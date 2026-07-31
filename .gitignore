@@ -1,0 +1,10 @@
+/target/
+/.semantic-thread/
+/.gradle/
+**/build/
+**/.gradle/
+*.tmp
+thread.json
+edit.json
+preview.json
+

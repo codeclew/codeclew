@@ -1,0 +1,82 @@
+syntax = "proto3";
+package semantic_thread.worker.v1;
+
+message ProtocolVersion { uint32 major = 1; uint32 minor = 2; }
+message SnapshotId {
+  string base_revision = 1;
+  string project_model_hash = 2;
+}
+enum RequestKind {
+  REQUEST_KIND_UNSPECIFIED = 0;
+  HANDSHAKE = 1;
+  OPEN_PROJECT = 2;
+  INDEX_FILES = 3;
+  RESOLVE_SYMBOL = 4;
+  RESOLVE_EXPRESSION = 5;
+  BUILD_LOCAL_GRAPH = 6;
+  APPLY_EDIT = 7;
+  VALIDATE_CANDIDATE = 8;
+  SHUTDOWN = 9;
+}
+message OpenProjectRequest { bytes payload_json = 1; }
+message IndexFilesRequest { bytes payload_json = 1; }
+message ResolveSymbolRequest { bytes payload_json = 1; }
+message ResolveExpressionRequest { bytes payload_json = 1; }
+message BuildLocalGraphRequest { bytes payload_json = 1; }
+message ApplyEditRequest { bytes payload_json = 1; }
+message ValidateCandidateRequest { bytes payload_json = 1; }
+message ShutdownRequest {}
+message WorkerRequest {
+  uint64 request_id = 1;
+  ProtocolVersion protocol_version = 2;
+  SnapshotId snapshot = 3;
+  oneof payload {
+    OpenProjectRequest open_project = 10;
+    IndexFilesRequest index_files = 11;
+    ResolveSymbolRequest resolve_symbol = 12;
+    ResolveExpressionRequest resolve_expression = 13;
+    BuildLocalGraphRequest build_local_graph = 14;
+    ApplyEditRequest apply_edit = 15;
+    ValidateCandidateRequest validate_candidate = 16;
+    ShutdownRequest shutdown = 17;
+  }
+}
+message WorkerCapabilities {
+  string language = 1;
+  string worker_version = 2;
+  string compiler_version = 3;
+  repeated ProtocolVersion protocol_versions = 4;
+  repeated string supported_operations = 5;
+  repeated string supported_language_features = 6;
+  repeated string unsupported_features = 7;
+}
+message WorkerError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  repeated string evidence = 4;
+}
+message OpenProjectResponse { bytes payload_json = 1; }
+message IndexFilesResponse { bytes payload_json = 1; }
+message ResolveSymbolResponse { bytes payload_json = 1; }
+message ResolveExpressionResponse { bytes payload_json = 1; }
+message BuildLocalGraphResponse { bytes payload_json = 1; }
+message ApplyEditResponse { bytes payload_json = 1; }
+message ValidateCandidateResponse { bytes payload_json = 1; }
+message ShutdownResponse { bytes payload_json = 1; }
+message WorkerResponse {
+  uint64 request_id = 1;
+  ProtocolVersion protocol_version = 2;
+  oneof payload {
+    WorkerCapabilities capabilities = 10;
+    OpenProjectResponse open_project = 11;
+    IndexFilesResponse index_files = 12;
+    ResolveSymbolResponse resolve_symbol = 13;
+    ResolveExpressionResponse resolve_expression = 14;
+    BuildLocalGraphResponse build_local_graph = 15;
+    ApplyEditResponse apply_edit = 16;
+    ValidateCandidateResponse validate_candidate = 17;
+    WorkerError error = 18;
+    ShutdownResponse shutdown = 19;
+  }
+}

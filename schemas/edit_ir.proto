@@ -1,0 +1,4 @@
+syntax = "proto3";
+package semantic_thread.edit.v1;
+message EditIrBlob { string schema = 1; bytes canonical_json = 2; }
+

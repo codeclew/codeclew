@@ -1,0 +1,3 @@
+syntax = "proto3";
+package semantic_thread.transaction.v1;
+message TransactionBlob { string schema = 1; bytes canonical_json = 2; }
