@@ -1,0 +1,2 @@
+{"schema":"semantic-benchmark/0.1","seconds":{
+"doctor":0.61,"inspect":0.33,"index":0.40,"cfg":0.39}}
