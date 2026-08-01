@@ -88,6 +88,7 @@ fn opens_maven_kotlin_23_project_with_exact_worker_and_build_plan() {
         .unwrap();
 
     assert_eq!(project["buildSystem"], "MAVEN");
+    assert_eq!(project["buildLauncher"], "./mvnw");
     assert_eq!(project["compilerVersion"], "2.3.0");
     assert_eq!(project["workerCompilerVersion"], "2.3.0");
     assert_eq!(worker.capabilities.compiler_version, "2.3.0");
@@ -111,6 +112,32 @@ fn opens_maven_kotlin_23_project_with_exact_worker_and_build_plan() {
             .any(|input| input["path"] == "pom.xml")
     );
 
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn invalidates_maven_project_snapshot_when_pom_changes() {
+    let root = workspace_root();
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture = temporary.path().join("maven-model-invalidation");
+    copy_maven_fixture(&root.join("fixtures/kotlin-maven"), &fixture);
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let before = worker
+        .request(RequestKind::OpenProject, &json!({"repo": fixture}))
+        .unwrap();
+    let pom = fixture.join("pom.xml");
+    let changed = std::fs::read_to_string(&pom).unwrap().replace(
+        "<java.version>21</java.version>",
+        "<java.version>17</java.version>",
+    );
+    std::fs::write(&pom, changed).unwrap();
+
+    let after = worker
+        .request(RequestKind::OpenProject, &json!({"repo": fixture}))
+        .unwrap();
+
+    assert_eq!(after["jvmTarget"], "17");
+    assert_ne!(before["projectModelHash"], after["projectModelHash"]);
     worker.shutdown().unwrap();
 }
 
@@ -149,6 +176,25 @@ fn indexes_and_resolves_maven_sources_with_k2() {
     assert_eq!(resolved["declaration"]["name"], "archiveEvent");
     assert_eq!(resolved["k2Validated"], true);
 
+    let test_index = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo": fixture, "compilation": ":/test"}),
+        )
+        .unwrap();
+    assert_eq!(
+        test_index["k2Validated"], true,
+        "{:#}",
+        test_index["diagnostics"]
+    );
+    assert!(
+        test_index["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "src/test/kotlin/com/acme/archive/ArchiveServiceTest.kt")
+    );
+
     worker.shutdown().unwrap();
 }
 
@@ -185,7 +231,7 @@ fn agent_context_renders_maven_targeted_test_command() {
     assert_eq!(context["validationPlan"]["buildSystem"], "MAVEN");
     assert_eq!(
         context["validationPlan"]["targetedCommands"],
-        json!(["mvn -Dtest=ArchiveServiceTest test"])
+        json!(["./mvnw -Dtest=ArchiveServiceTest test"])
     );
     assert!(
         context["validationPlan"]["targetedCommands"]
@@ -193,6 +239,44 @@ fn agent_context_renders_maven_targeted_test_command() {
             .unwrap()
             .iter()
             .all(|command| !command.as_str().unwrap().contains("gradlew"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fails_closed_when_neither_wrapper_nor_maven_is_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = workspace_root();
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture = temporary.path().join("maven-without-launcher");
+    copy_maven_fixture(&root.join("fixtures/kotlin-maven"), &fixture);
+    let wrapper = fixture.join("mvnw");
+    let mut permissions = std::fs::metadata(&wrapper).unwrap().permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&wrapper, permissions).unwrap();
+    let java_home = std::env::var("JAVA_HOME").expect("JAVA_HOME is required by the test suite");
+    let restricted_path = format!("{java_home}/bin:/usr/bin:/bin");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sthread"))
+        .args(["project", "inspect", "--repo", fixture.to_str().unwrap()])
+        .env("PATH", restricted_path)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let response = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        response.contains("UNSUPPORTED_PROJECT_CONFIGURATION"),
+        "{response}"
+    );
+    assert!(
+        !response.contains("INCOMPLETE_SEMANTIC_ANALYSIS"),
+        "{response}"
     );
 }
 
@@ -244,6 +328,7 @@ fn semantic_transaction_commits_after_maven_compile_and_tests() {
             project_model_hash: project["projectModelHash"].as_str().unwrap().into(),
             compiler_version: "2.3.0".into(),
             build_system: BuildSystem::Maven,
+            build_launcher: "./mvnw".into(),
             index_snapshot: index_snapshot.clone(),
             compilation: ":/main".into(),
             compile_task: "compile".into(),

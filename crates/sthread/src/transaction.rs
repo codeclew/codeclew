@@ -451,12 +451,14 @@ pub fn commit(
         let (compile_duration_ms, test_duration_ms) = validate_worktree(
             &worktree_path,
             transaction.thread.snapshot.build_system,
+            &transaction.thread.snapshot.build_launcher,
             &transaction.thread.snapshot.compile_task,
             configured_test_tasks,
         )?;
         transaction.validation_evidence.push(json!({
             "kind":"BUILD",
             "buildSystem":transaction.thread.snapshot.build_system,
+            "buildLauncher":transaction.thread.snapshot.build_launcher,
             "compileTask":transaction.thread.snapshot.compile_task,
             "testTasks":configured_test_tasks,
             "compileDurationMs":compile_duration_ms,
@@ -754,6 +756,7 @@ fn revalidate_semantic_read_set(
             .into(),
         compiler_version: transaction.thread.snapshot.compiler_version.clone(),
         build_system: transaction.thread.snapshot.build_system,
+        build_launcher: transaction.thread.snapshot.build_launcher.clone(),
         index_snapshot: transaction.thread.snapshot.index_snapshot.clone(),
         compilation: transaction.thread.snapshot.compilation.clone(),
         compile_task: transaction.thread.snapshot.compile_task.clone(),
@@ -831,11 +834,12 @@ fn revalidate_semantic_read_set(
 fn validate_worktree(
     worktree: &Path,
     build_system: BuildSystem,
+    build_launcher: &str,
     compile_task: &str,
     tests: &[String],
 ) -> Result<(u64, u64), SthreadError> {
     let compile_started = std::time::Instant::now();
-    let mut compile = build_command(worktree, build_system);
+    let mut compile = build_command(worktree, build_system, build_launcher)?;
     match build_system {
         BuildSystem::Gradle => {
             compile.arg(compile_task).arg("--no-daemon").arg("--quiet");
@@ -844,7 +848,10 @@ fn validate_worktree(
             compile.args(["-q", "-DskipTests", compile_task]);
         }
     }
-    let output = compile.current_dir(worktree).output().map_err(io_error)?;
+    let output = compile
+        .current_dir(worktree)
+        .output()
+        .map_err(|error| build_start_error(build_launcher, error))?;
     let compile_duration_ms = compile_started.elapsed().as_millis() as u64;
     log_output(&output);
     if !output.status.success() {
@@ -854,14 +861,14 @@ fn validate_worktree(
         );
         error
             .evidence
-            .push(format!("gradleCompileDurationMs={compile_duration_ms}"));
+            .push(format!("buildCompileDurationMs={compile_duration_ms}"));
         return Err(error);
     }
     if tests.is_empty() {
         return Ok((compile_duration_ms, 0));
     }
     let test_started = std::time::Instant::now();
-    let mut test = build_command(worktree, build_system);
+    let mut test = build_command(worktree, build_system, build_launcher)?;
     test.args(tests);
     match build_system {
         BuildSystem::Gradle => {
@@ -871,7 +878,10 @@ fn validate_worktree(
             test.arg("-q");
         }
     }
-    let output = test.current_dir(worktree).output().map_err(io_error)?;
+    let output = test
+        .current_dir(worktree)
+        .output()
+        .map_err(|error| build_start_error(build_launcher, error))?;
     let test_duration_ms = test_started.elapsed().as_millis() as u64;
     log_output(&output);
     if output.status.success() {
@@ -880,27 +890,50 @@ fn validate_worktree(
         let mut error = SthreadError::new(
             ErrorCode::TestFailed,
             format!(
-                "candidate worktree Gradle test tasks {} failed",
+                "candidate worktree {build_system:?} test tasks {} failed",
                 tests.join(", ")
             ),
         );
         error
             .evidence
-            .push(format!("gradleCompileDurationMs={compile_duration_ms}"));
+            .push(format!("buildCompileDurationMs={compile_duration_ms}"));
         error
             .evidence
-            .push(format!("gradleTestDurationMs={test_duration_ms}"));
+            .push(format!("buildTestDurationMs={test_duration_ms}"));
         Err(error)
     }
 }
 
-fn build_command(worktree: &Path, build_system: BuildSystem) -> Command {
-    let launcher = match build_system {
-        BuildSystem::Gradle => worktree.join("gradlew"),
-        BuildSystem::Maven if worktree.join("mvnw").is_file() => worktree.join("mvnw"),
-        BuildSystem::Maven => PathBuf::from("mvn"),
+fn build_command(
+    worktree: &Path,
+    build_system: BuildSystem,
+    build_launcher: &str,
+) -> Result<Command, SthreadError> {
+    let launcher = match (build_system, build_launcher) {
+        (BuildSystem::Gradle, "./gradlew") => worktree.join("gradlew"),
+        (BuildSystem::Maven, "./mvnw") => worktree.join("mvnw"),
+        (BuildSystem::Maven, "mvn") => PathBuf::from("mvn"),
+        _ => {
+            return Err(SthreadError::new(
+                ErrorCode::UnsupportedProjectConfiguration,
+                format!("unsupported {build_system:?} build launcher policy {build_launcher}"),
+            ));
+        }
     };
-    Command::new(launcher)
+    if launcher.is_absolute() && !launcher.is_file() {
+        return Err(SthreadError::new(
+            ErrorCode::UnsupportedProjectConfiguration,
+            format!("stored build launcher is missing: {}", launcher.display()),
+        ));
+    }
+    Ok(Command::new(launcher))
+}
+
+fn build_start_error(build_launcher: &str, error: std::io::Error) -> SthreadError {
+    SthreadError::new(
+        ErrorCode::UnsupportedProjectConfiguration,
+        format!("build launcher {build_launcher} could not start: {error}"),
+    )
 }
 
 pub struct Ledger {
@@ -1280,7 +1313,13 @@ mod tests {
             .join("../..")
             .join("fixtures/kotlin-maven");
 
-        let result = validate_worktree(&fixture, BuildSystem::Maven, "compile", &["test".into()]);
+        let result = validate_worktree(
+            &fixture,
+            BuildSystem::Maven,
+            "./mvnw",
+            "compile",
+            &["test".into()],
+        );
 
         assert!(result.is_ok(), "{result:?}");
     }
