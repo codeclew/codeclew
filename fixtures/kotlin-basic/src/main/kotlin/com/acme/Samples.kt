@@ -40,6 +40,12 @@ fun String.decorate(prefix: String = "["): String = "$prefix$this]"
 fun overloaded(value: Int): Int = value * 2
 fun overloaded(value: String): Int = value.length
 fun namedCall(value: String): String = value.decorate(prefix = "{")
+fun nullableValue(value: String?): String? = value
+
+fun duplicateExpressions(flag: Boolean, value: Int): Int {
+    val result = if (flag) value + 1 else value + 1
+    return result
+}
 
 fun capture(values: List<Int>): Int {
     var sum = 0
@@ -56,4 +62,3 @@ class Counter(var value: Int) {
         return value
     }
 }
-

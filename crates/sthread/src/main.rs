@@ -205,8 +205,11 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 RequestKind::OpenProject,
                 &json!({"repo":repo,"compilation":args.compilation}),
             )?;
-            let facts = w.request(RequestKind::IndexFiles, &json!({"repo":repo}))?;
-            let mut index = RepositoryIndex::open(&repo)?;
+            let facts = w.request(
+                RequestKind::IndexFiles,
+                &json!({"repo":repo,"compilation":args.compilation}),
+            )?;
+            let mut index = RepositoryIndex::open_compilation(&repo, args.compilation.as_deref())?;
             let persistent_hash = index.update(&facts)?;
             Ok(
                 json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len)}),

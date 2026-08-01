@@ -21,6 +21,27 @@ fn k2_fir_golden_language_and_slice_matrix() {
     assert_eq!(project["jvmTarget"], "21");
     assert_eq!(project["compileTask"], ":compileKotlin");
     assert!(!project["compileClasspath"].as_array().unwrap().is_empty());
+    assert!(
+        project["modelInputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| input["path"] == "gradle/wrapper/gradle-wrapper.jar")
+    );
+    let test_index = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/test"}),
+        )
+        .unwrap();
+    assert_eq!(test_index["compilation"], ":/test");
+    assert!(
+        test_index["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|file| file["path"].as_str().unwrap().contains("/test/"))
+    );
 
     let call = worker
         .request(
@@ -196,6 +217,68 @@ fn k2_fir_golden_language_and_slice_matrix() {
             .iter()
             .any(|node| node.attributes.contains_key("receiverType"))
     );
+    assert!(calls.nodes.iter().any(|node| node.kind == "CALL"));
+    let call_seed = calls
+        .nodes
+        .iter()
+        .find(|node| node.kind == "RETURN")
+        .unwrap()
+        .id
+        .clone();
+    let call_thread = graph::slice(
+        &calls,
+        &call_seed,
+        SlicePolicy::default(),
+        Snapshot {
+            base_revision: "test".into(),
+            project_model_hash: project["projectModelHash"].as_str().unwrap().into(),
+            compiler_version: "2.4.10".into(),
+        },
+        json!({"kind":"FUNCTION_RETURN","symbol":"com.acme.namedCall","nodeId":call_seed}),
+    )
+    .unwrap();
+    assert_eq!(
+        call_thread.completeness.status,
+        CompletenessStatus::PartialExternalBoundary
+    );
+    assert!(!call_thread.completeness.boundaries.is_empty());
+    assert!(!call_thread.external_summaries.is_empty());
+
+    let capture = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.capture"}),
+        )
+        .unwrap();
+    let capture = graph::enrich(serde_json::from_value(capture).unwrap());
+    assert!(capture.edges.iter().any(|edge| edge.kind == "CAPTURE"));
+    let counter = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.Counter.increment"}),
+        )
+        .unwrap();
+    let counter = graph::enrich(serde_json::from_value(counter).unwrap());
+    for effect in ["READ_STATE", "WRITE_STATE"] {
+        assert!(
+            counter.edges.iter().any(|edge| edge.kind == effect),
+            "counter lacks {effect}"
+        );
+    }
+    assert!(counter.nodes.iter().any(|node| {
+        node.attributes
+            .get("memoryKind")
+            .and_then(|value| value.as_str())
+            == Some("THIS_PROPERTY")
+    }));
+    let suspend = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.boundary"}),
+        )
+        .unwrap();
+    let suspend = graph::enrich(serde_json::from_value(suspend).unwrap());
+    assert!(suspend.edges.iter().any(|edge| edge.kind == "SUSPEND"));
 
     let source =
         std::fs::read_to_string(fixture.join("src/main/kotlin/com/acme/Samples.kt")).unwrap();

@@ -1,2 +1,1 @@
-{"schema":"semantic-benchmark/0.1","seconds":{
-"doctor":0.61,"inspect":0.33,"index":0.40,"cfg":0.39}}
+{"schema":"semantic-benchmark/0.2","scope":"separately-instrumented-stages-and-e2e-validation","milliseconds":{"anchorResolution":42,"canonicalSerialization":0,"firExtraction":31,"ipcPlusPsiParse":34,"k2Analysis":4846,"slicing":0,"ssaAndControl":1,"workerStartup":284},"seconds":{"projectModel":3.22,"declarationIndex":5.22,"editPreview":12.63,"gradleValidation":2.56}}

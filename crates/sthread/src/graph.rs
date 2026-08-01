@@ -8,6 +8,7 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     for node in &mut graph.nodes {
         node.editable = node.origin.is_some() && !node.kind.starts_with("PHI");
     }
+    add_effect_edges(&mut graph);
     let entry = graph
         .nodes
         .iter()
@@ -44,6 +45,94 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     graph.edges.sort();
     graph.edges.dedup();
     graph
+}
+
+fn add_effect_edges(graph: &mut LocalGraph) {
+    let originals = graph.nodes.clone();
+    for node in originals {
+        let mut effects: BTreeSet<String> = node
+            .attributes
+            .get("effects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        if node.kind == "CALL" && effects.is_empty() && !is_supported_intrinsic(&node) {
+            effects.insert("READ_STATE".into());
+        }
+        for effect in effects {
+            let id = format!("effect:{}:{}", node.id, effect.to_lowercase());
+            let mut attributes = BTreeMap::new();
+            attributes.insert("effect".into(), json!(effect));
+            attributes.insert(
+                "memoryKind".into(),
+                node.attributes
+                    .get("memoryKind")
+                    .cloned()
+                    .unwrap_or_else(|| json!("UNKNOWN_HEAP")),
+            );
+            attributes.insert(
+                "memoryLocation".into(),
+                node.attributes
+                    .get("memoryLocation")
+                    .cloned()
+                    .unwrap_or_else(|| json!("UNKNOWN_HEAP")),
+            );
+            graph.nodes.push(GraphNode {
+                id: id.clone(),
+                kind: "EFFECT".into(),
+                defines: None,
+                uses: vec![],
+                origin: node.origin.clone(),
+                editable: false,
+                attributes,
+            });
+            graph.edges.push(Edge {
+                from: node.id.clone(),
+                to: id,
+                kind: effect,
+            });
+        }
+    }
+}
+
+#[allow(dead_code)]
+const MEMORY_ABSTRACTIONS: [&str; 4] = [
+    "THIS_PROPERTY",
+    "OBJECT_PROPERTY",
+    "STATIC_PROPERTY",
+    "UNKNOWN_HEAP",
+];
+
+fn is_supported_intrinsic(node: &GraphNode) -> bool {
+    let symbol = node
+        .attributes
+        .get("symbol")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = symbol.rsplit(['.', '/']).next().unwrap_or_default();
+    symbol.starts_with("kotlin/")
+        && matches!(
+            name,
+            "plus"
+                | "minus"
+                | "times"
+                | "div"
+                | "rem"
+                | "compareTo"
+                | "inc"
+                | "dec"
+                | "not"
+                | "unaryMinus"
+                | "unaryPlus"
+        )
+        && node
+            .attributes
+            .get("effects")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
 }
 
 fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
@@ -403,7 +492,12 @@ pub fn slice(
     // A depth-zero call anywhere in the selected local function can influence
     // a source-backed seed through control/value evaluation. Until a call
     // summary proves otherwise, completeness must remain partial.
-    let external = graph.nodes.iter().any(|n| n.kind == "CALL");
+    let external_calls: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "CALL" && !is_supported_intrinsic(n))
+        .collect();
+    let external = !external_calls.is_empty();
     let unsupported = !graph.boundaries.is_empty();
     let status = if budget_hit {
         CompletenessStatus::PartialBudget
@@ -419,7 +513,7 @@ pub fn slice(
     } else if unsupported {
         graph.boundaries.clone()
     } else if external {
-        vec![json!({"kind":"EXTERNAL_CALL","reason":"maxCallDepth=0"})]
+        external_calls.iter().map(|node| json!({"kind":"EXTERNAL_CALL","nodeId":node.id,"symbol":node.attributes.get("symbol"),"reason":"maxCallDepth=0"})).collect()
     } else {
         vec![]
     };
@@ -515,7 +609,18 @@ pub fn slice(
         nodes,
         edges,
         editable_units,
-        external_summaries: vec![],
+        external_summaries: external_calls
+            .iter()
+            .map(|node| {
+                json!({
+                    "nodeId": node.id,
+                    "symbol": node.attributes.get("symbol"),
+                    "receiverType": node.attributes.get("receiverType"),
+                    "calleeSummaryHash": node.attributes.get("calleeSummaryHash"),
+                    "effects": node.attributes.get("effects")
+                })
+            })
+            .collect(),
         read_set,
         validation_plan: vec![
             "SYNTAX".into(),

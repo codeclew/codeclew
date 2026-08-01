@@ -40,7 +40,7 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 - K2 candidate diagnostics, type, protected-binding, call-target, callee-summary, and effect validation
 - minimal preview diff, isolated worktree validation, configured tests
 - candidate commits with provenance trailers and CAS ref update
-- append-only SQLite transaction ledger, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
+- append-only SQLite transaction ledger with trailer-based crash recovery and idempotent retry, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
 
 This is intentionally fail-closed. Android, KMP, scripts, compiler plugins, reflection, precise coroutine lowering, global interprocedural analysis, and ambiguous anchors are rejected or marked as boundaries. See [progress](docs/progress.md) and [final report](docs/final-report.md).
 

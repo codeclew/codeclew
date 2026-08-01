@@ -34,12 +34,13 @@ internal class Worker : AutoCloseable {
     private val factory = KtPsiFactory(environment.project, markGenerated = false)
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
     private val analysisCache = mutableMapOf<String, K2Analysis>()
+    private val gradleModelCache = mutableMapOf<String, JsonObject>()
 
     fun handle(kind: Int, payload: ByteArray): String {
         val request = if (payload.isEmpty()) buildJsonObject {} else json.parseToJsonElement(payload.decodeToString()).jsonObject
         return when (kind) {
             2 -> inspect(Path.of(request.requiredString("repo")), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content).toString()
-            3 -> index(Path.of(request.requiredString("repo"))).toString()
+            3 -> index(Path.of(request.requiredString("repo")), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content).toString()
             4 -> resolveSymbol(Path.of(request.requiredString("repo")), request.requiredString("symbol")).toString()
             5 -> resolveExpression(Path.of(request.requiredString("repo")), request.requiredString("file"), request.requiredInt("offset")).toString()
             6 -> localGraph(Path.of(request.requiredString("repo")), request.requiredString("symbol")).toString()
@@ -52,7 +53,7 @@ internal class Worker : AutoCloseable {
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
         require(requestedRepo.isDirectory()) { "repository does not exist: $requestedRepo" }
         val repo = requestedRepo.toRealPath()
-        val gradle = gradleModel(repo, compilation)
+        val gradle = cachedGradleModel(repo, compilation)
         val modelFiles = projectModelFiles(repo)
         val sourceFiles = gradle["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
         val sourceRoots = sourceFiles.mapNotNull { sourceRoot(repo, it) }.distinct().sorted()
@@ -99,6 +100,13 @@ internal class Worker : AutoCloseable {
         } finally { Files.deleteIfExists(script) }
     }
 
+    private fun cachedGradleModel(repo: Path, compilation: String?): JsonObject {
+        val canonicalRepo = repo.toRealPath()
+        val inputHash = sha(projectModelFiles(canonicalRepo).flatMap { file -> (canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) + "\n").toByteArray().asIterable() }.toByteArray())
+        val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
+        return gradleModelCache.getOrPut(key) { gradleModel(canonicalRepo, compilation) }
+    }
+
     private fun sourceRoot(repo: Path, file: Path): String? {
         val normalized = file.normalize(); val markers = listOf("/src/main/kotlin/", "/src/test/kotlin/")
         val text = normalized.invariantSeparatorsPathString
@@ -114,9 +122,12 @@ internal class Worker : AutoCloseable {
 
     private fun projectModelFiles(repo: Path): List<Path> = Files.walk(repo).use { paths ->
         paths.filter { it.isRegularFile() }.filter {
+            val relative = repo.relativize(it).invariantSeparatorsPathString
+            if (relative.split('/').any { part -> part == "build" || part == ".gradle" || part == ".git" }) return@filter false
             val n = it.fileName.toString()
             n == "settings.gradle" || n == "settings.gradle.kts" || n == "build.gradle" || n == "build.gradle.kts" ||
-                n == "gradle.properties" || n == "libs.versions.toml" || n == "gradle-wrapper.properties"
+                n == "gradle.properties" || n == "libs.versions.toml" || n == "gradle-wrapper.properties" || n == "gradle-wrapper.jar" ||
+                relative.startsWith("buildSrc/") || relative.startsWith("build-logic/") || relative.startsWith("gradle/")
         }.sorted().toList()
     }
 
@@ -125,22 +136,23 @@ internal class Worker : AutoCloseable {
             .sorted().toList()
     }
 
-    private fun analyzeWithK2(repo: Path, overrides: Map<String, String> = emptyMap()): K2Analysis {
-        val sources = sourceFiles(repo)
+    private fun analyzeWithK2(repo: Path, overrides: Map<String, String> = emptyMap(), compilation: String = ":/main"): K2Analysis {
+        val analysisRepo = repo.toRealPath()
+        val model = cachedGradleModel(analysisRepo, compilation)
+        val sources = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
         val cacheMaterial = buildString {
             sources.forEach { source ->
-                val relative = repo.relativize(source).invariantSeparatorsPathString
+                val relative = analysisRepo.relativize(source.toRealPath()).invariantSeparatorsPathString
                 append(relative).append('\u0000').append(overrides[relative] ?: source.readText()).append('\u0000')
             }
-            projectModelFiles(repo).forEach { input -> append(repo.relativize(input).invariantSeparatorsPathString).append(':').append(sha(input.readBytes())).append('\u0000') }
+            projectModelFiles(analysisRepo).forEach { input -> append(analysisRepo.relativize(input).invariantSeparatorsPathString).append(':').append(sha(input.readBytes())).append('\u0000') }
         }
         val cacheKey = sha(cacheMaterial.toByteArray())
-        if (overrides.isEmpty()) analysisCache["$repo|$cacheKey"]?.let { return it }
-        val model = gradleModel(repo, ":/main")
+        if (overrides.isEmpty()) analysisCache["$analysisRepo|$compilation|$cacheKey"]?.let { return it }
         val temp = Files.createTempDirectory("semantic-thread-k2")
         try {
             val sourceArgs = sources.map { original ->
-                val relative = repo.relativize(original).invariantSeparatorsPathString
+                val relative = analysisRepo.relativize(original.toRealPath()).invariantSeparatorsPathString
                 val replacement = overrides[relative]
                 if (replacement == null) original else temp.resolve("sources").resolve(relative).also { it.parent.createDirectories(); it.writeText(replacement) }
             }
@@ -150,23 +162,26 @@ internal class Worker : AutoCloseable {
             val java = Path.of(System.getProperty("java.home"), "bin", "java").toString()
             val command = mutableListOf(java, "-cp", System.getProperty("java.class.path"), "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-d", outputDir.toString(), "-classpath", classpath, "-no-stdlib", "-no-reflect", "-jdk-home", model["jdkHome"]!!.jsonPrimitive.content, "-jvm-target", model["jvmTarget"]?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21", "-Xplugin=$plugin", "-P", "plugin:$FACTS_PLUGIN_ID:output=$factsFile")
             command += sourceArgs.map(Path::toString)
-            val process = ProcessBuilder(command).directory(repo.toFile()).redirectErrorStream(true).start()
+            val process = ProcessBuilder(command).directory(analysisRepo.toFile()).redirectErrorStream(true).start()
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             val diagnostics = output.lineSequence().filter { it.isNotBlank() }.map { line ->
                 buildJsonObject { put("severity", when { "error:" in line.lowercase() || line.startsWith("e:") -> "ERROR"; "warning:" in line.lowercase() || line.startsWith("w:") -> "WARNING"; else -> "INFO" }); put("message", line) }
             }.toList()
             val facts = if (factsFile.isRegularFile()) factsFile.readLines().filter(String::isNotBlank).map { json.parseToJsonElement(it).jsonObject } else emptyList()
             val result = K2Analysis(status == 0, facts.sortedBy { it.toString() }, diagnostics)
-            if (overrides.isEmpty()) analysisCache["$repo|$cacheKey"] = result
+            if (overrides.isEmpty()) analysisCache["$analysisRepo|$compilation|$cacheKey"] = result
             return result
         } finally { temp.toFile().deleteRecursively() }
     }
 
     private fun parse(path: Path): KtFile = factory.createFile(path.fileName.toString(), path.readText())
 
-    private fun index(repo: Path): JsonObject {
-        val analysis = analyzeWithK2(repo)
-        val files = sourceFiles(repo).map { path ->
+    private fun index(repo: Path, compilation: String?): JsonObject {
+        val selected = compilation ?: ":/main"
+        val model = cachedGradleModel(repo, selected)
+        val selectedFiles = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
+        val analysis = analyzeWithK2(repo, compilation = selected)
+        val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path); val pkg = kt.packageFqName.asString()
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
@@ -181,7 +196,7 @@ internal class Worker : AutoCloseable {
         }
         val canonical = JsonArray(files)
         return buildJsonObject {
-            put("schema", "semantic-index/0.1"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
+            put("schema", "semantic-index/0.1"); put("compilation", selected); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
         }
     }
@@ -316,6 +331,8 @@ internal class Worker : AutoCloseable {
 
     private fun normalizeFirCfg(file: String, owner: String, kt: KtFile, fn: KtNamedFunction, cfg: JsonObject): JsonObject {
         val rawNodes = cfg["nodes"]!!.jsonArray
+        val functionLocals = (fn.valueParameters.mapNotNull { it.name } + PsiTreeUtil.collectElementsOfType(fn.bodyExpression ?: fn, KtProperty::class.java).filter { property -> generateSequence(property.parent) { it.parent }.takeWhile { it != fn }.none { it is KtLambdaExpression } }.mapNotNull { it.name }).toSet()
+        val hasClassReceiver = generateSequence(fn.parent) { it.parent }.any { it is KtClassOrObject }
         val normalizedNodes = rawNodes.map { value ->
             val raw = value.jsonObject; val rawId = raw["id"]!!.jsonPrimitive.int
             val start = raw["start"]?.jsonPrimitive?.intOrNull; val end = raw["end"]?.jsonPrimitive?.intOrNull
@@ -325,13 +342,15 @@ internal class Worker : AutoCloseable {
             val rawKind = raw["kind"]!!.jsonPrimitive.content
             val expression = (psi as? KtExpression)?.takeUnless { it is KtNamedFunction || it is KtBlockExpression || it is KtWhenExpression || it is KtIfExpression || it is KtLoopExpression }
             val kind = when {
+                "FunctionEnter" in rawKind -> "ENTRY"
+                "FunctionExit" in rawKind -> "EXIT"
+                rawKind == "FunctionCallEnterNode" || rawKind == "FunctionCallExitNode" || expression is KtCallExpression -> "CALL"
                 "Enter" in rawKind -> "ENTRY"
-                "Exit" in rawKind -> if ("Function" in rawKind) "EXIT" else "EXPRESSION"
+                "Exit" in rawKind -> "EXPRESSION"
                 "Throw" in rawKind -> "THROW"
                 "Jump" in rawKind || "Return" in rawKind -> "RETURN"
                 "Condition" in rawKind || "Branch" in rawKind || "When" in rawKind -> "BRANCH"
                 "Loop" in rawKind -> "LOOP"
-                "FunctionCall" in rawKind || expression is KtCallExpression -> "CALL"
                 expression != null -> normalizedKind(expression)
                 else -> "EXPRESSION"
             }
@@ -352,7 +371,17 @@ internal class Worker : AutoCloseable {
                 if (conditionText.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) uses = listOf(conditionText)
             }
             graphNode("fir:$rawId", kind, defines, psi?.let { anchor(file, owner, it, kt.text) }, uses).let { node ->
-                buildJsonObject { node.forEach { (key, item) -> put(key, item) }; putJsonObject("attributes") { put("firNodeKind", rawKind); put("firDead", raw["dead"] ?: JsonPrimitive(false)); put("analysis", "K2_FIR_CFG") } }
+                buildJsonObject { node.forEach { (key, item) -> put(key, item) }; putJsonObject("attributes") {
+                    put("firNodeKind", rawKind); put("firDead", raw["dead"] ?: JsonPrimitive(false)); put("analysis", "K2_FIR_CFG")
+                    if (hasClassReceiver && ((defines != null && defines !in functionLocals) || uses.any { it !in functionLocals })) {
+                        putJsonArray("effects") {
+                            if (uses.any { it !in functionLocals }) add("READ_STATE")
+                            if (defines != null && defines !in functionLocals) add("WRITE_STATE")
+                        }
+                        val property = defines?.takeIf { it !in functionLocals } ?: uses.first { it !in functionLocals }
+                        put("memoryKind", "THIS_PROPERTY"); put("memoryLocation", "THIS_PROPERTY:$owner#$property")
+                    }
+                } }
             }
         }
         val rawKinds = rawNodes.associate { it.jsonObject["id"]!!.jsonPrimitive.int to it.jsonObject["kind"]!!.jsonPrimitive.content }
@@ -382,9 +411,25 @@ internal class Worker : AutoCloseable {
             for (index in 0 until parameterNodes.lastIndex) normalizedEdges += edge("param:$index", "param:${index + 1}", "CFG_NORMAL")
             entryEdges.forEach { original -> normalizedEdges += edge("param:${parameterNodes.lastIndex}", original["to"]!!.jsonPrimitive.content, original["kind"]!!.jsonPrimitive.content) }
         }
+        val outerNames = functionLocals + fn.valueParameters.mapNotNull { it.name }
+        val captureNodes = mutableListOf<JsonObject>()
+        PsiTreeUtil.collectElementsOfType(fn.bodyExpression ?: fn, KtLambdaExpression::class.java).sortedBy { it.textOffset }.forEachIndexed { lambdaIndex, lambda ->
+            val localNames = lambda.valueParameters.mapNotNull { it.name }.toSet() + PsiTreeUtil.collectElementsOfType(lambda, KtProperty::class.java).mapNotNull { it.name }
+            val captured = usedNames(lambda).filter { it in outerNames && it !in localNames }.distinct().sorted()
+            captured.forEach { name ->
+                val id = "capture:$lambdaIndex:$name"
+                captureNodes += graphNode(id, "CAPTURE", null, anchor(file, owner, lambda, kt.text), listOf(name))
+                val host = normalizedNodes.filter { node ->
+                    node["kind"]?.jsonPrimitive?.content == "CALL" && node["origin"]?.jsonObject?.get("rangeHint")?.jsonArray?.let { range ->
+                        (range[0].jsonPrimitive.int <= lambda.textRange.startOffset && range[1].jsonPrimitive.int >= lambda.textRange.endOffset)
+                    } == true
+                }.minByOrNull { node -> node["origin"]!!.jsonObject["rangeHint"]!!.jsonArray.let { it[1].jsonPrimitive.int - it[0].jsonPrimitive.int } }
+                host?.get("id")?.jsonPrimitive?.content?.let { normalizedEdges += edge(it, id, "CAPTURE") }
+            }
+        }
         return buildJsonObject {
             put("schema", "local-cfg/0.1"); put("symbol", owner); put("file", file); put("graphSource", "K2_FIR_CFG")
-            putJsonArray("nodes") { (normalizedNodes + parameterNodes).forEach(::add) }; putJsonArray("edges") { normalizedEdges.forEach(::add) }; putJsonArray("boundaries") {}
+            putJsonArray("nodes") { (normalizedNodes + parameterNodes + captureNodes).forEach(::add) }; putJsonArray("edges") { normalizedEdges.forEach(::add) }; putJsonArray("boundaries") {}
             put("firCfgHash", sha(cfg.toString().toByteArray()))
         }
     }
@@ -419,6 +464,8 @@ internal class Worker : AutoCloseable {
                     node["attributes"]?.jsonObject?.forEach { (key, value) -> put(key, value) }
                     put("analysis", "K2_FIR")
                     matching?.let { fact -> listOf("kind", "type", "symbol", "returnType", "receiverType", "argumentToParameter").forEach { key -> fact[key]?.let { put(key, it) } } }
+                    val mergedEffects = (node["attributes"]?.jsonObject?.get("effects")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty() + matching?.get("effects")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()).distinct().sorted()
+                    if (mergedEffects.isNotEmpty()) putJsonArray("effects") { mergedEffects.forEach(::add) }
                     matching?.get("symbol")?.jsonPrimitive?.content?.let { symbol -> calleeSummaryHash(repo, analysis, symbol)?.let { put("calleeSummaryHash", it) } }
                 }
             }
@@ -614,6 +661,14 @@ internal class Worker : AutoCloseable {
         // only tie-breakers: a unique token target survives neighboring edits.
         matches = matches.filter { sha(it.text.toByteArray()) == expectedHash }
         if (matches.isEmpty()) throw WorkerFailure("STALE_TARGET", "target hash no longer exists")
+        if (matches.size > 1) {
+            val requested = listOf("ancestorPathHash", "localOrdinal", "leftContextHash", "rightContextHash")
+            requested.forEach { field ->
+                val expected = request[field] ?: return@forEach
+                val narrowed = matches.filter { candidate -> anchor(relative, ownerQuery, candidate, source)[field] == expected }
+                if (narrowed.isNotEmpty()) matches = narrowed
+            }
+        }
         if (matches.size > 1) throw WorkerFailure("AMBIGUOUS_TARGET", "target hash resolves to ${matches.size} nodes")
         val oldEffects = effects(matches.single())
         val replacementNode = try {
@@ -677,7 +732,12 @@ internal class Worker : AutoCloseable {
             if (!sameType(originalType, expected)) throw WorkerFailure("TYPE_MISMATCH", "expected target type $expected, resolved ${originalType ?: "<unknown>"}")
         }
         postconditions["typeAssignableTo"]?.jsonPrimitive?.content?.let { expected ->
-            if (!sameType(replacementType, expected)) throw WorkerFailure("TYPE_MISMATCH", "replacement type ${replacementType ?: "<unknown>"} is not assignable to $expected")
+            if (kind == "REPLACE_EXPRESSION") {
+                val probe = "run { val __semantic_thread_type_probe: $expected = $replacement; $replacement }"
+                val probeSource = source.substring(0, matchedRange.startOffset) + probe + source.substring(matchedRange.endOffset)
+                val probeAnalysis = analyzeWithK2(repo, mapOf(relative to probeSource))
+                if (!probeAnalysis.valid || probeAnalysis.diagnostics.any(::isErrorDiagnostic)) throw WorkerFailure("TYPE_MISMATCH", "replacement type ${replacementType ?: "<unknown>"} is not assignable to $expected: ${probeAnalysis.diagnostics.filter(::isErrorDiagnostic).joinToString("; ") { it["message"]?.jsonPrimitive?.content.orEmpty() }}")
+            } else if (!sameType(replacementType, expected)) throw WorkerFailure("TYPE_MISMATCH", "replacement type ${replacementType ?: "<unknown>"} is not assignable to $expected")
         }
         if (postconditions["preserveEffects"]?.jsonPrimitive?.booleanOrNull == true && introducedEffects.isNotEmpty()) throw WorkerFailure("EFFECT_CHANGED", "replacement changes effects: ${introducedEffects.sorted()}")
         return buildJsonObject {
@@ -746,7 +806,7 @@ internal class Worker : AutoCloseable {
     }.minByOrNull { (it["end"]!!.jsonPrimitive.int - it["start"]!!.jsonPrimitive.int) }?.get("type")?.jsonPrimitive?.content
     private fun sameType(actual: String?, expected: String): Boolean {
         if (actual == null) return false
-        fun normalize(value: String) = value.removePrefix("kotlin/").replace('/', '.').removeSuffix("?")
+        fun normalize(value: String) = value.removePrefix("kotlin/").replace('/', '.')
         return normalize(actual) == normalize(expected) || normalize(actual).substringAfterLast('.') == normalize(expected).substringAfterLast('.')
     }
 

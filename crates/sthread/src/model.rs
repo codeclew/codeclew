@@ -39,6 +39,9 @@ impl Default for SlicePolicy {
                 "CAPTURE",
                 "READ_STATE",
                 "WRITE_STATE",
+                "SUSPEND",
+                "THROW",
+                "IO",
             ]
             .map(str::to_owned)
             .to_vec(),
