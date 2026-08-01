@@ -496,6 +496,20 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             let result = transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?;
             if let Some(output) = args.output.as_deref() {
                 write_artifact(output, &transaction)?;
+                let build = transaction
+                    .validation_evidence
+                    .iter()
+                    .find(|evidence| evidence["kind"] == "BUILD")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                return Ok(json!({
+                    "schema":"semantic-task-apply-receipt/0.1",
+                    "status":transaction.status,
+                    "finalCommit":transaction.final_commit,
+                    "changedFiles":transaction.preview.as_ref().map(|preview| &preview.changed_files),
+                    "build":build,
+                    "transactionArtifact":output
+                }));
             }
             Ok(
                 json!({"schema":"semantic-task-apply/0.1","result":result,"transaction":transaction}),

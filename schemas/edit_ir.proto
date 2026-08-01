@@ -22,6 +22,7 @@ enum OperationKind {
   REMOVE_IMPORT = 4;
   REPLACE_DECLARATION = 5;
   CREATE_FILE = 6;
+  REWRITE_DECLARATION = 7;
 }
 message Condition { string key = 1; bytes canonical_value = 2; }
 message EditOperation {

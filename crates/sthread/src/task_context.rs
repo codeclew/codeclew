@@ -45,19 +45,10 @@ pub struct TaskContextSelection {
 impl TaskContextSelection {
     pub fn root_symbols(&self, limit: usize) -> Vec<String> {
         let mut roots = Vec::new();
-        roots.extend(
-            self.candidates
-                .iter()
-                .filter(|candidate| {
-                    candidate.declaration["kind"]
-                        .as_str()
-                        .is_some_and(|kind| kind.contains("Function"))
-                        && candidate.reasons.iter().any(|reason| {
-                            reason.starts_with("exact:") || reason.starts_with("symbol:")
-                        })
-                })
-                .filter_map(|candidate| candidate.declaration["legacySymbolId"].as_str()),
-        );
+        // An explicitly named owner is the strongest task boundary. Prefer its
+        // goal-bearing member over helper functions that happen to be terms;
+        // the call graph closes over those helpers without spending another
+        // expensive graph root.
         for owner in &self.explicit_owners {
             if let Some(symbol) = self
                 .catalog
@@ -113,6 +104,19 @@ impl TaskContextSelection {
                 roots.push(symbol);
             }
         }
+        roots.extend(
+            self.candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.declaration["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.contains("Function"))
+                        && candidate.reasons.iter().any(|reason| {
+                            reason.starts_with("exact:") || reason.starts_with("symbol:")
+                        })
+                })
+                .filter_map(|candidate| candidate.declaration["legacySymbolId"].as_str()),
+        );
         roots.extend(
             self.candidates
                 .iter()
@@ -511,8 +515,8 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "schema":"semantic-task-edit-plan/0.1",
             "threadId":thread_id,
             "baseRevision":base_revision,
-            "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
-            "instruction":"Reference declarationTargetId/bodyTargetId as target.targetId, provide replacement.kotlin, then run sthread task-apply; SThread expands and validates the exact target from evidence. REPLACE_DECLARATION must contain exactly one declaration; put every new top-level sibling in a full Kotlin CREATE_FILE operation instead.",
+            "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","REWRITE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
+            "instruction":"Prefer REWRITE_DECLARATION with preconditions.substitutions [{old,new,occurrences?}] for exact local changes. Use declaration targets for signature/type changes and body targets only if signature is unchanged. New top-level declarations require CREATE_FILE.",
             "constraints":[
                 "Every non-CREATE_FILE operation references one emitted targetId",
                 "REPLACE_DECLARATION replacement.kotlin parses as exactly one Kotlin declaration and contains no package or imports",

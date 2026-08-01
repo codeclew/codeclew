@@ -54,7 +54,7 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
         context["editPlan"]["instruction"]
             .as_str()
             .unwrap()
-            .contains("exactly one declaration")
+            .contains("substitutions")
     );
     let stored: Value = serde_json::from_slice(&std::fs::read(evidence).unwrap()).unwrap();
     assert_eq!(stored["schema"], "semantic-task-context-evidence/0.2");

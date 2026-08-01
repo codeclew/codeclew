@@ -63,6 +63,7 @@ impl RepositoryIndex {
     }
 
     pub fn open_compilation(repo: &Path, compilation: Option<&str>) -> Result<Self, SthreadError> {
+        exclude_runtime_state(repo)?;
         let state = repo.join(".semantic-thread");
         std::fs::create_dir_all(&state).map_err(io_error)?;
         let blobs = state.join("blobs/sha256");
@@ -378,6 +379,34 @@ impl RepositoryIndex {
             .optional()
             .map_err(db_error)
     }
+}
+
+fn exclude_runtime_state(repo: &Path) -> Result<(), SthreadError> {
+    let exclude = repo.join(".git/info/exclude");
+    let Some(parent) = exclude.parent() else {
+        return Ok(());
+    };
+    if !parent.is_dir() {
+        // A linked worktree stores .git as a file; its common repository owns
+        // the exclude policy, and leaving the cache visible is preferable to
+        // guessing that location here.
+        return Ok(());
+    }
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|line| line.trim() == ".semantic-thread/")
+    {
+        return Ok(());
+    }
+    let separator = (!existing.is_empty() && !existing.ends_with('\n'))
+        .then_some("\n")
+        .unwrap_or("");
+    std::fs::write(
+        &exclude,
+        format!("{existing}{separator}.semantic-thread/\n"),
+    )
+    .map_err(io_error)
 }
 
 fn database_name(compilation: Option<&str>) -> String {
