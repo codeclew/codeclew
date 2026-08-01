@@ -5,7 +5,7 @@
   "repository": "product-repo",
   "sourceBaselineRevision": "56d42d5f943acb566fcc1f0663e7ecef86886249",
   "sanitizedBaselineRevision": "e0716be5cd6f2035e50ef88a615d3bd546b6f692",
-  "toolRevision": "40ba87a",
+  "toolRevision": "86ce481384f2abe6f0c37074ed775731c0560603",
   "model": "gpt-5.6-terra",
   "reasoningEffort": "medium",
   "measurement": {
@@ -178,58 +178,63 @@
       "eligibility": "historical-only: the expansion was hard-coded in the global worker and is excluded from the no-recipe comparison"
     },
     {
-      "mode": "sthread-generic-skill",
-      "commit": "7013978a0a8176e4927711161b594a26e5c1e73a",
-      "startUtc": "2026-08-01T16:21:00Z",
-      "firstEditUtc": "2026-08-01T16:21:54Z",
-      "endUtc": "2026-08-01T16:23:38Z",
-      "timeToEditSeconds": 54,
-      "timeToCommitSeconds": 158,
-      "toolCalls": 14,
+      "mode": "sthread-transient-graph",
+      "commit": "dca765dc500a0de10535ae29d990195461920213",
+      "startUtc": "2026-08-01T17:46:03Z",
+      "firstEditUtc": "2026-08-01T17:46:53Z",
+      "endUtc": "2026-08-01T17:47:40Z",
+      "timeToEditSeconds": 50,
+      "timeToCommitSeconds": 97,
+      "toolCalls": 11,
+      "orchestrationWaitCallsExcluded": 2,
+      "allTopLevelCalls": 13,
       "filesChanged": 7,
-      "additions": 47,
-      "deletions": 25,
+      "additions": 39,
+      "deletions": 19,
       "tokens": {
-        "input": 486084,
-        "cachedInput": 446720,
-        "output": 5691,
-        "reasoningOutputIncludedInOutput": 1549,
-        "rawTotal": 491775,
-        "noncached": 45055,
+        "input": 370392,
+        "cachedInput": 337408,
+        "output": 4364,
+        "reasoningOutputIncludedInOutput": 1627,
+        "rawTotal": 374756,
+        "noncached": 37348,
         "goalTokensUsed": null
       },
       "navigation": {
-        "tool": "sthread agent-context + universal graph roles",
+        "tool": "sthread agent-context + runtime transient change graph",
         "calls": 1,
-        "coldToolMilliseconds": 28960,
+        "coldToolMilliseconds": 22985,
         "stdoutLimitBytes": 16384,
-        "stdoutBytes": 14383,
-        "evidenceBytes": 12338295,
+        "stdoutBytes": 15782,
+        "evidenceBytes": 12349460,
         "contextCompleteness": "COMPLETE_TASK",
         "recipe": null
       },
       "planning": {
-        "planBytes": 5289,
-        "validatorAttempts": 2,
-        "validatorResults": ["INVALID", "VALID"],
+        "schema": "semantic-task-goal/0.4",
+        "planBytes": 398,
+        "validatorAttempts": 1,
+        "validatorResults": ["VALID"],
+        "modelOwnedValues": ["newContract", "newProjection", "imports"],
+        "workerDerived": ["resolved role path", "data source", "collection", "loop item", "identity field", "identity argument", "payload parameter", "test binding", "EditIR substitutions"],
         "sourceReadsOutsideContext": 0,
         "grepFallback": false
       },
       "transaction": {
         "calls": 1,
         "status": "COMMITTED",
-        "durationMilliseconds": 38334,
-        "targetedTestMilliseconds": 30665,
+        "wallSeconds": 47,
+        "targetedTestMilliseconds": 39831,
         "worktreeSynchronized": true
       },
       "freshHiddenAcceptance": {
         "status": "ACCEPT",
-        "result": "109 tests, 0 failures, 0 errors, 0 skipped; extra producer test passed",
-        "durationMilliseconds": 18903,
+        "result": "109 tests, 0 failures, 0 errors, 0 skipped",
+        "durationMilliseconds": 23584,
         "reason": "fresh hidden tests and independent audit confirm the static nullable contract, one constructor projection per batch, both archive branches, productId retention and CREATE/UPDATE assignability",
         "minorFinding": "git diff --check reports pre-existing-style trailing whitespace inside the rewritten JPQL raw string; acceptance judged it nonfunctional"
       },
-      "eligibility": "fair no-recipe run: one context, generic anchored EditIR, one atomic apply"
+      "eligibility": "fair no-recipe run: the current-run graph and compact goal were built inside measured time; the worker contains no repository/task vocabulary; one context and one atomic apply"
     }
   ],
   "engineeringTrials": [
@@ -240,7 +245,12 @@
     {"runs":"9-23","status":"excluded","reason":"generic no-recipe engineering trials used to remove ambiguous targets, escaped multiline edits, missing role closure, invalid aliases and incomplete plan validation"},
     {"run":24,"status":"excluded","reason":"a valid generic plan exposed two worker generalization defects; the unchanged plan passed after contract-header and mixed-import fixes"},
     {"run":25,"status":"excluded","reason":"task-apply rejected an out-of-range occurrence; the universal validator was extended to catch it and residual renamed-variable uses"},
-    {"run":26,"status":"excluded","reason":"candidate committed and independently passed 109 hidden tests, but a failed timing wrapper had actually started a second agent-context call"}
+    {"run":26,"status":"excluded","reason":"candidate committed and independently passed 109 hidden tests, but a failed timing wrapper had actually started a second agent-context call"},
+    {"run":27,"status":"excluded","reason":"candidate passed hidden tests and performance thresholds, but strict audit found task-shaped vocabulary in the global worker/test fixtures"},
+    {"runs":"29-30","status":"excluded","reason":"clean structural worker runs passed correctness but lost total time to process polling or 5-11 KB model-authored substitution plans"},
+    {"run":31,"status":"excluded","elapsedSeconds":104,"rawTokens":447692,"noncachedTokens":33228,"reason":"transient v0.1 failed closed because the model reused an emitted contract name for a new type"},
+    {"run":32,"status":"excluded","elapsedSeconds":102,"rawTokens":376398,"noncachedTokens":32846,"reason":"transient v0.2 failed closed because model-owned sink and identity bindings were ambiguous"},
+    {"run":33,"status":"excluded","rawTokens":330111,"noncachedTokens":26239,"reason":"transient v0.3 reached Maven but model-owned test binding was wrong; no commit was published"}
   ],
   "comparisonPercent": {
     "astIndexVsDefault": {
@@ -274,12 +284,19 @@
       "noncachedTokens": -75.38,
       "toolCalls": -66.67
     },
-    "sthreadGenericSkillVsAstIndex": {
-      "timeToEdit": -14.29,
-      "timeToCommit": -7.6,
-      "rawTokens": -55.29,
-      "noncachedTokens": -38.22,
-      "toolCalls": -33.33
+    "sthreadTransientGraphVsAstIndex": {
+      "timeToEdit": -20.63,
+      "timeToCommit": -43.27,
+      "rawTokens": -65.93,
+      "noncachedTokens": -48.79,
+      "toolCalls": -47.62
+    },
+    "sthreadTransientGraphVsDefault": {
+      "timeToEdit": -32.43,
+      "timeToCommit": -66.89,
+      "rawTokens": -83.03,
+      "noncachedTokens": -71.21,
+      "toolCalls": -62.07
     }
   },
   "independentAcceptance": {
@@ -288,26 +305,27 @@
     "astIndex": "REJECT",
     "sthread": "REJECT",
     "sthreadGraphRecipe": "ACCEPT_HISTORICAL_DISQUALIFIED",
-    "sthreadGenericSkill": "ACCEPT",
-    "correctWinner": "sthread-generic-skill",
-    "relativeRanking": ["sthread-generic-skill", "ast-index", "sthread-agent-context", "default"]
+    "sthreadGenericSkillRun27": "ACCEPT_RESULT_DISQUALIFIED_IMPLEMENTATION",
+    "sthreadTransientGraph": "ACCEPT",
+    "correctWinner": "sthread-transient-graph",
+    "relativeRanking": ["sthread-transient-graph", "ast-index", "sthread-agent-context", "default"]
   },
   "outcome": {
-    "performanceWinnerAmongEligibleNoRecipeRuns": "sthread-generic-skill",
-    "correctWinner": "sthread-generic-skill",
+    "performanceWinnerAmongEligibleNoRecipeRuns": "sthread-transient-graph",
+    "correctWinner": "sthread-transient-graph",
     "sthreadWinsDefault": true,
     "sthreadWinsAstIndexer": true,
     "generalization": "one repository and one task; the skill and worker contain no repository-specific recipe, but replication on other Kotlin/Maven and Gradle tasks is still required"
   },
   "nextOptimization": {
-    "priority": "replace manual anchored plan assembly with a generic role-flow transformation and shrink cold evidence",
-    "why": "the eligible run spends 28.960 seconds on cold context and 30.665 seconds in Maven validation, while the model still emits a 5.289 KB plan and needs one validator repair",
+    "priority": "shrink cold evidence and generalize the transient transform across unrelated tasks",
+    "why": "runtime role-flow compilation removed manual plan assembly: the eligible goal is 398 bytes and validates once; remaining measured floor is 22.985 seconds cold context plus 39.831 seconds Maven",
     "actions": [
-      "add a repository-agnostic typed graph transformation that propagates a contract through WORKFLOW, INTERMEDIARY, OUTPUT_CONTRACT and DATA_SOURCE roles",
-      "move deterministic occurrence and renamed-variable repair into task-plan normalization",
       "store compact evidence references instead of embedding a 12.3 MB index snapshot",
       "reuse a content-addressed long-lived K2 index across clean clones while retaining a separately reported cold metric",
-      "separate build-tool time from semantic transaction overhead and investigate Maven test startup"
+      "separate build-tool time from semantic transaction overhead and investigate Maven test startup",
+      "add renamed neutral Maven and Gradle end-to-end fixtures plus negative ambiguity and collision cases",
+      "measure additional change families before claiming repository-independent generality"
     ]
   }
 }

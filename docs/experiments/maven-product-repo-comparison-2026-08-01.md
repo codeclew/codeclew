@@ -4,106 +4,115 @@
 
 ## Итог
 
-SThread честно выиграл end-to-end benchmark у `ast-index` без grep, локального
-или глобального recipe и без чтения исходников вне одного bounded context.
-Зачётный generic run 27: 54 секунды до edit, 158 секунд до commit, 14 tool
-calls, 491 775 raw / 45 055 некэшированных tokens и `ACCEPT` независимой
-hidden-приёмки (109/109 тестов).
+SThread выиграл end-to-end benchmark у `ast-index` и default workflow без
+grep, чтения исходников вне одного bounded context, локального recipe или
+заранее зашитого решения. Зачётный run 34: 50 секунд до edit, 97 секунд до
+commit, 11 измеряемых tool calls, 374 756 raw / 37 348 некэшированных tokens и
+`ACCEPT` независимой hidden-приёмки — 109 тестов без failures/errors.
 
-Предыдущий результат с hardcoded `ARCHIVE_EVENT_ENTITY_CONTRACT` оставлен в
-данных как исторический, но исключён из честного сравнения: он был быстрее,
-однако содержал знание конкретной задачи в глобальном worker.
+Победа получена за счёт transient change graph. Он строится из evidence
+текущего запуска и компилирует 398-байтную semantic goal в полный EditIR.
+Модель задаёт только два новых имени типов и import; data source, collection,
+loop item, identity/payload bindings, test binding, occurrences и substitutions
+выводит worker из полного resolved graph.
+
+Исторический hardcoded recipe-run оставлен в данных, но дисквалифицирован.
+Run 27 также исключён задним числом: он прошёл hidden tests и пороги, однако
+строгий аудит обнаружил task-shaped vocabulary в глобальном worker/tests.
 
 ## Методика
 
-Из `product-repo` revision `56d42d5f` создан Git-репозиторий с одним baseline
-commit, без remote и без достижимой истории эталонного решения. Независимые
-`gpt-5.6-terra`, effort `medium`, работали на чистых клонах:
+Из `product-repo` revision `56d42d5f` подготовлен Git baseline без достижимой
+истории эталонного решения. Независимые `gpt-5.6-terra`, effort `medium`,
+работали на fresh clones:
 
 1. обычные `rg`/`sed`;
-2. cold `ast-index 3.48.1` и точечное чтение найденных файлов;
-3. старый `sthread agent-context` с лимитом 32 КБ;
-4. зачётный SThread: ровно один 16-КБ graph context, generic anchored EditIR,
-   локальная детерминированная проверка плана и ровно один atomic `task-apply`.
+2. cold `ast-index 3.48.1` и чтение найденных файлов;
+3. старый 32-КБ `sthread agent-context`;
+4. SThread transient graph: один 16-КБ context, goal v0.4, один validator и
+   один atomic `task-apply`.
 
-Задача требовала изменить архивный `products-changefeed` event, не добавить
-N+1, сохранить batching и CREATE/UPDATE, добавить regression coverage,
-запустить Maven и сделать commit. Время взято из START/FIRST_EDIT/END markers,
-tokens — из последнего cumulative `token_count` rollout. Некэшированные tokens
-считаются как `input - cached input + output`. Tool calls — все `exec` records,
-включая два process polls; специальные `wait` calls не учитываются.
+Задача требовала сохранить `productId`, добавить статически типизированный
+`entity {id, code, title}` для `DELETED`, не добавить N+1, сохранить batching и
+CREATE/UPDATE, добавить regression coverage, запустить Maven и сделать commit.
 
-## Результаты эффективности
+Время взято из START/FIRST_EDIT/END markers. Tokens — из последнего cumulative
+`token_count` rollout; noncached = `input - cachedInput + output`. Tool calls —
+11 `exec`-вызовов; два orchestration `wait` указаны отдельно и, как в исходной
+методике, не входят в сравнимый счётчик.
 
-| Метрика | Default | ast-index | Старый SThread | Generic SThread |
+## Результаты
+
+| Метрика | Default | ast-index | Старый SThread | Transient SThread |
 |---|---:|---:|---:|---:|
-| До первого edit | 74 с | 63 с | 67 с | **54 с** |
-| До commit | 293 с | 171 с | 351 с | **158 с** |
-| Tool calls по rollout trace | 29 | 21 | 34 | **14** |
+| До первого edit | 74 с | 63 с | 67 с | **50 с** |
+| До commit | 293 с | 171 с | 351 с | **97 с** |
+| Сравнимые tool calls | 29 | 21 | 34 | **11** |
+| Все calls с orchestration wait | — | — | — | 13 |
 | Изменено файлов | 9 | **3** | 9 | 7 |
-| Patch | +96/-24 | +46/-1 | +96/-19 | +47/-25 |
-| Raw total tokens | 2 208 464 | 1 099 997 | 2 318 681 | **491 775** |
-| Некэшированные tokens | 129 744 | 72 925 | 143 449 | **45 055** |
+| Patch | +96/-24 | +46/-1 | +96/-19 | +39/-19 |
+| Raw total tokens | 2 208 464 | 1 099 997 | 2 318 681 | **374 756** |
+| Некэшированные tokens | 129 744 | 72 925 | 143 449 | **37 348** |
 | Fresh hidden acceptance | REJECT | REJECT | REJECT | **ACCEPT** |
 
-Generic SThread относительно `ast-index` быстрее до первого edit на 14,29% и
-до commit на 7,60%; использует на 55,29% меньше raw tokens, на 38,22% меньше
-некэшированных tokens и на 33,33% меньше tool calls. Ast-index patch при этом
-не прошёл fresh acceptance, а generic SThread прошёл.
+Относительно `ast-index` transient SThread быстрее до edit на 20,63%, до
+commit на 43,27%, использует на 65,93% меньше raw и на 48,79% меньше
+некэшированных tokens, а также на 47,62% меньше сравнимых tool calls.
 
 ## Независимая приёмка
 
-Run 27 был проверен новым агентом в fresh clone без информации о методе
-получения patch. Он восстановил baseline test, применил только hidden patch и
-выполнил `mvn -q -Dtest=NomenclatureServiceTest clean test`: 109 тестов,
-0 failures/errors/skips. Дополнительный producer test также прошёл.
+Новый агент создал fresh clone candidate `dca765dc`, восстановил baseline test,
+применил скрытый patch и выполнил
+`mvn -q -Dtest=NomenclatureServiceTest clean test`: 109 тестов, 0 failures,
+0 errors, 0 skipped.
 
-Приёмщик подтвердил:
+Аудит подтвердил:
 
-- статический контракт `id: UUID`, `code: String?`, `title: String`;
-- один constructor-projection query на каждый archive batch, без N+1;
-- передачу `productId` и typed entity в обеих flush-ветках;
-- assignability полного `ProductCanonicalDto`, сохраняющую CREATE/UPDATE;
-- regression assertions и русские `@DisplayName`;
-- ограниченный задачей patch из семи файлов.
+- контракт `id: UUID`, `code: String?`, `title: String`;
+- сохранение persistence nullability;
+- один constructor-projection query на archive batch, без repository calls в
+  loop;
+- `productId` и typed entity в обеих flush-ветках;
+- `ProductCanonicalDto` остаётся assignable для CREATE/UPDATE;
+- regression matcher полей и русский `@DisplayName`;
+- task-scoped patch и чистый исходный candidate worktree.
 
-Единственное замечание — trailing whitespace внутри переписанной JPQL raw
-string; `git diff --check` его отмечает, но приёмщик классифицировал это как
-нефункциональный formatting defect.
+Нефункциональное замечание: прежние пробелы JPQL raw string приводят к
+`git diff --check` warning на изменённой строке.
 
-Исторические default, ast-index и старый SThread были отклонены: первые и
-третий не выставляли `code/title` в declared entity contract; ast-index сделал
-nullable DB `code` non-null и получил шесть NPE в fresh hidden run.
+## За счёт чего получен выигрыш
 
-## Что изменило результат
+SThread сначала изолирует поверхность один раз:
 
-Победа получена не repository-рецептом, а универсальной границей между
-пониманием и изменением:
+`WORKFLOW → DATA_SOURCE → INTERMEDIARY → OUTPUT_CONTRACT`, плюс существующий
+assignable contract, projection fields с nullability и anchored regression
+test. Compact context остаётся меньше 16 КБ; полный evidence используется
+worker'ом, но не пересылается модели повторно.
 
-- task-aware graph closure выдаёт `WORKFLOW`, `INTERMEDIARY`,
-  `OUTPUT_CONTRACT`, `DATA_SOURCE`, существующий контракт и anchored test;
-- `projectionFields` переносит source nullability;
-- короткие semantic aliases уменьшают plan и не раскрывают filesystem search;
-- normalizer объединяет anchored substitutions, создаёт top-level types,
-  синтезирует imports и обеспечивает совместимость существующих payload;
-- skill-validator до единственной транзакции проверяет покрытие ролей,
-  количество occurrences и незавершённые переименования;
-- worker собирает cross-file candidate и проверяет его в detached worktree до
-  atomic Git CAS.
+Затем transient compiler:
 
-Runs 9–25 были engineering trials и не включены в результат. Run 26 создал
-корректный commit и отдельно прошёл 109 hidden tests, но был исключён, потому
-что неудачный timing-wrapper фактически запустил лишний `agent-context`. Run 27
-повторил путь на новом baseline строго с одним context и одним apply.
+- проверяет единственный resolved path и отсутствие коллизий новых типов;
+- выводит текущие method/collection/loop/sink/test bindings;
+- строит общий typed contract и bulk projection;
+- протягивает тип через все роли и обе workflow-ветки;
+- формирует точные substitutions/occurrences и regression matcher;
+- передаёт полный EditIR существующей detached Maven/Git транзакции.
 
-## Где осталось время
+Поэтому модель больше не тратит время и tokens на 5–11 КБ ручных замен. Цена
+построения transient структуры полностью входит в 97 секунд benchmark; это не
+сохранённый repository recipe.
 
-В зачётном run cold context занял 28,960 секунды, Maven test lifecycle — 30,665
-секунды. Модель сформировала 5 289-байтный план и один раз исправила его после
-детерминированной проверки. Следующая линия — repository-agnostic typed graph
-transformation: передавать контракт и его поля по ролевым рёбрам вместо ручной
-сборки низкоуровневых substitutions. Дополнительно нужно заменить 12,3-МБ
-embedded evidence компактными ссылками и исследовать content-addressed K2 reuse,
-сохраняя отдельную cold-метрику.
+## Неудачные итерации и следующая линия
+
+Runs 31–33 были честными engineering trials. Они fail-closed показали, какие
+данные ошибочно оставались model-owned: имя существующего contract, sink и
+identity bindings, затем test binding. Последовательное перенесение этих связей
+в worker уменьшило raw tokens 447 692 → 376 398 → 330 111; v0.4 завершился с
+374 756 tokens и корректным commit.
+
+Теперь основной пол — 22,985 секунды cold context и 39,831 секунды Maven.
+Следующие оптимизации: компактные evidence references вместо 12,3-МБ snapshot,
+content-addressed reuse K2 с отдельной cold-метрикой и проверка transient
+подхода на переименованных Maven/Gradle fixtures и других change families.
 
 Машиночитаемые данные: `benchmarks/reports/maven-product-repo.json`.
