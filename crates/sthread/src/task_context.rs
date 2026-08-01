@@ -512,7 +512,13 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
-            "instruction":"Reference declarationTargetId/bodyTargetId as target.targetId, provide replacement.kotlin, then run sthread task-apply; SThread expands and validates the exact target from evidence."
+            "instruction":"Reference declarationTargetId/bodyTargetId as target.targetId, provide replacement.kotlin, then run sthread task-apply; SThread expands and validates the exact target from evidence. REPLACE_DECLARATION must contain exactly one declaration; put every new top-level sibling in a full Kotlin CREATE_FILE operation instead.",
+            "constraints":[
+                "Every non-CREATE_FILE operation references one emitted targetId",
+                "REPLACE_DECLARATION replacement.kotlin parses as exactly one Kotlin declaration and contains no package or imports",
+                "CREATE_FILE target.fileId is a new .kt path and replacement.kotlin is a complete Kotlin file; related new declarations may share that file",
+                "All operations are assembled before detached-worktree compile and tests"
+            ]
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{

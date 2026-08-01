@@ -321,9 +321,11 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 RequestKind::IndexFiles,
                 &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":true}),
             )?;
-            let storage_compilation = format!("{}#agent-context-syntax", args.compilation);
+            // A task context is the immutable base of the following transaction,
+            // so its snapshot must be published in the same compilation namespace
+            // that task-apply and commit validate.
             let mut repository_index =
-                RepositoryIndex::open_compilation(&repo, Some(&storage_compilation))?;
+                RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
             let index_snapshot = repository_index.update(&index_facts)?;
             let selection = task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
             let resolutions = selection
