@@ -436,6 +436,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
             inject_created_type_imports(&mut plan)?;
+            inject_created_contract_overrides(&mut plan)?;
             let operations: Vec<EditOperation> = serde_json::from_value(
                 plan["operations"]
                     .as_array()
@@ -921,8 +922,8 @@ fn write_artifact<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), Sth
 
 fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadError> {
     let mut targets = std::collections::BTreeMap::<String, Value>::new();
-    for key in ["editSurfaces", "contracts", "tests"] {
-        for item in context[key].as_array().into_iter().flatten() {
+    for (key, prefix) in [("editSurfaces", "S"), ("contracts", "C"), ("tests", "T")] {
+        for (index, item) in context[key].as_array().into_iter().flatten().enumerate() {
             for target_key in ["declarationTarget", "bodyTarget"] {
                 let Some(target) = item.get(target_key) else {
                     continue;
@@ -931,6 +932,8 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadE
                     continue;
                 };
                 targets.insert(id.to_owned(), target.clone());
+                let suffix = if target_key == "bodyTarget" { "B" } else { "" };
+                targets.insert(format!("{prefix}{}{suffix}", index + 1), target.clone());
             }
         }
     }
@@ -1108,22 +1111,27 @@ fn join_plan_lines(
             format!("task edit cannot contain both {text_key} and {lines_key}"),
         ));
     }
-    let lines = lines.as_array().ok_or_else(|| {
-        SthreadError::new(
-            ErrorCode::InvalidInput,
-            format!("task edit field {lines_key} must be an array of strings"),
-        )
-    })?;
-    let lines = lines
-        .iter()
-        .map(Value::as_str)
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| {
-            SthreadError::new(
-                ErrorCode::InvalidInput,
-                format!("task edit field {lines_key} must contain only strings"),
-            )
-        })?;
+    let lines = if let Some(text) = lines.as_str() {
+        text.lines().collect::<Vec<_>>()
+    } else {
+        lines
+            .as_array()
+            .ok_or_else(|| {
+                SthreadError::new(
+                    ErrorCode::InvalidInput,
+                    format!("task edit field {lines_key} must be a string or array of strings"),
+                )
+            })?
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                SthreadError::new(
+                    ErrorCode::InvalidInput,
+                    format!("task edit field {lines_key} must contain only strings"),
+                )
+            })?
+    };
     let common_indent = lines
         .iter()
         .filter(|line| !line.trim().is_empty())
@@ -1147,6 +1155,85 @@ fn join_plan_lines(
         .join("\n");
     object.insert(text_key.to_owned(), Value::String(text));
     Ok(true)
+}
+fn inject_created_contract_overrides(plan: &mut Value) -> Result<(), SthreadError> {
+    let contracts = plan["operations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|operation| operation["kind"] == "CREATE_FILE")
+        .filter_map(|operation| {
+            operation
+                .pointer("/replacement/kotlin")
+                .and_then(Value::as_str)
+        })
+        .flat_map(|source| {
+            let lines = source.lines().collect::<Vec<_>>();
+            let mut contracts = Vec::new();
+            for (index, line) in lines.iter().enumerate() {
+                let Some(declaration) = line.trim().strip_prefix("interface ") else {
+                    continue;
+                };
+                let name = declaration
+                    .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let fields = lines[index + 1..]
+                    .iter()
+                    .take_while(|line| !line.trim().starts_with('}'))
+                    .filter_map(|line| {
+                        line.trim()
+                            .strip_prefix("val ")
+                            .or_else(|| line.trim().strip_prefix("var "))?
+                            .split_once(':')
+                            .map(|(field, _)| field.trim().to_owned())
+                    })
+                    .collect::<Vec<_>>();
+                if !name.is_empty() && !fields.is_empty() {
+                    contracts.push((name, fields));
+                }
+            }
+            contracts
+        })
+        .collect::<Vec<_>>();
+    for operation in plan["operations"].as_array_mut().into_iter().flatten() {
+        if operation["kind"] != "REWRITE_DECLARATION" {
+            continue;
+        }
+        let substitutions = operation
+            .pointer_mut("/preconditions/substitutions")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| {
+                SthreadError::new(
+                    ErrorCode::InvalidInput,
+                    "normalized rewrite has no substitutions",
+                )
+            })?;
+        let replacement_text = substitutions
+            .iter()
+            .filter_map(|substitution| substitution["new"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (name, fields) in &contracts {
+            if !replacement_text.contains(&format!(": {name}")) {
+                continue;
+            }
+            for field in fields {
+                if replacement_text.contains(&format!("override val {field}:"))
+                    || replacement_text.contains(&format!("override var {field}:"))
+                {
+                    continue;
+                }
+                substitutions.push(json!({
+                    "old":format!("val {field}:"),
+                    "new":format!("override val {field}:"),
+                    "occurrences":1
+                }));
+            }
+        }
+    }
+    Ok(())
 }
 fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
     let operations = plan["operations"].as_array().ok_or_else(|| {
@@ -1280,17 +1367,18 @@ mod task_plan_tests {
             {
                 "op":"CREATE_FILE",
                 "target":{"fileId":"src/main/kotlin/com/acme/contracts/Entity.kt"},
-                "replacement":{"kotlin":"package com.acme.contracts\n\ninterface Entity"}
+                "replacement":{"kotlin":"package com.acme.contracts\n\ninterface Entity {\n    val id: String\n}"}
             },
             {
                 "kind":"REWRITE_DECLARATION",
                 "target":{"fileId":"src/main/kotlin/com/acme/service/Service.kt"},
-                "preconditions":{"substitutions":[{"old":"Old", "new":"Entity"}]}
+                "preconditions":{"substitutions":[{"old":"Old) {", "new":"Old) : Entity {"}]}
             }
         ]});
 
         normalize_task_plan(&mut plan).unwrap();
         inject_created_type_imports(&mut plan).unwrap();
+        inject_created_contract_overrides(&mut plan).unwrap();
 
         let operations = plan["operations"].as_array().unwrap();
         assert_eq!(operations.len(), 3);
@@ -1301,6 +1389,10 @@ mod task_plan_tests {
         );
         assert_eq!(operations[2]["replacement"]["kotlin"], "");
         assert_eq!(operations[2]["opId"], "task-op-2");
+        assert_eq!(
+            operations[2]["preconditions"]["substitutions"][1]["new"],
+            "override val id:"
+        );
     }
 
     #[test]
@@ -1310,7 +1402,7 @@ mod task_plan_tests {
                 "kind":"CREATE_FILE",
                 "target":{"targetId":"file:src/main/kotlin/com/acme/Entity.kt"},
                 "path":"src/main/kotlin/com/acme/Entity.kt",
-                "newLines":["    package com.acme", "", "    interface Entity"]
+                "newLines":"    package com.acme\n\n    interface Entity"
             },
             {
                 "kind":"REWRITE_DECLARATION",
