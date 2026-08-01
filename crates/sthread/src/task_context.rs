@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const MAX_EDIT_SURFACES: usize = 4;
-const MAX_CONTRACTS: usize = 1;
+const MAX_CONTRACTS: usize = 2;
 const MAX_TESTS: usize = 1;
 const MAX_EXECUTION_EDGES: usize = 4;
 const MAX_SOURCE_BYTES: usize = 4_200;
@@ -665,9 +665,6 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         })
         .collect::<Vec<_>>();
     let call_declarations = collect_call_declarations(index_facts, selection, resolutions);
-    let contract_declarations =
-        collect_contracts(index_facts, selection, resolutions, &call_declarations);
-    let projection_fields = collect_projection_fields(selection, &call_declarations);
     let required_candidates = selection
         .catalog
         .iter()
@@ -675,6 +672,14 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             candidate_id(candidate).is_some_and(|id| selection.required_candidate_ids.contains(&id))
         })
         .collect::<Vec<_>>();
+    let contract_declarations = collect_contracts(
+        index_facts,
+        selection,
+        resolutions,
+        &call_declarations,
+        &required_candidates,
+    );
+    let projection_fields = collect_projection_fields(selection, &call_declarations);
     let required_surface_overflow = required_candidates.len().saturating_sub(MAX_EDIT_SURFACES);
     let mut edit_candidates = required_candidates.clone();
     for candidate in &root_candidates {
@@ -869,6 +874,28 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             && contracts.len() == 1
             && tests.len() == 1
             && !projection_fields.is_empty();
+    let transient_transform = if transient_transform_available {
+        json!({
+            "available":true,
+            "kind":"PROPAGATE_TYPED_FIELDS",
+            "schema":"semantic-task-goal/0.4",
+            "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
+            "goalShape":{
+                "schema":"semantic-task-goal/0.4",
+                "baseRevision":base_revision,
+                "transform":{
+                    "kind":"PROPAGATE_TYPED_FIELDS",
+                    "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
+                    "names":{"newContract":"<new identifier>","newProjection":"<new identifier>","imports":["<fully qualified field type import>"]}
+                }
+            },
+            "required":"transform.kind/fields; names.newContract/newProjection/imports",
+            "constraints":["newContract and newProjection must be distinct new top-level identifiers", "do not restate or rename resolved graph bindings"],
+            "instruction":"Copy goalShape and replace only its type-name/import placeholders. The worker derives data-source, collection, loop item, sink bindings, identity field, and anchored test binding from full resolved evidence. Never add graph bindings, existing contract names, source text, substitutions, target IDs, or occurrence counts."
+        })
+    } else {
+        json!({"available":false})
+    };
     let full = json!({
         "schema":"semantic-task-context/0.2",
         "task":{"intent":intent,"terms":terms,"intentTokens":selection.intent_tokens,"matchedTerms":matched_terms,"unmatchedTerms":unmatched_terms,"requirements":requirements},
@@ -885,24 +912,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"old":"...","new":"..."},
-            "transientTransform":{
-                "available":transient_transform_available,
-                "kind":"PROPAGATE_TYPED_FIELDS",
-                "schema":"semantic-task-goal/0.4",
-                "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
-                "goalShape":{
-                    "schema":"semantic-task-goal/0.4",
-                    "baseRevision":base_revision,
-                    "transform":{
-                        "kind":"PROPAGATE_TYPED_FIELDS",
-                        "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
-                        "names":{"newContract":"<new identifier>","newProjection":"<new identifier>","imports":["<fully qualified field type import>"]}
-                    }
-                },
-                "required":"transform.kind/fields; names.newContract/newProjection/imports",
-                "constraints":["newContract and newProjection must be distinct new top-level identifiers", "do not restate or rename resolved graph bindings"],
-                "instruction":"Copy goalShape and replace only its type-name/import placeholders. The worker derives data-source, collection, loop item, sink bindings, identity field, and anchored test binding from full resolved evidence. Never add graph bindings, existing contract names, source text, substitutions, target IDs, or occurrence counts."
-            },
+            "transientTransform":transient_transform,
             "instruction":"Use transientTransform when available. Otherwise use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
         "evidence":evidence_display(repo,evidence_path),
@@ -1097,6 +1107,7 @@ fn collect_contracts<'a>(
     selection: &'a TaskContextSelection,
     resolutions: &[Value],
     call_declarations: &[&Candidate],
+    support_declarations: &[&Candidate],
 ) -> Vec<&'a Candidate> {
     let mut type_names = BTreeSet::new();
     for resolution in resolutions {
@@ -1140,6 +1151,28 @@ fn collect_contracts<'a>(
                     .flat_map(extract_type_names),
             );
         }
+    }
+    for candidate in support_declarations {
+        for key in ["parameterTypes", "receiverTypes"] {
+            type_names.extend(
+                candidate
+                    .declaration
+                    .pointer(&format!("/symbolIdentity/{key}"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .flat_map(extract_type_names),
+            );
+        }
+        type_names.extend(
+            candidate
+                .declaration
+                .pointer("/symbolIdentity/returnType")
+                .and_then(Value::as_str)
+                .into_iter()
+                .flat_map(extract_type_names),
+        );
     }
     let mut contracts = selection
         .catalog
