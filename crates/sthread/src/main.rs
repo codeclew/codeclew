@@ -420,6 +420,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             let mut plan: Value = read_json(&args.edit_plan)?;
             normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
+            inject_created_type_imports(&mut plan)?;
             let operations: Vec<EditOperation> = serde_json::from_value(
                 plan["operations"]
                     .as_array()
@@ -960,6 +961,104 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
     }
     Ok(())
 }
+fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
+    let operations = plan["operations"].as_array().ok_or_else(|| {
+        SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
+    })?;
+    let created_types = operations
+        .iter()
+        .filter(|operation| operation["kind"] == "CREATE_FILE")
+        .flat_map(|operation| {
+            let source = operation
+                .pointer("/replacement/kotlin")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let package = source
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("package "))
+                .unwrap_or_default();
+            source
+                .lines()
+                .filter(|line| !line.starts_with(char::is_whitespace))
+                .filter_map(|line| {
+                    let words = line.split_whitespace().collect::<Vec<_>>();
+                    let marker = words
+                        .iter()
+                        .position(|word| matches!(*word, "class" | "interface"))?;
+                    let name = words.get(marker + 1)?.trim_matches(|character: char| {
+                        !character.is_ascii_alphanumeric() && character != '_'
+                    });
+                    (!package.is_empty() && !name.is_empty()).then(|| {
+                        (
+                            name.to_owned(),
+                            format!("{package}.{name}"),
+                            package.to_owned(),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut expanded = Vec::new();
+    let mut inserted = std::collections::BTreeSet::new();
+    for operation in operations {
+        if operation["kind"] == "REWRITE_DECLARATION" {
+            let file = operation
+                .pointer("/target/fileId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let target_package = file
+                .split_once("/kotlin/")
+                .and_then(|(_, relative)| relative.rsplit_once('/'))
+                .map(|(package, _)| package.replace('/', "."))
+                .unwrap_or_default();
+            let replacements = operation
+                .pointer("/preconditions/substitutions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|substitution| substitution["new"].as_str())
+                .collect::<Vec<_>>();
+            for (name, fq_name, package) in &created_types {
+                if target_package == *package
+                    || replacements
+                        .iter()
+                        .any(|replacement| replacement.contains(fq_name))
+                    || !replacements
+                        .iter()
+                        .any(|replacement| contains_identifier(replacement, name))
+                    || !inserted.insert((file.to_owned(), fq_name.clone()))
+                {
+                    continue;
+                }
+                expanded.push(json!({
+                    "opId":format!("auto-import-{}",expanded.len()+1),
+                    "kind":"ADD_IMPORT",
+                    "target":operation["target"].clone(),
+                    "replacement":{"kotlin":fq_name},
+                    "preconditions":{},
+                    "postconditions":{}
+                }));
+            }
+        }
+        expanded.push(operation.clone());
+    }
+    plan["operations"] = Value::Array(expanded);
+    Ok(())
+}
+fn contains_identifier(source: &str, identifier: &str) -> bool {
+    source.match_indices(identifier).any(|(start, _)| {
+        let is_identifier = |character: char| character.is_alphanumeric() || character == '_';
+        source[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !is_identifier(character))
+            && source[start + identifier.len()..]
+                .chars()
+                .next()
+                .is_none_or(|character| !is_identifier(character))
+    })
+}
 fn parse_error(e: impl std::fmt::Display) -> SthreadError {
     SthreadError::new(ErrorCode::InvalidInput, e.to_string())
 }
@@ -981,5 +1080,39 @@ fn exit_code(code: &ErrorCode) -> u8 {
         | ErrorCode::TestFailed => 6,
         ErrorCode::WorkerCrashed | ErrorCode::WorkerProtocolMismatch => 7,
         _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod task_plan_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_compact_rewrites_and_imports_created_cross_package_types() {
+        let mut plan = json!({"operations":[
+            {
+                "kind":"CREATE_FILE",
+                "target":{"fileId":"src/main/kotlin/com/acme/contracts/Entity.kt"},
+                "replacement":{"kotlin":"package com.acme.contracts\n\ninterface Entity"}
+            },
+            {
+                "kind":"REWRITE_DECLARATION",
+                "target":{"fileId":"src/main/kotlin/com/acme/service/Service.kt"},
+                "preconditions":{"substitutions":[{"old":"Old", "new":"Entity"}]}
+            }
+        ]});
+
+        normalize_task_plan(&mut plan).unwrap();
+        inject_created_type_imports(&mut plan).unwrap();
+
+        let operations = plan["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 3);
+        assert_eq!(operations[1]["kind"], "ADD_IMPORT");
+        assert_eq!(
+            operations[1]["replacement"]["kotlin"],
+            "com.acme.contracts.Entity"
+        );
+        assert_eq!(operations[2]["replacement"]["kotlin"], "");
+        assert_eq!(operations[2]["opId"], "task-op-2");
     }
 }
