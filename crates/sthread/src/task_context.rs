@@ -608,16 +608,8 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "schema":"semantic-task-edit-plan/0.1",
             "threadId":thread_id,
             "baseRevision":base_revision,
-            "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","REWRITE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
             "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"preconditions":{"substitutions":[{"old":"...","new":"..."}]}},
-            "instruction":"Use kind (not op). Prefer REWRITE_DECLARATION substitutions. Use oldLines/newLines or kotlinLines for multiline text; task-apply common-dedents and LF-joins them. Use scalar old/new for whitespace-sensitive edits. For one repeated match use 1-based occurrence. Use declaration targets for type/signature changes; new top-level declarations require CREATE_FILE.",
-            "constraints":[
-                "Every non-CREATE_FILE operation references one emitted targetId",
-                "Never weaken a requested typed contract to Any/Any?; requested fields remain statically accessible and existing payload types remain assignable",
-                "REPLACE_DECLARATION replacement.kotlin parses as exactly one Kotlin declaration and contains no package or imports",
-                "CREATE_FILE target.fileId is a new .kt path and replacement.kotlin is a complete Kotlin file; related new declarations may share that file",
-                "All operations are assembled before detached-worktree compile and tests"
-            ]
+            "instruction":"Use kind and target.targetId. Prefer REWRITE_DECLARATION substitutions. Multiline: oldLines/newLines/kotlinLines (common-dedented); occurrence selects one match, occurrences edits all. A typed contract must not become Any/Any?: required fields stay statically accessible and existing payloads assignable. CREATE_FILE adds top-level declarations."
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{
@@ -1389,6 +1381,16 @@ fn compact_targets_for_stdout(mut context: Value) -> Value {
         .flatten()
     {
         test.as_object_mut().expect("test item").remove("score");
+    }
+    for edge in context
+        .get_mut("executionPath")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        edge.as_object_mut()
+            .expect("execution edge")
+            .retain(|key, _| matches!(key.as_str(), "from" | "to" | "occurrences"));
     }
     context
 }
