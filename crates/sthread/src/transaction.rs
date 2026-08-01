@@ -432,6 +432,13 @@ pub fn commit(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, SthreadError> {
+    let qualified_target_ref;
+    let target_ref = if target_ref.starts_with("refs/") {
+        target_ref
+    } else {
+        qualified_target_ref = format!("refs/heads/{target_ref}");
+        &qualified_target_ref
+    };
     let current = git_output(repo, &["rev-parse", target_ref])?;
     let checked_out_target_is_clean = checked_out_target_is_clean(repo, target_ref, &current);
     transaction.target_ref = Some(target_ref.into());

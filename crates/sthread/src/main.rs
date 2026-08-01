@@ -985,7 +985,9 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
                         "task substitution must be an object",
                     )
                 })?;
-                join_plan_lines(substitution, "oldLines", "old")?;
+                if join_plan_lines(substitution, "oldLines", "old")? {
+                    substitution.insert("lineMode".to_owned(), Value::Bool(true));
+                }
                 join_plan_lines(substitution, "newLines", "new")?;
             }
         }
@@ -1001,9 +1003,9 @@ fn join_plan_lines(
     object: &mut serde_json::Map<String, Value>,
     lines_key: &str,
     text_key: &str,
-) -> Result<(), SthreadError> {
+) -> Result<bool, SthreadError> {
     let Some(lines) = object.remove(lines_key) else {
-        return Ok(());
+        return Ok(false);
     };
     if object.contains_key(text_key) {
         return Err(SthreadError::new(
@@ -1017,7 +1019,7 @@ fn join_plan_lines(
             format!("task edit field {lines_key} must be an array of strings"),
         )
     })?;
-    let text = lines
+    let lines = lines
         .iter()
         .map(Value::as_str)
         .collect::<Option<Vec<_>>>()
@@ -1026,10 +1028,30 @@ fn join_plan_lines(
                 ErrorCode::InvalidInput,
                 format!("task edit field {lines_key} must contain only strings"),
             )
-        })?
+        })?;
+    let common_indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.char_indices()
+                .find_map(|(index, character)| (!character.is_whitespace()).then_some(index))
+                .unwrap_or(line.len())
+        })
+        .min()
+        .unwrap_or_default();
+    let text = lines
+        .iter()
+        .map(|line| {
+            if line.trim().is_empty() {
+                ""
+            } else {
+                &line[common_indent..]
+            }
+        })
+        .collect::<Vec<_>>()
         .join("\n");
     object.insert(text_key.to_owned(), Value::String(text));
-    Ok(())
+    Ok(true)
 }
 fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
     let operations = plan["operations"].as_array().ok_or_else(|| {
@@ -1192,13 +1214,13 @@ mod task_plan_tests {
             {
                 "kind":"CREATE_FILE",
                 "target":{"fileId":"src/main/kotlin/com/acme/Entity.kt"},
-                "replacement":{"kotlinLines":["package com.acme", "", "interface Entity"]}
+                "replacement":{"kotlinLines":["    package com.acme", "", "    interface Entity"]}
             },
             {
                 "kind":"REWRITE_DECLARATION",
                 "preconditions":{"substitutions":[{
-                    "oldLines":["fun old() {", "}"],
-                    "newLines":["fun new() {", "}"]
+                    "oldLines":["        fun old() {", "        }"],
+                    "newLines":["        fun new() {", "            call()", "        }"]
                 }]}
             }
         ]});
@@ -1215,7 +1237,11 @@ mod task_plan_tests {
         );
         assert_eq!(
             plan["operations"][1]["preconditions"]["substitutions"][0]["new"],
-            "fun new() {\n}"
+            "fun new() {\n    call()\n}"
+        );
+        assert_eq!(
+            plan["operations"][1]["preconditions"]["substitutions"][0]["lineMode"],
+            true
         );
     }
 }
