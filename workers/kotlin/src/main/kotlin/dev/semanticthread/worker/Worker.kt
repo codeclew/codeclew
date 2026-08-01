@@ -1152,6 +1152,7 @@ internal class Worker : AutoCloseable {
         val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: "main"
         val kind = request.requiredString("kind"); val replacement = request.requiredString("replacement")
         if (kind == "ADD_IMPORT" || kind == "REMOVE_IMPORT") return applyImportEdit(repo, relative, path, source, kind, replacement)
+        if (kind == "REPLACE_DECLARATION") return applyDeclarationEdit(repo, relative, path, source, request, replacement, module, sourceSet)
         val kt = factory.createFile(path.fileName.toString(), source); val ownerQuery = request.requiredString("ownerSymbolId")
         val pkg = kt.packageFqName.asString(); val owner = PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java).singleOrNull { symbolMatches(ownerQuery, pkg, it, module, sourceSet) }
             ?: throw WorkerFailure("STALE_TARGET", "owner no longer resolves uniquely")
@@ -1272,6 +1273,40 @@ internal class Worker : AutoCloseable {
                 putJsonObject("effects") { put("key", ownerQuery); put("beforeHash", sha(JsonArray(beforeEffects.map(::JsonPrimitive)).toString().toByteArray())); put("afterHash", sha(JsonArray(afterEffects.map(::JsonPrimitive)).toString().toByteArray())) }
                 putJsonObject("diagnostics") { put("key", relative); put("beforeHash", sha(JsonArray(baseline.diagnostics).toString().toByteArray())); put("afterHash", sha(JsonArray(candidateAnalysis.diagnostics).toString().toByteArray())) }
             }
+        }
+    }
+
+    private fun applyDeclarationEdit(repo: Path, relative: String, path: Path, source: String, request: JsonObject, replacement: String, module: String, sourceSet: String): JsonObject {
+        val kt = factory.createFile(path.fileName.toString(), source)
+        val ownerQuery = request.requiredString("ownerSymbolId")
+        val pkg = kt.packageFqName.asString()
+        val owner = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
+            .singleOrNull { symbolMatches(ownerQuery, pkg, it, module, sourceSet) }
+            ?: throw WorkerFailure("STALE_TARGET", "declaration owner no longer resolves uniquely")
+        val expectedHash = request.requiredString("exactTextHash")
+        if (sha(owner.text.toByteArray()) != expectedHash) throw WorkerFailure("STALE_TARGET", "declaration hash no longer matches")
+        request["syntaxKind"]?.jsonPrimitive?.content?.takeIf(String::isNotBlank)?.let { expected ->
+            if (owner::class.simpleName != expected) throw WorkerFailure("STALE_TARGET", "declaration syntax kind no longer matches")
+        }
+        val replacementFile = factory.createFile(path.fileName.toString(), replacement)
+        val replacementErrors = PsiTreeUtil.collectElementsOfType(replacementFile, PsiErrorElement::class.java)
+            .map { it.errorDescription }.sorted()
+        val declarations = replacementFile.declarations
+        if (replacementErrors.isNotEmpty() || declarations.size != 1 || declarations.single() !is KtNamedDeclaration || replacementFile.importDirectives.isNotEmpty()) {
+            throw WorkerFailure("REPLACEMENT_PARSE_ERROR", "replacement must contain exactly one Kotlin declaration")
+        }
+        val replacementDeclaration = declarations.single()
+        val candidate = source.substring(0, owner.textRange.startOffset) + replacementDeclaration.text + source.substring(owner.textRange.endOffset)
+        val candidateFile = factory.createFile(path.fileName.toString(), candidate)
+        val errors = PsiTreeUtil.collectElementsOfType(candidateFile, PsiErrorElement::class.java).map { it.errorDescription }.sorted()
+        if (errors.isNotEmpty()) throw WorkerFailure("REPLACEMENT_PARSE_ERROR", errors.joinToString("; "))
+        return buildJsonObject {
+            put("schema", "semantic-candidate/0.1"); put("file", relative)
+            put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
+            putJsonArray("diagnostics") {}; putJsonArray("introducedEffects") {}
+            // Declaration changes may make callers temporarily inconsistent.
+            // The detached transaction worktree performs the authoritative K2/build validation after every candidate is assembled.
+            put("k2Validated", false)
         }
     }
 

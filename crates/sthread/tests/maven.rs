@@ -3,6 +3,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use sthread::canonical;
 use sthread::graph;
 use sthread::index::RepositoryIndex;
 use sthread::model::{
@@ -222,8 +223,10 @@ fn agent_context_renders_maven_targeted_test_command() {
             "archiveEvent",
             "--term",
             "ArchiveService",
+            "--intent",
+            "Archive event must expose typed id/code/title payload and preserve Maven tests",
             "--max-bytes",
-            "12288",
+            "16384",
             "--evidence",
             evidence.to_str().unwrap(),
         ])
@@ -238,15 +241,39 @@ fn agent_context_renders_maven_targeted_test_command() {
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(context["validationPlan"]["buildSystem"], "MAVEN");
     assert_eq!(
-        context["validationPlan"]["targetedCommands"],
-        json!(["./mvnw -Dtest=ArchiveServiceTest test"])
+        context["validationPlan"]["targetedArgs"],
+        json!(["-Dtest=ArchiveServiceTest", "test"])
     );
     assert!(
-        context["validationPlan"]["targetedCommands"]
+        context["validationPlan"]["targetedArgs"]
             .as_array()
             .unwrap()
             .iter()
             .all(|command| !command.as_str().unwrap().contains("gradlew"))
+    );
+    assert!(
+        context["editSurfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|surface| surface["name"] == "archiveEvent")
+    );
+    assert!(
+        context["contracts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|contract| {
+                contract["name"] == "ProductIdentity"
+                    && contract["sourceText"]
+                        .as_str()
+                        .is_some_and(|source| source.contains("code: String?"))
+            })
+    );
+    assert!(
+        context["tests"][0]["declarationTargetId"]
+            .as_str()
+            .is_some()
     );
 }
 
@@ -289,7 +316,7 @@ fn fails_closed_when_neither_wrapper_nor_maven_is_executable() {
 }
 
 #[test]
-fn semantic_transaction_commits_after_maven_compile_and_tests() {
+fn semantic_transaction_commits_structured_multifile_candidates_after_clean_maven_validation() {
     let root = workspace_root();
     let temporary = tempfile::tempdir().unwrap();
     let repo = init_maven_repo(temporary.path());
@@ -355,20 +382,42 @@ fn semantic_transaction_commits_after_maven_compile_and_tests() {
             &json!({"repo": repo, "symbol": "com.acme.archive.ArchiveService.archiveEvent"}),
         )
         .unwrap();
+    let declaration_source =
+        std::fs::read_to_string(repo.join("src/main/kotlin/com/acme/archive/ArchiveService.kt"))
+            .unwrap();
+    let old_declaration = "fun archiveEvent(product: ProductIdentity): String =\n        \"${product.id}:${product.code}:${product.title}\"";
+    assert!(declaration_source.contains(old_declaration));
     let edit = EditIr {
         schema: "semantic-edit/0.1".into(),
         thread_id: thread.thread_id.clone(),
         base_revision: base.clone(),
-        operations: vec![EditOperation {
-            op_id: "op:maven".into(),
-            kind: "REPLACE_FUNCTION_BODY".into(),
-            target: resolved["bodyAnchor"].clone(),
-            replacement: Replacement {
-                kotlin: "{ return \"${product.id}:${product.code}:${product.title}\" }".into(),
+        operations: vec![
+            EditOperation {
+                op_id: "op:replace-declaration".into(),
+                kind: "REPLACE_DECLARATION".into(),
+                target: json!({
+                    "fileId": "src/main/kotlin/com/acme/archive/ArchiveService.kt",
+                    "ownerSymbolId": resolved["declaration"]["symbolId"],
+                    "syntaxKind": "KtNamedFunction",
+                    "exactTextHash": canonical::hash_bytes(old_declaration.as_bytes()),
+                }),
+                replacement: Replacement {
+                    kotlin: "fun archiveEvent(product: ProductIdentity): String {\n        return \"${product.id}:${product.code}:${product.title}\"\n    }".into(),
+                },
+                preconditions: BTreeMap::new(),
+                postconditions: BTreeMap::new(),
             },
-            preconditions: BTreeMap::new(),
-            postconditions: BTreeMap::new(),
-        }],
+            EditOperation {
+                op_id: "op:create-test-source".into(),
+                kind: "CREATE_FILE".into(),
+                target: json!({"fileId": "src/test/kotlin/com/acme/archive/GeneratedArchiveMarker.kt"}),
+                replacement: Replacement {
+                    kotlin: "package com.acme.archive\n\ninternal class GeneratedArchiveMarker\n".into(),
+                },
+                preconditions: BTreeMap::new(),
+                postconditions: BTreeMap::new(),
+            },
+        ],
         expected_write_set: vec![],
     };
     let mut transaction = Transaction {
@@ -402,6 +451,29 @@ fn semantic_transaction_commits_after_maven_compile_and_tests() {
             .iter()
             .any(|evidence| { evidence["kind"] == "BUILD" && evidence["buildSystem"] == "MAVEN" })
     );
+    let preview = transaction.preview.as_ref().unwrap();
+    assert!(
+        preview
+            .candidates
+            .contains_key("src/main/kotlin/com/acme/archive/ArchiveService.kt")
+    );
+    assert!(
+        preview
+            .candidates
+            .contains_key("src/test/kotlin/com/acme/archive/GeneratedArchiveMarker.kt")
+    );
+    assert!(
+        preview
+            .actual_write_set
+            .iter()
+            .any(|write| write.kind == "DECLARATION")
+    );
+    assert!(
+        preview
+            .actual_write_set
+            .iter()
+            .any(|write| write.kind == "FILE")
+    );
     let committed_files = git_output(&repo, &["ls-tree", "-r", "--name-only", "HEAD"]);
     assert!(
         !committed_files
@@ -416,5 +488,13 @@ fn semantic_transaction_commits_after_maven_compile_and_tests() {
         ],
     );
     assert!(committed_source.contains("return \"${product.id}:${product.code}:${product.title}\""));
+    let generated = git_output(
+        &repo,
+        &[
+            "show",
+            "HEAD:src/test/kotlin/com/acme/archive/GeneratedArchiveMarker.kt",
+        ],
+    );
+    assert!(generated.contains("internal class GeneratedArchiveMarker"));
     worker.shutdown().unwrap();
 }

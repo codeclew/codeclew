@@ -3,13 +3,13 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use sthread::agent_context;
 use sthread::canonical;
 use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
 use sthread::index::RepositoryIndex;
 use sthread::model::*;
 use sthread::proto::RequestKind;
+use sthread::task_context;
 use sthread::transaction;
 use sthread::worker::{WorkerClient, workspace_root};
 
@@ -50,6 +50,11 @@ enum Command {
         about = "Build one bounded edit-ready semantic context pack for an agent"
     )]
     AgentContext(AgentContextArgs),
+    #[command(
+        name = "task-apply",
+        about = "Apply one graph-derived multi-file task edit and commit it after clean validation"
+    )]
+    TaskApply(TaskApplyArgs),
     Edit {
         #[command(subcommand)]
         command: EditCommand,
@@ -144,14 +149,33 @@ struct AgentContextArgs {
     compilation: String,
     #[arg(long = "term", visible_alias = "symbol", required = true)]
     terms: Vec<String>,
-    #[arg(long, default_value_t = 12_288)]
+    #[arg(long, default_value = "")]
+    intent: String,
+    #[arg(long, default_value_t = 16_384)]
     max_bytes: usize,
     #[arg(long, default_value = ".semantic-thread/agent-context.json")]
     evidence: PathBuf,
-    #[arg(long, hide = true)]
+    #[arg(long)]
     output: Option<PathBuf>,
+    #[arg(long, default_value_t = 2)]
+    max_roots: usize,
     #[arg(long = "max-nodes", hide = true)]
     _max_nodes: Option<usize>,
+}
+#[derive(Args)]
+struct TaskApplyArgs {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long)]
+    context: PathBuf,
+    #[arg(long = "edit-plan")]
+    edit_plan: PathBuf,
+    #[arg(long)]
+    target_ref: String,
+    #[arg(long, default_value = "semantic-task-agent")]
+    actor: String,
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 #[derive(Clone, ValueEnum)]
 enum DirectionArg {
@@ -300,16 +324,28 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             let storage_compilation = format!("{}#agent-context-syntax", args.compilation);
             let mut repository_index =
                 RepositoryIndex::open_compilation(&repo, Some(&storage_compilation))?;
-            repository_index.update(&index_facts)?;
-            let selection = agent_context::select(&repo, &index_facts, &args.terms)?;
+            let index_snapshot = repository_index.update(&index_facts)?;
+            let selection = task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
             let resolutions = selection
-                .function_symbols()
+                .root_symbols(args.max_roots)
                 .into_iter()
-                .take(6)
                 .map(|symbol| {
                     worker.request(
                         RequestKind::ResolveSymbol,
                         &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let threads = resolutions
+                .iter()
+                .map(|resolution| {
+                    build_task_thread(
+                        worker,
+                        &repo,
+                        &args.compilation,
+                        &project,
+                        &index_snapshot,
+                        resolution,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -319,15 +355,18 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 repo.join(args.evidence)
             };
             let base_revision = git_head(&repo)?;
-            let (context, evidence) = agent_context::build(agent_context::AgentContextBuild {
+            let (context, evidence) = task_context::build(task_context::TaskContextBuild {
                 repo: &repo,
                 terms: &args.terms,
+                intent: &args.intent,
                 compilation: &args.compilation,
                 project: &project,
                 index_facts: &index_facts,
                 selection: &selection,
                 resolutions: &resolutions,
+                threads: &threads,
                 base_revision: &base_revision,
+                index_snapshot: &index_snapshot,
                 evidence_path: &evidence_path,
                 max_bytes: args.max_bytes,
             })?;
@@ -341,6 +380,124 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 write_artifact(&output_path, &context)?;
             }
             Ok(context)
+        }),
+        Command::TaskApply(args) => with_worker(&workspace, |worker| {
+            let repo = absolute(&args.repo)?;
+            let evidence: Value = read_json(&args.context)?;
+            if evidence["schema"] != "semantic-task-context-evidence/0.2" {
+                return Err(SthreadError::new(
+                    ErrorCode::InvalidInput,
+                    "task-apply needs semantic-task-context-evidence/0.2",
+                ));
+            }
+            let context = &evidence["context"];
+            if context
+                .pointer("/completeness/status")
+                .and_then(Value::as_str)
+                != Some("COMPLETE_TASK")
+                || evidence
+                    .pointer("/stdoutCompleteness/status")
+                    .and_then(Value::as_str)
+                    != Some("COMPLETE_TASK")
+            {
+                return Err(SthreadError::new(
+                    ErrorCode::IncompleteSemanticAnalysis,
+                    "task context or its bounded stdout projection is not COMPLETE_TASK; rebuild or inspect its boundaries",
+                ));
+            }
+            let thread: ThreadIr = serde_json::from_value(
+                evidence["threads"]
+                    .as_array()
+                    .and_then(|threads| threads.first())
+                    .cloned()
+                    .ok_or_else(|| {
+                        SthreadError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
+                    })?,
+            )
+            .map_err(parse_error)?;
+            let mut plan: Value = read_json(&args.edit_plan)?;
+            expand_task_targets(&mut plan, context)?;
+            let operations: Vec<EditOperation> = serde_json::from_value(
+                plan["operations"]
+                    .as_array()
+                    .cloned()
+                    .map(Value::Array)
+                    .ok_or_else(|| {
+                        SthreadError::new(
+                            ErrorCode::InvalidInput,
+                            "edit plan has no operations array",
+                        )
+                    })?,
+            )
+            .map_err(parse_error)?;
+            let expected_write_set: Vec<ExpectedWriteFact> = plan
+                .get("expectedWriteSet")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(parse_error)?
+                .unwrap_or_default();
+            let base_revision = context
+                .pointer("/snapshot/baseRevision")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if base_revision != thread.snapshot.base_revision {
+                return Err(SthreadError::new(
+                    ErrorCode::PreconditionFailed,
+                    "task context snapshot does not match its Thread IR",
+                ));
+            }
+            let edit = EditIr {
+                schema: "semantic-edit/0.1".into(),
+                thread_id: thread.thread_id.clone(),
+                base_revision: base_revision.clone(),
+                operations,
+                expected_write_set,
+            };
+            let test_tasks = context
+                .pointer("/validationPlan/targetedArgs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let mut transaction = Transaction {
+                schema: "semantic-transaction/0.1".into(),
+                tx_id: format!("tx:{}", uuid::Uuid::new_v4()),
+                actor_id: args.actor,
+                intent: context
+                    .pointer("/task/intent")
+                    .and_then(Value::as_str)
+                    .unwrap_or("task edit")
+                    .to_owned(),
+                base_revision: base_revision.clone(),
+                project_model_hash: thread.snapshot.project_model_hash.clone(),
+                base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
+                status: "CREATED".into(),
+                thread,
+                edit,
+                preview: None,
+                expected_write_set_hash: None,
+                actual_write_set_hash: None,
+                validation_evidence: vec![json!({
+                    "kind":"TASK_CONTEXT",
+                    "contextHash":canonical::hash(context).map_err(parse_error)?,
+                    "evidence":args.context
+                })],
+                test_tasks,
+                candidate_commit: None,
+                final_commit: None,
+                target_ref: None,
+            };
+            let result = transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?;
+            if let Some(output) = args.output.as_deref() {
+                write_artifact(output, &transaction)?;
+            }
+            Ok(
+                json!({"schema":"semantic-task-apply/0.1","result":result,"transaction":transaction}),
+            )
         }),
         Command::Edit {
             command: EditCommand::Preview(args),
@@ -429,6 +586,100 @@ fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, St
     let thread = build_thread(worker, args)?;
     write_optional(output.as_deref(), &thread)?;
     serde_json::to_value(thread).map_err(parse_error)
+}
+
+fn build_task_thread(
+    worker: &mut WorkerClient,
+    repo: &Path,
+    compilation: &str,
+    project: &Value,
+    index_snapshot: &str,
+    resolution: &Value,
+) -> Result<ThreadIr, SthreadError> {
+    let symbol = resolution
+        .pointer("/declaration/legacySymbolId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "resolved task root has no legacySymbolId",
+            )
+        })?;
+    let raw = worker.request(
+        RequestKind::BuildLocalGraph,
+        &json!({"repo":repo,"symbol":symbol,"compilation":compilation}),
+    )?;
+    let graph: LocalGraph = serde_json::from_value(raw).map_err(parse_error)?;
+    let graph = graph::enrich(graph);
+    let seed_id = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "RETURN")
+        .max_by_key(|node| {
+            node.origin
+                .as_ref()
+                .and_then(|origin| origin.pointer("/rangeHint/1"))
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        })
+        .or_else(|| {
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.origin.is_some())
+                .max_by_key(|node| {
+                    node.origin
+                        .as_ref()
+                        .and_then(|origin| origin.pointer("/rangeHint/1"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default()
+                })
+        })
+        .map(|node| node.id.clone())
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::IncompleteSemanticAnalysis,
+                format!("task root {symbol} has no source-backed graph seed"),
+            )
+        })?;
+    let seed_node = graph.nodes.iter().find(|node| node.id == seed_id);
+    let snapshot = Snapshot {
+        base_revision: git_head(repo)?,
+        project_model_hash: project["projectModelHash"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+        compiler_version: worker.capabilities.compiler_version.clone(),
+        build_system: match project["buildSystem"].as_str() {
+            Some("MAVEN") => BuildSystem::Maven,
+            _ => BuildSystem::Gradle,
+        },
+        build_launcher: project["buildLauncher"]
+            .as_str()
+            .unwrap_or("./gradlew")
+            .into(),
+        index_snapshot: index_snapshot.into(),
+        compilation: compilation.into(),
+        compile_task: project["compileTask"]
+            .as_str()
+            .unwrap_or(":compileKotlin")
+            .into(),
+        test_tasks: project["testTasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+    };
+    let seed = json!({
+        "kind":"TASK_ROOT",
+        "symbol":symbol,
+        "nodeId":seed_id,
+        "anchor":seed_node.and_then(|node|node.origin.clone())
+    });
+    graph::slice(&graph, &seed_id, SlicePolicy::default(), snapshot, seed)
+        .map_err(|error| SthreadError::new(ErrorCode::Internal, error.to_string()))
 }
 
 fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, SthreadError> {
@@ -633,6 +884,45 @@ fn write_artifact<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), Sth
             .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?,
     )
     .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))
+}
+
+fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadError> {
+    let mut targets = std::collections::BTreeMap::<String, Value>::new();
+    for key in ["editSurfaces", "contracts", "tests"] {
+        for item in context[key].as_array().into_iter().flatten() {
+            for target_key in ["declarationTarget", "bodyTarget"] {
+                let Some(target) = item.get(target_key) else {
+                    continue;
+                };
+                let Some(id) = target["anchorId"].as_str() else {
+                    continue;
+                };
+                targets.insert(id.to_owned(), target.clone());
+            }
+        }
+    }
+    for operation in plan["operations"].as_array_mut().into_iter().flatten() {
+        if operation["kind"] == "CREATE_FILE" {
+            continue;
+        }
+        let Some(target_id) = operation
+            .pointer("/target/targetId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Err(SthreadError::new(
+                ErrorCode::InvalidInput,
+                "every non-CREATE_FILE task operation must reference a context targetId",
+            ));
+        };
+        operation["target"] = targets.get(&target_id).cloned().ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::InvalidInput,
+                format!("edit plan references unknown task target {target_id}"),
+            )
+        })?;
+    }
+    Ok(())
 }
 fn parse_error(e: impl std::fmt::Display) -> SthreadError {
     SthreadError::new(ErrorCode::InvalidInput, e.to_string())
