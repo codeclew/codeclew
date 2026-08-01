@@ -970,12 +970,65 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
         object
             .entry("opId")
             .or_insert_with(|| json!(format!("task-op-{}", index + 1)));
+        if let Some(replacement) = object.get_mut("replacement").and_then(Value::as_object_mut) {
+            join_plan_lines(replacement, "kotlinLines", "kotlin")?;
+        }
+        if let Some(substitutions) = object
+            .get_mut("preconditions")
+            .and_then(|preconditions| preconditions.get_mut("substitutions"))
+            .and_then(Value::as_array_mut)
+        {
+            for substitution in substitutions {
+                let substitution = substitution.as_object_mut().ok_or_else(|| {
+                    SthreadError::new(
+                        ErrorCode::InvalidInput,
+                        "task substitution must be an object",
+                    )
+                })?;
+                join_plan_lines(substitution, "oldLines", "old")?;
+                join_plan_lines(substitution, "newLines", "new")?;
+            }
+        }
         if object.get("kind").and_then(Value::as_str) == Some("REWRITE_DECLARATION") {
             object
                 .entry("replacement")
                 .or_insert_with(|| json!({"kotlin":""}));
         }
     }
+    Ok(())
+}
+fn join_plan_lines(
+    object: &mut serde_json::Map<String, Value>,
+    lines_key: &str,
+    text_key: &str,
+) -> Result<(), SthreadError> {
+    let Some(lines) = object.remove(lines_key) else {
+        return Ok(());
+    };
+    if object.contains_key(text_key) {
+        return Err(SthreadError::new(
+            ErrorCode::InvalidInput,
+            format!("task edit cannot contain both {text_key} and {lines_key}"),
+        ));
+    }
+    let lines = lines.as_array().ok_or_else(|| {
+        SthreadError::new(
+            ErrorCode::InvalidInput,
+            format!("task edit field {lines_key} must be an array of strings"),
+        )
+    })?;
+    let text = lines
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::InvalidInput,
+                format!("task edit field {lines_key} must contain only strings"),
+            )
+        })?
+        .join("\n");
+    object.insert(text_key.to_owned(), Value::String(text));
     Ok(())
 }
 fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
@@ -1131,5 +1184,38 @@ mod task_plan_tests {
         );
         assert_eq!(operations[2]["replacement"]["kotlin"], "");
         assert_eq!(operations[2]["opId"], "task-op-2");
+    }
+
+    #[test]
+    fn normalizes_multiline_plan_fields_without_escaped_newlines() {
+        let mut plan = json!({"operations":[
+            {
+                "kind":"CREATE_FILE",
+                "target":{"fileId":"src/main/kotlin/com/acme/Entity.kt"},
+                "replacement":{"kotlinLines":["package com.acme", "", "interface Entity"]}
+            },
+            {
+                "kind":"REWRITE_DECLARATION",
+                "preconditions":{"substitutions":[{
+                    "oldLines":["fun old() {", "}"],
+                    "newLines":["fun new() {", "}"]
+                }]}
+            }
+        ]});
+
+        normalize_task_plan(&mut plan).unwrap();
+
+        assert_eq!(
+            plan["operations"][0]["replacement"]["kotlin"],
+            "package com.acme\n\ninterface Entity"
+        );
+        assert_eq!(
+            plan["operations"][1]["preconditions"]["substitutions"][0]["old"],
+            "fun old() {\n}"
+        );
+        assert_eq!(
+            plan["operations"][1]["preconditions"]["substitutions"][0]["new"],
+            "fun new() {\n}"
+        );
     }
 }
