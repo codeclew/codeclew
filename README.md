@@ -9,7 +9,7 @@ Executable vertical prototype of a language-neutral Rust semantic core and a ver
 - `jq` for the reproducible transaction demo
 - Rust is installed automatically according to `rust-toolchain.toml` when rustup is available
 
-Kotlin and `protoc` do not need system installations. Kotlin 2.4.10 is resolved by Gradle and `protoc` is vendored by the Rust build.
+Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.21 and 2.4.10 workers are resolved by Gradle, selected automatically from the target project, and `protoc` is vendored by the Rust build.
 
 ## Quick start
 
@@ -19,6 +19,7 @@ cargo run --bin sthread -- doctor
 cargo run --bin sthread -- project inspect --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic --syntax-only
+cargo run --bin sthread -- context --repo fixtures/kotlin-basic --symbol com.acme.namedCall
 printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
 ```
 
@@ -54,6 +55,7 @@ This is intentionally fail-closed. Android, KMP, scripts, reflection, precise co
 
 - `crates/sthread`: Rust core and CLI
 - `workers/kotlin`: long-lived Kotlin 2.4.10 PSI/compiler worker
+- `workers/kotlin21`: Kotlin 2.1.21 adapter reusing the common worker implementation
 - `schemas`: versioned Protobuf contracts
 - `fixtures`: executable Kotlin corpus
 - `docs`: architecture, safety model, protocol, ADRs, and status
