@@ -1151,7 +1151,7 @@ internal class Worker : AutoCloseable {
         val module = project["module"]?.jsonPrimitive?.content ?: ":"
         val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: "main"
         val kind = request.requiredString("kind"); val replacement = request.requiredString("replacement")
-        if (kind == "ADD_IMPORT" || kind == "REMOVE_IMPORT") return applyImportEdit(repo, relative, path, source, kind, replacement)
+        if (kind == "ADD_IMPORT" || kind == "REMOVE_IMPORT") return applyImportEdit(repo, relative, path, source, kind, replacement, request)
         if (kind == "REPLACE_DECLARATION") return applyDeclarationEdit(repo, relative, path, source, request, replacement, module, sourceSet)
         if (kind == "REWRITE_DECLARATION") return applyDeclarationRewrite(repo, relative, path, source, request, module, sourceSet)
         val kt = factory.createFile(path.fileName.toString(), source); val ownerQuery = request.requiredString("ownerSymbolId")
@@ -1369,7 +1369,7 @@ internal class Worker : AutoCloseable {
         }
     }
 
-    private fun applyImportEdit(repo: Path, relative: String, path: Path, source: String, kind: String, replacement: String): JsonObject {
+    private fun applyImportEdit(repo: Path, relative: String, path: Path, source: String, kind: String, replacement: String, request: JsonObject): JsonObject {
         val fqName = replacement.trim().removePrefix("import ").trim()
         if (!fqName.matches(Regex("[A-Za-z_][A-Za-z0-9_.]*(?:\\.\\*)?"))) throw WorkerFailure("REPLACEMENT_PARSE_ERROR", "invalid import: $fqName")
         val lineEnding = if ("\r\n" in source) "\r\n" else "\n"
@@ -1393,6 +1393,13 @@ internal class Worker : AutoCloseable {
             else -> {
                 val pattern = Regex("(?m)^import\\s+${Regex.escape(fqName)}\\s*(?:\\r?\\n)?")
                 source.replaceFirst(pattern, "")
+            }
+        }
+        if (request["deferSemanticValidation"]?.jsonPrimitive?.booleanOrNull == true) {
+            return buildJsonObject {
+                put("schema", "semantic-candidate/0.1"); put("file", relative)
+                put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
+                putJsonArray("diagnostics") {}; putJsonArray("introducedEffects") {}; put("k2Validated", false)
             }
         }
         val baselineOverrides = if (source == path.readText()) emptyMap() else mapOf(relative to source)
