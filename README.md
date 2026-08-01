@@ -19,6 +19,7 @@ cargo run --bin sthread -- doctor
 cargo run --bin sthread -- project inspect --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic --syntax-only
+printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
 ```
 
 For slicing, preview and commit the target must be a Git repository with a committed `HEAD`. The reproducible demonstration creates an isolated copy:
@@ -43,8 +44,11 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 - candidate commits with provenance trailers and CAS ref update
 - typed Protobuf requests, mandatory snapshots, batching and content-addressed large-source BlobRefs
 - append-only SQLite transaction ledger with pre/post-CAS crash recovery and idempotent retry, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
+- immutable RepositoryIndex snapshots with post-CAS publication, executable caller/downstream invalidation, and recovery repair
+- complete language-neutral SymbolId, AST/type edges, and LOCAL/THIS/OBJECT/STATIC/UNKNOWN memory abstractions
+- separate long-lived Rust `semanticd` JSONL service with structured logs and required metrics
 
-This is intentionally fail-closed. Android, KMP, scripts, compiler plugins, reflection, precise coroutine lowering, global interprocedural analysis, and ambiguous anchors are rejected or marked as boundaries. See [progress](docs/progress.md) and [final report](docs/final-report.md).
+This is intentionally fail-closed. Android, KMP, scripts, reflection, precise coroutine lowering, global interprocedural analysis, and ambiguous anchors are rejected or marked as boundaries. Compiler plugins for the selected JVM compilation are honored and content-hashed, but arbitrary plugin-specific semantic interpretation remains outside the MVP. See [progress](docs/progress.md) and [final report](docs/final-report.md).
 
 ## Repository map
 

@@ -1,6 +1,7 @@
 use crate::canonical;
 use crate::error::{ErrorCode, SthreadError};
 use crate::graph;
+use crate::index::RepositoryIndex;
 use crate::model::*;
 use crate::proto::RequestKind;
 use crate::worker::WorkerClient;
@@ -87,7 +88,7 @@ pub fn preview(
                 .unwrap_or_default();
             let resolved = worker.request(
                 RequestKind::ResolveSymbol,
-                &json!({"repo":repo,"symbol":owner}),
+                &json!({"repo":repo,"symbol":owner,"compilation":thread.snapshot.compilation}),
             )?;
             if resolved
                 .pointer("/declaration/signatureHash")
@@ -117,6 +118,7 @@ pub fn preview(
             "leftContextHash": target.get("leftContextHash").cloned().unwrap_or(Value::Null),
             "rightContextHash": target.get("rightContextHash").cloned().unwrap_or(Value::Null),
             "kind": operation.kind, "replacement": operation.replacement.kotlin,
+            "compilation": thread.snapshot.compilation,
             "preconditions": operation.preconditions, "postconditions": operation.postconditions
         });
         let response = worker.request(RequestKind::ApplyEdit, &request)?;
@@ -323,17 +325,55 @@ pub fn commit(
 ) -> Result<Value, SthreadError> {
     let current = git_output(repo, &["rev-parse", target_ref])?;
     transaction.target_ref = Some(target_ref.into());
-    if transaction.base_index_snapshot.is_none() {
-        transaction.base_index_snapshot = Some(
-            canonical::hash(&transaction.thread.read_set)
-                .map_err(internal)?
-                .replacen("sha256:", "index:", 1),
-        );
+    let base_index_snapshot = transaction
+        .base_index_snapshot
+        .clone()
+        .filter(|snapshot| !snapshot.is_empty())
+        .or_else(|| {
+            (!transaction.thread.snapshot.index_snapshot.is_empty())
+                .then(|| transaction.thread.snapshot.index_snapshot.clone())
+        })
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::InvalidInput,
+                "transaction must start with an immutable repository index snapshot",
+            )
+        })?;
+    transaction.base_index_snapshot = Some(base_index_snapshot.clone());
+    let current_index_snapshot =
+        RepositoryIndex::open_compilation(repo, Some(&transaction.thread.snapshot.compilation))?
+            .hash()?;
+    if current == transaction.base_revision
+        && current_index_snapshot.as_deref() != Some(base_index_snapshot.as_str())
+    {
+        return Err(SthreadError::new(
+            ErrorCode::StaleRequiresReslice,
+            format!(
+                "repository index snapshot changed since transaction start: expected {base_index_snapshot}, current {}",
+                current_index_snapshot.as_deref().unwrap_or("<missing>")
+            ),
+        ));
     }
     let edit_hash = canonical::hash(&transaction.edit).map_err(internal)?;
     if let Some(existing) =
         find_matching_transaction_commit(repo, target_ref, &transaction.tx_id, &edit_hash)?
     {
+        let compilation = &transaction.thread.snapshot.compilation;
+        let repository_index = RepositoryIndex::open_compilation(repo, Some(compilation))?;
+        let (final_index_snapshot, invalidations) =
+            if repository_index.published_revision()?.as_deref() == Some(existing.as_str()) {
+                (
+                    repository_index.hash()?.ok_or_else(|| {
+                        SthreadError::new(
+                            ErrorCode::TransactionRecoveryRequired,
+                            "published revision has no repository index hash",
+                        )
+                    })?,
+                    repository_index.invalidations()?,
+                )
+            } else {
+                publish_index_for_revision(repo, &existing, compilation, worker)?
+            };
         transaction.final_commit = Some(existing.clone());
         transaction.status = "COMMITTED".into();
         ledger(repo)?.append(
@@ -341,7 +381,7 @@ pub fn commit(
             "idempotent retry matched reachable Git trailers",
         )?;
         return Ok(
-            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":transaction.base_revision,"finalCommit":existing,"currentRevision":current,"targetRef":target_ref,"status":"COMMITTED","idempotent":true}),
+            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":transaction.base_revision,"finalCommit":existing,"currentRevision":current,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED","idempotent":true}),
         );
     }
     let report = preview_for_commit(repo, transaction, &current, worker).map_err(|mut e| {
@@ -396,10 +436,14 @@ pub fn commit(
             std::fs::write(safe_join(&worktree_path, file)?, source.as_bytes())
                 .map_err(io_error)?;
         }
-        validate_worktree(&worktree_path, &transaction.test_tasks)?;
+        validate_worktree(
+            &worktree_path,
+            &transaction.thread.snapshot.compile_task,
+            &transaction.test_tasks,
+        )?;
         transaction.validation_evidence.push(json!({
             "kind":"GRADLE",
-            "compileTask":"compileKotlin",
+            "compileTask":transaction.thread.snapshot.compile_task,
             "testTasks":transaction.test_tasks,
             "status":"PASSED"
         }));
@@ -438,11 +482,38 @@ pub fn commit(
                 "target ref changed during commit CAS",
             )
         })?;
+        let index_facts = worker
+            .request(
+                RequestKind::IndexFiles,
+                &json!({
+                    "repo":worktree_path,
+                    "compilation":transaction.thread.snapshot.compilation
+                }),
+            )
+            .map_err(index_recovery_error)?;
+        let mut repository_index =
+            RepositoryIndex::open_compilation(repo, Some(&transaction.thread.snapshot.compilation))
+                .map_err(index_recovery_error)?;
+        let final_index_snapshot = repository_index
+            .update_from_root(&index_facts, &worktree_path)
+            .map_err(index_recovery_error)?;
+        let invalidations = repository_index
+            .invalidations()
+            .map_err(index_recovery_error)?;
+        repository_index
+            .mark_published_revision(&candidate)
+            .map_err(index_recovery_error)?;
+        transaction.validation_evidence.push(json!({
+            "kind":"INDEX_PUBLICATION",
+            "baseIndexSnapshot":base_index_snapshot,
+            "finalIndexSnapshot":final_index_snapshot,
+            "appliedInvalidations":invalidations
+        }));
         transaction.final_commit = Some(candidate.clone());
         transaction.status = "COMMITTED".into();
         ledger(repo)?.append(transaction, "target ref updated atomically")?;
         Ok(
-            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"finalCommit":candidate,"targetRef":target_ref,"status":"COMMITTED"}),
+            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"baseIndexSnapshot":base_index_snapshot,"finalCommit":candidate,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED"}),
         )
     })();
     let _ = git(
@@ -455,6 +526,53 @@ pub fn commit(
         ],
     );
     result
+}
+
+fn publish_index_for_revision(
+    repo: &Path,
+    revision: &str,
+    compilation: &str,
+    worker: &mut WorkerClient,
+) -> Result<(String, Vec<String>), SthreadError> {
+    let temporary = tempfile::tempdir().map_err(io_error)?;
+    let path = temporary.path().join("index-recovery");
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            path.to_str().unwrap(),
+            revision,
+        ],
+    )?;
+    let result = (|| {
+        let facts = worker.request(
+            RequestKind::IndexFiles,
+            &json!({"repo":path,"compilation":compilation}),
+        )?;
+        let mut index = RepositoryIndex::open_compilation(repo, Some(compilation))?;
+        let hash = index.update_from_root(&facts, &path)?;
+        let invalidations = index.invalidations()?;
+        index.mark_published_revision(revision)?;
+        Ok((hash, invalidations))
+    })()
+    .map_err(index_recovery_error);
+    let _ = git(
+        repo,
+        &["worktree", "remove", "--force", path.to_str().unwrap()],
+    );
+    result
+}
+
+fn index_recovery_error(mut error: SthreadError) -> SthreadError {
+    error.code = ErrorCode::TransactionRecoveryRequired;
+    error.retryable = true;
+    error.message = format!(
+        "repository index publication requires recovery: {}",
+        error.message
+    );
+    error
 }
 
 fn preview_for_commit(
@@ -481,8 +599,10 @@ fn preview_for_commit(
         ],
     )?;
     let result = (|| {
-        let current_model =
-            worker.request(RequestKind::OpenProject, &json!({"repo":replay_path}))?;
+        let current_model = worker.request(
+            RequestKind::OpenProject,
+            &json!({"repo":replay_path,"compilation":transaction.thread.snapshot.compilation}),
+        )?;
         if current_model
             .get("projectModelHash")
             .and_then(Value::as_str)
@@ -543,7 +663,7 @@ fn revalidate_semantic_read_set(
         })?;
     let raw = worker.request(
         RequestKind::BuildLocalGraph,
-        &json!({"repo":repo,"symbol":symbol}),
+        &json!({"repo":repo,"symbol":symbol,"compilation":transaction.thread.snapshot.compilation}),
     )?;
     let graph = graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(|error| {
         SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
@@ -589,6 +709,10 @@ fn revalidate_semantic_read_set(
             .unwrap_or_default()
             .into(),
         compiler_version: transaction.thread.snapshot.compiler_version.clone(),
+        index_snapshot: transaction.thread.snapshot.index_snapshot.clone(),
+        compilation: transaction.thread.snapshot.compilation.clone(),
+        compile_task: transaction.thread.snapshot.compile_task.clone(),
+        test_tasks: transaction.thread.snapshot.test_tasks.clone(),
     };
     let rebuilt = graph::slice(
         &graph,
@@ -659,11 +783,30 @@ fn revalidate_semantic_read_set(
     Ok(())
 }
 
-fn validate_worktree(worktree: &Path, tests: &[String]) -> Result<(), SthreadError> {
-    let mut tasks = vec!["compileKotlin".to_owned()];
-    tasks.extend(tests.iter().cloned());
+fn validate_worktree(
+    worktree: &Path,
+    compile_task: &str,
+    tests: &[String],
+) -> Result<(), SthreadError> {
     let output = Command::new(worktree.join("gradlew"))
-        .args(&tasks)
+        .arg(compile_task)
+        .arg("--no-daemon")
+        .arg("--quiet")
+        .current_dir(worktree)
+        .output()
+        .map_err(io_error)?;
+    log_output(&output);
+    if !output.status.success() {
+        return Err(SthreadError::new(
+            ErrorCode::CompileFailed,
+            format!("candidate worktree Gradle compile task {compile_task} failed"),
+        ));
+    }
+    if tests.is_empty() {
+        return Ok(());
+    }
+    let output = Command::new(worktree.join("gradlew"))
+        .args(tests)
         .arg("--no-daemon")
         .arg("--quiet")
         .current_dir(worktree)
@@ -674,8 +817,11 @@ fn validate_worktree(worktree: &Path, tests: &[String]) -> Result<(), SthreadErr
         Ok(())
     } else {
         Err(SthreadError::new(
-            ErrorCode::CompileFailed,
-            "candidate worktree Gradle validation failed",
+            ErrorCode::TestFailed,
+            format!(
+                "candidate worktree Gradle test tasks {} failed",
+                tests.join(", ")
+            ),
         ))
     }
 }

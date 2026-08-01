@@ -26,11 +26,22 @@ set -e
 [ "$INVALID_EXIT" -eq 6 ]
 [ "$BASE" = "$(git -C "$DEMO_ROOT/repo" rev-parse refs/heads/main)" ]
 "$BIN" edit preview --repo "$DEMO_ROOT/repo" --thread "$DEMO_ROOT/thread.json" --operations "$DEMO_ROOT/edit.json" --output "$DEMO_ROOT/preview.json" >/dev/null
-jq -n --slurpfile thread "$DEMO_ROOT/thread.json" --slurpfile edit "$DEMO_ROOT/edit.json" --arg base "$BASE" '{schema:"semantic-transaction/0.1",txId:"tx:demo-valid",actorId:"agent:demo",intent:"rewrite premium multiplication equivalently",baseRevision:$base,projectModelHash:$thread[0].snapshot.projectModelHash,status:"CREATED",thread:$thread[0],edit:$edit[0],testTasks:["test"]}' > "$DEMO_ROOT/tx.json"
-"$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/commit.json"
+jq -n --slurpfile thread "$DEMO_ROOT/thread.json" --slurpfile edit "$DEMO_ROOT/edit.json" --arg base "$BASE" '{schema:"semantic-transaction/0.1",txId:"tx:demo-valid",actorId:"agent:demo",intent:"rewrite premium multiplication equivalently",baseRevision:$base,baseIndexSnapshot:$thread[0].snapshot.indexSnapshot,projectModelHash:$thread[0].snapshot.projectModelHash,status:"CREATED",thread:$thread[0],edit:$edit[0],testTasks:["test"]}' > "$DEMO_ROOT/tx.json"
+jq -n --slurpfile thread "$DEMO_ROOT/thread.json" --slurpfile edit "$DEMO_ROOT/invalid-edit.json" --arg base "$BASE" '{schema:"semantic-transaction/0.1",txId:"tx:demo-invalid",actorId:"agent:demo",intent:"prove typed transaction failure context",baseRevision:$base,baseIndexSnapshot:$thread[0].snapshot.indexSnapshot,projectModelHash:$thread[0].snapshot.projectModelHash,status:"CREATED",thread:$thread[0],edit:$edit[0],testTasks:["test"]}' > "$DEMO_ROOT/invalid-tx.json"
+set +e
+"$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/invalid-tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/typed-error.json"
+TYPED_ERROR_EXIT=$?
+set -e
+[ "$TYPED_ERROR_EXIT" -eq 6 ]
+jq -e '.error.transactionId == "tx:demo-invalid" and (.error.snapshotId | length > 0) and (.error.relevantAnchorsOrSymbols | length > 0)' "$DEMO_ROOT/typed-error.json" >/dev/null
+[ "$BASE" = "$(git -C "$DEMO_ROOT/repo" rev-parse refs/heads/main)" ]
+if ! "$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/commit.json"; then
+  cat "$DEMO_ROOT/commit.json" >&2
+  exit 1
+fi
 FINAL=$(git -C "$DEMO_ROOT/repo" rev-parse refs/heads/main)
 git -C "$DEMO_ROOT/repo" show -s --format=%B "$FINAL" | grep -q 'Semantic-Transaction-Id: tx:demo-valid'
 "$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/retry.json"
 [ "$(jq -r '.idempotent' "$DEMO_ROOT/retry.json")" = true ]
 [ "$FINAL" = "$(git -C "$DEMO_ROOT/repo" rev-parse refs/heads/main)" ]
-jq -n --slurpfile invalid "$DEMO_ROOT/invalid.json" --slurpfile commit "$DEMO_ROOT/commit.json" --slurpfile retry "$DEMO_ROOT/retry.json" '{schema:"semantic-demo/0.1",status:"PASSED",invalidReplacement:$invalid[0],commit:$commit[0],idempotentRetry:$retry[0],branchUnchangedAfterFailure:true,branchUnchangedAfterRetry:true}'
+jq -n --slurpfile invalid "$DEMO_ROOT/invalid.json" --slurpfile typedError "$DEMO_ROOT/typed-error.json" --slurpfile commit "$DEMO_ROOT/commit.json" --slurpfile retry "$DEMO_ROOT/retry.json" '{schema:"semantic-demo/0.1",status:"PASSED",invalidReplacement:$invalid[0],typedTransactionError:$typedError[0],commit:$commit[0],idempotentRetry:$retry[0],branchUnchangedAfterFailure:true,branchUnchangedAfterRetry:true}'

@@ -21,6 +21,10 @@ pub struct WorkerClient {
 }
 
 impl WorkerClient {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn start(workspace: &Path) -> Result<Self, SthreadError> {
         let launcher = worker_launcher(workspace);
         if !launcher.is_file() {
@@ -178,6 +182,7 @@ impl WorkerClient {
                         payload.get("postconditions").unwrap_or(&Value::Null),
                     )
                     .map_err(internal)?,
+                    compilation: compilation(),
                 })
             }
             RequestKind::ValidateCandidate => {
@@ -220,12 +225,21 @@ impl WorkerClient {
         }
         let canonical_json = match response.payload {
             Some(worker_response::Payload::Error(error)) => {
+                let relevant: Vec<String> = payload
+                    .get("ownerSymbolId")
+                    .or_else(|| payload.get("symbol"))
+                    .or_else(|| payload.get("exactTextHash"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .into_iter()
+                    .collect();
                 return Err(SthreadError {
                     code: parse_worker_code(&error.code),
                     message: error.message,
                     transaction_id: None,
-                    snapshot_id: None,
+                    snapshot_id: self.snapshot.as_ref().map(snapshot_label),
                     evidence: error.evidence,
+                    relevant_anchors_or_symbols: relevant.into_boxed_slice(),
                     retryable: error.retryable,
                 });
             }
@@ -399,6 +413,7 @@ impl WorkerClient {
                     transaction_id: None,
                     snapshot_id: None,
                     evidence: error.evidence,
+                    relevant_anchors_or_symbols: vec!["batch-validation".into()].into_boxed_slice(),
                     retryable: error.retryable,
                 }),
                 _ => Err(SthreadError::new(
@@ -450,6 +465,13 @@ fn snapshot_from(payload: &Value) -> SnapshotId {
             .unwrap_or("UNRESOLVED")
             .into(),
     }
+}
+
+fn snapshot_label(snapshot: &SnapshotId) -> String {
+    format!(
+        "snapshot:{}:{}",
+        snapshot.base_revision, snapshot.project_model_hash
+    )
 }
 
 fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), SthreadError> {

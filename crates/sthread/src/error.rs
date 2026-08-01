@@ -38,6 +38,7 @@ pub enum ErrorCode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Error)]
 #[error("{code:?}: {message}")]
+#[serde(rename_all = "camelCase")]
 pub struct SthreadError {
     pub code: ErrorCode,
     pub message: String,
@@ -47,18 +48,51 @@ pub struct SthreadError {
     pub snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "relevant_is_empty")]
+    pub relevant_anchors_or_symbols: Box<[String]>,
     pub retryable: bool,
+}
+
+fn relevant_is_empty(values: &[String]) -> bool {
+    values.is_empty()
 }
 
 impl SthreadError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        let retryable = matches!(
+            code,
+            ErrorCode::WorkerCrashed
+                | ErrorCode::RefCompareAndSwapFailed
+                | ErrorCode::TransactionRecoveryRequired
+        );
         Self {
             code,
             message: message.into(),
             transaction_id: None,
             snapshot_id: None,
             evidence: vec![],
-            retryable: false,
+            relevant_anchors_or_symbols: Box::default(),
+            retryable,
         }
+    }
+
+    pub fn with_transaction(mut self, transaction_id: impl Into<String>) -> Self {
+        self.transaction_id = Some(transaction_id.into());
+        self
+    }
+
+    pub fn with_snapshot(mut self, snapshot_id: impl Into<String>) -> Self {
+        self.snapshot_id = Some(snapshot_id.into());
+        self
+    }
+
+    pub fn with_relevant(mut self, value: impl Into<String>) -> Self {
+        let value = value.into();
+        if !value.is_empty() && !self.relevant_anchors_or_symbols.contains(&value) {
+            let mut relevant = self.relevant_anchors_or_symbols.into_vec();
+            relevant.push(value);
+            self.relevant_anchors_or_symbols = relevant.into_boxed_slice();
+        }
+        self
     }
 }

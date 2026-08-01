@@ -113,6 +113,36 @@ pub struct Snapshot {
     pub base_revision: String,
     pub project_model_hash: String,
     pub compiler_version: String,
+    #[serde(default)]
+    pub index_snapshot: String,
+    #[serde(default = "default_compilation")]
+    pub compilation: String,
+    #[serde(default = "default_compile_task")]
+    pub compile_task: String,
+    #[serde(default)]
+    pub test_tasks: Vec<String>,
+}
+
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            base_revision: String::new(),
+            project_model_hash: String::new(),
+            compiler_version: "2.4.10".into(),
+            index_snapshot: String::new(),
+            compilation: default_compilation(),
+            compile_task: default_compile_task(),
+            test_tasks: vec![],
+        }
+    }
+}
+
+fn default_compilation() -> String {
+    ":/main".into()
+}
+
+fn default_compile_task() -> String {
+    ":compileKotlin".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
