@@ -128,6 +128,8 @@ pub struct Snapshot {
     pub compiler_version: String,
     #[serde(default)]
     pub build_system: BuildSystem,
+    #[serde(default = "default_build_launcher")]
+    pub build_launcher: String,
     #[serde(default)]
     pub index_snapshot: String,
     #[serde(default = "default_compilation")]
@@ -145,6 +147,7 @@ impl Default for Snapshot {
             project_model_hash: String::new(),
             compiler_version: "2.4.10".into(),
             build_system: BuildSystem::Gradle,
+            build_launcher: default_build_launcher(),
             index_snapshot: String::new(),
             compilation: default_compilation(),
             compile_task: default_compile_task(),
@@ -159,6 +162,10 @@ fn default_compilation() -> String {
 
 fn default_compile_task() -> String {
     ":compileKotlin".into()
+}
+
+fn default_build_launcher() -> String {
+    "./gradlew".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

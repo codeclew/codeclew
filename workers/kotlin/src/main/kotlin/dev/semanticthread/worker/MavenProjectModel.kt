@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import org.w3c.dom.Element
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import javax.xml.parsers.DocumentBuilderFactory
@@ -36,10 +37,7 @@ internal class MavenProjectModelExtractor {
                 "help:effective-pom",
                 "dependency:build-classpath",
             )
-            val process = ProcessBuilder(command)
-                .directory(repo.toFile())
-                .redirectErrorStream(true)
-                .start()
+            val process = start(command, repo, "Maven model extraction")
             val output = process.inputStream.bufferedReader().readText()
             val status = process.waitFor()
             if (status != 0 || !effectivePom.isRegularFile() || !classpathFile.isRegularFile()) {
@@ -64,20 +62,31 @@ internal class MavenProjectModelExtractor {
                 ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Kotlin Maven plugin version is required")
             val compilerLine = compilerVersion.split('.').take(2).joinToString(".")
             val configuration = kotlinPlugin.directChild("configuration")
-            val sourceRoot = configuredRoot(project, repo, sourceSet)
-            val sourceFiles = kotlinSources(sourceRoot)
+            val selectedSources = kotlinSources(configuredRoot(project, repo, sourceSet))
+            val sourceFiles = if (sourceSet == "test") {
+                (kotlinSources(configuredRoot(project, repo, "main")) + selectedSources).distinct().sorted()
+            } else {
+                selectedSources
+            }
             if (sourceFiles.isEmpty()) {
                 throw WorkerFailure(
                     "UNSUPPORTED_PROJECT_CONFIGURATION",
                     "Maven Kotlin source set '$sourceSet' is empty",
                 )
             }
-            val classpath = classpathFile.toFile().readText()
+            val classpathEntries = classpathFile.toFile().readText()
                 .trim()
                 .split(File.pathSeparator)
                 .filter(String::isNotBlank)
                 .map(Path::of)
-                .filter(Path::exists)
+            val missingClasspath = classpathEntries.filterNot(Path::exists)
+            if (missingClasspath.isNotEmpty()) {
+                throw WorkerFailure(
+                    "UNSUPPORTED_PROJECT_CONFIGURATION",
+                    "Maven classpath contains missing entries: ${missingClasspath.take(3).joinToString()}",
+                )
+            }
+            val classpath = classpathEntries
                 .map { it.toAbsolutePath().normalize().toString() }
                 .distinct()
                 .sorted()
@@ -128,8 +137,19 @@ internal class MavenProjectModelExtractor {
     private fun launcher(repo: Path): List<String> {
         val wrapper = repo.resolve("mvnw")
         if (wrapper.isRegularFile() && wrapper.isExecutable()) return listOf(wrapper.toString())
-        return listOf("mvn")
+        if (executableOnPath("mvn")) return listOf("mvn")
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "neither executable ./mvnw nor Maven on PATH is available",
+        )
     }
+
+    private fun executableOnPath(name: String): Boolean =
+        System.getenv("PATH")
+            ?.split(File.pathSeparator)
+            ?.map { Path.of(it.ifBlank { "." }).resolve(name) }
+            ?.any { it.isRegularFile() && it.isExecutable() }
+            ?: false
 
     private fun compilerPluginArtifacts(
         kotlinPlugin: Element,
@@ -177,10 +197,11 @@ internal class MavenProjectModelExtractor {
         classifier: String?,
     ) {
         val coordinate = listOfNotNull(group, artifact, "jar", classifier, version).joinToString(":")
-        val process = ProcessBuilder(launcher + listOf("-q", "dependency:get", "-Dartifact=$coordinate"))
-            .directory(repo.toFile())
-            .redirectErrorStream(true)
-            .start()
+        val process = start(
+            launcher + listOf("-q", "dependency:get", "-Dartifact=$coordinate"),
+            repo,
+            "Maven compiler plugin resolution",
+        )
         val output = process.inputStream.bufferedReader().readText()
         if (process.waitFor() != 0) {
             throw WorkerFailure(
@@ -244,6 +265,18 @@ internal class MavenProjectModelExtractor {
         } catch (_: Exception) {
             "unknown"
         }
+    }
+
+    private fun start(command: List<String>, repo: Path, operation: String) = try {
+        ProcessBuilder(command)
+            .directory(repo.toFile())
+            .redirectErrorStream(true)
+            .start()
+    } catch (error: IOException) {
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "$operation could not start: ${error.message}",
+        )
     }
 
     private fun rejectModules(repo: Path) {

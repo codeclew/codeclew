@@ -551,6 +551,10 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
             Some("MAVEN") => BuildSystem::Maven,
             _ => BuildSystem::Gradle,
         },
+        build_launcher: project["buildLauncher"]
+            .as_str()
+            .unwrap_or("./gradlew")
+            .into(),
         index_snapshot,
         compilation: args.compilation,
         compile_task: project["compileTask"]

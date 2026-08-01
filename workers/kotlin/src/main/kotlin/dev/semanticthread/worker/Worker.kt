@@ -159,7 +159,7 @@ internal class Worker : AutoCloseable {
     private fun cachedProjectModel(repo: Path, compilation: String?): JsonObject {
         requestCacheRequests++
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha((listOf("projectModelSchema=4") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
+        val inputHash = sha((listOf("projectModelSchema=5") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
             Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") && !it.invariantSeparatorsPathString.contains("/target/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         projectModelCache[key]?.let { requestCacheHits++; return it }
