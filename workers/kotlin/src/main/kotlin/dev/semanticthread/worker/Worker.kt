@@ -1345,11 +1345,22 @@ internal class Worker : AutoCloseable {
             val new = item.jsonObject["new"]?.jsonPrimitive?.content
                 ?: throw WorkerFailure("INVALID_INPUT", "substitution $index has no new text")
             if (old.isEmpty()) throw WorkerFailure("INVALID_INPUT", "substitution $index old text is empty")
-            val expectedOccurrences = item.jsonObject["occurrences"]?.jsonPrimitive?.intOrNull ?: 1
-            if (expectedOccurrences < 1) throw WorkerFailure("INVALID_INPUT", "substitution $index occurrences must be positive")
-            val occurrences = Regex(Regex.escape(old)).findAll(rewritten).count()
-            if (occurrences != expectedOccurrences) throw WorkerFailure("PRECONDITION_FAILED", "substitution $index expected $expectedOccurrences exact matches, found $occurrences")
-            rewritten = rewritten.replace(old, new)
+            val occurrence = item.jsonObject["occurrence"]?.jsonPrimitive?.intOrNull
+            val expectedOccurrences = item.jsonObject["occurrences"]?.jsonPrimitive?.intOrNull
+                ?: if (occurrence == null) 1 else null
+            if (occurrence != null && occurrence < 1) throw WorkerFailure("INVALID_INPUT", "substitution $index occurrence must be positive")
+            if (expectedOccurrences != null && expectedOccurrences < 1) throw WorkerFailure("INVALID_INPUT", "substitution $index occurrences must be positive")
+            val matches = Regex(Regex.escape(old)).findAll(rewritten).toList()
+            if (expectedOccurrences != null && matches.size != expectedOccurrences) {
+                throw WorkerFailure("PRECONDITION_FAILED", "substitution $index expected $expectedOccurrences exact matches, found ${matches.size}")
+            }
+            rewritten = if (occurrence != null) {
+                val match = matches.getOrNull(occurrence - 1)
+                    ?: throw WorkerFailure("PRECONDITION_FAILED", "substitution $index occurrence $occurrence is absent; found ${matches.size} exact matches")
+                rewritten.replaceRange(match.range, new)
+            } else {
+                rewritten.replace(old, new)
+            }
         }
         val replacementFile = factory.createFile(path.fileName.toString(), rewritten)
         val replacementErrors = PsiTreeUtil.collectElementsOfType(replacementFile, PsiErrorElement::class.java)
