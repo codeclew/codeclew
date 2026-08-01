@@ -608,7 +608,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"preconditions":{"substitutions":[{"old":"...","new":"..."}]}},
-            "instruction":"Use kind and target.targetId. Prefer REWRITE_DECLARATION substitutions. Multiline: oldLines/newLines/kotlinLines (common-dedented); occurrence selects one match, occurrences edits all. A typed contract must not become Any/Any?: required fields stay statically accessible and existing payloads assignable. CREATE_FILE adds top-level declarations."
+            "instruction":"Use kind and target.targetId. Prefer REWRITE_DECLARATION substitutions. Multiline: oldLines/newLines/kotlinLines (common-dedented); occurrence selects one match, occurrences edits all. Plan all necessary emitted surfaces. A typed contract must not become Any/Any?: required fields stay statically accessible and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{

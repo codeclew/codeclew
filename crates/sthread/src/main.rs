@@ -976,6 +976,25 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
             })?;
             object.insert("kind".to_owned(), kind);
         }
+        if object.contains_key("old") || object.contains_key("oldLines") {
+            let mut substitution = serde_json::Map::new();
+            for key in [
+                "old",
+                "new",
+                "oldLines",
+                "newLines",
+                "occurrence",
+                "occurrences",
+            ] {
+                if let Some(value) = object.remove(key) {
+                    substitution.insert(key.to_owned(), value);
+                }
+            }
+            object.insert(
+                "substitutions".to_owned(),
+                Value::Array(vec![Value::Object(substitution)]),
+            );
+        }
         if let Some(substitutions) = object.remove("substitutions") {
             if object.contains_key("preconditions") {
                 return Err(SthreadError::new(
@@ -1015,6 +1034,31 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
                 .or_insert_with(|| json!({"kotlin":""}));
         }
     }
+    let unmerged = std::mem::take(operations);
+    let mut merged = Vec::<Value>::new();
+    for operation in unmerged {
+        let merge_target =
+            (operation["kind"] == "REWRITE_DECLARATION").then(|| operation["target"].clone());
+        if let Some(target) = merge_target
+            && let Some(existing) = merged.iter_mut().find(|existing| {
+                existing["kind"] == "REWRITE_DECLARATION" && existing["target"] == target
+            })
+        {
+            let additions = operation
+                .pointer("/preconditions/substitutions")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            existing
+                .pointer_mut("/preconditions/substitutions")
+                .and_then(Value::as_array_mut)
+                .expect("normalized rewrite substitutions")
+                .extend(additions);
+            continue;
+        }
+        merged.push(operation);
+    }
+    *operations = merged;
     Ok(())
 }
 fn join_plan_lines(
@@ -1240,11 +1284,18 @@ mod task_plan_tests {
                     "oldLines":["        fun old() {", "        }"],
                     "newLines":["        fun new() {", "            call()", "        }"]
                 }]
+            },
+            {
+                "kind":"REWRITE_DECLARATION",
+                "target":null,
+                "old":"call()",
+                "new":"otherCall()"
             }
         ]});
 
         normalize_task_plan(&mut plan).unwrap();
 
+        assert_eq!(plan["operations"].as_array().unwrap().len(), 2);
         assert_eq!(
             plan["operations"][0]["replacement"]["kotlin"],
             "package com.acme\n\ninterface Entity"
@@ -1261,6 +1312,10 @@ mod task_plan_tests {
         assert_eq!(
             plan["operations"][1]["preconditions"]["substitutions"][0]["lineMode"],
             true
+        );
+        assert_eq!(
+            plan["operations"][1]["preconditions"]["substitutions"][1]["new"],
+            "otherCall()"
         );
     }
 }
