@@ -36,3 +36,29 @@ tool output, а не полный token usage rollout; корректное ср
 
 Отдельный fixture с serialization compiler plugin подтверждает, что K2/FIR
 анализ Kotlin 2.1.21 проходит без прежнего `IncompatibleClassChangeError`.
+
+## Повторный Terra-прогон
+
+Независимый `gpt-5.6-terra` повторил исходную задачу на commit `be34782d` и
+создал commit `0e5dd5b`. Корректность улучшилась, но общая эффективность — нет:
+
+| Метрика | sthread v1 | sthread v2 | Изменение |
+|---|---:|---:|---:|
+| Время до commit | 185 с | 185 с | 0% |
+| Команд до первого edit | 37 | 20 | -45,9% |
+| Tool roundtrips | 19 | 29 | +52,6% |
+| Raw total tokens | 773 304 | 1 276 799 | +65,1% |
+| Output tokens | 7 413 | 8 670 | +17,0% |
+| Некэшированные tokens | 64 184 | 76 159 | +18,7% |
+
+Модель, reasoning effort, client version и задача совпадали. V2 устранил
+несовместимость Kotlin compiler plugin и сократил число shell-команд, но агент
+сделал больше отдельных tool turns. Два больших `context` ответа достигли
+40-КБ лимита stdout каждый, а шесть запросов ушли на неуспешный lookup классов,
+synthetic `MainKt` и угаданных FQN. Поэтому локальное уменьшение ответа для
+`applyAdaptive` не перешло в экономию полного rollout.
+
+Следующая оптимизация должна быть направлена не на FIR/K2, а на agent protocol:
+summary-only stdout при наличии `--output`, единый discovery/search для
+функций и классов, компактное представление больших slices и объединение
+нескольких lookup в один roundtrip.
