@@ -1,10 +1,9 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::de::DeserializeOwned;
-use serde_json::Map;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use sthread::agent_context;
 use sthread::canonical;
 use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
@@ -13,7 +12,6 @@ use sthread::model::*;
 use sthread::proto::RequestKind;
 use sthread::transaction;
 use sthread::worker::{WorkerClient, workspace_root};
-use walkdir::WalkDir;
 
 #[derive(Parser)]
 #[command(
@@ -46,8 +44,12 @@ enum Command {
     },
     Cfg(SymbolArgs),
     Slice(SliceArgs),
-    #[command(about = "Build compact edit-ready semantic context for an agent")]
-    Context(ContextArgs),
+    #[command(
+        name = "agent-context",
+        visible_alias = "context",
+        about = "Build one bounded edit-ready semantic context pack for an agent"
+    )]
+    AgentContext(AgentContextArgs),
     Edit {
         #[command(subcommand)]
         command: EditCommand,
@@ -135,17 +137,21 @@ struct SliceArgs {
     output: Option<PathBuf>,
 }
 #[derive(Args)]
-struct ContextArgs {
+struct AgentContextArgs {
     #[arg(long)]
     repo: PathBuf,
     #[arg(long, default_value = ":/main")]
     compilation: String,
-    #[arg(long)]
-    symbol: String,
-    #[arg(long, default_value_t = 40)]
-    max_nodes: usize,
-    #[arg(long)]
+    #[arg(long = "term", visible_alias = "symbol", required = true)]
+    terms: Vec<String>,
+    #[arg(long, default_value_t = 12_288)]
+    max_bytes: usize,
+    #[arg(long, default_value = ".semantic-thread/agent-context.json")]
+    evidence: PathBuf,
+    #[arg(long, hide = true)]
     output: Option<PathBuf>,
+    #[arg(long = "max-nodes", hide = true)]
+    _max_nodes: Option<usize>,
 }
 #[derive(Clone, ValueEnum)]
 enum DirectionArg {
@@ -281,24 +287,59 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             serde_json::to_value(graph::enrich(graph)).map_err(parse_error)
         }),
         Command::Slice(args) => with_worker(&workspace, |w| slice_command(w, args)),
-        Command::Context(args) => with_worker(&workspace, |worker| {
+        Command::AgentContext(args) => with_worker(&workspace, |worker| {
             let repo = absolute(&args.repo)?;
-            let output = args.output.clone();
-            let thread = build_thread(
-                worker,
-                SliceArgs {
-                    repo: repo.clone(),
-                    compilation: args.compilation,
-                    symbol: Some(args.symbol),
-                    file: None,
-                    offset: None,
-                    direction: DirectionArg::Both,
-                    max_nodes: args.max_nodes,
-                    output: None,
-                },
+            let project = worker.request(
+                RequestKind::OpenProject,
+                &json!({"repo":repo,"compilation":args.compilation}),
             )?;
-            let context = compact_context(&repo, &thread);
-            write_optional(output.as_deref(), &context)?;
+            let index_facts = worker.request(
+                RequestKind::IndexFiles,
+                &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":true}),
+            )?;
+            let storage_compilation = format!("{}#agent-context-syntax", args.compilation);
+            let mut repository_index =
+                RepositoryIndex::open_compilation(&repo, Some(&storage_compilation))?;
+            repository_index.update(&index_facts)?;
+            let selection = agent_context::select(&repo, &index_facts, &args.terms)?;
+            let resolutions = selection
+                .function_symbols()
+                .into_iter()
+                .take(6)
+                .map(|symbol| {
+                    worker.request(
+                        RequestKind::ResolveSymbol,
+                        &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let evidence_path = if args.evidence.is_absolute() {
+                args.evidence
+            } else {
+                repo.join(args.evidence)
+            };
+            let base_revision = git_head(&repo)?;
+            let (context, evidence) = agent_context::build(agent_context::AgentContextBuild {
+                repo: &repo,
+                terms: &args.terms,
+                compilation: &args.compilation,
+                project: &project,
+                index_facts: &index_facts,
+                selection: &selection,
+                resolutions: &resolutions,
+                base_revision: &base_revision,
+                evidence_path: &evidence_path,
+                max_bytes: args.max_bytes,
+            })?;
+            write_artifact(&evidence_path, &evidence)?;
+            if let Some(output) = args.output {
+                let output_path = if output.is_absolute() {
+                    output
+                } else {
+                    repo.join(output)
+                };
+                write_artifact(&output_path, &context)?;
+            }
             Ok(context)
         }),
         Command::Edit {
@@ -525,182 +566,6 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
     Ok(thread)
 }
 
-fn compact_context(repo: &Path, thread: &ThreadIr) -> Value {
-    let files = thread
-        .nodes
-        .iter()
-        .filter_map(|node| node.origin.as_ref()?.get("fileId")?.as_str())
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    let nodes = thread
-        .nodes
-        .iter()
-        .map(|node| {
-            let mut compact = Map::from_iter([
-                ("id".into(), json!(node.id)),
-                ("kind".into(), json!(node.kind)),
-                ("editable".into(), json!(node.editable)),
-            ]);
-            if let Some(defines) = &node.defines {
-                compact.insert("defines".into(), json!(defines));
-            }
-            if !node.uses.is_empty() {
-                compact.insert("uses".into(), json!(node.uses));
-            }
-            if let Some(origin) = &node.origin {
-                compact.insert("origin".into(), compact_origin(origin));
-            }
-            Value::Object(compact)
-        })
-        .collect::<Vec<_>>();
-    let boundaries = thread
-        .completeness
-        .boundaries
-        .iter()
-        .map(compact_boundary)
-        .collect::<Vec<_>>();
-    let editable_units = thread
-        .editable_units
-        .iter()
-        .map(compact_editable_unit)
-        .collect::<Vec<_>>();
-    json!({
-        "schema": "semantic-agent-context/0.1",
-        "threadId": thread.thread_id,
-        "seed": compact_seed(&thread.seed),
-        "snapshot": {
-            "baseRevision": thread.snapshot.base_revision,
-            "projectModelHash": thread.snapshot.project_model_hash,
-            "compilerVersion": thread.snapshot.compiler_version,
-            "compilation": thread.snapshot.compilation,
-            "compileTask": thread.snapshot.compile_task,
-            "testTasks": thread.snapshot.test_tasks,
-        },
-        "completeness": {"status": thread.completeness.status, "boundaries": boundaries},
-        "files": files,
-        "relatedTestFiles": related_test_files(repo, &thread.seed),
-        "nodes": nodes,
-        "edges": thread.edges,
-        "editableUnits": editable_units,
-        "validationPlan": thread.validation_plan,
-    })
-}
-
-fn compact_origin(origin: &Value) -> Value {
-    let mut compact = Map::new();
-    for key in [
-        "fileId",
-        "rangeHint",
-        "sourceText",
-        "anchorId",
-        "syntaxKind",
-    ] {
-        if let Some(value) = origin.get(key) {
-            compact.insert(key.into(), value.clone());
-        }
-    }
-    Value::Object(compact)
-}
-
-fn compact_seed(seed: &Value) -> Value {
-    let mut compact = Map::new();
-    for key in ["kind", "symbol", "nodeId"] {
-        if let Some(value) = seed.get(key) {
-            compact.insert(key.into(), value.clone());
-        }
-    }
-    if let Some(anchor_id) = seed.pointer("/anchor/anchorId") {
-        compact.insert("anchorId".into(), anchor_id.clone());
-    }
-    Value::Object(compact)
-}
-
-fn compact_editable_unit(unit: &Value) -> Value {
-    let mut compact = Map::new();
-    for key in [
-        "fileId",
-        "rangeHint",
-        "anchorId",
-        "ownerSymbolId",
-        "ownerSignatureHash",
-        "syntaxKind",
-        "exactTextHash",
-        "normalizedTokenHash",
-        "ancestorPathHash",
-        "localOrdinal",
-        "leftContextHash",
-        "rightContextHash",
-    ] {
-        if let Some(value) = unit.get(key) {
-            compact.insert(key.into(), value.clone());
-        }
-    }
-    Value::Object(compact)
-}
-
-fn compact_boundary(boundary: &Value) -> Value {
-    let mut compact = Map::new();
-    for key in ["kind", "symbol", "file", "reason"] {
-        if let Some(value) = boundary.get(key) {
-            compact.insert(key.into(), value.clone());
-        }
-    }
-    if let Some(message) = boundary.get("message").and_then(Value::as_str) {
-        compact.insert(
-            "message".into(),
-            json!(message.chars().take(300).collect::<String>()),
-        );
-    }
-    Value::Object(compact)
-}
-
-fn related_test_files(repo: &Path, seed: &Value) -> Vec<String> {
-    let symbol = seed
-        .get("symbol")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let declaration_name = serde_json::from_str::<Value>(symbol)
-        .ok()
-        .and_then(|identity| identity.get("declarationName")?.as_str().map(str::to_owned))
-        .unwrap_or_else(|| {
-            symbol
-                .split_once('(')
-                .map_or(symbol, |(name, _)| name)
-                .rsplit(['.', '/'])
-                .next()
-                .unwrap_or_default()
-                .to_owned()
-        });
-    if declaration_name.is_empty() {
-        return Vec::new();
-    }
-    WalkDir::new(repo)
-        .into_iter()
-        .filter_entry(|entry| {
-            !matches!(
-                entry.file_name().to_str(),
-                Some(".git" | ".gradle" | ".semantic-thread" | "build")
-            )
-        })
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_file()
-                && entry.path().extension().and_then(|value| value.to_str()) == Some("kt")
-        })
-        .filter_map(|entry| {
-            let relative = entry.path().strip_prefix(repo).ok()?;
-            let relative_text = relative.to_string_lossy().replace('\\', "/");
-            if !relative_text.contains("/test/") && !relative_text.starts_with("src/test/") {
-                return None;
-            }
-            std::fs::read_to_string(entry.path())
-                .ok()?
-                .contains(&declaration_name)
-                .then_some(relative_text)
-        })
-        .collect()
-}
-
 fn with_worker<F>(workspace: &Path, action: F) -> Result<Value, SthreadError>
 where
     F: FnOnce(&mut WorkerClient) -> Result<Value, SthreadError>,
@@ -748,6 +613,18 @@ fn write_optional<T: serde::Serialize>(path: Option<&Path>, value: &T) -> Result
         .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?
     }
     Ok(())
+}
+fn write_artifact<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), SthreadError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?;
+    }
+    std::fs::write(
+        path,
+        canonical::pretty(value)
+            .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?,
+    )
+    .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))
 }
 fn parse_error(e: impl std::fmt::Display) -> SthreadError {
     SthreadError::new(ErrorCode::InvalidInput, e.to_string())

@@ -1,3 +1,4 @@
+pub mod agent_context;
 pub mod canonical;
 pub mod error;
 pub mod graph;
