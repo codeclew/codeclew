@@ -92,6 +92,8 @@ pub struct LocalGraph {
     pub file: String,
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<Edge>,
+    #[serde(default)]
+    pub boundaries: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

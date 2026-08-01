@@ -4,6 +4,9 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 ./gradlew :workers:kotlin:test :workers:kotlin:installDist --no-daemon --quiet
 fixtures/kotlin-basic/gradlew -p fixtures/kotlin-basic test --no-daemon --quiet
+fixtures/kotlin-control-flow/gradlew -p fixtures/kotlin-control-flow compileKotlin --no-daemon --quiet
+fixtures/kotlin-calls/gradlew -p fixtures/kotlin-calls compileKotlin --no-daemon --quiet
+fixtures/kotlin-concurrency/gradlew -p fixtures/kotlin-concurrency compileKotlin --no-daemon --quiet
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

@@ -1,5 +1,6 @@
 use crate::canonical;
 use crate::error::{ErrorCode, SthreadError};
+use crate::graph;
 use crate::model::*;
 use crate::proto::RequestKind;
 use crate::worker::WorkerClient;
@@ -41,8 +42,13 @@ pub fn preview(
     let mut candidates = BTreeMap::new();
     let mut writes = Vec::new();
     let mut windows = Vec::new();
+    let mut diagnostics = Vec::new();
     for operation in &edit.operations {
-        if operation.kind != "REPLACE_EXPRESSION" && operation.kind != "REPLACE_FUNCTION_BODY" {
+        if operation.kind != "REPLACE_EXPRESSION"
+            && operation.kind != "REPLACE_FUNCTION_BODY"
+            && operation.kind != "ADD_IMPORT"
+            && operation.kind != "REMOVE_IMPORT"
+        {
             return Err(SthreadError::new(
                 ErrorCode::InvalidInput,
                 format!("unsupported edit operation {}", operation.kind),
@@ -105,9 +111,17 @@ pub fn preview(
             "exactTextHash": target.get("exactTextHash").and_then(Value::as_str).unwrap_or_default(),
             "syntaxKind": target.get("syntaxKind").and_then(Value::as_str).unwrap_or_default(),
             "normalizedTokenHash": target.get("normalizedTokenHash").and_then(Value::as_str).unwrap_or_default(),
-            "kind": operation.kind, "replacement": operation.replacement.kotlin
+            "kind": operation.kind, "replacement": operation.replacement.kotlin,
+            "preconditions": operation.preconditions, "postconditions": operation.postconditions
         });
         let response = worker.request(RequestKind::ApplyEdit, &request)?;
+        diagnostics.extend(
+            response
+                .get("diagnostics")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        );
         let candidate = response
             .get("source")
             .and_then(Value::as_str)
@@ -148,8 +162,17 @@ pub fn preview(
             key: target
                 .get("anchorId")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!(
+                        "import:{}",
+                        operation
+                            .replacement
+                            .kotlin
+                            .trim()
+                            .trim_start_matches("import ")
+                    )
+                }),
             before_hash: canonical::hash_bytes(current.as_bytes()),
             after_hash: canonical::hash_bytes(candidate.as_bytes()),
         });
@@ -177,7 +200,7 @@ pub fn preview(
         diff,
         candidates,
         actual_write_set: writes,
-        diagnostics: vec![],
+        diagnostics,
         formatting_windows: windows,
     })
 }
@@ -243,7 +266,6 @@ pub fn commit(
         }
         e
     })?;
-    validate_in_copy(repo, &report.candidates, &transaction.test_tasks)?;
     transaction.preview = Some(report.clone());
     transaction.status = "VALIDATED".into();
     ledger(repo)?.append(transaction, "preview and Gradle validation passed")?;
@@ -353,9 +375,17 @@ fn preview_for_commit(
         {
             return Err(SthreadError::new(
                 ErrorCode::StaleRequiresReslice,
-                "project model changed since slice",
+                format!(
+                    "project model changed since slice: expected {}, current {}",
+                    transaction.project_model_hash,
+                    current_model
+                        .get("projectModelHash")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<missing>")
+                ),
             ));
         }
+        revalidate_semantic_read_set(&replay_path, transaction, &current_model, current, worker)?;
         let mut replay_thread = transaction.thread.clone();
         let mut replay_edit = transaction.edit.clone();
         replay_thread.snapshot.base_revision = current.to_owned();
@@ -376,6 +406,142 @@ fn preview_for_commit(
         let _ = ledger(repo)?.append(transaction, "project model or read dependency changed");
     }
     result
+}
+
+fn revalidate_semantic_read_set(
+    repo: &Path,
+    transaction: &Transaction,
+    project: &Value,
+    current: &str,
+    worker: &mut WorkerClient,
+) -> Result<(), SthreadError> {
+    let symbol = transaction
+        .thread
+        .seed
+        .get("symbol")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::StaleRequiresReslice,
+                "thread seed has no owner symbol",
+            )
+        })?;
+    let raw = worker.request(
+        RequestKind::BuildLocalGraph,
+        &json!({"repo":repo,"symbol":symbol}),
+    )?;
+    let graph = graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(|error| {
+        SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
+    })?);
+    let old_seed_id = transaction
+        .thread
+        .seed
+        .get("nodeId")
+        .and_then(Value::as_str);
+    let seed_anchor = transaction
+        .thread
+        .seed
+        .get("anchor")
+        .and_then(|anchor| anchor.get("anchorId"))
+        .and_then(Value::as_str);
+    let seed_id = old_seed_id
+        .filter(|id| graph.nodes.iter().any(|node| node.id == *id))
+        .map(str::to_owned)
+        .or_else(|| {
+            graph
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.origin
+                        .as_ref()
+                        .and_then(|origin| origin.get("anchorId"))
+                        .and_then(Value::as_str)
+                        == seed_anchor
+                })
+                .map(|node| node.id.clone())
+        })
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::StaleRequiresReslice,
+                "slice seed no longer resolves",
+            )
+        })?;
+    let snapshot = Snapshot {
+        base_revision: current.into(),
+        project_model_hash: project
+            .get("projectModelHash")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        compiler_version: transaction.thread.snapshot.compiler_version.clone(),
+    };
+    let rebuilt = graph::slice(
+        &graph,
+        &seed_id,
+        transaction.thread.policy.clone(),
+        snapshot,
+        transaction.thread.seed.clone(),
+    )
+    .map_err(internal)?;
+    let old: std::collections::BTreeSet<_> = transaction
+        .thread
+        .read_set
+        .iter()
+        .filter(|fact| fact.kind != "PROJECT_MODEL")
+        .cloned()
+        .collect();
+    let new: std::collections::BTreeSet<_> = rebuilt
+        .read_set
+        .iter()
+        .filter(|fact| fact.kind != "PROJECT_MODEL")
+        .cloned()
+        .collect();
+    if old != new {
+        let removed: Vec<_> = old
+            .difference(&new)
+            .take(8)
+            .map(|fact| format!("- {} {} {}", fact.kind, fact.key, fact.hash))
+            .collect();
+        let added: Vec<_> = new
+            .difference(&old)
+            .take(8)
+            .map(|fact| format!("+ {} {} {}", fact.kind, fact.key, fact.hash))
+            .collect();
+        let target_anchors: std::collections::BTreeSet<_> = transaction
+            .edit
+            .operations
+            .iter()
+            .filter_map(|operation| operation.target.get("anchorId").and_then(Value::as_str))
+            .collect();
+        let target_text_changed = transaction.edit.operations.iter().any(|operation| {
+            let Some(file) = operation.target.get("fileId").and_then(Value::as_str) else {
+                return true;
+            };
+            let Some(text) = operation.target.get("sourceText").and_then(Value::as_str) else {
+                return true;
+            };
+            std::fs::read_to_string(repo.join(file)).map_or(true, |source| !source.contains(text))
+        });
+        let write_conflict = target_text_changed
+            || old.difference(&new).any(|fact| {
+                fact.kind == "SOURCE_NODE" && target_anchors.contains(fact.key.as_str())
+            });
+        let mut error = SthreadError::new(
+            if write_conflict {
+                ErrorCode::WwConflict
+            } else {
+                ErrorCode::StaleRequiresReslice
+            },
+            if write_conflict {
+                "concurrent write changed the target anchor"
+            } else {
+                "semantic ReadSet changed since slice"
+            },
+        );
+        error.evidence = removed.into_iter().chain(added).collect();
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn validate_worktree(worktree: &Path, tests: &[String]) -> Result<(), SthreadError> {

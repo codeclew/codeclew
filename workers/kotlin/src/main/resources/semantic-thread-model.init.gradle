@@ -1,0 +1,62 @@
+import groovy.json.JsonOutput
+
+gradle.beforeProject { project ->
+    project.tasks.register("semanticThreadModel") {
+        doLast {
+            def requested = System.getProperty("semantic.thread.compileTask", "compileKotlin")
+            def compile = project.tasks.findByName(requested)
+            if (compile == null) {
+                throw new GradleException("Kotlin compilation task not found: ${project.path}:${requested}")
+            }
+            def filesOf = { String property ->
+                try {
+                    def value = compile.property(property)
+                    return value == null ? [] : value.files.collect { it.absolutePath }.sort()
+                } catch (Throwable ignored) {
+                    return []
+                }
+            }
+            def option = { String property ->
+                try {
+                    def value = compile.compilerOptions."${property}"
+                    if (value == null) return null
+                    if (value.metaClass.respondsTo(value, "getOrNull")) return value.getOrNull()?.toString()
+                    return value.toString()
+                } catch (Throwable ignored) {
+                    return null
+                }
+            }
+            def listOption = { String property ->
+                try {
+                    def value = compile.compilerOptions."${property}"
+                    if (value == null) return []
+                    def resolved = value.metaClass.respondsTo(value, "getOrElse") ? value.getOrElse([]) : value
+                    return resolved.collect { it.toString() }.sort()
+                } catch (Throwable ignored) {
+                    return []
+                }
+            }
+            def sourceFiles = []
+            try { sourceFiles = compile.sources.files.collect { it.absolutePath }.sort() } catch (Throwable ignored) {}
+            def tasks = project.tasks.collect { it.name }.sort()
+            def model = [
+                projectPath: project.path,
+                projectDir: project.projectDir.absolutePath,
+                compileTask: compile.path,
+                sourceFiles: sourceFiles,
+                classpath: filesOf("libraries"),
+                friendPaths: filesOf("friendPaths"),
+                compilerPlugins: filesOf("pluginClasspath"),
+                languageVersion: option("languageVersion"),
+                apiVersion: option("apiVersion"),
+                jvmTarget: option("jvmTarget"),
+                freeCompilerArguments: listOption("freeCompilerArgs"),
+                optIns: listOption("optIn"),
+                tasks: tasks,
+                gradleVersion: gradle.gradleVersion,
+                jdkHome: System.getProperty("java.home")
+            ]
+            println("__SEMANTIC_THREAD_MODEL__" + JsonOutput.toJson(model))
+        }
+    }
+}
