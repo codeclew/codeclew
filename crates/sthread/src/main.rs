@@ -970,6 +970,12 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
         object
             .entry("opId")
             .or_insert_with(|| json!(format!("task-op-{}", index + 1)));
+        if !object.contains_key("kind") {
+            let kind = object.remove("op").ok_or_else(|| {
+                SthreadError::new(ErrorCode::InvalidInput, "task operation must contain kind")
+            })?;
+            object.insert("kind".to_owned(), kind);
+        }
         if let Some(replacement) = object.get_mut("replacement").and_then(Value::as_object_mut) {
             join_plan_lines(replacement, "kotlinLines", "kotlin")?;
         }
@@ -1183,7 +1189,7 @@ mod task_plan_tests {
     fn normalizes_compact_rewrites_and_imports_created_cross_package_types() {
         let mut plan = json!({"operations":[
             {
-                "kind":"CREATE_FILE",
+                "op":"CREATE_FILE",
                 "target":{"fileId":"src/main/kotlin/com/acme/contracts/Entity.kt"},
                 "replacement":{"kotlin":"package com.acme.contracts\n\ninterface Entity"}
             },
@@ -1231,6 +1237,7 @@ mod task_plan_tests {
             plan["operations"][0]["replacement"]["kotlin"],
             "package com.acme\n\ninterface Entity"
         );
+        assert_eq!(plan["operations"][0]["kind"], "CREATE_FILE");
         assert_eq!(
             plan["operations"][1]["preconditions"]["substitutions"][0]["old"],
             "fun old() {\n}"
