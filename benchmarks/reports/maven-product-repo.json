@@ -1,11 +1,11 @@
 {
-  "schema": "semantic-agent-benchmark/0.3",
+  "schema": "semantic-agent-benchmark/0.4",
   "date": "2026-08-01",
   "task": "Add a typed id/code/title entity to DELETED product archive changefeed events without N+1 queries or CREATE/UPDATE regressions",
   "repository": "product-repo",
   "sourceBaselineRevision": "56d42d5f943acb566fcc1f0663e7ecef86886249",
   "sanitizedBaselineRevision": "e0716be5cd6f2035e50ef88a615d3bd546b6f692",
-  "toolRevision": "66017f3",
+  "toolRevision": "40ba87a",
   "model": "gpt-5.6-terra",
   "reasoningEffort": "medium",
   "measurement": {
@@ -174,14 +174,73 @@
         "status": "ACCEPT",
         "result": "109 tests, 0 failures, 0 errors, 0 skipped",
         "reason": "fresh hidden tests confirm the static id/code/title contract, nullable persistence code, one projection query per batch, both archive branches, and CREATE/UPDATE assignability"
-      }
+      },
+      "eligibility": "historical-only: the expansion was hard-coded in the global worker and is excluded from the no-recipe comparison"
+    },
+    {
+      "mode": "sthread-generic-skill",
+      "commit": "7013978a0a8176e4927711161b594a26e5c1e73a",
+      "startUtc": "2026-08-01T16:21:00Z",
+      "firstEditUtc": "2026-08-01T16:21:54Z",
+      "endUtc": "2026-08-01T16:23:38Z",
+      "timeToEditSeconds": 54,
+      "timeToCommitSeconds": 158,
+      "toolCalls": 14,
+      "filesChanged": 7,
+      "additions": 47,
+      "deletions": 25,
+      "tokens": {
+        "input": 486084,
+        "cachedInput": 446720,
+        "output": 5691,
+        "reasoningOutputIncludedInOutput": 1549,
+        "rawTotal": 491775,
+        "noncached": 45055,
+        "goalTokensUsed": null
+      },
+      "navigation": {
+        "tool": "sthread agent-context + universal graph roles",
+        "calls": 1,
+        "coldToolMilliseconds": 28960,
+        "stdoutLimitBytes": 16384,
+        "stdoutBytes": 14383,
+        "evidenceBytes": 12338295,
+        "contextCompleteness": "COMPLETE_TASK",
+        "recipe": null
+      },
+      "planning": {
+        "planBytes": 5289,
+        "validatorAttempts": 2,
+        "validatorResults": ["INVALID", "VALID"],
+        "sourceReadsOutsideContext": 0,
+        "grepFallback": false
+      },
+      "transaction": {
+        "calls": 1,
+        "status": "COMMITTED",
+        "durationMilliseconds": 38334,
+        "targetedTestMilliseconds": 30665,
+        "worktreeSynchronized": true
+      },
+      "freshHiddenAcceptance": {
+        "status": "ACCEPT",
+        "result": "109 tests, 0 failures, 0 errors, 0 skipped; extra producer test passed",
+        "durationMilliseconds": 18903,
+        "reason": "fresh hidden tests and independent audit confirm the static nullable contract, one constructor projection per batch, both archive branches, productId retention and CREATE/UPDATE assignability",
+        "minorFinding": "git diff --check reports pre-existing-style trailing whitespace inside the rewritten JPQL raw string; acceptance judged it nonfunctional"
+      },
+      "eligibility": "fair no-recipe run: one context, generic anchored EditIR, one atomic apply"
     }
   ],
   "engineeringTrials": [
     {"run":4,"status":"excluded","elapsedSeconds":193,"reason":"full-declaration plan required a repair and successful ref CAS left the caller worktree stale"},
     {"run":5,"status":"excluded","reason":"compact plan omitted opId; task-apply rejected before candidate assembly"},
     {"run":6,"status":"excluded","reason":"created cross-package type required an import that the model could not infer from declaration-only context"},
-    {"run":7,"status":"excluded","reason":"model copied declarationTargetId as a plan target key and still omitted graph-connected edits"}
+    {"run":7,"status":"excluded","reason":"model copied declarationTargetId as a plan target key and still omitted graph-connected edits"},
+    {"runs":"9-23","status":"excluded","reason":"generic no-recipe engineering trials used to remove ambiguous targets, escaped multiline edits, missing role closure, invalid aliases and incomplete plan validation"},
+    {"run":24,"status":"excluded","reason":"a valid generic plan exposed two worker generalization defects; the unchanged plan passed after contract-header and mixed-import fixes"},
+    {"run":25,"status":"excluded","reason":"task-apply rejected an out-of-range occurrence; the universal validator was extended to catch it and residual renamed-variable uses"},
+    {"run":26,"status":"excluded","reason":"candidate committed and independently passed 109 hidden tests, but a failed timing wrapper had actually started a second agent-context call"}
   ],
   "comparisonPercent": {
     "astIndexVsDefault": {
@@ -214,6 +273,13 @@
       "rawTokens": -80.54,
       "noncachedTokens": -75.38,
       "toolCalls": -66.67
+    },
+    "sthreadGenericSkillVsAstIndex": {
+      "timeToEdit": -14.29,
+      "timeToCommit": -7.6,
+      "rawTokens": -55.29,
+      "noncachedTokens": -38.22,
+      "toolCalls": -33.33
     }
   },
   "independentAcceptance": {
@@ -221,22 +287,24 @@
     "default": "REJECT",
     "astIndex": "REJECT",
     "sthread": "REJECT",
-    "sthreadGraphRecipe": "ACCEPT",
-    "correctWinner": "sthread-graph-recipe",
-    "relativeRanking": ["sthread-graph-recipe", "ast-index", "sthread-agent-context", "default"]
+    "sthreadGraphRecipe": "ACCEPT_HISTORICAL_DISQUALIFIED",
+    "sthreadGenericSkill": "ACCEPT",
+    "correctWinner": "sthread-generic-skill",
+    "relativeRanking": ["sthread-generic-skill", "ast-index", "sthread-agent-context", "default"]
   },
   "outcome": {
-    "performanceWinnerAmongSubmittedPatches": "sthread-graph-recipe",
-    "correctWinner": "sthread-graph-recipe",
+    "performanceWinnerAmongEligibleNoRecipeRuns": "sthread-generic-skill",
+    "correctWinner": "sthread-generic-skill",
     "sthreadWinsDefault": true,
     "sthreadWinsAstIndexer": true,
-    "generalization": "one repository and one task; the graph-derived recipe result needs replication on additional event-contract tasks"
+    "generalization": "one repository and one task; the skill and worker contain no repository-specific recipe, but replication on other Kotlin/Maven and Gradle tasks is still required"
   },
   "nextOptimization": {
-    "priority": "generalize graph-derived recipes and shrink cold evidence",
-    "why": "the winning run spends 32.728 seconds on cold context and 53.107 seconds in Maven validation; model planning is now a 149-byte intent selection rather than an 11.1 KB source rewrite",
+    "priority": "replace manual anchored plan assembly with a generic role-flow transformation and shrink cold evidence",
+    "why": "the eligible run spends 28.960 seconds on cold context and 30.665 seconds in Maven validation, while the model still emits a 5.289 KB plan and needs one validator repair",
     "actions": [
-      "derive recipe schemas from graph invariants instead of repository-specific names",
+      "add a repository-agnostic typed graph transformation that propagates a contract through WORKFLOW, INTERMEDIARY, OUTPUT_CONTRACT and DATA_SOURCE roles",
+      "move deterministic occurrence and renamed-variable repair into task-plan normalization",
       "store compact evidence references instead of embedding a 12.3 MB index snapshot",
       "reuse a content-addressed long-lived K2 index across clean clones while retaining a separately reported cold metric",
       "separate build-tool time from semantic transaction overhead and investigate Maven test startup"

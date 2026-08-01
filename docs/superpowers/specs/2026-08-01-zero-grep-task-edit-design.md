@@ -9,18 +9,17 @@ The supported Kotlin/JVM workflow becomes:
 ```text
 task intent
   -> one bounded task-context
-  -> one model-selected graph recipe or compact structured Edit IR
+  -> one generic role-complete structured Edit IR
   -> one atomic SThread task commit
   -> clean detached-worktree compile and tests
 ```
 
 The benchmark agent must not use external source search or broad file reads.
 SThread, rather than `apply_patch`, applies every production and test-source
-change. For a recognized closure, the model selects the semantic intent and
-SThread expands it into anchored code/test edits. For an unrecognized closure,
-the model may still provide compact exact substitutions. SThread owns target
-selection, source assembly, imports, syntax checks, write scope, clean
-validation, Git commit, and evidence.
+change. The model follows emitted graph roles and provides compact exact
+substitutions without repository-specific knowledge in the global worker or
+skill. SThread owns target selection, source assembly, imports, syntax checks,
+write scope, clean validation, Git commit, and evidence.
 
 ## Why the old pack failed
 
@@ -72,14 +71,13 @@ exists. `tx commit` writes the set only into a detached worktree, runs the
 configured clean compile and tests once, commits it, and updates the target ref
 with compare-and-swap. A failure leaves the target unchanged.
 
-Task context may also advertise a versioned graph-derived recipe. The first
-implemented recipe, `ARCHIVE_EVENT_ENTITY_CONTRACT`, closes the archive call
-path, persistence field nullability, static event contract, CREATE/UPDATE
-assignability, batch projection, and regression assertion. `task-apply`
-expands it to low-level Edit IR before the same fail-closed validation.
+The earlier hard-coded archive recipe was removed: it made the benchmark fast
+by embedding task knowledge in the global worker and therefore was not a fair
+general solution. Repository-owned recipes may be designed separately for
+genuinely recurring local automation, but the eligible path requires none.
 
-This is the speed optimization as well as the correctness model: one semantic
-closure, one intent-sized plan, one multi-file candidate, one clean validation.
+The speed optimization and correctness model are one semantic closure, one
+role-complete plan, one multi-file candidate and one clean validation.
 
 ## Benchmark gate
 
@@ -93,6 +91,6 @@ A run is eligible only if:
 - commit time is below 171 seconds, tool calls below 21, noncached tokens below
   72,925, and raw tokens below 1,099,997.
 
-The target margin is stricter: at most 150 seconds, 16 calls, 65,000 noncached
-tokens, and 900,000 raw tokens. One run proves the concrete result only; it does
-not establish a general statistical claim.
+The aspirational next margin is stricter: at most 150 seconds, 16 calls, 40,000
+noncached tokens, and 400,000 raw tokens. One run proves the concrete result
+only; it does not establish a general statistical claim.
