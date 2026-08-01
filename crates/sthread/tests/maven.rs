@@ -194,6 +194,14 @@ fn indexes_and_resolves_maven_sources_with_k2() {
             .iter()
             .any(|file| file["path"] == "src/test/kotlin/com/acme/archive/ArchiveServiceTest.kt")
     );
+    assert!(
+        test_index["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|file| !file["path"].as_str().unwrap().starts_with("src/main/")),
+        "main files must not be published as test-source declarations"
+    );
 
     worker.shutdown().unwrap();
 }

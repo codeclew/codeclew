@@ -63,12 +63,12 @@ internal class MavenProjectModelExtractor {
             val compilerLine = compilerVersion.split('.').take(2).joinToString(".")
             val configuration = kotlinPlugin.directChild("configuration")
             val selectedSources = kotlinSources(configuredRoot(project, repo, sourceSet))
-            val sourceFiles = if (sourceSet == "test") {
+            val analysisSourceFiles = if (sourceSet == "test") {
                 (kotlinSources(configuredRoot(project, repo, "main")) + selectedSources).distinct().sorted()
             } else {
                 selectedSources
             }
-            if (sourceFiles.isEmpty()) {
+            if (selectedSources.isEmpty()) {
                 throw WorkerFailure(
                     "UNSUPPORTED_PROJECT_CONFIGURATION",
                     "Maven Kotlin source set '$sourceSet' is empty",
@@ -108,7 +108,10 @@ internal class MavenProjectModelExtractor {
                 put("buildLauncher", if (launcher.single().endsWith("mvnw")) "./mvnw" else "mvn")
                 put("projectPath", ":")
                 put("compileTask", if (sourceSet == "test") "test-compile" else "compile")
-                putJsonArray("sourceFiles") { sourceFiles.forEach { add(JsonPrimitive(it.toString())) } }
+                putJsonArray("sourceFiles") { selectedSources.forEach { add(JsonPrimitive(it.toString())) } }
+                putJsonArray("analysisSourceFiles") {
+                    analysisSourceFiles.forEach { add(JsonPrimitive(it.toString())) }
+                }
                 putJsonArray("classpath") { classpath.forEach { add(JsonPrimitive(it)) } }
                 putJsonArray("friendPaths") {
                     if (sourceSet == "test") add(JsonPrimitive(repo.resolve("target/classes").toString()))
