@@ -1216,7 +1216,7 @@ fn inject_created_contract_overrides(plan: &mut Value) -> Result<(), SthreadErro
             .collect::<Vec<_>>()
             .join("\n");
         for (name, fields) in &contracts {
-            if !replacement_text.contains(&format!(": {name}")) {
+            if !replacement_text.contains(&format!(") : {name}")) {
                 continue;
             }
             for field in fields {
@@ -1294,13 +1294,11 @@ fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
                 .filter_map(|substitution| substitution["new"].as_str())
                 .collect::<Vec<_>>();
             for (name, fq_name, package) in &created_types {
+                let needs_import = replacements.iter().any(|replacement| {
+                    contains_identifier(&replacement.replace(fq_name, ""), name)
+                });
                 if target_package == *package
-                    || replacements
-                        .iter()
-                        .any(|replacement| replacement.contains(fq_name))
-                    || !replacements
-                        .iter()
-                        .any(|replacement| contains_identifier(replacement, name))
+                    || !needs_import
                     || !inserted.insert((file.to_owned(), fq_name.clone()))
                 {
                     continue;
@@ -1372,7 +1370,7 @@ mod task_plan_tests {
             {
                 "kind":"REWRITE_DECLARATION",
                 "target":{"fileId":"src/main/kotlin/com/acme/service/Service.kt"},
-                "preconditions":{"substitutions":[{"old":"Old) {", "new":"Old) : Entity {"}]}
+                "preconditions":{"substitutions":[{"old":"Old) {", "new":"com.acme.contracts.Entity(); Old) : Entity {"}]}
             }
         ]});
 
@@ -1446,6 +1444,35 @@ mod task_plan_tests {
         assert_eq!(
             plan["operations"][1]["preconditions"]["substitutions"][1]["new"],
             "otherCall()"
+        );
+    }
+
+    #[test]
+    fn does_not_treat_a_parameter_type_as_a_created_contract_implementation() {
+        let mut plan = json!({"operations":[
+            {
+                "kind":"CREATE_FILE",
+                "target":{"fileId":"src/main/kotlin/com/acme/Entity.kt"},
+                "replacement":{"kotlin":"package com.acme\n\ninterface Entity {\n    val id: String\n}"}
+            },
+            {
+                "kind":"REWRITE_DECLARATION",
+                "target":{},
+                "preconditions":{"substitutions":[{
+                    "old":"product: Old?", "new":"product: Entity?"
+                }]},
+                "replacement":{"kotlin":""}
+            }
+        ]});
+
+        inject_created_contract_overrides(&mut plan).unwrap();
+
+        assert_eq!(
+            plan["operations"][1]["preconditions"]["substitutions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
     }
 }
