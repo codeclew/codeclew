@@ -261,6 +261,10 @@ impl WorkerClient {
                     )
                     .map_err(internal)?,
                     compilation: compilation(),
+                    defer_semantic_validation: payload
+                        .get("deferSemanticValidation")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 })
             }
             RequestKind::ValidateCandidate => {

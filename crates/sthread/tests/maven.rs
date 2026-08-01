@@ -393,7 +393,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
     let declaration_source =
         std::fs::read_to_string(repo.join("src/main/kotlin/com/acme/archive/ArchiveService.kt"))
             .unwrap();
-    let old_declaration = "fun archiveEvent(product: ProductIdentity): String =\n        \"${product.id}:${product.code}:${product.title}\"";
+    let old_declaration = "data class ProductIdentity(\n    val id: String,\n    val code: String?,\n    val title: String,\n)";
     assert!(declaration_source.contains(old_declaration));
     let edit = EditIr {
         schema: "semantic-edit/0.1".into(),
@@ -405,12 +405,32 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                 kind: "REPLACE_DECLARATION".into(),
                 target: json!({
                     "fileId": "src/main/kotlin/com/acme/archive/ArchiveService.kt",
-                    "ownerSymbolId": resolved["declaration"]["symbolId"],
-                    "syntaxKind": "KtNamedFunction",
+                    "ownerSymbolId": "com.acme.archive.ProductIdentity",
+                    "syntaxKind": "KtClass",
                     "exactTextHash": canonical::hash_bytes(old_declaration.as_bytes()),
                 }),
                 replacement: Replacement {
-                    kotlin: "fun archiveEvent(product: ProductIdentity): String {\n        return \"${product.id}:${product.code}:${product.title}\"\n    }".into(),
+                    kotlin: "data class ProductIdentity(\n    val id: String,\n    val code: String?,\n    val title: String,\n) : java.io.Serializable".into(),
+                },
+                preconditions: BTreeMap::new(),
+                postconditions: BTreeMap::new(),
+            },
+            EditOperation {
+                op_id: "op:replace-body-before-created-helper-exists".into(),
+                kind: "REPLACE_FUNCTION_BODY".into(),
+                target: resolved["bodyAnchor"].clone(),
+                replacement: Replacement {
+                    kotlin: "{ return formatArchive(product) }".into(),
+                },
+                preconditions: BTreeMap::new(),
+                postconditions: BTreeMap::new(),
+            },
+            EditOperation {
+                op_id: "op:create-production-helper".into(),
+                kind: "CREATE_FILE".into(),
+                target: json!({"fileId": "src/main/kotlin/com/acme/archive/ArchiveFormatter.kt"}),
+                replacement: Replacement {
+                    kotlin: "package com.acme.archive\n\ninternal fun formatArchive(product: ProductIdentity): String =\n    \"${product.id}:${product.code}:${product.title}\"\n".into(),
                 },
                 preconditions: BTreeMap::new(),
                 postconditions: BTreeMap::new(),
@@ -472,6 +492,11 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
     );
     assert!(
         preview
+            .candidates
+            .contains_key("src/main/kotlin/com/acme/archive/ArchiveFormatter.kt")
+    );
+    assert!(
+        preview
             .actual_write_set
             .iter()
             .any(|write| write.kind == "DECLARATION")
@@ -495,7 +520,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
             "HEAD:src/main/kotlin/com/acme/archive/ArchiveService.kt",
         ],
     );
-    assert!(committed_source.contains("return \"${product.id}:${product.code}:${product.title}\""));
+    assert!(committed_source.contains("return formatArchive(product)"));
     let generated = git_output(
         &repo,
         &[

@@ -155,6 +155,7 @@ private fun decodeRequest(kind: Int, bytes: ByteArray): ByteArray {
             fields.firstOrNull { it.number == 16 }?.bytes?.takeIf { it.isNotEmpty() }?.let { put("preconditions", Json.parseToJsonElement(it.decodeToString())) }
             fields.firstOrNull { it.number == 17 }?.bytes?.takeIf { it.isNotEmpty() }?.let { put("postconditions", Json.parseToJsonElement(it.decodeToString())) }
             optionalString(18)?.let { put("compilation", it) }
+            fields.firstOrNull { it.number == 19 }?.value?.let { put("deferSemanticValidation", it != 0L) }
         }
         8 -> buildJsonObject {
             val repo = string(2); put("repo", repo); put("file", string(3))
