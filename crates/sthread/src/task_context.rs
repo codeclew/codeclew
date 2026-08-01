@@ -11,7 +11,7 @@ const MAX_CANDIDATES: usize = 20;
 const MAX_EDIT_SURFACES: usize = 4;
 const MAX_CONTRACTS: usize = 1;
 const MAX_TESTS: usize = 1;
-const MAX_EXECUTION_EDGES: usize = 8;
+const MAX_EXECUTION_EDGES: usize = 4;
 const MAX_SOURCE_BYTES: usize = 4_200;
 const MAX_TEST_BYTES: usize = 4_200;
 
@@ -267,7 +267,8 @@ pub fn select(
     let goal_tokens = task_tokens(primary_intent(intent), terms);
     let normalized_terms = terms
         .iter()
-        .map(|term| term.to_lowercase())
+        .flat_map(|term| split_identifier_tokens(term))
+        .flat_map(token_variants)
         .collect::<Vec<_>>();
     let explicit_owners = index_facts["files"]
         .as_array()
@@ -431,12 +432,12 @@ fn candidate_score(
     let connected_function = kind.contains("Function")
         && reasons
             .iter()
-            .filter(|reason| reason.starts_with("body:"))
-            .count()
-            >= 1
+            .any(|reason| reason.starts_with("intent-name:"))
         && reasons
             .iter()
-            .any(|reason| reason.starts_with("intent-name:"));
+            .filter(|reason| reason.starts_with("intent-body:"))
+            .count()
+            >= 2;
     let task_contract = kind.contains("Class")
         && reasons
             .iter()
@@ -561,7 +562,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         .map(|candidate| compact_contract(candidate))
         .collect::<Vec<_>>();
     let execution_path = collect_execution_path(resolutions, index_facts, selection);
-    let test_needles = task_needles(terms, intent, &edit_candidates, selection);
+    let test_needles = task_needles(terms, intent, &root_candidates, &edit_candidates, selection);
     let tests = collect_anchored_tests(selection, &test_needles);
     let validation_plan = validation_plan(project, &tests);
     let matched_terms = terms
@@ -582,9 +583,6 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
     let internal_calls = execution_path.len();
     let missing_internal_calls = 0usize;
     let mut boundaries = Vec::new();
-    if !unmatched_terms.is_empty() {
-        boundaries.push(json!({"kind":"UNMATCHED_TASK_TERM","terms":unmatched_terms}));
-    }
     if root_candidates.is_empty() {
         boundaries.push(json!({"kind":"NO_FUNCTION_ROOT"}));
     }
@@ -1032,6 +1030,7 @@ fn collect_execution_path(
 fn task_needles(
     terms: &[String],
     intent: &str,
+    root_candidates: &[&Candidate],
     edit_candidates: &[&Candidate],
     selection: &TaskContextSelection,
 ) -> BTreeMap<String, usize> {
@@ -1053,6 +1052,12 @@ fn task_needles(
         .filter_map(|candidate| candidate.declaration["name"].as_str())
     {
         needles.insert(name.to_owned(), 12);
+    }
+    for name in root_candidates
+        .iter()
+        .filter_map(|candidate| candidate.declaration["name"].as_str())
+    {
+        needles.insert(name.to_owned(), 40);
     }
     needles
 }
@@ -1230,12 +1235,61 @@ fn task_tokens(intent: &str, terms: &[String]) -> BTreeSet<String> {
         "должна",
         "сделать",
     ];
-    let _ = terms;
     intent
         .split(|character: char| !(character.is_alphanumeric() || character == '_'))
-        .map(str::to_lowercase)
+        .chain(terms.iter().flat_map(|term| split_identifier_tokens(term)))
+        .flat_map(token_variants)
         .filter(|token| token.len() >= 2 && !stop.contains(&token.as_str()))
         .collect()
+}
+
+fn split_identifier_tokens(value: &str) -> Vec<&str> {
+    let mut starts = vec![0];
+    let characters = value.char_indices().collect::<Vec<_>>();
+    for window in characters.windows(2) {
+        let (left_index, left) = window[0];
+        let (right_index, right) = window[1];
+        if !left.is_alphanumeric() {
+            starts.push(right_index);
+        } else if left.is_lowercase() && right.is_uppercase() {
+            starts.push(right_index);
+        } else if left_index == 0 && !right.is_alphanumeric() {
+            starts.push(right_index + right.len_utf8());
+        }
+    }
+    starts.push(value.len());
+    starts.sort_unstable();
+    starts.dedup();
+    let mut tokens = starts
+        .windows(2)
+        .filter_map(|range| value.get(range[0]..range[1]))
+        .map(|token| token.trim_matches(|character: char| !character.is_alphanumeric()))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.len() > 1 {
+        tokens.push(value);
+    }
+    tokens
+}
+
+fn token_variants(value: &str) -> BTreeSet<String> {
+    let token = value.to_lowercase();
+    let mut variants = BTreeSet::from([token.clone()]);
+    if token.len() > 4 && token.ends_with('s') {
+        variants.insert(token[..token.len() - 1].to_owned());
+    }
+    if token.len() > 5 && token.ends_with("ed") && !token.ends_with("eed") {
+        variants.insert(token[..token.len() - 1].to_owned());
+        variants.insert(token[..token.len() - 2].to_owned());
+    }
+    if token.len() > 6 && token.ends_with("ing") {
+        let stem = &token[..token.len() - 3];
+        variants.insert(stem.to_owned());
+        if stem.ends_with('v') {
+            variants.insert(format!("{stem}e"));
+        }
+    }
+    variants
 }
 
 fn extract_type_names(value: &str) -> Vec<String> {
@@ -1293,10 +1347,10 @@ fn is_contract_source(source: &str) -> bool {
 }
 
 fn compact_targets_for_stdout(mut context: Value) -> Value {
-    context["task"]
-        .as_object_mut()
-        .expect("task object")
-        .remove("intentTokens");
+    let task = context["task"].as_object_mut().expect("task object");
+    for diagnostic in ["intentTokens", "matchedTerms", "unmatchedTerms"] {
+        task.remove(diagnostic);
+    }
     for key in ["editSurfaces", "contracts", "tests"] {
         for item in context
             .get_mut(key)
@@ -1593,6 +1647,17 @@ mod tests {
     }
 
     #[test]
+    fn plausible_terms_are_split_and_inflected_intent_is_normalized() {
+        let tokens = task_tokens(
+            "When archiving products",
+            &["archiveProduct".into(), "ProductChangeFeed".into()],
+        );
+        assert!(tokens.contains("archive"));
+        assert!(tokens.contains("product"));
+        assert!(tokens.contains("feed"));
+    }
+
+    #[test]
     fn follows_the_call_whose_parameter_matches_task_intent() {
         let selection = TaskContextSelection {
             files: Vec::new(),
@@ -1623,5 +1688,30 @@ mod tests {
             selection.followup_symbols(&resolutions, 1),
             vec!["com.acme.Service.emitChange"]
         );
+    }
+
+    #[test]
+    fn anchored_test_ranking_prefers_the_primary_graph_root() {
+        let root = function_candidate("executeChange");
+        let helper = function_candidate("emitPayload");
+        let selection = TaskContextSelection {
+            files: Vec::new(),
+            catalog: Vec::new(),
+            candidates: Vec::new(),
+            intent_tokens: BTreeSet::new(),
+            goal_tokens: BTreeSet::new(),
+            explicit_owners: BTreeSet::new(),
+        };
+
+        let needles = task_needles(
+            &[],
+            "change payload",
+            &[&root],
+            &[&root, &helper],
+            &selection,
+        );
+
+        assert_eq!(needles["executeChange"], 40);
+        assert_eq!(needles["emitPayload"], 12);
     }
 }
