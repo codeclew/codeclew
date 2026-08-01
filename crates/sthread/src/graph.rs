@@ -8,6 +8,8 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     for node in &mut graph.nodes {
         node.editable = node.origin.is_some() && !node.kind.starts_with("PHI");
     }
+    add_ast_and_type_edges(&mut graph);
+    annotate_local_memory(&mut graph);
     add_call_edges(&mut graph);
     add_effect_edges(&mut graph);
     let entry = graph
@@ -48,6 +50,121 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     graph
 }
 
+fn add_ast_and_type_edges(graph: &mut LocalGraph) {
+    let source_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            let origin = node.origin.as_ref()?;
+            let file = origin.get("fileId")?.as_str()?.to_owned();
+            let range = origin.get("rangeHint")?.as_array()?;
+            Some((
+                node.id.clone(),
+                file,
+                range.first()?.as_u64()?,
+                range.get(1)?.as_u64()?,
+            ))
+        })
+        .collect();
+    let root_id = format!(
+        "ast-root:{}",
+        canonical::hash(&json!({"file":graph.file,"symbol":graph.symbol}))
+            .unwrap_or_else(|_| "sha256:unknown".into())
+            .trim_start_matches("sha256:")
+    );
+    if !source_nodes.is_empty() {
+        let mut attributes = BTreeMap::new();
+        attributes.insert("file".into(), json!(graph.file));
+        attributes.insert("ownerSymbolId".into(), json!(graph.symbol));
+        graph.nodes.push(GraphNode {
+            id: root_id.clone(),
+            kind: "AST_ROOT".into(),
+            defines: None,
+            uses: vec![],
+            origin: None,
+            editable: false,
+            attributes,
+        });
+    }
+    for (child, child_file, child_start, child_end) in &source_nodes {
+        let parent = source_nodes
+            .iter()
+            .filter(|(candidate, file, start, end)| {
+                candidate != child
+                    && file == child_file
+                    && *start <= *child_start
+                    && *end >= *child_end
+                    && (*start < *child_start || *end > *child_end)
+            })
+            .min_by_key(|(id, _, start, end)| (end - start, id.clone()))
+            .map(|(id, _, _, _)| id.clone())
+            .unwrap_or_else(|| root_id.clone());
+        graph.edges.push(Edge {
+            from: parent,
+            to: child.clone(),
+            kind: "AST_CHILD".into(),
+        });
+    }
+
+    let typed: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.attributes
+                .get("type")
+                .or_else(|| node.attributes.get("returnType"))
+                .and_then(Value::as_str)
+                .map(|value| (node.id.clone(), value.to_owned()))
+        })
+        .collect();
+    for (node_id, type_name) in typed {
+        let type_id = format!(
+            "type:{}",
+            canonical::hash(&json!(type_name))
+                .unwrap_or_else(|_| "sha256:unknown".into())
+                .trim_start_matches("sha256:")
+        );
+        if !graph.nodes.iter().any(|node| node.id == type_id) {
+            let mut attributes = BTreeMap::new();
+            attributes.insert("type".into(), json!(type_name));
+            graph.nodes.push(GraphNode {
+                id: type_id.clone(),
+                kind: "TYPE".into(),
+                defines: None,
+                uses: vec![],
+                origin: None,
+                editable: false,
+                attributes,
+            });
+        }
+        graph.edges.push(Edge {
+            from: node_id,
+            to: type_id,
+            kind: "TYPE".into(),
+        });
+    }
+}
+
+fn annotate_local_memory(graph: &mut LocalGraph) {
+    for node in &mut graph.nodes {
+        if node.attributes.contains_key("memoryKind")
+            || (node.defines.is_none() && node.uses.is_empty())
+        {
+            continue;
+        }
+        let variable = node
+            .defines
+            .as_deref()
+            .or_else(|| node.uses.first().map(String::as_str))
+            .unwrap_or("<unknown>");
+        node.attributes.insert("memoryKind".into(), json!("LOCAL"));
+        node.attributes.insert(
+            "memoryLocation".into(),
+            json!(format!("LOCAL:{}#{variable}", graph.symbol)),
+        );
+    }
+}
+
 fn add_call_edges(graph: &mut LocalGraph) {
     let calls: Vec<_> = graph
         .nodes
@@ -56,6 +173,21 @@ fn add_call_edges(graph: &mut LocalGraph) {
         .cloned()
         .collect();
     for call in calls {
+        let call_result = graph
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == "CALL_RESULT"
+                    && node
+                        .origin
+                        .as_ref()
+                        .and_then(|origin| origin.get("anchorId"))
+                        == call
+                            .origin
+                            .as_ref()
+                            .and_then(|origin| origin.get("anchorId"))
+            })
+            .map(|node| node.id.clone());
         let symbol = call
             .attributes
             .get("symbol")
@@ -93,7 +225,7 @@ fn add_call_edges(graph: &mut LocalGraph) {
         });
         graph.edges.push(Edge {
             from: callee_id,
-            to: call.id,
+            to: call_result.unwrap_or_else(|| call.id.clone()),
             kind: "RETURN".into(),
         });
     }
@@ -151,7 +283,8 @@ fn add_effect_edges(graph: &mut LocalGraph) {
 }
 
 #[allow(dead_code)]
-const MEMORY_ABSTRACTIONS: [&str; 4] = [
+const MEMORY_ABSTRACTIONS: [&str; 5] = [
+    "LOCAL",
     "THIS_PROPERTY",
     "OBJECT_PROPERTY",
     "STATIC_PROPERTY",
@@ -217,6 +350,14 @@ fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
 
     let mut definitions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for node in &graph.nodes {
+        if node
+            .attributes
+            .get("memoryKind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind != "LOCAL")
+        {
+            continue;
+        }
         if let Some(variable) = &node.defines {
             definitions
                 .entry(variable.clone())
@@ -250,6 +391,11 @@ fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
             phi_ids.insert((block.clone(), variable.clone()), id.clone());
             let mut attributes = BTreeMap::new();
             attributes.insert("joinBlock".into(), json!(block));
+            attributes.insert("memoryKind".into(), json!("LOCAL"));
+            attributes.insert(
+                "memoryLocation".into(),
+                json!(format!("LOCAL:{}#{variable}", graph.symbol)),
+            );
             graph.nodes.push(GraphNode {
                 id,
                 kind: "PHI".into(),
@@ -297,7 +443,12 @@ fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
                     pushed.push(variable.clone());
                 }
                 if let Some(node) = originals.get(&block) {
-                    for used in &node.uses {
+                    let local_node = node
+                        .attributes
+                        .get("memoryKind")
+                        .and_then(Value::as_str)
+                        .is_none_or(|kind| kind == "LOCAL");
+                    for used in node.uses.iter().filter(|_| local_node) {
                         if let Some(definition) = stacks.get(used).and_then(|stack| stack.last()) {
                             graph.edges.push(Edge {
                                 from: definition.clone(),
@@ -306,7 +457,7 @@ fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
                             });
                         }
                     }
-                    if let Some(variable) = &node.defines {
+                    if let Some(variable) = node.defines.as_ref().filter(|_| local_node) {
                         let version = versions.entry(variable.clone()).or_default();
                         if let Some(target) = graph.nodes.iter_mut().find(|item| item.id == block) {
                             target
@@ -544,10 +695,10 @@ pub fn slice(
     // A depth-zero call anywhere in the selected local function can influence
     // a source-backed seed through control/value evaluation. Until a call
     // summary proves otherwise, completeness must remain partial.
-    let external_calls: Vec<_> = graph
-        .nodes
+    let external_calls: Vec<_> = nodes
         .iter()
         .filter(|n| n.kind == "CALL" && !is_supported_intrinsic(n))
+        .cloned()
         .collect();
     let external = !external_calls.is_empty();
     let unsupported = !graph.boundaries.is_empty();
@@ -847,6 +998,7 @@ mod tests {
                 base_revision: "x".into(),
                 project_model_hash: "p".into(),
                 compiler_version: "2.4.10".into(),
+                ..Snapshot::default()
             },
             json!({}),
         )

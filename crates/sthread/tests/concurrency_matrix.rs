@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use sthread::error::ErrorCode;
 use sthread::graph;
+use sthread::index::RepositoryIndex;
 use sthread::model::{
     EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, Transaction,
 };
@@ -90,6 +91,14 @@ fn make_tx(
     id: &str,
 ) -> Transaction {
     let base = git_output(repo, &["rev-parse", "refs/heads/main"]);
+    let index_facts = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":repo,"compilation":":/main"}),
+        )
+        .unwrap();
+    let mut repository_index = RepositoryIndex::open_compilation(repo, Some(":/main")).unwrap();
+    let index_snapshot = repository_index.update(&index_facts).unwrap();
     let raw = worker
         .request(
             RequestKind::BuildLocalGraph,
@@ -119,6 +128,10 @@ fn make_tx(
             base_revision: base.clone(),
             project_model_hash: project_hash.into(),
             compiler_version: "2.4.10".into(),
+            index_snapshot: index_snapshot.clone(),
+            compilation: ":/main".into(),
+            compile_task: ":compileKotlin".into(),
+            test_tasks: vec!["test".into()],
         },
         json!({"kind":"FUNCTION_RETURN","symbol":symbol,"nodeId":seed_id}),
     )
@@ -152,7 +165,7 @@ fn make_tx(
         intent: id.into(),
         base_revision: base,
         project_model_hash: project_hash.into(),
-        base_index_snapshot: None,
+        base_index_snapshot: Some(index_snapshot),
         status: "CREATED".into(),
         thread,
         edit,

@@ -62,3 +62,14 @@ class Counter(var value: Int) {
         return value
     }
 }
+
+object Settings {
+    var multiplier: Int = 2
+}
+
+fun objectProperty(): Int {
+    Settings.multiplier += 1
+    return Settings.multiplier
+}
+
+fun staticProperty(): Int = java.lang.Integer.MAX_VALUE

@@ -142,6 +142,7 @@ fn anchors_ir_and_candidate_validation_are_metamorphic() {
             base_revision: "test".into(),
             project_model_hash: project["projectModelHash"].as_str().unwrap().into(),
             compiler_version: "2.4.10".into(),
+            ..Snapshot::default()
         },
         json!({"kind":"FUNCTION_RETURN","symbol":"com.acme.total","nodeId":seed}),
     )

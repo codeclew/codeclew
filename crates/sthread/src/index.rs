@@ -62,6 +62,15 @@ impl RepositoryIndex {
     }
 
     pub fn update(&mut self, facts: &Value) -> Result<String, SthreadError> {
+        let source_root = self.repo.clone();
+        self.update_from_root(facts, &source_root)
+    }
+
+    pub fn update_from_root(
+        &mut self,
+        facts: &Value,
+        source_root: &Path,
+    ) -> Result<String, SthreadError> {
         let files = facts
             .get("files")
             .and_then(Value::as_array)
@@ -122,7 +131,16 @@ impl RepositoryIndex {
         for file in files {
             let path = file["path"].as_str().unwrap_or_default();
             let hash = file["contentHash"].as_str().unwrap_or_default();
-            let source = std::fs::read(self.repo.join(path)).map_err(io_error)?;
+            let source_path = source_root.join(path);
+            let source = std::fs::read(&source_path).map_err(|error| {
+                SthreadError::new(
+                    ErrorCode::Internal,
+                    format!(
+                        "cannot read indexed source {}: {error}",
+                        source_path.display()
+                    ),
+                )
+            })?;
             if canonical::hash_bytes(&source) != hash {
                 return Err(SthreadError::new(
                     ErrorCode::ProjectModelChanged,
@@ -131,7 +149,12 @@ impl RepositoryIndex {
             }
             let blob = self.blobs.join(hash.trim_start_matches("sha256:"));
             if !blob.exists() {
-                std::fs::write(&blob, &source).map_err(io_error)?;
+                std::fs::write(&blob, &source).map_err(|error| {
+                    SthreadError::new(
+                        ErrorCode::Internal,
+                        format!("cannot publish source blob {}: {error}", blob.display()),
+                    )
+                })?;
             }
             let facts_bytes = canonical::bytes(file).map_err(internal)?;
             let previous_facts: Option<Vec<u8>> = tx
@@ -236,6 +259,27 @@ impl RepositoryIndex {
             .map(|json| serde_json::from_str(&json).map_err(|error| internal(error.into())))
             .transpose()
             .map(Option::unwrap_or_default)
+    }
+
+    pub fn mark_published_revision(&self, revision: &str) -> Result<(), SthreadError> {
+        self.connection
+            .execute(
+                "INSERT INTO metadata(key,value) VALUES('published_revision',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [revision],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    pub fn published_revision(&self) -> Result<Option<String>, SthreadError> {
+        self.connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key='published_revision'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error)
     }
 }
 

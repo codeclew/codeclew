@@ -114,6 +114,8 @@ struct ExpressionArgs {
 struct SliceArgs {
     #[arg(long)]
     repo: PathBuf,
+    #[arg(long, default_value = ":/main")]
+    compilation: String,
     #[arg(long, required_unless_present = "file", conflicts_with = "file")]
     symbol: Option<String>,
     #[arg(long, requires = "offset", conflicts_with = "symbol")]
@@ -276,6 +278,21 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         } => with_worker(&workspace, |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
+            let transaction_id = tx.tx_id.clone();
+            let snapshot_id = tx.thread.snapshot.index_snapshot.clone();
+            let relevant = tx
+                .edit
+                .operations
+                .first()
+                .and_then(|operation| {
+                    operation
+                        .target
+                        .get("anchorId")
+                        .or_else(|| operation.target.get("ownerSymbolId"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             tx.status = "VALIDATING".into();
             transaction::ledger(&repo)?.append(&tx, "validation started")?;
             match transaction::preview(&repo, &tx.thread, &tx.edit, w) {
@@ -288,7 +305,10 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 Err(e) => {
                     tx.status = "VALIDATION_FAILED".into();
                     let _ = transaction::ledger(&repo)?.append(&tx, &e.message);
-                    Err(e)
+                    Err(e
+                        .with_transaction(transaction_id)
+                        .with_snapshot(snapshot_id)
+                        .with_relevant(relevant))
                 }
             }
         }),
@@ -297,7 +317,27 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         } => with_worker(&workspace, |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
-            transaction::commit(&repo, &mut tx, &args.target_ref, w)
+            let transaction_id = tx.tx_id.clone();
+            let snapshot_id = tx.thread.snapshot.index_snapshot.clone();
+            let relevant = tx
+                .edit
+                .operations
+                .first()
+                .and_then(|operation| {
+                    operation
+                        .target
+                        .get("anchorId")
+                        .or_else(|| operation.target.get("ownerSymbolId"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            transaction::commit(&repo, &mut tx, &args.target_ref, w).map_err(|error| {
+                error
+                    .with_transaction(transaction_id)
+                    .with_snapshot(snapshot_id)
+                    .with_relevant(relevant)
+            })
         }),
         Command::Tx {
             command: TxCommand::Inspect(args),
@@ -307,12 +347,21 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
 
 fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, SthreadError> {
     let repo = absolute(&args.repo)?;
-    let project = worker.request(RequestKind::OpenProject, &json!({"repo":repo}))?;
+    let project = worker.request(
+        RequestKind::OpenProject,
+        &json!({"repo":repo,"compilation":args.compilation}),
+    )?;
+    let index_facts = worker.request(
+        RequestKind::IndexFiles,
+        &json!({"repo":repo,"compilation":args.compilation}),
+    )?;
+    let mut repository_index = RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
+    let index_snapshot = repository_index.update(&index_facts)?;
     let expression_anchor = if let (Some(file), Some(offset)) = (&args.file, args.offset) {
         Some(
             worker.request(
                 RequestKind::ResolveExpression,
-                &json!({"repo":repo,"file":file,"offset":offset}),
+                &json!({"repo":repo,"file":file,"offset":offset,"compilation":args.compilation}),
             )?["anchor"]
                 .clone(),
         )
@@ -337,7 +386,7 @@ fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, St
         })?;
     let raw = worker.request(
         RequestKind::BuildLocalGraph,
-        &json!({"repo":repo,"symbol":symbol}),
+        &json!({"repo":repo,"symbol":symbol,"compilation":args.compilation}),
     )?;
     let graph: LocalGraph = serde_json::from_value(raw).map_err(parse_error)?;
     let graph = graph::enrich(graph);
@@ -412,6 +461,19 @@ fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, St
             .unwrap_or_default()
             .into(),
         compiler_version: "2.4.10".into(),
+        index_snapshot,
+        compilation: args.compilation,
+        compile_task: project["compileTask"]
+            .as_str()
+            .unwrap_or(":compileKotlin")
+            .into(),
+        test_tasks: project["testTasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
     };
     let thread = graph::slice(&graph, &seed_id, policy, snapshot, seed)
         .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?;

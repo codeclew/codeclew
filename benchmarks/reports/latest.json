@@ -1,1 +1,32 @@
-{"schema":"semantic-benchmark/0.2","scope":"separately-instrumented-stages-and-e2e-validation","milliseconds":{"anchorResolution":4,"canonicalSerialization":0,"firExtraction":43,"ipcPlusPsiParse":35,"k2Analysis":20,"k2AnalysisCold":30,"slicing":0,"ssaAndControl":1,"warmFileReindex":27,"workerStartup":271},"seconds":{"projectModel":0.34,"declarationIndex":0.51,"coldEditPreview":2.46,"editPreview":0.46,"gradleValidation":2.54}}
+{
+  "schema": "semantic-benchmark/0.3",
+  "scope": "isolated-clean-fixture-real-semantic-p95",
+  "milliseconds": {
+    "anchorResolutionP95": 12,
+    "boundedSliceP95": 1,
+    "canonicalSerializationP95": 1,
+    "coldSemanticIndex": 1560,
+    "editPreviewP95": 38,
+    "firstEditPreview": 152,
+    "ipcPlusPsiParseP95": 1,
+    "localCfgP95": 40,
+    "localThreadExtractionP95": 1,
+    "resolveSymbolP95": 30,
+    "sampleCount": 20,
+    "sloPassed": {
+      "anchorResolution": true,
+      "boundedSlice": true,
+      "canonicalSerialization": true,
+      "editPreview": true,
+      "localCfg": true,
+      "localThreadExtraction": true,
+      "resolveSymbol": true,
+      "warmSemanticFileReindex": true
+    },
+    "warmSemanticFileReindexP95": 246,
+    "workerStartup": 276
+  },
+  "seconds": {
+    "gradleValidation": 2.56
+  }
+}

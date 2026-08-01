@@ -1,0 +1,269 @@
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+use std::time::Instant;
+use sthread::error::{ErrorCode, SthreadError};
+use sthread::graph;
+use sthread::index::RepositoryIndex;
+use sthread::model::{EditIr, LocalGraph, SlicePolicy, Snapshot, ThreadIr, Transaction};
+use sthread::proto::RequestKind;
+use sthread::transaction;
+use sthread::worker::{WorkerClient, workspace_root};
+
+#[derive(Default)]
+struct Metrics {
+    values: BTreeMap<String, u64>,
+    failures: BTreeMap<String, u64>,
+    conflicts: BTreeMap<String, u64>,
+}
+
+impl Metrics {
+    fn add(&mut self, name: &str, value: u64) {
+        *self.values.entry(name.into()).or_default() += value;
+    }
+
+    fn set(&mut self, name: &str, value: u64) {
+        self.values.insert(name.into(), value);
+    }
+
+    fn snapshot(&self, worker_pid: u32) -> Value {
+        let mut values = self.values.clone();
+        values.insert("worker_memory_bytes".into(), worker_memory(worker_pid));
+        for required in [
+            "request_duration_ms_total",
+            "request_count",
+            "worker_startup_duration_ms",
+            "worker_memory_bytes",
+            "cache_hits",
+            "cache_requests",
+            "files_parsed",
+            "semantic_facts_extracted",
+            "cfg_nodes",
+            "slice_nodes",
+            "slice_boundary_count",
+            "anchor_resolution_attempts",
+            "gradle_validation_duration_ms",
+            "orphan_worktrees",
+        ] {
+            values.entry(required.into()).or_default();
+        }
+        json!({
+            "schema":"semantic-metrics/0.1",
+            "metrics":values,
+            "validationFailuresByCategory":self.failures,
+            "transactionConflictsByCategory":self.conflicts,
+            "cacheHitRate": if values.get("cache_requests").copied().unwrap_or(0) == 0 { 0.0 } else { values.get("cache_hits").copied().unwrap_or(0) as f64 / values["cache_requests"] as f64 }
+        })
+    }
+}
+
+fn main() {
+    let startup = Instant::now();
+    let mut worker = match WorkerClient::start(&workspace_root()) {
+        Ok(worker) => worker,
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({"schema":"semanticd-response/0.1","error":error}))
+                    .unwrap()
+            );
+            std::process::exit(1);
+        }
+    };
+    let mut metrics = Metrics::default();
+    metrics.set(
+        "worker_startup_duration_ms",
+        startup.elapsed().as_millis() as u64,
+    );
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let started = Instant::now();
+        let request: Result<Value, _> = serde_json::from_str(&line);
+        let (id, method, result) = match request {
+            Ok(request) => {
+                let id = request.get("id").cloned().unwrap_or(Value::Null);
+                let method = request
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<missing>")
+                    .to_owned();
+                let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+                let result = dispatch(&method, &params, &mut worker, &mut metrics);
+                (id, method, result)
+            }
+            Err(error) => (
+                Value::Null,
+                "<decode>".into(),
+                Err(SthreadError::new(
+                    ErrorCode::InvalidInput,
+                    error.to_string(),
+                )),
+            ),
+        };
+        let elapsed = started.elapsed().as_millis() as u64;
+        metrics.add("request_duration_ms_total", elapsed);
+        metrics.add("request_count", 1);
+        if let Err(error) = &result {
+            *metrics
+                .failures
+                .entry(format!("{:?}", error.code))
+                .or_default() += 1;
+            if matches!(
+                error.code,
+                ErrorCode::RwConflict
+                    | ErrorCode::WwConflict
+                    | ErrorCode::StaleRequiresReslice
+                    | ErrorCode::RefCompareAndSwapFailed
+            ) {
+                *metrics
+                    .conflicts
+                    .entry(format!("{:?}", error.code))
+                    .or_default() += 1;
+            }
+        }
+        eprintln!(
+            "{}",
+            serde_json::to_string(&json!({"event":"semanticd_request","id":id,"method":method,"durationMs":elapsed,"success":result.is_ok()})).unwrap()
+        );
+        let response = match result {
+            Ok(result) => json!({"schema":"semanticd-response/0.1","id":id,"result":result}),
+            Err(error) => json!({"schema":"semanticd-response/0.1","id":id,"error":error}),
+        };
+        let _ = writeln!(stdout, "{}", serde_json::to_string(&response).unwrap());
+        let _ = stdout.flush();
+        if method == "shutdown" {
+            break;
+        }
+    }
+    let _ = worker.shutdown();
+}
+
+fn dispatch(
+    method: &str,
+    params: &Value,
+    worker: &mut WorkerClient,
+    metrics: &mut Metrics,
+) -> Result<Value, SthreadError> {
+    let repo = || {
+        params
+            .get("repo")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    };
+    let compilation = || {
+        params
+            .get("compilation")
+            .and_then(Value::as_str)
+            .unwrap_or(":/main")
+    };
+    match method {
+        "health" => Ok(json!({"status":"OK","service":"semanticd","workerPid":worker.pid()})),
+        "metrics" => Ok(metrics.snapshot(worker.pid())),
+        "project.inspect" => worker.request(RequestKind::OpenProject, params),
+        "index" => {
+            let facts = worker.request(RequestKind::IndexFiles, params)?;
+            let mut index =
+                RepositoryIndex::open_compilation(Path::new(repo()), Some(compilation()))?;
+            let snapshot = index.update(&facts)?;
+            let files = facts["files"].as_array().map_or(0, Vec::len) as u64;
+            let semantic_facts = facts["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|file| file["semanticFacts"].as_array().map_or(0, Vec::len) as u64)
+                .sum();
+            metrics.add("files_parsed", files);
+            metrics.add("semantic_facts_extracted", semantic_facts);
+            Ok(
+                json!({"indexSnapshot":snapshot,"invalidations":index.invalidations()?,"facts":facts}),
+            )
+        }
+        "resolve.symbol" => worker.request(RequestKind::ResolveSymbol, params),
+        "resolve.expression" => {
+            metrics.add("anchor_resolution_attempts", 1);
+            worker.request(RequestKind::ResolveExpression, params)
+        }
+        "graph.local" => {
+            let raw = worker.request(RequestKind::BuildLocalGraph, params)?;
+            let graph =
+                graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(parse_error)?);
+            metrics.add("cfg_nodes", graph.nodes.len() as u64);
+            serde_json::to_value(graph).map_err(parse_error)
+        }
+        "thread.slice" => {
+            let graph: LocalGraph =
+                serde_json::from_value(params["graph"].clone()).map_err(parse_error)?;
+            let policy: SlicePolicy =
+                serde_json::from_value(params["policy"].clone()).unwrap_or_default();
+            let snapshot: Snapshot =
+                serde_json::from_value(params["snapshot"].clone()).map_err(parse_error)?;
+            let seed_id = params["seedId"].as_str().ok_or_else(|| {
+                SthreadError::new(ErrorCode::InvalidInput, "thread.slice needs seedId")
+            })?;
+            let thread = graph::slice(&graph, seed_id, policy, snapshot, params["seed"].clone())
+                .map_err(parse_error)?;
+            metrics.add("slice_nodes", thread.nodes.len() as u64);
+            metrics.add(
+                "slice_boundary_count",
+                thread.completeness.boundaries.len() as u64,
+            );
+            serde_json::to_value(thread).map_err(parse_error)
+        }
+        "edit.preview" => {
+            let thread: ThreadIr =
+                serde_json::from_value(params["thread"].clone()).map_err(parse_error)?;
+            let edit: EditIr =
+                serde_json::from_value(params["edit"].clone()).map_err(parse_error)?;
+            serde_json::to_value(transaction::preview(
+                Path::new(repo()),
+                &thread,
+                &edit,
+                worker,
+            )?)
+            .map_err(parse_error)
+        }
+        "tx.commit" => {
+            let started = Instant::now();
+            let mut transaction: Transaction =
+                serde_json::from_value(params["transaction"].clone()).map_err(parse_error)?;
+            let target = params["targetRef"].as_str().ok_or_else(|| {
+                SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef")
+            })?;
+            let result = transaction::commit(Path::new(repo()), &mut transaction, target, worker);
+            metrics.add(
+                "gradle_validation_duration_ms",
+                started.elapsed().as_millis() as u64,
+            );
+            result
+        }
+        "tx.inspect" => transaction::ledger(Path::new(repo()))?
+            .inspect(params["transactionId"].as_str().unwrap_or_default()),
+        "shutdown" => Ok(json!({"status":"SHUTTING_DOWN"})),
+        _ => Err(SthreadError::new(
+            ErrorCode::InvalidInput,
+            format!("unknown semanticd method {method}"),
+        )),
+    }
+}
+
+fn worker_memory(pid: u32) -> u64 {
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+        * 1024
+}
+
+fn parse_error(error: impl std::fmt::Display) -> SthreadError {
+    SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
+}

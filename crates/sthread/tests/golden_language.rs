@@ -42,6 +42,14 @@ fn k2_fir_golden_language_and_slice_matrix() {
             .iter()
             .all(|file| file["path"].as_str().unwrap().contains("/test/"))
     );
+    assert!(
+        test_index["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|file| file["declarations"].as_array().into_iter().flatten())
+            .all(|declaration| declaration["symbolIdentity"]["sourceSet"] == "test")
+    );
     let main_index = worker
         .request(
             RequestKind::IndexFiles,
@@ -49,6 +57,13 @@ fn k2_fir_golden_language_and_slice_matrix() {
         )
         .unwrap();
     let indexed_file = &main_index["files"][0];
+    assert!(
+        indexed_file["declarations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|declaration| declaration["symbolIdentity"]["sourceSet"] == "main")
+    );
     for field in [
         "fileId",
         "module",
@@ -108,9 +123,20 @@ fn k2_fir_golden_language_and_slice_matrix() {
             &json!({"repo":fixture,"symbol":"com.acme.overloaded(Int)"}),
         )
         .unwrap();
+    let overloaded_identity = &overloaded["declaration"]["symbolIdentity"];
+    assert_eq!(overloaded_identity["module"], ":");
+    assert_eq!(overloaded_identity["sourceSet"], "main");
+    assert_eq!(overloaded_identity["declarationKind"], "FUNCTION");
+    assert_eq!(overloaded_identity["parameterTypes"], json!(["Int"]));
+    assert_eq!(overloaded_identity["returnType"], "Int");
+    assert_eq!(overloaded_identity["typeParameterArity"], 0);
+    assert_eq!(overloaded_identity["suspendFlag"], false);
     assert_eq!(
-        overloaded["declaration"]["symbolId"],
-        "com.acme.overloaded(Int)"
+        serde_json::from_str::<serde_json::Value>(
+            overloaded["declaration"]["symbolId"].as_str().unwrap()
+        )
+        .unwrap(),
+        *overloaded_identity
     );
 
     let total_raw = worker
@@ -133,6 +159,18 @@ fn k2_fir_golden_language_and_slice_matrix() {
     assert!(total.edges.iter().any(|edge| edge.kind == "CFG_TRUE"));
     assert!(total.edges.iter().any(|edge| edge.kind == "CFG_FALSE"));
     assert!(total.edges.iter().any(|edge| edge.kind == "CONTROL_DEP"));
+    for edge in ["AST_CHILD", "TYPE"] {
+        assert!(
+            total.edges.iter().any(|candidate| candidate.kind == edge),
+            "minimal semantic graph lacks {edge}"
+        );
+    }
+    assert!(total.nodes.iter().any(|node| {
+        node.attributes
+            .get("memoryKind")
+            .and_then(|value| value.as_str())
+            == Some("LOCAL")
+    }));
     assert!(
         total
             .nodes
@@ -151,6 +189,7 @@ fn k2_fir_golden_language_and_slice_matrix() {
         base_revision: "test".into(),
         project_model_hash: project["projectModelHash"].as_str().unwrap().into(),
         compiler_version: "2.4.10".into(),
+        ..Snapshot::default()
     };
     let thread = graph::slice(
         &total,
@@ -280,6 +319,7 @@ fn k2_fir_golden_language_and_slice_matrix() {
             base_revision: "test".into(),
             project_model_hash: project["projectModelHash"].as_str().unwrap().into(),
             compiler_version: "2.4.10".into(),
+            ..Snapshot::default()
         },
         json!({"kind":"FUNCTION_RETURN","symbol":"com.acme.namedCall","nodeId":call_seed}),
     )
@@ -291,10 +331,109 @@ fn k2_fir_golden_language_and_slice_matrix() {
     assert!(!call_thread.completeness.boundaries.is_empty());
     assert!(!call_thread.external_summaries.is_empty());
     assert_eq!(call_thread.external_summaries.len(), 1);
+    assert_eq!(
+        call_thread
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "CALL")
+            .count(),
+        1,
+        "call slice must retain its unique CALL-enter node"
+    );
+    for edge in ["CALL", "RETURN", "ARG_PARAM", "RECEIVER"] {
+        assert!(
+            call_thread
+                .edges
+                .iter()
+                .any(|candidate| candidate.kind == edge),
+            "call slice lacks {edge}"
+        );
+    }
+    for summary in &call_thread.external_summaries {
+        let node_id = summary["nodeId"].as_str().unwrap();
+        assert!(
+            call_thread.nodes.iter().any(|node| node.id == node_id),
+            "external summary refers to a node outside the slice"
+        );
+    }
+    assert!(
+        call_thread
+            .read_set
+            .iter()
+            .any(|fact| fact.kind == "CALL_TARGET"),
+        "call Thread ReadSet lacks CALL_TARGET"
+    );
     for kind in ["COMPILER_OPTIONS", "CLASSPATH", "INHERITANCE"] {
         assert!(
             call_thread.read_set.iter().any(|fact| fact.kind == kind),
             "call Thread ReadSet lacks {kind}"
+        );
+    }
+
+    let flow_fixture = root.join("fixtures/kotlin-control-flow");
+    let short_circuit: LocalGraph = serde_json::from_value(
+        worker
+            .request(
+                RequestKind::BuildLocalGraph,
+                &json!({"repo":flow_fixture,"symbol":"flow.shortCircuit"}),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    for edge in ["CFG_TRUE", "CFG_FALSE"] {
+        assert!(
+            short_circuit
+                .edges
+                .iter()
+                .any(|candidate| candidate.kind == edge),
+            "short-circuit FIR CFG lacks {edge}"
+        );
+    }
+    let calls_fixture = root.join("fixtures/kotlin-calls");
+    let java_boundary = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":calls_fixture,"symbol":"calls.javaBoundary"}),
+        )
+        .unwrap();
+    let java_boundary = graph::enrich(serde_json::from_value::<LocalGraph>(java_boundary).unwrap());
+    let java_call = java_boundary
+        .nodes
+        .iter()
+        .find(|node| {
+            node.kind == "CALL"
+                && node
+                    .attributes
+                    .get("symbol")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|symbol| symbol.starts_with("java/"))
+        })
+        .expect("Java boundary call must resolve through K2");
+    assert!(
+        java_boundary
+            .edges
+            .iter()
+            .any(|edge| edge.from == java_call.id && edge.kind == "CALL")
+    );
+    assert!(
+        java_boundary
+            .edges
+            .iter()
+            .any(|edge| { edge.from == java_call.id && edge.kind == "READ_STATE" })
+    );
+    let guarded: LocalGraph = serde_json::from_value(
+        worker
+            .request(
+                RequestKind::BuildLocalGraph,
+                &json!({"repo":fixture,"symbol":"com.acme.guarded"}),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    for edge in ["CFG_TRUE", "CFG_FALSE"] {
+        assert!(
+            guarded.edges.iter().any(|candidate| candidate.kind == edge),
+            "safe-call/Elvis FIR CFG lacks {edge}"
         );
     }
 
@@ -325,6 +464,34 @@ fn k2_fir_golden_language_and_slice_matrix() {
             .and_then(|value| value.as_str())
             == Some("THIS_PROPERTY")
     }));
+    for (symbol, memory_kind) in [
+        ("com.acme.objectProperty", "OBJECT_PROPERTY"),
+        ("com.acme.staticProperty", "STATIC_PROPERTY"),
+    ] {
+        let memory_graph = worker
+            .request(
+                RequestKind::BuildLocalGraph,
+                &json!({"repo":fixture,"symbol":symbol}),
+            )
+            .unwrap();
+        let memory_graph = graph::enrich(serde_json::from_value(memory_graph).unwrap());
+        assert!(
+            memory_graph.nodes.iter().any(|node| {
+                node.attributes
+                    .get("memoryKind")
+                    .and_then(|value| value.as_str())
+                    == Some(memory_kind)
+            }),
+            "{symbol} lacks {memory_kind}"
+        );
+        assert!(
+            memory_graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "READ_STATE"),
+            "{symbol} lacks conservative state dependency"
+        );
+    }
     let suspend = worker
         .request(
             RequestKind::BuildLocalGraph,

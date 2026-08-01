@@ -39,9 +39,11 @@ fn worker_vertical_resolves_and_builds_total_graph() {
         )
         .unwrap();
     assert_eq!(
-        symbol["declaration"]["symbolId"],
+        symbol["declaration"]["legacySymbolId"],
         "com.acme.total(Int,Boolean)"
     );
+    assert_eq!(symbol["declaration"]["symbolIdentity"]["module"], ":");
+    assert_eq!(symbol["declaration"]["symbolIdentity"]["sourceSet"], "main");
     let anchor = &symbol["bodyAnchor"];
     let fixture_source =
         std::fs::read_to_string(fixture.join("src/main/kotlin/com/acme/Samples.kt")).unwrap();
