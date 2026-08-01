@@ -976,6 +976,34 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
             })?;
             object.insert("kind".to_owned(), kind);
         }
+        if object.get("kind").and_then(Value::as_str) == Some("CREATE_FILE")
+            && !object.contains_key("replacement")
+        {
+            let lines = object
+                .remove("kotlinLines")
+                .or_else(|| object.remove("newLines"))
+                .ok_or_else(|| {
+                    SthreadError::new(
+                        ErrorCode::InvalidInput,
+                        "CREATE_FILE needs replacement.kotlinLines or top-level kotlinLines/newLines",
+                    )
+                })?;
+            let path = object
+                .remove("path")
+                .and_then(|path| path.as_str().map(str::to_owned))
+                .or_else(|| {
+                    object
+                        .get("target")
+                        .and_then(|target| target.get("fileId").or_else(|| target.get("targetId")))
+                        .and_then(Value::as_str)
+                        .map(|path| path.strip_prefix("file:").unwrap_or(path).to_owned())
+                })
+                .ok_or_else(|| {
+                    SthreadError::new(ErrorCode::InvalidInput, "CREATE_FILE needs a path")
+                })?;
+            object.insert("target".to_owned(), json!({"fileId":path}));
+            object.insert("replacement".to_owned(), json!({"kotlinLines":lines}));
+        }
         if object.contains_key("old") || object.contains_key("oldLines") {
             let mut substitution = serde_json::Map::new();
             for key in [
@@ -1275,8 +1303,9 @@ mod task_plan_tests {
         let mut plan = json!({"operations":[
             {
                 "kind":"CREATE_FILE",
-                "target":{"fileId":"src/main/kotlin/com/acme/Entity.kt"},
-                "replacement":{"kotlinLines":["    package com.acme", "", "    interface Entity"]}
+                "target":{"targetId":"file:src/main/kotlin/com/acme/Entity.kt"},
+                "path":"src/main/kotlin/com/acme/Entity.kt",
+                "newLines":["    package com.acme", "", "    interface Entity"]
             },
             {
                 "kind":"REWRITE_DECLARATION",
@@ -1301,6 +1330,10 @@ mod task_plan_tests {
             "package com.acme\n\ninterface Entity"
         );
         assert_eq!(plan["operations"][0]["kind"], "CREATE_FILE");
+        assert_eq!(
+            plan["operations"][0]["target"]["fileId"],
+            "src/main/kotlin/com/acme/Entity.kt"
+        );
         assert_eq!(
             plan["operations"][1]["preconditions"]["substitutions"][0]["old"],
             "fun old() {\n}"

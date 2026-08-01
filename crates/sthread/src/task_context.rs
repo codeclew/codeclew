@@ -607,8 +607,8 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "schema":"semantic-task-edit-plan/0.1",
             "threadId":thread_id,
             "baseRevision":base_revision,
-            "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"preconditions":{"substitutions":[{"old":"...","new":"..."}]}},
-            "instruction":"Use kind and target.targetId. Prefer REWRITE_DECLARATION substitutions. Multiline: oldLines/newLines/kotlinLines (common-dedented); occurrence selects one match, occurrences edits all. Plan all necessary emitted surfaces. A typed contract must not become Any/Any?: required fields stay statically accessible and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
+            "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"old":"...","new":"..."},
+            "instruction":"Use kind and target.targetId. Multiline: oldLines/newLines/kotlinLines (common-dedented); occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan all necessary emitted surfaces. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. If a new subtype flows through an emitted intermediary, update its parameter to the common contract. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{
