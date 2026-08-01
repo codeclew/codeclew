@@ -53,18 +53,6 @@ pub fn expand_transient_transform(
             "names.newContract and names.newProjection must be distinct",
         ));
     }
-    let identity_field = identifier(
-        required_string(&transform["workflow"], "identityField")?,
-        "workflow.identityField",
-    )?;
-    let identity_parameter = identifier(
-        required_string(&transform["sink"], "identity")?,
-        "sink.identity",
-    )?;
-    let payload_parameter = identifier(
-        required_string(&transform["sink"], "payload")?,
-        "sink.payload",
-    )?;
     let test_expected = identifier(
         required_string(&transform["test"], "expected")?,
         "test.expected",
@@ -117,8 +105,10 @@ pub fn expand_transient_transform(
     let (header_old, header_new) = contract_header_rewrite(&contract_source, &interface_name)?;
     let old_collection = infer_collection(&workflow_source, &old_data_source_name)?;
     let old_item = infer_loop_item(&workflow_source, &old_collection)?;
-    let query_rewrite =
+    let (query_old, query_new, identity_field) =
         projection_query_rewrite(&data_source_source, &package, &record_name, &fields)?;
+    let payload_parameter = parameter_for_type(&intermediary_source, &current_contract)?;
+    let identity_parameter = infer_identity_parameter(&workflow_source, &old_item)?;
     let return_rewrite =
         return_type_rewrite(&data_source_source, &old_data_source_name, &record_name)?;
     let test_old = format!("{payload_parameter} = anyOrNull(),");
@@ -171,7 +161,7 @@ pub fn expand_transient_transform(
         rewrite(
             data_source,
             vec![
-                substitution_occurrence(&query_rewrite.0, &query_rewrite.1, 1),
+                substitution_occurrence(&query_old, &query_new, 1),
                 substitution(&return_rewrite.0, &return_rewrite.1, 1),
             ],
         )?,
@@ -382,7 +372,7 @@ fn projection_query_rewrite(
     package: &str,
     record_name: &str,
     fields: &[Field],
-) -> Result<(String, String), SthreadError> {
+) -> Result<(String, String, String), SthreadError> {
     let lower = source.to_lowercase();
     let select = lower
         .find("select ")
@@ -399,6 +389,13 @@ fn projection_query_rewrite(
         .map(|(alias, _)| alias.trim())
         .filter(|alias| !alias.is_empty())
         .ok_or_else(|| incomplete("data source projection has no resolvable alias"))?;
+    let identity_field = old
+        .trim()
+        .split_once('.')
+        .map(|(_, field)| field.trim())
+        .filter(|field| fields.iter().any(|candidate| candidate.name == *field))
+        .map(str::to_owned)
+        .ok_or_else(|| incomplete("data source scalar projection is not a requested field"))?;
     let expressions = fields
         .iter()
         .map(|field| {
@@ -407,7 +404,56 @@ fn projection_query_rewrite(
         })
         .collect::<Vec<_>>()
         .join(", ");
-    Ok((old, format!("new {package}.{record_name}({expressions})")))
+    Ok((
+        old,
+        format!("new {package}.{record_name}({expressions})"),
+        identity_field,
+    ))
+}
+
+fn parameter_for_type(source: &str, type_name: &str) -> Result<String, SthreadError> {
+    let signature = source
+        .split_once('{')
+        .map(|(signature, _)| signature)
+        .unwrap_or(source);
+    let parameter_list = signature
+        .split_once('(')
+        .and_then(|(_, tail)| tail.rsplit_once(')').map(|(parameters, _)| parameters))
+        .ok_or_else(|| incomplete("intermediary declaration has no parameter list"))?;
+    let parameters = parameter_list
+        .split(',')
+        .filter_map(|parameter| {
+            let (name, type_and_default) = parameter.trim().split_once(':')?;
+            let candidate = type_and_default.trim();
+            let type_matches = candidate == type_name
+                || candidate.starts_with(&format!("{type_name}?"))
+                || candidate.starts_with(&format!("{type_name} "));
+            type_matches.then(|| name.trim().to_owned())
+        })
+        .collect::<BTreeSet<_>>();
+    if parameters.len() != 1 {
+        return Err(incomplete(format!(
+            "intermediary payload parameter for {type_name} is ambiguous; found {parameters:?}"
+        )));
+    }
+    Ok(parameters.into_iter().next().unwrap())
+}
+
+fn infer_identity_parameter(source: &str, loop_item: &str) -> Result<String, SthreadError> {
+    let parameters = source
+        .split([',', '\n', '('])
+        .filter_map(|fragment| {
+            let (parameter, value) = fragment.trim().split_once(" = ")?;
+            (value == loop_item).then(|| parameter.trim().to_owned())
+        })
+        .filter(|parameter| identifier(parameter.clone(), "identity parameter").is_ok())
+        .collect::<BTreeSet<_>>();
+    if parameters.len() != 1 {
+        return Err(incomplete(format!(
+            "workflow identity argument for {loop_item} is ambiguous; found {parameters:?}"
+        )));
+    }
+    Ok(parameters.into_iter().next().unwrap())
 }
 
 fn return_type_rewrite(
@@ -658,7 +704,7 @@ mod tests {
 
     fn compact_plan() -> Value {
         json!({
-            "schema":"semantic-task-goal/0.2",
+            "schema":"semantic-task-goal/0.3",
             "transform":{
                 "kind":"PROPAGATE_TYPED_FIELDS",
                 "fields":["key","label"],
@@ -667,10 +713,6 @@ mod tests {
                     "newProjection":"SelectedRecord",
                     "imports":[]
                 },
-                "workflow":{
-                    "identityField":"key"
-                },
-                "sink":{"identity":"identity","payload":"payload"},
                 "test":{"expected":"expected","occurrence":1}
             }
         })
