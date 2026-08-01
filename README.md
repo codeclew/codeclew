@@ -19,7 +19,9 @@ cargo run --bin sthread -- doctor
 cargo run --bin sthread -- project inspect --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic --syntax-only
-cargo run --bin sthread -- context --repo fixtures/kotlin-basic --symbol com.acme.namedCall
+cargo run --bin sthread -- agent-context --repo fixtures/kotlin-2-1 \
+  --term applyAdaptive --term Adaptive --max-bytes 12288 \
+  --evidence .semantic-thread/agent-context.json
 printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
 ```
 
@@ -39,6 +41,8 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 - composite semantic anchors with unique replay
 - actual K2 FIR CFG normalization, Rust dominance-frontier SSA/PHI/def-use and post-dominator control dependencies
 - forward/backward/bidirectional bounded slicing and canonical Thread IR
+- one-shot `agent-context` discovery with deduplicated source, references, tests,
+  semantic edit anchors, a hard stdout byte budget, and full evidence stored separately
 - `REPLACE_EXPRESSION`, `REPLACE_FUNCTION_BODY`, `ADD_IMPORT`, and `REMOVE_IMPORT` on PSI copies
 - K2 candidate diagnostics, type, protected-binding, call-target, callee-summary, and effect validation
 - minimal preview diff with Expected/ActualWriteSet and ABI enforcement, isolated worktree validation, and configured tests run by default
