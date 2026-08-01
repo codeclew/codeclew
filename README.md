@@ -67,3 +67,7 @@ This is intentionally fail-closed. Android, KMP, scripts, reflection, precise co
 - `fixtures`: executable Kotlin corpus
 - `docs`: architecture, safety model, protocol, ADRs, and status
 - `scripts`: one-command verification and demo
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
