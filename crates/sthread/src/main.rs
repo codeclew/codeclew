@@ -976,6 +976,18 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
             })?;
             object.insert("kind".to_owned(), kind);
         }
+        if let Some(substitutions) = object.remove("substitutions") {
+            if object.contains_key("preconditions") {
+                return Err(SthreadError::new(
+                    ErrorCode::InvalidInput,
+                    "task operation cannot contain both substitutions and preconditions",
+                ));
+            }
+            object.insert(
+                "preconditions".to_owned(),
+                json!({"substitutions":substitutions}),
+            );
+        }
         if let Some(replacement) = object.get_mut("replacement").and_then(Value::as_object_mut) {
             join_plan_lines(replacement, "kotlinLines", "kotlin")?;
         }
@@ -1224,10 +1236,10 @@ mod task_plan_tests {
             },
             {
                 "kind":"REWRITE_DECLARATION",
-                "preconditions":{"substitutions":[{
+                "substitutions":[{
                     "oldLines":["        fun old() {", "        }"],
                     "newLines":["        fun new() {", "            call()", "        }"]
-                }]}
+                }]
             }
         ]});
 

@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-const MAX_CANDIDATES: usize = 20;
 const MAX_EDIT_SURFACES: usize = 4;
 const MAX_CONTRACTS: usize = 1;
 const MAX_TESTS: usize = 1;
@@ -36,7 +35,6 @@ struct Candidate {
 pub struct TaskContextSelection {
     files: Vec<SourceFile>,
     catalog: Vec<Candidate>,
-    candidates: Vec<Candidate>,
     intent_tokens: BTreeSet<String>,
     goal_tokens: BTreeSet<String>,
     explicit_owners: BTreeSet<String>,
@@ -104,27 +102,20 @@ impl TaskContextSelection {
                 roots.push(symbol);
             }
         }
-        roots.extend(
-            self.candidates
-                .iter()
-                .filter(|candidate| {
-                    candidate.declaration["kind"]
+        let mut ranked = self
+            .catalog
+            .iter()
+            .filter(|candidate| {
+                candidate.score > 0
+                    && candidate.declaration["kind"]
                         .as_str()
                         .is_some_and(|kind| kind.contains("Function"))
-                        && candidate.reasons.iter().any(|reason| {
-                            reason.starts_with("exact:") || reason.starts_with("symbol:")
-                        })
-                })
-                .filter_map(|candidate| candidate.declaration["legacySymbolId"].as_str()),
-        );
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by_key(|candidate| Reverse(root_candidate_rank(candidate, self)));
         roots.extend(
-            self.candidates
-                .iter()
-                .filter(|candidate| {
-                    candidate.declaration["kind"]
-                        .as_str()
-                        .is_some_and(|kind| kind.contains("Function"))
-                })
+            ranked
+                .into_iter()
                 .filter_map(|candidate| candidate.declaration["legacySymbolId"].as_str()),
         );
         let mut unique = Vec::new();
@@ -233,6 +224,28 @@ impl TaskContextSelection {
     }
 }
 
+fn root_candidate_rank(candidate: &Candidate, selection: &TaskContextSelection) -> usize {
+    let name = candidate.declaration["name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_lowercase();
+    let source = candidate.source_text.to_lowercase();
+    let goal_source_hits = selection
+        .goal_tokens
+        .iter()
+        .filter(|token| token.len() >= 2 && source.contains(token.as_str()))
+        .count();
+    let intent_source_hits = selection
+        .intent_tokens
+        .iter()
+        .filter(|token| token.len() >= 4 && source.contains(token.as_str()))
+        .count();
+    goal_name_score(&name, &selection.goal_tokens) * 1_000
+        + goal_source_hits * 120
+        + intent_source_hits * 10
+        + candidate.score
+}
+
 fn goal_name_score(name: &str, tokens: &BTreeSet<String>) -> usize {
     tokens
         .iter()
@@ -267,6 +280,7 @@ pub fn select(
     let goal_tokens = task_tokens(primary_intent(intent), terms);
     let normalized_terms = terms
         .iter()
+        .filter(|term| !looks_like_constant(term))
         .flat_map(|term| split_identifier_tokens(term))
         .flat_map(token_variants)
         .collect::<Vec<_>>();
@@ -290,7 +304,6 @@ pub fn select(
         .collect::<BTreeSet<_>>();
 
     let mut catalog = Vec::new();
-    let mut candidates = Vec::new();
     for file in index_facts["files"].as_array().into_iter().flatten() {
         let path = file["path"].as_str().unwrap_or_default();
         let Some(source) = sources.get(path) else {
@@ -317,35 +330,21 @@ pub fn select(
                 reasons,
             };
             catalog.push(candidate.clone());
-            if score > 0 {
-                candidates.push(candidate);
-            }
         }
     }
-    candidates.sort_by_key(|candidate| {
-        (
-            Reverse(candidate.score),
-            candidate.declaration["file"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned(),
-            candidate.declaration["rangeStart"]
-                .as_u64()
-                .unwrap_or_default(),
-        )
-    });
-    candidates.dedup_by(|left, right| {
-        left.declaration["declarationId"] == right.declaration["declarationId"]
-    });
-    candidates.truncate(MAX_CANDIDATES);
     Ok(TaskContextSelection {
         files,
         catalog,
-        candidates,
         intent_tokens,
         goal_tokens,
         explicit_owners,
     })
+}
+
+fn looks_like_constant(term: &str) -> bool {
+    let mut letters = term.chars().filter(|character| character.is_alphabetic());
+    let letter_count = letters.clone().count();
+    letter_count >= 2 && letters.all(|character| character.is_uppercase())
 }
 
 fn primary_intent(intent: &str) -> &str {
@@ -1662,13 +1661,53 @@ mod tests {
     }
 
     #[test]
+    fn enum_literal_is_not_treated_as_an_exact_declaration_name() {
+        assert!(looks_like_constant("DELETED"));
+        assert!(looks_like_constant("PRODUCT_DELETED"));
+        assert!(!looks_like_constant("archiveProduct"));
+    }
+
+    #[test]
+    fn primary_root_prefers_rich_goal_evidence_over_a_generic_exact_verb() {
+        let mut delete = function_candidate("delete");
+        delete.score = 360;
+        delete.reasons = BTreeSet::from(["exact:delete".into()]);
+        delete.source_text = "fun delete(id: UUID)".into();
+        let mut archive = function_candidate("archive");
+        archive.score = 120;
+        archive.reasons = BTreeSet::from(["intent-name:archive".into()]);
+        archive.source_text =
+            "fun archive(products: List<Product>) { emit(DELETED, productId, entity) }".into();
+        let selection = TaskContextSelection {
+            files: Vec::new(),
+            catalog: vec![delete.clone(), archive.clone()],
+            intent_tokens: BTreeSet::from([
+                "archive".into(),
+                "deleted".into(),
+                "entity".into(),
+                "product".into(),
+                "productid".into(),
+            ]),
+            goal_tokens: BTreeSet::from([
+                "archive".into(),
+                "deleted".into(),
+                "entity".into(),
+                "product".into(),
+                "productid".into(),
+            ]),
+            explicit_owners: BTreeSet::new(),
+        };
+
+        assert_eq!(selection.root_symbols(1), vec!["com.acme.Service.archive"]);
+    }
+
+    #[test]
     fn follows_the_call_whose_parameter_matches_task_intent() {
         let mut query_candidate = function_candidate("persistBatch");
         query_candidate.source_text = "@Query fun persistBatch() = Unit".into();
         let selection = TaskContextSelection {
             files: Vec::new(),
             catalog: vec![function_candidate("emitChange"), query_candidate],
-            candidates: Vec::new(),
             intent_tokens: BTreeSet::from(["subjectid".into()]),
             goal_tokens: BTreeSet::new(),
             explicit_owners: BTreeSet::new(),
@@ -1700,7 +1739,6 @@ mod tests {
         let selection = TaskContextSelection {
             files: Vec::new(),
             catalog: Vec::new(),
-            candidates: Vec::new(),
             intent_tokens: BTreeSet::new(),
             goal_tokens: BTreeSet::new(),
             explicit_owners: BTreeSet::new(),
