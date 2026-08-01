@@ -48,7 +48,7 @@ pub fn preview(
     let defer_semantic_validation = edit.operations.iter().any(|operation| {
         matches!(
             operation.kind.as_str(),
-            "REPLACE_DECLARATION" | "CREATE_FILE"
+            "REPLACE_DECLARATION" | "REWRITE_DECLARATION" | "CREATE_FILE"
         )
     });
     for operation in &edit.operations {
@@ -57,6 +57,7 @@ pub fn preview(
             && operation.kind != "ADD_IMPORT"
             && operation.kind != "REMOVE_IMPORT"
             && operation.kind != "REPLACE_DECLARATION"
+            && operation.kind != "REWRITE_DECLARATION"
             && operation.kind != "CREATE_FILE"
         {
             return Err(SthreadError::new(
@@ -208,14 +209,15 @@ pub fn preview(
                 before_hash: canonical::hash_bytes(current.as_bytes()),
                 after_hash: canonical::hash_bytes(candidate.as_bytes()),
             });
-        } else if operation.kind == "REPLACE_DECLARATION" {
+        } else if operation.kind == "REPLACE_DECLARATION" || operation.kind == "REWRITE_DECLARATION"
+        {
             let owner = target
                 .get("ownerSymbolId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     SthreadError::new(
                         ErrorCode::InvalidInput,
-                        "REPLACE_DECLARATION target has no ownerSymbolId",
+                        "declaration edit target has no ownerSymbolId",
                     )
                 })?;
             let key = format!("{file}:{owner}");
@@ -431,6 +433,7 @@ pub fn commit(
     worker: &mut WorkerClient,
 ) -> Result<Value, SthreadError> {
     let current = git_output(repo, &["rev-parse", target_ref])?;
+    let checked_out_target_is_clean = checked_out_target_is_clean(repo, target_ref, &current);
     transaction.target_ref = Some(target_ref.into());
     let base_index_snapshot = transaction
         .base_index_snapshot
@@ -573,6 +576,7 @@ pub fn commit(
             "testTasks":configured_test_tasks,
             "compileDurationMs":compile_duration_ms,
             "testDurationMs":test_duration_ms,
+            "compileCoveredByTestLifecycle": transaction.thread.snapshot.build_system == BuildSystem::Maven && !configured_test_tasks.is_empty(),
             "status":"PASSED"
         }));
         git(&worktree_path, &["add", "--", "."])?;
@@ -593,8 +597,8 @@ pub fn commit(
             .current_dir(&worktree_path)
             .output()
             .map_err(io_error)?;
-        log_output(&output);
         if !output.status.success() {
+            log_output(&output);
             return Err(SthreadError::new(
                 ErrorCode::Internal,
                 "candidate commit failed",
@@ -654,11 +658,21 @@ pub fn commit(
                 )));
             }
         };
+        let worktree_synchronized = if checked_out_target_is_clean {
+            // update-ref intentionally does not touch the caller's index or
+            // worktree. The pre-publication cleanliness check makes this
+            // synchronization safe and prevents a successful transaction from
+            // looking like a staged reverse diff to the next agent.
+            git(repo, &["reset", "--hard", &candidate]).is_ok()
+        } else {
+            false
+        };
         transaction.validation_evidence.push(json!({
             "kind":"INDEX_PUBLICATION",
             "baseIndexSnapshot":base_index_snapshot,
             "finalIndexSnapshot":final_index_snapshot,
-            "appliedInvalidations":invalidations
+            "appliedInvalidations":invalidations,
+            "worktreeSynchronized":worktree_synchronized
         }));
         transaction.final_commit = Some(candidate.clone());
         transaction.status = "COMMITTED".into();
@@ -957,6 +971,37 @@ fn validate_worktree(
     compile_task: &str,
     tests: &[String],
 ) -> Result<(u64, u64), SthreadError> {
+    if build_system == BuildSystem::Maven && !tests.is_empty() {
+        // Maven's test lifecycle already includes main/test compilation. A
+        // separate `compile` invocation repeats dependency resolution and
+        // compilation without increasing validation coverage.
+        let test_started = std::time::Instant::now();
+        let mut test = build_command(worktree, build_system, build_launcher)?;
+        test.args(tests).arg("-q");
+        let output = test
+            .current_dir(worktree)
+            .output()
+            .map_err(|error| build_start_error(build_launcher, error))?;
+        let test_duration_ms = test_started.elapsed().as_millis() as u64;
+        if output.status.success() {
+            return Ok((0, test_duration_ms));
+        }
+        log_output(&output);
+        let mut error = SthreadError::new(
+            ErrorCode::TestFailed,
+            format!(
+                "candidate worktree {build_system:?} test lifecycle {} failed",
+                tests.join(", ")
+            ),
+        );
+        error
+            .evidence
+            .push("buildCompileCoveredByTestLifecycle=true".into());
+        error
+            .evidence
+            .push(format!("buildTestDurationMs={test_duration_ms}"));
+        return Err(error);
+    }
     let compile_started = std::time::Instant::now();
     let mut compile = build_command(worktree, build_system, build_launcher)?;
     match build_system {
@@ -1021,6 +1066,15 @@ fn validate_worktree(
             .push(format!("buildTestDurationMs={test_duration_ms}"));
         Err(error)
     }
+}
+
+fn checked_out_target_is_clean(repo: &Path, target_ref: &str, current: &str) -> bool {
+    git_output(repo, &["symbolic-ref", "-q", "HEAD"]).is_ok_and(|head| head == target_ref)
+        && Command::new("git")
+            .args(["diff-index", "--quiet", current, "--"])
+            .current_dir(repo)
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 fn build_command(
@@ -1378,10 +1432,10 @@ fn git(repo: &Path, args: &[&str]) -> Result<(), SthreadError> {
         .current_dir(repo)
         .output()
         .map_err(io_error)?;
-    log_output(&output);
     if output.status.success() {
         Ok(())
     } else {
+        log_output(&output);
         Err(SthreadError::new(
             ErrorCode::Internal,
             format!("git {} failed", args.join(" ")),

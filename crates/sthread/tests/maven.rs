@@ -401,8 +401,8 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
         base_revision: base.clone(),
         operations: vec![
             EditOperation {
-                op_id: "op:replace-declaration".into(),
-                kind: "REPLACE_DECLARATION".into(),
+                op_id: "op:rewrite-declaration".into(),
+                kind: "REWRITE_DECLARATION".into(),
                 target: json!({
                     "fileId": "src/main/kotlin/com/acme/archive/ArchiveService.kt",
                     "ownerSymbolId": "com.acme.archive.ProductIdentity",
@@ -410,9 +410,12 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                     "exactTextHash": canonical::hash_bytes(old_declaration.as_bytes()),
                 }),
                 replacement: Replacement {
-                    kotlin: "data class ProductIdentity(\n    val id: String,\n    val code: String?,\n    val title: String,\n) : java.io.Serializable".into(),
+                    kotlin: String::new(),
                 },
-                preconditions: BTreeMap::new(),
+                preconditions: BTreeMap::from([(
+                    "substitutions".into(),
+                    json!([{"old":")", "new":") : java.io.Serializable"}]),
+                )]),
                 postconditions: BTreeMap::new(),
             },
             EditOperation {
@@ -521,6 +524,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
         ],
     );
     assert!(committed_source.contains("return formatArchive(product)"));
+    assert!(committed_source.contains(") : java.io.Serializable"));
     let generated = git_output(
         &repo,
         &[
@@ -529,5 +533,6 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
         ],
     );
     assert!(generated.contains("internal class GeneratedArchiveMarker"));
+    assert_eq!(git_output(&repo, &["status", "--short"]), "");
     worker.shutdown().unwrap();
 }

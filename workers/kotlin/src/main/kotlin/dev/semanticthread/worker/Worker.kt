@@ -1153,6 +1153,7 @@ internal class Worker : AutoCloseable {
         val kind = request.requiredString("kind"); val replacement = request.requiredString("replacement")
         if (kind == "ADD_IMPORT" || kind == "REMOVE_IMPORT") return applyImportEdit(repo, relative, path, source, kind, replacement)
         if (kind == "REPLACE_DECLARATION") return applyDeclarationEdit(repo, relative, path, source, request, replacement, module, sourceSet)
+        if (kind == "REWRITE_DECLARATION") return applyDeclarationRewrite(repo, relative, path, source, request, module, sourceSet)
         val kt = factory.createFile(path.fileName.toString(), source); val ownerQuery = request.requiredString("ownerSymbolId")
         val pkg = kt.packageFqName.asString(); val owner = PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java).singleOrNull { symbolMatches(ownerQuery, pkg, it, module, sourceSet) }
             ?: throw WorkerFailure("STALE_TARGET", "owner no longer resolves uniquely")
@@ -1318,6 +1319,53 @@ internal class Worker : AutoCloseable {
             // Declaration changes may make callers temporarily inconsistent.
             // The detached transaction worktree performs the authoritative K2/build validation after every candidate is assembled.
             put("k2Validated", false)
+        }
+    }
+
+    private fun applyDeclarationRewrite(repo: Path, relative: String, path: Path, source: String, request: JsonObject, module: String, sourceSet: String): JsonObject {
+        val kt = factory.createFile(path.fileName.toString(), source)
+        val ownerQuery = request.requiredString("ownerSymbolId")
+        val pkg = kt.packageFqName.asString()
+        val owner = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
+            .singleOrNull { symbolMatches(ownerQuery, pkg, it, module, sourceSet) }
+            ?: throw WorkerFailure("STALE_TARGET", "declaration owner no longer resolves uniquely")
+        if (sha(owner.text.toByteArray()) != request.requiredString("exactTextHash")) {
+            throw WorkerFailure("STALE_TARGET", "declaration hash no longer matches")
+        }
+        request["syntaxKind"]?.jsonPrimitive?.content?.takeIf(String::isNotBlank)?.let { expected ->
+            if (owner::class.simpleName != expected) throw WorkerFailure("STALE_TARGET", "declaration syntax kind no longer matches")
+        }
+        val substitutions = request["preconditions"]?.jsonObject?.get("substitutions")?.jsonArray
+            ?: throw WorkerFailure("INVALID_INPUT", "REWRITE_DECLARATION requires preconditions.substitutions")
+        if (substitutions.isEmpty()) throw WorkerFailure("INVALID_INPUT", "REWRITE_DECLARATION substitutions are empty")
+        var rewritten = owner.text
+        substitutions.forEachIndexed { index, item ->
+            val old = item.jsonObject["old"]?.jsonPrimitive?.content
+                ?: throw WorkerFailure("INVALID_INPUT", "substitution $index has no old text")
+            val new = item.jsonObject["new"]?.jsonPrimitive?.content
+                ?: throw WorkerFailure("INVALID_INPUT", "substitution $index has no new text")
+            if (old.isEmpty()) throw WorkerFailure("INVALID_INPUT", "substitution $index old text is empty")
+            val expectedOccurrences = item.jsonObject["occurrences"]?.jsonPrimitive?.intOrNull ?: 1
+            if (expectedOccurrences < 1) throw WorkerFailure("INVALID_INPUT", "substitution $index occurrences must be positive")
+            val occurrences = Regex(Regex.escape(old)).findAll(rewritten).count()
+            if (occurrences != expectedOccurrences) throw WorkerFailure("PRECONDITION_FAILED", "substitution $index expected $expectedOccurrences exact matches, found $occurrences")
+            rewritten = rewritten.replace(old, new)
+        }
+        val replacementFile = factory.createFile(path.fileName.toString(), rewritten)
+        val replacementErrors = PsiTreeUtil.collectElementsOfType(replacementFile, PsiErrorElement::class.java)
+            .map { it.errorDescription }.sorted()
+        if (replacementErrors.isNotEmpty() || replacementFile.declarations.size != 1 || replacementFile.declarations.single() !is KtNamedDeclaration || replacementFile.importDirectives.isNotEmpty()) {
+            throw WorkerFailure("REPLACEMENT_PARSE_ERROR", "rewritten result must contain exactly one Kotlin declaration")
+        }
+        val replacementDeclaration = replacementFile.declarations.single()
+        val candidate = source.substring(0, owner.textRange.startOffset) + replacementDeclaration.text + source.substring(owner.textRange.endOffset)
+        val candidateFile = factory.createFile(path.fileName.toString(), candidate)
+        val errors = PsiTreeUtil.collectElementsOfType(candidateFile, PsiErrorElement::class.java).map { it.errorDescription }.sorted()
+        if (errors.isNotEmpty()) throw WorkerFailure("REPLACEMENT_PARSE_ERROR", errors.joinToString("; "))
+        return buildJsonObject {
+            put("schema", "semantic-candidate/0.1"); put("file", relative)
+            put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
+            putJsonArray("diagnostics") {}; putJsonArray("introducedEffects") {}; put("k2Validated", false)
         }
     }
 
