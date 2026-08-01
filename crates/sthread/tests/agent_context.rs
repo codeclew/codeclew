@@ -17,8 +17,10 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
             "applyAdaptive",
             "--term",
             "Adaptive",
+            "--intent",
+            "Apply adaptive settings to the selected Kotlin function and preserve its typed contract",
             "--max-bytes",
-            "12288",
+            "16384",
             "--evidence",
             evidence.to_str().unwrap(),
         ])
@@ -30,28 +32,38 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.len() <= 12_288);
+    assert!(output.stdout.len() <= 16_384);
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(context["schema"], "semantic-agent-context-pack/0.1");
-    let declaration = context["declarations"]
+    assert_eq!(context["schema"], "semantic-task-context/0.2");
+    let declaration = context["editSurfaces"]
         .as_array()
         .unwrap()
         .iter()
         .find(|declaration| declaration["name"] == "applyAdaptive")
         .unwrap();
-    assert!(
-        declaration["editAnchor"]["syntaxKind"]
-            .as_str()
-            .is_some_and(|kind| kind.starts_with("Kt"))
-    );
+    assert!(declaration["bodyTargetId"].as_str().is_some());
     assert!(
         declaration["sourceText"]
             .as_str()
             .unwrap()
             .contains("applyAdaptive")
     );
-
+    assert!(context.get("references").is_none());
+    assert_eq!(context["editPlan"]["schema"], "semantic-task-edit-plan/0.1");
     let stored: Value = serde_json::from_slice(&std::fs::read(evidence).unwrap()).unwrap();
-    assert_eq!(stored["schema"], "semantic-agent-context-evidence/0.1");
+    assert_eq!(stored["schema"], "semantic-task-context-evidence/0.2");
+    assert_eq!(stored["stdoutCompleteness"]["status"], "COMPLETE_TASK");
     assert!(!stored["index"]["files"].as_array().unwrap().is_empty());
+    assert!(!stored["threads"].as_array().unwrap().is_empty());
+    let stored_declaration = stored["context"]["editSurfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|declaration| declaration["name"] == "applyAdaptive")
+        .unwrap();
+    assert!(
+        stored_declaration["bodyTarget"]["syntaxKind"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("Kt"))
+    );
 }

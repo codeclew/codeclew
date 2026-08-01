@@ -50,6 +50,8 @@ pub fn preview(
             && operation.kind != "REPLACE_FUNCTION_BODY"
             && operation.kind != "ADD_IMPORT"
             && operation.kind != "REMOVE_IMPORT"
+            && operation.kind != "REPLACE_DECLARATION"
+            && operation.kind != "CREATE_FILE"
         {
             return Err(SthreadError::new(
                 ErrorCode::InvalidInput,
@@ -66,6 +68,18 @@ pub fn preview(
             .get("fileId")
             .and_then(Value::as_str)
             .ok_or_else(|| SthreadError::new(ErrorCode::InvalidInput, "target has no fileId"))?;
+        if operation.kind == "CREATE_FILE" {
+            preview_create_file(
+                repo,
+                operation,
+                file,
+                &mut candidates,
+                &mut writes,
+                &mut expected_writes,
+                worker,
+            )?;
+            continue;
+        }
         if let Some(expected) = operation
             .preconditions
             .get("nodeTextHash")
@@ -187,6 +201,37 @@ pub fn preview(
                 before_hash: canonical::hash_bytes(current.as_bytes()),
                 after_hash: canonical::hash_bytes(candidate.as_bytes()),
             });
+        } else if operation.kind == "REPLACE_DECLARATION" {
+            let owner = target
+                .get("ownerSymbolId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    SthreadError::new(
+                        ErrorCode::InvalidInput,
+                        "REPLACE_DECLARATION target has no ownerSymbolId",
+                    )
+                })?;
+            let key = format!("{file}:{owner}");
+            expected_writes.extend([
+                ExpectedWriteFact {
+                    kind: "DECLARATION".into(),
+                    key: key.clone(),
+                },
+                ExpectedWriteFact {
+                    kind: "SUMMARY".into(),
+                    key: owner.into(),
+                },
+            ]);
+            writes.push(WriteFact {
+                kind: "DECLARATION".into(),
+                key,
+                before_hash: target
+                    .get("exactTextHash")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+                after_hash: canonical::hash_bytes(operation.replacement.kotlin.as_bytes()),
+            });
         } else {
             let anchor = target
                 .get("anchorId")
@@ -297,7 +342,7 @@ pub fn preview(
     }
     let mut diff = String::new();
     for (file, candidate) in &candidates {
-        let original = std::fs::read_to_string(safe_join(repo, file)?).map_err(io_error)?;
+        let original = std::fs::read_to_string(safe_join(repo, file)?).unwrap_or_default();
         diff.push_str(&unified_diff(file, &original, candidate));
     }
     writes.sort();
@@ -315,6 +360,61 @@ pub fn preview(
         diagnostics,
         formatting_windows: windows,
     })
+}
+
+fn preview_create_file(
+    repo: &Path,
+    operation: &EditOperation,
+    file: &str,
+    candidates: &mut BTreeMap<String, String>,
+    writes: &mut Vec<WriteFact>,
+    expected_writes: &mut Vec<ExpectedWriteFact>,
+    worker: &mut WorkerClient,
+) -> Result<(), SthreadError> {
+    if !file.ends_with(".kt") {
+        return Err(SthreadError::new(
+            ErrorCode::InvalidInput,
+            "CREATE_FILE only supports Kotlin .kt files",
+        ));
+    }
+    let path = safe_join(repo, file)?;
+    if path.exists() || candidates.contains_key(file) {
+        return Err(SthreadError::new(
+            ErrorCode::PreconditionFailed,
+            format!("CREATE_FILE target already exists: {file}"),
+        ));
+    }
+    if operation.replacement.kotlin.trim().is_empty() {
+        return Err(SthreadError::new(
+            ErrorCode::InvalidInput,
+            "CREATE_FILE replacement must not be empty",
+        ));
+    }
+    let validation = worker.request(
+        RequestKind::ValidateCandidate,
+        &json!({"repo":repo,"file":file,"source":operation.replacement.kotlin}),
+    )?;
+    if validation.get("valid").and_then(Value::as_bool) != Some(true) {
+        return Err(SthreadError::new(
+            ErrorCode::ReplacementParseError,
+            format!(
+                "CREATE_FILE Kotlin syntax is invalid: {}",
+                validation["diagnostics"]
+            ),
+        ));
+    }
+    candidates.insert(file.into(), operation.replacement.kotlin.clone());
+    expected_writes.push(ExpectedWriteFact {
+        kind: "FILE".into(),
+        key: file.into(),
+    });
+    writes.push(WriteFact {
+        kind: "FILE".into(),
+        key: file.into(),
+        before_hash: canonical::hash_bytes(&[]),
+        after_hash: canonical::hash_bytes(operation.replacement.kotlin.as_bytes()),
+    });
+    Ok(())
 }
 
 pub fn commit(
@@ -440,8 +540,11 @@ pub fn commit(
     )?;
     let result = (|| {
         for (file, source) in &report.candidates {
-            std::fs::write(safe_join(&worktree_path, file)?, source.as_bytes())
-                .map_err(io_error)?;
+            let path = safe_join(&worktree_path, file)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(io_error)?;
+            }
+            std::fs::write(path, source.as_bytes()).map_err(io_error)?;
         }
         let configured_test_tasks = if transaction.test_tasks.is_empty() {
             &transaction.thread.snapshot.test_tasks

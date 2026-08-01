@@ -4,6 +4,7 @@ pub mod error;
 pub mod graph;
 pub mod index;
 pub mod model;
+pub mod task_context;
 pub mod transaction;
 pub mod worker;
 
