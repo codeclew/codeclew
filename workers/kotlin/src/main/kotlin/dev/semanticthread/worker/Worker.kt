@@ -13,10 +13,12 @@ import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
 import org.jetbrains.kotlin.com.intellij.psi.impl.source.tree.TreeCopyHandler
 import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.config.CompilerConfiguration
+import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.*
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.io.path.*
 
@@ -40,7 +42,7 @@ internal class Worker : AutoCloseable {
         val request = if (payload.isEmpty()) buildJsonObject {} else json.parseToJsonElement(payload.decodeToString()).jsonObject
         return when (kind) {
             2 -> inspect(Path.of(request.requiredString("repo")), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content).toString()
-            3 -> index(Path.of(request.requiredString("repo")), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content).toString()
+            3 -> index(Path.of(request.requiredString("repo")), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content, request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true, request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()).toString()
             4 -> resolveSymbol(Path.of(request.requiredString("repo")), request.requiredString("symbol")).toString()
             5 -> resolveExpression(Path.of(request.requiredString("repo")), request.requiredString("file"), request.requiredInt("offset")).toString()
             6 -> localGraph(Path.of(request.requiredString("repo")), request.requiredString("symbol")).toString()
@@ -102,9 +104,22 @@ internal class Worker : AutoCloseable {
 
     private fun cachedGradleModel(repo: Path, compilation: String?): JsonObject {
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha(projectModelFiles(canonicalRepo).flatMap { file -> (canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) + "\n").toByteArray().asIterable() }.toByteArray())
+        val inputHash = sha((projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
+            Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
-        return gradleModelCache.getOrPut(key) { gradleModel(canonicalRepo, compilation) }
+        gradleModelCache[key]?.let { return it }
+        val safeCompilation = (compilation ?: ":/main").replace(Regex("[^A-Za-z0-9]+"), "_")
+        val cache = canonicalRepo.resolve(".semantic-thread/cache/project/$safeCompilation-${inputHash.removePrefix("sha256:")}.json")
+        if (cache.isRegularFile()) {
+            runCatching { json.parseToJsonElement(cache.readText()).jsonObject }.getOrNull()?.let { cached ->
+                val belongsToRepo = cached["sourceFiles"]?.jsonArray?.all { Path.of(it.jsonPrimitive.content).normalize().startsWith(canonicalRepo) } != false
+                if (belongsToRepo) { gradleModelCache[key] = cached; return cached }
+            }
+        }
+        val model = gradleModel(canonicalRepo, compilation)
+        writeCacheAtomically(cache, model.toString())
+        gradleModelCache[key] = model
+        return model
     }
 
     private fun sourceRoot(repo: Path, file: Path): String? {
@@ -148,7 +163,21 @@ internal class Worker : AutoCloseable {
             projectModelFiles(analysisRepo).forEach { input -> append(analysisRepo.relativize(input).invariantSeparatorsPathString).append(':').append(sha(input.readBytes())).append('\u0000') }
         }
         val cacheKey = sha(cacheMaterial.toByteArray())
-        if (overrides.isEmpty()) analysisCache["$analysisRepo|$compilation|$cacheKey"]?.let { return it }
+        val memoryKey = "$analysisRepo|$compilation|$cacheKey"
+        analysisCache[memoryKey]?.let { return it }
+        val safeCompilation = compilation.replace(Regex("[^A-Za-z0-9]+"), "_")
+        val diskCache = analysisRepo.resolve(".semantic-thread/cache/k2/$safeCompilation-${cacheKey.removePrefix("sha256:")}.json")
+        if (diskCache.isRegularFile()) {
+            runCatching { json.parseToJsonElement(diskCache.readText()).jsonObject }.getOrNull()?.let { cached ->
+                val result = K2Analysis(
+                    cached["valid"]?.jsonPrimitive?.booleanOrNull == true,
+                    cached["facts"]?.jsonArray?.map { it.jsonObject }.orEmpty(),
+                    cached["diagnostics"]?.jsonArray?.map { it.jsonObject }.orEmpty()
+                )
+                analysisCache[memoryKey] = result
+                return result
+            }
+        }
         val temp = Files.createTempDirectory("semantic-thread-k2")
         try {
             val sourceArgs = sources.map { original ->
@@ -169,57 +198,122 @@ internal class Worker : AutoCloseable {
             }.toList()
             val facts = if (factsFile.isRegularFile()) factsFile.readLines().filter(String::isNotBlank).map { json.parseToJsonElement(it).jsonObject } else emptyList()
             val result = K2Analysis(status == 0, facts.sortedBy { it.toString() }, diagnostics)
-            if (overrides.isEmpty()) analysisCache["$analysisRepo|$compilation|$cacheKey"] = result
+            writeCacheAtomically(diskCache, buildJsonObject {
+                put("schema", "semantic-k2-cache/0.1"); put("valid", result.valid)
+                putJsonArray("facts") { result.facts.forEach(::add) }; putJsonArray("diagnostics") { result.diagnostics.forEach(::add) }
+            }.toString())
+            analysisCache[memoryKey] = result
             return result
         } finally { temp.toFile().deleteRecursively() }
     }
 
+    private fun writeCacheAtomically(path: Path, content: String) {
+        path.parent.createDirectories()
+        val temporary = Files.createTempFile(path.parent, path.fileName.toString(), ".tmp")
+        try {
+            temporary.writeText(content)
+            try { Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
+            catch (_: Throwable) { Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING) }
+        } finally { Files.deleteIfExists(temporary) }
+    }
+
     private fun parse(path: Path): KtFile = factory.createFile(path.fileName.toString(), path.readText())
 
-    private fun index(repo: Path, compilation: String?): JsonObject {
+    private fun index(repo: Path, compilation: String?, syntaxOnly: Boolean = false, requestedFiles: List<String> = emptyList()): JsonObject {
         val selected = compilation ?: ":/main"
         val model = cachedGradleModel(repo, selected)
-        val selectedFiles = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
-        val analysis = analyzeWithK2(repo, compilation = selected)
+        val project = inspect(repo, selected)
+        val module = project["module"]?.jsonPrimitive?.content.orEmpty()
+        val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: selected.substringAfterLast('/')
+        val allFiles = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
+        val requested = requestedFiles.toSet()
+        val selectedFiles = if (requested.isEmpty()) allFiles else allFiles.filter { repo.relativize(it).invariantSeparatorsPathString in requested }
+        if (requested.isNotEmpty() && selectedFiles.size != requested.size) throw WorkerFailure("INVALID_INPUT", "requested index file is outside selected compilation")
+        val analysis = if (syntaxOnly) K2Analysis(true, emptyList(), emptyList()) else analyzeWithK2(repo, compilation = selected)
         val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path); val pkg = kt.packageFqName.asString()
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
-                .sortedBy { it.textOffset }.map { declarationJson(repo, path, pkg, it) }
+                .sortedBy { it.textOffset }.map { declarationJson(repo, path, pkg, it, analysis, module, sourceSet) }
+            val relative = repo.relativize(path).invariantSeparatorsPathString
+            val inheritance = PsiTreeUtil.collectElementsOfType(kt, KtClassOrObject::class.java).map { declaration ->
+                buildJsonObject { put("symbol", symbolId(pkg, declaration)); putJsonArray("supertypes") { declaration.superTypeListEntries.map { it.typeReference?.text.orEmpty() }.sorted().forEach(::add) } }
+            }.sortedBy { it.toString() }
+            val overrides = PsiTreeUtil.collectElementsOfType(kt, KtCallableDeclaration::class.java).filter { it.hasModifier(KtTokens.OVERRIDE_KEYWORD) }
+                .map { symbolId(pkg, it) }.sorted()
             buildJsonObject {
-                put("path", repo.relativize(path).invariantSeparatorsPathString); put("contentHash", sha(bytes)); put("package", pkg)
+                put("fileId", "file:" + sha("$module|$sourceSet|$relative".toByteArray()).removePrefix("sha256:")); put("module", module); put("sourceSet", sourceSet)
+                put("path", relative); put("normalizedRelativePath", relative); put("contentHash", sha(bytes)); put("package", pkg)
                 put("lineEnding", if (bytes.decodeToString().contains("\r\n")) "CRLF" else "LF"); put("bom", bytes.take(3) == listOf(0xef.toByte(), 0xbb.toByte(), 0xbf.toByte()))
                 putJsonArray("imports") { kt.importDirectives.map { it.importPath?.pathStr.orEmpty() }.sorted().forEach(::add) }
                 putJsonArray("declarations") { declarations.forEach(::add) }
+                putJsonArray("declarationIds") { declarations.map { it["declarationId"]!! }.sortedBy { it.toString() }.forEach(::add) }
                 putJsonArray("semanticFacts") { fileFacts(repo, path, analysis).forEach(::add) }
+                putJsonArray("inheritance") { inheritance.forEach(::add) }
+                putJsonArray("overrides") { overrides.forEach(::add) }
+                putJsonArray("functionSummaries") { declarations.filter { it["kind"]?.jsonPrimitive?.content?.contains("Function") == true }.map { buildJsonObject { put("symbolId", it["symbolId"]!!); put("semanticSummaryHash", it["semanticSummaryHash"]!!) } }.forEach(::add) }
+                putJsonArray("diagnostics") { analysis.diagnostics.filter { diagnostic -> diagnostic["message"]?.jsonPrimitive?.content?.replace('\\', '/')?.contains(relative) == true }.forEach(::add) }
             }
         }
         val canonical = JsonArray(files)
         return buildJsonObject {
-            put("schema", "semantic-index/0.1"); put("compilation", selected); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
+            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requested.isNotEmpty()); put("analysisMode", if (syntaxOnly) "SYNTAX_DECLARATIONS" else "K2_SEMANTIC"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
+            put("projectModelHash", project["projectModelHash"]!!); put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
+            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!) }.toString().toByteArray()))
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
         }
     }
 
-    private fun declarationJson(repo: Path, path: Path, pkg: String, declaration: KtNamedDeclaration): JsonObject {
-        val symbol = symbolId(pkg, declaration); val signature = when (declaration) {
-            is KtNamedFunction -> declaration.text.substringBefore(declaration.bodyExpression?.text ?: "")
-            else -> declaration.name.orEmpty()
-        }
+    private fun declarationJson(repo: Path, path: Path, pkg: String, declaration: KtNamedDeclaration, analysis: K2Analysis? = null, module: String = "", sourceSet: String = "main"): JsonObject {
+        val symbol = symbolId(pkg, declaration); val signature = sourceSignature(declaration)
+        val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().firstOrNull()?.let { symbolId(pkg, it) }
+        val relative = repo.relativize(path).invariantSeparatorsPathString
+        val body = (declaration as? KtDeclarationWithBody)?.bodyExpression?.text.orEmpty()
+        val declarationFacts = analysis?.let { fileFacts(repo, path, it) }?.filter { fact ->
+            val start = fact["start"]?.jsonPrimitive?.intOrNull ?: -1; val end = fact["end"]?.jsonPrimitive?.intOrNull ?: -1
+            start >= declaration.textRange.startOffset && end <= declaration.textRange.endOffset
+        }.orEmpty()
+        val signatureHash = sha(normalizeTokens(signature).toByteArray())
+        val bodyHash = sha(normalizeTokens(body).toByteArray())
+        val abiHash = sha(buildJsonObject { put("symbol", symbol); put("kind", declaration::class.simpleName.orEmpty()); put("signatureHash", signatureHash) }.toString().toByteArray())
+        val summaryHash = sha(buildJsonObject { put("bodyHash", bodyHash); putJsonArray("facts") { declarationFacts.map(::semanticSignature).forEach(::add) } }.toString().toByteArray())
+        val declarationId = "declaration:" + sha("$module|$sourceSet|$relative|$symbol|${declaration::class.simpleName}|$signatureHash".toByteArray()).removePrefix("sha256:")
         return buildJsonObject {
-            put("symbolId", symbol); put("name", declaration.name.orEmpty()); put("kind", declaration::class.simpleName ?: "KtDeclaration")
-            put("file", repo.relativize(path).invariantSeparatorsPathString); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset)
-            put("signatureHash", sha(signature.toByteArray())); put("bodyHash", sha((declaration as? KtDeclarationWithBody)?.bodyExpression?.text?.toByteArray() ?: byteArrayOf()))
+            put("declarationId", declarationId); put("symbolId", symbol); put("name", declaration.name.orEmpty()); put("kind", declaration::class.simpleName ?: "KtDeclaration")
+            if (containing != null) put("containingDeclaration", containing)
+            putJsonObject("sourceOrigin") { put("file", relative); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset) }
+            put("file", relative); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset)
+            put("sourceSignatureHash", signatureHash); put("signatureHash", signatureHash); put("bodyHash", bodyHash); put("abiHash", abiHash); put("semanticSummaryHash", summaryHash)
         }
     }
 
     private fun symbolId(pkg: String, declaration: KtNamedDeclaration): String {
-        val owners = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtClassOrObject>().toList().asReversed().mapNotNull { it.name }
+        val owners = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().toList().asReversed().mapNotNull { it.name }
         val base = (listOf(pkg).filter { it.isNotBlank() } + owners + listOf(declaration.name ?: "<anonymous>")).joinToString(".")
         if (declaration !is KtNamedFunction) return base
         val receiver = declaration.receiverTypeReference?.text?.let { "$it." }.orEmpty()
         val params = declaration.valueParameters.joinToString(",") { it.typeReference?.text ?: "?" }
         return "$receiver$base($params)"
+    }
+
+    private fun sourceSignature(declaration: KtNamedDeclaration): String = when (declaration) {
+        is KtNamedFunction -> buildString {
+            append(if (declaration.hasModifier(KtTokens.SUSPEND_KEYWORD)) "suspend " else "")
+            append(if (declaration.hasModifier(KtTokens.PRIVATE_KEYWORD)) "private " else if (declaration.hasModifier(KtTokens.PROTECTED_KEYWORD)) "protected " else if (declaration.hasModifier(KtTokens.INTERNAL_KEYWORD)) "internal " else "public ")
+            append("fun "); declaration.receiverTypeReference?.text?.let { append(it).append('.') }; append(declaration.name)
+            append(declaration.typeParameterList?.text.orEmpty())
+            append(declaration.valueParameters.joinToString(",", "(", ")") { parameter -> "${parameter.name}:${parameter.typeReference?.text ?: "?"}" })
+            append(':').append(declaration.typeReference?.text ?: "Unit")
+        }
+        is KtProperty -> buildString {
+            append(if (declaration.hasModifier(KtTokens.PRIVATE_KEYWORD)) "private " else if (declaration.hasModifier(KtTokens.PROTECTED_KEYWORD)) "protected " else if (declaration.hasModifier(KtTokens.INTERNAL_KEYWORD)) "internal " else "public ")
+            append(if (declaration.isVar) "var " else "val "); append(declaration.name).append(':').append(declaration.typeReference?.text ?: "?")
+        }
+        is KtClassOrObject -> buildString {
+            append(declaration::class.simpleName).append(' ').append(declaration.name).append(declaration.typeParameterList?.text.orEmpty())
+            append(':').append(declaration.superTypeListEntries.joinToString(",") { it.typeReference?.text.orEmpty() })
+        }
+        else -> declaration.name.orEmpty()
     }
 
     private fun resolveSymbol(repo: Path, query: String): JsonObject {
@@ -305,7 +399,7 @@ internal class Worker : AutoCloseable {
         val firCfg = cfgRecords(repo, path, analysis).firstOrNull {
             it["start"]?.jsonPrimitive?.intOrNull == fn.textRange.startOffset && it["end"]?.jsonPrimitive?.intOrNull == fn.textRange.endOffset
         }
-        val graph = if (firCfg == null) LocalCfgBuilder(relative, owner, kt.text).build(fn) else normalizeFirCfg(relative, owner, kt, fn, firCfg)
+        val graph = if (firCfg == null) LocalCfgBuilder(relative, owner, kt.text).build(fn) else normalizeFirCfg(repo, relative, owner, kt, fn, firCfg, analysis)
         return enrichGraph(repo, path, graph, analysis)
     }
 
@@ -329,7 +423,7 @@ internal class Worker : AutoCloseable {
         }
     }
 
-    private fun normalizeFirCfg(file: String, owner: String, kt: KtFile, fn: KtNamedFunction, cfg: JsonObject): JsonObject {
+    private fun normalizeFirCfg(repo: Path, file: String, owner: String, kt: KtFile, fn: KtNamedFunction, cfg: JsonObject, analysis: K2Analysis): JsonObject {
         val rawNodes = cfg["nodes"]!!.jsonArray
         val functionLocals = (fn.valueParameters.mapNotNull { it.name } + PsiTreeUtil.collectElementsOfType(fn.bodyExpression ?: fn, KtProperty::class.java).filter { property -> generateSequence(property.parent) { it.parent }.takeWhile { it != fn }.none { it is KtLambdaExpression } }.mapNotNull { it.name }).toSet()
         val hasClassReceiver = generateSequence(fn.parent) { it.parent }.any { it is KtClassOrObject }
@@ -344,8 +438,10 @@ internal class Worker : AutoCloseable {
             val kind = when {
                 "FunctionEnter" in rawKind -> "ENTRY"
                 "FunctionExit" in rawKind -> "EXIT"
-                rawKind == "FunctionCallEnterNode" || rawKind == "FunctionCallExitNode" || expression is KtCallExpression -> "CALL"
-                "Enter" in rawKind -> "ENTRY"
+                rawKind == "FunctionCallEnterNode" -> "CALL"
+                rawKind == "FunctionCallExitNode" -> "CALL_RESULT"
+                expression is KtCallExpression && "Arguments" !in rawKind -> "CALL"
+                "Enter" in rawKind -> "EXPRESSION"
                 "Exit" in rawKind -> "EXPRESSION"
                 "Throw" in rawKind -> "THROW"
                 "Jump" in rawKind || "Return" in rawKind -> "RETURN"
@@ -427,15 +523,57 @@ internal class Worker : AutoCloseable {
                 host?.get("id")?.jsonPrimitive?.content?.let { normalizedEdges += edge(it, id, "CAPTURE") }
             }
         }
+        val callEdges = mutableListOf<JsonObject>()
+        normalizedNodes.filter { it["kind"]?.jsonPrimitive?.content == "CALL" }.forEach { callNode ->
+            val callId = callNode["id"]!!.jsonPrimitive.content
+            val callRange = callNode["origin"]?.jsonObject?.get("rangeHint")?.jsonArray
+            val callStart = callRange?.getOrNull(0)?.jsonPrimitive?.intOrNull
+            val callEnd = callRange?.getOrNull(1)?.jsonPrimitive?.intOrNull
+            val mappings = callNode["attributes"]?.jsonObject?.get("argumentToParameter")?.jsonArray.orEmpty()
+            mappings.forEach { mapping ->
+                val argumentStart = mapping.jsonObject["argumentStart"]?.jsonPrimitive?.intOrNull ?: return@forEach
+                normalizedNodes.filter { candidate ->
+                    candidate["id"]?.jsonPrimitive?.content != callId && candidate["origin"]?.jsonObject?.get("rangeHint")?.jsonArray?.let { range ->
+                        range[0].jsonPrimitive.int <= argumentStart && range[1].jsonPrimitive.int > argumentStart
+                    } == true
+                }.minByOrNull { candidate -> candidate["origin"]!!.jsonObject["rangeHint"]!!.jsonArray.let { it[1].jsonPrimitive.int - it[0].jsonPrimitive.int } }
+                    ?.get("id")?.jsonPrimitive?.content?.let { callEdges += edge(it, callId, "ARG_PARAM") }
+            }
+            if (callStart != null && callEnd != null) {
+                val callPsi = generateSequence(kt.findElementAt(callStart) as PsiElement?) { it.parent }
+                    .filterIsInstance<KtCallExpression>().firstOrNull { it.textRange.startOffset >= callStart && it.textRange.endOffset <= callEnd }
+                val receiver = (callPsi?.parent as? KtQualifiedExpression)?.receiverExpression
+                if (receiver != null) {
+                    normalizedNodes.filter { candidate ->
+                        candidate["id"]?.jsonPrimitive?.content != callId && candidate["origin"]?.jsonObject?.get("rangeHint")?.jsonArray?.let { range ->
+                            range[0].jsonPrimitive.int == receiver.textRange.startOffset && range[1].jsonPrimitive.int == receiver.textRange.endOffset
+                        } == true
+                    }.minByOrNull { it["id"]!!.jsonPrimitive.content }
+                        ?.get("id")?.jsonPrimitive?.content?.let { callEdges += edge(it, callId, "RECEIVER") }
+                }
+            }
+        }
+        val project = inspect(repo, ":/main")
+        val inheritance = PsiTreeUtil.collectElementsOfType(kt, KtClassOrObject::class.java).map { declaration ->
+            buildJsonObject {
+                put("symbol", symbolId(kt.packageFqName.asString(), declaration))
+                putJsonArray("supertypes") { declaration.superTypeListEntries.map { it.typeReference?.text.orEmpty() }.sorted().forEach(::add) }
+            }
+        }.sortedBy { it.toString() }
         return buildJsonObject {
             put("schema", "local-cfg/0.1"); put("symbol", owner); put("file", file); put("graphSource", "K2_FIR_CFG")
-            putJsonArray("nodes") { (normalizedNodes + parameterNodes + captureNodes).forEach(::add) }; putJsonArray("edges") { normalizedEdges.forEach(::add) }; putJsonArray("boundaries") {}
+            putJsonArray("nodes") { (normalizedNodes + parameterNodes + captureNodes).forEach(::add) }; putJsonArray("edges") { (normalizedEdges + callEdges).distinctBy { it.toString() }.forEach(::add) }; putJsonArray("boundaries") {}
+            putJsonArray("diagnostics") { normalizedDiagnostics(analysis.diagnostics).forEach(::add) }
+            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!) }.toString().toByteArray()))
+            put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
+            putJsonArray("inheritanceFacts") { inheritance.forEach(::add) }
             put("firCfgHash", sha(cfg.toString().toByteArray()))
         }
     }
 
     private fun enrichGraph(repo: Path, path: Path, graph: JsonObject, analysis: K2Analysis): JsonObject {
         val facts = fileFacts(repo, path, analysis)
+        val kt = parse(path)
         val nodes = graph["nodes"]!!.jsonArray.map { raw ->
             val node = raw.jsonObject
             val range = node["origin"]?.jsonObject?.get("rangeHint")?.jsonArray
@@ -470,10 +608,39 @@ internal class Worker : AutoCloseable {
                 }
             }
         }
+        val semanticEdges = graph["edges"]!!.jsonArray.map { it.jsonObject }.toMutableList()
+        nodes.filter { it["kind"]?.jsonPrimitive?.content == "CALL" }.forEach { callNode ->
+            val callId = callNode["id"]!!.jsonPrimitive.content
+            callNode["attributes"]?.jsonObject?.get("argumentToParameter")?.jsonArray.orEmpty().forEach { mapping ->
+                val argumentStart = mapping.jsonObject["argumentStart"]?.jsonPrimitive?.intOrNull ?: return@forEach
+                nodes.filter { candidate ->
+                    candidate["id"]?.jsonPrimitive?.content != callId && candidate["origin"]?.jsonObject?.get("rangeHint")?.jsonArray?.let { range ->
+                        range[0].jsonPrimitive.int <= argumentStart && range[1].jsonPrimitive.int > argumentStart
+                    } == true
+                }.minByOrNull { candidate -> candidate["origin"]!!.jsonObject["rangeHint"]!!.jsonArray.let { it[1].jsonPrimitive.int - it[0].jsonPrimitive.int } }
+                    ?.get("id")?.jsonPrimitive?.content?.let { semanticEdges += edge(it, callId, "ARG_PARAM") }
+            }
+            val callRange = callNode["origin"]?.jsonObject?.get("rangeHint")?.jsonArray
+            val callStart = callRange?.getOrNull(0)?.jsonPrimitive?.intOrNull
+            val callEnd = callRange?.getOrNull(1)?.jsonPrimitive?.intOrNull
+            if (callStart != null && callEnd != null) {
+                val qualified = PsiTreeUtil.collectElementsOfType(kt, KtQualifiedExpression::class.java)
+                    .filter { it.textRange.startOffset == callStart && it.textRange.endOffset == callEnd }
+                    .minByOrNull { it.textLength }
+                val receiver = qualified?.receiverExpression
+                if (receiver != null) {
+                    nodes.filter { candidate -> candidate["origin"]?.jsonObject?.get("rangeHint")?.jsonArray?.let { range ->
+                        range[0].jsonPrimitive.int == receiver.textRange.startOffset && range[1].jsonPrimitive.int == receiver.textRange.endOffset
+                    } == true }.minByOrNull { it["id"]!!.jsonPrimitive.content }
+                        ?.get("id")?.jsonPrimitive?.content?.let { semanticEdges += edge(it, callId, "RECEIVER") }
+                }
+            }
+        }
         return buildJsonObject {
-            graph.forEach { (key, value) -> if (key != "nodes" && key != "boundaries") put(key, value) }
+            graph.forEach { (key, value) -> if (key != "nodes" && key != "edges" && key != "boundaries") put(key, value) }
             put("graphSource", graph["graphSource"] ?: JsonPrimitive("K2_FIR_VALIDATED_STRUCTURED_CFG"))
             putJsonArray("nodes") { nodes.forEach(::add) }
+            putJsonArray("edges") { semanticEdges.distinctBy { it.toString() }.sortedBy { it.toString() }.forEach(::add) }
             putJsonArray("boundaries") {
                 graph["boundaries"]?.jsonArray?.forEach(::add)
                 if (!analysis.valid) add(buildJsonObject { put("kind", "INCOMPLETE_SEMANTIC_ANALYSIS"); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) } })
@@ -740,11 +907,33 @@ internal class Worker : AutoCloseable {
             } else if (!sameType(replacementType, expected)) throw WorkerFailure("TYPE_MISMATCH", "replacement type ${replacementType ?: "<unknown>"} is not assignable to $expected")
         }
         if (postconditions["preserveEffects"]?.jsonPrimitive?.booleanOrNull == true && introducedEffects.isNotEmpty()) throw WorkerFailure("EFFECT_CHANGED", "replacement changes effects: ${introducedEffects.sorted()}")
+        val candidateOwner = PsiTreeUtil.collectElementsOfType(candidateFile, KtNamedFunction::class.java).singleOrNull { symbolId(pkg, it) == ownerQuery || symbolId(pkg, it).substringBefore('(') == ownerQuery }
+            ?: throw WorkerFailure("BINDING_CHANGED", "owner declaration changed or disappeared")
+        fun signature(function: KtNamedFunction) = normalizeTokens(sourceSignature(function))
+        fun summary(function: KtNamedFunction, facts: List<JsonObject>) = sha(buildJsonObject {
+            put("bodyHash", sha(normalizeTokens(function.bodyExpression?.text.orEmpty()).toByteArray()))
+            putJsonArray("facts") { facts.filter { fact ->
+                val start = fact["start"]?.jsonPrimitive?.intOrNull ?: -1; val end = fact["end"]?.jsonPrimitive?.intOrNull ?: -1
+                start >= function.textRange.startOffset && end <= function.textRange.endOffset
+            }.map(::semanticSignature).forEach(::add) }
+        }.toString().toByteArray())
+        val beforeSignature = sha(signature(owner).toByteArray()); val afterSignature = sha(signature(candidateOwner).toByteArray())
+        val beforeBody = sha(normalizeTokens(owner.bodyExpression?.text.orEmpty()).toByteArray()); val afterBody = sha(normalizeTokens(candidateOwner.bodyExpression?.text.orEmpty()).toByteArray())
+        val beforeEffects = (effects(owner.bodyExpression ?: owner) + semanticEffects(baselineFacts, owner.textRange.startOffset, owner.textRange.endOffset)).sorted()
+        val afterEffects = (effects(candidateOwner.bodyExpression ?: candidateOwner) + semanticEffects(candidateFacts, candidateOwner.textRange.startOffset, candidateOwner.textRange.endOffset)).sorted()
         return buildJsonObject {
-            put("schema", "semantic-candidate/0.1"); put("file", relative); put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); put("source", candidate)
+            put("schema", "semantic-candidate/0.1"); put("file", relative); put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
             putJsonArray("diagnostics") { candidateAnalysis.diagnostics.forEach(::add) }; putJsonArray("introducedEffects") { introducedEffects.sorted().forEach(::add) }
             originalType?.let { put("originalType", it) }; replacementType?.let { put("replacementType", it) }
             put("protectedBindingsHash", sha(JsonArray(protectedFacts.map(::semanticSignature)).toString().toByteArray())); put("k2Validated", candidateAnalysis.valid)
+            putJsonObject("semanticDelta") {
+                putJsonObject("body") { put("key", ownerQuery); put("beforeHash", beforeBody); put("afterHash", afterBody) }
+                putJsonObject("signature") { put("key", ownerQuery); put("beforeHash", beforeSignature); put("afterHash", afterSignature) }
+                putJsonObject("abi") { put("key", ownerQuery); put("beforeHash", sha("$ownerQuery|$beforeSignature".toByteArray())); put("afterHash", sha("$ownerQuery|$afterSignature".toByteArray())) }
+                putJsonObject("summary") { put("key", ownerQuery); put("beforeHash", summary(owner, baselineFacts)); put("afterHash", summary(candidateOwner, candidateFacts)) }
+                putJsonObject("effects") { put("key", ownerQuery); put("beforeHash", sha(JsonArray(beforeEffects.map(::JsonPrimitive)).toString().toByteArray())); put("afterHash", sha(JsonArray(afterEffects.map(::JsonPrimitive)).toString().toByteArray())) }
+                putJsonObject("diagnostics") { put("key", relative); put("beforeHash", sha(JsonArray(baseline.diagnostics).toString().toByteArray())); put("afterHash", sha(JsonArray(candidateAnalysis.diagnostics).toString().toByteArray())) }
+            }
         }
     }
 
@@ -781,12 +970,26 @@ internal class Worker : AutoCloseable {
         val after = fileFacts(repo, path, candidateAnalysis).map(::semanticSignature).groupingBy { it.toString() }.eachCount()
         if (before != after) throw WorkerFailure("BINDING_CHANGED", "import operation changes protected K2 bindings")
         return buildJsonObject {
-            put("schema", "semantic-candidate/0.1"); put("file", relative); put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); put("source", candidate)
+            put("schema", "semantic-candidate/0.1"); put("file", relative); put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
             putJsonArray("diagnostics") { candidateAnalysis.diagnostics.forEach(::add) }; putJsonArray("introducedEffects") {}; put("k2Validated", candidateAnalysis.valid)
         }
     }
 
     private fun isErrorDiagnostic(diagnostic: JsonObject) = diagnostic["severity"]?.jsonPrimitive?.content == "ERROR"
+    private fun normalizedDiagnostics(diagnostics: List<JsonObject>): List<JsonObject> = diagnostics.map { diagnostic ->
+        buildJsonObject {
+            put("severity", diagnostic["severity"] ?: JsonPrimitive("INFO"))
+            put("message", diagnostic["message"]?.jsonPrimitive?.content.orEmpty().replace(Regex("^(?:[^:]+/)*[^:]+\\.kt:\\d+:\\d+:\\s*"), ""))
+        }
+    }.sortedBy { it.toString() }
+    private fun JsonObjectBuilder.putCandidateSource(repo: Path, source: String) {
+        val bytes = source.toByteArray()
+        if (bytes.size <= 64 * 1024) { put("source", source); return }
+        val hash = sha(bytes); val relative = ".semantic-thread/blobs/sha256/${hash.removePrefix("sha256:")}"
+        val path = repo.resolve(relative)
+        if (!path.isRegularFile()) writeCacheAtomically(path, source)
+        putJsonObject("sourceBlob") { put("contentHash", hash); put("relativePath", relative); put("sizeBytes", bytes.size) }
+    }
     private fun diagnosticIdentity(diagnostic: JsonObject) = diagnostic["message"]?.jsonPrimitive?.content.orEmpty().replace(Regex("/[^ :]+/semantic-thread-k2[^ :]+"), "<candidate>")
     private fun semanticSignature(fact: JsonObject) = buildJsonObject {
         listOf("kind", "type", "symbol", "returnType", "receiverType", "effects").forEach { key -> fact[key]?.let { put(key, it) } }

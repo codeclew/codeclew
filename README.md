@@ -18,6 +18,7 @@ Kotlin and `protoc` do not need system installations. Kotlin 2.4.10 is resolved 
 cargo run --bin sthread -- doctor
 cargo run --bin sthread -- project inspect --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic
+cargo run --bin sthread -- index --repo fixtures/kotlin-basic --syntax-only
 ```
 
 For slicing, preview and commit the target must be a Git repository with a committed `HEAD`. The reproducible demonstration creates an isolated copy:
@@ -31,16 +32,17 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 ## Supported vertical
 
 - Gradle Kotlin/JVM inspection and project model fingerprinting
-- PSI declaration index with K2 FIR facts persisted in SQLite WAL/content blobs
+- §11 PSI declaration/file/semantic facts with typed invalidation persisted in compilation-scoped SQLite WAL/content blobs
 - FQN function and file+offset expression resolution
 - composite semantic anchors with unique replay
 - actual K2 FIR CFG normalization, Rust dominance-frontier SSA/PHI/def-use and post-dominator control dependencies
 - forward/backward/bidirectional bounded slicing and canonical Thread IR
 - `REPLACE_EXPRESSION`, `REPLACE_FUNCTION_BODY`, `ADD_IMPORT`, and `REMOVE_IMPORT` on PSI copies
 - K2 candidate diagnostics, type, protected-binding, call-target, callee-summary, and effect validation
-- minimal preview diff, isolated worktree validation, configured tests
+- minimal preview diff with Expected/ActualWriteSet and ABI enforcement, isolated worktree validation, configured tests
 - candidate commits with provenance trailers and CAS ref update
-- append-only SQLite transaction ledger with trailer-based crash recovery and idempotent retry, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
+- typed Protobuf requests, mandatory snapshots, batching and content-addressed large-source BlobRefs
+- append-only SQLite transaction ledger with pre/post-CAS crash recovery and idempotent retry, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
 
 This is intentionally fail-closed. Android, KMP, scripts, compiler plugins, reflection, precise coroutine lowering, global interprocedural analysis, and ambiguous anchors are rejected or marked as boundaries. See [progress](docs/progress.md) and [final report](docs/final-report.md).
 

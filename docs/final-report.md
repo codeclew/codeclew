@@ -6,15 +6,15 @@ The repository contains a runnable Rust/Kotlin vertical covering Gradle model in
 
 ## Gates and correctness evidence
 
-`scripts/verify.sh` builds both toolchains, runs unit, golden-language, metamorphic and real-worktree concurrency tests, checks the protocol handshake and deterministic inspect/index output, then runs the transaction demonstration. The `total` slice includes `base`, `premium`, initial and conditional `value` definitions, PHI and return. Invalid Kotlin is rejected without ref movement; valid candidates compile and receive transaction trailers. Repeating the same transaction is deduplicated by its transaction ID and Edit IR hash, while ledger inspection reconciles interrupted commits from reachable trailers.
+`scripts/verify.sh` builds both toolchains, runs unit, golden-language, metamorphic and real-worktree concurrency tests, checks typed/batch/blob protocol paths and deterministic inspect/index output, executes the 100k-LOC corpus gate, then runs the transaction demonstration. The `total` slice includes `base`, `premium`, initial and conditional `value` definitions, PHI and return. Invalid Kotlin is rejected without ref movement; valid candidates compile and receive transaction trailers. Repeating the same transaction is deduplicated by its transaction ID and Edit IR hash. Ledger inspection reconciles both post-publication crashes from reachable trailers and pre-CAS crashes from the validated candidate commit.
 
 ## Kotlin constructs
 
-The fixtures cover functions/members/parameters/locals, assignments, if/when, loops and jumps, return/throw/try/finally, calls/extensions/named/default arguments, safe calls/Elvis, properties, lambda capture and suspend/Java boundaries. Calls are opaque, content-hashed summaries at call depth zero. Unsupported project forms and ambiguous source targets fail closed.
+The fixtures cover functions/members/parameters/locals, assignments, if/when, loops and jumps, return/throw/try/finally, calls/extensions/named/default arguments, safe calls/Elvis, properties, lambda capture and suspend/Java boundaries. Each call-site normalizes to one CALL node with explicit CALL/RETURN/ARG_PARAM/RECEIVER edges and an opaque content-hashed summary at call depth zero. ReadSets include source/signature/symbol/type/call/summary/diagnostics/inheritance/compiler/classpath facts; preview enforces semantic ExpectedWriteSet/ActualWriteSet scope and protected ABI.
 
 ## Performance
 
-The benchmark runner separately reports worker startup, IPC plus PSI parse, composite-anchor resolution, K2 analysis, FIR extraction, SSA/control construction, slicing, canonical serialization, project-model loading, declaration indexing, edit preview and Gradle validation. The fixture is intentionally small and is not evidence for the 100k LOC SLO. Timings are recorded in `benchmarks/reports/latest.json` when `scripts/benchmark.sh` runs.
+The stage benchmark separately reports worker startup, IPC plus PSI parse, warm one-file reindex, composite-anchor resolution, cold/first and warm K2 analysis, FIR extraction, SSA/control construction, slicing, canonical serialization, project-model loading, declaration indexing, cold/warm edit preview and Gradle validation. The recorded warm run is one-file reindex 27 ms, anchor 4 ms, K2 20 ms, FIR 43 ms and preview 460 ms. The separate generated corpus contains 100,002 Kotlin lines and its cold syntax/declaration index passes the 20 s SLO; the exact latest duration is kept in the machine-readable report. Reports live in `benchmarks/reports/latest.json` and `benchmarks/reports/corpus-100k.json`.
 
 ## Kotlin K2/FIR isolation
 
@@ -22,4 +22,4 @@ The worker launches the pinned Kotlin 2.4.10 K2 compiler with an in-distribution
 
 ## Next stage
 
-Extend the supported project contour to Android/KMP, add deeper interprocedural summaries and corpus-scale SLO measurements. The language-neutral protocol/IR/transaction boundary is ready for another language worker without importing Kotlin types into Rust.
+Extend the supported project contour to Android/KMP and add deeper interprocedural summaries. The language-neutral protocol/IR/transaction boundary is ready for another language worker without importing Kotlin types into Rust.

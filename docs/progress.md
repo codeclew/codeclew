@@ -4,13 +4,13 @@
 |---|---|---|
 | 0 Bootstrap | Rust starts worker, handshakes and shuts down | Passed |
 | 1 Project model | repeated canonical model/hash | Passed on `kotlin-basic` |
-| 2 Declaration index | compilation-scoped SQLite/WAL incremental update without unchanged-file rewrites | Passed |
+| 2 Declaration index | complete §11 facts, compilation-scoped SQLite/WAL incremental update and typed invalidation | Passed, including 100k-LOC corpus gate |
 | 3 Semantic facts | K2 types, call targets, receivers, argument mappings, diagnostics | Passed by FIR-plugin golden tests |
 | 4 Local CFG | actual K2 FIR CFG exported and normalized | Passed for branch/loop/exception/safe-call fixtures |
 | 5 Rust graph | dominance-frontier SSA, PHI, def-use, post-dominator control dependencies | Passed by golden and permutation tests |
-| 6 Slicer | bounded directions, Thread IR, ReadSet, explicit boundaries | Passed |
-| 7 Preview | replacements/imports, unique anchors, K2 candidate facts, protected bindings/type/diagnostic/effect checks | Passed by metamorphic tests |
-| 8 Commit | worktree, compile/tests, trailers, CAS, recoverable ledger, idempotent retry | Passed by demo/integration path |
+| 6 Slicer | bounded directions, Thread IR, full semantic ReadSet, explicit boundaries | Passed |
+| 7 Preview | replacements/imports, unique anchors, K2 candidate facts, protected bindings/type/diagnostic/effect/ABI/WriteSet checks | Passed by metamorphic tests |
+| 8 Commit | worktree, compile/tests, trailers, CAS, pre/post-CAS recovery, idempotent retry | Passed by demo/integration path |
 | 9 Parallel transactions | semantic replay, ReadSet/callee invalidation, WW and project-model conflicts | Passed by executable concurrency matrix |
 | 10 Docs/benchmarks | docs, ADRs, smoke timing | Passed for MVP scope |
 

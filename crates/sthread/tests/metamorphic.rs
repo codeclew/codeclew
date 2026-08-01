@@ -4,8 +4,11 @@ use std::process::Command;
 use sthread::canonical;
 use sthread::error::ErrorCode;
 use sthread::graph;
-use sthread::model::{LocalGraph, SlicePolicy, Snapshot, ThreadIr};
+use sthread::model::{
+    EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, ThreadIr,
+};
 use sthread::proto::RequestKind;
+use sthread::transaction;
 use sthread::worker::{WorkerClient, workspace_root};
 
 fn copy_fixture(from: &Path, to: &Path) {
@@ -213,6 +216,44 @@ fn anchors_ir_and_candidate_validation_are_metamorphic() {
     let duplicate_candidate = duplicate_candidate["source"].as_str().unwrap();
     assert_eq!(duplicate_candidate.matches("value + 2").count(), 1);
     assert_eq!(duplicate_candidate.matches("value + 1").count(), 1);
+    let mut preview_thread = thread.clone();
+    let base_revision = String::from_utf8(original_ref.clone())
+        .unwrap()
+        .trim()
+        .to_owned();
+    preview_thread.snapshot.base_revision = base_revision.clone();
+    let preview_edit = EditIr {
+        schema: "semantic-edit/0.1".into(),
+        thread_id: preview_thread.thread_id.clone(),
+        base_revision,
+        operations: vec![EditOperation {
+            op_id: "op:writeset".into(),
+            kind: "REPLACE_EXPRESSION".into(),
+            target: duplicate_target.clone(),
+            replacement: Replacement {
+                kotlin: "value + 2".into(),
+            },
+            preconditions: Default::default(),
+            postconditions: Default::default(),
+        }],
+        expected_write_set: vec![],
+    };
+    let preview = transaction::preview(&repo, &preview_thread, &preview_edit, &mut worker).unwrap();
+    for kind in ["TARGET_ANCHOR", "BODY", "SUMMARY"] {
+        assert!(
+            preview
+                .expected_write_set
+                .iter()
+                .any(|fact| fact.kind == kind),
+            "ExpectedWriteSet lacks {kind}"
+        );
+    }
+    assert!(preview.actual_write_set.iter().all(|actual| {
+        preview
+            .expected_write_set
+            .iter()
+            .any(|expected| expected.kind == actual.kind && expected.key == actual.key)
+    }));
     let import_request = json!({
         "repo":repo,"file":"src/main/kotlin/com/acme/Samples.kt","kind":"ADD_IMPORT",
         "replacement":"java.time.Instant","source":std::fs::read_to_string(&path).unwrap()

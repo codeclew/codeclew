@@ -36,7 +36,7 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
-    Index(RepoArgs),
+    Index(IndexArgs),
     Resolve {
         #[command(subcommand)]
         command: ResolveCommand,
@@ -79,6 +79,20 @@ struct RepoArgs {
     repo: PathBuf,
     #[arg(long)]
     compilation: Option<String>,
+}
+#[derive(Args)]
+struct IndexArgs {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long)]
+    compilation: Option<String>,
+    #[arg(
+        long,
+        help = "Build the cold syntax/declaration index without K2 enrichment"
+    )]
+    syntax_only: bool,
+    #[arg(long = "file", help = "Incrementally update one relative Kotlin file")]
+    files: Vec<String>,
 }
 #[derive(Args)]
 struct SymbolArgs {
@@ -207,12 +221,19 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             )?;
             let facts = w.request(
                 RequestKind::IndexFiles,
-                &json!({"repo":repo,"compilation":args.compilation}),
+                &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":args.syntax_only,"files":args.files}),
             )?;
-            let mut index = RepositoryIndex::open_compilation(&repo, args.compilation.as_deref())?;
+            let syntax_storage = args
+                .syntax_only
+                .then(|| format!("{}#syntax", args.compilation.as_deref().unwrap_or(":/main")));
+            let mut index = RepositoryIndex::open_compilation(
+                &repo,
+                syntax_storage.as_deref().or(args.compilation.as_deref()),
+            )?;
             let persistent_hash = index.update(&facts)?;
+            let invalidations = index.invalidations()?;
             Ok(
-                json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len)}),
+                json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len),"invalidations":invalidations}),
             )
         }),
         Command::Resolve {

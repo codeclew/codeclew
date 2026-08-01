@@ -1,4 +1,21 @@
 syntax = "proto3";
 package semantic_thread.ir.v1;
-message ThreadIrBlob { string schema = 1; bytes canonical_json = 2; }
 
+message SchemaVersion { uint32 major = 1; uint32 minor = 2; }
+message Snapshot { string base_revision = 1; string project_model_hash = 2; string compiler_version = 3; }
+message Fact { string kind = 1; string key = 2; string hash = 3; }
+message Node { string id = 1; string kind = 2; bytes semantic_anchor = 3; repeated string uses = 4; optional string defines = 5; }
+message Edge { string from = 1; string to = 2; string kind = 3; }
+message Completeness { string status = 1; repeated bytes boundaries = 2; }
+message ThreadIr {
+  SchemaVersion schema_version = 1;
+  string thread_id = 2;
+  Snapshot snapshot = 3;
+  bytes seed = 4;
+  bytes policy = 5;
+  Completeness completeness = 6;
+  repeated Node nodes = 7;
+  repeated Edge edges = 8;
+  repeated Fact read_set = 9;
+  repeated bytes external_summaries = 10;
+}

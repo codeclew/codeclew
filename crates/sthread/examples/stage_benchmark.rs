@@ -22,6 +22,28 @@ fn main() {
         .expect("IPC/PSI probe");
     let ipc_plus_psi = started.elapsed().as_millis();
 
+    worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .expect("project snapshot setup");
+
+    worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main","syntaxOnly":true,"files":["src/main/kotlin/com/acme/Samples.kt"]}),
+        )
+        .expect("file index warmup");
+    let started = Instant::now();
+    worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main","syntaxOnly":true,"files":["src/main/kotlin/com/acme/Samples.kt"]}),
+        )
+        .expect("warm file reindex");
+    let warm_file_reindex = started.elapsed().as_millis();
+
     let source =
         std::fs::read_to_string(fixture.join("src/main/kotlin/com/acme/Samples.kt")).unwrap();
     let started = Instant::now();
@@ -35,6 +57,15 @@ fn main() {
             &json!({"repo":fixture,"symbol":"com.acme.total"}),
         )
         .expect("K2 facts");
+    let k2_analysis_cold = started.elapsed().as_millis();
+
+    let started = Instant::now();
+    worker
+        .request(
+            RequestKind::ResolveSymbol,
+            &json!({"repo":fixture,"symbol":"com.acme.total"}),
+        )
+        .expect("warm K2 facts");
     let k2_analysis = started.elapsed().as_millis();
 
     let started = Instant::now();
@@ -77,5 +108,5 @@ fn main() {
     let _ = canonical::bytes(&thread).unwrap();
     let serialization = started.elapsed().as_millis();
     worker.shutdown().unwrap();
-    println!("{}", serde_json::to_string(&json!({"workerStartup":worker_startup,"ipcPlusPsiParse":ipc_plus_psi,"anchorResolution":anchor_resolution,"k2Analysis":k2_analysis,"firExtraction":fir_extraction,"ssaAndControl":ssa_and_control,"slicing":slicing,"canonicalSerialization":serialization})).unwrap());
+    println!("{}", serde_json::to_string(&json!({"workerStartup":worker_startup,"ipcPlusPsiParse":ipc_plus_psi,"warmFileReindex":warm_file_reindex,"anchorResolution":anchor_resolution,"k2AnalysisCold":k2_analysis_cold,"k2Analysis":k2_analysis,"firExtraction":fir_extraction,"ssaAndControl":ssa_and_control,"slicing":slicing,"canonicalSerialization":serialization})).unwrap());
 }

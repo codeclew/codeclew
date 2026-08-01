@@ -42,6 +42,39 @@ fn k2_fir_golden_language_and_slice_matrix() {
             .iter()
             .all(|file| file["path"].as_str().unwrap().contains("/test/"))
     );
+    let main_index = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    let indexed_file = &main_index["files"][0];
+    for field in [
+        "fileId",
+        "module",
+        "sourceSet",
+        "normalizedRelativePath",
+        "declarationIds",
+        "inheritance",
+        "overrides",
+        "functionSummaries",
+        "diagnostics",
+    ] {
+        assert!(!indexed_file[field].is_null(), "file fact lacks {field}");
+    }
+    for declaration in indexed_file["declarations"].as_array().unwrap() {
+        for field in [
+            "declarationId",
+            "symbolId",
+            "sourceOrigin",
+            "sourceSignatureHash",
+            "bodyHash",
+            "abiHash",
+            "semanticSummaryHash",
+        ] {
+            assert!(!declaration[field].is_null(), "declaration lacks {field}");
+        }
+    }
 
     let call = worker
         .request(
@@ -217,7 +250,21 @@ fn k2_fir_golden_language_and_slice_matrix() {
             .iter()
             .any(|node| node.attributes.contains_key("receiverType"))
     );
-    assert!(calls.nodes.iter().any(|node| node.kind == "CALL"));
+    assert_eq!(
+        calls
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "CALL")
+            .count(),
+        1,
+        "one Kotlin call-site must normalize to exactly one CALL node"
+    );
+    for edge in ["CALL", "RETURN", "ARG_PARAM", "RECEIVER"] {
+        assert!(
+            calls.edges.iter().any(|candidate| candidate.kind == edge),
+            "named/default extension call lacks {edge}"
+        );
+    }
     let call_seed = calls
         .nodes
         .iter()
@@ -243,6 +290,13 @@ fn k2_fir_golden_language_and_slice_matrix() {
     );
     assert!(!call_thread.completeness.boundaries.is_empty());
     assert!(!call_thread.external_summaries.is_empty());
+    assert_eq!(call_thread.external_summaries.len(), 1);
+    for kind in ["COMPILER_OPTIONS", "CLASSPATH", "INHERITANCE"] {
+        assert!(
+            call_thread.read_set.iter().any(|fact| fact.kind == kind),
+            "call Thread ReadSet lacks {kind}"
+        );
+    }
 
     let capture = worker
         .request(
