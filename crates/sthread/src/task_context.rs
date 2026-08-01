@@ -737,7 +737,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             let id = candidate.declaration["declarationId"]
                 .as_str()
                 .unwrap_or_default();
-            let required = selection.required_candidate_ids.contains(id);
+            let explicitly_required = selection.required_candidate_ids.contains(id);
             let role = if selection.entrypoint_candidate_ids.contains(id) {
                 "WORKFLOW"
             } else if selection.explicit_candidate_ids.contains(id) {
@@ -758,7 +758,8 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
                 "DEPENDENCY"
             };
             surface["role"] = json!(role);
-            surface["required"] = json!(required);
+            surface["required"] = json!(explicitly_required || role == "WORKFLOW");
+            surface["surfaceRequired"] = json!(true);
             surface["surfaceOrder"] = json!(index + 1);
             surface
         })
@@ -1847,6 +1848,10 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
         if array_len(&pack, "contracts") > 2 && pop_array(&mut pack, "contracts") {
             continue;
         }
+        if let Some(omitted) = strip_largest_optional_source(&mut pack) {
+            source_bytes += omitted;
+            continue;
+        }
         // Optional graph expansion is useful orientation, not part of the
         // required edit surface. Remove it before degrading an entrypoint,
         // explicit target, contract, or requested test.
@@ -1914,12 +1919,28 @@ fn pop_last_optional(value: &mut Value, key: &str) -> bool {
     };
     let Some(index) = items
         .iter()
-        .rposition(|item| item["required"].as_bool() == Some(false))
+        .rposition(|item| item["surfaceRequired"].as_bool() == Some(false))
     else {
         return false;
     };
     items.remove(index);
     true
+}
+
+fn strip_largest_optional_source(pack: &mut Value) -> Option<usize> {
+    let (index, length) = pack["editSurfaces"]
+        .as_array()?
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item["required"].as_bool() == Some(false))
+        .filter_map(|(index, item)| Some((index, item["sourceText"].as_str()?.len())))
+        .filter(|(_, length)| *length > 0)
+        .max_by_key(|(_, length)| *length)?;
+    let item = pack["editSurfaces"].as_array_mut()?.get_mut(index)?;
+    item["sourceText"] = json!("");
+    item["sourceProjection"] = json!("GRAPH_SIGNATURE_ONLY");
+    item["sourceBytesOmitted"] = json!(length);
+    Some(length)
 }
 
 fn trim_largest_source(pack: &mut Value) -> Option<(usize, bool)> {
@@ -2152,14 +2173,14 @@ mod tests {
     }
 
     #[test]
-    fn stdout_budget_discards_optional_graph_source_before_required_surface() {
+    fn stdout_budget_keeps_optional_graph_role_before_required_source() {
         let required_source = "r".repeat(2_000);
         let optional_source = "o".repeat(2_000);
         let pack = json!({
             "task":{},
             "editSurfaces":[
-                {"name":"main","required":true,"sourceText":required_source},
-                {"name":"loadRecords","required":false,"sourceText":optional_source}
+                {"name":"main","required":true,"surfaceRequired":true,"sourceText":required_source},
+                {"name":"loadRecords","required":false,"surfaceRequired":true,"sourceText":optional_source}
             ],
             "executionPath":[],
             "contracts":[],
@@ -2174,7 +2195,7 @@ mod tests {
         let bounded = enforce_budget(pack, 4_096).unwrap();
 
         assert_eq!(bounded["completeness"]["status"], "COMPLETE_TASK");
-        assert_eq!(bounded["editSurfaces"].as_array().unwrap().len(), 1);
+        assert_eq!(bounded["editSurfaces"].as_array().unwrap().len(), 2);
         assert_eq!(bounded["editSurfaces"][0]["name"], "main");
         assert_eq!(
             bounded["editSurfaces"][0]["sourceText"]
@@ -2183,8 +2204,10 @@ mod tests {
                 .len(),
             2_000
         );
-        assert_eq!(bounded["completeness"]["omitted"]["editSurfaces"], 1);
-        assert_eq!(bounded["completeness"]["omitted"]["sourceBytes"], 0);
+        assert_eq!(bounded["editSurfaces"][1]["name"], "loadRecords");
+        assert_eq!(bounded["editSurfaces"][1]["sourceText"], "");
+        assert_eq!(bounded["completeness"]["omitted"]["editSurfaces"], 0);
+        assert_eq!(bounded["completeness"]["omitted"]["sourceBytes"], 2_000);
     }
 
     #[test]
