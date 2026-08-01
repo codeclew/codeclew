@@ -40,11 +40,11 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 - forward/backward/bidirectional bounded slicing and canonical Thread IR
 - `REPLACE_EXPRESSION`, `REPLACE_FUNCTION_BODY`, `ADD_IMPORT`, and `REMOVE_IMPORT` on PSI copies
 - K2 candidate diagnostics, type, protected-binding, call-target, callee-summary, and effect validation
-- minimal preview diff with Expected/ActualWriteSet and ABI enforcement, isolated worktree validation, configured tests
-- candidate commits with provenance trailers and CAS ref update
+- minimal preview diff with Expected/ActualWriteSet and ABI enforcement, isolated worktree validation, and configured tests run by default
+- candidate commits with provenance trailers, a completely staged index, CAS ref update, atomic index rename, and inverse-CAS rollback
 - typed Protobuf requests, mandatory snapshots, batching and content-addressed large-source BlobRefs
 - append-only SQLite transaction ledger with pre/post-CAS crash recovery and idempotent retry, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
-- immutable RepositoryIndex snapshots with post-CAS publication, executable caller/downstream invalidation, and recovery repair
+- immutable RepositoryIndex snapshots with pre-CAS construction, atomic publication, executable caller/downstream invalidation, and recovery repair
 - complete language-neutral SymbolId, AST/type edges, and LOCAL/THIS/OBJECT/STATIC/UNKNOWN memory abstractions
 - separate long-lived Rust `semanticd` JSONL service with structured logs and required metrics
 

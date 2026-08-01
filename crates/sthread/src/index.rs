@@ -11,6 +11,52 @@ pub struct RepositoryIndex {
     blobs: PathBuf,
 }
 
+/// A fully built repository index that is not visible to readers yet.
+///
+/// The staged database lives beside the published database, so `publish` is a
+/// same-filesystem atomic rename.  Dropping an unpublished stage only removes
+/// the private staging file; the live index is never modified.
+#[derive(Debug)]
+pub struct StagedIndex {
+    staging_path: PathBuf,
+    published_path: PathBuf,
+    hash: String,
+    invalidations: Vec<String>,
+    published: bool,
+}
+
+impl StagedIndex {
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    pub fn invalidations(&self) -> &[String] {
+        &self.invalidations
+    }
+
+    pub fn publish(mut self) -> Result<(String, Vec<String>), SthreadError> {
+        std::fs::rename(&self.staging_path, &self.published_path).map_err(|error| {
+            SthreadError::new(
+                ErrorCode::Internal,
+                format!(
+                    "cannot atomically publish repository index {}: {error}",
+                    self.published_path.display()
+                ),
+            )
+        })?;
+        self.published = true;
+        Ok((self.hash.clone(), self.invalidations.clone()))
+    }
+}
+
+impl Drop for StagedIndex {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = std::fs::remove_file(&self.staging_path);
+        }
+    }
+}
+
 impl RepositoryIndex {
     pub fn open(repo: &Path) -> Result<Self, SthreadError> {
         Self::open_compilation(repo, None)
@@ -21,23 +67,11 @@ impl RepositoryIndex {
         std::fs::create_dir_all(&state).map_err(io_error)?;
         let blobs = state.join("blobs/sha256");
         std::fs::create_dir_all(&blobs).map_err(io_error)?;
-        let database = compilation.map_or_else(
-            || "index.sqlite3".to_owned(),
-            |unit| {
-                let safe: String = unit
-                    .chars()
-                    .map(|character| {
-                        if character.is_ascii_alphanumeric() {
-                            character
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
-                format!("index{safe}.sqlite3")
-            },
-        );
-        let connection = Connection::open(state.join(database)).map_err(db_error)?;
+        Self::open_database(repo, state.join(database_name(compilation)), blobs)
+    }
+
+    fn open_database(repo: &Path, database: PathBuf, blobs: PathBuf) -> Result<Self, SthreadError> {
+        let connection = Connection::open(database).map_err(db_error)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(db_error)?;
@@ -59,6 +93,69 @@ impl RepositoryIndex {
             repo: repo.to_path_buf(),
             blobs,
         })
+    }
+
+    /// Build the complete post-commit index without changing the published
+    /// database.  All fallible K2 and SQLite work therefore happens before the
+    /// Git ref compare-and-swap.
+    pub fn stage_update(
+        repo: &Path,
+        compilation: Option<&str>,
+        facts: &Value,
+        source_root: &Path,
+        revision: &str,
+    ) -> Result<StagedIndex, SthreadError> {
+        let state = repo.join(".semantic-thread");
+        std::fs::create_dir_all(&state).map_err(io_error)?;
+        let blobs = state.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).map_err(io_error)?;
+        let published_path = state.join(database_name(compilation));
+        let staging_path = state.join(format!(".index-stage-{}.sqlite3", uuid::Uuid::new_v4()));
+
+        if published_path.exists() {
+            // Materialize WAL contents into the database before taking the
+            // private copy.  Failure is pre-publication and leaves both ref and
+            // live index untouched.
+            let live = Connection::open(&published_path).map_err(db_error)?;
+            let (busy, log_frames, checkpointed_frames): (i64, i64, i64) = live
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(db_error)?;
+            if busy != 0 || log_frames != checkpointed_frames {
+                return Err(SthreadError::new(
+                    ErrorCode::Internal,
+                    "published index is busy and cannot be staged consistently",
+                ));
+            }
+            drop(live);
+            std::fs::copy(&published_path, &staging_path).map_err(io_error)?;
+        }
+
+        let result = (|| {
+            let mut staged = Self::open_database(repo, staging_path.clone(), blobs.clone())?;
+            let hash = staged.update_from_root(facts, source_root)?;
+            let invalidations = staged.invalidations()?;
+            staged.mark_published_revision(revision)?;
+            // The renamed file must be self-contained; no staging WAL file may
+            // be required after publication.
+            staged
+                .connection
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+                .map_err(db_error)?;
+            drop(staged);
+            Ok(StagedIndex {
+                staging_path: staging_path.clone(),
+                published_path,
+                hash,
+                invalidations,
+                published: false,
+            })
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&staging_path);
+        }
+        result
     }
 
     pub fn update(&mut self, facts: &Value) -> Result<String, SthreadError> {
@@ -283,6 +380,25 @@ impl RepositoryIndex {
     }
 }
 
+fn database_name(compilation: Option<&str>) -> String {
+    compilation.map_or_else(
+        || "index.sqlite3".to_owned(),
+        |unit| {
+            let safe: String = unit
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() {
+                        character
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            format!("index{safe}.sqlite3")
+        },
+    )
+}
+
 fn classify_file_change(
     path: &str,
     before: &Value,
@@ -354,6 +470,85 @@ fn internal(error: anyhow::Error) -> SthreadError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn staged_index_is_invisible_until_atomic_publish() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("A.kt");
+        let facts = |source: &str| {
+            json!({"files":[{
+                "path":"A.kt",
+                "contentHash":canonical::hash_bytes(source.as_bytes()),
+                "declarations":[{"symbolId":"a"}],
+                "semanticFacts":[]
+            }]})
+        };
+        std::fs::write(&source_path, "fun a() = 1\n").unwrap();
+        let mut live = RepositoryIndex::open(temp.path()).unwrap();
+        let old_hash = live.update(&facts("fun a() = 1\n")).unwrap();
+        live.mark_published_revision("old").unwrap();
+        drop(live);
+
+        std::fs::write(&source_path, "fun a() = 2\n").unwrap();
+        let stage = RepositoryIndex::stage_update(
+            temp.path(),
+            None,
+            &facts("fun a() = 2\n"),
+            temp.path(),
+            "new",
+        )
+        .unwrap();
+        let new_hash = stage.hash().to_owned();
+        let visible = RepositoryIndex::open(temp.path()).unwrap();
+        assert_eq!(visible.hash().unwrap().as_deref(), Some(old_hash.as_str()));
+        assert_eq!(
+            visible.published_revision().unwrap().as_deref(),
+            Some("old")
+        );
+        drop(visible);
+
+        stage.publish().unwrap();
+        let visible = RepositoryIndex::open(temp.path()).unwrap();
+        assert_eq!(visible.hash().unwrap().as_deref(), Some(new_hash.as_str()));
+        assert_eq!(
+            visible.published_revision().unwrap().as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn failed_stage_preserves_published_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("A.kt"), "fun a() = 1\n").unwrap();
+        let facts = |source: &str| {
+            json!({"files":[{
+                "path":"A.kt",
+                "contentHash":canonical::hash_bytes(source.as_bytes()),
+                "declarations":[{"symbolId":"a"}],
+                "semanticFacts":[]
+            }]})
+        };
+        let mut live = RepositoryIndex::open(temp.path()).unwrap();
+        let old_hash = live.update(&facts("fun a() = 1\n")).unwrap();
+        live.mark_published_revision("old").unwrap();
+        drop(live);
+
+        let error = RepositoryIndex::stage_update(
+            temp.path(),
+            None,
+            &facts("fun a() = 2\n"),
+            temp.path(),
+            "never-published",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ProjectModelChanged);
+        let visible = RepositoryIndex::open(temp.path()).unwrap();
+        assert_eq!(visible.hash().unwrap().as_deref(), Some(old_hash.as_str()));
+        assert_eq!(
+            visible.published_revision().unwrap().as_deref(),
+            Some("old")
+        );
+    }
 
     #[test]
     fn unchanged_files_are_not_rewritten() {

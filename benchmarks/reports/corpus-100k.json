@@ -2,7 +2,7 @@
   "schema": "semantic-corpus-benchmark/0.1",
   "mode": "cold-syntax-declaration-index",
   "kotlinLoc": 100002,
-  "milliseconds": 7720,
+  "milliseconds": 7940,
   "sloMilliseconds": 20000,
   "passed": true
 }

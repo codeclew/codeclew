@@ -1,8 +1,9 @@
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
+use sthread::canonical;
 use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
 use sthread::index::RepositoryIndex;
@@ -16,6 +17,7 @@ struct Metrics {
     values: BTreeMap<String, u64>,
     failures: BTreeMap<String, u64>,
     conflicts: BTreeMap<String, u64>,
+    seen_cache_keys: BTreeSet<String>,
 }
 
 impl Metrics {
@@ -55,6 +57,21 @@ impl Metrics {
             "transactionConflictsByCategory":self.conflicts,
             "cacheHitRate": if values.get("cache_requests").copied().unwrap_or(0) == 0 { 0.0 } else { values.get("cache_hits").copied().unwrap_or(0) as f64 / values["cache_requests"] as f64 }
         })
+    }
+
+    fn observe_cache_request(&mut self, method: &str, params: &Value) {
+        if !matches!(
+            method,
+            "project.inspect" | "index" | "resolve.symbol" | "resolve.expression" | "graph.local"
+        ) {
+            return;
+        }
+        self.add("cache_requests", 1);
+        let key = canonical::hash(&json!({"method":method,"params":params}))
+            .unwrap_or_else(|_| format!("{method}:{params}"));
+        if !self.seen_cache_keys.insert(key) {
+            self.add("cache_hits", 1);
+        }
     }
 }
 
@@ -162,6 +179,10 @@ fn dispatch(
             .and_then(Value::as_str)
             .unwrap_or(":/main")
     };
+    metrics.observe_cache_request(method, params);
+    if !repo().is_empty() {
+        metrics.set("orphan_worktrees", orphan_worktrees(Path::new(repo())));
+    }
     match method {
         "health" => Ok(json!({"status":"OK","service":"semanticd","workerPid":worker.pid()})),
         "metrics" => Ok(metrics.snapshot(worker.pid())),
@@ -229,18 +250,45 @@ fn dispatch(
             .map_err(parse_error)
         }
         "tx.commit" => {
-            let started = Instant::now();
             let mut transaction: Transaction =
                 serde_json::from_value(params["transaction"].clone()).map_err(parse_error)?;
+            let transaction_id = transaction.tx_id.clone();
+            let snapshot_id = transaction.thread.snapshot.index_snapshot.clone();
+            let relevant = transaction
+                .edit
+                .operations
+                .first()
+                .and_then(|operation| {
+                    operation
+                        .target
+                        .get("anchorId")
+                        .or_else(|| operation.target.get("ownerSymbolId"))
+                })
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             let target = params["targetRef"].as_str().ok_or_else(|| {
                 SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef")
             })?;
-            let result = transaction::commit(Path::new(repo()), &mut transaction, target, worker);
+            let result =
+                match transaction::commit(Path::new(repo()), &mut transaction, target, worker) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        metrics.add(
+                            "gradle_validation_duration_ms",
+                            gradle_duration_from_evidence(&error),
+                        );
+                        return Err(error
+                            .with_transaction(transaction_id)
+                            .with_snapshot(snapshot_id)
+                            .with_relevant(relevant));
+                    }
+                };
             metrics.add(
                 "gradle_validation_duration_ms",
-                started.elapsed().as_millis() as u64,
+                result["gradleValidationDurationMs"].as_u64().unwrap_or(0),
             );
-            result
+            Ok(result)
         }
         "tx.inspect" => transaction::ledger(Path::new(repo()))?
             .inspect(params["transactionId"].as_str().unwrap_or_default()),
@@ -250,6 +298,47 @@ fn dispatch(
             format!("unknown semanticd method {method}"),
         )),
     }
+}
+
+fn gradle_duration_from_evidence(error: &SthreadError) -> u64 {
+    error
+        .evidence
+        .iter()
+        .filter_map(|item| {
+            item.strip_prefix("gradleCompileDurationMs=")
+                .or_else(|| item.strip_prefix("gradleTestDurationMs="))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .sum()
+}
+
+fn orphan_worktrees(repo: &Path) -> u64 {
+    let output = match std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return 0,
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut orphaned = 0u64;
+    let mut current_path: Option<&str> = None;
+    for line in text.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if current_path.is_some_and(|path| !Path::new(path).exists()) {
+                orphaned += 1;
+            }
+            current_path = Some(path);
+        } else if line.starts_with("prunable ") {
+            orphaned += 1;
+            current_path = None;
+        }
+    }
+    if current_path.is_some_and(|path| !Path::new(path).exists()) {
+        orphaned += 1;
+    }
+    orphaned
 }
 
 fn worker_memory(pid: u32) -> u64 {

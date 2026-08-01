@@ -4,7 +4,18 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
 
-pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
+#[derive(Debug, Clone, Copy)]
+pub struct EnrichTimings {
+    pub rust_graph_construction_micros: u64,
+    pub ssa_and_control_micros: u64,
+}
+
+pub fn enrich(graph: LocalGraph) -> LocalGraph {
+    enrich_profiled(graph).0
+}
+
+pub fn enrich_profiled(mut graph: LocalGraph) -> (LocalGraph, EnrichTimings) {
+    let graph_started = Instant::now();
     for node in &mut graph.nodes {
         node.editable = node.origin.is_some() && !node.kind.starts_with("PHI");
     }
@@ -12,6 +23,7 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     annotate_local_memory(&mut graph);
     add_call_edges(&mut graph);
     add_effect_edges(&mut graph);
+    let rust_graph_construction_micros = graph_started.elapsed().as_micros() as u64;
     let entry = graph
         .nodes
         .iter()
@@ -42,12 +54,20 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
         .or_else(|| graph.nodes.iter().find(|node| node.kind == "EXIT"))
         .map(|node| node.id.clone())
         .unwrap_or_else(|| "exit".into());
+    let ssa_started = Instant::now();
     add_ssa_and_def_use(&mut graph, &entry);
     add_control_dependencies(&mut graph, &exit);
     graph.nodes.sort_by(|a, b| a.id.cmp(&b.id));
     graph.edges.sort();
     graph.edges.dedup();
-    graph
+    let ssa_and_control_micros = ssa_started.elapsed().as_micros() as u64;
+    (
+        graph,
+        EnrichTimings {
+            rust_graph_construction_micros,
+            ssa_and_control_micros,
+        },
+    )
 }
 
 fn add_ast_and_type_edges(graph: &mut LocalGraph) {

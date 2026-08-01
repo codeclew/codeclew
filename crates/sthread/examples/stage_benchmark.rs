@@ -59,6 +59,10 @@ fn millis(started: Instant) -> u64 {
     started.elapsed().as_micros().div_ceil(1000) as u64
 }
 
+fn micros(started: Instant) -> u64 {
+    started.elapsed().as_micros() as u64
+}
+
 fn p95(samples: &[u64]) -> u64 {
     let mut sorted = samples.to_vec();
     sorted.sort_unstable();
@@ -131,16 +135,20 @@ fn main() {
         )
         .expect("restore semantic baseline");
 
-    let mut ipc_psi_samples = Vec::new();
+    let mut ipc_serialization_samples = Vec::new();
+    let mut psi_parse_samples = Vec::new();
     for sample in 0..SAMPLES {
         let started = Instant::now();
-        worker
+        let response = worker
             .request(
                 RequestKind::ValidateCandidate,
                 &json!({"file":"Probe.kt","source":format!("fun probe{sample}() = {sample}")}),
             )
             .expect("IPC/PSI probe");
-        ipc_psi_samples.push(millis(started));
+        let total_micros = micros(started);
+        let psi_micros = response["psiParseMicros"].as_u64().unwrap_or(0);
+        psi_parse_samples.push(psi_micros);
+        ipc_serialization_samples.push(total_micros.saturating_sub(psi_micros));
     }
 
     let offset = original_source.find("value *= 2").unwrap();
@@ -168,22 +176,29 @@ fn main() {
         resolve_samples.push(millis(started));
     }
 
-    let mut cfg_samples = Vec::new();
-    let mut latest_raw = None;
+    let mut cfg_and_ssa_samples = Vec::new();
+    let mut fir_extraction_samples = Vec::new();
+    let mut rust_graph_samples = Vec::new();
+    let mut ssa_samples = Vec::new();
+    let mut latest_graph = None;
     for _ in 0..SAMPLES {
-        let started = Instant::now();
-        latest_raw = Some(
-            worker
-                .request(
-                    RequestKind::BuildLocalGraph,
-                    &json!({"repo":fixture,"symbol":"com.acme.total","compilation":":/main"}),
-                )
-                .expect("FIR CFG"),
-        );
-        cfg_samples.push(millis(started));
+        let complete_started = Instant::now();
+        let fir_started = Instant::now();
+        let raw = worker
+            .request(
+                RequestKind::BuildLocalGraph,
+                &json!({"repo":fixture,"symbol":"com.acme.total","compilation":":/main"}),
+            )
+            .expect("FIR CFG");
+        fir_extraction_samples.push(millis(fir_started));
+        let local: LocalGraph = serde_json::from_value(raw).unwrap();
+        let (enriched, profile) = graph::enrich_profiled(local);
+        rust_graph_samples.push(profile.rust_graph_construction_micros);
+        ssa_samples.push(profile.ssa_and_control_micros);
+        cfg_and_ssa_samples.push(millis(complete_started));
+        latest_graph = Some(enriched);
     }
-    let local: LocalGraph = serde_json::from_value(latest_raw.unwrap()).unwrap();
-    let graph = graph::enrich(local);
+    let graph = latest_graph.unwrap();
     let seed = graph
         .nodes
         .iter()
@@ -262,7 +277,10 @@ fn main() {
     let warm_semantic_reindex = p95(&semantic_reindex_samples);
     let anchor = p95(&anchor_samples);
     let resolve = p95(&resolve_samples);
-    let cfg = p95(&cfg_samples);
+    let cfg_and_ssa = p95(&cfg_and_ssa_samples);
+    let fir_extraction = p95(&fir_extraction_samples);
+    let rust_graph = p95(&rust_graph_samples);
+    let ssa = p95(&ssa_samples);
     let extraction = p95(&extraction_samples);
     let serialization = p95(&serialization_samples);
     let edit_preview = p95(&edit_preview_samples);
@@ -272,11 +290,17 @@ fn main() {
             "sampleCount":SAMPLES,
             "workerStartup":worker_startup,
             "coldSemanticIndex":cold_semantic_index,
-            "ipcPlusPsiParseP95":p95(&ipc_psi_samples),
+            "ipcAndProtocolSerializationMicrosP95":p95(&ipc_serialization_samples),
+            "psiParseMicrosP95":p95(&psi_parse_samples),
             "warmSemanticFileReindexP95":warm_semantic_reindex,
+            "k2SemanticAnalysisCold":cold_semantic_index,
+            "k2ChangedFileAnalysisP95":warm_semantic_reindex,
             "anchorResolutionP95":anchor,
             "resolveSymbolP95":resolve,
-            "localCfgP95":cfg,
+            "firCfgExtractionP95":fir_extraction,
+            "rustGraphConstructionMicrosP95":rust_graph,
+            "ssaAndControlMicrosP95":ssa,
+            "localCfgAndSsaP95":cfg_and_ssa,
             "localThreadExtractionP95":extraction,
             "boundedSliceP95":extraction,
             "canonicalSerializationP95":serialization,
@@ -286,7 +310,7 @@ fn main() {
                 "warmSemanticFileReindex":warm_semantic_reindex <= 300,
                 "anchorResolution":anchor <= 100,
                 "resolveSymbol":resolve <= 150,
-                "localCfg":cfg <= 500,
+                "localCfgAndSsa":cfg_and_ssa <= 500,
                 "localThreadExtraction":extraction <= 800,
                 "boundedSlice":extraction <= 2000,
                 "canonicalSerialization":serialization <= 100,

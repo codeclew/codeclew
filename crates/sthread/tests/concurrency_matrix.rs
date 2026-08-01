@@ -131,7 +131,9 @@ fn make_tx(
             index_snapshot: index_snapshot.clone(),
             compilation: ":/main".into(),
             compile_task: ":compileKotlin".into(),
-            test_tasks: vec!["test".into()],
+            // Concurrency fixtures exercise publication, not project test
+            // behavior. Default configured tests are covered independently.
+            test_tasks: vec![],
         },
         json!({"kind":"FUNCTION_RETURN","symbol":symbol,"nodeId":seed_id}),
     )
@@ -359,6 +361,54 @@ fn mandatory_concurrency_matrix() {
     let stale =
         transaction::commit(&repo_model, &mut old_tx, "refs/heads/main", &mut worker).unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleRequiresReslice);
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn configured_snapshot_tests_run_by_default_and_block_publication() {
+    let root = workspace_root();
+    let temp = tempfile::tempdir().unwrap();
+    let repo = init_repo(temp.path(), "default-tests");
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let project = worker
+        .request(RequestKind::OpenProject, &json!({"repo":repo}))
+        .unwrap();
+    let hash = project["projectModelHash"].as_str().unwrap();
+    let mut transaction = make_tx(
+        &mut worker,
+        &repo,
+        hash,
+        "com.acme.total",
+        "{ return base }",
+        "default-tests",
+    );
+    transaction.thread.snapshot.test_tasks = vec![":test".into()];
+    assert!(transaction.test_tasks.is_empty());
+    let before_ref = git_output(&repo, &["rev-parse", "refs/heads/main"]);
+    let before_worktrees = git_output(&repo, &["worktree", "list", "--porcelain"]);
+    let before_index = RepositoryIndex::open_compilation(&repo, Some(":/main"))
+        .unwrap()
+        .hash()
+        .unwrap();
+
+    let error =
+        transaction::commit(&repo, &mut transaction, "refs/heads/main", &mut worker).unwrap_err();
+    assert_eq!(error.code, ErrorCode::TestFailed, "{error:?}");
+    assert_eq!(
+        git_output(&repo, &["rev-parse", "refs/heads/main"]),
+        before_ref
+    );
+    assert_eq!(
+        git_output(&repo, &["worktree", "list", "--porcelain"]),
+        before_worktrees
+    );
+    assert_eq!(
+        RepositoryIndex::open_compilation(&repo, Some(":/main"))
+            .unwrap()
+            .hash()
+            .unwrap(),
+        before_index
+    );
     worker.shutdown().unwrap();
 }
 

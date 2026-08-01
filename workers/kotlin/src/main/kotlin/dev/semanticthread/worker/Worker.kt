@@ -176,6 +176,7 @@ internal class Worker : AutoCloseable {
         val model = cachedGradleModel(analysisRepo, compilation)
         val sources = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
         val cacheMaterial = buildString {
+            append("factsPluginSchema=2\u0000")
             sources.forEach { source ->
                 val relative = analysisRepo.relativize(source.toRealPath()).invariantSeparatorsPathString
                 append(relative).append('\u0000').append(overrides[relative] ?: source.readText()).append('\u0000')
@@ -305,7 +306,9 @@ internal class Worker : AutoCloseable {
     }
 
     private fun declarationJson(repo: Path, path: Path, pkg: String, declaration: KtNamedDeclaration, analysis: K2Analysis? = null, module: String = "", sourceSet: String = "main"): JsonObject {
-        val symbol = symbolId(pkg, declaration, module.ifBlank { ":" }, sourceSet); val signature = sourceSignature(declaration)
+        val resolvedTypes = resolvedIdentityTypes(repo, path, declaration, analysis)
+        val identity = symbolIdentity(pkg, declaration, module.ifBlank { ":" }, sourceSet, resolvedTypes)
+        val symbol = identity.toString(); val signature = sourceSignature(declaration)
         val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().firstOrNull()?.let { symbolId(pkg, it, module.ifBlank { ":" }, sourceSet) }
         val relative = repo.relativize(path).invariantSeparatorsPathString
         val body = (declaration as? KtDeclarationWithBody)?.bodyExpression?.text.orEmpty()
@@ -319,7 +322,7 @@ internal class Worker : AutoCloseable {
         val summaryHash = sha(buildJsonObject { put("bodyHash", bodyHash); putJsonArray("facts") { declarationFacts.map(::semanticSignature).forEach(::add) } }.toString().toByteArray())
         val declarationId = "declaration:" + sha("$module|$sourceSet|$relative|$symbol|${declaration::class.simpleName}|$signatureHash".toByteArray()).removePrefix("sha256:")
         return buildJsonObject {
-            put("declarationId", declarationId); put("symbolId", symbol); put("symbolIdentity", symbolIdentity(pkg, declaration, module.ifBlank { ":" }, sourceSet)); put("legacySymbolId", legacySymbolId(pkg, declaration)); put("name", declaration.name.orEmpty()); put("kind", declaration::class.simpleName ?: "KtDeclaration")
+            put("declarationId", declarationId); put("symbolId", symbol); put("symbolIdentity", identity); put("legacySymbolId", legacySymbolId(pkg, declaration)); put("name", declaration.name.orEmpty()); put("kind", declaration::class.simpleName ?: "KtDeclaration")
             if (containing != null) put("containingDeclaration", containing)
             putJsonObject("sourceOrigin") { put("file", relative); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset) }
             put("file", relative); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset)
@@ -336,7 +339,29 @@ internal class Worker : AutoCloseable {
         return "$receiver$base($params)"
     }
 
-    private fun symbolIdentity(pkg: String, declaration: KtNamedDeclaration, module: String = ":", sourceSet: String = "main"): JsonObject {
+    private fun resolvedIdentityTypes(repo: Path, path: Path, declaration: KtNamedDeclaration, analysis: K2Analysis?): JsonObject? {
+        if (analysis == null) return null
+        if (declaration is KtNamedFunction) {
+            return cfgRecords(repo, path, analysis).firstOrNull { fact ->
+                fact["start"]?.jsonPrimitive?.intOrNull == declaration.textRange.startOffset &&
+                    fact["end"]?.jsonPrimitive?.intOrNull == declaration.textRange.endOffset
+            }
+        }
+        if (declaration is KtProperty) {
+            val initializer = declaration.initializer ?: return null
+            val fact = fileFacts(repo, path, analysis).filter { candidate ->
+                val start = candidate["start"]?.jsonPrimitive?.intOrNull ?: -1
+                val end = candidate["end"]?.jsonPrimitive?.intOrNull ?: -1
+                start >= initializer.textRange.startOffset && end <= initializer.textRange.endOffset
+            }.maxByOrNull { candidate ->
+                (candidate["end"]?.jsonPrimitive?.intOrNull ?: 0) - (candidate["start"]?.jsonPrimitive?.intOrNull ?: 0)
+            }
+            return fact?.get("type")?.let { type -> buildJsonObject { put("returnType", type) } }
+        }
+        return null
+    }
+
+    private fun symbolIdentity(pkg: String, declaration: KtNamedDeclaration, module: String = ":", sourceSet: String = "main", resolvedTypes: JsonObject? = null): JsonObject {
         val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().toList().asReversed().mapNotNull { it.name }
         val declarationKind = when (declaration) {
             is KtNamedFunction -> "FUNCTION"
@@ -344,11 +369,13 @@ internal class Worker : AutoCloseable {
             is KtClassOrObject -> "CLASS"
             else -> declaration::class.simpleName.orEmpty().removePrefix("Kt").uppercase()
         }
-        val receiverTypes = (declaration as? KtNamedFunction)?.receiverTypeReference?.text?.let(::listOf).orEmpty()
-        val parameterTypes = (declaration as? KtNamedFunction)?.valueParameters?.map { it.typeReference?.text ?: "?" }.orEmpty()
+        val receiverTypes = resolvedTypes?.get("receiverType")?.jsonPrimitive?.contentOrNull?.takeUnless { it == "<unresolved>" }?.let(::listOf)
+            ?: (declaration as? KtNamedFunction)?.receiverTypeReference?.text?.let(::listOf).orEmpty()
+        val parameterTypes = resolvedTypes?.get("parameterTypes")?.jsonArray?.map { it.jsonPrimitive.content }?.takeUnless { values -> values.any { it == "<unresolved>" } }
+            ?: (declaration as? KtNamedFunction)?.valueParameters?.map { it.typeReference?.text ?: "?" }.orEmpty()
         val returnType = when (declaration) {
-            is KtNamedFunction -> declaration.typeReference?.text ?: "Unit"
-            is KtProperty -> declaration.typeReference?.text ?: "?"
+            is KtNamedFunction -> resolvedTypes?.get("returnType")?.jsonPrimitive?.contentOrNull?.takeUnless { it == "<unresolved>" } ?: declaration.typeReference?.text ?: "<unresolved>"
+            is KtProperty -> resolvedTypes?.get("returnType")?.jsonPrimitive?.contentOrNull?.takeUnless { it == "<unresolved>" } ?: declaration.typeReference?.text ?: "<unresolved>"
             is KtClassOrObject -> declaration.name ?: "?"
             else -> "?"
         }
@@ -364,8 +391,59 @@ internal class Worker : AutoCloseable {
             putJsonArray("parameterTypes") { parameterTypes.forEach(::add) }
             put("returnType", returnType)
             put("suspendFlag", declaration is KtNamedFunction && declaration.hasModifier(KtTokens.SUSPEND_KEYWORD))
-            put("jvmDescriptor", "(${parameterTypes.joinToString(",")})$returnType")
+            put("jvmDescriptor", jvmDescriptor(declaration, receiverTypes, parameterTypes, returnType, pkg))
         }
+    }
+
+    private fun jvmDescriptor(declaration: KtNamedDeclaration, receivers: List<String>, parameters: List<String>, returnType: String, pkg: String): String = when (declaration) {
+        is KtNamedFunction -> {
+            val arguments = (receivers + parameters).map { jvmTypeDescriptor(it, false) }.toMutableList()
+            if (declaration.hasModifier(KtTokens.SUSPEND_KEYWORD)) {
+                arguments += "Lkotlin/coroutines/Continuation;"
+                "(${arguments.joinToString("")})Ljava/lang/Object;"
+            } else "(${arguments.joinToString("")})${jvmTypeDescriptor(returnType, true)}"
+        }
+        is KtProperty -> jvmTypeDescriptor(returnType, false)
+        is KtClassOrObject -> "L${(listOf(pkg).filter(String::isNotBlank) + declaration.name.orEmpty()).joinToString("/")};"
+        else -> "Ljava/lang/Object;"
+    }
+
+    private fun jvmTypeDescriptor(rawType: String, returnPosition: Boolean): String {
+        val nullable = rawType.trim().endsWith('?')
+        val type = rawType.trim().removeSuffix("?").substringBefore('<').replace('.', '/')
+        if (!nullable) when (type) {
+            "Boolean", "kotlin/Boolean" -> return "Z"
+            "Byte", "kotlin/Byte" -> return "B"
+            "Char", "kotlin/Char" -> return "C"
+            "Short", "kotlin/Short" -> return "S"
+            "Int", "kotlin/Int" -> return "I"
+            "Long", "kotlin/Long" -> return "J"
+            "Float", "kotlin/Float" -> return "F"
+            "Double", "kotlin/Double" -> return "D"
+            "Unit", "kotlin/Unit" -> return if (returnPosition) "V" else "Lkotlin/Unit;"
+            "BooleanArray", "kotlin/BooleanArray" -> return "[Z"
+            "ByteArray", "kotlin/ByteArray" -> return "[B"
+            "CharArray", "kotlin/CharArray" -> return "[C"
+            "ShortArray", "kotlin/ShortArray" -> return "[S"
+            "IntArray", "kotlin/IntArray" -> return "[I"
+            "LongArray", "kotlin/LongArray" -> return "[J"
+            "FloatArray", "kotlin/FloatArray" -> return "[F"
+            "DoubleArray", "kotlin/DoubleArray" -> return "[D"
+        }
+        val boxed = when (type) {
+            "Boolean", "kotlin/Boolean" -> "java/lang/Boolean"
+            "Byte", "kotlin/Byte" -> "java/lang/Byte"
+            "Char", "kotlin/Char" -> "java/lang/Character"
+            "Short", "kotlin/Short" -> "java/lang/Short"
+            "Int", "kotlin/Int" -> "java/lang/Integer"
+            "Long", "kotlin/Long" -> "java/lang/Long"
+            "Float", "kotlin/Float" -> "java/lang/Float"
+            "Double", "kotlin/Double" -> "java/lang/Double"
+            "String", "kotlin/String" -> "java/lang/String"
+            "Any", "kotlin/Any", "?", "<unresolved>" -> "java/lang/Object"
+            else -> type.ifBlank { "java/lang/Object" }
+        }
+        return "L$boxed;"
     }
 
     private fun symbolId(pkg: String, declaration: KtNamedDeclaration, module: String = ":", sourceSet: String = "main"): String =
@@ -373,8 +451,21 @@ internal class Worker : AutoCloseable {
 
     private fun symbolMatches(query: String, pkg: String, declaration: KtNamedDeclaration, module: String = ":", sourceSet: String = "main"): Boolean {
         val legacy = legacySymbolId(pkg, declaration)
-        return query == symbolId(pkg, declaration, module, sourceSet) || query == legacy || query == legacy.substringBefore('(')
+        if (query == symbolId(pkg, declaration, module, sourceSet) || query == legacy || query == legacy.substringBefore('(')) return true
+        val identity = runCatching { json.parseToJsonElement(query).jsonObject }.getOrNull() ?: return false
+        if (identity["module"]?.jsonPrimitive?.content != module || identity["sourceSet"]?.jsonPrimitive?.content != sourceSet || identity["package"]?.jsonPrimitive?.content != pkg) return false
+        if (identity["declarationName"]?.jsonPrimitive?.content != declaration.name) return false
+        val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().toList().asReversed().mapNotNull { it.name }
+        if (identity["containingDeclarations"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty() != containing) return false
+        val function = declaration as? KtNamedFunction ?: return true
+        val expectedParameters = identity["parameterTypes"]?.jsonArray?.map { normalizeIdentityType(it.jsonPrimitive.content) }.orEmpty()
+        val actualParameters = function.valueParameters.map { normalizeIdentityType(it.typeReference?.text ?: "?") }
+        val expectedReceivers = identity["receiverTypes"]?.jsonArray?.map { normalizeIdentityType(it.jsonPrimitive.content) }.orEmpty()
+        val actualReceivers = function.receiverTypeReference?.text?.let { listOf(normalizeIdentityType(it)) }.orEmpty()
+        return expectedParameters == actualParameters && expectedReceivers == actualReceivers
     }
+
+    private fun normalizeIdentityType(type: String): String = type.trim().removePrefix("kotlin/").removePrefix("kotlin.").substringAfterLast('/').substringAfterLast('.')
 
     private fun sourceSignature(declaration: KtNamedDeclaration): String = when (declaration) {
         is KtNamedFunction -> buildString {
@@ -400,19 +491,11 @@ internal class Worker : AutoCloseable {
         val project = inspect(repo, compilation)
         val module = project["module"]?.jsonPrimitive?.content ?: ":"
         val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: "main"
-        val matches = mutableListOf<JsonObject>()
-        compilationSourceFiles(repo, compilation).forEach { path ->
-            val kt = parse(path); val pkg = kt.packageFqName.asString()
-            PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java).forEach { fn ->
-                if (symbolMatches(query, pkg, fn, module, sourceSet)) matches += declarationJson(repo, path, pkg, fn, null, module, sourceSet)
-            }
-        }
-        if (matches.isEmpty()) throw WorkerFailure("SYMBOL_NOT_FOUND", "symbol not found: $query")
-        if (matches.size > 1) throw WorkerFailure("AMBIGUOUS_SYMBOL", "symbol is ambiguous: $query")
-        val declaration = matches.single()
-        val file = declaration["file"]!!.jsonPrimitive.content
         val (path, kt, fn) = findFunction(repo, query, compilation)
         val analysis = analyzeWithK2(repo, compilation = compilation)
+        val declaration = declarationJson(repo, path, kt.packageFqName.asString(), fn, analysis, module, sourceSet)
+        val file = declaration["file"]!!.jsonPrimitive.content
+        val resolvedSymbol = declaration["symbolId"]!!.jsonPrimitive.content
         val semanticFacts = fileFacts(repo, path, analysis).filter { fact ->
             val start = fact["start"]?.jsonPrimitive?.intOrNull ?: -1
             val end = fact["end"]?.jsonPrimitive?.intOrNull ?: -1
@@ -420,7 +503,7 @@ internal class Worker : AutoCloseable {
         }
         return buildJsonObject {
             put("schema", "semantic-symbol/0.1"); put("declaration", declaration)
-            fn.bodyExpression?.let { put("bodyAnchor", anchor(file, symbolId(kt.packageFqName.asString(), fn, module, sourceSet), it, kt.text)) }
+            fn.bodyExpression?.let { put("bodyAnchor", anchor(file, resolvedSymbol, it, kt.text)) }
             putJsonArray("references") { fn.bodyExpression?.let(::usedNames).orEmpty().sorted().forEach(::add) }
             putJsonArray("calls") { PsiTreeUtil.collectElementsOfType(fn, KtCallExpression::class.java).map { it.calleeExpression?.text.orEmpty() }.sorted().forEach(::add) }
             putJsonArray("declaredTypes") { (fn.valueParameters.mapNotNull { it.typeReference?.text } + listOfNotNull(fn.typeReference?.text)).sorted().forEach(::add) }
@@ -456,7 +539,8 @@ internal class Worker : AutoCloseable {
         val owner = generateSequence(expression.parent) { it.parent }.filterIsInstance<KtNamedFunction>().firstOrNull()
             ?: throw WorkerFailure("EXPRESSION_NOT_FOUND", "expression is outside a function")
         val project = inspect(repo, compilation)
-        val symbol = symbolId(kt.packageFqName.asString(), owner, project["module"]?.jsonPrimitive?.content ?: ":", project["sourceSet"]?.jsonPrimitive?.content ?: "main")
+        val analysis = analyzeWithK2(repo, compilation = compilation)
+        val symbol = declarationJson(repo, path, kt.packageFqName.asString(), owner, analysis, project["module"]?.jsonPrimitive?.content ?: ":", project["sourceSet"]?.jsonPrimitive?.content ?: "main")["symbolId"]!!.jsonPrimitive.content
         return buildJsonObject { put("schema", "semantic-anchor/0.1"); put("anchor", anchor(relative, symbol, expression, kt.text)) }
     }
 
@@ -481,8 +565,8 @@ internal class Worker : AutoCloseable {
     private fun localGraph(repo: Path, query: String, compilation: String = ":/main"): JsonObject {
         val (path, kt, fn) = findFunction(repo, query, compilation); val relative = repo.relativize(path).invariantSeparatorsPathString
         val project = inspect(repo, compilation)
-        val owner = symbolId(kt.packageFqName.asString(), fn, project["module"]?.jsonPrimitive?.content ?: ":", project["sourceSet"]?.jsonPrimitive?.content ?: "main")
         val analysis = analyzeWithK2(repo, compilation = compilation)
+        val owner = declarationJson(repo, path, kt.packageFqName.asString(), fn, analysis, project["module"]?.jsonPrimitive?.content ?: ":", project["sourceSet"]?.jsonPrimitive?.content ?: "main")["symbolId"]!!.jsonPrimitive.content
         val firCfg = cfgRecords(repo, path, analysis).firstOrNull {
             it["start"]?.jsonPrimitive?.intOrNull == fn.textRange.startOffset && it["end"]?.jsonPrimitive?.intOrNull == fn.textRange.endOffset
         }
@@ -706,13 +790,20 @@ internal class Worker : AutoCloseable {
                 when {
                     "FunctionCall" in firKind -> "FunctionCall" in factKind
                     "QualifiedAccess" in firKind -> "PropertyAccess" in factKind || "QualifiedAccess" in factKind
+                    "VariableAssignment" in firKind -> "PropertyAccess" in factKind && fact["receiverType"] != null
                     "Literal" in firKind -> "Literal" in factKind
                     "Jump" in firKind -> "Return" in factKind
                     "Throw" in firKind -> "Throw" in factKind
                     else -> false
                 }
             }
-            val matching = preferred.minByOrNull { kotlin.math.abs((it["end"]?.jsonPrimitive?.intOrNull ?: end!!) - (it["start"]?.jsonPrimitive?.intOrNull ?: start!!)) }
+            val matching = preferred.firstOrNull {
+                it["start"]?.jsonPrimitive?.intOrNull == start && it["end"]?.jsonPrimitive?.intOrNull == end
+            } ?: if ("VariableAssignment" in firKind) {
+                preferred.maxByOrNull { (it["end"]?.jsonPrimitive?.intOrNull ?: 0) - (it["start"]?.jsonPrimitive?.intOrNull ?: 0) }
+            } else {
+                preferred.minByOrNull { kotlin.math.abs((it["end"]?.jsonPrimitive?.intOrNull ?: end!!) - (it["start"]?.jsonPrimitive?.intOrNull ?: start!!)) }
+            }
             buildJsonObject {
                 node.forEach { (key, value) -> put(key, value) }
                 putJsonObject("attributes") {
@@ -723,10 +814,13 @@ internal class Worker : AutoCloseable {
                     val factKind = matching?.get("kind")?.jsonPrimitive?.content.orEmpty()
                     val objectSite = objectSites.entries.firstOrNull { (prefix, _) -> resolvedSymbol.startsWith("$prefix.") }
                     val staticProperty = "PropertyAccess" in factKind && resolvedSymbol.startsWith("java/")
+                    val receiverType = matching?.get("receiverType")?.jsonPrimitive?.content.orEmpty()
+                    val unknownHeapProperty = objectSite == null && !staticProperty && receiverType.isNotEmpty() &&
+                        ("PropertyAccess" in factKind || "VariableAssignment" in factKind)
                     val mergedEffects = (node["attributes"]?.jsonObject?.get("effects")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
                         + matching?.get("effects")?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
-                        + (if (objectSite != null || staticProperty) listOf("READ_STATE") else emptyList())
-                        + (if ((objectSite != null || staticProperty) && "VariableAssignment" in firKind) listOf("WRITE_STATE") else emptyList())).distinct().sorted()
+                        + (if (objectSite != null || staticProperty || unknownHeapProperty) listOf("READ_STATE") else emptyList())
+                        + (if ((objectSite != null || staticProperty || unknownHeapProperty) && ("VariableAssignment" in firKind || "VariableAssignment" in factKind)) listOf("WRITE_STATE") else emptyList())).distinct().sorted()
                     if (mergedEffects.isNotEmpty()) putJsonArray("effects") { mergedEffects.forEach(::add) }
                     if (objectSite != null) {
                         put("memoryKind", "OBJECT_PROPERTY")
@@ -734,6 +828,9 @@ internal class Worker : AutoCloseable {
                     } else if (staticProperty) {
                         put("memoryKind", "STATIC_PROPERTY")
                         put("memoryLocation", "STATIC_PROPERTY:$resolvedSymbol")
+                    } else if (unknownHeapProperty && node["attributes"]?.jsonObject?.get("memoryKind") == null) {
+                        put("memoryKind", "UNKNOWN_HEAP")
+                        put("memoryLocation", "UNKNOWN_HEAP:$resolvedSymbol")
                     }
                     matching?.get("symbol")?.jsonPrimitive?.content?.let { symbol -> calleeSummaryHash(repo, analysis, symbol)?.let { put("calleeSummaryHash", it) } }
                 }
@@ -1149,9 +1246,12 @@ internal class Worker : AutoCloseable {
     }
 
     private fun validateCandidate(request: JsonObject): JsonObject {
-        val source = request.requiredString("source"); val kt = factory.createFile(request["file"]?.jsonPrimitive?.content ?: "Candidate.kt", source)
+        val source = request.requiredString("source")
+        val parseStarted = System.nanoTime()
+        val kt = factory.createFile(request["file"]?.jsonPrimitive?.content ?: "Candidate.kt", source)
         val errors = PsiTreeUtil.collectElementsOfType(kt, PsiErrorElement::class.java).map { it.errorDescription }.sorted()
-        return buildJsonObject { put("valid", errors.isEmpty()); putJsonArray("diagnostics") { errors.forEach(::add) } }
+        val psiParseMicros = (System.nanoTime() - parseStarted) / 1_000
+        return buildJsonObject { put("valid", errors.isEmpty()); put("psiParseMicros", psiParseMicros); putJsonArray("diagnostics") { errors.forEach(::add) } }
     }
 
     private fun effects(element: PsiElement): Set<String> {

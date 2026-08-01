@@ -4,18 +4,29 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn semanticd_is_long_lived_and_exports_required_metrics() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("fixtures/kotlin-basic")
+        .canonicalize()
+        .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_semanticd"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
+    let requests = format!(
+        "{}\n{}\n{}\n{}\n{}\n",
+        serde_json::json!({"id":1,"method":"health"}),
+        serde_json::json!({"id":2,"method":"project.inspect","params":{"repo":fixture,"compilation":":/main"}}),
+        serde_json::json!({"id":3,"method":"project.inspect","params":{"repo":fixture,"compilation":":/main"}}),
+        serde_json::json!({"id":4,"method":"metrics"}),
+        serde_json::json!({"id":5,"method":"shutdown"}),
+    );
     child
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(
-            b"{\"id\":1,\"method\":\"health\"}\n{\"id\":2,\"method\":\"metrics\"}\n{\"id\":3,\"method\":\"shutdown\"}\n",
-        )
+        .write_all(requests.as_bytes())
         .unwrap();
     drop(child.stdin.take());
     let output = child.wait_with_output().unwrap();
@@ -25,9 +36,9 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(responses.len(), 3);
+    assert_eq!(responses.len(), 5);
     assert_eq!(responses[0]["result"]["status"], "OK");
-    let metrics = &responses[1]["result"]["metrics"];
+    let metrics = &responses[3]["result"]["metrics"];
     for required in [
         "request_duration_ms_total",
         "worker_startup_duration_ms",
@@ -44,4 +55,7 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
     ] {
         assert!(!metrics[required].is_null(), "missing metric {required}");
     }
+    assert_eq!(metrics["cache_requests"], 2);
+    assert_eq!(metrics["cache_hits"], 1);
+    assert_eq!(responses[3]["result"]["cacheHitRate"], 0.5);
 }
