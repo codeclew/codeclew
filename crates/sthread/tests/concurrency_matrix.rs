@@ -128,6 +128,7 @@ fn make_tx(
             base_revision: base.clone(),
             project_model_hash: project_hash.into(),
             compiler_version: "2.4.10".into(),
+            build_system: sthread::model::BuildSystem::Gradle,
             index_snapshot: index_snapshot.clone(),
             compilation: ":/main".into(),
             compile_task: ":compileKotlin".into(),

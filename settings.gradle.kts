@@ -3,3 +3,4 @@ dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_P
 rootProject.name = "semantic-thread"
 include(":workers:kotlin")
 include(":workers:kotlin21")
+include(":workers:kotlin23")

@@ -62,6 +62,19 @@ pub enum Direction {
     Both,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BuildSystem {
+    Gradle,
+    Maven,
+}
+
+impl Default for BuildSystem {
+    fn default() -> Self {
+        Self::Gradle
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
@@ -114,6 +127,8 @@ pub struct Snapshot {
     pub project_model_hash: String,
     pub compiler_version: String,
     #[serde(default)]
+    pub build_system: BuildSystem,
+    #[serde(default)]
     pub index_snapshot: String,
     #[serde(default = "default_compilation")]
     pub compilation: String,
@@ -129,6 +144,7 @@ impl Default for Snapshot {
             base_revision: String::new(),
             project_model_hash: String::new(),
             compiler_version: "2.4.10".into(),
+            build_system: BuildSystem::Gradle,
             index_snapshot: String::new(),
             compilation: default_compilation(),
             compile_task: default_compile_task(),

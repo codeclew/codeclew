@@ -284,11 +284,21 @@ pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), SthreadErro
         .cloned()
         .collect::<Vec<_>>();
     let test_tasks = project["testTasks"].as_array().cloned().unwrap_or_default();
+    let build_system = project["buildSystem"].as_str().unwrap_or("GRADLE");
+    let build_launcher = project["buildLauncher"]
+        .as_str()
+        .unwrap_or(match build_system {
+            "MAVEN" => "mvn",
+            _ => "./gradlew",
+        });
     let targeted_tests = tests
         .iter()
         .filter_map(|test| test["path"].as_str())
         .filter_map(|path| Path::new(path).file_stem()?.to_str())
-        .map(|stem| format!("./gradlew cleanTest --tests '*{stem}'"))
+        .map(|stem| match build_system {
+            "MAVEN" => format!("{build_launcher} -Dtest={stem} test"),
+            _ => format!("{build_launcher} cleanTest --tests '*{stem}'"),
+        })
         .collect::<BTreeSet<_>>();
 
     let full = json!({
@@ -310,6 +320,8 @@ pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), SthreadErro
         "references": references,
         "tests": tests,
         "validationPlan": {
+            "buildSystem": build_system,
+            "buildLauncher": build_launcher,
             "compileTask": project["compileTask"],
             "testTasks": test_tasks,
             "targetedCommands": targeted_tests,

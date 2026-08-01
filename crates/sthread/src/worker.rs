@@ -39,6 +39,7 @@ pub struct WorkerClient {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerVariant {
     Kotlin21,
+    Kotlin23,
     Kotlin24,
 }
 
@@ -52,11 +53,12 @@ impl WorkerVariant {
             .as_str()
         {
             "2.1" => Ok(Self::Kotlin21),
+            "2.3" => Ok(Self::Kotlin23),
             "2.4" => Ok(Self::Kotlin24),
             _ => Err(SthreadError::new(
                 ErrorCode::UnsupportedProjectConfiguration,
                 format!(
-                    "unsupported Kotlin compiler {version}; supported compiler lines are 2.1 and 2.4"
+                    "unsupported Kotlin compiler {version}; supported compiler lines are 2.1, 2.3, and 2.4"
                 ),
             )),
         }
@@ -65,6 +67,7 @@ impl WorkerVariant {
     fn compiler_version(self) -> &'static str {
         match self {
             Self::Kotlin21 => "2.1.21",
+            Self::Kotlin23 => "2.3.0",
             Self::Kotlin24 => "2.4.10",
         }
     }
@@ -72,6 +75,7 @@ impl WorkerVariant {
     fn install_task(self) -> &'static str {
         match self {
             Self::Kotlin21 => ":workers:kotlin21:installDist",
+            Self::Kotlin23 => ":workers:kotlin23:installDist",
             Self::Kotlin24 => ":workers:kotlin:installDist",
         }
     }
@@ -698,6 +702,9 @@ fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
     match variant {
         WorkerVariant::Kotlin21 => {
             workspace.join("workers/kotlin21/build/install/kotlin21/bin/kotlin21")
+        }
+        WorkerVariant::Kotlin23 => {
+            workspace.join("workers/kotlin23/build/install/kotlin23/bin/kotlin23")
         }
         WorkerVariant::Kotlin24 => workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin"),
     }

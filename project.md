@@ -2,6 +2,8 @@
 
 Semantic Thread Platform: Kotlin MVP
 
+> Дополнение от 2026-08-01: после выполнения исходной Gradle-вертикали поддерживаемая область расширена полной single-module Maven Kotlin/JVM вертикалью. Maven project inspection, version-pinned worker selection, semantic index/context и detached-worktree compile/test/commit подчиняются тем же требованиям к fingerprint, fail-closed поведению и транзакционной безопасности. Подробный дизайн: `docs/superpowers/specs/2026-08-01-maven-end-to-end-design.md`.
+
 1. Роль агента
 
 Ты выступаешь как senior software architect и senior systems engineer с опытом в:
