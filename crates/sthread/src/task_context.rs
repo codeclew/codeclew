@@ -609,9 +609,11 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","REWRITE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
-            "instruction":"Prefer REWRITE_DECLARATION with preconditions.substitutions [{old,new,occurrences?}] for exact local changes. For multiline text use oldLines/newLines arrays; for a new file use replacement.kotlinLines. task-apply common-dedents these arrays and joins them with LF; use scalar old/new only for whitespace-sensitive edits. When the same old text occurs more than once but only one match must change, use 1-based occurrence instead of copying surrounding source. Use declaration targets for signature/type changes and body targets only if signature is unchanged. New top-level declarations require CREATE_FILE.",
+            "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"preconditions":{"substitutions":[{"old":"...","new":"..."}]}},
+            "instruction":"Use kind (not op). Prefer REWRITE_DECLARATION substitutions. Use oldLines/newLines or kotlinLines for multiline text; task-apply common-dedents and LF-joins them. Use scalar old/new for whitespace-sensitive edits. For one repeated match use 1-based occurrence. Use declaration targets for type/signature changes; new top-level declarations require CREATE_FILE.",
             "constraints":[
                 "Every non-CREATE_FILE operation references one emitted targetId",
+                "Never weaken a requested typed contract to Any/Any?; requested fields remain statically accessible and existing payload types remain assignable",
                 "REPLACE_DECLARATION replacement.kotlin parses as exactly one Kotlin declaration and contains no package or imports",
                 "CREATE_FILE target.fileId is a new .kt path and replacement.kotlin is a complete Kotlin file; related new declarations may share that file",
                 "All operations are assembled before detached-worktree compile and tests"
