@@ -1,0 +1,211 @@
+use serde_json::json;
+use sthread::canonical;
+use sthread::graph;
+use sthread::model::{CompletenessStatus, Direction, LocalGraph, SlicePolicy, Snapshot};
+use sthread::proto::RequestKind;
+use sthread::worker::{WorkerClient, workspace_root};
+
+#[test]
+fn k2_fir_golden_language_and_slice_matrix() {
+    let root = workspace_root();
+    let fixture = root.join("fixtures/kotlin-basic");
+    let mut worker = WorkerClient::start(&root).unwrap();
+
+    let project = worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    assert_eq!(project["languageVersion"], "2.4");
+    assert_eq!(project["jvmTarget"], "21");
+    assert_eq!(project["compileTask"], ":compileKotlin");
+    assert!(!project["compileClasspath"].as_array().unwrap().is_empty());
+
+    let call = worker
+        .request(
+            RequestKind::ResolveSymbol,
+            &json!({"repo":fixture,"symbol":"com.acme.namedCall"}),
+        )
+        .unwrap();
+    assert_eq!(call["k2Validated"], true);
+    let resolved = call["resolvedCalls"].as_array().unwrap();
+    assert!(
+        resolved
+            .iter()
+            .any(|fact| fact["symbol"] == "com/acme/decorate")
+    );
+    assert!(
+        resolved
+            .iter()
+            .any(|fact| fact["receiverType"] == "kotlin/String")
+    );
+    assert!(resolved.iter().any(|fact| {
+        fact["argumentToParameter"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mapping| mapping["parameter"] == "prefix")
+    }));
+
+    let overloaded = worker
+        .request(
+            RequestKind::ResolveSymbol,
+            &json!({"repo":fixture,"symbol":"com.acme.overloaded(Int)"}),
+        )
+        .unwrap();
+    assert_eq!(
+        overloaded["declaration"]["symbolId"],
+        "com.acme.overloaded(Int)"
+    );
+
+    let total_raw = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.total"}),
+        )
+        .unwrap();
+    assert_eq!(total_raw["graphSource"], "K2_FIR_CFG");
+    let local: LocalGraph = serde_json::from_value(total_raw).unwrap();
+    let mut permuted = local.clone();
+    permuted.nodes.reverse();
+    permuted.edges.reverse();
+    let total = graph::enrich(local);
+    let total_permuted = graph::enrich(permuted);
+    assert_eq!(
+        canonical::bytes(&total).unwrap(),
+        canonical::bytes(&total_permuted).unwrap()
+    );
+    assert!(total.edges.iter().any(|edge| edge.kind == "CFG_TRUE"));
+    assert!(total.edges.iter().any(|edge| edge.kind == "CFG_FALSE"));
+    assert!(total.edges.iter().any(|edge| edge.kind == "CONTROL_DEP"));
+    assert!(
+        total
+            .nodes
+            .iter()
+            .any(|node| node.kind == "PHI" && node.defines.as_deref() == Some("value"))
+    );
+
+    let return_id = total
+        .nodes
+        .iter()
+        .find(|node| node.kind == "RETURN" && node.uses.iter().any(|name| name == "value"))
+        .unwrap()
+        .id
+        .clone();
+    let snapshot = Snapshot {
+        base_revision: "test".into(),
+        project_model_hash: project["projectModelHash"].as_str().unwrap().into(),
+        compiler_version: "2.4.10".into(),
+    };
+    let thread = graph::slice(
+        &total,
+        &return_id,
+        SlicePolicy {
+            direction: Direction::Both,
+            ..Default::default()
+        },
+        snapshot,
+        json!({"kind":"FUNCTION_RETURN","symbol":"com.acme.total","nodeId":return_id}),
+    )
+    .unwrap();
+    for required in ["base", "premium"] {
+        assert!(
+            thread
+                .nodes
+                .iter()
+                .any(|node| node.kind == "PARAMETER" && node.defines.as_deref() == Some(required)),
+            "missing parameter {required}"
+        );
+    }
+    assert!(thread.nodes.iter().any(|node| node.kind == "PHI"));
+    assert!(thread.nodes.iter().any(|node| node.kind == "ASSIGNMENT"));
+    assert!(thread.nodes.iter().any(|node| node.kind == "RETURN"));
+    assert_eq!(
+        thread.completeness.status,
+        CompletenessStatus::CompleteSupportedSubset
+    );
+    for kind in [
+        "SOURCE_NODE",
+        "OWNER_SIGNATURE",
+        "RESOLVED_SYMBOL",
+        "EXPRESSION_TYPE",
+        "PROJECT_MODEL",
+        "DIAGNOSTICS",
+    ] {
+        assert!(
+            thread.read_set.iter().any(|fact| fact.kind == kind),
+            "missing ReadSet fact {kind}"
+        );
+    }
+
+    for (symbol, edge) in [
+        ("com.acme.loops", "CFG_BACK"),
+        ("com.acme.guarded", "CFG_EXCEPTION"),
+        ("com.acme.classify", "CFG_TRUE"),
+    ] {
+        let raw = worker
+            .request(
+                RequestKind::BuildLocalGraph,
+                &json!({"repo":fixture,"symbol":symbol}),
+            )
+            .unwrap();
+        let graph = graph::enrich(serde_json::from_value(raw).unwrap());
+        assert!(
+            graph.edges.iter().any(|candidate| candidate.kind == edge),
+            "{symbol} lacks {edge}"
+        );
+    }
+    let guarded = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.guarded"}),
+        )
+        .unwrap();
+    let guarded = graph::enrich(serde_json::from_value(guarded).unwrap());
+    assert!(guarded.nodes.iter().any(|node| node.kind == "THROW"));
+    assert!(guarded.nodes.iter().any(|node| {
+        node.attributes
+            .get("firNodeKind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind.contains("SafeCall"))
+    }));
+    assert!(guarded.nodes.iter().any(|node| {
+        node.attributes
+            .get("firNodeKind")
+            .and_then(|value| value.as_str())
+            .is_some_and(|kind| kind.contains("Elvis"))
+    }));
+
+    let calls = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.namedCall"}),
+        )
+        .unwrap();
+    let calls = graph::enrich(serde_json::from_value(calls).unwrap());
+    assert!(
+        calls
+            .nodes
+            .iter()
+            .any(|node| node.attributes.contains_key("calleeSummaryHash"))
+    );
+    assert!(
+        calls
+            .nodes
+            .iter()
+            .any(|node| node.attributes.contains_key("receiverType"))
+    );
+
+    let source =
+        std::fs::read_to_string(fixture.join("src/main/kotlin/com/acme/Samples.kt")).unwrap();
+    let offset = source.find("value *= 2").unwrap() + 2;
+    let expression = worker
+        .request(
+            RequestKind::ResolveExpression,
+            &json!({"repo":fixture,"file":"src/main/kotlin/com/acme/Samples.kt","offset":offset}),
+        )
+        .unwrap();
+    assert_eq!(expression["anchor"]["sourceText"], "value *= 2");
+    worker.shutdown().unwrap();
+}

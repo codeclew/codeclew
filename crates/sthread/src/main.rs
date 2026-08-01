@@ -100,8 +100,12 @@ struct ExpressionArgs {
 struct SliceArgs {
     #[arg(long)]
     repo: PathBuf,
-    #[arg(long)]
-    symbol: String,
+    #[arg(long, required_unless_present = "file", conflicts_with = "file")]
+    symbol: Option<String>,
+    #[arg(long, requires = "offset", conflicts_with = "symbol")]
+    file: Option<String>,
+    #[arg(long, requires = "file")]
+    offset: Option<usize>,
     #[arg(long, value_enum, default_value = "both")]
     direction: DirectionArg,
     #[arg(long, default_value_t = 200)]
@@ -192,16 +196,20 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         } => with_worker(&workspace, |w| {
             w.request(
                 RequestKind::OpenProject,
-                &json!({"repo":absolute(&args.repo)?}),
+                &json!({"repo":absolute(&args.repo)?,"compilation":args.compilation}),
             )
         }),
         Command::Index(args) => with_worker(&workspace, |w| {
             let repo = absolute(&args.repo)?;
+            let project = w.request(
+                RequestKind::OpenProject,
+                &json!({"repo":repo,"compilation":args.compilation}),
+            )?;
             let facts = w.request(RequestKind::IndexFiles, &json!({"repo":repo}))?;
             let mut index = RepositoryIndex::open(&repo)?;
             let persistent_hash = index.update(&facts)?;
             Ok(
-                json!({"schema":"semantic-index-result/0.1","workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len)}),
+                json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len)}),
             )
         }),
         Command::Resolve {
@@ -276,21 +284,94 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
 fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, SthreadError> {
     let repo = absolute(&args.repo)?;
     let project = worker.request(RequestKind::OpenProject, &json!({"repo":repo}))?;
+    let expression_anchor = if let (Some(file), Some(offset)) = (&args.file, args.offset) {
+        Some(
+            worker.request(
+                RequestKind::ResolveExpression,
+                &json!({"repo":repo,"file":file,"offset":offset}),
+            )?["anchor"]
+                .clone(),
+        )
+    } else {
+        None
+    };
+    let symbol = args
+        .symbol
+        .clone()
+        .or_else(|| {
+            expression_anchor
+                .as_ref()?
+                .get("ownerSymbolId")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::InvalidInput,
+                "slice needs --symbol or --file with --offset",
+            )
+        })?;
     let raw = worker.request(
         RequestKind::BuildLocalGraph,
-        &json!({"repo":repo,"symbol":args.symbol}),
+        &json!({"repo":repo,"symbol":symbol}),
     )?;
     let graph: LocalGraph = serde_json::from_value(raw).map_err(parse_error)?;
     let graph = graph::enrich(graph);
-    let seed_id = graph
-        .nodes
-        .iter()
-        .filter(|n| n.kind == "RETURN")
-        .map(|n| n.id.clone())
-        .next_back()
-        .unwrap_or_else(|| "exit".into());
+    let seed_id = if let Some(anchor) = &expression_anchor {
+        let anchor_id = anchor.get("anchorId").and_then(Value::as_str);
+        graph
+            .nodes
+            .iter()
+            .find(|node| {
+                node.origin
+                    .as_ref()
+                    .and_then(|o| o.get("anchorId"))
+                    .and_then(Value::as_str)
+                    == anchor_id
+            })
+            .map(|n| n.id.clone())
+            .ok_or_else(|| {
+                SthreadError::new(
+                    ErrorCode::ExpressionNotFound,
+                    "resolved expression has no source-backed CFG node",
+                )
+            })?
+    } else {
+        graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == "RETURN")
+            .max_by_key(|n| {
+                n.origin
+                    .as_ref()
+                    .and_then(|o| o.pointer("/rangeHint/0"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+            .map(|n| n.id.clone())
+            .or_else(|| {
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|n| n.origin.is_some())
+                    .max_by_key(|n| {
+                        n.origin
+                            .as_ref()
+                            .and_then(|o| o.pointer("/rangeHint/1"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    })
+                    .map(|n| n.id.clone())
+            })
+            .ok_or_else(|| {
+                SthreadError::new(
+                    ErrorCode::IncompleteSemanticAnalysis,
+                    "function has no source-backed CFG seed",
+                )
+            })?
+    };
     let seed_node = graph.nodes.iter().find(|n| n.id == seed_id);
-    let seed = json!({"kind":"FUNCTION_RETURN","symbol":args.symbol,"nodeId":seed_id,"anchor":seed_node.and_then(|n|n.origin.clone())});
+    let seed = json!({"kind":if expression_anchor.is_some(){"EXPRESSION"}else{"FUNCTION_RETURN"},"symbol":symbol,"nodeId":seed_id,"anchor":expression_anchor.or_else(||seed_node.and_then(|n|n.origin.clone()))});
     let policy = SlicePolicy {
         direction: match args.direction {
             DirectionArg::Forward => Direction::Forward,

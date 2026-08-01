@@ -247,6 +247,11 @@ fn parse_worker_code(code: &str) -> ErrorCode {
         "AMBIGUOUS_TARGET" => ErrorCode::AmbiguousTarget,
         "REPLACEMENT_PARSE_ERROR" => ErrorCode::ReplacementParseError,
         "UNSUPPORTED_CONTROL_FLOW" => ErrorCode::UnsupportedControlFlow,
+        "UNSUPPORTED_PROJECT_CONFIGURATION" => ErrorCode::UnsupportedProjectConfiguration,
+        "TYPE_MISMATCH" => ErrorCode::TypeMismatch,
+        "BINDING_CHANGED" => ErrorCode::BindingChanged,
+        "NEW_DIAGNOSTICS" => ErrorCode::NewDiagnostics,
+        "EFFECT_CHANGED" => ErrorCode::EffectChanged,
         _ => ErrorCode::IncompleteSemanticAnalysis,
     }
 }

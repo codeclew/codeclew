@@ -8,66 +8,249 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     for node in &mut graph.nodes {
         node.editable = node.origin.is_some() && !node.kind.starts_with("PHI");
     }
-    let mut definitions: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for node in &graph.nodes {
-        if let Some(name) = &node.defines {
-            definitions
-                .entry(name.clone())
-                .or_default()
-                .push(node.id.clone());
-        }
-    }
-    let mut phi_for = BTreeMap::new();
-    for (name, defs) in definitions.iter().filter(|(_, defs)| defs.len() > 1) {
-        let id = format!("phi:{}", name);
-        graph.nodes.push(GraphNode {
-            id: id.clone(),
-            kind: "PHI".into(),
-            defines: Some(name.clone()),
-            uses: vec![],
-            origin: None,
-            editable: false,
-            attributes: BTreeMap::new(),
-        });
-        for def in defs {
-            graph.edges.push(Edge {
-                from: def.clone(),
-                to: id.clone(),
-                kind: "PHI_INPUT".into(),
-            });
-        }
-        phi_for.insert(name.clone(), id);
-    }
-    for node in &graph.nodes.clone() {
-        for used in &node.uses {
-            if let Some(phi) = phi_for.get(used) {
-                if phi != &node.id {
-                    graph.edges.push(Edge {
-                        from: phi.clone(),
-                        to: node.id.clone(),
-                        kind: "DEF_USE".into(),
-                    });
-                }
-            } else if let Some(def) = definitions.get(used).and_then(|d| d.last())
-                && def != &node.id
-            {
-                graph.edges.push(Edge {
-                    from: def.clone(),
-                    to: node.id.clone(),
-                    kind: "DEF_USE".into(),
-                });
-            }
-        }
-    }
-    add_control_dependencies(&mut graph);
+    let entry = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            node.kind == "ENTRY"
+                && node
+                    .attributes
+                    .get("firNodeKind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.contains("FunctionEnter"))
+        })
+        .or_else(|| graph.nodes.iter().find(|node| node.id == "entry"))
+        .or_else(|| graph.nodes.iter().find(|node| node.kind == "ENTRY"))
+        .map(|node| node.id.clone())
+        .unwrap_or_else(|| "entry".into());
+    let exit = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            node.kind == "EXIT"
+                && node
+                    .attributes
+                    .get("firNodeKind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.contains("FunctionExit"))
+        })
+        .or_else(|| graph.nodes.iter().find(|node| node.id == "exit"))
+        .or_else(|| graph.nodes.iter().find(|node| node.kind == "EXIT"))
+        .map(|node| node.id.clone())
+        .unwrap_or_else(|| "exit".into());
+    add_ssa_and_def_use(&mut graph, &entry);
+    add_control_dependencies(&mut graph, &exit);
     graph.nodes.sort_by(|a, b| a.id.cmp(&b.id));
     graph.edges.sort();
     graph.edges.dedup();
     graph
 }
 
-fn add_control_dependencies(graph: &mut LocalGraph) {
-    let postdominators = dominators(graph, "exit", true);
+fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
+    let dominator_sets = dominators(graph, entry, false);
+    let immediate = immediate_dominators(&dominator_sets);
+    let mut frontier: BTreeMap<String, BTreeSet<String>> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), BTreeSet::new()))
+        .collect();
+    let predecessors = cfg_predecessors(graph);
+    for (block, incoming) in &predecessors {
+        if incoming.len() < 2 {
+            continue;
+        }
+        for predecessor in incoming {
+            let mut runner = Some(predecessor.clone());
+            while let Some(current) = runner {
+                if immediate.get(block) == Some(&current) {
+                    break;
+                }
+                frontier
+                    .entry(current.clone())
+                    .or_default()
+                    .insert(block.clone());
+                runner = immediate.get(&current).cloned();
+            }
+        }
+    }
+
+    let mut definitions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for node in &graph.nodes {
+        if let Some(variable) = &node.defines {
+            definitions
+                .entry(variable.clone())
+                .or_default()
+                .insert(node.id.clone());
+        }
+    }
+    let mut phi_at: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (variable, sites) in &definitions {
+        let mut work: VecDeque<String> = sites.iter().cloned().collect();
+        let mut placed = BTreeSet::new();
+        while let Some(site) = work.pop_front() {
+            for join in frontier.get(&site).into_iter().flatten() {
+                if placed.insert(join.clone()) {
+                    phi_at
+                        .entry(join.clone())
+                        .or_default()
+                        .insert(variable.clone());
+                    if !sites.contains(join) {
+                        work.push_back(join.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut phi_ids = BTreeMap::new();
+    for (block, variables) in &phi_at {
+        for variable in variables {
+            let id = format!("phi:{variable}@{block}");
+            phi_ids.insert((block.clone(), variable.clone()), id.clone());
+            let mut attributes = BTreeMap::new();
+            attributes.insert("joinBlock".into(), json!(block));
+            graph.nodes.push(GraphNode {
+                id,
+                kind: "PHI".into(),
+                defines: Some(variable.clone()),
+                uses: vec![],
+                origin: None,
+                editable: false,
+                attributes,
+            });
+        }
+    }
+
+    let originals: BTreeMap<_, _> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind != "PHI")
+        .map(|node| (node.id.clone(), node.clone()))
+        .collect();
+    let mut children: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (node, parent) in &immediate {
+        children
+            .entry(parent.clone())
+            .or_default()
+            .push(node.clone());
+    }
+    for values in children.values_mut() {
+        values.sort();
+    }
+    let successors = cfg_successors(graph);
+    let mut stacks: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut versions: BTreeMap<String, usize> = BTreeMap::new();
+    let mut events = vec![RenameEvent::Enter(entry.into())];
+    while let Some(event) = events.pop() {
+        match event {
+            RenameEvent::Exit(pushed) => {
+                for variable in pushed.into_iter().rev() {
+                    let _ = stacks.get_mut(&variable).and_then(Vec::pop);
+                }
+            }
+            RenameEvent::Enter(block) => {
+                let mut pushed = Vec::new();
+                for variable in phi_at.get(&block).into_iter().flatten() {
+                    let id = phi_ids[&(block.clone(), variable.clone())].clone();
+                    stacks.entry(variable.clone()).or_default().push(id);
+                    pushed.push(variable.clone());
+                }
+                if let Some(node) = originals.get(&block) {
+                    for used in &node.uses {
+                        if let Some(definition) = stacks.get(used).and_then(|stack| stack.last()) {
+                            graph.edges.push(Edge {
+                                from: definition.clone(),
+                                to: block.clone(),
+                                kind: "DEF_USE".into(),
+                            });
+                        }
+                    }
+                    if let Some(variable) = &node.defines {
+                        let version = versions.entry(variable.clone()).or_default();
+                        if let Some(target) = graph.nodes.iter_mut().find(|item| item.id == block) {
+                            target
+                                .attributes
+                                .insert("ssaVersion".into(), json!(*version));
+                        }
+                        *version += 1;
+                        stacks
+                            .entry(variable.clone())
+                            .or_default()
+                            .push(block.clone());
+                        pushed.push(variable.clone());
+                    }
+                }
+                for successor in successors.get(&block).into_iter().flatten() {
+                    for variable in phi_at.get(successor).into_iter().flatten() {
+                        if let Some(definition) =
+                            stacks.get(variable).and_then(|stack| stack.last())
+                        {
+                            graph.edges.push(Edge {
+                                from: definition.clone(),
+                                to: phi_ids[&(successor.clone(), variable.clone())].clone(),
+                                kind: "PHI_INPUT".into(),
+                            });
+                        }
+                    }
+                }
+                events.push(RenameEvent::Exit(pushed));
+                for child in children.get(&block).into_iter().flatten().rev() {
+                    events.push(RenameEvent::Enter(child.clone()));
+                }
+            }
+        }
+    }
+}
+
+enum RenameEvent {
+    Enter(String),
+    Exit(Vec<String>),
+}
+
+fn immediate_dominators(sets: &BTreeMap<String, BTreeSet<String>>) -> BTreeMap<String, String> {
+    sets.iter()
+        .filter_map(|(node, dominators)| {
+            dominators
+                .iter()
+                .filter(|candidate| *candidate != node)
+                .max_by_key(|candidate| sets.get(*candidate).map_or(0, BTreeSet::len))
+                .map(|parent| (node.clone(), parent.clone()))
+        })
+        .collect()
+}
+
+fn cfg_predecessors(graph: &LocalGraph) -> BTreeMap<String, Vec<String>> {
+    let mut result: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind.starts_with("CFG_"))
+    {
+        result
+            .entry(edge.to.clone())
+            .or_default()
+            .push(edge.from.clone());
+    }
+    result
+}
+
+fn cfg_successors(graph: &LocalGraph) -> BTreeMap<String, Vec<String>> {
+    let mut result: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind.starts_with("CFG_"))
+    {
+        result
+            .entry(edge.from.clone())
+            .or_default()
+            .push(edge.to.clone());
+    }
+    result
+}
+
+fn add_control_dependencies(graph: &mut LocalGraph, exit: &str) {
+    let postdominators = dominators(graph, exit, true);
     let immediate: BTreeMap<String, Option<String>> = postdominators
         .iter()
         .map(|(node, set)| {
@@ -217,9 +400,15 @@ pub fn slice(
         .collect();
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
     edges.sort();
-    let external = nodes.iter().any(|n| n.kind == "CALL");
+    // A depth-zero call anywhere in the selected local function can influence
+    // a source-backed seed through control/value evaluation. Until a call
+    // summary proves otherwise, completeness must remain partial.
+    let external = graph.nodes.iter().any(|n| n.kind == "CALL");
+    let unsupported = !graph.boundaries.is_empty();
     let status = if budget_hit {
         CompletenessStatus::PartialBudget
+    } else if unsupported {
+        CompletenessStatus::PartialUnsupportedFeature
     } else if external {
         CompletenessStatus::PartialExternalBoundary
     } else {
@@ -227,6 +416,8 @@ pub fn slice(
     };
     let boundaries = if budget_hit {
         vec![json!({"kind":"BUDGET","maxNodes":policy.max_nodes})]
+    } else if unsupported {
+        graph.boundaries.clone()
     } else if external {
         vec![json!({"kind":"EXTERNAL_CALL","reason":"maxCallDepth=0"})]
     } else {
@@ -245,12 +436,60 @@ pub fn slice(
                 key: key.into(),
                 hash: hash.into(),
             });
+            if let Some(signature) = origin.get("ownerSignatureHash").and_then(Value::as_str) {
+                read_set.push(ReadFact {
+                    kind: "OWNER_SIGNATURE".into(),
+                    key: origin
+                        .get("ownerSymbolId")
+                        .and_then(Value::as_str)
+                        .unwrap_or(key)
+                        .into(),
+                    hash: signature.into(),
+                });
+            }
+        }
+        let semantic_key = node
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.get("anchorId"))
+            .and_then(Value::as_str)
+            .unwrap_or(&node.id);
+        for (attribute, kind) in [
+            ("symbol", "RESOLVED_SYMBOL"),
+            ("type", "EXPRESSION_TYPE"),
+            ("receiverType", "RECEIVER_TYPE"),
+            ("calleeSummaryHash", "CALLEE_SUMMARY"),
+        ] {
+            if let Some(value) = node.attributes.get(attribute) {
+                let hash = if attribute == "calleeSummaryHash" {
+                    value.as_str().unwrap_or_default().to_owned()
+                } else {
+                    canonical::hash(value)?
+                };
+                read_set.push(ReadFact {
+                    kind: kind.into(),
+                    key: format!("{semantic_key}:{attribute}"),
+                    hash,
+                });
+                if attribute == "symbol" && node.kind == "CALL" {
+                    read_set.push(ReadFact {
+                        kind: "CALL_TARGET".into(),
+                        key: format!("{semantic_key}:callTarget"),
+                        hash: canonical::hash(value)?,
+                    });
+                }
+            }
         }
     }
     read_set.push(ReadFact {
         kind: "PROJECT_MODEL".into(),
         key: snapshot.project_model_hash.clone(),
         hash: snapshot.project_model_hash.clone(),
+    });
+    read_set.push(ReadFact {
+        kind: "DIAGNOSTICS".into(),
+        key: graph.symbol.clone(),
+        hash: canonical::hash(&json!([]))?,
     });
     read_set.sort();
     read_set.dedup();
@@ -313,6 +552,7 @@ mod tests {
             symbol: "total".into(),
             file: "Total.kt".into(),
             nodes: vec![
+                node("entry", "ENTRY", None, &[]),
                 node("base", "PARAMETER", Some("base"), &[]),
                 node("premium", "PARAMETER", Some("premium"), &[]),
                 node("init", "DEFINITION", Some("value"), &["base"]),
@@ -322,6 +562,11 @@ mod tests {
                 node("exit", "EXIT", None, &[]),
             ],
             edges: vec![
+                Edge {
+                    from: "entry".into(),
+                    to: "base".into(),
+                    kind: "CFG_NORMAL".into(),
+                },
                 Edge {
                     from: "base".into(),
                     to: "premium".into(),
@@ -358,14 +603,17 @@ mod tests {
                     kind: "CFG_NORMAL".into(),
                 },
             ],
+            boundaries: vec![],
         };
         let enriched = enrich(graph);
-        assert!(enriched.nodes.iter().any(|n| n.id == "phi:value"));
+        assert!(enriched.nodes.iter().any(|n| n.id == "phi:value@ret"));
         assert!(
             enriched
                 .edges
                 .iter()
-                .any(|e| e.kind == "PHI_INPUT" && e.from == "double")
+                .any(|e| e.kind == "PHI_INPUT" && e.from == "double"),
+            "edges: {:?}",
+            enriched.edges
         );
         assert!(
             enriched
@@ -396,6 +644,7 @@ mod tests {
                 to: "b".into(),
                 kind: "DEF_USE".into(),
             }],
+            boundaries: vec![],
         };
         let ir = slice(
             &graph,

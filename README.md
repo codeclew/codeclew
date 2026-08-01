@@ -31,16 +31,16 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 ## Supported vertical
 
 - Gradle Kotlin/JVM inspection and project model fingerprinting
-- PSI declaration index persisted in SQLite WAL
+- PSI declaration index with K2 FIR facts persisted in SQLite WAL/content blobs
 - FQN function and file+offset expression resolution
 - composite semantic anchors with unique replay
-- local PSI-derived CFG DTO, Rust PHI/def-use/control-dependency enrichment
+- actual K2 FIR CFG normalization, Rust dominance-frontier SSA/PHI/def-use and post-dominator control dependencies
 - forward/backward/bidirectional bounded slicing and canonical Thread IR
-- `REPLACE_EXPRESSION` and `REPLACE_FUNCTION_BODY` on PSI copies
-- syntax plus Kotlin 2.4.10 K2/Gradle compile validation
+- `REPLACE_EXPRESSION`, `REPLACE_FUNCTION_BODY`, `ADD_IMPORT`, and `REMOVE_IMPORT` on PSI copies
+- K2 candidate diagnostics, type, protected-binding, call-target, callee-summary, and effect validation
 - minimal preview diff, isolated worktree validation, configured tests
 - candidate commits with provenance trailers and CAS ref update
-- append-only SQLite transaction ledger and conservative stale/conflict handling
+- append-only SQLite transaction ledger, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
 
 This is intentionally fail-closed. Android, KMP, scripts, compiler plugins, reflection, precise coroutine lowering, global interprocedural analysis, and ambiguous anchors are rejected or marked as boundaries. See [progress](docs/progress.md) and [final report](docs/final-report.md).
 
