@@ -4,7 +4,7 @@ use crate::graph;
 use crate::model::*;
 use crate::proto::RequestKind;
 use crate::worker::WorkerClient;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use similar::TextDiff;
 use std::collections::BTreeMap;
@@ -111,6 +111,10 @@ pub fn preview(
             "exactTextHash": target.get("exactTextHash").and_then(Value::as_str).unwrap_or_default(),
             "syntaxKind": target.get("syntaxKind").and_then(Value::as_str).unwrap_or_default(),
             "normalizedTokenHash": target.get("normalizedTokenHash").and_then(Value::as_str).unwrap_or_default(),
+            "ancestorPathHash": target.get("ancestorPathHash").cloned().unwrap_or(Value::Null),
+            "localOrdinal": target.get("localOrdinal").cloned().unwrap_or(Value::Null),
+            "leftContextHash": target.get("leftContextHash").cloned().unwrap_or(Value::Null),
+            "rightContextHash": target.get("rightContextHash").cloned().unwrap_or(Value::Null),
             "kind": operation.kind, "replacement": operation.replacement.kotlin,
             "preconditions": operation.preconditions, "postconditions": operation.postconditions
         });
@@ -253,6 +257,20 @@ pub fn commit(
     worker: &mut WorkerClient,
 ) -> Result<Value, SthreadError> {
     let current = git_output(repo, &["rev-parse", target_ref])?;
+    let edit_hash = canonical::hash(&transaction.edit).map_err(internal)?;
+    if let Some(existing) =
+        find_matching_transaction_commit(repo, target_ref, &transaction.tx_id, &edit_hash)?
+    {
+        transaction.final_commit = Some(existing.clone());
+        transaction.status = "COMMITTED".into();
+        ledger(repo)?.append(
+            transaction,
+            "idempotent retry matched reachable Git trailers",
+        )?;
+        return Ok(
+            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":transaction.base_revision,"finalCommit":existing,"currentRevision":current,"targetRef":target_ref,"status":"COMMITTED","idempotent":true}),
+        );
+    }
     let report = preview_for_commit(repo, transaction, &current, worker).map_err(|mut e| {
         if current != transaction.base_revision
             && matches!(
@@ -269,6 +287,14 @@ pub fn commit(
     transaction.preview = Some(report.clone());
     transaction.status = "VALIDATED".into();
     ledger(repo)?.append(transaction, "preview and Gradle validation passed")?;
+    if report.candidates.is_empty() {
+        transaction.final_commit = Some(current.clone());
+        transaction.status = "COMMITTED".into();
+        ledger(repo)?.append(transaction, "idempotent no-op merged at current ref")?;
+        return Ok(
+            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"finalCommit":current,"targetRef":target_ref,"status":"COMMITTED","idempotent":true}),
+        );
+    }
     let worktree = tempfile::tempdir().map_err(io_error)?;
     let worktree_path = worktree.path().join("worktree");
     git(
@@ -288,7 +314,6 @@ pub fn commit(
         }
         validate_worktree(&worktree_path, &transaction.test_tasks)?;
         git(&worktree_path, &["add", "--", "."])?;
-        let edit_hash = canonical::hash(&transaction.edit).map_err(internal)?;
         let message = format!(
             "semantic transaction {}\n\nSemantic-Transaction-Id: {}\nSemantic-Base-Revision: {}\nSemantic-Edit-Hash: {}",
             transaction.intent, transaction.tx_id, transaction.base_revision, edit_hash
@@ -567,6 +592,7 @@ fn validate_worktree(worktree: &Path, tests: &[String]) -> Result<(), SthreadErr
 
 pub struct Ledger {
     connection: Connection,
+    repo: PathBuf,
 }
 impl Ledger {
     pub fn open(repo: &Path) -> Result<Self, SthreadError> {
@@ -577,7 +603,10 @@ impl Ledger {
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(db_error)?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, tx_id TEXT NOT NULL, status TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, record_json BLOB NOT NULL, evidence TEXT NOT NULL);") .map_err(db_error)?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            repo: repo.to_path_buf(),
+        })
     }
     pub fn append(&self, tx: &Transaction, evidence: &str) -> Result<(), SthreadError> {
         self.connection
@@ -594,12 +623,125 @@ impl Ledger {
         Ok(())
     }
     pub fn inspect(&self, id: &str) -> Result<Value, SthreadError> {
+        let latest: Option<(String, Vec<u8>)> = self.connection.query_row(
+            "SELECT status,record_json FROM events WHERE tx_id=?1 ORDER BY sequence DESC LIMIT 1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(db_error)?;
+        let (mut status, record) = latest.ok_or_else(|| {
+            SthreadError::new(
+                ErrorCode::InvalidInput,
+                format!("transaction not found: {id}"),
+            )
+        })?;
+        let mut transaction: Transaction = serde_json::from_slice(&record).map_err(|error| {
+            SthreadError::new(ErrorCode::TransactionRecoveryRequired, error.to_string())
+        })?;
+        let terminal = matches!(
+            status.as_str(),
+            "COMMITTED" | "CONFLICTED" | "STALE_REQUIRES_RESLICE" | "VALIDATION_FAILED" | "ABORTED"
+        );
+        let mut action = "NONE";
+        if !terminal {
+            if let Some(commit) = find_transaction_commit(&self.repo, id)? {
+                transaction.status = "COMMITTED".into();
+                transaction.final_commit = Some(commit);
+                self.append(
+                    &transaction,
+                    "recovered committed status from reachable Git trailer",
+                )?;
+                status = "COMMITTED".into();
+                action = "RECOVERED_COMMITTED_FROM_TRAILER";
+            } else if matches!(
+                status.as_str(),
+                "CREATED" | "SLICED" | "EDIT_PREVIEWED" | "VALIDATING" | "VALIDATED" | "REBASING"
+            ) {
+                transaction.status = "ABORTED".into();
+                self.append(
+                    &transaction,
+                    "recovered unfinished pre-publication transaction as aborted",
+                )?;
+                status = "ABORTED".into();
+                action = "RECOVERED_ABORTED_NO_REF_CHANGE";
+            } else {
+                return Err(SthreadError::new(
+                    ErrorCode::TransactionRecoveryRequired,
+                    "unfinished COMMITTING transaction has no reachable commit trailer",
+                ));
+            }
+        }
         let mut statement=self.connection.prepare("SELECT sequence,status,timestamp,evidence FROM events WHERE tx_id=?1 ORDER BY sequence").map_err(db_error)?;
         let rows=statement.query_map([id],|r|Ok(json!({"sequence":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"timestamp":r.get::<_,String>(2)?,"evidence":r.get::<_,String>(3)?}))).map_err(db_error)?.collect::<Result<Vec<_>,_>>().map_err(db_error)?;
         Ok(
-            json!({"schema":"semantic-ledger/0.1","transactionId":id,"events":rows,"recoverable":true}),
+            json!({"schema":"semantic-ledger/0.1","transactionId":id,"events":rows,"reconciledStatus":status,"recoveryAction":action,"recoverable":true}),
         )
     }
+}
+
+fn find_transaction_commit(repo: &Path, id: &str) -> Result<Option<String>, SthreadError> {
+    let output = Command::new("git")
+        .args(["log", "--all", "--format=%H%x1f%B%x1e"])
+        .current_dir(repo)
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(SthreadError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "cannot scan Git history for transaction trailers",
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text.split('\u{1e}').find_map(|record| {
+        let (commit, message) = record.trim().split_once('\u{1f}')?;
+        message
+            .lines()
+            .any(|line| line.trim() == format!("Semantic-Transaction-Id: {id}"))
+            .then(|| commit.to_owned())
+    }))
+}
+
+fn find_matching_transaction_commit(
+    repo: &Path,
+    revision: &str,
+    id: &str,
+    edit_hash: &str,
+) -> Result<Option<String>, SthreadError> {
+    let output = Command::new("git")
+        .args(["log", revision, "--format=%H%x1f%B%x1e"])
+        .current_dir(repo)
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(SthreadError::new(
+            ErrorCode::Internal,
+            format!("cannot scan target history {revision} for transaction trailers"),
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for record in text.split('\u{1e}') {
+        let Some((commit, message)) = record.trim().split_once('\u{1f}') else {
+            continue;
+        };
+        if !message
+            .lines()
+            .any(|line| line.trim() == format!("Semantic-Transaction-Id: {id}"))
+        {
+            continue;
+        }
+        let recorded_hash = message.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("Semantic-Edit-Hash: ")
+                .map(str::to_owned)
+        });
+        if recorded_hash.as_deref() != Some(edit_hash) {
+            return Err(SthreadError::new(
+                ErrorCode::InvalidInput,
+                format!("transaction id {id} is already associated with a different edit"),
+            ));
+        }
+        return Ok(Some(commit.to_owned()));
+    }
+    Ok(None)
 }
 pub fn ledger(repo: &Path) -> Result<Ledger, SthreadError> {
     Ledger::open(repo)

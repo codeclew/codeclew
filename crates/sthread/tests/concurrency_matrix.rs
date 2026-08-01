@@ -161,6 +161,33 @@ fn make_tx(
     }
 }
 
+fn make_import_tx(
+    worker: &mut WorkerClient,
+    repo: &Path,
+    project_hash: &str,
+    id: &str,
+) -> Transaction {
+    let mut transaction = make_tx(
+        worker,
+        repo,
+        project_hash,
+        "com.acme.total",
+        "{ return base }",
+        id,
+    );
+    transaction.edit.operations = vec![EditOperation {
+        op_id: format!("op:{id}"),
+        kind: "ADD_IMPORT".into(),
+        target: json!({"fileId":"src/main/kotlin/com/acme/Samples.kt","sourceText":""}),
+        replacement: Replacement {
+            kotlin: "java.time.Instant".into(),
+        },
+        preconditions: BTreeMap::new(),
+        postconditions: BTreeMap::new(),
+    }];
+    transaction
+}
+
 #[test]
 fn mandatory_concurrency_matrix() {
     let root = workspace_root();
@@ -313,5 +340,108 @@ fn mandatory_concurrency_matrix() {
     let stale =
         transaction::commit(&repo_model, &mut old_tx, "refs/heads/main", &mut worker).unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleRequiresReslice);
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn callee_formatting_replays_and_same_import_merges_idempotently() {
+    let root = workspace_root();
+    let temp = tempfile::tempdir().unwrap();
+    let mut worker = WorkerClient::start(&root).unwrap();
+
+    let formatting_repo = init_repo(temp.path(), "formatting");
+    let project = worker
+        .request(RequestKind::OpenProject, &json!({"repo":formatting_repo}))
+        .unwrap();
+    let hash = project["projectModelHash"].as_str().unwrap();
+    let mut caller = make_tx(
+        &mut worker,
+        &formatting_repo,
+        hash,
+        "com.acme.namedCall",
+        "{ return value.decorate(prefix = \"(\") }",
+        "formatting-caller",
+    );
+    let source_path = formatting_repo.join("src/main/kotlin/com/acme/Samples.kt");
+    let source = std::fs::read_to_string(&source_path).unwrap();
+    std::fs::write(
+        &source_path,
+        source.replace(
+            "= \"$prefix$this]\"",
+            "= /* formatting only */ \"$prefix$this]\"",
+        ),
+    )
+    .unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "src/main/kotlin/com/acme/Samples.kt"])
+            .current_dir(&formatting_repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@localhost",
+                "commit",
+                "-qm",
+                "callee formatting"
+            ])
+            .current_dir(&formatting_repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    transaction::commit(
+        &formatting_repo,
+        &mut caller,
+        "refs/heads/main",
+        &mut worker,
+    )
+    .unwrap();
+
+    let import_repo = init_repo(temp.path(), "imports");
+    let project = worker
+        .request(RequestKind::OpenProject, &json!({"repo":import_repo}))
+        .unwrap();
+    let hash = project["projectModelHash"].as_str().unwrap();
+    let mut first = make_import_tx(&mut worker, &import_repo, hash, "import-first");
+    let mut second = make_import_tx(&mut worker, &import_repo, hash, "import-second");
+    transaction::commit(&import_repo, &mut first, "refs/heads/main", &mut worker).unwrap();
+    let mut interrupted = first.clone();
+    interrupted.status = "COMMITTING".into();
+    transaction::ledger(&import_repo)
+        .unwrap()
+        .append(&interrupted, "simulated crash after candidate publication")
+        .unwrap();
+    let recovered = transaction::ledger(&import_repo)
+        .unwrap()
+        .inspect("tx:import-first")
+        .unwrap();
+    assert_eq!(recovered["reconciledStatus"], "COMMITTED");
+    assert_eq!(
+        recovered["recoveryAction"],
+        "RECOVERED_COMMITTED_FROM_TRAILER"
+    );
+    let before_second = git_output(&import_repo, &["rev-parse", "refs/heads/main"]);
+    let result =
+        transaction::commit(&import_repo, &mut second, "refs/heads/main", &mut worker).unwrap();
+    assert_eq!(result["idempotent"], true);
+    assert_eq!(
+        before_second,
+        git_output(&import_repo, &["rev-parse", "refs/heads/main"])
+    );
+    let source = git_output(
+        &import_repo,
+        &[
+            "show",
+            "refs/heads/main:src/main/kotlin/com/acme/Samples.kt",
+        ],
+    );
+    assert_eq!(source.matches("import java.time.Instant").count(), 1);
     worker.shutdown().unwrap();
 }

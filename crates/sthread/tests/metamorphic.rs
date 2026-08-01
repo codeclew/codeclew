@@ -161,6 +161,9 @@ fn anchors_ir_and_candidate_validation_are_metamorphic() {
         no_op["source"].as_str().unwrap().as_bytes(),
         std::fs::read(&path).unwrap()
     );
+    let mut subtype = request.clone();
+    subtype["postconditions"] = json!({"typeAssignableTo":"CharSequence"});
+    worker.request(RequestKind::ApplyEdit, &subtype).unwrap();
 
     let mut wrong_type = request.clone();
     wrong_type["postconditions"] = json!({"typeAssignableTo":"Int"});
@@ -168,12 +171,48 @@ fn anchors_ir_and_candidate_validation_are_metamorphic() {
         .request(RequestKind::ApplyEdit, &wrong_type)
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::TypeMismatch);
+    let nullable = worker
+        .request(
+            RequestKind::ResolveSymbol,
+            &json!({"repo":repo,"symbol":"com.acme.nullableValue"}),
+        )
+        .unwrap();
+    let nullable_target = nullable["bodyAnchor"].clone();
+    let nullable_request = json!({
+        "repo":repo,"file":nullable_target["fileId"],"ownerSymbolId":nullable_target["ownerSymbolId"],
+        "exactTextHash":nullable_target["exactTextHash"],"syntaxKind":nullable_target["syntaxKind"],"normalizedTokenHash":nullable_target["normalizedTokenHash"],
+        "ancestorPathHash":nullable_target["ancestorPathHash"],"localOrdinal":nullable_target["localOrdinal"],"leftContextHash":nullable_target["leftContextHash"],"rightContextHash":nullable_target["rightContextHash"],
+        "kind":"REPLACE_EXPRESSION","replacement":"value","preconditions":{},"postconditions":{"typeAssignableTo":"String"}
+    });
+    assert_eq!(
+        worker
+            .request(RequestKind::ApplyEdit, &nullable_request)
+            .unwrap_err()
+            .code,
+        ErrorCode::TypeMismatch
+    );
     let mut invalid = request;
     invalid["replacement"] = json!("value =");
     let error = worker
         .request(RequestKind::ApplyEdit, &invalid)
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::ReplacementParseError);
+    let duplicate_source = std::fs::read_to_string(&path).unwrap();
+    let duplicate_offset = duplicate_source.find("value + 1 else").unwrap() + 2;
+    let duplicate = worker.request(RequestKind::ResolveExpression, &json!({"repo":repo,"file":"src/main/kotlin/com/acme/Samples.kt","offset":duplicate_offset})).unwrap();
+    let duplicate_target = duplicate["anchor"].clone();
+    let duplicate_edit = json!({
+        "repo":repo,"file":duplicate_target["fileId"],"ownerSymbolId":duplicate_target["ownerSymbolId"],
+        "exactTextHash":duplicate_target["exactTextHash"],"syntaxKind":duplicate_target["syntaxKind"],"normalizedTokenHash":duplicate_target["normalizedTokenHash"],
+        "ancestorPathHash":duplicate_target["ancestorPathHash"],"localOrdinal":duplicate_target["localOrdinal"],"leftContextHash":duplicate_target["leftContextHash"],"rightContextHash":duplicate_target["rightContextHash"],
+        "kind":"REPLACE_EXPRESSION","replacement":"value + 2","preconditions":{},"postconditions":{"typeAssignableTo":"Int"}
+    });
+    let duplicate_candidate = worker
+        .request(RequestKind::ApplyEdit, &duplicate_edit)
+        .unwrap();
+    let duplicate_candidate = duplicate_candidate["source"].as_str().unwrap();
+    assert_eq!(duplicate_candidate.matches("value + 2").count(), 1);
+    assert_eq!(duplicate_candidate.matches("value + 1").count(), 1);
     let import_request = json!({
         "repo":repo,"file":"src/main/kotlin/com/acme/Samples.kt","kind":"ADD_IMPORT",
         "replacement":"java.time.Instant","source":std::fs::read_to_string(&path).unwrap()
@@ -187,6 +226,19 @@ fn anchors_ir_and_candidate_validation_are_metamorphic() {
         .request(RequestKind::ApplyEdit, &imported_twice_request)
         .unwrap();
     assert_eq!(imported_once["source"], imported_twice["source"]);
+    let model_before = worker
+        .request(RequestKind::OpenProject, &json!({"repo":repo}))
+        .unwrap();
+    let convention = repo.join("buildSrc/src/main/kotlin/ConventionMarker.kt");
+    std::fs::create_dir_all(convention.parent().unwrap()).unwrap();
+    std::fs::write(&convention, "internal object ConventionMarker\n").unwrap();
+    let model_after = worker
+        .request(RequestKind::OpenProject, &json!({"repo":repo}))
+        .unwrap();
+    assert_ne!(
+        model_before["projectModelHash"],
+        model_after["projectModelHash"]
+    );
     let final_ref = Command::new("git")
         .args(["rev-parse", "refs/heads/main"])
         .current_dir(&repo)

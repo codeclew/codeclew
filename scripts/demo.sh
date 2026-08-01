@@ -8,6 +8,7 @@ cargo build --quiet --bin sthread
 DEMO_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/semantic-thread-demo.XXXXXX")
 trap 'rm -rf "$DEMO_ROOT"' EXIT INT TERM
 cp -R fixtures/kotlin-basic "$DEMO_ROOT/repo"
+rm -rf "$DEMO_ROOT/repo/.semantic-thread" "$DEMO_ROOT/repo/.gradle" "$DEMO_ROOT/repo/build"
 cd "$DEMO_ROOT/repo"
 git init -q -b main
 git add .
@@ -29,10 +30,7 @@ jq -n --slurpfile thread "$DEMO_ROOT/thread.json" --slurpfile edit "$DEMO_ROOT/e
 "$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/commit.json"
 FINAL=$(git -C "$DEMO_ROOT/repo" rev-parse refs/heads/main)
 git -C "$DEMO_ROOT/repo" show -s --format=%B "$FINAL" | grep -q 'Semantic-Transaction-Id: tx:demo-valid'
-set +e
-"$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/conflict.json"
-CONFLICT_EXIT=$?
-set -e
-[ "$CONFLICT_EXIT" -eq 5 ]
+"$BIN" tx commit --repo "$DEMO_ROOT/repo" --transaction "$DEMO_ROOT/tx.json" --target-ref refs/heads/main > "$DEMO_ROOT/retry.json"
+[ "$(jq -r '.idempotent' "$DEMO_ROOT/retry.json")" = true ]
 [ "$FINAL" = "$(git -C "$DEMO_ROOT/repo" rev-parse refs/heads/main)" ]
-jq -n --slurpfile invalid "$DEMO_ROOT/invalid.json" --slurpfile commit "$DEMO_ROOT/commit.json" --slurpfile conflict "$DEMO_ROOT/conflict.json" '{schema:"semantic-demo/0.1",status:"PASSED",invalidReplacement:$invalid[0],commit:$commit[0],conflict:$conflict[0],branchUnchangedAfterFailure:true,branchUnchangedAfterConflict:true}'
+jq -n --slurpfile invalid "$DEMO_ROOT/invalid.json" --slurpfile commit "$DEMO_ROOT/commit.json" --slurpfile retry "$DEMO_ROOT/retry.json" '{schema:"semantic-demo/0.1",status:"PASSED",invalidReplacement:$invalid[0],commit:$commit[0],idempotentRetry:$retry[0],branchUnchangedAfterFailure:true,branchUnchangedAfterRetry:true}'

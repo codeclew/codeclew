@@ -6,7 +6,7 @@ The repository contains a runnable Rust/Kotlin vertical covering Gradle model in
 
 ## Gates and correctness evidence
 
-`scripts/verify.sh` builds both toolchains, runs unit, golden-language, metamorphic and real-worktree concurrency tests, checks the protocol handshake and deterministic inspect/index output, then runs the transaction demonstration. The `total` slice includes `base`, `premium`, initial and conditional `value` definitions, PHI and return. Invalid Kotlin is rejected without ref movement; valid candidates compile and receive transaction trailers.
+`scripts/verify.sh` builds both toolchains, runs unit, golden-language, metamorphic and real-worktree concurrency tests, checks the protocol handshake and deterministic inspect/index output, then runs the transaction demonstration. The `total` slice includes `base`, `premium`, initial and conditional `value` definitions, PHI and return. Invalid Kotlin is rejected without ref movement; valid candidates compile and receive transaction trailers. Repeating the same transaction is deduplicated by its transaction ID and Edit IR hash, while ledger inspection reconciles interrupted commits from reachable trailers.
 
 ## Kotlin constructs
 
@@ -14,7 +14,7 @@ The fixtures cover functions/members/parameters/locals, assignments, if/when, lo
 
 ## Performance
 
-The benchmark runner reports worker startup, inspect, index, CFG/slice and preview separately. The fixture is intentionally small and is not evidence for the 100k LOC SLO. Warm timings are recorded in `benchmarks/reports/latest.json` when `scripts/benchmark.sh` runs.
+The benchmark runner separately reports worker startup, IPC plus PSI parse, composite-anchor resolution, K2 analysis, FIR extraction, SSA/control construction, slicing, canonical serialization, project-model loading, declaration indexing, edit preview and Gradle validation. The fixture is intentionally small and is not evidence for the 100k LOC SLO. Timings are recorded in `benchmarks/reports/latest.json` when `scripts/benchmark.sh` runs.
 
 ## Kotlin K2/FIR isolation
 
