@@ -415,6 +415,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
     let call_declarations = collect_call_declarations(index_facts, selection, resolutions);
     let contract_declarations = collect_contracts(index_facts, selection, resolutions);
     let projection_fields = collect_projection_fields(selection, &call_declarations);
+    let archive_recipe_available = projection_fields.len() >= 3;
     let mut edit_candidates = root_candidates.clone();
     for candidate in &call_declarations {
         if !edit_candidates.iter().any(|existing| {
@@ -517,6 +518,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "schema":"semantic-task-edit-plan/0.1",
             "threadId":thread_id,
             "baseRevision":base_revision,
+            "recommendedRecipe":{"kind":"ARCHIVE_EVENT_ENTITY_CONTRACT","available":archive_recipe_available},
             "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","REWRITE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
             "instruction":"Prefer REWRITE_DECLARATION with preconditions.substitutions [{old,new,occurrences?}] for exact local changes. Use declaration targets for signature/type changes and body targets only if signature is unchanged. New top-level declarations require CREATE_FILE.",
             "constraints":[
