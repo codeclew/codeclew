@@ -109,24 +109,32 @@
       "passed": true
     },
     {
-      "run": 5,
-      "sessionId": "019fbc06-b879-7422-b293-b19908d25fd0",
-      "commit": "66198b8b00ff50c16ab1cd4c3879c1f78ea6a4b0",
+      "run": 6,
+      "sessionId": "019fbc0f-ad97-7b92-9c21-72cc9f9e8157",
+      "commit": "3d68bd92e3eae0e56ae1ea497c692c834896c66f",
       "commandsBeforeEdit": 2,
       "agentContextCalls": 1,
       "navigationStdoutBytes": 11312,
-      "coldToolWallMilliseconds": 7306,
-      "timeToEditSeconds": 36,
-      "timeToCommitSeconds": 63,
-      "totalToolCalls": 8,
-      "inputTokens": 209257,
-      "cachedInputTokens": 186112,
-      "outputTokens": 2578,
-      "noncachedTokens": 25723,
-      "rawTotalTokens": 211835,
+      "coldToolWallMilliseconds": 8263,
+      "timeToEditSeconds": 39,
+      "timeToCommitSeconds": 56,
+      "totalToolCalls": 5,
+      "inputTokens": 134103,
+      "cachedInputTokens": 121344,
+      "outputTokens": 2386,
+      "noncachedTokens": 15145,
+      "rawTotalTokens": 136489,
       "targetedCleanTest": "PASS",
       "cleanWorktree": true,
       "passed": true
+    }
+  ],
+  "excludedRuns": [
+    {
+      "run": 5,
+      "sessionId": "019fbc06-b879-7422-b293-b19908d25fd0",
+      "commit": "66198b8b00ff50c16ab1cd4c3879c1f78ea6a4b0",
+      "reason": "Independent acceptance rejected an extra class-level DisplayName; all performance and correctness gates otherwise passed"
     }
   ],
   "summary": {
@@ -136,18 +144,18 @@
     "mean": {
       "commandsBeforeEdit": 2.2,
       "navigationStdoutBytes": 11312,
-      "coldToolWallMilliseconds": 7625.2,
-      "timeToEditSeconds": 34.2,
-      "timeToCommitSeconds": 58.0,
-      "totalToolCalls": 7.4,
-      "noncachedTokens": 23594.4,
-      "rawTotalTokens": 194704.8
+      "coldToolWallMilliseconds": 7816.6,
+      "timeToEditSeconds": 34.8,
+      "timeToCommitSeconds": 56.6,
+      "totalToolCalls": 6.8,
+      "noncachedTokens": 21478.8,
+      "rawTotalTokens": 179635.6
     },
     "worst": {
       "commandsBeforeEdit": 3,
       "navigationStdoutBytes": 11312,
-      "coldToolWallMilliseconds": 8078,
-      "timeToEditSeconds": 37,
+      "coldToolWallMilliseconds": 8263,
+      "timeToEditSeconds": 39,
       "timeToCommitSeconds": 63,
       "totalToolCalls": 8,
       "noncachedTokens": 30971,
