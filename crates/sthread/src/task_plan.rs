@@ -43,20 +43,16 @@ pub fn expand_transient_transform(
     let names = transform
         .get("names")
         .ok_or_else(|| invalid("transform needs names"))?;
-    let interface_name = identifier(required_string(names, "contract")?, "contract")?;
-    let record_name = identifier(required_string(names, "projection")?, "projection")?;
-    let data_source_name = identifier(
-        required_string(&transform["dataSource"], "name")?,
-        "dataSource.name",
+    let interface_name = identifier(required_string(names, "newContract")?, "names.newContract")?;
+    let record_name = identifier(
+        required_string(names, "newProjection")?,
+        "names.newProjection",
     )?;
-    let collection_name = identifier(
-        required_string(&transform["workflow"], "collection")?,
-        "workflow.collection",
-    )?;
-    let item_name = identifier(
-        required_string(&transform["workflow"], "item")?,
-        "workflow.item",
-    )?;
+    if interface_name == record_name {
+        return Err(invalid(
+            "names.newContract and names.newProjection must be distinct",
+        ));
+    }
     let identity_field = identifier(
         required_string(&transform["workflow"], "identityField")?,
         "workflow.identityField",
@@ -79,6 +75,14 @@ pub fn expand_transient_transform(
     }
 
     let current_contract = required_string(contract, "name")?;
+    let existing_names = context_names(context);
+    for new_name in [&interface_name, &record_name] {
+        if existing_names.contains(new_name.as_str()) {
+            return Err(invalid(format!(
+                "new type {new_name} collides with an emitted declaration"
+            )));
+        }
+    }
     let contract_source = required_string(contract, "sourceText")?;
     let workflow_source = required_string(workflow, "sourceText")?;
     let intermediary_source = required_string(intermediary, "sourceText")?;
@@ -134,11 +138,8 @@ pub fn expand_transient_transform(
     let workflow_substitutions = workflow_substitutions(
         &workflow_source,
         &old_data_source_name,
-        &data_source_name,
         &old_collection,
-        &collection_name,
         &old_item,
-        &item_name,
         &identity_field,
         &identity_parameter,
         &payload_parameter,
@@ -171,7 +172,6 @@ pub fn expand_transient_transform(
             data_source,
             vec![
                 substitution_occurrence(&query_rewrite.0, &query_rewrite.1, 1),
-                substitution(&old_data_source_name, &data_source_name, 1),
                 substitution(&return_rewrite.0, &return_rewrite.1, 1),
             ],
         )?,
@@ -475,40 +475,29 @@ fn infer_loop_item(source: &str, collection: &str) -> Result<String, SthreadErro
 fn workflow_substitutions(
     source: &str,
     old_method: &str,
-    new_method: &str,
     old_collection: &str,
-    new_collection: &str,
     old_item: &str,
-    new_item: &str,
     identity_field: &str,
     identity_parameter: &str,
     payload_parameter: &str,
 ) -> Result<Vec<Value>, SthreadError> {
     let specs = vec![
-        (old_method.to_owned(), new_method.to_owned()),
-        (
-            format!("val {old_collection} ="),
-            format!("val {new_collection} ="),
-        ),
-        (
-            format!("{old_collection}.forEach {{ {old_item} ->"),
-            format!("{new_collection}.forEach {{ {new_item} ->"),
-        ),
         (
             format!("{identity_parameter} = {old_item},"),
             format!(
-                "{identity_parameter} = {new_item}.{identity_field},\n                        {payload_parameter} = {new_item},"
+                "{identity_parameter} = {old_item}.{identity_field},\n                        {payload_parameter} = {old_item},"
             ),
         ),
         (
             format!("({old_item})"),
-            format!("({new_item}.{identity_field})"),
-        ),
-        (
-            format!("{old_collection}.size"),
-            format!("{new_collection}.size"),
+            format!("({old_item}.{identity_field})"),
         ),
     ];
+    if !source.contains(old_method) || !source.contains(old_collection) {
+        return Err(incomplete(
+            "workflow no longer contains the resolved data-source binding",
+        ));
+    }
     specs
         .into_iter()
         .map(|(old, new)| {
@@ -519,6 +508,19 @@ fn workflow_substitutions(
                 )));
             }
             Ok(substitution(&old, &new, count))
+        })
+        .collect()
+}
+
+fn context_names(context: &Value) -> BTreeSet<&str> {
+    ["editSurfaces", "contracts", "tests"]
+        .into_iter()
+        .flat_map(|section| {
+            context[section]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item["name"].as_str())
         })
         .collect()
 }
@@ -656,19 +658,16 @@ mod tests {
 
     fn compact_plan() -> Value {
         json!({
-            "schema":"semantic-task-goal/0.1",
+            "schema":"semantic-task-goal/0.2",
             "transform":{
                 "kind":"PROPAGATE_TYPED_FIELDS",
                 "fields":["key","label"],
                 "names":{
-                    "contract":"ChangePayload",
-                    "projection":"SelectedRecord",
+                    "newContract":"ChangePayload",
+                    "newProjection":"SelectedRecord",
                     "imports":[]
                 },
-                "dataSource":{"name":"findRecords"},
                 "workflow":{
-                    "collection":"selectedRecords",
-                    "item":"record",
                     "identityField":"key"
                 },
                 "sink":{"identity":"identity","payload":"payload"},
@@ -710,5 +709,16 @@ mod tests {
 
         assert_eq!(error.code, ErrorCode::IncompleteSemanticAnalysis);
         assert!(error.message.contains("resolved reconcile -> findKeys"));
+    }
+
+    #[test]
+    fn rejects_new_type_names_that_collide_with_emitted_declarations() {
+        let mut plan = compact_plan();
+        plan["transform"]["names"]["newContract"] = json!("Canonical");
+
+        let error = expand_transient_transform(&mut plan, &context(), &evidence()).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.contains("collides"));
     }
 }
