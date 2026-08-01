@@ -15,4 +15,4 @@
 | 10 Daemon/observability | separate long-lived Rust semanticd, structured logs, worker-reported real cache hits, orphan/Gradle metrics, contextual typed errors | Passed by semanticd success/failure metric tests and demo |
 | 11 Docs/benchmarks | docs, ADRs, isolated 20-sample semantic p95 with separate mandatory stage profiles and 100k-LOC corpus | Passed for MVP scope |
 
-Known limitations are deliberately visible: FIR APIs are version-unstable, so all Kotlin/FIR internals remain isolated in the pinned 2.4.10 worker. Interprocedural slicing stops at explicit call boundaries, overload assignability is intentionally conservative, and Android/KMP project models are outside the first-version support contour.
+Known limitations are deliberately visible: FIR APIs are version-unstable, so all Kotlin/FIR internals remain isolated in exact 2.1.21 and 2.4.10 workers. Interprocedural slicing stops at explicit call boundaries, overload assignability is intentionally conservative, and Android/KMP project models are outside the first-version support contour.

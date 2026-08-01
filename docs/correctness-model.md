@@ -5,7 +5,7 @@ Safety is based on snapshot validation, unique source-backed anchors, compiler v
 - Preview never writes the source repository.
 - PSI replacement is performed on an in-memory file copy.
 - Parse diagnostics reject malformed replacements.
-- Kotlin 2.4.10 Gradle compilation rejects type, overload and unresolved-binding failures.
+- A worker matching Kotlin 2.1.21 or 2.4.10 Gradle compilation rejects type, overload and unresolved-binding failures.
 - Only candidate files listed by ActualWriteSet are copied into the worktree.
 - The affected compilation and the snapshot's configured tests run by default before a commit exists on the target ref; a transaction may explicitly replace that test set.
 - K2 facts and the complete SQLite index snapshot are built in a private same-filesystem staging database before `git update-ref <ref> <new> <expected>`.

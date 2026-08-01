@@ -1,12 +1,14 @@
 package dev.semanticthread.worker
 
 import kotlinx.serialization.json.*
+import org.jetbrains.kotlin.config.KotlinCompilerVersion
 import java.nio.file.Path
 import java.security.MessageDigest
 import kotlin.io.path.readBytes
 
 private const val PROTOCOL_MAJOR = 1L
 private const val PROTOCOL_MINOR = 0L
+internal val WORKER_COMPILER_VERSION: String = KotlinCompilerVersion.VERSION
 
 fun main() {
     Worker().use { worker ->
@@ -71,7 +73,7 @@ private fun capabilities(): ByteArray {
     val features = listOf("functions", "locals", "assignments", "if", "when", "loops", "return", "throw", "calls", "safe_calls", "elvis")
     val unsupported = listOf("android", "multiplatform", "scripts", "expect_actual", "reflection", "compiler_plugins", "precise_coroutine_state_machine")
     return Proto.message(
-        Proto.string(1, "kotlin"), Proto.string(2, "0.1.0"), Proto.string(3, "2.4.10"), Proto.bytes(4, version()),
+        Proto.string(1, "kotlin"), Proto.string(2, "0.1.0"), Proto.string(3, WORKER_COMPILER_VERSION), Proto.bytes(4, version()),
         *supported.map { Proto.string(5, it) }.toTypedArray(), *features.map { Proto.string(6, it) }.toTypedArray(),
         *unsupported.map { Proto.string(7, it) }.toTypedArray()
     )

@@ -25,6 +25,8 @@ pub struct RequestProfile {
 }
 
 pub struct WorkerClient {
+    workspace: PathBuf,
+    variant: WorkerVariant,
     child: Child,
     stdin: ChildStdin,
     stdout: ChildStdout,
@@ -34,16 +36,61 @@ pub struct WorkerClient {
     pub last_profile: RequestProfile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerVariant {
+    Kotlin21,
+    Kotlin24,
+}
+
+impl WorkerVariant {
+    fn for_project(version: &str) -> Result<Self, SthreadError> {
+        match version
+            .split('.')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(".")
+            .as_str()
+        {
+            "2.1" => Ok(Self::Kotlin21),
+            "2.4" => Ok(Self::Kotlin24),
+            _ => Err(SthreadError::new(
+                ErrorCode::UnsupportedProjectConfiguration,
+                format!(
+                    "unsupported Kotlin compiler {version}; supported compiler lines are 2.1 and 2.4"
+                ),
+            )),
+        }
+    }
+
+    fn compiler_version(self) -> &'static str {
+        match self {
+            Self::Kotlin21 => "2.1.21",
+            Self::Kotlin24 => "2.4.10",
+        }
+    }
+
+    fn install_task(self) -> &'static str {
+        match self {
+            Self::Kotlin21 => ":workers:kotlin21:installDist",
+            Self::Kotlin24 => ":workers:kotlin:installDist",
+        }
+    }
+}
+
 impl WorkerClient {
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
 
     pub fn start(workspace: &Path) -> Result<Self, SthreadError> {
-        let launcher = worker_launcher(workspace);
+        Self::start_variant(workspace, WorkerVariant::Kotlin24)
+    }
+
+    fn start_variant(workspace: &Path, variant: WorkerVariant) -> Result<Self, SthreadError> {
+        let launcher = worker_launcher(workspace, variant);
         if !launcher.is_file() {
             let output = Command::new(workspace.join("gradlew"))
-                .args([":workers:kotlin:installDist", "--no-daemon", "--quiet"])
+                .args([variant.install_task(), "--no-daemon", "--quiet"])
                 .current_dir(workspace)
                 .output()
                 .map_err(|e| {
@@ -88,7 +135,7 @@ impl WorkerClient {
                 ));
             }
         };
-        if capabilities.compiler_version != "2.4.10"
+        if capabilities.compiler_version != variant.compiler_version()
             || !capabilities.protocol_versions.iter().any(|v| v.major == 1)
         {
             return Err(SthreadError::new(
@@ -97,6 +144,8 @@ impl WorkerClient {
             ));
         }
         Ok(Self {
+            workspace: workspace.to_path_buf(),
+            variant,
             child,
             stdin,
             stdout,
@@ -105,6 +154,15 @@ impl WorkerClient {
             capabilities,
             last_profile: RequestProfile::default(),
         })
+    }
+
+    fn switch_variant(&mut self, variant: WorkerVariant) -> Result<(), SthreadError> {
+        if self.variant == variant {
+            return Ok(());
+        }
+        let replacement = Self::start_variant(&self.workspace, variant)?;
+        let previous = std::mem::replace(self, replacement);
+        previous.shutdown()
     }
 
     pub fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, SthreadError> {
@@ -335,6 +393,15 @@ impl WorkerClient {
             })?);
         }
         if kind == RequestKind::OpenProject {
+            let project_compiler = value
+                .get("compilerVersion")
+                .and_then(Value::as_str)
+                .unwrap_or(self.capabilities.compiler_version.as_str());
+            let desired = WorkerVariant::for_project(project_compiler)?;
+            if desired != self.variant {
+                self.switch_variant(desired)?;
+                return self.request(kind, payload);
+            }
             self.snapshot = Some(SnapshotId {
                 base_revision: snapshot_from(payload).base_revision,
                 project_model_hash: value
@@ -627,8 +694,13 @@ fn read_response_blob(payload: &Value, blob: &Value) -> Result<Vec<u8>, SthreadE
     Ok(bytes)
 }
 
-fn worker_launcher(workspace: &Path) -> PathBuf {
-    workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin")
+fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
+    match variant {
+        WorkerVariant::Kotlin21 => {
+            workspace.join("workers/kotlin21/build/install/kotlin21/bin/kotlin21")
+        }
+        WorkerVariant::Kotlin24 => workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin"),
+    }
 }
 
 fn write_message<M: Message>(writer: &mut impl Write, message: &M) -> Result<(), SthreadError> {

@@ -1,5 +1,3 @@
-@file:OptIn(org.jetbrains.kotlin.K1Deprecation::class, org.jetbrains.kotlin.config.CompilerConfiguration.Internals::class)
-
 package dev.semanticthread.worker
 
 import kotlinx.serialization.json.*
@@ -88,11 +86,14 @@ internal class Worker : AutoCloseable {
         val generatedRoots = sourceFiles.filter { it.normalize().startsWith(repo.resolve("build/generated").normalize()) }.map { repo.relativize(it.parent).invariantSeparatorsPathString }.distinct().sorted()
         val classpath = gradle["classpath"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
         val plugins = gradle["compilerPlugins"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
+        val compilerVersion = gradle["compilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
+        val compilerLine = compilerVersion.split('.').take(2).joinToString(".")
         val normalized = buildJsonObject {
             put("module", gradle["projectPath"] ?: JsonPrimitive(":")); put("sourceSet", compilation?.substringAfterLast('/') ?: "main")
             putJsonArray("sourceRoots") { sourceRoots.forEach(::add) }; putJsonArray("generatedSourceRoots") { generatedRoots.forEach(::add) }
             putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { gradle["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.sorted()?.forEach(::add) }
-            put("languageVersion", gradle["languageVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive("2.4")); put("apiVersion", gradle["apiVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive("2.4")); put("jvmTarget", gradle["jvmTarget"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
+            put("compilerVersion", compilerVersion)
+            put("languageVersion", gradle["languageVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("apiVersion", gradle["apiVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("jvmTarget", gradle["jvmTarget"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
             putJsonArray("freeCompilerArguments") { gradle["freeCompilerArguments"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
             putJsonArray("optIns") { gradle["optIns"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }; putJsonArray("compilerPlugins") { plugins.forEach(::add) }
             put("compileTask", gradle["compileTask"] ?: JsonPrimitive(":compileKotlin")); putJsonArray("testTasks") { gradle["tasks"]?.jsonArray?.map { it.jsonPrimitive.content }?.filter { it == "test" || it.endsWith("Test") }?.sorted()?.forEach(::add) }
@@ -102,7 +103,9 @@ internal class Worker : AutoCloseable {
         val modelHash = sha(normalized.toString().toByteArray())
         return buildJsonObject {
             put("schema", "semantic-project/0.1"); put("projectPath", repo.toAbsolutePath().normalize().toString())
-            normalized.forEach { (key, value) -> put(key, value) }; put("compilerVersion", "2.4.10"); put("jdk", 21)
+            normalized.forEach { (key, value) -> put(key, value) }
+            put("workerCompilerVersion", WORKER_COMPILER_VERSION)
+            put("jdk", 21)
             put("projectModelHash", modelHash)
         }
     }
@@ -131,7 +134,7 @@ internal class Worker : AutoCloseable {
     private fun cachedGradleModel(repo: Path, compilation: String?): JsonObject {
         requestCacheRequests++
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha((projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
+        val inputHash = sha((listOf("projectModelSchema=2") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
             Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         gradleModelCache[key]?.let { requestCacheHits++; return it }
@@ -242,7 +245,7 @@ internal class Worker : AutoCloseable {
                 if (replacement == null) original else temp.resolve("sources").resolve(relative).also { it.parent.createDirectories(); it.writeText(replacement) }
             }
             val factsFile = temp.resolve("facts.jsonl"); val outputDir = temp.resolve("classes").also(Path::createDirectories)
-            val plugin = Path.of(FirFactsCompilerPluginRegistrar::class.java.protectionDomain.codeSource.location.toURI())
+            val plugin = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
             val classpath = model["classpath"]?.jsonArray?.joinToString(File.pathSeparator) { it.jsonPrimitive.content }.orEmpty()
             val command = mutableListOf("-d", outputDir.toString(), "-classpath", classpath, "-no-stdlib", "-no-reflect", "-jdk-home", model["jdkHome"]!!.jsonPrimitive.content, "-jvm-target", model["jvmTarget"]?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
             model["languageVersion"]?.jsonPrimitive?.contentOrNull?.let { command += listOf("-language-version", it) }
@@ -512,11 +515,12 @@ internal class Worker : AutoCloseable {
 
     private fun symbolMatches(query: String, pkg: String, declaration: KtNamedDeclaration, module: String = ":", sourceSet: String = "main"): Boolean {
         val legacy = legacySymbolId(pkg, declaration)
-        if (query == symbolId(pkg, declaration, module, sourceSet) || query == legacy || query == legacy.substringBefore('(')) return true
+        val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().toList().asReversed().mapNotNull { it.name }
+        val sourceFqn = (listOf(pkg) + containing + listOfNotNull(declaration.name)).filter(String::isNotBlank).joinToString(".")
+        if (query == declaration.name || query == sourceFqn || query == symbolId(pkg, declaration, module, sourceSet) || query == legacy || query == legacy.substringBefore('(')) return true
         val identity = runCatching { json.parseToJsonElement(query).jsonObject }.getOrNull() ?: return false
         if (identity["module"]?.jsonPrimitive?.content != module || identity["sourceSet"]?.jsonPrimitive?.content != sourceSet || identity["package"]?.jsonPrimitive?.content != pkg) return false
         if (identity["declarationName"]?.jsonPrimitive?.content != declaration.name) return false
-        val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().toList().asReversed().mapNotNull { it.name }
         if (identity["containingDeclarations"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty() != containing) return false
         val function = declaration as? KtNamedFunction ?: return true
         val expectedParameters = identity["parameterTypes"]?.jsonArray?.map { normalizeIdentityType(it.jsonPrimitive.content) }.orEmpty()
