@@ -40,19 +40,42 @@ internal class Worker : AutoCloseable {
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
     private val analysisCache = mutableMapOf<String, K2Analysis>()
     private val gradleModelCache = mutableMapOf<String, JsonObject>()
+    private var requestCacheRequests = 0L
+    private var requestCacheHits = 0L
+    private var requestPsiParseMicros = 0L
+    private var requestK2AnalysisMicros = 0L
+    private var requestFirExtractionMicros = 0L
 
     fun handle(kind: Int, payload: ByteArray): String {
+        requestCacheRequests = 0
+        requestCacheHits = 0
+        requestPsiParseMicros = 0
+        requestK2AnalysisMicros = 0
+        requestFirExtractionMicros = 0
+        val processingStarted = System.nanoTime()
         val request = if (payload.isEmpty()) buildJsonObject {} else json.parseToJsonElement(payload.decodeToString()).jsonObject
-        return when (kind) {
-            2 -> inspect(Path.of(request.requiredString("repo")).toRealPath(), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content).toString()
-            3 -> index(Path.of(request.requiredString("repo")).toRealPath(), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content, request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true, request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()).toString()
-            4 -> resolveSymbol(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("symbol"), request["compilation"]?.jsonPrimitive?.content ?: ":/main").toString()
-            5 -> resolveExpression(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("file"), request.requiredInt("offset"), request["compilation"]?.jsonPrimitive?.content ?: ":/main").toString()
-            6 -> localGraph(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("symbol"), request["compilation"]?.jsonPrimitive?.content ?: ":/main").toString()
-            7 -> applyEdit(request).toString()
-            8 -> validateCandidate(request).toString()
+        val result = when (kind) {
+            2 -> inspect(Path.of(request.requiredString("repo")).toRealPath(), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content)
+            3 -> index(Path.of(request.requiredString("repo")).toRealPath(), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content, request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true, request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty())
+            4 -> resolveSymbol(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("symbol"), request["compilation"]?.jsonPrimitive?.content ?: ":/main")
+            5 -> resolveExpression(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("file"), request.requiredInt("offset"), request["compilation"]?.jsonPrimitive?.content ?: ":/main")
+            6 -> localGraph(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("symbol"), request["compilation"]?.jsonPrimitive?.content ?: ":/main")
+            7 -> applyEdit(request)
+            8 -> validateCandidate(request)
             else -> error("unsupported request kind $kind")
         }
+        val processingMicros = (System.nanoTime() - processingStarted) / 1_000
+        return buildJsonObject {
+            result.forEach { (key, value) -> put(key, value) }
+            putJsonObject("profiling") {
+                put("workerProcessingMicros", processingMicros)
+                put("cacheRequests", requestCacheRequests)
+                put("cacheHits", requestCacheHits)
+                put("psiParseMicros", requestPsiParseMicros)
+                put("k2AnalysisMicros", requestK2AnalysisMicros)
+                put("firExtractionMicros", requestFirExtractionMicros)
+            }
+        }.toString()
     }
 
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
@@ -106,17 +129,18 @@ internal class Worker : AutoCloseable {
     }
 
     private fun cachedGradleModel(repo: Path, compilation: String?): JsonObject {
+        requestCacheRequests++
         val canonicalRepo = repo.toRealPath()
         val inputHash = sha((projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
             Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
-        gradleModelCache[key]?.let { return it }
+        gradleModelCache[key]?.let { requestCacheHits++; return it }
         val safeCompilation = (compilation ?: ":/main").replace(Regex("[^A-Za-z0-9]+"), "_")
         val cache = canonicalRepo.resolve(".semantic-thread/cache/project/$safeCompilation-${inputHash.removePrefix("sha256:")}.json")
         if (cache.isRegularFile()) {
             runCatching { json.parseToJsonElement(cache.readText()).jsonObject }.getOrNull()?.let { cached ->
                 val belongsToRepo = cached["sourceFiles"]?.jsonArray?.all { Path.of(it.jsonPrimitive.content).normalize().startsWith(canonicalRepo) } != false
-                if (belongsToRepo) { gradleModelCache[key] = cached; return cached }
+                if (belongsToRepo) { requestCacheHits++; gradleModelCache[key] = cached; return cached }
             }
         }
         val model = gradleModel(canonicalRepo, compilation)
@@ -172,11 +196,12 @@ internal class Worker : AutoCloseable {
             .orEmpty()
 
     private fun analyzeWithK2(repo: Path, overrides: Map<String, String> = emptyMap(), compilation: String = ":/main"): K2Analysis {
+        requestCacheRequests++
         val analysisRepo = repo.toRealPath()
         val model = cachedGradleModel(analysisRepo, compilation)
         val sources = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
         val cacheMaterial = buildString {
-            append("factsPluginSchema=2\u0000")
+            append("factsPluginSchema=3\u0000")
             sources.forEach { source ->
                 val relative = analysisRepo.relativize(source.toRealPath()).invariantSeparatorsPathString
                 append(relative).append('\u0000').append(overrides[relative] ?: source.readText()).append('\u0000')
@@ -194,7 +219,7 @@ internal class Worker : AutoCloseable {
         }
         val cacheKey = sha(cacheMaterial.toByteArray())
         val memoryKey = "$analysisRepo|$compilation|$cacheKey"
-        analysisCache[memoryKey]?.let { return it }
+        analysisCache[memoryKey]?.let { requestCacheHits++; return it }
         val safeCompilation = compilation.replace(Regex("[^A-Za-z0-9]+"), "_")
         val diskCache = analysisRepo.resolve(".semantic-thread/cache/k2/$safeCompilation-${cacheKey.removePrefix("sha256:")}.json")
         if (diskCache.isRegularFile()) {
@@ -205,6 +230,7 @@ internal class Worker : AutoCloseable {
                     cached["diagnostics"]?.jsonArray?.map { it.jsonObject }.orEmpty()
                 )
                 analysisCache[memoryKey] = result
+                requestCacheHits++
                 return result
             }
         }
@@ -229,14 +255,19 @@ internal class Worker : AutoCloseable {
             command += listOf("-Xplugin=$plugin", "-P", "plugin:$FACTS_PLUGIN_ID:output=$factsFile")
             command += sourceArgs.map(Path::toString)
             val compilerOutput = ByteArrayOutputStream()
+            val k2Started = System.nanoTime()
             val status = PrintStream(compilerOutput, true, Charsets.UTF_8).use { output ->
                 synchronized(K2JVMCompiler::class.java) { K2JVMCompiler().exec(output, *command.toTypedArray()).code }
             }
+            requestK2AnalysisMicros += (System.nanoTime() - k2Started) / 1_000
             val output = compilerOutput.toString(Charsets.UTF_8)
             val diagnostics = output.lineSequence().filter { it.isNotBlank() }.map { line ->
                 buildJsonObject { put("severity", when { "error:" in line.lowercase() || line.startsWith("e:") -> "ERROR"; "warning:" in line.lowercase() || line.startsWith("w:") -> "WARNING"; else -> "INFO" }); put("message", line) }
             }.toList()
             val facts = if (factsFile.isRegularFile()) factsFile.readLines().filter(String::isNotBlank).map { json.parseToJsonElement(it).jsonObject } else emptyList()
+            requestFirExtractionMicros += facts
+                .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
+                .sumOf { it["firExtractionMicros"]?.jsonPrimitive?.longOrNull ?: 0 }
             val result = K2Analysis(status == 0, facts.sortedBy { it.toString() }, diagnostics)
             writeCacheAtomically(diskCache, buildJsonObject {
                 put("schema", "semantic-k2-cache/0.1"); put("valid", result.valid)
@@ -257,7 +288,12 @@ internal class Worker : AutoCloseable {
         } finally { Files.deleteIfExists(temporary) }
     }
 
-    private fun parse(path: Path): KtFile = factory.createFile(path.fileName.toString(), path.readText())
+    private fun parse(path: Path): KtFile {
+        val started = System.nanoTime()
+        return factory.createFile(path.fileName.toString(), path.readText()).also {
+            requestPsiParseMicros += (System.nanoTime() - started) / 1_000
+        }
+    }
 
     private fun index(requestedRepo: Path, compilation: String?, syntaxOnly: Boolean = false, requestedFiles: List<String> = emptyList()): JsonObject {
         val repo = requestedRepo.toRealPath()
@@ -391,27 +427,43 @@ internal class Worker : AutoCloseable {
             putJsonArray("parameterTypes") { parameterTypes.forEach(::add) }
             put("returnType", returnType)
             put("suspendFlag", declaration is KtNamedFunction && declaration.hasModifier(KtTokens.SUSPEND_KEYWORD))
-            put("jvmDescriptor", jvmDescriptor(declaration, receiverTypes, parameterTypes, returnType, pkg))
+            val identityTypes = receiverTypes + parameterTypes + returnType
+            val hasGenericArray = identityTypes.any { "Array<" in it }
+            val typeParameterNames = (declaration as? KtTypeParameterListOwner)?.typeParameters?.mapNotNull { it.name }.orEmpty()
+            val usesTypeParameter = identityTypes.any { type -> typeParameterNames.any { name -> Regex("(^|[<, ])${Regex.escape(name)}([>?, ]|$)").containsMatchIn(type) } }
+            val compilerDescriptor = resolvedTypes?.get("jvmDescriptor")?.jsonPrimitive?.contentOrNull
+                ?.takeIf { receiverTypes.isEmpty() && !hasGenericArray && !usesTypeParameter && (declaration !is KtNamedFunction || !declaration.hasModifier(KtTokens.SUSPEND_KEYWORD)) }
+            put("jvmDescriptor", compilerDescriptor
+                ?: jvmDescriptor(declaration, receiverTypes, parameterTypes, returnType, pkg))
         }
     }
 
     private fun jvmDescriptor(declaration: KtNamedDeclaration, receivers: List<String>, parameters: List<String>, returnType: String, pkg: String): String = when (declaration) {
         is KtNamedFunction -> {
-            val arguments = (receivers + parameters).map { jvmTypeDescriptor(it, false) }.toMutableList()
+            val arguments = (receivers + parameters).map { jvmTypeDescriptor(it, false, declaration) }.toMutableList()
             if (declaration.hasModifier(KtTokens.SUSPEND_KEYWORD)) {
                 arguments += "Lkotlin/coroutines/Continuation;"
                 "(${arguments.joinToString("")})Ljava/lang/Object;"
-            } else "(${arguments.joinToString("")})${jvmTypeDescriptor(returnType, true)}"
+            } else "(${arguments.joinToString("")})${jvmTypeDescriptor(returnType, true, declaration)}"
         }
-        is KtProperty -> jvmTypeDescriptor(returnType, false)
+        is KtProperty -> jvmTypeDescriptor(returnType, false, declaration)
         is KtClassOrObject -> "L${(listOf(pkg).filter(String::isNotBlank) + declaration.name.orEmpty()).joinToString("/")};"
         else -> "Ljava/lang/Object;"
     }
 
-    private fun jvmTypeDescriptor(rawType: String, returnPosition: Boolean): String {
+    private fun jvmTypeDescriptor(rawType: String, returnPosition: Boolean, declaration: KtNamedDeclaration? = null, forceBoxed: Boolean = false): String {
         val nullable = rawType.trim().endsWith('?')
-        val type = rawType.trim().removeSuffix("?").substringBefore('<').replace('.', '/')
-        if (!nullable) when (type) {
+        val withoutNullability = rawType.trim().removeSuffix("?")
+        if (withoutNullability.startsWith("kotlin/Array<") || withoutNullability.startsWith("kotlin.Array<") || withoutNullability.startsWith("Array<")) {
+            val element = withoutNullability.substringAfter('<').substringBeforeLast('>')
+            return "[${jvmTypeDescriptor(element, false, declaration, forceBoxed = true)}"
+        }
+        val type = withoutNullability.substringBefore('<').replace('.', '/')
+        val typeParameter = (declaration as? KtTypeParameterListOwner)?.typeParameters?.firstOrNull { it.name == type }
+        if (typeParameter != null) {
+            return jvmTypeDescriptor(typeParameter.extendsBound?.text ?: "kotlin/Any", returnPosition, declaration, forceBoxed)
+        }
+        if (!nullable && !forceBoxed) when (type) {
             "Boolean", "kotlin/Boolean" -> return "Z"
             "Byte", "kotlin/Byte" -> return "B"
             "Char", "kotlin/Char" -> return "C"
@@ -440,6 +492,15 @@ internal class Worker : AutoCloseable {
             "Float", "kotlin/Float" -> "java/lang/Float"
             "Double", "kotlin/Double" -> "java/lang/Double"
             "String", "kotlin/String" -> "java/lang/String"
+            "Number", "kotlin/Number" -> "java/lang/Number"
+            "kotlin/collections/Iterable", "kotlin/collections/MutableIterable" -> "java/lang/Iterable"
+            "kotlin/collections/Iterator", "kotlin/collections/MutableIterator" -> "java/util/Iterator"
+            "kotlin/collections/Collection", "kotlin/collections/MutableCollection" -> "java/util/Collection"
+            "kotlin/collections/List", "kotlin/collections/MutableList" -> "java/util/List"
+            "kotlin/collections/ListIterator", "kotlin/collections/MutableListIterator" -> "java/util/ListIterator"
+            "kotlin/collections/Set", "kotlin/collections/MutableSet" -> "java/util/Set"
+            "kotlin/collections/Map", "kotlin/collections/MutableMap" -> "java/util/Map"
+            "kotlin/collections/Map/Entry", "kotlin/collections/MutableMap/MutableEntry" -> "java/util/Map\$Entry"
             "Any", "kotlin/Any", "?", "<unresolved>" -> "java/lang/Object"
             else -> type.ifBlank { "java/lang/Object" }
         }
@@ -518,11 +579,18 @@ internal class Worker : AutoCloseable {
         val project = inspect(repo, compilation)
         val module = project["module"]?.jsonPrimitive?.content ?: ":"
         val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: "main"
+        val fullIdentityQuery = query.trimStart().startsWith('{')
+        val analysis = if (fullIdentityQuery) analyzeWithK2(repo, compilation = compilation) else null
         val matches = mutableListOf<Triple<Path, KtFile, KtNamedFunction>>()
         compilationSourceFiles(repo, compilation).forEach { path ->
             val kt = parse(path); val pkg = kt.packageFqName.asString()
             PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java).forEach { fn ->
-                if (symbolMatches(query, pkg, fn, module, sourceSet)) matches += Triple(path, kt, fn)
+                val matchesQuery = if (analysis == null) {
+                    symbolMatches(query, pkg, fn, module, sourceSet)
+                } else {
+                    declarationJson(repo, path, pkg, fn, analysis, module, sourceSet)["symbolId"]?.jsonPrimitive?.content == query
+                }
+                if (matchesQuery) matches += Triple(path, kt, fn)
             }
         }
         if (matches.isEmpty()) throw WorkerFailure("SYMBOL_NOT_FOUND", "symbol not found: $query")
@@ -1251,6 +1319,7 @@ internal class Worker : AutoCloseable {
         val kt = factory.createFile(request["file"]?.jsonPrimitive?.content ?: "Candidate.kt", source)
         val errors = PsiTreeUtil.collectElementsOfType(kt, PsiErrorElement::class.java).map { it.errorDescription }.sorted()
         val psiParseMicros = (System.nanoTime() - parseStarted) / 1_000
+        requestPsiParseMicros += psiParseMicros
         return buildJsonObject { put("valid", errors.isEmpty()); put("psiParseMicros", psiParseMicros); putJsonArray("diagnostics") { errors.forEach(::add) } }
     }
 

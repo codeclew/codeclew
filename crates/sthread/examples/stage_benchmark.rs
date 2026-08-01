@@ -110,8 +110,11 @@ fn main() {
         )
         .expect("cold K2 semantic index");
     let cold_semantic_index = millis(started);
+    let cold_k2_analysis_micros = worker.last_profile.k2_analysis_micros;
 
     let mut semantic_reindex_samples = Vec::new();
+    let mut k2_analysis_samples = Vec::new();
+    let mut fir_extraction_samples = Vec::new();
     for sample in 0..SAMPLES {
         std::fs::write(
             &source_path,
@@ -126,6 +129,8 @@ fn main() {
             )
             .expect("changed-file K2 semantic reindex");
         semantic_reindex_samples.push(millis(started));
+        k2_analysis_samples.push(worker.last_profile.k2_analysis_micros);
+        fir_extraction_samples.push(worker.last_profile.fir_extraction_micros);
     }
     std::fs::write(&source_path, &original_source).unwrap();
     worker
@@ -135,20 +140,22 @@ fn main() {
         )
         .expect("restore semantic baseline");
 
-    let mut ipc_serialization_samples = Vec::new();
+    let mut ipc_samples = Vec::new();
+    let mut protocol_serialization_samples = Vec::new();
     let mut psi_parse_samples = Vec::new();
     for sample in 0..SAMPLES {
         let started = Instant::now();
-        let response = worker
+        worker
             .request(
                 RequestKind::ValidateCandidate,
                 &json!({"file":"Probe.kt","source":format!("fun probe{sample}() = {sample}")}),
             )
             .expect("IPC/PSI probe");
-        let total_micros = micros(started);
-        let psi_micros = response["psiParseMicros"].as_u64().unwrap_or(0);
+        let _total_micros = micros(started);
+        let psi_micros = worker.last_profile.psi_parse_micros;
         psi_parse_samples.push(psi_micros);
-        ipc_serialization_samples.push(total_micros.saturating_sub(psi_micros));
+        ipc_samples.push(worker.last_profile.ipc_micros);
+        protocol_serialization_samples.push(worker.last_profile.serialization_micros);
     }
 
     let offset = original_source.find("value *= 2").unwrap();
@@ -177,20 +184,17 @@ fn main() {
     }
 
     let mut cfg_and_ssa_samples = Vec::new();
-    let mut fir_extraction_samples = Vec::new();
     let mut rust_graph_samples = Vec::new();
     let mut ssa_samples = Vec::new();
     let mut latest_graph = None;
     for _ in 0..SAMPLES {
         let complete_started = Instant::now();
-        let fir_started = Instant::now();
         let raw = worker
             .request(
                 RequestKind::BuildLocalGraph,
                 &json!({"repo":fixture,"symbol":"com.acme.total","compilation":":/main"}),
             )
             .expect("FIR CFG");
-        fir_extraction_samples.push(millis(fir_started));
         let local: LocalGraph = serde_json::from_value(raw).unwrap();
         let (enriched, profile) = graph::enrich_profiled(local);
         rust_graph_samples.push(profile.rust_graph_construction_micros);
@@ -290,14 +294,15 @@ fn main() {
             "sampleCount":SAMPLES,
             "workerStartup":worker_startup,
             "coldSemanticIndex":cold_semantic_index,
-            "ipcAndProtocolSerializationMicrosP95":p95(&ipc_serialization_samples),
+            "ipcMicrosP95":p95(&ipc_samples),
+            "protocolSerializationMicrosP95":p95(&protocol_serialization_samples),
             "psiParseMicrosP95":p95(&psi_parse_samples),
             "warmSemanticFileReindexP95":warm_semantic_reindex,
-            "k2SemanticAnalysisCold":cold_semantic_index,
-            "k2ChangedFileAnalysisP95":warm_semantic_reindex,
+            "k2SemanticAnalysisColdMicros":cold_k2_analysis_micros,
+            "k2ChangedFileAnalysisMicrosP95":p95(&k2_analysis_samples),
             "anchorResolutionP95":anchor,
             "resolveSymbolP95":resolve,
-            "firCfgExtractionP95":fir_extraction,
+            "firCfgExtractionMicrosP95":fir_extraction,
             "rustGraphConstructionMicrosP95":rust_graph,
             "ssaAndControlMicrosP95":ssa,
             "localCfgAndSsaP95":cfg_and_ssa,
