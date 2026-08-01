@@ -9,16 +9,18 @@ The supported Kotlin/JVM workflow becomes:
 ```text
 task intent
   -> one bounded task-context
-  -> one model-authored structured Edit IR
+  -> one model-selected graph recipe or compact structured Edit IR
   -> one atomic SThread task commit
   -> clean detached-worktree compile and tests
 ```
 
 The benchmark agent must not use external source search or broad file reads.
 SThread, rather than `apply_patch`, applies every production and test-source
-change. The model remains responsible for the replacement Kotlin, while
-SThread owns target selection, stable anchors, syntax checks, write scope,
-clean validation, Git commit, and evidence.
+change. For a recognized closure, the model selects the semantic intent and
+SThread expands it into anchored code/test edits. For an unrecognized closure,
+the model may still provide compact exact substitutions. SThread owns target
+selection, source assembly, imports, syntax checks, write scope, clean
+validation, Git commit, and evidence.
 
 ## Why the old pack failed
 
@@ -59,6 +61,8 @@ the missing boundary.
 Edit IR gains task-level source operations:
 
 - `REPLACE_DECLARATION` for signature/contract changes;
+- `REWRITE_DECLARATION` for one or more exact substitutions inside an anchored
+  declaration, with explicit occurrence preconditions;
 - `CREATE_FILE` for a new Kotlin source or test;
 - the existing expression, function-body, and import operations.
 
@@ -68,8 +72,14 @@ exists. `tx commit` writes the set only into a detached worktree, runs the
 configured clean compile and tests once, commits it, and updates the target ref
 with compare-and-swap. A failure leaves the target unchanged.
 
+Task context may also advertise a versioned graph-derived recipe. The first
+implemented recipe, `ARCHIVE_EVENT_ENTITY_CONTRACT`, closes the archive call
+path, persistence field nullability, static event contract, CREATE/UPDATE
+assignability, batch projection, and regression assertion. `task-apply`
+expands it to low-level Edit IR before the same fail-closed validation.
+
 This is the speed optimization as well as the correctness model: one semantic
-closure, one multi-file candidate, one clean validation.
+closure, one intent-sized plan, one multi-file candidate, one clean validation.
 
 ## Benchmark gate
 
