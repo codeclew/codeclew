@@ -2,7 +2,7 @@
 
 ## Implemented
 
-The repository contains a runnable Rust/Kotlin vertical covering Gradle compilation inspection, immutable repository-index snapshots, K2 FIR semantic facts and CFG, AST/type/memory edges, dominance-frontier SSA/PHI/def-use, control dependencies, slicing, structured edits, preview validation, detached worktree commits, CAS plus index publication, ledger, contextual typed failures, and the separate long-lived Rust `semanticd` service with metrics.
+The repository contains a runnable Rust/Kotlin vertical covering Gradle and single-module Maven compilation inspection, exact Kotlin 2.1/2.3/2.4 workers, immutable repository-index snapshots, K2 FIR semantic facts and CFG, AST/type/memory edges, dominance-frontier SSA/PHI/def-use, control dependencies, slicing, structured edits, preview validation, detached worktree compile/test/commit, CAS plus index publication, ledger, contextual typed failures, and the separate long-lived Rust `semanticd` service with metrics.
 
 ## Gates and correctness evidence
 
@@ -22,4 +22,4 @@ The selected worker invokes a pinned Kotlin 2.1.21 or 2.4.10 K2 compiler in-proc
 
 ## Next stage
 
-Extend the supported project contour to Android/KMP and add deeper interprocedural summaries. The language-neutral protocol/IR/transaction boundary is ready for another language worker without importing Kotlin types into Rust.
+The first Maven/Spring agent benchmark shows that cold semantic execution is no longer the dominant problem. The next gate is task-aware member/test ranking, transitive DTO contract closure, atomic bounded-context output, and mandatory clean detached-worktree acceptance. After that gate, extend the supported project contour to multi-module Maven, Android/KMP, and deeper interprocedural summaries.

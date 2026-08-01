@@ -14,5 +14,7 @@
 | 9 Parallel transactions | semantic replay, ReadSet/callee invalidation, WW and project-model conflicts | Passed by executable concurrency matrix |
 | 10 Daemon/observability | separate long-lived Rust semanticd, structured logs, worker-reported real cache hits, orphan/Gradle metrics, contextual typed errors | Passed by semanticd success/failure metric tests and demo |
 | 11 Docs/benchmarks | docs, ADRs, isolated 20-sample semantic p95 with separate mandatory stage profiles and 100k-LOC corpus | Passed for MVP scope |
+| 12 Maven Kotlin/JVM | single-module effective POM/classpath/plugins, exact Kotlin 2.3 worker, bounded context, detached Maven compile/test/commit | Passed by six Maven integration tests and independent review |
+| 13 Product-repo agent benchmark | blind default/ast-index/SThread run with token telemetry and fresh hidden acceptance | Measured; no correct patch winner, next gate defined |
 
-Known limitations are deliberately visible: FIR APIs are version-unstable, so all Kotlin/FIR internals remain isolated in exact 2.1.21 and 2.4.10 workers. Interprocedural slicing stops at explicit call boundaries, overload assignability is intentionally conservative, and Android/KMP project models are outside the first-version support contour.
+Known limitations are deliberately visible: FIR APIs are version-unstable, so all Kotlin/FIR internals remain isolated in exact 2.1.21, 2.3.0, and 2.4.10 workers. Interprocedural slicing stops at explicit call boundaries, overload assignability is intentionally conservative, and Android/KMP/multi-module Maven project models are outside the supported contour. The first large-repository comparison also shows that task-relative context completeness and clean acceptance remain open optimization gates.
