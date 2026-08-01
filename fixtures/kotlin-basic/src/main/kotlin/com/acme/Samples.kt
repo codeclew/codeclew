@@ -41,6 +41,8 @@ fun overloaded(value: Int): Int = value * 2
 fun overloaded(value: String): Int = value.length
 fun namedCall(value: String): String = value.decorate(prefix = "{")
 fun nullableValue(value: String?): String? = value
+fun inferredAnswer() = 42
+val inferredBanner = "ready"
 
 fun duplicateExpressions(flag: Boolean, value: Int): Int {
     val result = if (flag) value + 1 else value + 1
@@ -73,3 +75,10 @@ fun objectProperty(): Int {
 }
 
 fun staticProperty(): Int = java.lang.Integer.MAX_VALUE
+
+class Box(var field: Int)
+
+fun externalProperty(box: Box): Int {
+    box.field += 1
+    return box.field
+}

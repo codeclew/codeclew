@@ -1,10 +1,10 @@
 use crate::canonical;
 use crate::error::{ErrorCode, SthreadError};
 use crate::graph;
-use crate::index::RepositoryIndex;
+use crate::index::{RepositoryIndex, StagedIndex};
 use crate::model::*;
 use crate::proto::RequestKind;
-use crate::worker::WorkerClient;
+use crate::worker::{WorkerClient, workspace_root};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use similar::TextDiff;
@@ -376,12 +376,16 @@ pub fn commit(
             };
         transaction.final_commit = Some(existing.clone());
         transaction.status = "COMMITTED".into();
-        ledger(repo)?.append(
-            transaction,
-            "idempotent retry matched reachable Git trailers",
-        )?;
+        let ledger_recorded = ledger(repo)
+            .and_then(|ledger| {
+                ledger.append(
+                    transaction,
+                    "idempotent retry matched reachable Git trailers",
+                )
+            })
+            .is_ok();
         return Ok(
-            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":transaction.base_revision,"finalCommit":existing,"currentRevision":current,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED","idempotent":true}),
+            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":transaction.base_revision,"finalCommit":existing,"currentRevision":current,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED","idempotent":true,"ledgerRecorded":ledger_recorded}),
         );
     }
     let report = preview_for_commit(repo, transaction, &current, worker).map_err(|mut e| {
@@ -436,15 +440,22 @@ pub fn commit(
             std::fs::write(safe_join(&worktree_path, file)?, source.as_bytes())
                 .map_err(io_error)?;
         }
-        validate_worktree(
+        let configured_test_tasks = if transaction.test_tasks.is_empty() {
+            &transaction.thread.snapshot.test_tasks
+        } else {
+            &transaction.test_tasks
+        };
+        let (compile_duration_ms, test_duration_ms) = validate_worktree(
             &worktree_path,
             &transaction.thread.snapshot.compile_task,
-            &transaction.test_tasks,
+            configured_test_tasks,
         )?;
         transaction.validation_evidence.push(json!({
             "kind":"GRADLE",
             "compileTask":transaction.thread.snapshot.compile_task,
-            "testTasks":transaction.test_tasks,
+            "testTasks":configured_test_tasks,
+            "compileDurationMs":compile_duration_ms,
+            "testDurationMs":test_duration_ms,
             "status":"PASSED"
         }));
         git(&worktree_path, &["add", "--", "."])?;
@@ -476,33 +487,47 @@ pub fn commit(
         transaction.candidate_commit = Some(candidate.clone());
         transaction.status = "COMMITTING".into();
         ledger(repo)?.append(transaction, "candidate commit created")?;
+        let index_facts = worker.request(
+            RequestKind::IndexFiles,
+            &json!({
+                "repo":worktree_path,
+                "compilation":transaction.thread.snapshot.compilation
+            }),
+        )?;
+        let staged_index = RepositoryIndex::stage_update(
+            repo,
+            Some(&transaction.thread.snapshot.compilation),
+            &index_facts,
+            &worktree_path,
+            &candidate,
+        )?;
         git(repo, &["update-ref", target_ref, &candidate, &current]).map_err(|_| {
             SthreadError::new(
                 ErrorCode::RefCompareAndSwapFailed,
                 "target ref changed during commit CAS",
             )
         })?;
-        let index_facts = worker
-            .request(
-                RequestKind::IndexFiles,
-                &json!({
-                    "repo":worktree_path,
-                    "compilation":transaction.thread.snapshot.compilation
-                }),
-            )
-            .map_err(index_recovery_error)?;
-        let mut repository_index =
-            RepositoryIndex::open_compilation(repo, Some(&transaction.thread.snapshot.compilation))
-                .map_err(index_recovery_error)?;
-        let final_index_snapshot = repository_index
-            .update_from_root(&index_facts, &worktree_path)
-            .map_err(index_recovery_error)?;
-        let invalidations = repository_index
-            .invalidations()
-            .map_err(index_recovery_error)?;
-        repository_index
-            .mark_published_revision(&candidate)
-            .map_err(index_recovery_error)?;
+        let (final_index_snapshot, invalidations) = match staged_index.publish() {
+            Ok(published) => published,
+            Err(publication_error) => {
+                if git(repo, &["update-ref", target_ref, &current, &candidate]).is_ok() {
+                    return Err(SthreadError::new(
+                        ErrorCode::Internal,
+                        format!(
+                            "repository index publication failed; target ref was rolled back: {}",
+                            publication_error.message
+                        ),
+                    ));
+                }
+                return Err(index_recovery_error(SthreadError::new(
+                    ErrorCode::TransactionRecoveryRequired,
+                    format!(
+                        "index publication failed and target ref rollback also failed: {}",
+                        publication_error.message
+                    ),
+                )));
+            }
+        };
         transaction.validation_evidence.push(json!({
             "kind":"INDEX_PUBLICATION",
             "baseIndexSnapshot":base_index_snapshot,
@@ -511,9 +536,16 @@ pub fn commit(
         }));
         transaction.final_commit = Some(candidate.clone());
         transaction.status = "COMMITTED".into();
-        ledger(repo)?.append(transaction, "target ref updated atomically")?;
+        // Ref + index publication is the commit point. A later ledger write
+        // cannot turn that committed outcome into a reported failed
+        // transaction; Git trailers let inspection reconstruct the event.
+        let ledger_recorded = ledger(repo)
+            .and_then(|ledger| {
+                ledger.append(transaction, "target ref and index updated atomically")
+            })
+            .is_ok();
         Ok(
-            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"baseIndexSnapshot":base_index_snapshot,"finalCommit":candidate,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED"}),
+            json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"baseIndexSnapshot":base_index_snapshot,"finalCommit":candidate,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED","gradleValidationDurationMs":compile_duration_ms + test_duration_ms,"ledgerRecorded":ledger_recorded}),
         )
     })();
     let _ = git(
@@ -534,6 +566,17 @@ fn publish_index_for_revision(
     compilation: &str,
     worker: &mut WorkerClient,
 ) -> Result<(String, Vec<String>), SthreadError> {
+    stage_index_for_revision(repo, revision, compilation, worker)
+        .and_then(StagedIndex::publish)
+        .map_err(index_recovery_error)
+}
+
+fn stage_index_for_revision(
+    repo: &Path,
+    revision: &str,
+    compilation: &str,
+    worker: &mut WorkerClient,
+) -> Result<StagedIndex, SthreadError> {
     let temporary = tempfile::tempdir().map_err(io_error)?;
     let path = temporary.path().join("index-recovery");
     git(
@@ -551,11 +594,7 @@ fn publish_index_for_revision(
             RequestKind::IndexFiles,
             &json!({"repo":path,"compilation":compilation}),
         )?;
-        let mut index = RepositoryIndex::open_compilation(repo, Some(compilation))?;
-        let hash = index.update_from_root(&facts, &path)?;
-        let invalidations = index.invalidations()?;
-        index.mark_published_revision(revision)?;
-        Ok((hash, invalidations))
+        RepositoryIndex::stage_update(repo, Some(compilation), &facts, &path, revision)
     })()
     .map_err(index_recovery_error);
     let _ = git(
@@ -787,7 +826,8 @@ fn validate_worktree(
     worktree: &Path,
     compile_task: &str,
     tests: &[String],
-) -> Result<(), SthreadError> {
+) -> Result<(u64, u64), SthreadError> {
+    let compile_started = std::time::Instant::now();
     let output = Command::new(worktree.join("gradlew"))
         .arg(compile_task)
         .arg("--no-daemon")
@@ -795,16 +835,22 @@ fn validate_worktree(
         .current_dir(worktree)
         .output()
         .map_err(io_error)?;
+    let compile_duration_ms = compile_started.elapsed().as_millis() as u64;
     log_output(&output);
     if !output.status.success() {
-        return Err(SthreadError::new(
+        let mut error = SthreadError::new(
             ErrorCode::CompileFailed,
             format!("candidate worktree Gradle compile task {compile_task} failed"),
-        ));
+        );
+        error
+            .evidence
+            .push(format!("gradleCompileDurationMs={compile_duration_ms}"));
+        return Err(error);
     }
     if tests.is_empty() {
-        return Ok(());
+        return Ok((compile_duration_ms, 0));
     }
+    let test_started = std::time::Instant::now();
     let output = Command::new(worktree.join("gradlew"))
         .args(tests)
         .arg("--no-daemon")
@@ -812,17 +858,25 @@ fn validate_worktree(
         .current_dir(worktree)
         .output()
         .map_err(io_error)?;
+    let test_duration_ms = test_started.elapsed().as_millis() as u64;
     log_output(&output);
     if output.status.success() {
-        Ok(())
+        Ok((compile_duration_ms, test_duration_ms))
     } else {
-        Err(SthreadError::new(
+        let mut error = SthreadError::new(
             ErrorCode::TestFailed,
             format!(
                 "candidate worktree Gradle test tasks {} failed",
                 tests.join(", ")
             ),
-        ))
+        );
+        error
+            .evidence
+            .push(format!("gradleCompileDurationMs={compile_duration_ms}"));
+        error
+            .evidence
+            .push(format!("gradleTestDurationMs={test_duration_ms}"));
+        Err(error)
     }
 }
 
@@ -880,6 +934,21 @@ impl Ledger {
         let mut action = "NONE";
         if !terminal {
             if let Some(commit) = find_transaction_commit(&self.repo, id)? {
+                let compilation = &transaction.thread.snapshot.compilation;
+                let index = RepositoryIndex::open_compilation(&self.repo, Some(compilation))?;
+                if index.published_revision()?.as_deref() != Some(commit.as_str()) {
+                    drop(index);
+                    let mut worker = WorkerClient::start(&workspace_root())?;
+                    let publication =
+                        publish_index_for_revision(&self.repo, &commit, compilation, &mut worker);
+                    let _ = worker.shutdown();
+                    let (index_snapshot, invalidations) = publication?;
+                    transaction.validation_evidence.push(json!({
+                        "kind":"INDEX_RECOVERY",
+                        "finalIndexSnapshot":index_snapshot,
+                        "appliedInvalidations":invalidations
+                    }));
+                }
                 transaction.status = "COMMITTED".into();
                 transaction.final_commit = Some(commit);
                 self.append(
@@ -989,7 +1058,30 @@ fn recover_candidate_commit(
             "target ref moved from candidate parent {parent} to {current} before recovery"
         )));
     }
+    let compilation = &transaction.thread.snapshot.compilation;
+    let mut worker = WorkerClient::start(&workspace_root())?;
+    let staged = stage_index_for_revision(repo, candidate, compilation, &mut worker);
+    let _ = worker.shutdown();
+    let staged = staged?;
     git(repo, &["update-ref", target_ref, candidate, &current])?;
+    if let Err(publication_error) = staged.publish() {
+        if git(repo, &["update-ref", target_ref, &current, candidate]).is_ok() {
+            return Err(index_recovery_error(SthreadError::new(
+                ErrorCode::TransactionRecoveryRequired,
+                format!(
+                    "candidate index publication failed; target ref was rolled back: {}",
+                    publication_error.message
+                ),
+            )));
+        }
+        return Err(index_recovery_error(SthreadError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            format!(
+                "candidate index publication failed and target ref rollback failed: {}",
+                publication_error.message
+            ),
+        )));
+    }
     Ok(CandidateRecovery::Published(candidate.into()))
 }
 

@@ -73,6 +73,15 @@ private class FirFactsCfgChecker(private val output: String) : FirDeclarationChe
             put("recordType", "FIR_CFG"); put("file", context.containingFile?.path ?: return)
             put("start", source.startOffset); put("end", source.endOffset); put("name", graph.name)
             (declaration.symbol as? FirCallableSymbol<*>)?.let { put("symbol", it.callableIdAsString()) }
+            put("returnType", (declaration.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString() ?: "<unresolved>")
+            putJsonArray("parameterTypes") {
+                declaration.valueParameters.forEach { parameter ->
+                    add((parameter.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString() ?: "<unresolved>")
+                }
+            }
+            declaration.receiverParameter?.let { receiver ->
+                put("receiverType", (receiver.typeRef as? FirResolvedTypeRef)?.coneType?.toString() ?: "<unresolved>")
+            }
             putJsonArray("nodes") {
                 graph.nodes.sortedBy { it.id }.forEach { node ->
                     add(buildJsonObject {

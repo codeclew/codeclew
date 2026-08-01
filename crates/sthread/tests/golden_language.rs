@@ -90,6 +90,31 @@ fn k2_fir_golden_language_and_slice_matrix() {
             assert!(!declaration[field].is_null(), "declaration lacks {field}");
         }
     }
+    let inferred_function = indexed_file["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|declaration| declaration["name"] == "inferredAnswer")
+        .unwrap();
+    assert_eq!(
+        inferred_function["symbolIdentity"]["returnType"],
+        "kotlin/Int"
+    );
+    assert_eq!(inferred_function["symbolIdentity"]["jvmDescriptor"], "()I");
+    let inferred_property = indexed_file["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|declaration| declaration["name"] == "inferredBanner")
+        .unwrap();
+    assert_eq!(
+        inferred_property["symbolIdentity"]["returnType"],
+        "kotlin/String"
+    );
+    assert_eq!(
+        inferred_property["symbolIdentity"]["jvmDescriptor"],
+        "Ljava/lang/String;"
+    );
 
     let call = worker
         .request(
@@ -127,10 +152,11 @@ fn k2_fir_golden_language_and_slice_matrix() {
     assert_eq!(overloaded_identity["module"], ":");
     assert_eq!(overloaded_identity["sourceSet"], "main");
     assert_eq!(overloaded_identity["declarationKind"], "FUNCTION");
-    assert_eq!(overloaded_identity["parameterTypes"], json!(["Int"]));
-    assert_eq!(overloaded_identity["returnType"], "Int");
+    assert_eq!(overloaded_identity["parameterTypes"], json!(["kotlin/Int"]));
+    assert_eq!(overloaded_identity["returnType"], "kotlin/Int");
     assert_eq!(overloaded_identity["typeParameterArity"], 0);
     assert_eq!(overloaded_identity["suspendFlag"], false);
+    assert_eq!(overloaded_identity["jvmDescriptor"], "(I)I");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(
             overloaded["declaration"]["symbolId"].as_str().unwrap()
@@ -138,6 +164,14 @@ fn k2_fir_golden_language_and_slice_matrix() {
         .unwrap(),
         *overloaded_identity
     );
+    let full_symbol = overloaded["declaration"]["symbolId"].as_str().unwrap();
+    let round_trip = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":full_symbol}),
+        )
+        .unwrap();
+    assert_eq!(round_trip["symbol"], full_symbol);
 
     let total_raw = worker
         .request(
@@ -490,6 +524,25 @@ fn k2_fir_golden_language_and_slice_matrix() {
                 .iter()
                 .any(|edge| edge.kind == "READ_STATE"),
             "{symbol} lacks conservative state dependency"
+        );
+    }
+    let external = worker
+        .request(
+            RequestKind::BuildLocalGraph,
+            &json!({"repo":fixture,"symbol":"com.acme.externalProperty"}),
+        )
+        .unwrap();
+    let external = graph::enrich(serde_json::from_value(external).unwrap());
+    assert!(external.nodes.iter().any(|node| {
+        node.attributes
+            .get("memoryKind")
+            .and_then(|value| value.as_str())
+            == Some("UNKNOWN_HEAP")
+    }));
+    for effect in ["READ_STATE", "WRITE_STATE"] {
+        assert!(
+            external.edges.iter().any(|edge| edge.kind == effect),
+            "external instance property lacks {effect}"
         );
     }
     let suspend = worker
