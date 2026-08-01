@@ -1,0 +1,79 @@
+{
+  "schema": "semantic-agent-benchmark/0.5",
+  "date": "2026-08-02",
+  "objective": "Universal zero-grep task-surface workflow that substantially beats default and ast-index in end-to-end time and tokens for most applied Kotlin tasks",
+  "toolRevision": "081aae2",
+  "model": "gpt-5.6-terra",
+  "architecture": {
+    "formula": "EntryPoints union ExactTargets union BoundedGraphClosure union Contracts union Tests",
+    "repositorySpecificRecipes": false,
+    "taskVocabularyInWorker": false,
+    "discoveryTurns": 1,
+    "applyTransactions": 1,
+    "failClosedOnIncompleteSurface": true
+  },
+  "pimMigrator": {
+    "baselineRevision": "be34782d0e6045e0e1427c712fff4fdd1f11f62e",
+    "coldContextSeries": {
+      "runs": 5,
+      "complete": 5,
+      "bytesEach": 11516,
+      "wallMilliseconds": [8206, 7404, 7334, 7490, 7382],
+      "meanWallMilliseconds": 7563.2,
+      "requirementsSatisfied": true,
+      "surfaces": ["WORKFLOW", "EXPLICIT_TARGET", "EXPLICIT_TARGET", "INTERMEDIARY"],
+      "contracts": ["MigrationJob", "AdaptiveBatchSettings"]
+    },
+    "historicalComparableTelemetry": {
+      "default": {"timeToEditSeconds": 59.1, "timeToCommitSeconds": 149, "toolCalls": 13, "navigationStdoutBytes": 41904, "rawTokens": 431909, "noncachedTokens": 49957},
+      "sthreadContextPackMean": {"timeToEditSeconds": 34.8, "timeToCommitSeconds": 56.6, "toolCalls": 6.8, "navigationStdoutBytes": 11312, "rawTokens": 179635.6, "noncachedTokens": 21478.8, "acceptedRuns": 5},
+      "astIndexSingleRun": {"timeToCommitSeconds": 159, "rawTokens": 583954, "noncachedTokens": 34322}
+    },
+    "requirementsDrivenSuccessfulTransaction": {
+      "commit": "11a7b07fb7fe4f737202ea4b11708a65bdd96c09",
+      "contextBytes": 11581,
+      "contextToolWallMilliseconds": 10337,
+      "planBytes": 2985,
+      "validatorAttempts": 2,
+      "applyToolWallMilliseconds": 23699,
+      "compileMilliseconds": 8526,
+      "testMilliseconds": 6645,
+      "grepFallback": false,
+      "sourceReadsOutsideContext": 0,
+      "status": "COMMITTED",
+      "approximateArtifactEndToEndSeconds": 138,
+      "warning": "34.0 seconds is tool wall only, not full end-to-end; about 86 seconds elapsed between context output and valid plan"
+    },
+    "excludedRuns": [
+      {"run": 9, "reason": "task-apply received immutable SHA instead of branch ref; no candidate or receipt", "contextBytes": 11376, "contextMilliseconds": 8730, "planBytes": 3099, "validatorAttempts": 1, "elapsedSecondsBeforeRejectedApply": 51},
+      {"run": 10, "reason": "agent supplied nonexistent compilation :pim-migrator:main; stopped after the sole context call"}
+    ]
+  },
+  "productRepo": {
+    "baselineRevision": "e0716be5cd6f2035e50ef88a615d3bd546b6f692",
+    "currentContextSmoke": {"status": "COMPLETE_TASK", "bytes": 15181, "contracts": ["ProductCanonicalDto"], "roles": ["WORKFLOW", "INTERMEDIARY", "OUTPUT_CONTRACT", "DATA_SOURCE"], "transientTransformAvailable": true},
+    "historicalComparableTelemetry": {
+      "default": {"timeToCommitSeconds": 293, "toolCalls": 29, "rawTokens": 2208464, "noncachedTokens": 129744, "hiddenAcceptance": "REJECT"},
+      "astIndex": {"timeToCommitSeconds": 171, "toolCalls": 21, "rawTokens": 1099997, "noncachedTokens": 72925, "hiddenAcceptance": "REJECT"},
+      "sthreadTransientGraph": {"timeToCommitSeconds": 97, "toolCalls": 11, "rawTokens": 374756, "noncachedTokens": 37348, "hiddenAcceptance": "ACCEPT_109_OF_109"}
+    }
+  },
+  "verification": {
+    "cargoTestWorkspace": "PASS",
+    "gradleKotlin21Fixture": "PASS",
+    "mavenKotlin23Fixture": "PASS",
+    "metamorphic": "PASS",
+    "concurrency": "PASS_3_OF_3"
+  },
+  "tokenMeasurement": {
+    "newCumulativeTelemetryAvailable": false,
+    "policy": "Do not estimate tokens from bytes; token conclusions use only saved comparable Terra cumulative events"
+  },
+  "verdict": {
+    "taskSurfaceImproved": true,
+    "mavenTypedPropagationBeatsDefaultAndAstIndex": true,
+    "universalMajorityClaimProven": false,
+    "goalStatus": "STOP_DEEP_RESEARCH",
+    "reason": "Only one structural family has an accepted substantial win; PIM requirements-driven successful run spent about 86 seconds in model-authored planning and finished near the default baseline"
+  }
+}
