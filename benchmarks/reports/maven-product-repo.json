@@ -1,0 +1,188 @@
+{
+  "schema": "semantic-agent-benchmark/0.2",
+  "date": "2026-08-01",
+  "task": "Add a typed id/code/title entity to DELETED product archive changefeed events without N+1 queries or CREATE/UPDATE regressions",
+  "repository": "product-repo",
+  "sourceBaselineRevision": "56d42d5f943acb566fcc1f0663e7ecef86886249",
+  "sanitizedBaselineRevision": "e0716be5cd6f2035e50ef88a615d3bd546b6f692",
+  "toolRevision": "81cde55",
+  "model": "gpt-5.6-terra",
+  "reasoningEffort": "medium",
+  "measurement": {
+    "timeOrigin": "START_UTC shell marker",
+    "timeToEdit": "FIRST_EDIT_UTC minus START_UTC",
+    "timeToCommit": "END_UTC minus START_UTC",
+    "toolCalls": "custom_tool_call exec records in the independent rollout; wait calls excluded",
+    "tokenSource": "final cumulative token_count event in each independent rollout",
+    "rawTotalFormula": "inputTokens + outputTokens",
+    "noncachedFormula": "inputTokens - cachedInputTokens + outputTokens",
+    "goalTokens": "tokensUsed returned by update_goal; recorded separately because it closes before the final response",
+    "navigationStdout": "not comparable: default/ast outputs were not aggregated and the sthread tee target did not exist"
+  },
+  "runs": [
+    {
+      "mode": "default",
+      "commit": "979ebe474683ffea8044adb1669f7a77522cea70",
+      "startUtc": "2026-08-01T09:31:36Z",
+      "firstEditUtc": "2026-08-01T09:32:50Z",
+      "endUtc": "2026-08-01T09:36:29Z",
+      "timeToEditSeconds": 74,
+      "timeToCommitSeconds": 293,
+      "goalElapsedSeconds": 304,
+      "toolCalls": 29,
+      "filesChanged": 9,
+      "additions": 96,
+      "deletions": 24,
+      "tokens": {
+        "input": 2197458,
+        "cachedInput": 2078720,
+        "output": 11006,
+        "reasoningOutputIncludedInOutput": 2759,
+        "rawTotal": 2208464,
+        "noncached": 129744,
+        "goalTokensUsed": 127254
+      },
+      "navigation": {
+        "tool": "rg/sed",
+        "coldToolMilliseconds": null,
+        "stdoutBytes": null
+      },
+      "agentReportedTests": "PASS after fixing a nullable projection issue",
+      "freshHiddenAcceptance": {
+        "status": "REJECT",
+        "result": "TEST_COMPILE_FAILED",
+        "reason": "the declared ProductModifyEntity contract exposes id only; hidden entity.code/title matchers do not compile"
+      }
+    },
+    {
+      "mode": "ast-index",
+      "commit": "73534933b0154df363e86c370b8316747a053f23",
+      "startUtc": "2026-08-01T09:31:53Z",
+      "firstEditUtc": "2026-08-01T09:32:56Z",
+      "endUtc": "2026-08-01T09:34:44Z",
+      "timeToEditSeconds": 63,
+      "timeToCommitSeconds": 171,
+      "goalElapsedSeconds": 176,
+      "toolCalls": 21,
+      "filesChanged": 3,
+      "additions": 46,
+      "deletions": 1,
+      "tokens": {
+        "input": 1094368,
+        "cachedInput": 1027072,
+        "output": 5629,
+        "reasoningOutputIncludedInOutput": 1423,
+        "rawTotal": 1099997,
+        "noncached": 72925,
+        "goalTokensUsed": 69884
+      },
+      "navigation": {
+        "tool": "ast-index 3.48.1",
+        "coldToolMilliseconds": 300,
+        "stdoutBytes": null,
+        "indexBytes": 6811648,
+        "files": 425,
+        "symbols": 7890,
+        "references": 35702
+      },
+      "agentReportedTests": "PASS, but not reproducible from a fresh worktree",
+      "freshHiddenAcceptance": {
+        "status": "REJECT",
+        "result": "109 tests, 0 failures, 6 errors",
+        "reason": "archive loads ProductCanonicalProjection.code as non-null although database code is nullable, causing six NPEs; it also adds a second batch query and a full entity payload"
+      }
+    },
+    {
+      "mode": "sthread-agent-context",
+      "commit": "90a36e0607d063075c47c1944df2735b56cb0437",
+      "startUtc": "2026-08-01T09:32:10Z",
+      "firstEditUtc": "2026-08-01T09:33:17Z",
+      "endUtc": "2026-08-01T09:38:01Z",
+      "timeToEditSeconds": 67,
+      "timeToCommitSeconds": 351,
+      "goalElapsedSeconds": 363,
+      "toolCalls": 34,
+      "filesChanged": 9,
+      "additions": 96,
+      "deletions": 19,
+      "tokens": {
+        "input": 2307289,
+        "cachedInput": 2175232,
+        "output": 11392,
+        "reasoningOutputIncludedInOutput": 2527,
+        "rawTotal": 2318681,
+        "noncached": 143449,
+        "goalTokensUsed": 140055
+      },
+      "navigation": {
+        "tool": "sthread agent-context",
+        "calls": 1,
+        "coldToolMilliseconds": 21567,
+        "stdoutLimitBytes": 32768,
+        "stdoutBytes": null,
+        "stdoutCaptureFailure": "tee opened .semantic-thread/agent-context.json before the CLI created the directory",
+        "evidenceBytes": 11536111,
+        "indexBytes": 25415680,
+        "contextCompleteness": "COMPLETE"
+      },
+      "agentReportedTests": "PASS for ProductProducerKafkaServiceTest, ProductServiceIntTest, and NomenclatureServiceTest",
+      "freshHiddenAcceptance": {
+        "status": "REJECT",
+        "result": "TEST_COMPILE_FAILED",
+        "reason": "the declared ProductChangeEntity contract exposes id only; hidden entity.code/title matchers do not compile"
+      }
+    }
+  ],
+  "comparisonPercent": {
+    "astIndexVsDefault": {
+      "timeToEdit": -14.86,
+      "timeToCommit": -41.64,
+      "goalTokens": -45.08,
+      "rawTokens": -50.19,
+      "noncachedTokens": -43.79,
+      "toolCalls": -27.59
+    },
+    "sthreadVsDefault": {
+      "timeToEdit": -9.46,
+      "timeToCommit": 19.8,
+      "goalTokens": 10.06,
+      "rawTokens": 4.99,
+      "noncachedTokens": 10.56,
+      "toolCalls": 17.24
+    },
+    "sthreadVsAstIndex": {
+      "timeToEdit": 6.35,
+      "timeToCommit": 105.26,
+      "goalTokens": 100.41,
+      "rawTokens": 110.79,
+      "noncachedTokens": 96.71,
+      "toolCalls": 61.9
+    }
+  },
+  "independentAcceptance": {
+    "blindMapping": "withheld during review",
+    "default": "REJECT",
+    "astIndex": "REJECT",
+    "sthread": "REJECT",
+    "correctWinner": null,
+    "relativeRanking": ["ast-index", "sthread-agent-context", "default"]
+  },
+  "outcome": {
+    "performanceWinnerAmongSubmittedPatches": "ast-index",
+    "correctWinner": null,
+    "sthreadWinsDefault": false,
+    "sthreadWinsAstIndexer": false,
+    "generalization": "one repository, one task, one run per mode"
+  },
+  "nextOptimization": {
+    "priority": "acceptance-driven contract closure and relevance ranking",
+    "why": "the 21.567 second context build was only 6.1% of the 351 second workflow; irrelevant test prefixes, a class-head snippet instead of ProductService.archive, and missing declared field contracts caused extra work and an invalid patch",
+    "actions": [
+      "rank member methods that connect query terms and include ProductService.archive plus its repository calls",
+      "emit declared DTO/interface field contracts transitively, including id/code/title nullability",
+      "return anchored snippets around relevant test methods instead of the first 1200 bytes of many test files",
+      "add an atomic --output path for canonical context",
+      "validate in a clean detached worktree through the existing semantic transaction path"
+    ]
+  }
+}
