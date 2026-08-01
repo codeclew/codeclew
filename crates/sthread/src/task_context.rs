@@ -1344,12 +1344,13 @@ fn compact_targets_for_stdout(mut context: Value) -> Value {
     for diagnostic in ["intentTokens", "matchedTerms", "unmatchedTerms"] {
         task.remove(diagnostic);
     }
-    for key in ["editSurfaces", "contracts", "tests"] {
-        for item in context
+    for (key, prefix) in [("editSurfaces", "S"), ("contracts", "C"), ("tests", "T")] {
+        for (index, item) in context
             .get_mut(key)
             .and_then(Value::as_array_mut)
             .into_iter()
             .flatten()
+            .enumerate()
         {
             item.as_object_mut()
                 .expect("context item")
@@ -1365,7 +1366,8 @@ fn compact_targets_for_stdout(mut context: Value) -> Value {
                 if target.is_null() {
                     continue;
                 }
-                let id = target["anchorId"].clone();
+                let suffix = if target_key == "bodyTarget" { "B" } else { "" };
+                let id = json!(format!("{prefix}{}{suffix}", index + 1));
                 item[id_key] = id;
                 item.as_object_mut()
                     .expect("context item")

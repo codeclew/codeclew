@@ -55,7 +55,12 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
         context["editPlan"]["instruction"]
             .as_str()
             .unwrap()
-            .contains("substitutions")
+            .contains("same-target rewrites merge")
+    );
+    assert!(
+        declaration["declarationTargetId"]
+            .as_str()
+            .is_some_and(|target| target.starts_with('S'))
     );
     let stored: Value = serde_json::from_slice(&std::fs::read(evidence).unwrap()).unwrap();
     assert_eq!(stored["schema"], "semantic-task-context-evidence/0.2");
