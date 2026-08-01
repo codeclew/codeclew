@@ -1348,18 +1348,41 @@ internal class Worker : AutoCloseable {
             val occurrence = item.jsonObject["occurrence"]?.jsonPrimitive?.intOrNull
             val expectedOccurrences = item.jsonObject["occurrences"]?.jsonPrimitive?.intOrNull
                 ?: if (occurrence == null) 1 else null
+            val lineMode = item.jsonObject["lineMode"]?.jsonPrimitive?.booleanOrNull == true
             if (occurrence != null && occurrence < 1) throw WorkerFailure("INVALID_INPUT", "substitution $index occurrence must be positive")
             if (expectedOccurrences != null && expectedOccurrences < 1) throw WorkerFailure("INVALID_INPUT", "substitution $index occurrences must be positive")
-            val matches = Regex(Regex.escape(old)).findAll(rewritten).toList()
+            val matcher = if (lineMode) {
+                val lines = old.lines()
+                Regex(
+                    "(?m)^([\\t ]*)" + lines.first().let(Regex::escape) + "[\\t ]*$" +
+                        lines.drop(1).joinToString("") { line ->
+                            "\\r?\\n^[\\t ]*${Regex.escape(line)}[\\t ]*$"
+                        }
+                )
+            } else {
+                Regex(Regex.escape(old))
+            }
+            val matches = matcher.findAll(rewritten).toList()
             if (expectedOccurrences != null && matches.size != expectedOccurrences) {
                 throw WorkerFailure("PRECONDITION_FAILED", "substitution $index expected $expectedOccurrences exact matches, found ${matches.size}")
             }
-            rewritten = if (occurrence != null) {
-                val match = matches.getOrNull(occurrence - 1)
+            val selectedMatches = if (occurrence != null) {
+                listOf(matches.getOrNull(occurrence - 1)
                     ?: throw WorkerFailure("PRECONDITION_FAILED", "substitution $index occurrence $occurrence is absent; found ${matches.size} exact matches")
-                rewritten.replaceRange(match.range, new)
+                )
             } else {
-                rewritten.replace(old, new)
+                matches
+            }
+            selectedMatches.asReversed().forEach { match ->
+                val replacement = if (lineMode) {
+                    val indent = match.groupValues[1]
+                    new.lines().joinToString("\n") { line ->
+                        if (line.isEmpty()) "" else indent + line
+                    }
+                } else {
+                    new
+                }
+                rewritten = rewritten.replaceRange(match.range, replacement)
             }
         }
         val replacementFile = factory.createFile(path.fileName.toString(), rewritten)
