@@ -414,7 +414,10 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                 },
                 preconditions: BTreeMap::from([(
                     "substitutions".into(),
-                    json!([{"old":")", "new":") : java.io.Serializable"}]),
+                    json!([
+                        {"old":"String", "new":"kotlin.String", "occurrence":2},
+                        {"old":")", "new":") : java.io.Serializable"}
+                    ]),
                 )]),
                 postconditions: BTreeMap::new(),
             },
@@ -525,6 +528,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
     );
     assert!(committed_source.contains("return formatArchive(product)"));
     assert!(committed_source.contains(") : java.io.Serializable"));
+    assert!(committed_source.contains("val code: kotlin.String?"));
     let generated = git_output(
         &repo,
         &[

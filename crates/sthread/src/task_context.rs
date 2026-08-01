@@ -187,7 +187,7 @@ impl TaskContextSelection {
                         .unwrap_or_default()
                         .to_lowercase();
                     if self.intent_tokens.contains(&parameter) {
-                        600
+                        900
                     } else {
                         self.intent_tokens
                             .iter()
@@ -609,7 +609,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","REWRITE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
-            "instruction":"Prefer REWRITE_DECLARATION with preconditions.substitutions [{old,new,occurrences?}] for exact local changes. Use declaration targets for signature/type changes and body targets only if signature is unchanged. New top-level declarations require CREATE_FILE.",
+            "instruction":"Prefer REWRITE_DECLARATION with preconditions.substitutions [{old,new,occurrences?}] for exact local changes. When the same old text occurs more than once but only one match must change, use 1-based occurrence instead of copying surrounding source. Use declaration targets for signature/type changes and body targets only if signature is unchanged. New top-level declarations require CREATE_FILE.",
             "constraints":[
                 "Every non-CREATE_FILE operation references one emitted targetId",
                 "REPLACE_DECLARATION replacement.kotlin parses as exactly one Kotlin declaration and contains no package or imports",
@@ -1659,14 +1659,13 @@ mod tests {
 
     #[test]
     fn follows_the_call_whose_parameter_matches_task_intent() {
+        let mut query_candidate = function_candidate("persistBatch");
+        query_candidate.source_text = "@Query fun persistBatch() = Unit".into();
         let selection = TaskContextSelection {
             files: Vec::new(),
-            catalog: vec![
-                function_candidate("emitChange"),
-                function_candidate("persistBatch"),
-            ],
+            catalog: vec![function_candidate("emitChange"), query_candidate],
             candidates: Vec::new(),
-            intent_tokens: BTreeSet::from(["subjectid".into(), "payload".into()]),
+            intent_tokens: BTreeSet::from(["subjectid".into()]),
             goal_tokens: BTreeSet::new(),
             explicit_owners: BTreeSet::new(),
         };
@@ -1679,7 +1678,7 @@ mod tests {
                 },
                 {
                     "symbol":"com.acme.Service.emitChange",
-                    "argumentToParameter":[{"parameter":"subjectId"},{"parameter":"payload"}]
+                    "argumentToParameter":[{"parameter":"subjectId"}]
                 }
             ]
         })];
