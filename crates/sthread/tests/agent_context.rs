@@ -51,6 +51,15 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
     assert!(context.get("references").is_none());
     assert_eq!(context["editPlan"]["schema"], "semantic-task-edit-plan/0.1");
     assert!(context["editPlan"].get("recommendedRecipe").is_none());
+    assert_eq!(
+        context["editPlan"]["transientTransform"]["kind"],
+        "PROPAGATE_TYPED_FIELDS"
+    );
+    assert!(
+        context["editPlan"]["transientTransform"]["available"]
+            .as_bool()
+            .is_some()
+    );
     assert!(
         context["editPlan"]["instruction"]
             .as_str()

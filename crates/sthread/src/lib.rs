@@ -5,6 +5,7 @@ pub mod graph;
 pub mod index;
 pub mod model;
 pub mod task_context;
+pub mod task_plan;
 pub mod transaction;
 pub mod worker;
 

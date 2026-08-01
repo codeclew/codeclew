@@ -609,6 +609,17 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         .first()
         .map(|thread| thread.thread_id.as_str())
         .unwrap_or_default();
+    let available_roles = edit_surfaces
+        .iter()
+        .filter_map(|surface| surface["role"].as_str())
+        .collect::<BTreeSet<_>>();
+    let transient_transform_available =
+        ["WORKFLOW", "INTERMEDIARY", "OUTPUT_CONTRACT", "DATA_SOURCE"]
+            .into_iter()
+            .all(|role| available_roles.contains(role))
+            && contracts.len() == 1
+            && tests.len() == 1
+            && !projection_fields.is_empty();
     let full = json!({
         "schema":"semantic-task-context/0.2",
         "task":{"intent":intent,"terms":terms,"intentTokens":selection.intent_tokens,"matchedTerms":matched_terms,"unmatchedTerms":unmatched_terms},
@@ -625,7 +636,15 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"old":"...","new":"..."},
-            "instruction":"Use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
+            "transientTransform":{
+                "available":transient_transform_available,
+                "kind":"PROPAGATE_TYPED_FIELDS",
+                "schema":"semantic-task-goal/0.1",
+                "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
+                "required":"transform.kind/fields; names.contract/projection/imports; dataSource.name; workflow.collection/item/identityField; sink.identity/payload; test.expected/occurrence",
+                "instruction":"Prefer this compact runtime transform when available. It is compiled from full resolved evidence into anchored EditIR; supply task-local names and bindings only, never source text or occurrences outside test."
+            },
+            "instruction":"Use transientTransform when available. Otherwise use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{

@@ -433,6 +433,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             )
             .map_err(parse_error)?;
             let mut plan: Value = read_json(&args.edit_plan)?;
+            sthread::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
             normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
             inject_created_type_imports(&mut plan)?;
