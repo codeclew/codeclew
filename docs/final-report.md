@@ -22,4 +22,4 @@ The selected worker invokes a pinned Kotlin 2.1.21 or 2.4.10 K2 compiler in-proc
 
 ## Next stage
 
-The first Maven/Spring agent benchmark shows that cold semantic execution is no longer the dominant problem. The next gate is task-aware member/test ranking, transitive DTO contract closure, atomic bounded-context output, and mandatory clean detached-worktree acceptance. After that gate, extend the supported project contour to multi-module Maven, Android/KMP, and deeper interprocedural summaries.
+The strict Maven/Spring rerun passes the task-aware closure gate: a no-recipe Terra agent used one 16-KB context and one atomic transaction, beat ast-index on time, calls and tokens, and passed 109 fresh hidden tests. The next gate is a repository-agnostic typed role-flow transformation that shrinks the remaining 5.3-KB manual plan and its validator repair, followed by compact evidence and replication on additional Maven/Gradle repositories. After that, extend the supported contour to multi-module Maven, Android/KMP, and deeper interprocedural summaries.
