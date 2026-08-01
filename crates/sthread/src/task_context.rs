@@ -1538,7 +1538,7 @@ fn validation_plan(project: &Value, tests: &[Value]) -> Value {
             "test".into(),
         ],
         "GRADLE" if !stems.is_empty() => {
-            let mut args = vec!["cleanTest".into()];
+            let mut args = vec!["cleanTest".into(), "test".into()];
             for stem in stems {
                 args.push("--tests".into());
                 args.push(format!("*{stem}"));
@@ -2132,6 +2132,23 @@ mod tests {
         assert!(intent_requests_tests("добавить регрессионные тесты"));
         assert!(intent_requests_tests("use human-readable @DisplayName"));
         assert!(!intent_requests_tests("preserve runtime behavior"));
+    }
+
+    #[test]
+    fn gradle_targeted_validation_runs_test_task_before_filters() {
+        let plan = validation_plan(
+            &json!({
+                "buildSystem":"GRADLE",
+                "buildLauncher":"./gradlew",
+                "compileTask":":compileKotlin"
+            }),
+            &[json!({"path":"src/test/kotlin/com/acme/RunnerTest.kt"})],
+        );
+
+        assert_eq!(
+            plan["targetedArgs"],
+            json!(["cleanTest", "test", "--tests", "*RunnerTest"])
+        );
     }
 
     #[test]

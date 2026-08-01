@@ -437,6 +437,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
             inject_created_type_imports(&mut plan)?;
+            inject_explicit_target_imports(&mut plan, context)?;
             inject_created_contract_overrides(&mut plan)?;
             let operations: Vec<EditOperation> = serde_json::from_value(
                 plan["operations"]
@@ -476,7 +477,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 operations,
                 expected_write_set,
             };
-            let test_tasks = context
+            let mut test_tasks = context
                 .pointer("/validationPlan/targetedArgs")
                 .and_then(Value::as_array)
                 .into_iter()
@@ -484,6 +485,14 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 .filter_map(Value::as_str)
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
+            include_created_tests(
+                &mut test_tasks,
+                &plan,
+                context
+                    .pointer("/validationPlan/buildSystem")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GRADLE"),
+            );
             let mut transaction = Transaction {
                 schema: "semantic-transaction/0.1".into(),
                 tx_id: format!("tx:{}", uuid::Uuid::new_v4()),
@@ -1319,6 +1328,140 @@ fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
     plan["operations"] = Value::Array(expanded);
     Ok(())
 }
+
+fn inject_explicit_target_imports(plan: &mut Value, context: &Value) -> Result<(), SthreadError> {
+    let operations = plan["operations"].as_array().ok_or_else(|| {
+        SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
+    })?;
+    let explicit_targets = context["editSurfaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|surface| surface["role"] == "EXPLICIT_TARGET")
+        .filter_map(|surface| {
+            let name = surface["name"].as_str()?;
+            let identity: Value = serde_json::from_str(
+                surface
+                    .pointer("/declarationTarget/ownerSymbolId")?
+                    .as_str()?,
+            )
+            .ok()?;
+            let package = identity["package"].as_str()?;
+            let top_level = identity["containingDeclarations"]
+                .as_array()
+                .is_some_and(Vec::is_empty);
+            (!name.is_empty() && !package.is_empty() && top_level).then(|| {
+                (
+                    name.to_owned(),
+                    format!("{package}.{name}"),
+                    package.to_owned(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut expanded = Vec::new();
+    let mut inserted = std::collections::BTreeSet::new();
+    for operation in operations {
+        if operation["kind"] == "REWRITE_DECLARATION" {
+            let file = operation
+                .pointer("/target/fileId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let target_package = file
+                .split_once("/kotlin/")
+                .and_then(|(_, relative)| relative.rsplit_once('/'))
+                .map(|(package, _)| package.replace('/', "."))
+                .unwrap_or_default();
+            let replacements = operation
+                .pointer("/preconditions/substitutions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|substitution| substitution["new"].as_str())
+                .collect::<Vec<_>>();
+            for (name, fq_name, package) in &explicit_targets {
+                let needs_import = replacements.iter().any(|replacement| {
+                    contains_identifier(&replacement.replace(fq_name, ""), name)
+                });
+                if target_package == *package
+                    || !needs_import
+                    || !inserted.insert((file.to_owned(), fq_name.clone()))
+                {
+                    continue;
+                }
+                expanded.push(json!({
+                    "opId":format!("auto-explicit-import-{}",expanded.len()+1),
+                    "kind":"ADD_IMPORT",
+                    "target":operation["target"].clone(),
+                    "replacement":{"kotlin":fq_name},
+                    "preconditions":{},
+                    "postconditions":{}
+                }));
+            }
+        }
+        expanded.push(operation.clone());
+    }
+    plan["operations"] = Value::Array(expanded);
+    Ok(())
+}
+
+fn include_created_tests(test_tasks: &mut Vec<String>, plan: &Value, build_system: &str) {
+    if build_system != "MAVEN"
+        && test_tasks.iter().any(|argument| argument == "--tests")
+        && !test_tasks.iter().any(|argument| argument == "test")
+    {
+        let position = test_tasks
+            .iter()
+            .position(|argument| argument == "cleanTest")
+            .map_or(0, |index| index + 1);
+        test_tasks.insert(position, "test".into());
+    }
+    let stems = plan["operations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|operation| operation["kind"] == "CREATE_FILE")
+        .filter_map(|operation| operation.pointer("/target/fileId").and_then(Value::as_str))
+        .filter(|path| path.contains("/src/test/") || path.starts_with("src/test/"))
+        .filter_map(|path| Path::new(path).file_stem()?.to_str())
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    if stems.is_empty() {
+        return;
+    }
+    if build_system == "MAVEN" {
+        if let Some(filter) = test_tasks
+            .iter_mut()
+            .find(|argument| argument.starts_with("-Dtest="))
+        {
+            let mut selected = filter
+                .trim_start_matches("-Dtest=")
+                .split(',')
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>();
+            selected.extend(stems);
+            *filter = format!(
+                "-Dtest={}",
+                selected.into_iter().collect::<Vec<_>>().join(",")
+            );
+        } else {
+            test_tasks.insert(
+                0,
+                format!("-Dtest={}", stems.into_iter().collect::<Vec<_>>().join(",")),
+            );
+        }
+        return;
+    }
+    for stem in stems {
+        let selector = format!("*{stem}");
+        if test_tasks.iter().any(|argument| argument == &selector) {
+            continue;
+        }
+        test_tasks.push("--tests".into());
+        test_tasks.push(selector);
+    }
+}
+
 fn contains_identifier(source: &str, identifier: &str) -> bool {
     source.match_indices(identifier).any(|(start, _)| {
         let is_identifier = |character: char| character.is_alphanumeric() || character == '_';
@@ -1392,6 +1535,83 @@ mod task_plan_tests {
             operations[2]["preconditions"]["substitutions"][1]["new"],
             "override val id:"
         );
+    }
+
+    #[test]
+    fn imports_top_level_explicit_targets_used_by_a_workflow_rewrite() {
+        let identity = |name: &str| {
+            json!({
+                "package":"com.acme.options",
+                "containingDeclarations":[],
+                "declarationName":name
+            })
+            .to_string()
+        };
+        let context = json!({"editSurfaces":[
+            {
+                "name":"readOptions",
+                "role":"EXPLICIT_TARGET",
+                "declarationTarget":{"ownerSymbolId":identity("readOptions")}
+            },
+            {
+                "name":"applyOptions",
+                "role":"EXPLICIT_TARGET",
+                "declarationTarget":{"ownerSymbolId":identity("applyOptions")}
+            }
+        ]});
+        let mut plan = json!({"operations":[{
+            "opId":"rewrite-workflow",
+            "kind":"REWRITE_DECLARATION",
+            "target":{"fileId":"src/main/kotlin/com/acme/app/Runner.kt"},
+            "replacement":{"kotlin":""},
+            "preconditions":{"substitutions":[{
+                "old":"val records = load()",
+                "new":"val options = readOptions()\nval records = load().map { applyOptions(it, options) }",
+                "occurrences":1
+            }]},
+            "postconditions":{}
+        }]});
+
+        inject_explicit_target_imports(&mut plan, &context).unwrap();
+
+        let operations = plan["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 3);
+        assert_eq!(operations[0]["kind"], "ADD_IMPORT");
+        assert_eq!(
+            operations[0]["replacement"]["kotlin"],
+            "com.acme.options.readOptions"
+        );
+        assert_eq!(operations[1]["kind"], "ADD_IMPORT");
+        assert_eq!(
+            operations[1]["replacement"]["kotlin"],
+            "com.acme.options.applyOptions"
+        );
+        assert_eq!(operations[2]["opId"], "rewrite-workflow");
+    }
+
+    #[test]
+    fn created_tests_are_added_to_gradle_and_maven_validation() {
+        let plan = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"src/test/kotlin/com/acme/RunnerTest.kt"}
+        }]});
+        let mut gradle = vec!["cleanTest".into(), "--tests".into(), "*ExistingTest".into()];
+        include_created_tests(&mut gradle, &plan, "GRADLE");
+        assert_eq!(
+            gradle,
+            vec![
+                "cleanTest",
+                "test",
+                "--tests",
+                "*ExistingTest",
+                "--tests",
+                "*RunnerTest"
+            ]
+        );
+
+        let mut maven = vec!["-Dtest=ExistingTest".into(), "test".into()];
+        include_created_tests(&mut maven, &plan, "MAVEN");
+        assert_eq!(maven, vec!["-Dtest=ExistingTest,RunnerTest", "test"]);
     }
 
     #[test]
