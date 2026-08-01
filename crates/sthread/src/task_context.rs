@@ -414,6 +414,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         .collect::<Vec<_>>();
     let call_declarations = collect_call_declarations(index_facts, selection, resolutions);
     let contract_declarations = collect_contracts(index_facts, selection, resolutions);
+    let projection_fields = collect_projection_fields(selection, &call_declarations);
     let mut edit_candidates = root_candidates.clone();
     for candidate in &call_declarations {
         if !edit_candidates.iter().any(|existing| {
@@ -508,6 +509,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         "threadId":thread_id,
         "editSurfaces":edit_surfaces,
         "executionPath":execution_path,
+        "projectionFields":projection_fields,
         "contracts":contracts,
         "tests":tests,
         "validationPlan":validation_plan,
@@ -562,7 +564,6 @@ fn compact_surface(candidate: &Candidate, body_anchor: Option<&Value>) -> Value 
         ("reasons".into(), json!(candidate.reasons)),
         ("sourceText".into(), json!(source_text)),
         ("declarationTarget".into(), declaration_target),
-        ("operationKinds".into(), json!(["REPLACE_DECLARATION"])),
     ]);
     if let Some(anchor) = body_anchor {
         let mut compact = anchor.clone();
@@ -570,10 +571,6 @@ fn compact_surface(candidate: &Candidate, body_anchor: Option<&Value>) -> Value 
             object.remove("sourceText");
         }
         value.insert("bodyTarget".into(), compact);
-        value.insert(
-            "operationKinds".into(),
-            json!(["REPLACE_FUNCTION_BODY", "REPLACE_DECLARATION"]),
-        );
     }
     if truncated {
         value.insert("sourceTruncated".into(), json!(true));
@@ -592,8 +589,7 @@ fn compact_contract(candidate: &Candidate) -> Value {
         "sourceText":source_text,
         "sourceTruncated":truncated,
         "sourceBytesOmitted":omitted,
-        "declarationTarget":declaration_target(candidate),
-        "operationKinds":["REPLACE_DECLARATION"]
+        "declarationTarget":declaration_target(candidate)
     })
 }
 
@@ -761,6 +757,75 @@ fn collect_contracts<'a>(
         .collect::<Vec<_>>();
     contracts.sort_by_key(|candidate| Reverse(contract_rank(candidate, &selection.intent_tokens)));
     contracts
+}
+
+fn collect_projection_fields(
+    selection: &TaskContextSelection,
+    call_declarations: &[&Candidate],
+) -> Vec<Value> {
+    let entity_names = call_declarations
+        .iter()
+        .flat_map(|candidate| {
+            let words = candidate.source_text.split_whitespace().collect::<Vec<_>>();
+            words
+                .windows(2)
+                .filter(|window| window[0].eq_ignore_ascii_case("from"))
+                .map(|window| {
+                    window[1]
+                        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>();
+    let mut fields = BTreeMap::<String, Value>::new();
+    for candidate in selection.catalog.iter().filter(|candidate| {
+        candidate.declaration["kind"]
+            .as_str()
+            .is_some_and(|kind| kind.contains("Class"))
+            && candidate.declaration["name"]
+                .as_str()
+                .is_some_and(|name| entity_names.contains(name))
+    }) {
+        let owner = candidate.declaration["name"].as_str().unwrap_or_default();
+        for line in candidate.source_text.lines() {
+            let trimmed = line.trim();
+            let property = ["val ", "var "]
+                .into_iter()
+                .filter_map(|marker| trimmed.find(marker).map(|index| &trimmed[index + 4..]))
+                .next();
+            let Some((name, type_and_default)) = property.and_then(|text| text.split_once(':'))
+            else {
+                continue;
+            };
+            let name = name.trim();
+            if !selection.intent_tokens.contains(&name.to_lowercase()) {
+                continue;
+            }
+            let field_type = type_and_default
+                .split(['=', ','])
+                .next()
+                .unwrap_or_default()
+                .trim();
+            if field_type.is_empty() {
+                continue;
+            }
+            fields.entry(name.to_owned()).or_insert_with(|| {
+                json!({
+                    "source":format!("{owner}.{name}"),
+                    "type":field_type,
+                    "nullable":field_type.ends_with('?')
+                })
+            });
+        }
+    }
+    fields
+        .into_iter()
+        .map(|(name, mut field)| {
+            field["name"] = json!(name);
+            field
+        })
+        .collect()
 }
 
 fn contract_rank(candidate: &Candidate, intent_tokens: &BTreeSet<String>) -> usize {
@@ -987,8 +1052,7 @@ fn test_snippet(file: &SourceFile, needles: &BTreeMap<String, usize>) -> Option<
             "syntaxKind":"KtNamedFunction",
             "exactTextHash":exact_text_hash,
             "rangeHint":[start+1,end+1]
-        },
-        "operationKinds":["REPLACE_DECLARATION"]
+        }
     }))
 }
 

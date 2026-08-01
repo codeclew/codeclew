@@ -418,6 +418,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             )
             .map_err(parse_error)?;
             let mut plan: Value = read_json(&args.edit_plan)?;
+            normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
             let operations: Vec<EditOperation> = serde_json::from_value(
                 plan["operations"]
@@ -937,6 +938,25 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadE
                 format!("edit plan references unknown task target {target_id}"),
             )
         })?;
+    }
+    Ok(())
+}
+fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
+    let operations = plan["operations"].as_array_mut().ok_or_else(|| {
+        SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
+    })?;
+    for (index, operation) in operations.iter_mut().enumerate() {
+        let object = operation.as_object_mut().ok_or_else(|| {
+            SthreadError::new(ErrorCode::InvalidInput, "task operation must be an object")
+        })?;
+        object
+            .entry("opId")
+            .or_insert_with(|| json!(format!("task-op-{}", index + 1)));
+        if object.get("kind").and_then(Value::as_str) == Some("REWRITE_DECLARATION") {
+            object
+                .entry("replacement")
+                .or_insert_with(|| json!({"kotlin":""}));
+        }
     }
     Ok(())
 }
