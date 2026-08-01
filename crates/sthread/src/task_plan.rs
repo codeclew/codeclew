@@ -53,15 +53,6 @@ pub fn expand_transient_transform(
             "names.newContract and names.newProjection must be distinct",
         ));
     }
-    let test_expected = identifier(
-        required_string(&transform["test"], "expected")?,
-        "test.expected",
-    )?;
-    let test_occurrence = transform["test"]["occurrence"].as_u64().unwrap_or(1);
-    if test_occurrence == 0 {
-        return Err(invalid("test.occurrence must be positive"));
-    }
-
     let current_contract = required_string(contract, "name")?;
     let existing_names = context_names(context);
     for new_name in [&interface_name, &record_name] {
@@ -112,12 +103,13 @@ pub fn expand_transient_transform(
     let return_rewrite =
         return_type_rewrite(&data_source_source, &old_data_source_name, &record_name)?;
     let test_old = format!("{payload_parameter} = anyOrNull(),");
-    let test_count = test_source.matches(&test_old).count();
-    if test_count < test_occurrence as usize {
+    let test_occurrence = 1_u64;
+    if !test_source.contains(&test_old) {
         return Err(incomplete(format!(
-            "test payload matcher occurrence {test_occurrence} is absent; found {test_count}"
+            "test payload matcher {test_old:?} is absent"
         )));
     }
+    let test_expected = infer_test_expected(&test_source, &test_old)?;
     let assertions = fields
         .iter()
         .map(|field| format!("{} == {test_expected}.{}", field.name, field.name))
@@ -456,6 +448,22 @@ fn infer_identity_parameter(source: &str, loop_item: &str) -> Result<String, Sth
     Ok(parameters.into_iter().next().unwrap())
 }
 
+fn infer_test_expected(source: &str, matcher: &str) -> Result<String, SthreadError> {
+    let matcher_offset = source
+        .find(matcher)
+        .ok_or_else(|| incomplete("test payload matcher is absent"))?;
+    let prefix = &source[..matcher_offset];
+    let lambda = prefix
+        .rfind(".forEach {")
+        .map(|offset| &prefix[offset..])
+        .ok_or_else(|| incomplete("test matcher is not inside an emitted forEach binding"))?;
+    let binding = lambda
+        .split_once('{')
+        .and_then(|(_, tail)| tail.split_once("->").map(|(binding, _)| binding.trim()))
+        .ok_or_else(|| incomplete("test forEach binding is incomplete"))?;
+    identifier(binding, "test expected binding")
+}
+
 fn return_type_rewrite(
     source: &str,
     method_name: &str,
@@ -674,7 +682,7 @@ mod tests {
             "tests":[{
                 "declarationTargetId":"T1","name":"reconcile test",
                 "file":"src/test/kotlin/com/acme/ReconcileTest.kt",
-                "sourceText":"verify { notifier.notify(identity = expected.key, payload = anyOrNull(), audit = any()) }"
+                "sourceText":"records.forEach { expected ->\n    verify { notifier.notify(identity = expected.key, payload = anyOrNull(), audit = any()) }\n}"
             }],
             "projectionFields":[
                 {"name":"key","type":"String","source":"Record.key","nullable":false},
@@ -704,7 +712,7 @@ mod tests {
 
     fn compact_plan() -> Value {
         json!({
-            "schema":"semantic-task-goal/0.3",
+            "schema":"semantic-task-goal/0.4",
             "transform":{
                 "kind":"PROPAGATE_TYPED_FIELDS",
                 "fields":["key","label"],
@@ -712,8 +720,7 @@ mod tests {
                     "newContract":"ChangePayload",
                     "newProjection":"SelectedRecord",
                     "imports":[]
-                },
-                "test":{"expected":"expected","occurrence":1}
+                }
             }
         })
     }

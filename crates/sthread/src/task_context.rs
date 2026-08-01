@@ -639,21 +639,20 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "transientTransform":{
                 "available":transient_transform_available,
                 "kind":"PROPAGATE_TYPED_FIELDS",
-                "schema":"semantic-task-goal/0.3",
+                "schema":"semantic-task-goal/0.4",
                 "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
                 "goalShape":{
-                    "schema":"semantic-task-goal/0.3",
+                    "schema":"semantic-task-goal/0.4",
                     "baseRevision":base_revision,
                     "transform":{
                         "kind":"PROPAGATE_TYPED_FIELDS",
                         "fields":projection_fields.iter().filter_map(|field|field["name"].as_str()).collect::<Vec<_>>(),
-                        "names":{"newContract":"<new identifier>","newProjection":"<new identifier>","imports":["<fully qualified field type import>"]},
-                        "test":{"expected":"<existing test binding>","occurrence":1}
+                        "names":{"newContract":"<new identifier>","newProjection":"<new identifier>","imports":["<fully qualified field type import>"]}
                     }
                 },
-                "required":"transform.kind/fields; names.newContract/newProjection/imports; test.expected/occurrence",
+                "required":"transform.kind/fields; names.newContract/newProjection/imports",
                 "constraints":["newContract and newProjection must be distinct new top-level identifiers", "do not restate or rename resolved graph bindings"],
-                "instruction":"Copy goalShape and replace placeholders. The worker derives data-source, collection, loop item, identity field, identity argument, and payload parameter from full resolved evidence. Never supply existing contract names, source text, substitutions, target IDs, or occurrences outside test."
+                "instruction":"Copy goalShape and replace only its type-name/import placeholders. The worker derives data-source, collection, loop item, sink bindings, identity field, and anchored test binding from full resolved evidence. Never add graph bindings, existing contract names, source text, substitutions, target IDs, or occurrence counts."
             },
             "instruction":"Use transientTransform when available. Otherwise use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
