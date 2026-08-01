@@ -51,8 +51,19 @@ impl AgentContextSelection {
         self.declarations
             .iter()
             .filter(|selected| {
-                selected.match_kinds.len() > 1 || !selected.match_kinds.contains("file-alias")
+                !selected.match_kinds.contains("semantic-dependency")
+                    && (selected.match_kinds.len() > 1
+                        || !selected.match_kinds.contains("file-alias"))
             })
+            .filter_map(|selected| selected.declaration["name"].as_str())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn dependency_symbols(&self) -> BTreeSet<String> {
+        self.declarations
+            .iter()
+            .filter(|selected| selected.match_kinds.contains("semantic-dependency"))
             .filter_map(|selected| selected.declaration["name"].as_str())
             .map(str::to_owned)
             .collect()
@@ -118,6 +129,44 @@ pub fn select(
                 entry.matched_terms.insert(term);
                 entry.match_kinds.insert(kind);
             }
+        }
+    }
+
+    let dependency_names = selected
+        .values()
+        .flat_map(|selected| declaration_type_names(&selected.declaration))
+        .collect::<BTreeSet<_>>();
+    for file in index_facts["files"].as_array().into_iter().flatten() {
+        let path = file["path"].as_str().unwrap_or_default();
+        let Some(source) = sources.get(path) else {
+            continue;
+        };
+        for declaration in file["declarations"].as_array().into_iter().flatten() {
+            let name = declaration["name"].as_str().unwrap_or_default();
+            let kind = declaration["kind"].as_str().unwrap_or_default();
+            if !kind.contains("Class") || !dependency_names.contains(name) {
+                continue;
+            }
+            let id = declaration["declarationId"]
+                .as_str()
+                .unwrap_or(name)
+                .to_owned();
+            selected.entry(id).or_insert_with(|| {
+                let start = declaration["rangeStart"].as_u64().unwrap_or_default() as usize;
+                let end = declaration["rangeEnd"].as_u64().unwrap_or_default() as usize;
+                let (byte_start, byte_end) = utf16_range_to_bytes(source, start, end);
+                SelectedDeclaration {
+                    declaration: declaration.clone(),
+                    matched_terms: BTreeSet::new(),
+                    match_kinds: BTreeSet::from(["semantic-dependency".to_owned()]),
+                    source_text: source
+                        .get(byte_start..byte_end)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    line_start: line_number(source, byte_start),
+                    line_end: line_number(source, byte_end),
+                }
+            });
         }
     }
 
@@ -200,7 +249,13 @@ pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), SthreadErro
         .collect::<Vec<_>>();
     let matched_symbols = selection.reference_symbols();
     let references = collect_references(selection, terms, &matched_symbols);
-    let tests = collect_tests(selection, terms, &matched_symbols);
+    let tests = collect_tests(
+        selection,
+        terms,
+        &matched_symbols,
+        &selection.dependency_symbols(),
+    );
+    let file_headers = collect_file_headers(selection);
     let mut matched_terms = selection
         .declarations
         .iter()
@@ -251,6 +306,7 @@ pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), SthreadErro
             "compilation": compilation,
         },
         "declarations": declarations,
+        "fileHeaders": file_headers,
         "references": references,
         "tests": tests,
         "validationPlan": {
@@ -313,9 +369,54 @@ fn declaration_rank(selected: &SelectedDeclaration) -> usize {
         1
     } else if selected.match_kinds.contains("file-alias") {
         2
-    } else {
+    } else if selected.match_kinds.contains("name-prefix") {
         3
+    } else {
+        4
     }
+}
+
+fn declaration_type_names(declaration: &Value) -> Vec<String> {
+    ["receiverTypes", "parameterTypes"]
+        .into_iter()
+        .flat_map(|key| {
+            declaration["symbolIdentity"][key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+        })
+        .chain(declaration["symbolIdentity"]["returnType"].as_str())
+        .flat_map(|type_name| {
+            type_name
+                .split(|character: char| !is_kotlin_identifier_part(character))
+                .filter(|part| part.chars().next().is_some_and(char::is_uppercase))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|name| {
+            !matches!(
+                name.as_str(),
+                "Any"
+                    | "Array"
+                    | "Boolean"
+                    | "Double"
+                    | "Float"
+                    | "Int"
+                    | "Iterable"
+                    | "List"
+                    | "Long"
+                    | "Map"
+                    | "Nothing"
+                    | "Number"
+                    | "Sequence"
+                    | "Set"
+                    | "Short"
+                    | "String"
+                    | "Unit"
+            )
+        })
+        .collect()
 }
 
 fn compact_declaration(selected: &SelectedDeclaration, anchor: Option<&Value>) -> Value {
@@ -346,16 +447,7 @@ fn compact_declaration(selected: &SelectedDeclaration, anchor: Option<&Value>) -
 
 fn compact_anchor(anchor: &Value) -> Value {
     let mut compact = Map::new();
-    for key in [
-        "anchorId",
-        "fileId",
-        "rangeHint",
-        "syntaxKind",
-        "ownerSymbolId",
-        "ownerSignatureHash",
-        "exactTextHash",
-        "normalizedTokenHash",
-    ] {
+    for key in ["anchorId", "fileId", "rangeHint", "syntaxKind"] {
         if let Some(value) = anchor.get(key) {
             compact.insert(key.to_owned(), value.clone());
         }
@@ -419,6 +511,7 @@ fn collect_tests(
     selection: &AgentContextSelection,
     terms: &[String],
     symbols: &BTreeSet<String>,
+    dependency_symbols: &BTreeSet<String>,
 ) -> Vec<Value> {
     let needles = terms
         .iter()
@@ -428,11 +521,23 @@ fn collect_tests(
         .collect::<BTreeSet<_>>();
     let mut tests = Vec::new();
     for file in selection.files.iter().filter(|file| file.is_test) {
-        let matched = needles
+        let mut matched = needles
             .iter()
             .filter(|needle| contains_kotlin_name(&file.source, needle))
             .cloned()
             .collect::<Vec<_>>();
+        let file_stem = Path::new(&file.path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        matched.extend(
+            dependency_symbols
+                .iter()
+                .filter(|symbol| common_prefix_len(file_stem, symbol) >= 8)
+                .cloned(),
+        );
+        matched.sort();
+        matched.dedup();
         if matched.is_empty() {
             continue;
         }
@@ -452,10 +557,46 @@ fn collect_tests(
             "path": file.path,
             "matched": matched,
             "relevantLines": relevant_lines,
+            "sourceText": truncate_utf8(&file.source, 1_200).0,
         }));
     }
     tests.truncate(MAX_TEST_FILES);
     tests
+}
+
+fn collect_file_headers(selection: &AgentContextSelection) -> Vec<Value> {
+    let selected_files = selection
+        .declarations
+        .iter()
+        .filter_map(|selected| selected.declaration["file"].as_str())
+        .collect::<BTreeSet<_>>();
+    selection
+        .files
+        .iter()
+        .filter(|file| selected_files.contains(file.path.as_str()))
+        .filter_map(|file| {
+            let header = file
+                .source
+                .lines()
+                .take_while(|line| {
+                    let trimmed = line.trim();
+                    trimmed.is_empty()
+                        || trimmed.starts_with("package ")
+                        || trimmed.starts_with("import ")
+                        || trimmed.starts_with("//")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!header.is_empty()).then(|| json!({"file":file.path,"sourceText":header}))
+        })
+        .collect()
+}
+
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left.eq_ignore_ascii_case(right))
+        .count()
 }
 
 fn scan_kotlin_sources(repo: &Path) -> Result<Vec<SourceFile>, SthreadError> {
