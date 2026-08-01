@@ -32,17 +32,44 @@ struct Candidate {
 }
 
 #[derive(Clone, Debug)]
+struct TaskRequirement {
+    term: String,
+    kind: String,
+    candidate_ids: Vec<String>,
+    satisfied: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct TaskContextSelection {
     files: Vec<SourceFile>,
     catalog: Vec<Candidate>,
     intent_tokens: BTreeSet<String>,
     goal_tokens: BTreeSet<String>,
     explicit_owners: BTreeSet<String>,
+    requirements: Vec<TaskRequirement>,
+    required_candidate_ids: BTreeSet<String>,
+    entrypoint_candidate_ids: BTreeSet<String>,
+    explicit_candidate_ids: BTreeSet<String>,
+    requires_tests: bool,
 }
 
 impl TaskContextSelection {
     pub fn root_symbols(&self, limit: usize) -> Vec<String> {
-        let mut roots = Vec::new();
+        let mut roots = Vec::<String>::new();
+        // A named entrypoint is the execution boundary of the task. Exact
+        // declarations remain mandatory edit surfaces, but they must not
+        // displace the entrypoint from the bounded semantic graph.
+        roots.extend(self.catalog.iter().filter_map(|candidate| {
+            let id = candidate.declaration["declarationId"].as_str()?;
+            self.entrypoint_candidate_ids
+                .contains(id)
+                .then(|| {
+                    candidate.declaration["legacySymbolId"]
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .flatten()
+        }));
         // An explicitly named owner is the strongest task boundary. Prefer its
         // goal-bearing member over helper functions that happen to be terms;
         // the call graph closes over those helpers without spending another
@@ -99,7 +126,7 @@ impl TaskContextSelection {
                         .unwrap_or_default()
                 })
             {
-                roots.push(symbol);
+                roots.push(symbol.to_owned());
             }
         }
         let mut ranked = self
@@ -113,15 +140,15 @@ impl TaskContextSelection {
             })
             .collect::<Vec<_>>();
         ranked.sort_by_key(|candidate| Reverse(root_candidate_rank(candidate, self)));
-        roots.extend(
-            ranked
-                .into_iter()
-                .filter_map(|candidate| candidate.declaration["legacySymbolId"].as_str()),
-        );
-        let mut unique = Vec::new();
+        roots.extend(ranked.into_iter().filter_map(|candidate| {
+            candidate.declaration["legacySymbolId"]
+                .as_str()
+                .map(str::to_owned)
+        }));
+        let mut unique = Vec::<String>::new();
         for root in roots {
-            if !unique.iter().any(|existing| existing == root) {
-                unique.push(root.to_owned());
+            if !unique.iter().any(|existing| existing == &root) {
+                unique.push(root);
             }
             if unique.len() >= limit {
                 break;
@@ -329,13 +356,148 @@ pub fn select(
             catalog.push(candidate.clone());
         }
     }
+    let (requirements, required_candidate_ids, entrypoint_candidate_ids, explicit_candidate_ids) =
+        derive_requirements(&files, &catalog, terms);
     Ok(TaskContextSelection {
         files,
         catalog,
         intent_tokens,
         goal_tokens,
         explicit_owners,
+        requirements,
+        required_candidate_ids,
+        entrypoint_candidate_ids,
+        explicit_candidate_ids,
+        requires_tests: intent_requests_tests(intent),
     })
+}
+
+fn derive_requirements(
+    files: &[SourceFile],
+    catalog: &[Candidate],
+    terms: &[String],
+) -> (
+    Vec<TaskRequirement>,
+    BTreeSet<String>,
+    BTreeSet<String>,
+    BTreeSet<String>,
+) {
+    let mut requirements = Vec::new();
+    let mut required = BTreeSet::new();
+    let mut entrypoints = BTreeSet::new();
+    let mut explicit = BTreeSet::new();
+    for term in terms {
+        let exact = catalog
+            .iter()
+            .filter(|candidate| is_surface_declaration(candidate))
+            .filter(|candidate| {
+                candidate.declaration["name"]
+                    .as_str()
+                    .is_some_and(|name| name == term)
+            })
+            .collect::<Vec<_>>();
+        if !exact.is_empty() {
+            let ids = exact
+                .iter()
+                .filter_map(|candidate| candidate_id(candidate))
+                .collect::<Vec<_>>();
+            required.extend(ids.iter().cloned());
+            explicit.extend(ids.iter().cloned());
+            requirements.push(TaskRequirement {
+                term: term.clone(),
+                kind: "EXPLICIT_DECLARATION".into(),
+                candidate_ids: ids,
+                satisfied: true,
+            });
+            continue;
+        }
+
+        let matching_paths = files
+            .iter()
+            .filter(|file| {
+                Path::new(&file.path)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| stem.eq_ignore_ascii_case(term))
+            })
+            .map(|file| file.path.as_str())
+            .collect::<BTreeSet<_>>();
+        if !matching_paths.is_empty() {
+            let in_file = catalog
+                .iter()
+                .filter(|candidate| is_surface_declaration(candidate))
+                .filter(|candidate| {
+                    candidate.declaration["file"]
+                        .as_str()
+                        .is_some_and(|path| matching_paths.contains(path))
+                })
+                .collect::<Vec<_>>();
+            let main = in_file.iter().copied().find(|candidate| {
+                candidate.declaration["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "main")
+            });
+            let selected = main.or_else(|| {
+                in_file
+                    .iter()
+                    .copied()
+                    .max_by_key(|candidate| (candidate.score, candidate.source_text.len()))
+            });
+            let ids = selected
+                .into_iter()
+                .filter_map(candidate_id)
+                .collect::<Vec<_>>();
+            required.extend(ids.iter().cloned());
+            if main.is_some() {
+                entrypoints.extend(ids.iter().cloned());
+            } else {
+                explicit.extend(ids.iter().cloned());
+            }
+            requirements.push(TaskRequirement {
+                term: term.clone(),
+                kind: if main.is_some() {
+                    "ENTRYPOINT_FILE"
+                } else {
+                    "FILE_SURFACE"
+                }
+                .into(),
+                satisfied: !ids.is_empty(),
+                candidate_ids: ids,
+            });
+            continue;
+        }
+
+        let lower = term.to_lowercase();
+        let satisfied = files.iter().any(|file| {
+            file.path.to_lowercase().contains(&lower) || file.source.to_lowercase().contains(&lower)
+        });
+        requirements.push(TaskRequirement {
+            term: term.clone(),
+            kind: "EVIDENCE_TERM".into(),
+            candidate_ids: Vec::new(),
+            satisfied,
+        });
+    }
+    (requirements, required, entrypoints, explicit)
+}
+
+fn candidate_id(candidate: &Candidate) -> Option<String> {
+    candidate.declaration["declarationId"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn is_surface_declaration(candidate: &Candidate) -> bool {
+    candidate.declaration["kind"]
+        .as_str()
+        .is_some_and(|kind| kind.contains("Function") || kind.contains("Class"))
+}
+
+fn intent_requests_tests(intent: &str) -> bool {
+    let lower = intent.to_lowercase();
+    ["test", "coverage", "@displayname", "тест", "покрыт"]
+        .into_iter()
+        .any(|needle| lower.contains(needle))
 }
 
 fn looks_like_constant(term: &str) -> bool {
@@ -506,7 +668,22 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
     let contract_declarations =
         collect_contracts(index_facts, selection, resolutions, &call_declarations);
     let projection_fields = collect_projection_fields(selection, &call_declarations);
-    let mut edit_candidates = root_candidates.clone();
+    let required_candidates = selection
+        .catalog
+        .iter()
+        .filter(|candidate| {
+            candidate_id(candidate).is_some_and(|id| selection.required_candidate_ids.contains(&id))
+        })
+        .collect::<Vec<_>>();
+    let required_surface_overflow = required_candidates.len().saturating_sub(MAX_EDIT_SURFACES);
+    let mut edit_candidates = required_candidates.clone();
+    for candidate in &root_candidates {
+        if !edit_candidates.iter().any(|existing| {
+            existing.declaration["declarationId"] == candidate.declaration["declarationId"]
+        }) {
+            edit_candidates.push(candidate);
+        }
+    }
     for candidate in &call_declarations {
         if !edit_candidates.iter().any(|existing| {
             existing.declaration["declarationId"] == candidate.declaration["declarationId"]
@@ -515,10 +692,20 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         }
     }
     edit_candidates.sort_by_key(|candidate| {
-        Reverse(surface_rank(
-            candidate,
-            &root_symbols,
-            &selection.intent_tokens,
+        let id = candidate.declaration["declarationId"]
+            .as_str()
+            .unwrap_or_default();
+        Reverse((
+            usize::from(selection.entrypoint_candidate_ids.contains(id)) * 4
+                + usize::from(selection.explicit_candidate_ids.contains(id)) * 3
+                + usize::from(
+                    root_symbols.contains(
+                        candidate.declaration["legacySymbolId"]
+                            .as_str()
+                            .unwrap_or_default(),
+                    ),
+                ) * 2,
+            surface_rank(candidate, &root_symbols, &selection.intent_tokens),
         ))
     });
     edit_candidates.truncate(MAX_EDIT_SURFACES);
@@ -547,7 +734,15 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
                         .unwrap_or_default(),
                 ),
             );
-            let role = if root_candidates.first().is_some_and(|root| {
+            let id = candidate.declaration["declarationId"]
+                .as_str()
+                .unwrap_or_default();
+            let required = selection.required_candidate_ids.contains(id);
+            let role = if selection.entrypoint_candidate_ids.contains(id) {
+                "WORKFLOW"
+            } else if selection.explicit_candidate_ids.contains(id) {
+                "EXPLICIT_TARGET"
+            } else if root_candidates.first().is_some_and(|root| {
                 root.declaration["declarationId"] == candidate.declaration["declarationId"]
             }) {
                 "WORKFLOW"
@@ -563,6 +758,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
                 "DEPENDENCY"
             };
             surface["role"] = json!(role);
+            surface["required"] = json!(required);
             surface["surfaceOrder"] = json!(index + 1);
             surface
         })
@@ -579,7 +775,12 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         .collect::<Vec<_>>();
     let execution_path = collect_execution_path(resolutions, index_facts, selection);
     let test_needles = task_needles(terms, intent, &root_candidates, &edit_candidates, selection);
-    let tests = collect_anchored_tests(selection, &test_needles);
+    let mut tests = collect_anchored_tests(selection, &test_needles);
+    if selection.requires_tests {
+        for test in &mut tests {
+            test["required"] = json!(true);
+        }
+    }
     let validation_plan = validation_plan(project, &tests);
     let matched_terms = terms
         .iter()
@@ -605,6 +806,53 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
     if missing_internal_calls > 0 {
         boundaries.push(json!({"kind":"UNRESOLVED_INTERNAL_CALLS","count":missing_internal_calls}));
     }
+    for requirement in selection
+        .requirements
+        .iter()
+        .filter(|requirement| !requirement.satisfied)
+    {
+        boundaries.push(json!({"kind":"UNSATISFIED_REQUIREMENT","term":requirement.term,"requirementKind":requirement.kind}));
+    }
+    if required_surface_overflow > 0 {
+        boundaries.push(json!({"kind":"REQUIRED_SURFACE_LIMIT","omitted":required_surface_overflow,"limit":MAX_EDIT_SURFACES}));
+    }
+    if selection.requires_tests && tests.is_empty() {
+        boundaries.push(json!({"kind":"MISSING_TEST_SURFACE"}));
+    }
+    let requirements = selection
+        .requirements
+        .iter()
+        .map(|requirement| {
+            let matches = requirement
+                .candidate_ids
+                .iter()
+                .filter_map(|id| {
+                    selection.catalog.iter().find(|candidate| {
+                        candidate.declaration["declarationId"].as_str() == Some(id)
+                    })
+                })
+                .map(|candidate| {
+                    json!({
+                        "name":candidate.declaration["name"],
+                        "file":candidate.declaration["file"]
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "term":requirement.term,
+                "kind":requirement.kind,
+                "status":if requirement.satisfied {"SATISFIED"} else {"UNSATISFIED"},
+                "matches":matches
+            })
+        })
+        .chain(selection.requires_tests.then(|| {
+            json!({
+                "kind":"TEST_SURFACE",
+                "status":if tests.is_empty() {"UNSATISFIED"} else {"SATISFIED"},
+                "matches":tests.iter().filter_map(|test|test["path"].as_str()).collect::<Vec<_>>()
+            })
+        }))
+        .collect::<Vec<_>>();
     let thread_id = threads
         .first()
         .map(|thread| thread.thread_id.as_str())
@@ -622,7 +870,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             && !projection_fields.is_empty();
     let full = json!({
         "schema":"semantic-task-context/0.2",
-        "task":{"intent":intent,"terms":terms,"intentTokens":selection.intent_tokens,"matchedTerms":matched_terms,"unmatchedTerms":unmatched_terms},
+        "task":{"intent":intent,"terms":terms,"intentTokens":selection.intent_tokens,"matchedTerms":matched_terms,"unmatchedTerms":unmatched_terms,"requirements":requirements},
         "snapshot":{"baseRevision":base_revision,"projectModelHash":project["projectModelHash"],"indexSnapshot":index_snapshot,"compilerVersion":project["compilerVersion"],"compilation":compilation},
         "threadId":thread_id,
         "editSurfaces":edit_surfaces,
@@ -710,17 +958,44 @@ fn compact_surface(candidate: &Candidate, body_anchor: Option<&Value>) -> Value 
 }
 
 fn compact_contract(candidate: &Candidate) -> Value {
-    let (source_text, truncated, omitted) = truncate_utf8(&candidate.source_text, MAX_SOURCE_BYTES);
+    let source_text = declaration_header(&candidate.source_text);
     json!({
         "name":candidate.declaration["name"],
         "kind":candidate.declaration["kind"],
         "file":candidate.declaration["file"],
         "lines":[candidate.line_start,candidate.line_end],
         "sourceText":source_text,
-        "sourceTruncated":truncated,
-        "sourceBytesOmitted":omitted,
+        "sourceProjection":"DECLARATION_HEADER",
         "declarationTarget":declaration_target(candidate)
     })
+}
+
+fn declaration_header(source: &str) -> String {
+    let mut parentheses = 0isize;
+    let mut seen_declaration = false;
+    for (offset, character) in source.char_indices() {
+        match character {
+            '(' => parentheses += 1,
+            ')' => parentheses -= 1,
+            '{' if seen_declaration && parentheses <= 0 => {
+                return compact_header_text(&source[..offset]);
+            }
+            _ => {}
+        }
+        if character.is_alphabetic() {
+            seen_declaration = true;
+        }
+    }
+    compact_header_text(source)
+}
+
+fn compact_header_text(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code).trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn declaration_target(candidate: &Candidate) -> Value {
@@ -1043,8 +1318,17 @@ fn collect_execution_path(
             let target_candidate = selection.catalog.iter().find(|candidate| {
                 candidate.declaration["declarationId"] == target["declarationId"]
             });
+            // Syntax-index and K2 declaration ids intentionally use different
+            // snapshots. Join them by normalized symbol identity, not by an
+            // implementation-specific id, when recognizing resolved roots.
+            let target_legacy =
+                normalize_symbol(target["legacySymbolId"].as_str().unwrap_or_default());
             let root_target = resolutions.iter().any(|candidate| {
-                candidate["declaration"]["declarationId"] == target["declarationId"]
+                candidate
+                    .pointer("/declaration/legacySymbolId")
+                    .and_then(Value::as_str)
+                    .map(normalize_symbol)
+                    .is_some_and(|root| symbol_matches_declaration(&root, &target_legacy, target))
             });
             let rank = target_candidate.map_or(0, |candidate| {
                 call_declaration_rank(candidate, &selection.intent_tokens)
@@ -1716,6 +2000,21 @@ mod tests {
         }
     }
 
+    fn selection(catalog: Vec<Candidate>) -> TaskContextSelection {
+        TaskContextSelection {
+            files: Vec::new(),
+            catalog,
+            intent_tokens: BTreeSet::new(),
+            goal_tokens: BTreeSet::new(),
+            explicit_owners: BTreeSet::new(),
+            requirements: Vec::new(),
+            required_candidate_ids: BTreeSet::new(),
+            entrypoint_candidate_ids: BTreeSet::new(),
+            explicit_candidate_ids: BTreeSet::new(),
+            requires_tests: false,
+        }
+    }
+
     #[test]
     fn intent_tokens_split_camel_case_and_keep_payload_fields() {
         let tokens = task_tokens(
@@ -1746,6 +2045,54 @@ mod tests {
     }
 
     #[test]
+    fn named_file_entrypoint_and_disconnected_declarations_are_all_required() {
+        let mut boot = function_candidate("main");
+        boot.declaration["declarationId"] = json!("declaration:boot");
+        boot.declaration["legacySymbolId"] = json!("com.acme.Runner.main");
+        boot.declaration["file"] = json!("src/main/kotlin/com/acme/Runner.kt");
+        boot.score = 1;
+        let mut read_options = function_candidate("readOptions");
+        read_options.score = 500;
+        let mut apply_options = function_candidate("applyOptions");
+        apply_options.score = 400;
+        let files = vec![
+            SourceFile {
+                path: "src/main/kotlin/com/acme/Runner.kt".into(),
+                source: "fun main() = Unit".into(),
+                is_test: false,
+            },
+            SourceFile {
+                path: "src/main/kotlin/com/acme/Service.kt".into(),
+                source: "fun readOptions() = Unit\nfun applyOptions() = Unit".into(),
+                is_test: false,
+            },
+        ];
+        let catalog = vec![boot, read_options, apply_options];
+        let (requirements, required, entrypoints, explicit) = derive_requirements(
+            &files,
+            &catalog,
+            &["Runner".into(), "readOptions".into(), "applyOptions".into()],
+        );
+        let mut selected = selection(catalog);
+        selected.requirements = requirements;
+        selected.required_candidate_ids = required;
+        selected.entrypoint_candidate_ids = entrypoints;
+        selected.explicit_candidate_ids = explicit;
+
+        assert_eq!(selected.root_symbols(1), vec!["com.acme.Runner.main"]);
+        assert_eq!(selected.required_candidate_ids.len(), 3);
+        assert!(selected.requirements.iter().all(|item| item.satisfied));
+    }
+
+    #[test]
+    fn test_request_is_language_agnostic_and_explicit() {
+        assert!(intent_requests_tests("add three focused tests"));
+        assert!(intent_requests_tests("добавить регрессионные тесты"));
+        assert!(intent_requests_tests("use human-readable @DisplayName"));
+        assert!(!intent_requests_tests("preserve runtime behavior"));
+    }
+
+    #[test]
     fn primary_root_prefers_rich_goal_evidence_over_a_generic_exact_verb() {
         let mut update = function_candidate("update");
         update.score = 360;
@@ -1756,25 +2103,21 @@ mod tests {
         reconcile.reasons = BTreeSet::from(["intent-name:reconcile".into()]);
         reconcile.source_text =
             "fun reconcile(records: List<Record>) { emit(APPLIED, recordKey, payload) }".into();
-        let selection = TaskContextSelection {
-            files: Vec::new(),
-            catalog: vec![update.clone(), reconcile.clone()],
-            intent_tokens: BTreeSet::from([
-                "reconcile".into(),
-                "applied".into(),
-                "payload".into(),
-                "record".into(),
-                "recordkey".into(),
-            ]),
-            goal_tokens: BTreeSet::from([
-                "reconcile".into(),
-                "applied".into(),
-                "payload".into(),
-                "record".into(),
-                "recordkey".into(),
-            ]),
-            explicit_owners: BTreeSet::new(),
-        };
+        let mut selection = selection(vec![update.clone(), reconcile.clone()]);
+        selection.intent_tokens = BTreeSet::from([
+            "reconcile".into(),
+            "applied".into(),
+            "payload".into(),
+            "record".into(),
+            "recordkey".into(),
+        ]);
+        selection.goal_tokens = BTreeSet::from([
+            "reconcile".into(),
+            "applied".into(),
+            "payload".into(),
+            "record".into(),
+            "recordkey".into(),
+        ]);
 
         assert_eq!(
             selection.root_symbols(1),
@@ -1786,13 +2129,8 @@ mod tests {
     fn follows_the_call_whose_parameter_matches_task_intent() {
         let mut query_candidate = function_candidate("persistBatch");
         query_candidate.source_text = "@Query fun persistBatch() = Unit".into();
-        let selection = TaskContextSelection {
-            files: Vec::new(),
-            catalog: vec![function_candidate("emitChange"), query_candidate],
-            intent_tokens: BTreeSet::from(["subjectid".into()]),
-            goal_tokens: BTreeSet::new(),
-            explicit_owners: BTreeSet::new(),
-        };
+        let mut selection = selection(vec![function_candidate("emitChange"), query_candidate]);
+        selection.intent_tokens = BTreeSet::from(["subjectid".into()]);
         let resolutions = vec![json!({
             "declaration":{"legacySymbolId":"com.acme.Service.run"},
             "resolvedCalls":[
@@ -1837,13 +2175,7 @@ mod tests {
     fn anchored_test_ranking_prefers_the_primary_graph_root() {
         let root = function_candidate("executeChange");
         let helper = function_candidate("emitPayload");
-        let selection = TaskContextSelection {
-            files: Vec::new(),
-            catalog: Vec::new(),
-            intent_tokens: BTreeSet::new(),
-            goal_tokens: BTreeSet::new(),
-            explicit_owners: BTreeSet::new(),
-        };
+        let selection = selection(Vec::new());
 
         let needles = task_needles(
             &[],
