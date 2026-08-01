@@ -547,6 +547,10 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
             .unwrap_or_default()
             .into(),
         compiler_version: worker.capabilities.compiler_version.clone(),
+        build_system: match project["buildSystem"].as_str() {
+            Some("MAVEN") => BuildSystem::Maven,
+            _ => BuildSystem::Gradle,
+        },
         index_snapshot,
         compilation: args.compilation,
         compile_task: project["compileTask"]

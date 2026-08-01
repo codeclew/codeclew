@@ -7,9 +7,10 @@ Executable vertical prototype of a language-neutral Rust semantic core and a ver
 - JDK 21
 - Git
 - `jq` for the reproducible transaction demo
+- Maven on `PATH` for Maven repositories without `./mvnw`
 - Rust is installed automatically according to `rust-toolchain.toml` when rustup is available
 
-Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.21 and 2.4.10 workers are resolved by Gradle, selected automatically from the target project, and `protoc` is vendored by the Rust build.
+Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.21, 2.3.0, and 2.4.10 workers are resolved by Gradle, selected automatically from the target project, and `protoc` is vendored by the Rust build.
 
 ## Quick start
 
@@ -19,6 +20,7 @@ cargo run --bin sthread -- doctor
 cargo run --bin sthread -- project inspect --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic
 cargo run --bin sthread -- index --repo fixtures/kotlin-basic --syntax-only
+cargo run --bin sthread -- project inspect --repo fixtures/kotlin-maven
 cargo run --bin sthread -- agent-context --repo fixtures/kotlin-2-1 \
   --term applyAdaptive --term Adaptive --max-bytes 12288 \
   --evidence .semantic-thread/agent-context.json
@@ -31,11 +33,11 @@ For slicing, preview and commit the target must be a Git repository with a commi
 ./scripts/demo.sh
 ```
 
-The CLI always writes machine-readable canonical JSON to stdout; diagnostics from Gradle, Git, and the JVM go to stderr. Exit codes are stable by error category (`2` input, `3` not found, `4` stale, `5` conflict, `6` validation, `7` worker/protocol).
+The CLI always writes machine-readable canonical JSON to stdout; diagnostics from Gradle, Maven, Git, and the JVM go to stderr. Exit codes are stable by error category (`2` input, `3` not found, `4` stale, `5` conflict, `6` validation, `7` worker/protocol).
 
 ## Supported vertical
 
-- Gradle Kotlin/JVM inspection and project model fingerprinting
+- Gradle Wrapper and single-module Maven Kotlin/JVM inspection with project model fingerprinting
 - §11 PSI declaration/file/semantic facts with typed invalidation persisted in compilation-scoped SQLite WAL/content blobs
 - FQN function and file+offset expression resolution
 - composite semantic anchors with unique replay
@@ -60,6 +62,7 @@ This is intentionally fail-closed. Android, KMP, scripts, reflection, precise co
 - `crates/sthread`: Rust core and CLI
 - `workers/kotlin`: long-lived Kotlin 2.4.10 PSI/compiler worker
 - `workers/kotlin21`: Kotlin 2.1.21 adapter reusing the common worker implementation
+- `workers/kotlin23`: Kotlin 2.3.0 adapter used by Maven/Spring services such as `product-repo`
 - `schemas`: versioned Protobuf contracts
 - `fixtures`: executable Kotlin corpus
 - `docs`: architecture, safety model, protocol, ADRs, and status

@@ -37,7 +37,7 @@ internal class Worker : AutoCloseable {
     private val factory = KtPsiFactory(environment.project, markGenerated = false)
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
     private val analysisCache = mutableMapOf<String, K2Analysis>()
-    private val gradleModelCache = mutableMapOf<String, JsonObject>()
+    private val projectModelCache = mutableMapOf<String, JsonObject>()
     private var requestCacheRequests = 0L
     private var requestCacheHits = 0L
     private var requestPsiParseMicros = 0L
@@ -79,25 +79,32 @@ internal class Worker : AutoCloseable {
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
         require(requestedRepo.isDirectory()) { "repository does not exist: $requestedRepo" }
         val repo = requestedRepo.toRealPath()
-        val gradle = cachedGradleModel(repo, compilation)
+        val buildModel = cachedProjectModel(repo, compilation)
         val modelFiles = projectModelFiles(repo)
-        val sourceFiles = gradle["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
+        val sourceFiles = buildModel["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
         val sourceRoots = sourceFiles.mapNotNull { sourceRoot(repo, it) }.distinct().sorted()
-        val generatedRoots = sourceFiles.filter { it.normalize().startsWith(repo.resolve("build/generated").normalize()) }.map { repo.relativize(it.parent).invariantSeparatorsPathString }.distinct().sorted()
-        val classpath = gradle["classpath"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
-        val plugins = gradle["compilerPlugins"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
-        val compilerVersion = gradle["compilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
+        val generatedRoots = sourceFiles.filter {
+            val normalized = it.normalize()
+            normalized.startsWith(repo.resolve("build/generated").normalize()) ||
+                normalized.startsWith(repo.resolve("target/generated-sources").normalize())
+        }.map { repo.relativize(it.parent).invariantSeparatorsPathString }.distinct().sorted()
+        val classpath = buildModel["classpath"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
+        val plugins = buildModel["compilerPlugins"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
+        val compilerVersion = buildModel["compilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
         val compilerLine = compilerVersion.split('.').take(2).joinToString(".")
         val normalized = buildJsonObject {
-            put("module", gradle["projectPath"] ?: JsonPrimitive(":")); put("sourceSet", compilation?.substringAfterLast('/') ?: "main")
+            put("buildSystem", buildModel["buildSystem"] ?: JsonPrimitive("GRADLE"))
+            put("buildLauncher", buildModel["buildLauncher"] ?: JsonPrimitive("./gradlew"))
+            put("module", buildModel["projectPath"] ?: JsonPrimitive(":")); put("sourceSet", compilation?.substringAfterLast('/') ?: "main")
             putJsonArray("sourceRoots") { sourceRoots.forEach(::add) }; putJsonArray("generatedSourceRoots") { generatedRoots.forEach(::add) }
-            putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { gradle["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.sorted()?.forEach(::add) }
+            putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { buildModel["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.sorted()?.forEach(::add) }
             put("compilerVersion", compilerVersion)
-            put("languageVersion", gradle["languageVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("apiVersion", gradle["apiVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("jvmTarget", gradle["jvmTarget"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
-            putJsonArray("freeCompilerArguments") { gradle["freeCompilerArguments"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
-            putJsonArray("optIns") { gradle["optIns"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }; putJsonArray("compilerPlugins") { plugins.forEach(::add) }
-            put("compileTask", gradle["compileTask"] ?: JsonPrimitive(":compileKotlin")); putJsonArray("testTasks") { gradle["tasks"]?.jsonArray?.map { it.jsonPrimitive.content }?.filter { it == "test" || it.endsWith("Test") }?.sorted()?.forEach(::add) }
-            put("gradleVersion", gradle["gradleVersion"] ?: JsonPrimitive("unknown")); put("jdkHome", gradle["jdkHome"] ?: JsonPrimitive(System.getProperty("java.home")))
+            put("languageVersion", buildModel["languageVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("apiVersion", buildModel["apiVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("jvmTarget", buildModel["jvmTarget"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
+            putJsonArray("freeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
+            putJsonArray("optIns") { buildModel["optIns"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }; putJsonArray("compilerPlugins") { plugins.forEach(::add) }
+            putJsonArray("compilerPluginOptions") { buildModel["compilerPluginOptions"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
+            put("compileTask", buildModel["compileTask"] ?: JsonPrimitive(":compileKotlin")); putJsonArray("testTasks") { buildModel["tasks"]?.jsonArray?.map { it.jsonPrimitive.content }?.filter { it == "test" || it.endsWith("Test") }?.sorted()?.forEach(::add) }
+            put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown")); put("jdkHome", buildModel["jdkHome"] ?: JsonPrimitive(System.getProperty("java.home")))
             putJsonArray("modelInputs") { modelFiles.map { buildJsonObject { put("path", repo.relativize(it).invariantSeparatorsPathString); put("hash", sha(it.readBytes())) } }.sortedBy { it.toString() }.forEach(::add) }
         }
         val modelHash = sha(normalized.toString().toByteArray())
@@ -131,24 +138,42 @@ internal class Worker : AutoCloseable {
         } finally { Files.deleteIfExists(script) }
     }
 
-    private fun cachedGradleModel(repo: Path, compilation: String?): JsonObject {
+    private fun projectModel(repo: Path, compilation: String?): JsonObject {
+        val hasGradle = repo.resolve("gradlew").isRegularFile()
+        val hasMaven = repo.resolve("pom.xml").isRegularFile()
+        if (hasGradle && hasMaven) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "mixed Gradle and Maven repositories are not supported")
+        }
+        return when {
+            hasGradle -> gradleModel(repo, compilation).let { model ->
+                buildJsonObject {
+                    model.forEach(::put)
+                    put("buildSystem", "GRADLE")
+                }
+            }
+            hasMaven -> MavenProjectModelExtractor().extract(repo, compilation)
+            else -> throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper or Maven pom.xml is required")
+        }
+    }
+
+    private fun cachedProjectModel(repo: Path, compilation: String?): JsonObject {
         requestCacheRequests++
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha((listOf("projectModelSchema=2") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
-            Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
+        val inputHash = sha((listOf("projectModelSchema=4") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
+            Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") && !it.invariantSeparatorsPathString.contains("/target/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
-        gradleModelCache[key]?.let { requestCacheHits++; return it }
+        projectModelCache[key]?.let { requestCacheHits++; return it }
         val safeCompilation = (compilation ?: ":/main").replace(Regex("[^A-Za-z0-9]+"), "_")
         val cache = canonicalRepo.resolve(".semantic-thread/cache/project/$safeCompilation-${inputHash.removePrefix("sha256:")}.json")
         if (cache.isRegularFile()) {
             runCatching { json.parseToJsonElement(cache.readText()).jsonObject }.getOrNull()?.let { cached ->
                 val belongsToRepo = cached["sourceFiles"]?.jsonArray?.all { Path.of(it.jsonPrimitive.content).normalize().startsWith(canonicalRepo) } != false
-                if (belongsToRepo) { requestCacheHits++; gradleModelCache[key] = cached; return cached }
+                if (belongsToRepo) { requestCacheHits++; projectModelCache[key] = cached; return cached }
             }
         }
-        val model = gradleModel(canonicalRepo, compilation)
+        val model = projectModel(canonicalRepo, compilation)
         writeCacheAtomically(cache, model.toString())
-        gradleModelCache[key] = model
+        projectModelCache[key] = model
         return model
     }
 
@@ -182,6 +207,7 @@ internal class Worker : AutoCloseable {
             val n = it.fileName.toString()
             n == "settings.gradle" || n == "settings.gradle.kts" || n == "build.gradle" || n == "build.gradle.kts" ||
                 n == "gradle.properties" || n == "libs.versions.toml" || n == "gradle-wrapper.properties" || n == "gradle-wrapper.jar" ||
+                n == "pom.xml" || n == "mvnw" || n == "mvnw.cmd" || relative.startsWith(".mvn/") ||
                 relative.startsWith("buildSrc/") || relative.startsWith("build-logic/") || relative.startsWith("gradle/")
         }.sorted().toList()
     }
@@ -192,7 +218,7 @@ internal class Worker : AutoCloseable {
     }
 
     private fun compilationSourceFiles(repo: Path, compilation: String): List<Path> =
-        cachedGradleModel(repo, compilation)["sourceFiles"]?.jsonArray
+        cachedProjectModel(repo, compilation)["sourceFiles"]?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
             ?.filter(Path::isRegularFile)
             ?.sorted()
@@ -201,7 +227,7 @@ internal class Worker : AutoCloseable {
     private fun analyzeWithK2(repo: Path, overrides: Map<String, String> = emptyMap(), compilation: String = ":/main"): K2Analysis {
         requestCacheRequests++
         val analysisRepo = repo.toRealPath()
-        val model = cachedGradleModel(analysisRepo, compilation)
+        val model = cachedProjectModel(analysisRepo, compilation)
         val sources = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
         val cacheMaterial = buildString {
             append("factsPluginSchema=3\u0000")
@@ -216,7 +242,7 @@ internal class Worker : AutoCloseable {
                     append(artifact.toAbsolutePath().normalize()).append(':').append(artifactFingerprint(artifact)).append('\u0000')
                 }
             }
-            for (field in listOf("languageVersion", "apiVersion", "jvmTarget", "freeCompilerArguments", "optIns")) {
+            for (field in listOf("languageVersion", "apiVersion", "jvmTarget", "freeCompilerArguments", "optIns", "compilerPluginOptions")) {
                 append(field).append('=').append(model[field]).append('\u0000')
             }
         }
@@ -255,6 +281,9 @@ internal class Worker : AutoCloseable {
             model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }?.let(command::addAll)
             model["optIns"]?.jsonArray?.map { "-opt-in=${it.jsonPrimitive.content}" }?.let(command::addAll)
             model["compilerPlugins"]?.jsonArray?.map { "-Xplugin=${it.jsonPrimitive.content}" }?.let(command::addAll)
+            model["compilerPluginOptions"]?.jsonArray?.map { option ->
+                listOf("-P", option.jsonPrimitive.content)
+            }?.flatten()?.let(command::addAll)
             command += listOf("-Xplugin=$plugin", "-P", "plugin:$FACTS_PLUGIN_ID:output=$factsFile")
             command += sourceArgs.map(Path::toString)
             val compilerOutput = ByteArrayOutputStream()
@@ -301,7 +330,7 @@ internal class Worker : AutoCloseable {
     private fun index(requestedRepo: Path, compilation: String?, syntaxOnly: Boolean = false, requestedFiles: List<String> = emptyList()): JsonObject {
         val repo = requestedRepo.toRealPath()
         val selected = compilation ?: ":/main"
-        val model = cachedGradleModel(repo, selected)
+        val model = cachedProjectModel(repo, selected)
         val project = inspect(repo, selected)
         val module = project["module"]?.jsonPrimitive?.content.orEmpty()
         val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: selected.substringAfterLast('/')
@@ -339,7 +368,7 @@ internal class Worker : AutoCloseable {
         return buildJsonObject {
             put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requested.isNotEmpty()); put("analysisMode", if (syntaxOnly) "SYNTAX_DECLARATIONS" else "K2_SEMANTIC"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
             put("projectModelHash", project["projectModelHash"]!!); put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
-            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!) }.toString().toByteArray()))
+            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
         }
     }
@@ -831,7 +860,7 @@ internal class Worker : AutoCloseable {
             put("schema", "local-cfg/0.1"); put("symbol", owner); put("file", file); put("graphSource", "K2_FIR_CFG")
             putJsonArray("nodes") { (normalizedNodes + parameterNodes + captureNodes).forEach(::add) }; putJsonArray("edges") { (normalizedEdges + callEdges).distinctBy { it.toString() }.forEach(::add) }; putJsonArray("boundaries") {}
             putJsonArray("diagnostics") { normalizedDiagnostics(analysis.diagnostics).forEach(::add) }
-            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!) }.toString().toByteArray()))
+            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
             put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
             putJsonArray("inheritanceFacts") { inheritance.forEach(::add) }
             put("firCfgHash", sha(cfg.toString().toByteArray()))

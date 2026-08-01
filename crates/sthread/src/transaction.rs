@@ -450,11 +450,13 @@ pub fn commit(
         };
         let (compile_duration_ms, test_duration_ms) = validate_worktree(
             &worktree_path,
+            transaction.thread.snapshot.build_system,
             &transaction.thread.snapshot.compile_task,
             configured_test_tasks,
         )?;
         transaction.validation_evidence.push(json!({
-            "kind":"GRADLE",
+            "kind":"BUILD",
+            "buildSystem":transaction.thread.snapshot.build_system,
             "compileTask":transaction.thread.snapshot.compile_task,
             "testTasks":configured_test_tasks,
             "compileDurationMs":compile_duration_ms,
@@ -751,6 +753,7 @@ fn revalidate_semantic_read_set(
             .unwrap_or_default()
             .into(),
         compiler_version: transaction.thread.snapshot.compiler_version.clone(),
+        build_system: transaction.thread.snapshot.build_system,
         index_snapshot: transaction.thread.snapshot.index_snapshot.clone(),
         compilation: transaction.thread.snapshot.compilation.clone(),
         compile_task: transaction.thread.snapshot.compile_task.clone(),
@@ -827,23 +830,27 @@ fn revalidate_semantic_read_set(
 
 fn validate_worktree(
     worktree: &Path,
+    build_system: BuildSystem,
     compile_task: &str,
     tests: &[String],
 ) -> Result<(u64, u64), SthreadError> {
     let compile_started = std::time::Instant::now();
-    let output = Command::new(worktree.join("gradlew"))
-        .arg(compile_task)
-        .arg("--no-daemon")
-        .arg("--quiet")
-        .current_dir(worktree)
-        .output()
-        .map_err(io_error)?;
+    let mut compile = build_command(worktree, build_system);
+    match build_system {
+        BuildSystem::Gradle => {
+            compile.arg(compile_task).arg("--no-daemon").arg("--quiet");
+        }
+        BuildSystem::Maven => {
+            compile.args(["-q", "-DskipTests", compile_task]);
+        }
+    }
+    let output = compile.current_dir(worktree).output().map_err(io_error)?;
     let compile_duration_ms = compile_started.elapsed().as_millis() as u64;
     log_output(&output);
     if !output.status.success() {
         let mut error = SthreadError::new(
             ErrorCode::CompileFailed,
-            format!("candidate worktree Gradle compile task {compile_task} failed"),
+            format!("candidate worktree {build_system:?} compile task {compile_task} failed"),
         );
         error
             .evidence
@@ -854,13 +861,17 @@ fn validate_worktree(
         return Ok((compile_duration_ms, 0));
     }
     let test_started = std::time::Instant::now();
-    let output = Command::new(worktree.join("gradlew"))
-        .args(tests)
-        .arg("--no-daemon")
-        .arg("--quiet")
-        .current_dir(worktree)
-        .output()
-        .map_err(io_error)?;
+    let mut test = build_command(worktree, build_system);
+    test.args(tests);
+    match build_system {
+        BuildSystem::Gradle => {
+            test.arg("--no-daemon").arg("--quiet");
+        }
+        BuildSystem::Maven => {
+            test.arg("-q");
+        }
+    }
+    let output = test.current_dir(worktree).output().map_err(io_error)?;
     let test_duration_ms = test_started.elapsed().as_millis() as u64;
     log_output(&output);
     if output.status.success() {
@@ -881,6 +892,15 @@ fn validate_worktree(
             .push(format!("gradleTestDurationMs={test_duration_ms}"));
         Err(error)
     }
+}
+
+fn build_command(worktree: &Path, build_system: BuildSystem) -> Command {
+    let launcher = match build_system {
+        BuildSystem::Gradle => worktree.join("gradlew"),
+        BuildSystem::Maven if worktree.join("mvnw").is_file() => worktree.join("mvnw"),
+        BuildSystem::Maven => PathBuf::from("mvn"),
+    };
+    Command::new(launcher)
 }
 
 pub struct Ledger {
@@ -1247,4 +1267,21 @@ fn db_error(e: rusqlite::Error) -> SthreadError {
 }
 fn internal(e: anyhow::Error) -> SthreadError {
     SthreadError::new(ErrorCode::Internal, e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BuildSystem, validate_worktree};
+    use std::path::Path;
+
+    #[test]
+    fn validates_maven_compile_and_tests() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("fixtures/kotlin-maven");
+
+        let result = validate_worktree(&fixture, BuildSystem::Maven, "compile", &["test".into()]);
+
+        assert!(result.is_ok(), "{result:?}");
+    }
 }
