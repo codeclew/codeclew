@@ -239,6 +239,14 @@ fn agent_context_renders_maven_targeted_test_command() {
         String::from_utf8_lossy(&output.stderr)
     );
     let context: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let published_task_index = RepositoryIndex::open_compilation(&fixture, Some(":/main"))
+        .unwrap()
+        .hash()
+        .unwrap();
+    assert_eq!(
+        published_task_index.as_deref(),
+        context["snapshot"]["indexSnapshot"].as_str()
+    );
     assert_eq!(context["validationPlan"]["buildSystem"], "MAVEN");
     assert_eq!(
         context["validationPlan"]["targetedArgs"],

@@ -50,6 +50,12 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
     );
     assert!(context.get("references").is_none());
     assert_eq!(context["editPlan"]["schema"], "semantic-task-edit-plan/0.1");
+    assert!(
+        context["editPlan"]["instruction"]
+            .as_str()
+            .unwrap()
+            .contains("exactly one declaration")
+    );
     let stored: Value = serde_json::from_slice(&std::fs::read(evidence).unwrap()).unwrap();
     assert_eq!(stored["schema"], "semantic-task-context-evidence/0.2");
     assert_eq!(stored["stdoutCompleteness"]["status"], "COMPLETE_TASK");
