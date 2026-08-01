@@ -776,7 +776,11 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
                 surface.declaration["declarationId"] == contract.declaration["declarationId"]
             })
         })
-        .take(MAX_CONTRACTS)
+        .take(if selection.explicit_candidate_ids.is_empty() {
+            1
+        } else {
+            MAX_CONTRACTS
+        })
         .map(|candidate| compact_contract(candidate))
         .collect::<Vec<_>>();
     let execution_path = collect_execution_path(resolutions, index_facts, selection);

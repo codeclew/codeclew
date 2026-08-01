@@ -1350,42 +1350,58 @@ fn inject_explicit_target_imports(plan: &mut Value, context: &Value) -> Result<(
             let top_level = identity["containingDeclarations"]
                 .as_array()
                 .is_some_and(Vec::is_empty);
+            let is_extension = identity["receiverTypes"]
+                .as_array()
+                .is_some_and(|receivers| !receivers.is_empty());
             (!name.is_empty() && !package.is_empty() && top_level).then(|| {
                 (
                     name.to_owned(),
                     format!("{package}.{name}"),
                     package.to_owned(),
+                    is_extension,
                 )
             })
         })
         .collect::<Vec<_>>();
     let mut expanded = Vec::new();
     let mut inserted = std::collections::BTreeSet::new();
-    for operation in operations {
+    for original in operations {
+        let mut operation = original.clone();
         if operation["kind"] == "REWRITE_DECLARATION" {
             let file = operation
                 .pointer("/target/fileId")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_owned();
             let target_package = file
                 .split_once("/kotlin/")
                 .and_then(|(_, relative)| relative.rsplit_once('/'))
                 .map(|(package, _)| package.replace('/', "."))
                 .unwrap_or_default();
-            let replacements = operation
-                .pointer("/preconditions/substitutions")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|substitution| substitution["new"].as_str())
-                .collect::<Vec<_>>();
-            for (name, fq_name, package) in &explicit_targets {
-                let needs_import = replacements.iter().any(|replacement| {
-                    contains_identifier(&replacement.replace(fq_name, ""), name)
-                });
+            for (name, fq_name, package, is_extension) in &explicit_targets {
+                let mut needs_import = false;
+                for substitution in operation
+                    .pointer_mut("/preconditions/substitutions")
+                    .and_then(Value::as_array_mut)
+                    .into_iter()
+                    .flatten()
+                {
+                    let Some(replacement) = substitution["new"].as_str() else {
+                        continue;
+                    };
+                    needs_import |=
+                        replacement.contains(fq_name) || contains_identifier(replacement, name);
+                    if replacement.contains(fq_name) {
+                        substitution["new"] = json!(if *is_extension {
+                            canonicalize_extension_calls(replacement, fq_name, name)
+                        } else {
+                            replacement.replace(fq_name, name)
+                        });
+                    }
+                }
                 if target_package == *package
                     || !needs_import
-                    || !inserted.insert((file.to_owned(), fq_name.clone()))
+                    || !inserted.insert((file.clone(), fq_name.clone()))
                 {
                     continue;
                 }
@@ -1399,10 +1415,58 @@ fn inject_explicit_target_imports(plan: &mut Value, context: &Value) -> Result<(
                 }));
             }
         }
-        expanded.push(operation.clone());
+        expanded.push(operation);
     }
     plan["operations"] = Value::Array(expanded);
     Ok(())
+}
+
+fn canonicalize_extension_calls(source: &str, fq_name: &str, name: &str) -> String {
+    let needle = format!("{fq_name}(");
+    let mut result = source.to_owned();
+    let mut cursor = 0usize;
+    while let Some(relative) = result[cursor..].find(&needle) {
+        let start = cursor + relative;
+        let arguments_start = start + needle.len();
+        let mut depth = 0isize;
+        let mut comma = None;
+        for (offset, character) in result[arguments_start..].char_indices() {
+            match character {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' if depth > 0 => depth -= 1,
+                ')' if depth == 0 => break,
+                ',' if depth == 0 => {
+                    comma = Some(arguments_start + offset);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(comma) = comma else {
+            break;
+        };
+        let receiver = result[arguments_start..comma].trim();
+        if receiver.is_empty()
+            || !receiver
+                .chars()
+                .all(|character| character.is_alphanumeric() || matches!(character, '_' | '.'))
+        {
+            cursor = arguments_start;
+            continue;
+        }
+        let mut rest = comma + 1;
+        while result[rest..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+        {
+            rest += result[rest..].chars().next().unwrap().len_utf8();
+        }
+        let replacement = format!("{receiver}.{name}(");
+        result.replace_range(start..rest, &replacement);
+        cursor = start + replacement.len();
+    }
+    result
 }
 
 fn include_created_tests(test_tasks: &mut Vec<String>, plan: &Value, build_system: &str) {
@@ -1543,7 +1607,8 @@ mod task_plan_tests {
             json!({
                 "package":"com.acme.options",
                 "containingDeclarations":[],
-                "declarationName":name
+                "declarationName":name,
+                "receiverTypes":if name == "applyOptions" {vec!["String"]} else {Vec::<&str>::new()}
             })
             .to_string()
         };
@@ -1566,7 +1631,7 @@ mod task_plan_tests {
             "replacement":{"kotlin":""},
             "preconditions":{"substitutions":[{
                 "old":"val records = load()",
-                "new":"val options = readOptions()\nval records = load().map { applyOptions(it, options) }",
+                "new":"val options = readOptions()\nval records = load().map { com.acme.options.applyOptions(it, options) }",
                 "occurrences":1
             }]},
             "postconditions":{}
@@ -1587,6 +1652,10 @@ mod task_plan_tests {
             "com.acme.options.applyOptions"
         );
         assert_eq!(operations[2]["opId"], "rewrite-workflow");
+        assert_eq!(
+            operations[2]["preconditions"]["substitutions"][0]["new"],
+            "val options = readOptions()\nval records = load().map { it.applyOptions(options) }"
+        );
     }
 
     #[test]
