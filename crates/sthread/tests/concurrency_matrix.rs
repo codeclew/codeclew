@@ -550,5 +550,48 @@ fn callee_formatting_replays_and_same_import_merges_idempotently() {
         ],
     );
     assert_eq!(source.matches("import java.time.Instant").count(), 1);
+
+    // Advancing the target after the older transaction must never let inspect
+    // or an idempotent retry publish the older commit's index snapshot.
+    let mut later = make_tx(
+        &mut worker,
+        &import_repo,
+        hash,
+        "com.acme.total",
+        "{ var value = base; if (premium) value = value + value; return value }",
+        "after-import",
+    );
+    let later_result =
+        transaction::commit(&import_repo, &mut later, "refs/heads/main", &mut worker).unwrap();
+    let later_commit = later_result["finalCommit"].as_str().unwrap();
+    let mut old_interrupted = first.clone();
+    old_interrupted.status = "COMMITTING".into();
+    old_interrupted.final_commit = None;
+    transaction::ledger(&import_repo)
+        .unwrap()
+        .append(&old_interrupted, "simulated late inspection of ancestor")
+        .unwrap();
+    transaction::ledger(&import_repo)
+        .unwrap()
+        .inspect("tx:import-first")
+        .unwrap();
+    assert_eq!(
+        RepositoryIndex::open_compilation(&import_repo, Some(":/main"))
+            .unwrap()
+            .published_revision()
+            .unwrap()
+            .as_deref(),
+        Some(later_commit)
+    );
+    let mut retry_old = first.clone();
+    transaction::commit(&import_repo, &mut retry_old, "refs/heads/main", &mut worker).unwrap();
+    assert_eq!(
+        RepositoryIndex::open_compilation(&import_repo, Some(":/main"))
+            .unwrap()
+            .published_revision()
+            .unwrap()
+            .as_deref(),
+        Some(later_commit)
+    );
     worker.shutdown().unwrap();
 }

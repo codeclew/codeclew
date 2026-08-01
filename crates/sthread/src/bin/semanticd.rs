@@ -1,9 +1,8 @@
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
-use sthread::canonical;
 use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
 use sthread::index::RepositoryIndex;
@@ -17,7 +16,6 @@ struct Metrics {
     values: BTreeMap<String, u64>,
     failures: BTreeMap<String, u64>,
     conflicts: BTreeMap<String, u64>,
-    seen_cache_keys: BTreeSet<String>,
 }
 
 impl Metrics {
@@ -57,21 +55,6 @@ impl Metrics {
             "transactionConflictsByCategory":self.conflicts,
             "cacheHitRate": if values.get("cache_requests").copied().unwrap_or(0) == 0 { 0.0 } else { values.get("cache_hits").copied().unwrap_or(0) as f64 / values["cache_requests"] as f64 }
         })
-    }
-
-    fn observe_cache_request(&mut self, method: &str, params: &Value) {
-        if !matches!(
-            method,
-            "project.inspect" | "index" | "resolve.symbol" | "resolve.expression" | "graph.local"
-        ) {
-            return;
-        }
-        self.add("cache_requests", 1);
-        let key = canonical::hash(&json!({"method":method,"params":params}))
-            .unwrap_or_else(|_| format!("{method}:{params}"));
-        if !self.seen_cache_keys.insert(key) {
-            self.add("cache_hits", 1);
-        }
     }
 }
 
@@ -179,16 +162,17 @@ fn dispatch(
             .and_then(Value::as_str)
             .unwrap_or(":/main")
     };
-    metrics.observe_cache_request(method, params);
     if !repo().is_empty() {
         metrics.set("orphan_worktrees", orphan_worktrees(Path::new(repo())));
     }
     match method {
         "health" => Ok(json!({"status":"OK","service":"semanticd","workerPid":worker.pid()})),
         "metrics" => Ok(metrics.snapshot(worker.pid())),
-        "project.inspect" => worker.request(RequestKind::OpenProject, params),
+        "project.inspect" => {
+            profiled_worker_request(worker, RequestKind::OpenProject, params, metrics)
+        }
         "index" => {
-            let facts = worker.request(RequestKind::IndexFiles, params)?;
+            let facts = profiled_worker_request(worker, RequestKind::IndexFiles, params, metrics)?;
             let mut index =
                 RepositoryIndex::open_compilation(Path::new(repo()), Some(compilation()))?;
             let snapshot = index.update(&facts)?;
@@ -205,13 +189,16 @@ fn dispatch(
                 json!({"indexSnapshot":snapshot,"invalidations":index.invalidations()?,"facts":facts}),
             )
         }
-        "resolve.symbol" => worker.request(RequestKind::ResolveSymbol, params),
+        "resolve.symbol" => {
+            profiled_worker_request(worker, RequestKind::ResolveSymbol, params, metrics)
+        }
         "resolve.expression" => {
             metrics.add("anchor_resolution_attempts", 1);
-            worker.request(RequestKind::ResolveExpression, params)
+            profiled_worker_request(worker, RequestKind::ResolveExpression, params, metrics)
         }
         "graph.local" => {
-            let raw = worker.request(RequestKind::BuildLocalGraph, params)?;
+            let raw =
+                profiled_worker_request(worker, RequestKind::BuildLocalGraph, params, metrics)?;
             let graph =
                 graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(parse_error)?);
             metrics.add("cfg_nodes", graph.nodes.len() as u64);
@@ -268,7 +255,12 @@ fn dispatch(
                 .unwrap_or_default()
                 .to_owned();
             let target = params["targetRef"].as_str().ok_or_else(|| {
-                SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef")
+                with_transaction_context(
+                    SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef"),
+                    &transaction_id,
+                    &snapshot_id,
+                    &relevant,
+                )
             })?;
             let result =
                 match transaction::commit(Path::new(repo()), &mut transaction, target, worker) {
@@ -278,10 +270,12 @@ fn dispatch(
                             "gradle_validation_duration_ms",
                             gradle_duration_from_evidence(&error),
                         );
-                        return Err(error
-                            .with_transaction(transaction_id)
-                            .with_snapshot(snapshot_id)
-                            .with_relevant(relevant));
+                        return Err(with_transaction_context(
+                            error,
+                            &transaction_id,
+                            &snapshot_id,
+                            &relevant,
+                        ));
                     }
                 };
             metrics.add(
@@ -298,6 +292,30 @@ fn dispatch(
             format!("unknown semanticd method {method}"),
         )),
     }
+}
+
+fn with_transaction_context(
+    error: SthreadError,
+    transaction_id: &str,
+    snapshot_id: &str,
+    relevant: &str,
+) -> SthreadError {
+    error
+        .with_transaction(transaction_id)
+        .with_snapshot(snapshot_id)
+        .with_relevant(relevant)
+}
+
+fn profiled_worker_request(
+    worker: &mut WorkerClient,
+    kind: RequestKind,
+    params: &Value,
+    metrics: &mut Metrics,
+) -> Result<Value, SthreadError> {
+    let result = worker.request(kind, params)?;
+    metrics.add("cache_requests", worker.last_profile.cache_requests);
+    metrics.add("cache_hits", worker.last_profile.cache_hits);
+    Ok(result)
 }
 
 fn gradle_duration_from_evidence(error: &SthreadError) -> u64 {
@@ -355,4 +373,22 @@ fn worker_memory(pid: u32) -> u64 {
 
 fn parse_error(error: impl std::fmt::Display) -> SthreadError {
     SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn early_commit_errors_keep_transaction_context() {
+        let error = with_transaction_context(
+            SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef"),
+            "tx:context",
+            "sha256:snapshot",
+            "anchor:target",
+        );
+        assert_eq!(error.transaction_id.as_deref(), Some("tx:context"));
+        assert_eq!(error.snapshot_id.as_deref(), Some("sha256:snapshot"));
+        assert_eq!(&*error.relevant_anchors_or_symbols, &["anchor:target"]);
+    }
 }

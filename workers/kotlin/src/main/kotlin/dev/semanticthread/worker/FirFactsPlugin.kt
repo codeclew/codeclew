@@ -22,6 +22,7 @@ import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrar
 import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrarAdapter
 import org.jetbrains.kotlin.fir.references.FirResolvedNamedReference
 import org.jetbrains.kotlin.fir.resolve.dfa.FirControlFlowGraphReferenceImpl
+import org.jetbrains.kotlin.fir.scopes.jvm.computeJvmDescriptor
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
 import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.fir.types.FirResolvedTypeRef
@@ -67,12 +68,15 @@ private class FirFactsCheckersExtension(session: FirSession, output: String) : F
 private class FirFactsCfgChecker(private val output: String) : FirDeclarationChecker<FirFunction>(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(declaration: FirFunction) {
+        val extractionStarted = System.nanoTime()
         val source = declaration.source ?: return
         val graph = (declaration.controlFlowGraphReference as? FirControlFlowGraphReferenceImpl)?.controlFlowGraph ?: return
         val record = buildJsonObject {
             put("recordType", "FIR_CFG"); put("file", context.containingFile?.path ?: return)
             put("start", source.startOffset); put("end", source.endOffset); put("name", graph.name)
             (declaration.symbol as? FirCallableSymbol<*>)?.let { put("symbol", it.callableIdAsString()) }
+            runCatching { declaration.computeJvmDescriptor(null, true).substringAfter('(', "") }
+                .getOrNull()?.takeIf(String::isNotEmpty)?.let { put("jvmDescriptor", "($it") }
             put("returnType", (declaration.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString() ?: "<unresolved>")
             putJsonArray("parameterTypes") {
                 declaration.valueParameters.forEach { parameter ->
@@ -96,6 +100,7 @@ private class FirFactsCfgChecker(private val output: String) : FirDeclarationChe
                     add(buildJsonObject { put("from", from.id); put("to", to.id); put("label", edge.label.toString()); put("edgeKind", edge.kind.toString()) })
                 } }
             }
+            put("firExtractionMicros", (System.nanoTime() - extractionStarted) / 1_000)
         }
         appendFact(output, record)
     }

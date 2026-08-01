@@ -10,6 +10,19 @@ use serde_json::Value;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RequestProfile {
+    pub serialization_micros: u64,
+    pub ipc_micros: u64,
+    pub worker_processing_micros: u64,
+    pub cache_requests: u64,
+    pub cache_hits: u64,
+    pub psi_parse_micros: u64,
+    pub k2_analysis_micros: u64,
+    pub fir_extraction_micros: u64,
+}
 
 pub struct WorkerClient {
     child: Child,
@@ -18,6 +31,7 @@ pub struct WorkerClient {
     next_id: u64,
     snapshot: Option<SnapshotId>,
     pub capabilities: crate::proto::WorkerCapabilities,
+    pub last_profile: RequestProfile,
 }
 
 impl WorkerClient {
@@ -89,6 +103,7 @@ impl WorkerClient {
             next_id: 1,
             snapshot: None,
             capabilities,
+            last_profile: RequestProfile::default(),
         })
     }
 
@@ -105,6 +120,7 @@ impl WorkerClient {
         }
         let request_id = self.next_id;
         self.next_id += 1;
+        let request_serialization_started = Instant::now();
         let schema_version = || Some(SchemaVersion { major: 1, minor: 0 });
         let repo = || json_string(payload, "repo");
         let compilation = || json_optional_string(payload, "compilation");
@@ -215,8 +231,10 @@ impl WorkerClient {
             ),
             payload: Some(request_payload),
         };
-        write_message(&mut self.stdin, &request)?;
-        let response = read_message(&mut self.stdout)?;
+        let request_construction_micros =
+            request_serialization_started.elapsed().as_micros() as u64;
+        let (encode_micros, write_micros) = write_message_profiled(&mut self.stdin, &request)?;
+        let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)?;
         if response.request_id != request_id {
             return Err(SthreadError::new(
                 ErrorCode::WorkerProtocolMismatch,
@@ -301,7 +319,9 @@ impl WorkerClient {
                 ));
             }
         };
+        let json_started = Instant::now();
         let mut value: Value = serde_json::from_slice(&canonical_json).map_err(internal)?;
+        let json_micros = json_started.elapsed().as_micros() as u64;
         if kind == RequestKind::ApplyEdit && value.get("source").is_none() {
             let blob = value.get("sourceBlob").ok_or_else(|| {
                 SthreadError::new(
@@ -323,6 +343,41 @@ impl WorkerClient {
                     .unwrap_or("UNRESOLVED")
                     .into(),
             });
+        }
+        let worker_processing_micros = value
+            .pointer("/profiling/workerProcessingMicros")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        self.last_profile = RequestProfile {
+            serialization_micros: request_construction_micros
+                + encode_micros
+                + decode_micros
+                + json_micros,
+            ipc_micros: (write_micros + read_micros).saturating_sub(worker_processing_micros),
+            worker_processing_micros,
+            cache_requests: value
+                .pointer("/profiling/cacheRequests")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            cache_hits: value
+                .pointer("/profiling/cacheHits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            psi_parse_micros: value
+                .pointer("/profiling/psiParseMicros")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            k2_analysis_micros: value
+                .pointer("/profiling/k2AnalysisMicros")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            fir_extraction_micros: value
+                .pointer("/profiling/firExtractionMicros")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        };
+        if let Some(object) = value.as_object_mut() {
+            object.remove("profiling");
         }
         Ok(value)
     }
@@ -590,6 +645,27 @@ fn write_message<M: Message>(writer: &mut impl Write, message: &M) -> Result<(),
         })
 }
 
+fn write_message_profiled<M: Message>(
+    writer: &mut impl Write,
+    message: &M,
+) -> Result<(u64, u64), SthreadError> {
+    let encode_started = Instant::now();
+    let bytes = message.encode_to_vec();
+    let encode_micros = encode_started.elapsed().as_micros() as u64;
+    let write_started = Instant::now();
+    writer
+        .write_all(&(bytes.len() as u32).to_be_bytes())
+        .and_then(|_| writer.write_all(&bytes))
+        .and_then(|_| writer.flush())
+        .map_err(|e| {
+            SthreadError::new(
+                ErrorCode::WorkerCrashed,
+                format!("worker write failed: {e}"),
+            )
+        })?;
+    Ok((encode_micros, write_started.elapsed().as_micros() as u64))
+}
+
 fn read_message(reader: &mut impl Read) -> Result<WorkerResponse, SthreadError> {
     let mut header = [0u8; 4];
     reader.read_exact(&mut header).map_err(|e| {
@@ -614,6 +690,42 @@ fn read_message(reader: &mut impl Read) -> Result<WorkerResponse, SthreadError> 
     })?;
     WorkerResponse::decode(bytes.as_slice())
         .map_err(|e| SthreadError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))
+}
+
+fn read_message_profiled(
+    reader: &mut impl Read,
+) -> Result<(WorkerResponse, u64, u64), SthreadError> {
+    let read_started = Instant::now();
+    let mut header = [0u8; 4];
+    reader.read_exact(&mut header).map_err(|e| {
+        SthreadError::new(
+            ErrorCode::WorkerCrashed,
+            format!("worker frame header failed: {e}"),
+        )
+    })?;
+    let size = u32::from_be_bytes(header) as usize;
+    if size > 64 * 1024 * 1024 {
+        return Err(SthreadError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "worker frame exceeds 64MiB",
+        ));
+    }
+    let mut bytes = vec![0; size];
+    reader.read_exact(&mut bytes).map_err(|e| {
+        SthreadError::new(
+            ErrorCode::WorkerCrashed,
+            format!("worker frame body failed: {e}"),
+        )
+    })?;
+    let read_micros = read_started.elapsed().as_micros() as u64;
+    let decode_started = Instant::now();
+    let response = WorkerResponse::decode(bytes.as_slice())
+        .map_err(|e| SthreadError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))?;
+    Ok((
+        response,
+        read_micros,
+        decode_started.elapsed().as_micros() as u64,
+    ))
 }
 
 fn internal(error: impl std::fmt::Display) -> SthreadError {

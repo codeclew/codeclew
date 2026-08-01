@@ -361,7 +361,7 @@ pub fn commit(
         let compilation = &transaction.thread.snapshot.compilation;
         let repository_index = RepositoryIndex::open_compilation(repo, Some(compilation))?;
         let (final_index_snapshot, invalidations) =
-            if repository_index.published_revision()?.as_deref() == Some(existing.as_str()) {
+            if repository_index.published_revision()?.as_deref() == Some(current.as_str()) {
                 (
                     repository_index.hash()?.ok_or_else(|| {
                         SthreadError::new(
@@ -372,7 +372,10 @@ pub fn commit(
                     repository_index.invalidations()?,
                 )
             } else {
-                publish_index_for_revision(repo, &existing, compilation, worker)?
+                // The transaction commit may now be an ancestor of the target
+                // ref. The repository index always follows the current target,
+                // never the older idempotent transaction commit.
+                publish_index_for_revision(repo, &current, compilation, worker)?
             };
         transaction.final_commit = Some(existing.clone());
         transaction.status = "COMMITTED".into();
@@ -933,14 +936,31 @@ impl Ledger {
         );
         let mut action = "NONE";
         if !terminal {
-            if let Some(commit) = find_transaction_commit(&self.repo, id)? {
+            let target_revision = transaction
+                .target_ref
+                .as_deref()
+                .map(|target_ref| git_output(&self.repo, &["rev-parse", target_ref]))
+                .transpose()?;
+            let reachable_commit = target_revision
+                .as_deref()
+                .map(|revision| find_transaction_commit(&self.repo, revision, id))
+                .transpose()?
+                .flatten();
+            if let Some(commit) = reachable_commit {
                 let compilation = &transaction.thread.snapshot.compilation;
                 let index = RepositoryIndex::open_compilation(&self.repo, Some(compilation))?;
-                if index.published_revision()?.as_deref() != Some(commit.as_str()) {
+                let current_target = target_revision
+                    .as_deref()
+                    .expect("reachable commit has target");
+                if index.published_revision()?.as_deref() != Some(current_target) {
                     drop(index);
                     let mut worker = WorkerClient::start(&workspace_root())?;
-                    let publication =
-                        publish_index_for_revision(&self.repo, &commit, compilation, &mut worker);
+                    let publication = publish_index_for_revision(
+                        &self.repo,
+                        current_target,
+                        compilation,
+                        &mut worker,
+                    );
                     let _ = worker.shutdown();
                     let (index_snapshot, invalidations) = publication?;
                     transaction.validation_evidence.push(json!({
@@ -1085,9 +1105,13 @@ fn recover_candidate_commit(
     Ok(CandidateRecovery::Published(candidate.into()))
 }
 
-fn find_transaction_commit(repo: &Path, id: &str) -> Result<Option<String>, SthreadError> {
+fn find_transaction_commit(
+    repo: &Path,
+    revision: &str,
+    id: &str,
+) -> Result<Option<String>, SthreadError> {
     let output = Command::new("git")
-        .args(["log", "--all", "--format=%H%x1f%B%x1e"])
+        .args(["log", revision, "--format=%H%x1f%B%x1e"])
         .current_dir(repo)
         .output()
         .map_err(io_error)?;

@@ -5,18 +5,19 @@
     "anchorResolutionP95": 20,
     "boundedSliceP95": 1,
     "canonicalSerializationP95": 1,
-    "coldSemanticIndex": 1574,
-    "editPreviewP95": 39,
-    "firCfgExtractionP95": 42,
-    "firstEditPreview": 164,
-    "ipcAndProtocolSerializationMicrosP95": 71,
-    "k2ChangedFileAnalysisP95": 262,
-    "k2SemanticAnalysisCold": 1574,
-    "localCfgAndSsaP95": 44,
+    "coldSemanticIndex": 1571,
+    "editPreviewP95": 37,
+    "firCfgExtractionMicrosP95": 1491,
+    "firstEditPreview": 154,
+    "ipcMicrosP95": 51,
+    "k2ChangedFileAnalysisMicrosP95": 208286,
+    "k2SemanticAnalysisColdMicros": 1467419,
+    "localCfgAndSsaP95": 41,
     "localThreadExtractionP95": 1,
-    "psiParseMicrosP95": 114,
+    "protocolSerializationMicrosP95": 2,
+    "psiParseMicrosP95": 113,
     "resolveSymbolP95": 27,
-    "rustGraphConstructionMicrosP95": 89,
+    "rustGraphConstructionMicrosP95": 86,
     "sampleCount": 20,
     "sloPassed": {
       "anchorResolution": true,
@@ -28,11 +29,12 @@
       "resolveSymbol": true,
       "warmSemanticFileReindex": true
     },
-    "ssaAndControlMicrosP95": 1950,
-    "warmSemanticFileReindexP95": 262,
-    "workerStartup": 276
+    "ssaAndControlMicrosP95": 1903,
+    "warmSemanticFileReindexP95": 260,
+    "workerStartup": 349
   },
   "seconds": {
-    "gradleValidation": 2.59
+    "gradleCompile": 2.56,
+    "gradleTests": 2.63
   }
 }

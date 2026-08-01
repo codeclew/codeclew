@@ -1,5 +1,6 @@
 use serde_json::json;
 use sthread::canonical;
+use sthread::error::ErrorCode;
 use sthread::graph;
 use sthread::model::{CompletenessStatus, Direction, LocalGraph, SlicePolicy, Snapshot};
 use sthread::proto::RequestKind;
@@ -172,6 +173,46 @@ fn k2_fir_golden_language_and_slice_matrix() {
         )
         .unwrap();
     assert_eq!(round_trip["symbol"], full_symbol);
+    let mut tampered_identity = overloaded_identity.clone();
+    tampered_identity["returnType"] = json!("kotlin/String");
+    tampered_identity["jvmDescriptor"] = json!("(I)Ljava/lang/String;");
+    let tampered = worker
+        .request(
+            RequestKind::ResolveSymbol,
+            &json!({"repo":fixture,"symbol":tampered_identity.to_string()}),
+        )
+        .unwrap_err();
+    assert_eq!(tampered.code, ErrorCode::SymbolNotFound);
+    for (symbol, descriptor) in [
+        ("com.acme.capture", "(Ljava/util/List;)I"),
+        (
+            "com.acme.boxedArray",
+            "([Ljava/lang/Integer;)[Ljava/lang/Integer;",
+        ),
+        (
+            "com.acme.genericNumber",
+            "(Ljava/lang/Number;)Ljava/lang/Number;",
+        ),
+        (
+            "com.acme.genericArray",
+            "([Ljava/lang/Number;)[Ljava/lang/Number;",
+        ),
+        (
+            "String.com.acme.decorate",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+        ),
+    ] {
+        let resolved = worker
+            .request(
+                RequestKind::ResolveSymbol,
+                &json!({"repo":fixture,"symbol":symbol}),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved["declaration"]["symbolIdentity"]["jvmDescriptor"], descriptor,
+            "wrong JVM descriptor for {symbol}"
+        );
+    }
 
     let total_raw = worker
         .request(

@@ -55,6 +55,10 @@ fun capture(values: List<Int>): Int {
     return sum
 }
 
+fun boxedArray(values: Array<Int>): Array<Int> = values
+fun <T : Number> genericNumber(value: T): T = value
+fun <T : Number> genericArray(values: Array<T>): Array<T> = values
+
 suspend fun boundary(value: Int): Int = suspendIdentity(value)
 suspend fun suspendIdentity(value: Int): Int = value
 

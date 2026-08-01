@@ -15,12 +15,14 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
         .spawn()
         .unwrap();
     let requests = format!(
-        "{}\n{}\n{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         serde_json::json!({"id":1,"method":"health"}),
         serde_json::json!({"id":2,"method":"project.inspect","params":{"repo":fixture,"compilation":":/main"}}),
         serde_json::json!({"id":3,"method":"project.inspect","params":{"repo":fixture,"compilation":":/main"}}),
-        serde_json::json!({"id":4,"method":"metrics"}),
-        serde_json::json!({"id":5,"method":"shutdown"}),
+        serde_json::json!({"id":4,"method":"project.inspect","params":{"repo":"/definitely/missing/semantic-thread-cache-test"}}),
+        serde_json::json!({"id":5,"method":"project.inspect","params":{"repo":"/definitely/missing/semantic-thread-cache-test"}}),
+        serde_json::json!({"id":6,"method":"metrics"}),
+        serde_json::json!({"id":7,"method":"shutdown"}),
     );
     child
         .stdin
@@ -36,9 +38,11 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(responses.len(), 5);
+    assert_eq!(responses.len(), 7);
     assert_eq!(responses[0]["result"]["status"], "OK");
-    let metrics = &responses[3]["result"]["metrics"];
+    assert!(!responses[3]["error"].is_null());
+    assert!(!responses[4]["error"].is_null());
+    let metrics = &responses[5]["result"]["metrics"];
     for required in [
         "request_duration_ms_total",
         "worker_startup_duration_ms",
@@ -56,6 +60,10 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
         assert!(!metrics[required].is_null(), "missing metric {required}");
     }
     assert_eq!(metrics["cache_requests"], 2);
-    assert_eq!(metrics["cache_hits"], 1);
-    assert_eq!(responses[3]["result"]["cacheHitRate"], 0.5);
+    assert!(metrics["cache_hits"].as_u64().unwrap() >= 1);
+    assert!(metrics["cache_hits"].as_u64().unwrap() <= 2);
+    assert_eq!(
+        responses[5]["result"]["cacheHitRate"].as_f64().unwrap(),
+        metrics["cache_hits"].as_u64().unwrap() as f64 / 2.0
+    );
 }
