@@ -138,6 +138,99 @@ impl TaskContextSelection {
         }
         unique
     }
+
+    pub fn followup_symbols(&self, resolutions: &[Value], limit: usize) -> Vec<String> {
+        let resolved = resolutions
+            .iter()
+            .filter_map(|resolution| {
+                resolution
+                    .pointer("/declaration/legacySymbolId")
+                    .and_then(Value::as_str)
+                    .map(normalize_symbol)
+            })
+            .collect::<BTreeSet<_>>();
+        let mut ranked = BTreeMap::<String, usize>::new();
+        for call in resolutions
+            .iter()
+            .flat_map(|resolution| resolution["resolvedCalls"].as_array().into_iter().flatten())
+        {
+            let Some(symbol) = call["symbol"].as_str() else {
+                continue;
+            };
+            let normalized = normalize_symbol(symbol);
+            if resolved.contains(&normalized) {
+                continue;
+            }
+            let Some(candidate) = self.catalog.iter().find(|candidate| {
+                let legacy = normalize_symbol(
+                    candidate.declaration["legacySymbolId"]
+                        .as_str()
+                        .unwrap_or_default(),
+                );
+                symbol_matches_declaration(&normalized, &legacy, &candidate.declaration)
+            }) else {
+                continue;
+            };
+            if !candidate.declaration["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.contains("Function"))
+            {
+                continue;
+            }
+            let parameter_score = call["argumentToParameter"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|mapping| {
+                    let parameter = mapping["parameter"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_lowercase();
+                    if self.intent_tokens.contains(&parameter) {
+                        600
+                    } else {
+                        self.intent_tokens
+                            .iter()
+                            .filter(|token| token.len() >= 4 && parameter.contains(token.as_str()))
+                            .count()
+                            * 80
+                    }
+                })
+                .sum::<usize>();
+            let score = call_declaration_rank(candidate, &self.intent_tokens)
+                + parameter_score
+                + candidate.score;
+            let symbol = candidate.declaration["legacySymbolId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            ranked
+                .entry(symbol)
+                .and_modify(|existing| *existing = (*existing).max(score))
+                .or_insert(score);
+        }
+        let mut ranked = ranked.into_iter().collect::<Vec<_>>();
+        ranked.sort_by_key(|(symbol, score)| (Reverse(*score), symbol.clone()));
+        let mut symbols = ranked
+            .into_iter()
+            .filter(|(_, score)| *score > 0)
+            .map(|(symbol, _)| symbol)
+            .take(limit)
+            .collect::<Vec<_>>();
+        if symbols.len() < limit {
+            for symbol in self.root_symbols(self.catalog.len()) {
+                let normalized = normalize_symbol(&symbol);
+                if resolved.contains(&normalized) || symbols.iter().any(|item| item == &symbol) {
+                    continue;
+                }
+                symbols.push(symbol);
+                if symbols.len() >= limit {
+                    break;
+                }
+            }
+        }
+        symbols
+    }
 }
 
 fn goal_name_score(name: &str, tokens: &BTreeSet<String>) -> usize {
@@ -415,7 +508,6 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
     let call_declarations = collect_call_declarations(index_facts, selection, resolutions);
     let contract_declarations = collect_contracts(index_facts, selection, resolutions);
     let projection_fields = collect_projection_fields(selection, &call_declarations);
-    let archive_recipe_available = projection_fields.len() >= 3;
     let mut edit_candidates = root_candidates.clone();
     for candidate in &call_declarations {
         if !edit_candidates.iter().any(|existing| {
@@ -518,7 +610,6 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "schema":"semantic-task-edit-plan/0.1",
             "threadId":thread_id,
             "baseRevision":base_revision,
-            "recommendedRecipe":{"kind":"ARCHIVE_EVENT_ENTITY_CONTRACT","available":archive_recipe_available},
             "supportedOperations":["REPLACE_EXPRESSION","REPLACE_FUNCTION_BODY","REPLACE_DECLARATION","REWRITE_DECLARATION","CREATE_FILE","ADD_IMPORT","REMOVE_IMPORT"],
             "instruction":"Prefer REWRITE_DECLARATION with preconditions.substitutions [{old,new,occurrences?}] for exact local changes. Use declaration targets for signature/type changes and body targets only if signature is unchanged. New top-level declarations require CREATE_FILE.",
             "constraints":[
@@ -1473,6 +1564,23 @@ fn evidence_display(repo: &Path, evidence_path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn function_candidate(name: &str) -> Candidate {
+        Candidate {
+            declaration: json!({
+                "name":name,
+                "kind":"KtNamedFunction",
+                "legacySymbolId":format!("com.acme.Service.{name}"),
+                "declarationId":format!("declaration:{name}"),
+                "file":"src/main/kotlin/com/acme/Service.kt"
+            }),
+            source_text: format!("fun {name}() = Unit"),
+            line_start: 1,
+            line_end: 1,
+            score: 0,
+            reasons: BTreeSet::new(),
+        }
+    }
+
     #[test]
     fn intent_tokens_split_camel_case_and_keep_payload_fields() {
         let tokens = task_tokens(
@@ -1482,5 +1590,38 @@ mod tests {
         assert!(tokens.contains("archive"));
         assert!(tokens.contains("id"));
         assert!(tokens.contains("typed"));
+    }
+
+    #[test]
+    fn follows_the_call_whose_parameter_matches_task_intent() {
+        let selection = TaskContextSelection {
+            files: Vec::new(),
+            catalog: vec![
+                function_candidate("emitChange"),
+                function_candidate("persistBatch"),
+            ],
+            candidates: Vec::new(),
+            intent_tokens: BTreeSet::from(["subjectid".into(), "payload".into()]),
+            goal_tokens: BTreeSet::new(),
+            explicit_owners: BTreeSet::new(),
+        };
+        let resolutions = vec![json!({
+            "declaration":{"legacySymbolId":"com.acme.Service.run"},
+            "resolvedCalls":[
+                {
+                    "symbol":"com.acme.Service.persistBatch",
+                    "argumentToParameter":[{"parameter":"items"}]
+                },
+                {
+                    "symbol":"com.acme.Service.emitChange",
+                    "argumentToParameter":[{"parameter":"subjectId"},{"parameter":"payload"}]
+                }
+            ]
+        })];
+
+        assert_eq!(
+            selection.followup_symbols(&resolutions, 1),
+            vec!["com.acme.Service.emitChange"]
+        );
     }
 }

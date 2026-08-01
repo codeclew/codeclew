@@ -328,8 +328,8 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
             let index_snapshot = repository_index.update(&index_facts)?;
             let selection = task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
-            let resolutions = selection
-                .root_symbols(args.max_roots)
+            let mut resolutions = selection
+                .root_symbols(1)
                 .into_iter()
                 .map(|symbol| {
                     worker.request(
@@ -338,6 +338,21 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            while resolutions.len() < args.max_roots {
+                let followups = selection.followup_symbols(
+                    &resolutions,
+                    args.max_roots.saturating_sub(resolutions.len()),
+                );
+                if followups.is_empty() {
+                    break;
+                }
+                for symbol in followups {
+                    resolutions.push(worker.request(
+                        RequestKind::ResolveSymbol,
+                        &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
+                    )?);
+                }
+            }
             let threads = resolutions
                 .iter()
                 .map(|resolution| {
@@ -418,7 +433,6 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             )
             .map_err(parse_error)?;
             let mut plan: Value = read_json(&args.edit_plan)?;
-            expand_task_recipe(&mut plan, context)?;
             normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
             inject_created_type_imports(&mut plan)?;
@@ -945,133 +959,6 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadE
     }
     Ok(())
 }
-fn expand_task_recipe(plan: &mut Value, context: &Value) -> Result<(), SthreadError> {
-    let Some(kind) = plan
-        .pointer("/recipe/kind")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            plan["operations"]
-                .as_array()
-                .and_then(|operations| operations.first())
-                .and_then(|operation| operation["kind"].as_str())
-        })
-    else {
-        return Ok(());
-    };
-    if kind != "ARCHIVE_EVENT_ENTITY_CONTRACT" {
-        return Ok(());
-    }
-    let target = |section: &str, name: &str| -> Result<String, SthreadError> {
-        context[section]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|item| item["name"].as_str() == Some(name))
-            .and_then(|item| {
-                item["declarationTargetId"].as_str().or_else(|| {
-                    item.pointer("/declarationTarget/anchorId")
-                        .and_then(Value::as_str)
-                })
-            })
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                SthreadError::new(
-                    ErrorCode::IncompleteSemanticAnalysis,
-                    format!("task recipe needs {section} declaration {name}"),
-                )
-            })
-    };
-    let field_type = |name: &str| {
-        context["projectionFields"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|field| field["name"].as_str() == Some(name))
-            .and_then(|field| field["type"].as_str())
-            .map(str::to_owned)
-    };
-    let id_type = field_type("id").unwrap_or_else(|| "UUID".into());
-    let code_type = field_type("code").ok_or_else(|| {
-        SthreadError::new(
-            ErrorCode::IncompleteSemanticAnalysis,
-            "task recipe needs projection nullability for code",
-        )
-    })?;
-    let title_type = field_type("title").unwrap_or_else(|| "String".into());
-    if !code_type.ends_with('?') {
-        return Err(SthreadError::new(
-            ErrorCode::IncompleteSemanticAnalysis,
-            "archive event recipe refuses a non-null persistence code projection",
-        ));
-    }
-    let canonical = target("contracts", "ProductCanonicalDto")?;
-    let event = target("editSurfaces", "ProductModifyEvent")?;
-    let producer = target("editSurfaces", "notifyProductModified")?;
-    let repository = target("editSurfaces", "findNonTestIdsByIds")?;
-    let archive = target("editSurfaces", "archive")?;
-    let test = context["tests"]
-        .as_array()
-        .and_then(|tests| tests.first())
-        .and_then(|item| {
-            item["declarationTargetId"].as_str().or_else(|| {
-                item.pointer("/declarationTarget/anchorId")
-                    .and_then(Value::as_str)
-            })
-        })
-        .ok_or_else(|| {
-            SthreadError::new(
-                ErrorCode::IncompleteSemanticAnalysis,
-                "archive event recipe needs an anchored regression test",
-            )
-        })?;
-    plan["operations"] = json!([
-        {
-            "kind":"CREATE_FILE",
-            "target":{"fileId":"src/main/kotlin/io/ladadigit/pim/productrepo/dto/ProductChangeEntity.kt"},
-            "replacement":{"kotlin":format!("package io.ladadigit.pim.productrepo.dto\n\nimport java.util.UUID\n\ninterface ProductChangeEntity {{\n    val id: {id_type}\n    val code: {code_type}\n    val title: {title_type}\n}}\n\ndata class ProductArchiveEventDto(\n    override val id: {id_type},\n    override val code: {code_type},\n    override val title: {title_type},\n) : ProductChangeEntity")}
-        },
-        {
-            "kind":"REWRITE_DECLARATION","target":{"targetId":canonical},
-            "preconditions":{"substitutions":[
-                {"old":"    val id: UUID,\n    val code: String,\n    val title: String,","new":"    override val id: UUID,\n    override val code: String,\n    override val title: String,"},
-                {"old":") {\n    fun isTestEntity","new":") : ProductChangeEntity {\n    fun isTestEntity"}
-            ]}
-        },
-        {
-            "kind":"REWRITE_DECLARATION","target":{"targetId":event},
-            "preconditions":{"substitutions":[{"old":"val entity: ProductCanonicalDto? = null","new":"val entity: io.ladadigit.pim.productrepo.dto.ProductChangeEntity? = null"}]}
-        },
-        {
-            "kind":"REWRITE_DECLARATION","target":{"targetId":producer},
-            "preconditions":{"substitutions":[{"old":"product: ProductCanonicalDto? = null","new":"product: io.ladadigit.pim.productrepo.dto.ProductChangeEntity? = null"}]}
-        },
-        {
-            "kind":"REWRITE_DECLARATION","target":{"targetId":repository},
-            "preconditions":{"substitutions":[
-                {"old":"SELECT n.id FROM Nomenclature n WHERE n.id IN :ids AND n.title NOT LIKE 'ЪЫ%'","new":"SELECT new io.ladadigit.pim.productrepo.dto.ProductArchiveEventDto(n.id, n.code, n.title) FROM Nomenclature n WHERE n.id IN :ids AND n.title NOT LIKE 'ЪЫ%'"},
-                {"old":"fun findNonTestIdsByIds(@Param(\"ids\") ids: List<UUID>): List<UUID>","new":"fun findNonTestArchiveEventProductsByIds(@Param(\"ids\") ids: List<UUID>): List<io.ladadigit.pim.productrepo.dto.ProductArchiveEventDto>"}
-            ]}
-        },
-        {
-            "kind":"REWRITE_DECLARATION","target":{"targetId":archive},
-            "preconditions":{"substitutions":[
-                {"old":"val nonTestIds = nomenclatureRepository.findNonTestIdsByIds(batchIds)","new":"val nonTestProducts = nomenclatureRepository.findNonTestArchiveEventProductsByIds(batchIds)","occurrences":2},
-                {"old":"nonTestIds.forEach { productId ->","new":"nonTestProducts.forEach { product ->","occurrences":2},
-                {"old":"productId = productId,","new":"productId = product.id,\n                        product = product,","occurrences":2},
-                {"old":"batchArchiveTimes.getValue(productId)","new":"batchArchiveTimes.getValue(product.id)","occurrences":4},
-                {"old":"totalArchived += nonTestIds.size","new":"totalArchived += nonTestProducts.size","occurrences":2}
-            ]}
-        },
-        {
-            "kind":"REWRITE_DECLARATION","target":{"targetId":test},
-            "preconditions":{"substitutions":[{
-                "old":"eq(product.id),\n                product = anyOrNull(),\n                changes",
-                "new":"eq(product.id),\n                product = argThat<io.ladadigit.pim.productrepo.dto.ProductChangeEntity> {\n                    id == product.id && code == product.code && title == product.title\n                },\n                changes"
-            }]}
-        }
-    ]);
-    Ok(())
-}
 fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
     let operations = plan["operations"].as_array_mut().ok_or_else(|| {
         SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
@@ -1244,40 +1131,5 @@ mod task_plan_tests {
         );
         assert_eq!(operations[2]["replacement"]["kotlin"], "");
         assert_eq!(operations[2]["opId"], "task-op-2");
-    }
-
-    #[test]
-    fn expands_archive_event_recipe_into_complete_graph_closure() {
-        let mut plan = json!({"recipe":{"kind":"ARCHIVE_EVENT_ENTITY_CONTRACT"}});
-        let context = json!({
-            "projectionFields":[
-                {"name":"id","type":"UUID"},
-                {"name":"code","type":"String?"},
-                {"name":"title","type":"String"}
-            ],
-            "contracts":[{"name":"ProductCanonicalDto","declarationTargetId":"canonical"}],
-            "editSurfaces":[
-                {"name":"ProductModifyEvent","declarationTargetId":"event"},
-                {"name":"notifyProductModified","declarationTargetId":"producer"},
-                {"name":"findNonTestIdsByIds","declarationTargetId":"repository"},
-                {"name":"archive","declarationTargetId":"archive"}
-            ],
-            "tests":[{"declarationTargetId":"test"}]
-        });
-
-        expand_task_recipe(&mut plan, &context).unwrap();
-
-        let operations = plan["operations"].as_array().unwrap();
-        assert_eq!(operations.len(), 7);
-        assert_eq!(operations[0]["kind"], "CREATE_FILE");
-        assert!(operations.iter().any(|operation| {
-            operation.pointer("/target/targetId") == Some(&json!("producer"))
-        }));
-        assert!(
-            operations[0]["replacement"]["kotlin"]
-                .as_str()
-                .unwrap()
-                .contains("val code: String?")
-        );
     }
 }
