@@ -252,10 +252,7 @@ fn goal_name_score(name: &str, tokens: &BTreeSet<String>) -> usize {
         .map(|token| {
             if token == name || token.strip_suffix('d') == Some(name) {
                 3
-            } else if token.len() >= 6
-                && !matches!(token.as_str(), "product" | "products" | "entity")
-                && name.contains(token.as_str())
-            {
+            } else if token.len() >= 6 && name.contains(token.as_str()) {
                 1
             } else {
                 0
@@ -506,7 +503,8 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         })
         .collect::<Vec<_>>();
     let call_declarations = collect_call_declarations(index_facts, selection, resolutions);
-    let contract_declarations = collect_contracts(index_facts, selection, resolutions);
+    let contract_declarations =
+        collect_contracts(index_facts, selection, resolutions, &call_declarations);
     let projection_fields = collect_projection_fields(selection, &call_declarations);
     let mut edit_candidates = root_candidates.clone();
     for candidate in &call_declarations {
@@ -766,18 +764,9 @@ fn surface_rank(
     let symbol = candidate.declaration["legacySymbolId"]
         .as_str()
         .unwrap_or_default();
-    let name = candidate.declaration["name"]
-        .as_str()
-        .unwrap_or_default()
-        .to_lowercase();
     candidate.score
         + usize::from(root_symbols.contains(symbol)) * 2_000
         + call_declaration_rank(candidate, intent_tokens)
-        + usize::from(
-            ["event", "entity", "dto", "projection"]
-                .iter()
-                .any(|suffix| name.contains(suffix)),
-        ) * 400
 }
 
 fn call_declaration_rank(candidate: &Candidate, intent_tokens: &BTreeSet<String>) -> usize {
@@ -801,6 +790,7 @@ fn collect_contracts<'a>(
     _index_facts: &Value,
     selection: &'a TaskContextSelection,
     resolutions: &[Value],
+    call_declarations: &[&Candidate],
 ) -> Vec<&'a Candidate> {
     let mut type_names = BTreeSet::new();
     for resolution in resolutions {
@@ -858,7 +848,13 @@ fn collect_contracts<'a>(
                 && is_contract_source(&candidate.source_text)
         })
         .collect::<Vec<_>>();
-    contracts.sort_by_key(|candidate| Reverse(contract_rank(candidate, &selection.intent_tokens)));
+    contracts.sort_by_key(|candidate| {
+        Reverse(contract_rank(
+            candidate,
+            &selection.intent_tokens,
+            call_declarations,
+        ))
+    });
     contracts
 }
 
@@ -931,25 +927,57 @@ fn collect_projection_fields(
         .collect()
 }
 
-fn contract_rank(candidate: &Candidate, intent_tokens: &BTreeSet<String>) -> usize {
+fn contract_rank(
+    candidate: &Candidate,
+    intent_tokens: &BTreeSet<String>,
+    call_declarations: &[&Candidate],
+) -> usize {
     let name = candidate.declaration["name"]
         .as_str()
         .unwrap_or_default()
         .to_lowercase();
-    let preferred = ["entity", "event", "dto", "projection", "contract"]
+    let direct_references = call_declarations
         .iter()
-        .filter(|fragment| name.contains(**fragment))
+        .filter(|declaration| {
+            declaration
+                .source_text
+                .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                .any(|word| word.eq_ignore_ascii_case(&name))
+        })
         .count();
-    let incidental = ["filter", "request", "action", "type", "context", "metadata"]
+    let properties = candidate
+        .source_text
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            ["val ", "var "]
+                .into_iter()
+                .filter_map(|marker| trimmed.find(marker).map(|index| &trimmed[index + 4..]))
+                .next()
+                .and_then(|property| {
+                    property
+                        .split(|character: char| {
+                            !character.is_ascii_alphanumeric() && character != '_'
+                        })
+                        .next()
+                })
+                .filter(|property| !property.is_empty())
+                .map(str::to_lowercase)
+        })
+        .collect::<BTreeSet<_>>();
+    let property_intent_hits = properties
         .iter()
-        .filter(|fragment| name.contains(**fragment))
+        .filter(|property| intent_tokens.contains(*property))
         .count();
     let intent_hits = intent_tokens
         .iter()
         .filter(|token| token.len() >= 4 && name.contains(token.as_str()))
         .count();
-    (candidate.score + preferred * 500 + intent_hits * 100usize)
-        .saturating_sub(incidental.min(2) * 200usize)
+    candidate.score
+        + direct_references * 1_000
+        + property_intent_hits * 2_000
+        + properties.len().min(8) * 80
+        + intent_hits * 100
 }
 
 fn collect_execution_path(
@@ -1662,64 +1690,67 @@ mod tests {
     #[test]
     fn intent_tokens_split_camel_case_and_keep_payload_fields() {
         let tokens = task_tokens(
-            "archive typed id/code/title entity",
-            &["ProductService".into()],
+            "synchronize typed key/label payload",
+            &["RecordService".into()],
         );
-        assert!(tokens.contains("archive"));
-        assert!(tokens.contains("id"));
+        assert!(tokens.contains("synchronize"));
+        assert!(tokens.contains("key"));
         assert!(tokens.contains("typed"));
     }
 
     #[test]
     fn plausible_terms_are_split_and_inflected_intent_is_normalized() {
         let tokens = task_tokens(
-            "When archiving products",
-            &["archiveProduct".into(), "ProductChangeFeed".into()],
+            "When processing records",
+            &["processRecord".into(), "RecordDeltaStream".into()],
         );
-        assert!(tokens.contains("archive"));
-        assert!(tokens.contains("product"));
-        assert!(tokens.contains("feed"));
+        assert!(tokens.contains("process"));
+        assert!(tokens.contains("record"));
+        assert!(tokens.contains("stream"));
     }
 
     #[test]
     fn enum_literal_is_not_treated_as_an_exact_declaration_name() {
-        assert!(looks_like_constant("DELETED"));
-        assert!(looks_like_constant("PRODUCT_DELETED"));
-        assert!(!looks_like_constant("archiveProduct"));
+        assert!(looks_like_constant("APPLIED"));
+        assert!(looks_like_constant("ROW_APPLIED"));
+        assert!(!looks_like_constant("processRecord"));
     }
 
     #[test]
     fn primary_root_prefers_rich_goal_evidence_over_a_generic_exact_verb() {
-        let mut delete = function_candidate("delete");
-        delete.score = 360;
-        delete.reasons = BTreeSet::from(["exact:delete".into()]);
-        delete.source_text = "fun delete(id: UUID)".into();
-        let mut archive = function_candidate("archive");
-        archive.score = 120;
-        archive.reasons = BTreeSet::from(["intent-name:archive".into()]);
-        archive.source_text =
-            "fun archive(products: List<Product>) { emit(DELETED, productId, entity) }".into();
+        let mut update = function_candidate("update");
+        update.score = 360;
+        update.reasons = BTreeSet::from(["exact:update".into()]);
+        update.source_text = "fun update(key: UUID)".into();
+        let mut reconcile = function_candidate("reconcile");
+        reconcile.score = 120;
+        reconcile.reasons = BTreeSet::from(["intent-name:reconcile".into()]);
+        reconcile.source_text =
+            "fun reconcile(records: List<Record>) { emit(APPLIED, recordKey, payload) }".into();
         let selection = TaskContextSelection {
             files: Vec::new(),
-            catalog: vec![delete.clone(), archive.clone()],
+            catalog: vec![update.clone(), reconcile.clone()],
             intent_tokens: BTreeSet::from([
-                "archive".into(),
-                "deleted".into(),
-                "entity".into(),
-                "product".into(),
-                "productid".into(),
+                "reconcile".into(),
+                "applied".into(),
+                "payload".into(),
+                "record".into(),
+                "recordkey".into(),
             ]),
             goal_tokens: BTreeSet::from([
-                "archive".into(),
-                "deleted".into(),
-                "entity".into(),
-                "product".into(),
-                "productid".into(),
+                "reconcile".into(),
+                "applied".into(),
+                "payload".into(),
+                "record".into(),
+                "recordkey".into(),
             ]),
             explicit_owners: BTreeSet::new(),
         };
 
-        assert_eq!(selection.root_symbols(1), vec!["com.acme.Service.archive"]);
+        assert_eq!(
+            selection.root_symbols(1),
+            vec!["com.acme.Service.reconcile"]
+        );
     }
 
     #[test]
@@ -1750,6 +1781,26 @@ mod tests {
         assert_eq!(
             selection.followup_symbols(&resolutions, 1),
             vec!["com.acme.Service.emitChange"]
+        );
+    }
+
+    #[test]
+    fn contract_rank_prefers_requested_properties_over_domain_name_overlap() {
+        let mut payload = function_candidate("ChangePayload");
+        payload.declaration["kind"] = json!("KtClass");
+        payload.source_text = "data class ChangePayload(val key: String, val label: String)".into();
+        let mut request = function_candidate("RecordRequest");
+        request.declaration["kind"] = json!("KtClass");
+        request.source_text = "data class RecordRequest(val filter: String)".into();
+        let mut emit = function_candidate("emitChange");
+        emit.source_text = "fun emitChange(payload: ChangePayload)".into();
+        let mut execute = function_candidate("execute");
+        execute.source_text = "fun execute(request: RecordRequest)".into();
+        let calls = vec![&emit, &execute];
+        let intent = BTreeSet::from(["record".into(), "key".into(), "label".into()]);
+
+        assert!(
+            contract_rank(&payload, &intent, &calls) > contract_rank(&request, &intent, &calls)
         );
     }
 
