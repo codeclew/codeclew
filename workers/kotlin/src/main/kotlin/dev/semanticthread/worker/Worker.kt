@@ -159,7 +159,7 @@ internal class Worker : AutoCloseable {
     private fun cachedProjectModel(repo: Path, compilation: String?): JsonObject {
         requestCacheRequests++
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha((listOf("projectModelSchema=5") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
+        val inputHash = sha((listOf("projectModelSchema=6") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
             Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") && !it.invariantSeparatorsPathString.contains("/target/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         projectModelCache[key]?.let { requestCacheHits++; return it }
@@ -228,7 +228,12 @@ internal class Worker : AutoCloseable {
         requestCacheRequests++
         val analysisRepo = repo.toRealPath()
         val model = cachedProjectModel(analysisRepo, compilation)
-        val sources = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
+        val sources = (model["analysisSourceFiles"] ?: model["sourceFiles"])
+            ?.jsonArray
+            ?.map { Path.of(it.jsonPrimitive.content) }
+            ?.filter(Path::isRegularFile)
+            ?.sorted()
+            .orEmpty()
         val cacheMaterial = buildString {
             append("factsPluginSchema=3\u0000")
             sources.forEach { source ->
