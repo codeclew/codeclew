@@ -7,7 +7,7 @@ use crate::worker::WorkerClient;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use similar::TextDiff;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -41,6 +41,7 @@ pub fn preview(
     }
     let mut candidates = BTreeMap::new();
     let mut writes = Vec::new();
+    let mut expected_writes = Vec::new();
     let mut windows = Vec::new();
     let mut diagnostics = Vec::new();
     for operation in &edit.operations {
@@ -161,25 +162,109 @@ pub fn preview(
         let range = target.get("rangeHint").cloned().unwrap_or(json!([]));
         windows.push(json!({"file":file,"range":range}));
         candidates.insert(file.to_owned(), candidate.clone());
-        writes.push(WriteFact {
-            kind: operation.kind.clone(),
-            key: target
+        let owner = target
+            .get("ownerSymbolId")
+            .and_then(Value::as_str)
+            .unwrap_or(file);
+        if operation.kind == "ADD_IMPORT" || operation.kind == "REMOVE_IMPORT" {
+            let key = format!(
+                "{file}:import:{}",
+                operation
+                    .replacement
+                    .kotlin
+                    .trim()
+                    .trim_start_matches("import ")
+            );
+            expected_writes.push(ExpectedWriteFact {
+                kind: "IMPORT".into(),
+                key: key.clone(),
+            });
+            writes.push(WriteFact {
+                kind: "IMPORT".into(),
+                key,
+                before_hash: canonical::hash_bytes(current.as_bytes()),
+                after_hash: canonical::hash_bytes(candidate.as_bytes()),
+            });
+        } else {
+            let anchor = target
                 .get("anchorId")
                 .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    format!(
-                        "import:{}",
-                        operation
-                            .replacement
-                            .kotlin
-                            .trim()
-                            .trim_start_matches("import ")
-                    )
-                }),
-            before_hash: canonical::hash_bytes(current.as_bytes()),
-            after_hash: canonical::hash_bytes(candidate.as_bytes()),
-        });
+                .unwrap_or(owner)
+                .to_owned();
+            expected_writes.extend([
+                ExpectedWriteFact {
+                    kind: "TARGET_ANCHOR".into(),
+                    key: anchor.clone(),
+                },
+                ExpectedWriteFact {
+                    kind: "BODY".into(),
+                    key: owner.into(),
+                },
+                ExpectedWriteFact {
+                    kind: "SUMMARY".into(),
+                    key: owner.into(),
+                },
+            ]);
+            if operation
+                .postconditions
+                .contains_key("allowedEffectChanges")
+            {
+                expected_writes.push(ExpectedWriteFact {
+                    kind: "EFFECTS".into(),
+                    key: owner.into(),
+                });
+            }
+            writes.push(WriteFact {
+                kind: "TARGET_ANCHOR".into(),
+                key: anchor,
+                before_hash: target
+                    .get("exactTextHash")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .into(),
+                after_hash: canonical::hash_bytes(operation.replacement.kotlin.as_bytes()),
+            });
+            if let Some(delta) = response.get("semanticDelta").and_then(Value::as_object) {
+                for (field, kind) in [
+                    ("body", "BODY"),
+                    ("signature", "SIGNATURE"),
+                    ("abi", "ABI"),
+                    ("summary", "SUMMARY"),
+                    ("effects", "EFFECTS"),
+                ] {
+                    let Some(change) = delta.get(field) else {
+                        continue;
+                    };
+                    let before = change
+                        .get("beforeHash")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let after = change
+                        .get("afterHash")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if before == after {
+                        continue;
+                    }
+                    if kind == "ABI" || kind == "SIGNATURE" {
+                        return Err(SthreadError::new(
+                            ErrorCode::AbiChanged,
+                            format!("edit changes protected {kind} for {owner}"),
+                        ));
+                    }
+                    writes.push(WriteFact {
+                        kind: kind.into(),
+                        key: change
+                            .get("key")
+                            .and_then(Value::as_str)
+                            .unwrap_or(owner)
+                            .into(),
+                        before_hash: before.into(),
+                        after_hash: after.into(),
+                    });
+                }
+            }
+        }
     }
     candidates.retain(|file, candidate| {
         std::fs::read_to_string(safe_join(repo, file).unwrap())
@@ -187,7 +272,27 @@ pub fn preview(
             .unwrap_or(true)
     });
     writes.retain(|write| write.before_hash != write.after_hash);
-    validate_in_copy(repo, &candidates, &[])?;
+    if !edit.expected_write_set.is_empty() {
+        expected_writes = edit.expected_write_set.clone();
+    }
+    expected_writes.sort();
+    expected_writes.dedup();
+    let expected_scope: BTreeSet<_> = expected_writes
+        .iter()
+        .map(|fact| (&fact.kind, &fact.key))
+        .collect();
+    if let Some(exceeded) = writes
+        .iter()
+        .find(|fact| !expected_scope.contains(&(&fact.kind, &fact.key)))
+    {
+        return Err(SthreadError::new(
+            ErrorCode::WritesetExceeded,
+            format!(
+                "actual write {}:{} is outside ExpectedWriteSet",
+                exceeded.kind, exceeded.key
+            ),
+        ));
+    }
     let mut diff = String::new();
     for (file, candidate) in &candidates {
         let original = std::fs::read_to_string(safe_join(repo, file)?).map_err(io_error)?;
@@ -204,50 +309,10 @@ pub fn preview(
         diff,
         candidates,
         actual_write_set: writes,
+        expected_write_set: expected_writes,
         diagnostics,
         formatting_windows: windows,
     })
-}
-
-fn validate_in_copy(
-    repo: &Path,
-    candidates: &BTreeMap<String, String>,
-    test_tasks: &[String],
-) -> Result<(), SthreadError> {
-    let temp = tempfile::tempdir().map_err(io_error)?;
-    let copy = temp.path().join("candidate");
-    copy_tree(repo, &copy)?;
-    for (file, source) in candidates {
-        std::fs::write(safe_join(&copy, file)?, source.as_bytes()).map_err(io_error)?;
-    }
-    let wrapper = copy.join("gradlew");
-    if !wrapper.is_file() {
-        return Err(SthreadError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            "Gradle Wrapper ./gradlew is required for K2 validation",
-        ));
-    }
-    let mut tasks = vec!["compileKotlin".to_owned()];
-    tasks.extend(test_tasks.iter().cloned());
-    let output = Command::new(&wrapper)
-        .args(&tasks)
-        .arg("--no-daemon")
-        .arg("--quiet")
-        .current_dir(&copy)
-        .output()
-        .map_err(io_error)?;
-    log_output(&output);
-    if !output.status.success() {
-        return Err(SthreadError::new(
-            if test_tasks.is_empty() {
-                ErrorCode::CompileFailed
-            } else {
-                ErrorCode::TestFailed
-            },
-            format!("Gradle validation failed for tasks {}", tasks.join(", ")),
-        ));
-    }
-    Ok(())
 }
 
 pub fn commit(
@@ -257,6 +322,14 @@ pub fn commit(
     worker: &mut WorkerClient,
 ) -> Result<Value, SthreadError> {
     let current = git_output(repo, &["rev-parse", target_ref])?;
+    transaction.target_ref = Some(target_ref.into());
+    if transaction.base_index_snapshot.is_none() {
+        transaction.base_index_snapshot = Some(
+            canonical::hash(&transaction.thread.read_set)
+                .map_err(internal)?
+                .replacen("sha256:", "index:", 1),
+        );
+    }
     let edit_hash = canonical::hash(&transaction.edit).map_err(internal)?;
     if let Some(existing) =
         find_matching_transaction_commit(repo, target_ref, &transaction.tx_id, &edit_hash)?
@@ -285,6 +358,17 @@ pub fn commit(
         e
     })?;
     transaction.preview = Some(report.clone());
+    transaction.expected_write_set_hash =
+        Some(canonical::hash(&report.expected_write_set).map_err(internal)?);
+    transaction.actual_write_set_hash =
+        Some(canonical::hash(&report.actual_write_set).map_err(internal)?);
+    transaction.validation_evidence.push(json!({
+        "kind":"SEMANTIC_PREVIEW",
+        "valid":report.valid,
+        "diagnosticsHash":canonical::hash(&report.diagnostics).map_err(internal)?,
+        "expectedWriteSetHash":transaction.expected_write_set_hash,
+        "actualWriteSetHash":transaction.actual_write_set_hash
+    }));
     transaction.status = "VALIDATED".into();
     ledger(repo)?.append(transaction, "preview and Gradle validation passed")?;
     if report.candidates.is_empty() {
@@ -313,6 +397,12 @@ pub fn commit(
                 .map_err(io_error)?;
         }
         validate_worktree(&worktree_path, &transaction.test_tasks)?;
+        transaction.validation_evidence.push(json!({
+            "kind":"GRADLE",
+            "compileTask":"compileKotlin",
+            "testTasks":transaction.test_tasks,
+            "status":"PASSED"
+        }));
         git(&worktree_path, &["add", "--", "."])?;
         let message = format!(
             "semantic transaction {}\n\nSemantic-Transaction-Id: {}\nSemantic-Base-Revision: {}\nSemantic-Edit-Hash: {}",
@@ -652,6 +742,31 @@ impl Ledger {
                 )?;
                 status = "COMMITTED".into();
                 action = "RECOVERED_COMMITTED_FROM_TRAILER";
+            } else if status == "COMMITTING" {
+                match recover_candidate_commit(&self.repo, &transaction)? {
+                    CandidateRecovery::Published(commit) => {
+                        transaction.status = "COMMITTED".into();
+                        transaction.final_commit = Some(commit);
+                        self.append(
+                            &transaction,
+                            "recovered candidate commit with compare-and-swap",
+                        )?;
+                        status = "COMMITTED".into();
+                        action = "RECOVERED_COMMITTED_CANDIDATE_CAS";
+                    }
+                    CandidateRecovery::Conflicted(reason) => {
+                        transaction.status = "CONFLICTED".into();
+                        self.append(&transaction, &reason)?;
+                        status = "CONFLICTED".into();
+                        action = "RECOVERED_CONFLICTED_REF_MOVED";
+                    }
+                    CandidateRecovery::Aborted(reason) => {
+                        transaction.status = "ABORTED".into();
+                        self.append(&transaction, &reason)?;
+                        status = "ABORTED".into();
+                        action = "RECOVERED_ABORTED_CANDIDATE_MISSING";
+                    }
+                }
             } else if matches!(
                 status.as_str(),
                 "CREATED" | "SLICED" | "EDIT_PREVIEWED" | "VALIDATING" | "VALIDATED" | "REBASING"
@@ -664,10 +779,13 @@ impl Ledger {
                 status = "ABORTED".into();
                 action = "RECOVERED_ABORTED_NO_REF_CHANGE";
             } else {
-                return Err(SthreadError::new(
-                    ErrorCode::TransactionRecoveryRequired,
-                    "unfinished COMMITTING transaction has no reachable commit trailer",
-                ));
+                transaction.status = "ABORTED".into();
+                self.append(
+                    &transaction,
+                    "recovered unknown unfinished state as aborted",
+                )?;
+                status = "ABORTED".into();
+                action = "RECOVERED_ABORTED_UNKNOWN_STATE";
             }
         }
         let mut statement=self.connection.prepare("SELECT sequence,status,timestamp,evidence FROM events WHERE tx_id=?1 ORDER BY sequence").map_err(db_error)?;
@@ -676,6 +794,57 @@ impl Ledger {
             json!({"schema":"semantic-ledger/0.1","transactionId":id,"events":rows,"reconciledStatus":status,"recoveryAction":action,"recoverable":true}),
         )
     }
+}
+
+enum CandidateRecovery {
+    Published(String),
+    Conflicted(String),
+    Aborted(String),
+}
+
+fn recover_candidate_commit(
+    repo: &Path,
+    transaction: &Transaction,
+) -> Result<CandidateRecovery, SthreadError> {
+    let Some(candidate) = transaction.candidate_commit.as_deref() else {
+        return Ok(CandidateRecovery::Aborted(
+            "COMMITTING record has no candidate commit; no ref was changed".into(),
+        ));
+    };
+    let Some(target_ref) = transaction.target_ref.as_deref() else {
+        return Ok(CandidateRecovery::Aborted(
+            "COMMITTING record has no target ref; candidate left unpublished".into(),
+        ));
+    };
+    let message = match git_output(repo, &["show", "-s", "--format=%B", candidate]) {
+        Ok(message) => message,
+        Err(_) => {
+            return Ok(CandidateRecovery::Aborted(
+                "candidate commit object is unavailable; no ref was changed".into(),
+            ));
+        }
+    };
+    let edit_hash = canonical::hash(&transaction.edit).map_err(internal)?;
+    if !message
+        .lines()
+        .any(|line| line.trim() == format!("Semantic-Transaction-Id: {}", transaction.tx_id))
+        || !message
+            .lines()
+            .any(|line| line.trim() == format!("Semantic-Edit-Hash: {edit_hash}"))
+    {
+        return Ok(CandidateRecovery::Aborted(
+            "candidate trailers do not match ledger transaction".into(),
+        ));
+    }
+    let parent = git_output(repo, &["rev-parse", &format!("{candidate}^")])?;
+    let current = git_output(repo, &["rev-parse", target_ref])?;
+    if current != parent {
+        return Ok(CandidateRecovery::Conflicted(format!(
+            "target ref moved from candidate parent {parent} to {current} before recovery"
+        )));
+    }
+    git(repo, &["update-ref", target_ref, candidate, &current])?;
+    Ok(CandidateRecovery::Published(candidate.into()))
 }
 
 fn find_transaction_commit(repo: &Path, id: &str) -> Result<Option<String>, SthreadError> {
@@ -758,33 +927,6 @@ fn unified_diff(file: &str, old: &str, new: &str) -> String {
         .to_string()
 }
 
-fn copy_tree(source: &Path, target: &Path) -> Result<(), SthreadError> {
-    std::fs::create_dir_all(target).map_err(io_error)?;
-    for entry in walkdir::WalkDir::new(source).into_iter().filter_entry(|e| {
-        let n = e.file_name().to_string_lossy();
-        n != ".git" && n != ".semantic-thread" && n != "build" && n != ".gradle"
-    }) {
-        let entry = entry.map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?;
-        let relative = entry.path().strip_prefix(source).unwrap();
-        if relative.as_os_str().is_empty() {
-            continue;
-        }
-        let dest = target.join(relative);
-        if entry.file_type().is_dir() {
-            std::fs::create_dir_all(&dest).map_err(io_error)?
-        } else {
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent).map_err(io_error)?
-            }
-            std::fs::copy(entry.path(), &dest).map_err(io_error)?;
-            let permissions = std::fs::metadata(entry.path())
-                .map_err(io_error)?
-                .permissions();
-            std::fs::set_permissions(&dest, permissions).map_err(io_error)?;
-        }
-    }
-    Ok(())
-}
 fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, SthreadError> {
     let path = root.join(relative);
     if relative.starts_with('/') || relative.split('/').any(|p| p == "..") {

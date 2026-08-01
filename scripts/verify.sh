@@ -19,4 +19,5 @@ HASH1=$(cargo run --quiet --bin sthread -- index --repo fixtures/kotlin-basic)
 HASH2=$(cargo run --quiet --bin sthread -- index --repo fixtures/kotlin-basic)
 [ "$HASH1" = "$HASH2" ]
 ./scripts/demo.sh >/dev/null
+./scripts/benchmark-corpus.sh >/dev/null
 echo '{"schema":"semantic-verification/0.1","status":"PASSED"}'

@@ -143,6 +143,7 @@ fn make_tx(
             preconditions: BTreeMap::new(),
             postconditions: BTreeMap::new(),
         }],
+        expected_write_set: vec![],
     };
     Transaction {
         schema: "semantic-transaction/0.1".into(),
@@ -151,13 +152,18 @@ fn make_tx(
         intent: id.into(),
         base_revision: base,
         project_model_hash: project_hash.into(),
+        base_index_snapshot: None,
         status: "CREATED".into(),
         thread,
         edit,
         preview: None,
+        expected_write_set_hash: None,
+        actual_write_set_hash: None,
+        validation_evidence: vec![],
         test_tasks: vec![],
         candidate_commit: None,
         final_commit: None,
+        target_ref: None,
     }
 }
 
@@ -412,6 +418,44 @@ fn callee_formatting_replays_and_same_import_merges_idempotently() {
     let mut first = make_import_tx(&mut worker, &import_repo, hash, "import-first");
     let mut second = make_import_tx(&mut worker, &import_repo, hash, "import-second");
     transaction::commit(&import_repo, &mut first, "refs/heads/main", &mut worker).unwrap();
+    let candidate = first.candidate_commit.clone().unwrap();
+    let candidate_parent = git_output(&import_repo, &["rev-parse", &format!("{candidate}^")]);
+    assert!(
+        Command::new("git")
+            .args([
+                "update-ref",
+                "refs/heads/main",
+                &candidate_parent,
+                &candidate
+            ])
+            .current_dir(&import_repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut pre_cas = first.clone();
+    pre_cas.status = "COMMITTING".into();
+    pre_cas.final_commit = None;
+    transaction::ledger(&import_repo)
+        .unwrap()
+        .append(
+            &pre_cas,
+            "simulated crash after candidate commit before CAS",
+        )
+        .unwrap();
+    let recovered_pre_cas = transaction::ledger(&import_repo)
+        .unwrap()
+        .inspect("tx:import-first")
+        .unwrap();
+    assert_eq!(recovered_pre_cas["reconciledStatus"], "COMMITTED");
+    assert_eq!(
+        recovered_pre_cas["recoveryAction"],
+        "RECOVERED_COMMITTED_CANDIDATE_CAS"
+    );
+    assert_eq!(
+        git_output(&import_repo, &["rev-parse", "refs/heads/main"]),
+        candidate
+    );
     let mut interrupted = first.clone();
     interrupted.status = "COMMITTING".into();
     transaction::ledger(&import_repo)

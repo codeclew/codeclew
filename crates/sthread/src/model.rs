@@ -97,6 +97,14 @@ pub struct LocalGraph {
     pub edges: Vec<Edge>,
     #[serde(default)]
     pub boundaries: Vec<Value>,
+    #[serde(default)]
+    pub diagnostics: Vec<Value>,
+    #[serde(default)]
+    pub compiler_options_hash: Option<String>,
+    #[serde(default)]
+    pub classpath_hash: Option<String>,
+    #[serde(default)]
+    pub inheritance_facts: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +154,8 @@ pub struct EditIr {
     pub thread_id: String,
     pub base_revision: String,
     pub operations: Vec<EditOperation>,
+    #[serde(default)]
+    pub expected_write_set: Vec<ExpectedWriteFact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,8 +187,17 @@ pub struct PreviewReport {
     pub diff: String,
     pub candidates: BTreeMap<String, String>,
     pub actual_write_set: Vec<WriteFact>,
+    #[serde(default)]
+    pub expected_write_set: Vec<ExpectedWriteFact>,
     pub diagnostics: Vec<Value>,
     pub formatting_windows: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedWriteFact {
+    pub kind: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -199,15 +218,25 @@ pub struct Transaction {
     pub intent: String,
     pub base_revision: String,
     pub project_model_hash: String,
+    #[serde(default)]
+    pub base_index_snapshot: Option<String>,
     pub status: String,
     pub thread: ThreadIr,
     pub edit: EditIr,
     #[serde(default)]
     pub preview: Option<PreviewReport>,
     #[serde(default)]
+    pub expected_write_set_hash: Option<String>,
+    #[serde(default)]
+    pub actual_write_set_hash: Option<String>,
+    #[serde(default)]
+    pub validation_evidence: Vec<Value>,
+    #[serde(default)]
     pub test_tasks: Vec<String>,
     #[serde(default)]
     pub candidate_commit: Option<String>,
     #[serde(default)]
     pub final_commit: Option<String>,
+    #[serde(default)]
+    pub target_ref: Option<String>,
 }

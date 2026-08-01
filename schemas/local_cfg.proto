@@ -1,4 +1,26 @@
 syntax = "proto3";
 package semantic_thread.cfg.v1;
-message LocalCfgBlob { string schema = 1; bytes canonical_json = 2; }
 
+message SchemaVersion { uint32 major = 1; uint32 minor = 2; }
+message Attribute { string key = 1; bytes canonical_value = 2; }
+message GraphNode {
+  string id = 1;
+  string kind = 2;
+  optional string defines = 3;
+  repeated string uses = 4;
+  bytes semantic_anchor = 5;
+  repeated Attribute attributes = 6;
+}
+message GraphEdge { string from = 1; string to = 2; string kind = 3; }
+message Boundary { string kind = 1; string reason = 2; bytes evidence = 3; }
+message LocalCfg {
+  SchemaVersion schema_version = 1;
+  string symbol_id = 2;
+  string file_id = 3;
+  repeated GraphNode nodes = 4;
+  repeated GraphEdge edges = 5;
+  repeated Boundary boundaries = 6;
+  string diagnostics_hash = 7;
+  string compiler_options_hash = 8;
+  string classpath_hash = 9;
+}

@@ -22,6 +22,7 @@ measure() { NAME=$1; shift; RESULT=$(/usr/bin/time -p "$@" 2>&1 >/dev/null | awk
 {
   measure projectModel "$BIN" project inspect --repo fixtures/kotlin-basic
   measure declarationIndex "$BIN" index --repo fixtures/kotlin-basic
+  measure coldEditPreview "$BIN" edit preview --repo "$BENCH_ROOT/repo" --thread "$BENCH_ROOT/thread.json" --operations "$BENCH_ROOT/edit.json"
   measure editPreview "$BIN" edit preview --repo "$BENCH_ROOT/repo" --thread "$BENCH_ROOT/thread.json" --operations "$BENCH_ROOT/edit.json"
   measure gradleValidation fixtures/kotlin-basic/gradlew -p fixtures/kotlin-basic compileKotlin --no-daemon --quiet
 } | awk -F= -v stages="$STAGES" 'BEGIN{printf "{\"schema\":\"semantic-benchmark/0.2\",\"scope\":\"separately-instrumented-stages-and-e2e-validation\",\"milliseconds\":%s,\"seconds\":{",stages} {printf "%s\"%s\":%s",sep,$1,$2;sep=","} END{print "}}"}' > benchmarks/reports/latest.json

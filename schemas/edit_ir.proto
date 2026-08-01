@@ -1,4 +1,40 @@
 syntax = "proto3";
 package semantic_thread.edit.v1;
-message EditIrBlob { string schema = 1; bytes canonical_json = 2; }
 
+message SchemaVersion { uint32 major = 1; uint32 minor = 2; }
+message SemanticAnchor {
+  string anchor_id = 1;
+  string file_id = 2;
+  string owner_symbol_id = 3;
+  string syntax_kind = 4;
+  string normalized_token_hash = 5;
+  string ancestor_path_hash = 6;
+  uint64 local_ordinal = 7;
+  string left_context_hash = 8;
+  string right_context_hash = 9;
+  string exact_text_hash = 10;
+}
+enum OperationKind {
+  OPERATION_KIND_UNSPECIFIED = 0;
+  REPLACE_EXPRESSION = 1;
+  REPLACE_FUNCTION_BODY = 2;
+  ADD_IMPORT = 3;
+  REMOVE_IMPORT = 4;
+}
+message Condition { string key = 1; bytes canonical_value = 2; }
+message EditOperation {
+  string operation_id = 1;
+  OperationKind kind = 2;
+  SemanticAnchor target = 3;
+  string kotlin_replacement = 4;
+  repeated Condition preconditions = 5;
+  repeated Condition postconditions = 6;
+}
+message ExpectedWrite { string kind = 1; string key = 2; }
+message EditIr {
+  SchemaVersion schema_version = 1;
+  string thread_id = 2;
+  string base_revision = 3;
+  repeated EditOperation operations = 4;
+  repeated ExpectedWrite expected_write_set = 5;
+}

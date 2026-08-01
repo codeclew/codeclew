@@ -8,6 +8,7 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     for node in &mut graph.nodes {
         node.editable = node.origin.is_some() && !node.kind.starts_with("PHI");
     }
+    add_call_edges(&mut graph);
     add_effect_edges(&mut graph);
     let entry = graph
         .nodes
@@ -45,6 +46,57 @@ pub fn enrich(mut graph: LocalGraph) -> LocalGraph {
     graph.edges.sort();
     graph.edges.dedup();
     graph
+}
+
+fn add_call_edges(graph: &mut LocalGraph) {
+    let calls: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "CALL")
+        .cloned()
+        .collect();
+    for call in calls {
+        let symbol = call
+            .attributes
+            .get("symbol")
+            .and_then(Value::as_str)
+            .unwrap_or("<unresolved>");
+        let summary_hash = call
+            .attributes
+            .get("calleeSummaryHash")
+            .and_then(Value::as_str)
+            .unwrap_or("sha256:unknown");
+        let callee_id = format!(
+            "callee:{}",
+            canonical::hash(&json!({"symbol":symbol,"summary":summary_hash}))
+                .unwrap_or_else(|_| "sha256:unknown".into())
+                .trim_start_matches("sha256:")
+        );
+        if !graph.nodes.iter().any(|node| node.id == callee_id) {
+            let mut attributes = BTreeMap::new();
+            attributes.insert("symbol".into(), json!(symbol));
+            attributes.insert("calleeSummaryHash".into(), json!(summary_hash));
+            graph.nodes.push(GraphNode {
+                id: callee_id.clone(),
+                kind: "CALLEE_SUMMARY".into(),
+                defines: None,
+                uses: vec![],
+                origin: None,
+                editable: false,
+                attributes,
+            });
+        }
+        graph.edges.push(Edge {
+            from: call.id.clone(),
+            to: callee_id.clone(),
+            kind: "CALL".into(),
+        });
+        graph.edges.push(Edge {
+            from: callee_id,
+            to: call.id,
+            kind: "RETURN".into(),
+        });
+    }
 }
 
 fn add_effect_edges(graph: &mut LocalGraph) {
@@ -583,8 +635,33 @@ pub fn slice(
     read_set.push(ReadFact {
         kind: "DIAGNOSTICS".into(),
         key: graph.symbol.clone(),
-        hash: canonical::hash(&json!([]))?,
+        hash: canonical::hash(&graph.diagnostics)?,
     });
+    if let Some(hash) = &graph.compiler_options_hash {
+        read_set.push(ReadFact {
+            kind: "COMPILER_OPTIONS".into(),
+            key: graph.symbol.clone(),
+            hash: hash.clone(),
+        });
+    }
+    if let Some(hash) = &graph.classpath_hash {
+        read_set.push(ReadFact {
+            kind: "CLASSPATH".into(),
+            key: graph.symbol.clone(),
+            hash: hash.clone(),
+        });
+    }
+    for fact in &graph.inheritance_facts {
+        read_set.push(ReadFact {
+            kind: "INHERITANCE".into(),
+            key: fact
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or(&graph.symbol)
+                .into(),
+            hash: canonical::hash(fact)?,
+        });
+    }
     read_set.sort();
     read_set.dedup();
     let thread_id = format!(
@@ -709,6 +786,10 @@ mod tests {
                 },
             ],
             boundaries: vec![],
+            diagnostics: vec![],
+            compiler_options_hash: None,
+            classpath_hash: None,
+            inheritance_facts: vec![],
         };
         let enriched = enrich(graph);
         assert!(enriched.nodes.iter().any(|n| n.id == "phi:value@ret"));
@@ -750,6 +831,10 @@ mod tests {
                 kind: "DEF_USE".into(),
             }],
             boundaries: vec![],
+            diagnostics: vec![],
+            compiler_options_hash: None,
+            classpath_hash: None,
+            inheritance_facts: vec![],
         };
         let ir = slice(
             &graph,
