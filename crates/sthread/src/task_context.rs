@@ -539,15 +539,34 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         .collect::<BTreeMap<_, _>>();
     let edit_surfaces = edit_candidates
         .iter()
-        .map(|candidate| {
-            compact_surface(
+        .enumerate()
+        .map(|(index, candidate)| {
+            let mut surface = compact_surface(
                 candidate,
                 body_anchors.get(
                     candidate.declaration["legacySymbolId"]
                         .as_str()
                         .unwrap_or_default(),
                 ),
-            )
+            );
+            let role = if root_candidates.first().is_some_and(|root| {
+                root.declaration["declarationId"] == candidate.declaration["declarationId"]
+            }) {
+                "WORKFLOW"
+            } else if root_candidates.iter().any(|root| {
+                root.declaration["declarationId"] == candidate.declaration["declarationId"]
+            }) {
+                "INTERMEDIARY"
+            } else if is_contract_source(&candidate.source_text) {
+                "OUTPUT_CONTRACT"
+            } else if candidate.source_text.contains("@Query") {
+                "DATA_SOURCE"
+            } else {
+                "DEPENDENCY"
+            };
+            surface["role"] = json!(role);
+            surface["surfaceOrder"] = json!(index + 1);
+            surface
         })
         .collect::<Vec<_>>();
     let contracts = contract_declarations
@@ -608,7 +627,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
             "threadId":thread_id,
             "baseRevision":base_revision,
             "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"old":"...","new":"..."},
-            "instruction":"Use kind and target.targetId. Multiline: oldLines/newLines/kotlinLines (common-dedented); occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan all necessary emitted surfaces. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. If a new subtype flows through an emitted intermediary, update its parameter to the common contract. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
+            "instruction":"Use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{
