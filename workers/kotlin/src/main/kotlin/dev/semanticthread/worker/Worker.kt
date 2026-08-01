@@ -1192,6 +1192,17 @@ internal class Worker : AutoCloseable {
         val errors = PsiTreeUtil.collectElementsOfType(candidateFile, PsiErrorElement::class.java).map { it.errorDescription }.sorted()
         if (errors.isNotEmpty()) throw WorkerFailure("REPLACEMENT_PARSE_ERROR", errors.joinToString("; "))
         val syntacticIntroducedEffects = effects(replacementNode) - oldEffects
+        if (request["deferSemanticValidation"]?.jsonPrimitive?.booleanOrNull == true) {
+            return buildJsonObject {
+                put("schema", "semantic-candidate/0.1"); put("file", relative)
+                put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
+                putJsonArray("diagnostics") {}; putJsonArray("introducedEffects") { syntacticIntroducedEffects.sorted().forEach(::add) }
+                // A task transaction may temporarily break bindings while its
+                // declaration/file candidates are still being assembled.
+                // The detached worktree validates the complete state once.
+                put("k2Validated", false)
+            }
+        }
         val baselineOverrides = if (source == path.readText()) emptyMap() else mapOf(relative to source)
         val baseline = analyzeWithK2(repo, baselineOverrides, compilation)
         val candidateAnalysis = analyzeWithK2(repo, mapOf(relative to candidate), compilation)

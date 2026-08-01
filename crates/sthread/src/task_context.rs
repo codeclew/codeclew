@@ -955,9 +955,12 @@ fn test_snippet(file: &SourceFile, needles: &BTreeMap<String, usize>) -> Option<
         }
     }
     let source = lines[start..=end.min(lines.len().saturating_sub(1))].join("\n");
-    let (source_text, truncated, omitted) = truncate_utf8(&source, MAX_TEST_BYTES);
+    // PSI declaration.text starts at the first annotation/token, not at the
+    // surrounding blank line or its file indentation.
+    let declaration_source = source.trim();
+    let (source_text, truncated, omitted) = truncate_utf8(declaration_source, MAX_TEST_BYTES);
     let declaration_name = test_function_name(lines[function_line]).unwrap_or("test");
-    let exact_text_hash = canonical::hash_bytes(source.as_bytes());
+    let exact_text_hash = canonical::hash_bytes(declaration_source.as_bytes());
     let anchor_id = format!(
         "test-declaration:{}",
         canonical::hash_bytes(

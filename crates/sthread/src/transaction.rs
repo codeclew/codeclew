@@ -45,6 +45,12 @@ pub fn preview(
     let mut expected_writes = Vec::new();
     let mut windows = Vec::new();
     let mut diagnostics = Vec::new();
+    let defer_semantic_validation = edit.operations.iter().any(|operation| {
+        matches!(
+            operation.kind.as_str(),
+            "REPLACE_DECLARATION" | "CREATE_FILE"
+        )
+    });
     for operation in &edit.operations {
         if operation.kind != "REPLACE_EXPRESSION"
             && operation.kind != "REPLACE_FUNCTION_BODY"
@@ -133,6 +139,7 @@ pub fn preview(
             "rightContextHash": target.get("rightContextHash").cloned().unwrap_or(Value::Null),
             "kind": operation.kind, "replacement": operation.replacement.kotlin,
             "compilation": thread.snapshot.compilation,
+            "deferSemanticValidation":defer_semantic_validation,
             "preconditions": operation.preconditions, "postconditions": operation.postconditions
         });
         let response = worker.request(RequestKind::ApplyEdit, &request)?;
@@ -597,11 +604,20 @@ pub fn commit(
         transaction.candidate_commit = Some(candidate.clone());
         transaction.status = "COMMITTING".into();
         ledger(repo)?.append(transaction, "candidate commit created")?;
+        let changed_production_files = report
+            .candidates
+            .keys()
+            .filter(|file| file.contains("/src/main/") || file.starts_with("src/main/"))
+            .filter(|file| file.ends_with(".kt"))
+            .cloned()
+            .collect::<Vec<_>>();
         let index_facts = worker.request(
             RequestKind::IndexFiles,
             &json!({
                 "repo":worktree_path,
-                "compilation":transaction.thread.snapshot.compilation
+                "compilation":transaction.thread.snapshot.compilation,
+                "syntaxOnly":true,
+                "files":changed_production_files
             }),
         )?;
         let staged_index = RepositoryIndex::stage_update(
@@ -956,8 +972,8 @@ fn validate_worktree(
         .output()
         .map_err(|error| build_start_error(build_launcher, error))?;
     let compile_duration_ms = compile_started.elapsed().as_millis() as u64;
-    log_output(&output);
     if !output.status.success() {
+        log_output(&output);
         let mut error = SthreadError::new(
             ErrorCode::CompileFailed,
             format!("candidate worktree {build_system:?} compile task {compile_task} failed"),
@@ -986,10 +1002,10 @@ fn validate_worktree(
         .output()
         .map_err(|error| build_start_error(build_launcher, error))?;
     let test_duration_ms = test_started.elapsed().as_millis() as u64;
-    log_output(&output);
     if output.status.success() {
         Ok((compile_duration_ms, test_duration_ms))
     } else {
+        log_output(&output);
         let mut error = SthreadError::new(
             ErrorCode::TestFailed,
             format!(

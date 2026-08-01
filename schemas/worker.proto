@@ -50,6 +50,7 @@ message ApplyEditRequest {
   bytes preconditions_json = 16;
   bytes postconditions_json = 17;
   optional string compilation = 18;
+  bool defer_semantic_validation = 19;
 }
 message ValidateCandidateRequest {
   SchemaVersion schema_version = 1;
