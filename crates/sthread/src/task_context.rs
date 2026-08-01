@@ -966,6 +966,7 @@ fn compact_contract(candidate: &Candidate) -> Value {
         "lines":[candidate.line_start,candidate.line_end],
         "sourceText":source_text,
         "sourceProjection":"DECLARATION_HEADER",
+        "required":true,
         "declarationTarget":declaration_target(candidate)
     })
 }
@@ -1833,6 +1834,8 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
         .map(|key| (key.to_owned(), array_len(&pack, key)))
         .collect::<BTreeMap<_, _>>();
     let mut source_bytes = 0usize;
+    let mut required_source_bytes = 0usize;
+    let mut required_edit_surfaces_omitted = 0usize;
     let content_budget = max_bytes.saturating_sub(256).max(3_072);
     while serialized_len(&pack)? > content_budget {
         if array_len(&pack, "executionPath") > 6 && pop_array(&mut pack, "executionPath") {
@@ -1844,12 +1847,29 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
         if array_len(&pack, "contracts") > 2 && pop_array(&mut pack, "contracts") {
             continue;
         }
-        if let Some(omitted) = trim_largest_source(&mut pack) {
-            source_bytes += omitted;
+        // Optional graph expansion is useful orientation, not part of the
+        // required edit surface. Remove it before degrading an entrypoint,
+        // explicit target, contract, or requested test.
+        if pop_last_optional(&mut pack, "editSurfaces") {
             continue;
         }
-        if array_len(&pack, "editSurfaces") > 1 && pop_array(&mut pack, "editSurfaces") {
+        if let Some((omitted, required)) = trim_largest_source(&mut pack) {
+            source_bytes += omitted;
+            if required {
+                required_source_bytes += omitted;
+            }
             continue;
+        }
+        if array_len(&pack, "editSurfaces") > 1 {
+            let required = pack["editSurfaces"]
+                .as_array()
+                .and_then(|items| items.last())
+                .and_then(|item| item["required"].as_bool())
+                == Some(true);
+            if pop_array(&mut pack, "editSurfaces") {
+                required_edit_surfaces_omitted += usize::from(required);
+                continue;
+            }
         }
         return Err(SthreadError::new(
             ErrorCode::InvalidInput,
@@ -1860,7 +1880,11 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
         .iter()
         .map(|(key, count)| (key.clone(), count - array_len(&pack, key)))
         .collect::<BTreeMap<_, _>>();
-    let partial = source_bytes > 0 || omitted.values().any(|count| *count > 0);
+    let partial = required_source_bytes > 0
+        || required_edit_surfaces_omitted > 0
+        || omitted
+            .iter()
+            .any(|(key, count)| key != "editSurfaces" && *count > 0);
     if partial {
         pack["completeness"]["status"] = json!("PARTIAL_BUDGET");
         pack["completeness"]["boundaries"]
@@ -1884,24 +1908,42 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
     Ok(pack)
 }
 
-fn trim_largest_source(pack: &mut Value) -> Option<usize> {
-    let mut best: Option<(String, usize, usize)> = None;
+fn pop_last_optional(value: &mut Value, key: &str) -> bool {
+    let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let Some(index) = items
+        .iter()
+        .rposition(|item| item["required"].as_bool() == Some(false))
+    else {
+        return false;
+    };
+    items.remove(index);
+    true
+}
+
+fn trim_largest_source(pack: &mut Value) -> Option<(usize, bool)> {
+    let mut best: Option<(String, usize, usize, bool)> = None;
     for key in ["editSurfaces", "contracts", "tests"] {
         for (index, item) in pack.get(key)?.as_array()?.iter().enumerate() {
             let length = item["sourceText"]
                 .as_str()
                 .map(str::len)
                 .unwrap_or_default();
+            let required = item["required"].as_bool() == Some(true);
             if length > 640
                 && best
                     .as_ref()
-                    .is_none_or(|(_, _, best_length)| length > *best_length)
+                    .is_none_or(|(_, _, best_length, best_required)| {
+                        (!required && *best_required)
+                            || (required == *best_required && length > *best_length)
+                    })
             {
-                best = Some((key.to_owned(), index, length));
+                best = Some((key.to_owned(), index, length, required));
             }
         }
     }
-    let (key, index, length) = best?;
+    let (key, index, length, required) = best?;
     let item = pack.get_mut(&key)?.as_array_mut()?.get_mut(index)?;
     let source = item["sourceText"].as_str()?.to_owned();
     let (truncated, _, omitted) = truncate_utf8(&source, (length / 2).max(640));
@@ -1909,7 +1951,7 @@ fn trim_largest_source(pack: &mut Value) -> Option<usize> {
     item["sourceTruncated"] = json!(true);
     let previous = item["sourceBytesOmitted"].as_u64().unwrap_or_default() as usize;
     item["sourceBytesOmitted"] = json!(previous + omitted);
-    Some(omitted)
+    Some((omitted, required))
 }
 
 fn serialized_len(value: &Value) -> Result<usize, SthreadError> {
@@ -2090,6 +2132,64 @@ mod tests {
         assert!(intent_requests_tests("добавить регрессионные тесты"));
         assert!(intent_requests_tests("use human-readable @DisplayName"));
         assert!(!intent_requests_tests("preserve runtime behavior"));
+    }
+
+    #[test]
+    fn stdout_budget_discards_optional_graph_source_before_required_surface() {
+        let required_source = "r".repeat(2_000);
+        let optional_source = "o".repeat(2_000);
+        let pack = json!({
+            "task":{},
+            "editSurfaces":[
+                {"name":"main","required":true,"sourceText":required_source},
+                {"name":"loadRecords","required":false,"sourceText":optional_source}
+            ],
+            "executionPath":[],
+            "contracts":[],
+            "tests":[],
+            "completeness":{
+                "status":"COMPLETE_TASK",
+                "boundaries":[],
+                "omitted":{}
+            }
+        });
+
+        let bounded = enforce_budget(pack, 4_096).unwrap();
+
+        assert_eq!(bounded["completeness"]["status"], "COMPLETE_TASK");
+        assert_eq!(bounded["editSurfaces"].as_array().unwrap().len(), 1);
+        assert_eq!(bounded["editSurfaces"][0]["name"], "main");
+        assert_eq!(
+            bounded["editSurfaces"][0]["sourceText"]
+                .as_str()
+                .unwrap()
+                .len(),
+            2_000
+        );
+        assert_eq!(bounded["completeness"]["omitted"]["editSurfaces"], 1);
+        assert_eq!(bounded["completeness"]["omitted"]["sourceBytes"], 0);
+    }
+
+    #[test]
+    fn stdout_budget_never_reports_trimmed_required_source_as_complete() {
+        let pack = json!({
+            "task":{},
+            "editSurfaces":[{"name":"main","required":true,"sourceText":"r".repeat(6_000)}],
+            "executionPath":[],
+            "contracts":[],
+            "tests":[],
+            "completeness":{"status":"COMPLETE_TASK","boundaries":[],"omitted":{}}
+        });
+
+        let bounded = enforce_budget(pack, 4_096).unwrap();
+
+        assert_eq!(bounded["completeness"]["status"], "PARTIAL_BUDGET");
+        assert!(
+            bounded["completeness"]["omitted"]["sourceBytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
     }
 
     #[test]
