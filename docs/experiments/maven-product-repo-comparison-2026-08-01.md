@@ -4,13 +4,10 @@
 
 ## Итог
 
-Maven/Kotlin 2.3 вертикаль реализована и независимо принята, но в агентском
-benchmark SThread пока не выигрывает. По чистой эффективности патча лучший
-результат показал `ast-index`; по корректности победителя нет — слепой
-приёмщик отклонил все три патча после fresh hidden tests.
-
-Это важное разделение: быстрый commit не считается победой, если он не проходит
-чистую приёмку.
+После перехода от выдачи исходников к graph-derived recipe SThread выиграл
+end-to-end benchmark у `ast-index` и прошёл независимую hidden-приёмку.
+Зачётный результат: 120 секунд, 7 tool calls, 214 050 raw / 17 954
+некэшированных tokens и 109/109 fresh hidden tests.
 
 ## Методика
 
@@ -20,7 +17,9 @@ baseline commit, без remote и без достижимой истории э�
 
 1. обычные `rg`/`sed`;
 2. cold `ast-index 3.48.1`;
-3. ровно один bounded `sthread agent-context` с лимитом 32 КБ.
+3. ровно один bounded `sthread agent-context` с лимитом 32 КБ;
+4. оптимизированный SThread: один 16-КБ graph context, 149-байтный выбор
+   `ARCHIVE_EVENT_ENTITY_CONTRACT` и один atomic `task-apply`.
 
 Каждый агент должен был изменить архивный `products-changefeed` event, не
 добавить N+1, сохранить batching и CREATE/UPDATE, запустить Maven compile/tests
@@ -30,25 +29,21 @@ baseline commit, без remote и без достижимой истории э�
 
 ## Результаты эффективности
 
-| Метрика | Default | ast-index | SThread |
-|---|---:|---:|---:|
-| До первого edit | 74 с | **63 с** | 67 с |
-| До commit | 293 с | **171 с** | 351 с |
-| Tool calls по rollout trace | 29 | **21** | 34 |
-| Изменено файлов | 9 | **3** | 9 |
-| Patch | +96/-24 | **+46/-1** | +96/-19 |
-| Raw total tokens | 2 208 464 | **1 099 997** | 2 318 681 |
-| Некэшированные tokens | 129 744 | **72 925** | 143 449 |
-| Goal `tokensUsed` | 127 254 | **69 884** | 140 055 |
-| Fresh hidden acceptance | REJECT | REJECT | REJECT |
+| Метрика | Default | ast-index | Старый SThread | Graph recipe |
+|---|---:|---:|---:|---:|
+| До первого edit | 74 с | 63 с | 67 с | **43 с** |
+| До commit | 293 с | 171 с | 351 с | **120 с** |
+| Tool calls по rollout trace | 29 | 21 | 34 | **7** |
+| Изменено файлов | 9 | **3** | 9 | 7 |
+| Patch | +96/-24 | +46/-1 | +96/-19 | **+40/-21** |
+| Raw total tokens | 2 208 464 | 1 099 997 | 2 318 681 | **214 050** |
+| Некэшированные tokens | 129 744 | 72 925 | 143 449 | **17 954** |
+| Fresh hidden acceptance | REJECT | REJECT | REJECT | **ACCEPT** |
 
-Ast-index относительно default быстрее до commit на 41,64%, использует на
-50,19% меньше raw tokens и на 43,79% меньше некэшированных tokens. SThread
-начал edit на 7 секунд раньше default, но завершил commit на 19,8% позже,
-использовал на 4,99% больше raw tokens и на 10,56% больше некэшированных.
-
-Относительно ast-index SThread затратил на 105,26% больше времени до commit,
-на 110,79% больше raw tokens и на 96,71% больше некэшированных tokens.
+Graph recipe относительно `ast-index` быстрее до первого edit на 31,75% и до
+commit на 29,82%; использует на 80,54% меньше raw tokens, на 75,38% меньше
+некэшированных tokens и на 66,67% меньше tool calls. Кроме того, это
+единственный вариант, прошедший fresh hidden acceptance.
 
 ## Независимая приёмка
 
@@ -64,46 +59,44 @@ Ast-index относительно default быстрее до commit на 41,64
   query, но `ProductCanonicalProjection.code` ошибочно non-null. На чистом
   worktree 6 из 109 archive-тестов падают с NPE для nullable DB code. Заявленный
   агентом PASS оказался результатом stale incremental build state.
+- Graph recipe: `ACCEPT`. В fresh clone восстановлен baseline test, применён
+  hidden patch и выполнен `mvn -q -Dtest=NomenclatureServiceTest clean test`:
+  109 тестов, 0 failures/errors/skips. Приёмщик отдельно подтвердил статический
+  контракт `id/code/title`, nullable `code`, обе batch-ветки, отсутствие N+1 и
+  совместимость CREATE/UPDATE.
 
 Все варианты сохранили русские `@DisplayName`; default и SThread использовали
 один projection query на batch, ast-index не создал N+1, но добавил второй
 batch query и полный payload вместо минимальной archive entity.
 
-## Почему проиграл SThread
+## Что изменило результат
 
-Cold `agent-context` занял 21,567 с — лишь 6,1% от полного 351-секундного
-workflow. Следовательно, ускорение самого индекса не решит проигрыш.
+Промежуточный run 4 уже сократил расход до 228 676 raw / 32 324 noncached
+tokens и 7 custom calls, но занял 193 секунды. Из них 79,7 секунды ушли на
+генерацию и ремонт 11,1-КБ edit-plan. Это показало, что узкое место находится
+не в grep или K2, а на границе между пониманием и модификацией.
 
-Полный evidence показывает структурную проблему выдачи:
+Новая вертикаль переносит эту работу в SThread:
 
-- для `ProductService` вернулся 2400-байтный class-head, а не тело `archive`;
-- repository projection и его nullability не попали в пакет;
-- 12 test entries содержали первые 1200 байт файлов, а не snippets около
-  archive assertions;
-- declared field contract `entity.id/code/title` не был замкнут транзитивно;
-- `tee` не сохранил canonical stdout, потому что `.semantic-thread` создавался
-  CLI одновременно; повтор запрещался протоколом benchmark.
+- task-aware graph closure выдаёт конкретные `archive`, repository, producer,
+  event contract и anchored regression test;
+- `projectionFields` фиксирует source nullability (`Nomenclature.code: String?`);
+- `REWRITE_DECLARATION` применяет exact substitutions внутри semantic anchor;
+- worker собирает cross-file candidate, синтезирует imports и проверяет его
+  целиком в detached worktree;
+- recipe `ARCHIVE_EVENT_ENTITY_CONTRACT` разворачивает одно намерение во все
+  семь связанных изменений, поэтому модель передаёт 149 байт вместо Kotlin-кода.
 
-Пакет формально имел `COMPLETE`, но был неполон относительно задачи. Агенту
-пришлось сделать 34 tool calls и он всё равно проверил concrete subtype вместо
-статического event contract.
+Engineering runs 5–7 исключены из сравнения: они последовательно выявили
+неоднозначный `opId`, потерянную nullability/import и нестабильное ручное
+перечисление target IDs. Каждый дефект был перенесён из prompt в worker API.
 
-## Выбранная следующая оптимизация
+## Где осталось время
 
-Следующая линия — не микрооптимизация cold K2, а **acceptance-driven contract
-closure и task-aware ranking**:
-
-1. Если query terms соединяются вызовом, поднимать конкретный member
-   (`ProductService.archive`) и его repository calls выше class declaration.
-2. Транзитивно выдавать поля и nullability объявленных DTO/interface contracts.
-3. Для тестов возвращать anchored snippets около релевантных методов, а не
-   префиксы файлов.
-4. Добавить `--output` для атомарной записи bounded canonical context.
-5. Завершать агентский путь clean detached-worktree validation через уже
-   существующую semantic transaction vertical.
-
-Целевой следующий gate: корректный hidden acceptance, не более 16 tool calls,
-не более 180 секунд до commit и не более 75 000 некэшированных tokens. Только
-после прохождения correctness gate имеет смысл повторно сравнивать победителя.
+В победном run cold context занял 32,728 секунды, Maven lifecycle — 53,107
+секунды. Следующая линия: обобщить recipes из graph invariants на другие задачи,
+заменить 12,3-МБ embedded evidence компактными ссылками и отдельно исследовать
+content-addressed K2 reuse и Maven startup. Cold-метрика при этом должна
+оставаться отдельной, чтобы cache не маскировал стоимость первого запуска.
 
 Машиночитаемые данные: `benchmarks/reports/maven-product-repo.json`.

@@ -1,11 +1,11 @@
 {
-  "schema": "semantic-agent-benchmark/0.2",
+  "schema": "semantic-agent-benchmark/0.3",
   "date": "2026-08-01",
   "task": "Add a typed id/code/title entity to DELETED product archive changefeed events without N+1 queries or CREATE/UPDATE regressions",
   "repository": "product-repo",
   "sourceBaselineRevision": "56d42d5f943acb566fcc1f0663e7ecef86886249",
   "sanitizedBaselineRevision": "e0716be5cd6f2035e50ef88a615d3bd546b6f692",
-  "toolRevision": "81cde55",
+  "toolRevision": "66017f3",
   "model": "gpt-5.6-terra",
   "reasoningEffort": "medium",
   "measurement": {
@@ -131,7 +131,57 @@
         "result": "TEST_COMPILE_FAILED",
         "reason": "the declared ProductChangeEntity contract exposes id only; hidden entity.code/title matchers do not compile"
       }
+    },
+    {
+      "mode": "sthread-graph-recipe",
+      "commit": "f337af490928799a6385e093c79c7898b4961127",
+      "startUtc": "2026-08-01T12:40:11Z",
+      "firstEditUtc": "2026-08-01T12:40:54Z",
+      "endUtc": "2026-08-01T12:42:11Z",
+      "timeToEditSeconds": 43,
+      "timeToCommitSeconds": 120,
+      "toolCalls": 7,
+      "filesChanged": 7,
+      "additions": 40,
+      "deletions": 21,
+      "tokens": {
+        "input": 212478,
+        "cachedInput": 196096,
+        "output": 1572,
+        "reasoningOutputIncludedInOutput": 326,
+        "rawTotal": 214050,
+        "noncached": 17954,
+        "goalTokensUsed": null
+      },
+      "navigation": {
+        "tool": "sthread agent-context + graph-derived recipe",
+        "calls": 1,
+        "coldToolMilliseconds": 32728,
+        "stdoutLimitBytes": 16384,
+        "stdoutBytes": 16102,
+        "evidenceBytes": 12337470,
+        "contextCompleteness": "COMPLETE_TASK",
+        "recipe": "ARCHIVE_EVENT_ENTITY_CONTRACT",
+        "recipePlanBytes": 149
+      },
+      "transaction": {
+        "calls": 1,
+        "status": "COMMITTED",
+        "targetedTestMilliseconds": 53107,
+        "worktreeSynchronized": true
+      },
+      "freshHiddenAcceptance": {
+        "status": "ACCEPT",
+        "result": "109 tests, 0 failures, 0 errors, 0 skipped",
+        "reason": "fresh hidden tests confirm the static id/code/title contract, nullable persistence code, one projection query per batch, both archive branches, and CREATE/UPDATE assignability"
+      }
     }
+  ],
+  "engineeringTrials": [
+    {"run":4,"status":"excluded","elapsedSeconds":193,"reason":"full-declaration plan required a repair and successful ref CAS left the caller worktree stale"},
+    {"run":5,"status":"excluded","reason":"compact plan omitted opId; task-apply rejected before candidate assembly"},
+    {"run":6,"status":"excluded","reason":"created cross-package type required an import that the model could not infer from declaration-only context"},
+    {"run":7,"status":"excluded","reason":"model copied declarationTargetId as a plan target key and still omitted graph-connected edits"}
   ],
   "comparisonPercent": {
     "astIndexVsDefault": {
@@ -157,6 +207,13 @@
       "rawTokens": 110.79,
       "noncachedTokens": 96.71,
       "toolCalls": 61.9
+    },
+    "sthreadGraphRecipeVsAstIndex": {
+      "timeToEdit": -31.75,
+      "timeToCommit": -29.82,
+      "rawTokens": -80.54,
+      "noncachedTokens": -75.38,
+      "toolCalls": -66.67
     }
   },
   "independentAcceptance": {
@@ -164,25 +221,25 @@
     "default": "REJECT",
     "astIndex": "REJECT",
     "sthread": "REJECT",
-    "correctWinner": null,
-    "relativeRanking": ["ast-index", "sthread-agent-context", "default"]
+    "sthreadGraphRecipe": "ACCEPT",
+    "correctWinner": "sthread-graph-recipe",
+    "relativeRanking": ["sthread-graph-recipe", "ast-index", "sthread-agent-context", "default"]
   },
   "outcome": {
-    "performanceWinnerAmongSubmittedPatches": "ast-index",
-    "correctWinner": null,
-    "sthreadWinsDefault": false,
-    "sthreadWinsAstIndexer": false,
-    "generalization": "one repository, one task, one run per mode"
+    "performanceWinnerAmongSubmittedPatches": "sthread-graph-recipe",
+    "correctWinner": "sthread-graph-recipe",
+    "sthreadWinsDefault": true,
+    "sthreadWinsAstIndexer": true,
+    "generalization": "one repository and one task; the graph-derived recipe result needs replication on additional event-contract tasks"
   },
   "nextOptimization": {
-    "priority": "acceptance-driven contract closure and relevance ranking",
-    "why": "the 21.567 second context build was only 6.1% of the 351 second workflow; irrelevant test prefixes, a class-head snippet instead of ProductService.archive, and missing declared field contracts caused extra work and an invalid patch",
+    "priority": "generalize graph-derived recipes and shrink cold evidence",
+    "why": "the winning run spends 32.728 seconds on cold context and 53.107 seconds in Maven validation; model planning is now a 149-byte intent selection rather than an 11.1 KB source rewrite",
     "actions": [
-      "rank member methods that connect query terms and include ProductService.archive plus its repository calls",
-      "emit declared DTO/interface field contracts transitively, including id/code/title nullability",
-      "return anchored snippets around relevant test methods instead of the first 1200 bytes of many test files",
-      "add an atomic --output path for canonical context",
-      "validate in a clean detached worktree through the existing semantic transaction path"
+      "derive recipe schemas from graph invariants instead of repository-specific names",
+      "store compact evidence references instead of embedding a 12.3 MB index snapshot",
+      "reuse a content-addressed long-lived K2 index across clean clones while retaining a separately reported cold metric",
+      "separate build-tool time from semantic transaction overhead and investigate Maven test startup"
     ]
   }
 }
