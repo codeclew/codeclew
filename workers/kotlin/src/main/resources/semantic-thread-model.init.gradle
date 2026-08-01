@@ -38,6 +38,11 @@ gradle.beforeProject { project ->
             }
             def sourceFiles = []
             try { sourceFiles = compile.sources.files.collect { it.absolutePath }.sort() } catch (Throwable ignored) {}
+            def compilerVersion = null
+            try {
+                def versionClass = compile.class.classLoader.loadClass("org.jetbrains.kotlin.config.KotlinCompilerVersion")
+                compilerVersion = versionClass.getField("VERSION").get(null)?.toString()
+            } catch (Throwable ignored) {}
             def tasks = project.tasks.collect { it.name }.sort()
             def model = [
                 projectPath: project.path,
@@ -47,6 +52,7 @@ gradle.beforeProject { project ->
                 classpath: filesOf("libraries"),
                 friendPaths: filesOf("friendPaths"),
                 compilerPlugins: filesOf("pluginClasspath"),
+                compilerVersion: compilerVersion,
                 languageVersion: option("languageVersion"),
                 apiVersion: option("apiVersion"),
                 jvmTarget: option("jvmTarget"),

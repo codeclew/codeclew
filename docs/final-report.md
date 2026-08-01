@@ -18,7 +18,7 @@ The stage benchmark uses an isolated cache-clean fixture and 20 samples per p95.
 
 ## Kotlin K2/FIR isolation
 
-The worker invokes the pinned Kotlin 2.4.10 K2 compiler in-process with the selected Gradle compilation's language/API versions, JVM target, free arguments, opt-ins, friend paths, classpath and project compiler plugins, plus the in-distribution facts plugin. Cache identity includes the content of all those artifacts and options. The plugin exports resolved expression types, selected callable symbols, receivers, argument-to-parameter mappings, suspend effects, diagnostics, and the compiler's actual FIR CFG. Rust sees only versioned JSON/Protobuf DTOs and never imports FIR classes.
+The selected worker invokes a pinned Kotlin 2.1.21 or 2.4.10 K2 compiler in-process with the Gradle compilation's language/API versions, JVM target, free arguments, opt-ins, friend paths, classpath and project compiler plugins, plus the matching in-distribution facts plugin. Cache identity includes the compiler version and the content of all those artifacts and options. The plugin exports resolved expression types, selected callable symbols, receivers, argument-to-parameter mappings, suspend effects, diagnostics, and the compiler's actual FIR CFG. Rust sees only versioned JSON/Protobuf DTOs and never imports FIR classes.
 
 ## Next stage
 
