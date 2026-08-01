@@ -960,6 +960,11 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadE
     Ok(())
 }
 fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
+    if plan.get("operations").is_none()
+        && let Some(edits) = plan.as_object_mut().and_then(|plan| plan.remove("edits"))
+    {
+        plan["operations"] = edits;
+    }
     let operations = plan["operations"].as_array_mut().ok_or_else(|| {
         SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
     })?;
@@ -1271,7 +1276,7 @@ mod task_plan_tests {
 
     #[test]
     fn normalizes_compact_rewrites_and_imports_created_cross_package_types() {
-        let mut plan = json!({"operations":[
+        let mut plan = json!({"edits":[
             {
                 "op":"CREATE_FILE",
                 "target":{"fileId":"src/main/kotlin/com/acme/contracts/Entity.kt"},
