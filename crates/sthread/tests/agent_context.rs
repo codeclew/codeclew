@@ -14,11 +14,13 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
             "--repo",
             fixture.to_str().unwrap(),
             "--term",
-            "applyAdaptive",
+            "readOptions",
             "--term",
-            "Adaptive",
+            "applyOptions",
+            "--term",
+            "Runner",
             "--intent",
-            "Apply adaptive settings to the selected Kotlin function and preserve its typed contract",
+            "Wire the named options functions into the Runner entrypoint and add focused tests",
             "--max-bytes",
             "16384",
             "--evidence",
@@ -39,16 +41,32 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|declaration| declaration["name"] == "applyAdaptive")
+        .find(|declaration| declaration["name"] == "applyOptions")
         .unwrap();
-    assert!(declaration["bodyTargetId"].as_str().is_some());
+    assert!(declaration["declarationTargetId"].as_str().is_some());
     assert!(
         declaration["sourceText"]
             .as_str()
             .unwrap()
-            .contains("applyAdaptive")
+            .contains("applyOptions")
     );
     assert!(context.get("references").is_none());
+    assert_eq!(context["completeness"]["status"], "COMPLETE_TASK");
+    let roles = context["editSurfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|surface| surface["role"].as_str())
+        .collect::<Vec<_>>();
+    assert!(roles.contains(&"WORKFLOW"));
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|role| **role == "EXPLICIT_TARGET")
+            .count(),
+        2
+    );
+    assert_eq!(context["task"]["requirements"].as_array().unwrap().len(), 4);
     assert_eq!(context["editPlan"]["schema"], "semantic-task-edit-plan/0.1");
     assert!(context["editPlan"].get("recommendedRecipe").is_none());
     assert_eq!(
@@ -80,10 +98,10 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|declaration| declaration["name"] == "applyAdaptive")
+        .find(|declaration| declaration["name"] == "applyOptions")
         .unwrap();
     assert!(
-        stored_declaration["bodyTarget"]["syntaxKind"]
+        stored_declaration["declarationTarget"]["syntaxKind"]
             .as_str()
             .is_some_and(|kind| kind.starts_with("Kt"))
     );
