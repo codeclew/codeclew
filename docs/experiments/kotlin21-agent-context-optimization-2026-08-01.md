@@ -62,3 +62,7 @@ synthetic `MainKt` и угаданных FQN. Поэтому локальное 
 summary-only stdout при наличии `--output`, единый discovery/search для
 функций и классов, компактное представление больших slices и объединение
 нескольких lookup в один roundtrip.
+
+Эта линия реализована командой `agent-context`. Итоговая серия из пяти
+независимых Terra-прогонов прошла все пороги по времени, числу ходов и tokens;
+см. [отчёт Semantic Context Pack](semantic-agent-context-pack-2026-08-01.md).
