@@ -64,8 +64,17 @@ verify_package() {
     (.approvalSubject.artifacts|type=="array") and
     (.approvalSubject.currentTaskEvent|keys)==["authorRole","messageDigest","messageId","mode","taskId"] and
     .approvalSubject.currentTaskEvent.authorRole=="USER" and
+    (.approvalSubject.currentTaskEvent.taskId|type=="string" and length>0) and
+    (.approvalSubject.currentTaskEvent.messageId|type=="string" and length>0) and
     (.approvalSubject.currentTaskEvent.messageDigest|test("^[a-f0-9]{64}$"))
   ' "$approval" >/dev/null || reject APPROVAL_SHAPE_INVALID approval
+  jq -e '
+    all(.approvalSubject.artifacts[];
+      keys==["path","rawFileSha256","role"] and
+      (.role|type=="string" and length>0) and
+      (.path|type=="string" and length>0) and
+      (.rawFileSha256|test("^[a-f0-9]{64}$")))
+  ' "$approval" >/dev/null || reject APPROVAL_SHAPE_INVALID artifacts
   [ "$(jq -cS '.approvalSubject' "$approval" | sha_stream)" = "$(jq -r '.approvalSubjectDigest' "$approval")" ] || reject APPROVAL_SUBJECT_DIGEST_MISMATCH approval
   local mode
   mode=$(jq -r '.approvalSubject.currentTaskEvent.mode' "$approval")
@@ -75,6 +84,17 @@ verify_package() {
   expected_roles=$(jq -cS '.approvalArtifactRoles|sort' "$manifest")
   actual_roles=$(jq -cS '.approvalSubject.artifacts|map(.role)|sort' "$approval")
   [ "$actual_roles" = "$expected_roles" ] || reject APPROVAL_ARTIFACT_SET_MISMATCH roles
+  local expected_refs actual_refs
+  expected_refs=$(jq -cS '[
+    .basePlan,
+    .amendment,
+    {role:"P10_LITE_MANIFEST",path:"docs/superpowers/plans/codeclew-p10-lite-manifest-v1.json"},
+    .controller,
+    .rejectedP10Evidence,
+    .frozenRuntimePrototype
+  ] | map({role,path}) | sort_by(.role)' "$manifest")
+  actual_refs=$(jq -cS '.approvalSubject.artifacts | map({role,path}) | sort_by(.role)' "$approval")
+  [ "$actual_refs" = "$expected_refs" ] || reject APPROVAL_ARTIFACT_REF_MISMATCH paths
   local count index role path expected resolved actual
   count=$(jq '.approvalSubject.artifacts|length' "$approval"); index=0
   while [ "$index" -lt "$count" ]; do
@@ -95,7 +115,7 @@ verify_package() {
 
 make_approval() {
   local manifest=$1 output=$2 mode=$3
-  jq -nS --arg mode "$mode" --argjson artifacts "$(jq -c '[.basePlan,.amendment,{role:"P10_LITE_MANIFEST",path:"docs/superpowers/plans/codeclew-p10-lite-manifest-v1.json"},.controller,.rejectedP10Evidence,.frozenRuntimePrototype]' "$manifest")" '
+  jq -nS --arg mode "$mode" --argjson artifacts "$(jq -c '[.basePlan,.amendment,{role:"P10_LITE_MANIFEST",path:"docs/superpowers/plans/codeclew-p10-lite-manifest-v1.json"},.controller,.rejectedP10Evidence,.frozenRuntimePrototype] | map({role,path,rawFileSha256:(.rawFileSha256 // "")})' "$manifest")" '
     {schemaVersion:"codeclew-p10-lite-approval/1",approvalSubject:{artifacts:($artifacts|map(.rawFileSha256 = (.rawFileSha256 // ""))),currentTaskEvent:{mode:$mode,taskId:"goal-task",messageId:"approval-message",authorRole:"USER",messageDigest:("a"*64)}},approvalSubjectDigest:"",humanDecision:"HUMAN_APPROVED",createdAt:"2026-08-09T00:00:00Z",canonicalScope:"JQ_1_7_SORTED_COMPACT_INTEGER_JSON"}
   ' > "$output"
   local index path digest count
@@ -134,6 +154,9 @@ self_test() {
   negative stale-prototype STALE_FROZEN_RUNTIME_PROTOTYPE '(.approvalSubject.artifacts[]|select(.role=="FROZEN_RUNTIME_PROTOTYPE")|.rawFileSha256)=("b"*64)'
   negative bad-set APPROVAL_ARTIFACT_SET_MISMATCH '.approvalSubject.artifacts |= map(select(.role!="REJECTED_P10_EVIDENCE"))|.approvalSubjectDigest=""'
   negative invalid-event APPROVAL_SHAPE_INVALID '.approvalSubject.currentTaskEvent.messageDigest="not-a-digest"'
+  negative empty-event APPROVAL_SHAPE_INVALID '.approvalSubject.currentTaskEvent.taskId=""|.approvalSubject.currentTaskEvent.messageId=""'
+  negative path-alias APPROVAL_ARTIFACT_REF_MISMATCH '(.approvalSubject.artifacts[]|select(.role=="REJECTED_P10_EVIDENCE")|.path)="./docs/experiments/codeclew-p10-execution-2026-08-09.md"'
+  negative nested-extra-field APPROVAL_SHAPE_INVALID '(.approvalSubject.artifacts[]|select(.role=="BASE_PLAN")|.unexpected)=true'
   negative extra-field APPROVAL_SHAPE_INVALID '.unexpected=true'
   SELF_TEST=0; negative external-test-only TEST_ONLY_FORBIDDEN '.'; SELF_TEST=1
   jq -cnS --argjson total "$total" --argjson passed "$passed" '{schemaVersion:"codeclew-p10-lite-self-test/1",status:(if $total==$passed then "PASS" else "FAIL" end),total:$total,passed:$passed,runtimeContractsAccepted:false}'
