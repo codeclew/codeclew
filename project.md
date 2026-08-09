@@ -1213,49 +1213,49 @@ Semantic-Edit-Hash: ...
 Реализовать команды:
 
 ```bash
-sthread project inspect \
+clew project inspect \
   --repo <path>
 
-sthread index \
+clew index \
   --repo <path> \
   --compilation :app/main
 
-sthread resolve symbol \
+clew resolve symbol \
   --repo <path> \
   --symbol com.acme.OrderService.placeOrder
 
-sthread resolve expression \
+clew resolve expression \
   --repo <path> \
   --file src/main/kotlin/com/acme/OrderService.kt \
   --offset 842
 
-sthread cfg \
+clew cfg \
   --repo <path> \
   --symbol com.acme.OrderService.placeOrder
 
-sthread slice \
+clew slice \
   --repo <path> \
   --symbol com.acme.OrderService.placeOrder \
   --direction both \
   --max-nodes 200 \
   --output thread.json
 
-sthread edit preview \
+clew edit preview \
   --repo <path> \
   --thread thread.json \
   --operations edit.json \
   --output preview.json
 
-sthread tx validate \
+clew tx validate \
   --repo <path> \
   --transaction tx.json
 
-sthread tx commit \
+clew tx commit \
   --repo <path> \
   --transaction tx.json \
   --target-ref refs/heads/main
 
-sthread tx inspect \
+clew tx inspect \
   --transaction-id tx:...
 ```
 
@@ -1285,7 +1285,7 @@ CLI требования:
 • Protobuf generation для Rust и Kotlin;
 • framed IPC library;
 • minimal worker supervisor;
-• sthread doctor;
+• clew doctor;
 • CI для Rust tests, Kotlin tests и protocol compatibility.
 
 Gate: Rust CLI запускает Kotlin worker, выполняет handshake и корректно завершает его.
@@ -1295,7 +1295,7 @@ Gate: Rust CLI запускает Kotlin worker, выполняет handshake и
 Реализовать:
 
 ```bash
-sthread project inspect
+clew project inspect
 ```
 
 Gate: повторный запуск на одном snapshot даёт тот же canonical JSON и ProjectModelHash.
@@ -1723,12 +1723,12 @@ Compatibility implications
 
 Первая вертикальная версия считается завершённой, когда:
 
-1. sthread project inspect корректно загружает fixture Gradle Kotlin/JVM project.
-2. sthread index строит детерминированный incremental index.
-3. sthread resolve symbol разрешает функцию, calls и types.
-4. sthread cfg выдаёт canonical Local CFG.
+1. clew project inspect корректно загружает fixture Gradle Kotlin/JVM project.
+2. clew index строит детерминированный incremental index.
+3. clew resolve symbol разрешает функцию, calls и types.
+4. clew cfg выдаёт canonical Local CFG.
 5. Rust строит SSA, def-use и control dependencies.
-6. sthread slice выдаёт корректный Thread IR.
+6. clew slice выдаёт корректный Thread IR.
 7. ReplaceExpression применяется к PSI-копии.
 8. Invalid replacement отклоняется до source mutation.
 9. Valid replacement создаёт минимальный preview diff.

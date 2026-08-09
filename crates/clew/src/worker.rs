@@ -1,4 +1,4 @@
-use crate::error::{ErrorCode, SthreadError};
+use crate::error::{ClewError, ErrorCode};
 use crate::proto::{
     ApplyEditRequest, BatchRequest, BlobRef, BuildLocalGraphRequest, IndexFilesRequest,
     OpenProjectRequest, ProtocolVersion, RequestKind, ResolveExpressionRequest,
@@ -44,7 +44,7 @@ enum WorkerVariant {
 }
 
 impl WorkerVariant {
-    fn for_project(version: &str) -> Result<Self, SthreadError> {
+    fn for_project(version: &str) -> Result<Self, ClewError> {
         match version
             .split('.')
             .take(2)
@@ -55,7 +55,7 @@ impl WorkerVariant {
             "2.1" => Ok(Self::Kotlin21),
             "2.3" => Ok(Self::Kotlin23),
             "2.4" => Ok(Self::Kotlin24),
-            _ => Err(SthreadError::new(
+            _ => Err(ClewError::new(
                 ErrorCode::UnsupportedProjectConfiguration,
                 format!(
                     "unsupported Kotlin compiler {version}; supported compiler lines are 2.1, 2.3, and 2.4"
@@ -86,11 +86,11 @@ impl WorkerClient {
         self.child.id()
     }
 
-    pub fn start(workspace: &Path) -> Result<Self, SthreadError> {
+    pub fn start(workspace: &Path) -> Result<Self, ClewError> {
         Self::start_variant(workspace, WorkerVariant::Kotlin24)
     }
 
-    fn start_variant(workspace: &Path, variant: WorkerVariant) -> Result<Self, SthreadError> {
+    fn start_variant(workspace: &Path, variant: WorkerVariant) -> Result<Self, ClewError> {
         let launcher = worker_launcher(workspace, variant);
         if !launcher.is_file() {
             let output = Command::new(workspace.join("gradlew"))
@@ -98,7 +98,7 @@ impl WorkerClient {
                 .current_dir(workspace)
                 .output()
                 .map_err(|e| {
-                    SthreadError::new(
+                    ClewError::new(
                         ErrorCode::WorkerCrashed,
                         format!("cannot build Kotlin worker: {e}"),
                     )
@@ -110,7 +110,7 @@ impl WorkerClient {
                 eprint!("{}", String::from_utf8_lossy(&output.stderr));
             }
             if !output.status.success() {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::WorkerCrashed,
                     "Kotlin worker build failed",
                 ));
@@ -122,7 +122,7 @@ impl WorkerClient {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::WorkerCrashed,
                     format!("cannot start {}: {e}", launcher.display()),
                 )
@@ -133,7 +133,7 @@ impl WorkerClient {
         let capabilities = match hello.payload {
             Some(worker_response::Payload::Capabilities(value)) => value,
             _ => {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::WorkerProtocolMismatch,
                     "worker did not send startup capabilities",
                 ));
@@ -142,7 +142,7 @@ impl WorkerClient {
         if capabilities.compiler_version != variant.compiler_version()
             || !capabilities.protocol_versions.iter().any(|v| v.major == 1)
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
                 "worker compiler/protocol version mismatch",
             ));
@@ -160,7 +160,7 @@ impl WorkerClient {
         })
     }
 
-    fn switch_variant(&mut self, variant: WorkerVariant) -> Result<(), SthreadError> {
+    fn switch_variant(&mut self, variant: WorkerVariant) -> Result<(), ClewError> {
         if self.variant == variant {
             return Ok(());
         }
@@ -169,7 +169,7 @@ impl WorkerClient {
         previous.shutdown()
     }
 
-    pub fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, SthreadError> {
+    pub fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
         if self.snapshot.is_none()
             && !matches!(kind, RequestKind::OpenProject | RequestKind::Shutdown)
             && payload.get("repo").and_then(Value::as_str).is_some()
@@ -281,7 +281,7 @@ impl WorkerClient {
                 schema_version: schema_version(),
             }),
             _ => {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "unspecified worker request kind",
                 ));
@@ -302,7 +302,7 @@ impl WorkerClient {
         let (encode_micros, write_micros) = write_message_profiled(&mut self.stdin, &request)?;
         let (response, read_micros, decode_micros) = read_message_profiled(&mut self.stdout)?;
         if response.request_id != request_id {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
                 "worker response request_id mismatch",
             ));
@@ -317,7 +317,7 @@ impl WorkerClient {
                     .map(str::to_owned)
                     .into_iter()
                     .collect();
-                return Err(SthreadError {
+                return Err(ClewError {
                     code: parse_worker_code(&error.code),
                     message: error.message,
                     transaction_id: None,
@@ -370,7 +370,7 @@ impl WorkerClient {
                 let canonical: Value =
                     serde_json::from_slice(&value.canonical_json).map_err(internal)?;
                 if canonical.get("valid").and_then(Value::as_bool) != Some(value.valid) {
-                    return Err(SthreadError::new(
+                    return Err(ClewError::new(
                         ErrorCode::WorkerProtocolMismatch,
                         "typed validation result disagrees with canonical payload",
                     ));
@@ -379,7 +379,7 @@ impl WorkerClient {
             }
             Some(worker_response::Payload::Shutdown(value)) => value.canonical_json,
             _ => {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::WorkerProtocolMismatch,
                     "worker response has unexpected payload",
                 ));
@@ -390,14 +390,14 @@ impl WorkerClient {
         let json_micros = json_started.elapsed().as_micros() as u64;
         if kind == RequestKind::ApplyEdit && value.get("source").is_none() {
             let blob = value.get("sourceBlob").ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::WorkerProtocolMismatch,
                     "candidate response has neither inline source nor BlobRef",
                 )
             })?;
             let source = read_response_blob(payload, blob)?;
             value["source"] = Value::String(String::from_utf8(source).map_err(|error| {
-                SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
+                ClewError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
             })?);
         }
         if kind == RequestKind::OpenProject {
@@ -457,16 +457,16 @@ impl WorkerClient {
         Ok(value)
     }
 
-    pub fn shutdown(mut self) -> Result<(), SthreadError> {
+    pub fn shutdown(mut self) -> Result<(), ClewError> {
         let _ = self.request(RequestKind::Shutdown, &serde_json::json!({}))?;
         let status = self
             .child
             .wait()
-            .map_err(|e| SthreadError::new(ErrorCode::WorkerCrashed, e.to_string()))?;
+            .map_err(|e| ClewError::new(ErrorCode::WorkerCrashed, e.to_string()))?;
         if status.success() {
             Ok(())
         } else {
-            Err(SthreadError::new(
+            Err(ClewError::new(
                 ErrorCode::WorkerCrashed,
                 format!("worker exited with {status}"),
             ))
@@ -476,7 +476,7 @@ impl WorkerClient {
     pub fn validate_candidates_batch(
         &mut self,
         candidates: &[(String, String)],
-    ) -> Result<Vec<Value>, SthreadError> {
+    ) -> Result<Vec<Value>, ClewError> {
         let snapshot = self.snapshot.clone().unwrap_or(SnapshotId {
             base_revision: "UNVERSIONED".into(),
             project_model_hash: "UNRESOLVED".into(),
@@ -516,7 +516,7 @@ impl WorkerClient {
         )?;
         let response = read_message(&mut self.stdout)?;
         if response.request_id != request_id {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
                 "batch response request_id mismatch",
             ));
@@ -524,7 +524,7 @@ impl WorkerClient {
         let batch = match response.payload {
             Some(worker_response::Payload::Batch(batch)) => batch,
             _ => {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::WorkerProtocolMismatch,
                     "worker returned no BatchResponse",
                 ));
@@ -537,7 +537,7 @@ impl WorkerClient {
                 Some(worker_response::Payload::ValidateCandidate(value)) => {
                     serde_json::from_slice(&value.canonical_json).map_err(internal)
                 }
-                Some(worker_response::Payload::Error(error)) => Err(SthreadError {
+                Some(worker_response::Payload::Error(error)) => Err(ClewError {
                     code: parse_worker_code(&error.code),
                     message: error.message,
                     transaction_id: None,
@@ -546,7 +546,7 @@ impl WorkerClient {
                     relevant_anchors_or_symbols: vec!["batch-validation".into()].into_boxed_slice(),
                     retryable: error.retryable,
                 }),
-                _ => Err(SthreadError::new(
+                _ => Err(ClewError::new(
                     ErrorCode::WorkerProtocolMismatch,
                     "unexpected response inside batch",
                 )),
@@ -604,7 +604,7 @@ fn snapshot_label(snapshot: &SnapshotId) -> String {
     )
 }
 
-fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), SthreadError> {
+fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), ClewError> {
     let source = payload
         .get("source")
         .and_then(Value::as_str)
@@ -617,7 +617,7 @@ fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), Sthre
     let repo = payload
         .get("repo")
         .and_then(Value::as_str)
-        .ok_or_else(|| SthreadError::new(ErrorCode::InvalidInput, "large source needs repo"))?;
+        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "large source needs repo"))?;
     let hash = crate::canonical::hash_bytes(&source);
     let relative = format!(
         ".semantic-thread/blobs/sha256/{}",
@@ -625,14 +625,12 @@ fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), Sthre
     );
     let path = Path::new(repo).join(&relative);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            SthreadError::new(ErrorCode::Internal, format!("blob store: {error}"))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ClewError::new(ErrorCode::Internal, format!("blob store: {error}")))?;
     }
     if !path.exists() {
-        std::fs::write(&path, &source).map_err(|error| {
-            SthreadError::new(ErrorCode::Internal, format!("blob store: {error}"))
-        })?;
+        std::fs::write(&path, &source)
+            .map_err(|error| ClewError::new(ErrorCode::Internal, format!("blob store: {error}")))?;
     }
     Ok((
         vec![],
@@ -644,10 +642,10 @@ fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), Sthre
     ))
 }
 
-fn validate_typed_string(canonical: &[u8], pointer: &str, typed: &str) -> Result<(), SthreadError> {
+fn validate_typed_string(canonical: &[u8], pointer: &str, typed: &str) -> Result<(), ClewError> {
     let value: Value = serde_json::from_slice(canonical).map_err(internal)?;
     if value.pointer(pointer).and_then(Value::as_str) != Some(typed) {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             format!("typed response field disagrees with canonical payload at {pointer}"),
         ));
@@ -655,7 +653,7 @@ fn validate_typed_string(canonical: &[u8], pointer: &str, typed: &str) -> Result
     Ok(())
 }
 
-fn validate_typed_count(canonical: &[u8], pointer: &str, typed: u64) -> Result<(), SthreadError> {
+fn validate_typed_count(canonical: &[u8], pointer: &str, typed: u64) -> Result<(), ClewError> {
     let value: Value = serde_json::from_slice(canonical).map_err(internal)?;
     if value
         .pointer(pointer)
@@ -663,7 +661,7 @@ fn validate_typed_count(canonical: &[u8], pointer: &str, typed: u64) -> Result<(
         .map(|items| items.len() as u64)
         != Some(typed)
     {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             format!("typed response count disagrees with canonical payload at {pointer}"),
         ));
@@ -671,30 +669,29 @@ fn validate_typed_count(canonical: &[u8], pointer: &str, typed: u64) -> Result<(
     Ok(())
 }
 
-fn read_response_blob(payload: &Value, blob: &Value) -> Result<Vec<u8>, SthreadError> {
-    let repo = payload.get("repo").and_then(Value::as_str).ok_or_else(|| {
-        SthreadError::new(ErrorCode::WorkerProtocolMismatch, "BlobRef has no repo")
-    })?;
+fn read_response_blob(payload: &Value, blob: &Value) -> Result<Vec<u8>, ClewError> {
+    let repo = payload
+        .get("repo")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ClewError::new(ErrorCode::WorkerProtocolMismatch, "BlobRef has no repo"))?;
     let relative = blob
         .get("relativePath")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            SthreadError::new(ErrorCode::WorkerProtocolMismatch, "BlobRef has no path")
-        })?;
+        .ok_or_else(|| ClewError::new(ErrorCode::WorkerProtocolMismatch, "BlobRef has no path"))?;
     if relative.starts_with('/') || relative.split('/').any(|part| part == "..") {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             "response BlobRef escapes repository",
         ));
     }
     let bytes = std::fs::read(Path::new(repo).join(relative))
-        .map_err(|error| SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string()))?;
+        .map_err(|error| ClewError::new(ErrorCode::WorkerProtocolMismatch, error.to_string()))?;
     let expected = blob
         .get("contentHash")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if crate::canonical::hash_bytes(&bytes) != expected {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             "response BlobRef content hash mismatch",
         ));
@@ -714,14 +711,14 @@ fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
     }
 }
 
-fn write_message<M: Message>(writer: &mut impl Write, message: &M) -> Result<(), SthreadError> {
+fn write_message<M: Message>(writer: &mut impl Write, message: &M) -> Result<(), ClewError> {
     let bytes = message.encode_to_vec();
     writer
         .write_all(&(bytes.len() as u32).to_be_bytes())
         .and_then(|_| writer.write_all(&bytes))
         .and_then(|_| writer.flush())
         .map_err(|e| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::WorkerCrashed,
                 format!("worker write failed: {e}"),
             )
@@ -731,7 +728,7 @@ fn write_message<M: Message>(writer: &mut impl Write, message: &M) -> Result<(),
 fn write_message_profiled<M: Message>(
     writer: &mut impl Write,
     message: &M,
-) -> Result<(u64, u64), SthreadError> {
+) -> Result<(u64, u64), ClewError> {
     let encode_started = Instant::now();
     let bytes = message.encode_to_vec();
     let encode_micros = encode_started.elapsed().as_micros() as u64;
@@ -741,7 +738,7 @@ fn write_message_profiled<M: Message>(
         .and_then(|_| writer.write_all(&bytes))
         .and_then(|_| writer.flush())
         .map_err(|e| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::WorkerCrashed,
                 format!("worker write failed: {e}"),
             )
@@ -749,53 +746,51 @@ fn write_message_profiled<M: Message>(
     Ok((encode_micros, write_started.elapsed().as_micros() as u64))
 }
 
-fn read_message(reader: &mut impl Read) -> Result<WorkerResponse, SthreadError> {
+fn read_message(reader: &mut impl Read) -> Result<WorkerResponse, ClewError> {
     let mut header = [0u8; 4];
     reader.read_exact(&mut header).map_err(|e| {
-        SthreadError::new(
+        ClewError::new(
             ErrorCode::WorkerCrashed,
             format!("worker frame header failed: {e}"),
         )
     })?;
     let size = u32::from_be_bytes(header) as usize;
     if size > 64 * 1024 * 1024 {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             "worker frame exceeds 64MiB",
         ));
     }
     let mut bytes = vec![0; size];
     reader.read_exact(&mut bytes).map_err(|e| {
-        SthreadError::new(
+        ClewError::new(
             ErrorCode::WorkerCrashed,
             format!("worker frame body failed: {e}"),
         )
     })?;
     WorkerResponse::decode(bytes.as_slice())
-        .map_err(|e| SthreadError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))
+        .map_err(|e| ClewError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))
 }
 
-fn read_message_profiled(
-    reader: &mut impl Read,
-) -> Result<(WorkerResponse, u64, u64), SthreadError> {
+fn read_message_profiled(reader: &mut impl Read) -> Result<(WorkerResponse, u64, u64), ClewError> {
     let read_started = Instant::now();
     let mut header = [0u8; 4];
     reader.read_exact(&mut header).map_err(|e| {
-        SthreadError::new(
+        ClewError::new(
             ErrorCode::WorkerCrashed,
             format!("worker frame header failed: {e}"),
         )
     })?;
     let size = u32::from_be_bytes(header) as usize;
     if size > 64 * 1024 * 1024 {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             "worker frame exceeds 64MiB",
         ));
     }
     let mut bytes = vec![0; size];
     reader.read_exact(&mut bytes).map_err(|e| {
-        SthreadError::new(
+        ClewError::new(
             ErrorCode::WorkerCrashed,
             format!("worker frame body failed: {e}"),
         )
@@ -803,7 +798,7 @@ fn read_message_profiled(
     let read_micros = read_started.elapsed().as_micros() as u64;
     let decode_started = Instant::now();
     let response = WorkerResponse::decode(bytes.as_slice())
-        .map_err(|e| SthreadError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))?;
+        .map_err(|e| ClewError::new(ErrorCode::WorkerProtocolMismatch, e.to_string()))?;
     Ok((
         response,
         read_micros,
@@ -811,8 +806,8 @@ fn read_message_profiled(
     ))
 }
 
-fn internal(error: impl std::fmt::Display) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, error.to_string())
+fn internal(error: impl std::fmt::Display) -> ClewError {
+    ClewError::new(ErrorCode::Internal, error.to_string())
 }
 
 fn parse_worker_code(code: &str) -> ErrorCode {

@@ -63,7 +63,7 @@ Focused executable checks cover:
 - forged role aliases, duplicate roles and removal of boundary proof evidence;
 - a current hidden `Unknown` inside nominally complete coverage.
 
-Command: `cargo test -p sthread semantic_goal --lib`.
+Command: `cargo test -p clew semantic_goal --lib`.
 
 ## Independent gate history
 

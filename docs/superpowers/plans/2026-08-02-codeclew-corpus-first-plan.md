@@ -97,8 +97,8 @@ evidence должно появляться по мере выполнения з
 - **Read first:**
   - `docs/experiments/deep-research-codeclew-semantic-editing-results.md`;
   - `benchmarks/reports/universal-task-surface-2026-08-02.json`;
-  - `crates/sthread/src/task_context.rs`;
-  - `crates/sthread/src/task_plan.rs`.
+  - `crates/clew/src/task_context.rs`;
+  - `crates/clew/src/task_plan.rs`.
 - **Modify:**
   - add `benchmarks/semantic-change/gap.json`;
   - add `benchmarks/semantic-change/decisions.json`;
@@ -220,8 +220,8 @@ evidence должно появляться по мере выполнения з
 - **Depends on:** T02.
 - **Read first:**
   - `crates/semantic-corpus/src/`;
-  - `crates/sthread/src/canonical.rs`;
-  - `crates/sthread/src/transaction.rs`.
+  - `crates/clew/src/canonical.rs`;
+  - `crates/clew/src/transaction.rs`.
 - **Modify:**
   - extend `crates/semantic-corpus` with `seal`, `reveal`, `verify` commands;
   - add hidden/public manifest testdata;
@@ -256,7 +256,7 @@ evidence должно появляться по мере выполнения з
 - **Depends on:** T03.
 - **Read first:**
   - `crates/semantic-corpus/src/`;
-  - `crates/sthread/tests/metamorphic.rs`;
+  - `crates/clew/tests/metamorphic.rs`;
   - `fixtures/kotlin-control-flow/`.
 - **Modify:**
   - add corpus variation model and generators;
@@ -420,13 +420,13 @@ adjudication evidence. Без него разрешён только exploratory
 - **Sources:** research sections 8–10.
 - **Depends on:** T07, Gate G1-Corpus PASS.
 - **Read first:**
-  - `crates/sthread/src/model.rs`;
-  - `crates/sthread/src/task_plan.rs`;
+  - `crates/clew/src/model.rs`;
+  - `crates/clew/src/task_plan.rs`;
   - `schemas/worker.proto`;
   - frozen corpus manifests.
 - **Modify:**
-  - add `crates/sthread/src/change_goal.rs`;
-  - add `crates/sthread/src/change_graph.rs`;
+  - add `crates/clew/src/change_goal.rs`;
+  - add `crates/clew/src/change_graph.rs`;
   - export modules from `lib.rs`;
   - add JSON schemas under `benchmarks/semantic-change/schema/`.
 - **Product artifacts:** No product artifact update because this task defines
@@ -441,8 +441,8 @@ adjudication evidence. Без него разрешён только exploratory
   5. Canonical hash связывает goal/proof с snapshot и corpus task.
 - **Verify:**
   ```bash
-  cargo test -p sthread change_goal
-  cargo test -p sthread change_graph
+  cargo test -p clew change_goal
+  cargo test -p clew change_graph
   ```
 - **DoD:** schema round-trip/canonicalization стабильны; invalid mixed
   goal/operations отклоняется; model-owned fields и oracle ownership
@@ -478,8 +478,8 @@ adjudication evidence. Без него разрешён только exploratory
      оставить versioned или мигрировать явно.
 - **Verify:**
   ```bash
-  cargo test -p sthread --test concurrency_matrix
-  cargo test -p sthread goal_wide_read_set
+  cargo test -p clew --test concurrency_matrix
+  cargo test -p clew goal_wide_read_set
   ```
 - **DoD:** изменение второго required root вызывает stale/conflict; proof
   перечисляет все roots; каждая graph-dependent obligation имеет semantic fact
@@ -510,8 +510,8 @@ adjudication evidence. Без него разрешён только exploratory
   4. Реализовать 15 negative completeness cases из research.
 - **Verify:**
   ```bash
-  cargo test -p sthread complete_for
-  cargo test -p sthread --test goal_binding must_refuse
+  cargo test -p clew complete_for
+  cargo test -p clew --test goal_binding must_refuse
   ```
 - **DoD:** false `BOUND` отсутствует на public negative set;
   `missing_internal_calls` вычисляется или удалён; failure report указывает
@@ -542,8 +542,8 @@ adjudication evidence. Без него разрешён только exploratory
   5. Любой unknown boundary возвращает structured refusal.
 - **Verify:**
   ```bash
-  cargo test -p sthread goal_binding::primitives
-  cargo test -p sthread --test metamorphic
+  cargo test -p clew goal_binding::primitives
+  cargo test -p clew --test metamorphic
   ```
 - **DoD:** primitives не читают task names; decoys не меняют binding; ambiguity
   возвращает bounded choices, а не ranking winner.
@@ -558,7 +558,7 @@ adjudication evidence. Без него разрешён только exploratory
 - **Depends on:** T11.
 - **Read first:** MAP_EDGE goal schema, corpus family manifests, current
   `PROPAGATE_TYPED_FIELDS` code only as counterexample.
-- **Modify:** goal binder and `crates/sthread/tests/goal_binding.rs`.
+- **Modify:** goal binder and `crates/clew/tests/goal_binding.rs`.
 - **Product artifacts:** No product artifact update because no production edit
   capability is added.
 - **Steps:**
@@ -571,7 +571,7 @@ adjudication evidence. Без него разрешён только exploratory
      suspend, identity, unknown effect and missing oracle.
 - **Verify:**
   ```bash
-  cargo test -p sthread --test goal_binding map_edge_with_context
+  cargo test -p clew --test goal_binding map_edge_with_context
   ```
 - **DoD:** public positives bind correctly с explicit oracle class;
   ambiguous/refuse/no-oracle cases не получают plan; median proof payload
@@ -599,8 +599,8 @@ adjudication evidence. Без него разрешён только exploratory
      obligations.
 - **Verify:**
   ```bash
-  cargo test -p sthread task_plan
-  cargo test -p sthread --test goal_binding propagate_typed_fields_proof
+  cargo test -p clew task_plan
+  cargo test -p clew --test goal_binding propagate_typed_fields_proof
   ```
 - **DoD:** semantic proof не использует JPQL/Kotlin substring parsing; existing
   expansion tests остаются зелёными; materialization не объявлена PSI-native.
@@ -713,8 +713,8 @@ T15–T23 запрещены, пока G1 не имеет machine-readable `PASS
   4. Define postconditions tied to discharged obligations.
 - **Verify:**
   ```bash
-  cargo test -p sthread semantic_edit_protocol
-  cargo test -p sthread --test golden_language
+  cargo test -p clew semantic_edit_protocol
+  cargo test -p clew --test golden_language
   ```
 - **DoD:** goal/proof детерминированно компилируются в semantic ops; textual
   substitution не требуется выбранному family; backward compatibility явная.
@@ -741,8 +741,8 @@ T15–T23 запрещены, пока G1 не имеет machine-readable `PASS
 - **Verify:**
   ```bash
   ./gradlew :workers:kotlin:test :workers:kotlin21:test :workers:kotlin23:test
-  cargo test -p sthread --test kotlin21
-  cargo test -p sthread --test maven
+  cargo test -p clew --test kotlin21
+  cargo test -p clew --test maven
   ```
 - **DoD:** PSI-native mutations проходят все version workers; negative binding
   не materializes; old text path не вызывается chosen operation.
@@ -772,7 +772,7 @@ T15–T23 запрещены, пока G1 не имеет machine-readable `PASS
 - **Verify:**
   ```bash
   cargo test -p semantic-corpus mutation_gate
-  cargo test -p sthread test_oracle_classification
+  cargo test -p clew test_oracle_classification
   ```
 - **DoD:** self-confirming tests rejected; relevant mutants killed; model-owned
   expected values явно присутствуют в goal/receipt; T17 не может повысить
@@ -799,8 +799,8 @@ T15–T23 запрещены, пока G1 не имеет machine-readable `PASS
   4. Must-refuse cases stop before candidate creation.
 - **Verify:**
   ```bash
-  cargo test -p sthread --test semantic_change selected_family_end_to_end
-  cargo test -p sthread --test semantic_change selected_family_must_refuse
+  cargo test -p clew --test semantic_change selected_family_end_to_end
+  cargo test -p clew --test semantic_change selected_family_must_refuse
   ```
 - **DoD:** positive Gradle/Maven tasks commit cleanly; ambiguous/refuse tasks do
   not edit; no repository vocabulary or source-shape parser in new route.
@@ -826,8 +826,8 @@ T15–T23 запрещены, пока G1 не имеет machine-readable `PASS
   4. Run every applicable public corpus task; every refusal remains pre-edit.
 - **Verify:**
   ```bash
-  cargo test -p sthread --test concurrency_matrix
-  cargo test -p sthread --test semantic_goal_concurrency
+  cargo test -p clew --test concurrency_matrix
+  cargo test -p clew --test semantic_goal_concurrency
   cargo test --workspace
   ./scripts/verify.sh
   ```

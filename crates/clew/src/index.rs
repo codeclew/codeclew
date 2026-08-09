@@ -1,5 +1,5 @@
 use crate::canonical;
-use crate::error::{ErrorCode, SthreadError};
+use crate::error::{ClewError, ErrorCode};
 use crate::freshness::{
     DependencyFact, FRESHNESS_EVENT_SCHEMA, FactDomain, FactFreshness, FactProvenance,
     FreshnessCheckpoint, FreshnessEvent, FreshnessEventKind, FreshnessProjection, IngestOutcome,
@@ -51,9 +51,9 @@ impl StagedIndex {
         &self.invalidations
     }
 
-    pub fn publish(mut self) -> Result<(String, Vec<String>), SthreadError> {
+    pub fn publish(mut self) -> Result<(String, Vec<String>), ClewError> {
         std::fs::rename(&self.staging_path, &self.published_path).map_err(|error| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::Internal,
                 format!(
                     "cannot atomically publish repository index {}: {error}",
@@ -75,11 +75,11 @@ impl Drop for StagedIndex {
 }
 
 impl RepositoryIndex {
-    pub fn open(repo: &Path) -> Result<Self, SthreadError> {
+    pub fn open(repo: &Path) -> Result<Self, ClewError> {
         Self::open_compilation(repo, None)
     }
 
-    pub fn open_compilation(repo: &Path, compilation: Option<&str>) -> Result<Self, SthreadError> {
+    pub fn open_compilation(repo: &Path, compilation: Option<&str>) -> Result<Self, ClewError> {
         exclude_runtime_state(repo)?;
         let state = repo.join(".semantic-thread");
         std::fs::create_dir_all(&state).map_err(io_error)?;
@@ -88,7 +88,7 @@ impl RepositoryIndex {
         Self::open_database(repo, state.join(database_name(compilation)), blobs)
     }
 
-    fn open_database(repo: &Path, database: PathBuf, blobs: PathBuf) -> Result<Self, SthreadError> {
+    fn open_database(repo: &Path, database: PathBuf, blobs: PathBuf) -> Result<Self, ClewError> {
         let connection = Connection::open(database).map_err(db_error)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
@@ -126,7 +126,7 @@ impl RepositoryIndex {
         facts: &Value,
         source_root: &Path,
         revision: &str,
-    ) -> Result<StagedIndex, SthreadError> {
+    ) -> Result<StagedIndex, ClewError> {
         let state = repo.join(".semantic-thread");
         std::fs::create_dir_all(&state).map_err(io_error)?;
         let blobs = state.join("blobs/sha256");
@@ -145,7 +145,7 @@ impl RepositoryIndex {
                 })
                 .map_err(db_error)?;
             if busy != 0 || log_frames != checkpointed_frames {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::Internal,
                     "published index is busy and cannot be staged consistently",
                 ));
@@ -181,7 +181,7 @@ impl RepositoryIndex {
         result
     }
 
-    pub fn update(&mut self, facts: &Value) -> Result<String, SthreadError> {
+    pub fn update(&mut self, facts: &Value) -> Result<String, ClewError> {
         let source_root = self.repo.clone();
         self.update_from_root(facts, &source_root)
     }
@@ -190,13 +190,11 @@ impl RepositoryIndex {
         &mut self,
         facts: &Value,
         source_root: &Path,
-    ) -> Result<String, SthreadError> {
+    ) -> Result<String, ClewError> {
         let files = facts
             .get("files")
             .and_then(Value::as_array)
-            .ok_or_else(|| {
-                SthreadError::new(ErrorCode::InvalidInput, "worker index has no files")
-            })?;
+            .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "worker index has no files"))?;
         let tx = self.connection.transaction().map_err(db_error)?;
         let previous_metadata: BTreeMap<String, String> = [
             "project_model_hash",
@@ -285,7 +283,7 @@ impl RepositoryIndex {
             let hash = file["contentHash"].as_str().unwrap_or_default();
             let source_path = source_root.join(path);
             let source = std::fs::read(&source_path).map_err(|error| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::Internal,
                     format!(
                         "cannot read indexed source {}: {error}",
@@ -294,7 +292,7 @@ impl RepositoryIndex {
                 )
             })?;
             if canonical::hash_bytes(&source) != hash {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::ProjectModelChanged,
                     format!("source changed while indexing: {path}"),
                 ));
@@ -302,7 +300,7 @@ impl RepositoryIndex {
             let blob = self.blobs.join(hash.trim_start_matches("sha256:"));
             if !blob.exists() {
                 std::fs::write(&blob, &source).map_err(|error| {
-                    SthreadError::new(
+                    ClewError::new(
                         ErrorCode::Internal,
                         format!("cannot publish source blob {}: {error}", blob.display()),
                     )
@@ -479,7 +477,7 @@ impl RepositoryIndex {
         Ok(index_hash)
     }
 
-    pub fn hash(&self) -> Result<Option<String>, SthreadError> {
+    pub fn hash(&self) -> Result<Option<String>, ClewError> {
         let mut statement = self
             .connection
             .prepare("SELECT value FROM metadata WHERE key='index_hash'")
@@ -491,7 +489,7 @@ impl RepositoryIndex {
         }
     }
 
-    pub fn invalidations(&self) -> Result<Vec<String>, SthreadError> {
+    pub fn invalidations(&self) -> Result<Vec<String>, ClewError> {
         let value: Option<String> = self
             .connection
             .query_row(
@@ -507,7 +505,7 @@ impl RepositoryIndex {
             .map(Option::unwrap_or_default)
     }
 
-    pub fn identity_report(&self) -> Result<Option<IdentityReport>, SthreadError> {
+    pub fn identity_report(&self) -> Result<Option<IdentityReport>, ClewError> {
         let value: Option<String> = self
             .connection
             .query_row(
@@ -522,7 +520,7 @@ impl RepositoryIndex {
             .transpose()
     }
 
-    pub fn freshness_checkpoint(&self) -> Result<RepositoryFreshnessCheckpoint, SthreadError> {
+    pub fn freshness_checkpoint(&self) -> Result<RepositoryFreshnessCheckpoint, ClewError> {
         Ok(RepositoryFreshnessCheckpoint {
             schema: "repository-freshness-checkpoint/0.1".to_owned(),
             projection: load_freshness_projection(&self.connection)?.checkpoint(),
@@ -531,16 +529,16 @@ impl RepositoryIndex {
         })
     }
 
-    pub fn freshness_status(&self, fact_id: &str) -> Result<FactFreshness, SthreadError> {
+    pub fn freshness_status(&self, fact_id: &str) -> Result<FactFreshness, ClewError> {
         Ok(load_freshness_projection(&self.connection)?.status(fact_id))
     }
 
-    pub fn require_fresh(&self, fact_id: &str) -> Result<(), SthreadError> {
+    pub fn require_fresh(&self, fact_id: &str) -> Result<(), ClewError> {
         let status = self.freshness_status(fact_id)?;
         if status == FactFreshness::Fresh {
             Ok(())
         } else {
-            Err(SthreadError::new(
+            Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
                 format!("semantic fact {fact_id} is not fresh: {status:?}"),
             ))
@@ -553,7 +551,7 @@ impl RepositoryIndex {
     pub fn ingest_freshness_event(
         &mut self,
         event: FreshnessEvent,
-    ) -> Result<IngestOutcome, SthreadError> {
+    ) -> Result<IngestOutcome, ClewError> {
         let tx = self.connection.transaction().map_err(db_error)?;
         let mut projection = load_freshness_projection(&tx)?;
         match projection.ingest(event.clone()) {
@@ -577,11 +575,11 @@ impl RepositoryIndex {
     /// Verify that the durable contiguous log reproduces the checkpoint.
     /// A persisted gap cannot be cleared by replaying the older log; only a
     /// complete authoritative index rebuild may supersede missing input.
-    pub fn recover_freshness_from_log(&mut self) -> Result<FreshnessCheckpoint, SthreadError> {
+    pub fn recover_freshness_from_log(&mut self) -> Result<FreshnessCheckpoint, ClewError> {
         let tx = self.connection.transaction().map_err(db_error)?;
         let current = load_freshness_projection(&tx)?;
         if current.checkpoint().sequence_gap.is_some() {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
                 "freshness stream has a gap; a complete index rebuild is required",
             ));
@@ -591,7 +589,7 @@ impl RepositoryIndex {
             FreshnessProjection::replay(events).map_err(|error| internal(error.into()))?;
         let checkpoint = projection.checkpoint();
         if checkpoint != current.checkpoint() {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::Internal,
                 "freshness checkpoint differs from deterministic event replay",
             ));
@@ -600,7 +598,7 @@ impl RepositoryIndex {
         Ok(checkpoint)
     }
 
-    pub fn mark_published_revision(&self, revision: &str) -> Result<(), SthreadError> {
+    pub fn mark_published_revision(&self, revision: &str) -> Result<(), ClewError> {
         self.connection
             .execute(
                 "INSERT INTO metadata(key,value) VALUES('published_revision',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -610,7 +608,7 @@ impl RepositoryIndex {
         Ok(())
     }
 
-    pub fn published_revision(&self) -> Result<Option<String>, SthreadError> {
+    pub fn published_revision(&self) -> Result<Option<String>, ClewError> {
         self.connection
             .query_row(
                 "SELECT value FROM metadata WHERE key='published_revision'",
@@ -622,7 +620,7 @@ impl RepositoryIndex {
     }
 }
 
-fn exclude_runtime_state(repo: &Path) -> Result<(), SthreadError> {
+fn exclude_runtime_state(repo: &Path) -> Result<(), ClewError> {
     let exclude = repo.join(".git/info/exclude");
     let Some(parent) = exclude.parent() else {
         return Ok(());
@@ -640,9 +638,11 @@ fn exclude_runtime_state(repo: &Path) -> Result<(), SthreadError> {
     {
         return Ok(());
     }
-    let separator = (!existing.is_empty() && !existing.ends_with('\n'))
-        .then_some("\n")
-        .unwrap_or("");
+    let separator = if !existing.is_empty() && !existing.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
     std::fs::write(
         &exclude,
         format!("{existing}{separator}.semantic-thread/\n"),
@@ -686,12 +686,12 @@ fn record_freshness_update(
     identity_report: &IdentityReport,
     compiler_version: &str,
     invalidations: &BTreeSet<String>,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let mut projection = load_freshness_projection(tx)?;
     let partial = facts.get("partial").and_then(Value::as_bool) == Some(true);
     if projection.checkpoint().sequence_gap.is_some() {
         if partial {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
                 "partial index cannot recover a gapped freshness stream",
             ));
@@ -830,7 +830,7 @@ fn provenance_for_reset(
     index_hash: &str,
     identity_report: &IdentityReport,
     compiler_version: &str,
-) -> Result<FactProvenance, SthreadError> {
+) -> Result<FactProvenance, ClewError> {
     let project_model_hash = identity_report.after.project_model_hash.clone();
     let classpath_hash = identity_report.after.classpath_hash.clone();
     let compiler_options_hash = identity_report.after.compiler_options_hash.clone();
@@ -856,7 +856,7 @@ fn append_observation(
     tx: &Transaction<'_>,
     projection: &mut FreshnessProjection,
     fact: DependencyFact,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let provenance = fact.provenance.clone();
     append_freshness_event(
         tx,
@@ -872,7 +872,7 @@ fn append_invalidation(
     provenance: FactProvenance,
     fact_id: &str,
     reason: &str,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     append_freshness_event(
         tx,
         projection,
@@ -889,7 +889,7 @@ fn append_freshness_event(
     projection: &mut FreshnessProjection,
     provenance: FactProvenance,
     event: FreshnessEventKind,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let sequence = projection
         .last_sequence()
         .checked_add(1)
@@ -917,7 +917,7 @@ fn append_freshness_event(
 fn insert_freshness_event(
     connection: &Connection,
     event: &FreshnessEvent,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let bytes = canonical::bytes(event).map_err(internal)?;
     let hash = canonical::hash(event).map_err(internal)?;
     connection
@@ -937,7 +937,7 @@ fn insert_freshness_event(
 fn store_freshness_checkpoint(
     connection: &Connection,
     checkpoint: &FreshnessCheckpoint,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let json = canonical::pretty(checkpoint).map_err(internal)?;
     connection
         .execute(
@@ -948,7 +948,7 @@ fn store_freshness_checkpoint(
     Ok(())
 }
 
-fn load_freshness_projection(connection: &Connection) -> Result<FreshnessProjection, SthreadError> {
+fn load_freshness_projection(connection: &Connection) -> Result<FreshnessProjection, ClewError> {
     let checkpoint_json: Option<String> = connection
         .query_row(
             "SELECT value FROM metadata WHERE key='freshness_checkpoint'",
@@ -961,7 +961,7 @@ fn load_freshness_projection(connection: &Connection) -> Result<FreshnessProject
     let replayed = FreshnessProjection::replay(events).map_err(|error| internal(error.into()))?;
     let Some(json) = checkpoint_json else {
         if replayed.last_sequence() != 0 {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::Internal,
                 "freshness event log exists without a checkpoint",
             ));
@@ -977,7 +977,7 @@ fn load_freshness_projection(connection: &Connection) -> Result<FreshnessProject
     // log. Its durable gap marker overlays that otherwise reproducible state.
     replayed_checkpoint.sequence_gap = checkpoint.sequence_gap.clone();
     if replayed_checkpoint != checkpoint {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::Internal,
             "freshness checkpoint differs from deterministic event replay",
         ));
@@ -985,7 +985,7 @@ fn load_freshness_projection(connection: &Connection) -> Result<FreshnessProject
     Ok(projection)
 }
 
-fn load_freshness_events(connection: &Connection) -> Result<Vec<FreshnessEvent>, SthreadError> {
+fn load_freshness_events(connection: &Connection) -> Result<Vec<FreshnessEvent>, ClewError> {
     let mut statement = connection
         .prepare("SELECT sequence,event_hash,event_json FROM freshness_events ORDER BY sequence")
         .map_err(db_error)?;
@@ -1003,14 +1003,14 @@ fn load_freshness_events(connection: &Connection) -> Result<Vec<FreshnessEvent>,
             let event: FreshnessEvent =
                 serde_json::from_slice(&bytes).map_err(|error| internal(error.into()))?;
             if u64::try_from(stored_sequence).ok() != Some(event.sequence) {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::Internal,
                     format!("freshness event {} sequence mismatch", event.event_id),
                 ));
             }
             let actual_hash = canonical::hash(&event).map_err(internal)?;
             if actual_hash != expected_hash {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::Internal,
                     format!("freshness event {} hash mismatch", event.event_id),
                 ));
@@ -1118,14 +1118,14 @@ fn classify_file_change(
     }
 }
 
-fn io_error(error: std::io::Error) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, error.to_string())
+fn io_error(error: std::io::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, error.to_string())
 }
-fn db_error(error: rusqlite::Error) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, error.to_string())
+fn db_error(error: rusqlite::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, error.to_string())
 }
-fn internal(error: anyhow::Error) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, error.to_string())
+fn internal(error: anyhow::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, error.to_string())
 }
 
 #[cfg(test)]

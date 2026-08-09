@@ -1,14 +1,14 @@
+use clew::canonical;
+use clew::graph;
+use clew::model::{EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot};
+use clew::proto::RequestKind;
+use clew::transaction;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
-use sthread::canonical;
-use sthread::graph;
-use sthread::model::{EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot};
-use sthread::proto::RequestKind;
-use sthread::transaction;
-use sthread::worker::{WorkerClient, workspace_root};
 
 const SAMPLES: usize = 20;
 const SOURCE_FILE: &str = "src/main/kotlin/com/acme/Samples.kt";

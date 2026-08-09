@@ -62,17 +62,12 @@ pub enum Direction {
     Both,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum BuildSystem {
+    #[default]
     Gradle,
     Maven,
-}
-
-impl Default for BuildSystem {
-    fn default() -> Self {
-        Self::Gradle
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

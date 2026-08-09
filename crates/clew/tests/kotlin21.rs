@@ -1,6 +1,6 @@
+use clew::proto::RequestKind;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::json;
-use sthread::proto::RequestKind;
-use sthread::worker::{WorkerClient, workspace_root};
 
 #[test]
 fn selects_matching_kotlin_21_worker_and_resolves_extension_names() {

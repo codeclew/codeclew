@@ -39,7 +39,7 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, Serialize, Deserialize, Error)]
 #[error("{code:?}: {message}")]
 #[serde(rename_all = "camelCase")]
-pub struct SthreadError {
+pub struct ClewError {
     pub code: ErrorCode,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -57,7 +57,7 @@ fn relevant_is_empty(values: &[String]) -> bool {
     values.is_empty()
 }
 
-impl SthreadError {
+impl ClewError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         let retryable = matches!(
             code,

@@ -4,7 +4,7 @@
 
 ## Итог
 
-SThread выиграл end-to-end benchmark у `ast-index` и default workflow без
+Clew выиграл end-to-end benchmark у `ast-index` и default workflow без
 grep, чтения исходников вне одного bounded context, локального recipe или
 заранее зашитого решения. Зачётный run 34: 50 секунд до edit, 97 секунд до
 commit, 11 измеряемых tool calls, 374 756 raw / 37 348 некэшированных tokens и
@@ -28,8 +28,8 @@ Run 27 также исключён задним числом: он прошёл 
 
 1. обычные `rg`/`sed`;
 2. cold `ast-index 3.48.1` и чтение найденных файлов;
-3. старый 32-КБ `sthread agent-context`;
-4. SThread transient graph: один 16-КБ context, goal v0.4, один validator и
+3. старый 32-КБ `clew agent-context`;
+4. Clew transient graph: один 16-КБ context, goal v0.4, один validator и
    один atomic `task-apply`.
 
 Задача требовала сохранить `productId`, добавить статически типизированный
@@ -43,7 +43,7 @@ CREATE/UPDATE, добавить regression coverage, запустить Maven и
 
 ## Результаты
 
-| Метрика | Default | ast-index | Старый SThread | Transient SThread |
+| Метрика | Default | ast-index | Старый Clew | Transient Clew |
 |---|---:|---:|---:|---:|
 | До первого edit | 74 с | 63 с | 67 с | **50 с** |
 | До commit | 293 с | 171 с | 351 с | **97 с** |
@@ -55,7 +55,7 @@ CREATE/UPDATE, добавить regression coverage, запустить Maven и
 | Некэшированные tokens | 129 744 | 72 925 | 143 449 | **37 348** |
 | Fresh hidden acceptance | REJECT | REJECT | REJECT | **ACCEPT** |
 
-Относительно `ast-index` transient SThread быстрее до edit на 20,63%, до
+Относительно `ast-index` transient Clew быстрее до edit на 20,63%, до
 commit на 43,27%, использует на 65,93% меньше raw и на 48,79% меньше
 некэшированных tokens, а также на 47,62% меньше сравнимых tool calls.
 
@@ -82,7 +82,7 @@ commit на 43,27%, использует на 65,93% меньше raw и на 48
 
 ## За счёт чего получен выигрыш
 
-SThread сначала изолирует поверхность один раз:
+Clew сначала изолирует поверхность один раз:
 
 `WORKFLOW → DATA_SOURCE → INTERMEDIARY → OUTPUT_CONTRACT`, плюс существующий
 assignable contract, projection fields с nullability и anchored regression

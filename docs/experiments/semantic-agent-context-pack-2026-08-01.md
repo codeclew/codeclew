@@ -4,7 +4,7 @@
 
 ## Решение
 
-`sthread agent-context` заменяет серию отдельных `resolve`, `context`, `cfg`,
+`clew agent-context` заменяет серию отдельных `resolve`, `context`, `cfg`,
 поисковых и файловых запросов одним ограниченным пакетом. Команда за один
 жизненный цикл worker:
 

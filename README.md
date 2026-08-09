@@ -1,4 +1,4 @@
-# Semantic Thread Platform — Kotlin MVP
+# Codeclew — Kotlin semantic change engine
 
 Executable vertical prototype of a language-neutral Rust semantic core and a version-pinned Kotlin/JVM worker. The worker owns Kotlin PSI and compiler interaction; the Rust process owns canonical IR, graph analysis, storage, slicing, transactions, Git and the CLI.
 
@@ -16,14 +16,18 @@ Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.
 
 ```bash
 ./scripts/verify.sh
-cargo run --bin sthread -- doctor
-cargo run --bin sthread -- project inspect --repo fixtures/kotlin-basic
-cargo run --bin sthread -- index --repo fixtures/kotlin-basic
-cargo run --bin sthread -- index --repo fixtures/kotlin-basic --syntax-only
-cargo run --bin sthread -- project inspect --repo fixtures/kotlin-maven
-cargo run --bin sthread -- agent-context --repo fixtures/kotlin-2-1 \
+cargo run --bin clew -- doctor
+cargo run --bin clew -- project inspect --repo fixtures/kotlin-basic
+cargo run --bin clew -- index --repo fixtures/kotlin-basic
+cargo run --bin clew -- index --repo fixtures/kotlin-basic --syntax-only
+cargo run --bin clew -- project inspect --repo fixtures/kotlin-maven
+cargo run --bin clew -- agent-context --repo fixtures/kotlin-2-1 \
   --term applyAdaptive --term Adaptive --max-bytes 12288 \
   --evidence .semantic-thread/agent-context.json
+cargo run --bin clew -- prove map-edge-with-context \
+  --repo /path/to/clean-kotlin-repository \
+  --workflow-symbol com.example.valuesAwaitingContext \
+  --test-symbol 'applies the mapping context to one value'
 printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
 ```
 
@@ -43,6 +47,9 @@ The CLI always writes machine-readable canonical JSON to stdout; diagnostics fro
 - composite semantic anchors with unique replay
 - actual K2 FIR CFG normalization, Rust dominance-frontier SSA/PHI/def-use and post-dominator control dependencies
 - forward/backward/bidirectional bounded slicing and canonical Thread IR
+- authority-backed `MAP_EDGE_WITH_CONTEXT` proof: compiler-derived role binding,
+  twelve preservation invariants, a closed fifteen-obligation change graph, and
+  explicit `BOUND`, `AMBIGUOUS`, or `REFUSED` outcomes without source mutation
 - one-shot `agent-context` discovery with deduplicated source, references, tests,
   semantic edit anchors, a hard stdout byte budget, and full evidence stored separately
 - `REPLACE_EXPRESSION`, `REPLACE_FUNCTION_BODY`, `ADD_IMPORT`, and `REMOVE_IMPORT` on PSI copies
@@ -59,7 +66,7 @@ This is intentionally fail-closed. Android, KMP, scripts, reflection, precise co
 
 ## Repository map
 
-- `crates/sthread`: Rust core and CLI
+- `crates/clew`: Rust core and CLI
 - `workers/kotlin`: long-lived Kotlin 2.4.10 PSI/compiler worker
 - `workers/kotlin21`: Kotlin 2.1.21 adapter reusing the common worker implementation
 - `workers/kotlin23`: Kotlin 2.3.0 adapter used by Maven/Spring services such as `product-repo`

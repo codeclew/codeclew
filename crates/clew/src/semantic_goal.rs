@@ -97,7 +97,7 @@ impl SemanticGoal {
         }
     }
 
-    fn validate(&self) -> Result<(), Refusal> {
+    pub(crate) fn validate(&self) -> Result<(), Refusal> {
         if self.schema != SEMANTIC_GOAL_SCHEMA
             || self.constraints.schema != CONSTRAINT_LANGUAGE_SCHEMA
         {

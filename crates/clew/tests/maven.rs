@@ -1,17 +1,17 @@
+use clew::canonical;
+use clew::graph;
+use clew::index::RepositoryIndex;
+use clew::model::{
+    BuildSystem, EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, Transaction,
+};
+use clew::proto::RequestKind;
+use clew::transaction;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sthread::canonical;
-use sthread::graph;
-use sthread::index::RepositoryIndex;
-use sthread::model::{
-    BuildSystem, EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, Transaction,
-};
-use sthread::proto::RequestKind;
-use sthread::transaction;
-use sthread::worker::{WorkerClient, workspace_root};
 
 fn copy_maven_fixture(from: &Path, to: &Path) {
     for entry in walkdir::WalkDir::new(from).into_iter().map(Result::unwrap) {
@@ -214,7 +214,7 @@ fn agent_context_renders_maven_targeted_test_command() {
     let temporary = tempfile::tempdir().unwrap();
     let evidence = temporary.path().join("maven-evidence.json");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_sthread"))
+    let output = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args([
             "agent-context",
             "--repo",
@@ -301,7 +301,7 @@ fn fails_closed_when_neither_wrapper_nor_maven_is_executable() {
     let java_home = std::env::var("JAVA_HOME").expect("JAVA_HOME is required by the test suite");
     let restricted_path = format!("{java_home}/bin:/usr/bin:/bin");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_sthread"))
+    let output = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args(["project", "inspect", "--repo", fixture.to_str().unwrap()])
         .env("PATH", restricted_path)
         .output()

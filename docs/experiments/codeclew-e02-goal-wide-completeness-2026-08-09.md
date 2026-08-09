@@ -67,12 +67,12 @@ elaborate; they do not turn it into evidence.
 
 ## Verification evidence
 
-- `cargo test -p sthread`: all unit and integration suites passed, including
+- `cargo test -p clew`: all unit and integration suites passed, including
   112 library tests, Kotlin 2.1, Maven, projection, transaction and concurrency
   tests.
-- `cargo test -p sthread --test agent_context -- --nocapture`: passed; includes
+- `cargo test -p clew --test agent_context -- --nocapture`: passed; includes
   the default legacy-apply refusal.
-- `cargo test -p sthread --test concurrency_matrix change_in_second_required_thread_forces_reslice -- --nocapture`:
+- `cargo test -p clew --test concurrency_matrix change_in_second_required_thread_forces_reslice -- --nocapture`:
   passed; the second-root replay regression completes in about 24 seconds.
 - Independent first pass: `REJECT`, because role-labelled, disconnected and
   self-attested inputs could pass.

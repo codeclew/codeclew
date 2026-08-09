@@ -11,13 +11,13 @@ fixtures/kotlin-concurrency/gradlew -p fixtures/kotlin-concurrency compileKotlin
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo run --quiet --bin sthread -- doctor >/dev/null
-FIRST=$(cargo run --quiet --bin sthread -- project inspect --repo fixtures/kotlin-basic)
-SECOND=$(cargo run --quiet --bin sthread -- project inspect --repo fixtures/kotlin-basic)
+cargo run --quiet --bin clew -- doctor >/dev/null
+FIRST=$(cargo run --quiet --bin clew -- project inspect --repo fixtures/kotlin-basic)
+SECOND=$(cargo run --quiet --bin clew -- project inspect --repo fixtures/kotlin-basic)
 [ "$FIRST" = "$SECOND" ]
-cargo run --quiet --bin sthread -- index --repo fixtures/kotlin-basic >/dev/null
-HASH1=$(cargo run --quiet --bin sthread -- index --repo fixtures/kotlin-basic)
-HASH2=$(cargo run --quiet --bin sthread -- index --repo fixtures/kotlin-basic)
+cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic >/dev/null
+HASH1=$(cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic)
+HASH2=$(cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic)
 [ "$HASH1" = "$HASH2" ]
 ./scripts/demo.sh >/dev/null
 ./scripts/benchmark-corpus.sh >/dev/null

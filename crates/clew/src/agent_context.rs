@@ -1,5 +1,5 @@
 use crate::canonical;
-use crate::error::{ErrorCode, SthreadError};
+use crate::error::{ClewError, ErrorCode};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -74,7 +74,7 @@ pub fn select(
     repo: &Path,
     index_facts: &Value,
     terms: &[String],
-) -> Result<AgentContextSelection, SthreadError> {
+) -> Result<AgentContextSelection, ClewError> {
     let files = scan_kotlin_sources(repo)?;
     let sources = files
         .iter()
@@ -203,7 +203,7 @@ pub struct AgentContextBuild<'a> {
     pub max_bytes: usize,
 }
 
-pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), SthreadError> {
+pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), ClewError> {
     let AgentContextBuild {
         repo,
         terms,
@@ -217,7 +217,7 @@ pub fn build(input: AgentContextBuild<'_>) -> Result<(Value, Value), SthreadErro
         max_bytes,
     } = input;
     if max_bytes < 1_024 {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "--max-bytes must be at least 1024",
         ));
@@ -611,7 +611,7 @@ fn common_prefix_len(left: &str, right: &str) -> usize {
         .count()
 }
 
-fn scan_kotlin_sources(repo: &Path) -> Result<Vec<SourceFile>, SthreadError> {
+fn scan_kotlin_sources(repo: &Path) -> Result<Vec<SourceFile>, ClewError> {
     let mut files = WalkDir::new(repo)
         .into_iter()
         .filter_entry(|entry| {
@@ -629,11 +629,11 @@ fn scan_kotlin_sources(repo: &Path) -> Result<Vec<SourceFile>, SthreadError> {
             let path = entry.path();
             let relative = path
                 .strip_prefix(repo)
-                .map_err(|error| SthreadError::new(ErrorCode::Internal, error.to_string()))?
+                .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?
                 .to_string_lossy()
                 .replace('\\', "/");
             let source = std::fs::read_to_string(path)
-                .map_err(|error| SthreadError::new(ErrorCode::InvalidInput, error.to_string()))?;
+                .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?;
             let is_test = relative.starts_with("src/test/") || relative.contains("/src/test/");
             Ok(SourceFile {
                 path: relative,
@@ -641,7 +641,7 @@ fn scan_kotlin_sources(repo: &Path) -> Result<Vec<SourceFile>, SthreadError> {
                 is_test,
             })
         })
-        .collect::<Result<Vec<_>, SthreadError>>()?;
+        .collect::<Result<Vec<_>, ClewError>>()?;
     files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(files)
 }
@@ -721,7 +721,7 @@ fn evidence_display(repo: &Path, evidence_path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadError> {
+fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, ClewError> {
     let original_declarations = array_len(&pack, "declarations");
     let original_references = array_len(&pack, "references");
     let original_tests = array_len(&pack, "tests");
@@ -744,7 +744,7 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
         if array_len(&pack, "declarations") > 1 && pop_array(&mut pack, "declarations") {
             continue;
         }
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             format!("--max-bytes {max_bytes} is too small for the minimal context pack"),
         ));
@@ -792,7 +792,7 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
             );
             continue;
         }
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::Internal,
             "context budget accounting failed",
         ));
@@ -825,10 +825,10 @@ fn update_omission_summary(
     });
 }
 
-fn serialized_len(value: &Value) -> Result<usize, SthreadError> {
+fn serialized_len(value: &Value) -> Result<usize, ClewError> {
     canonical::pretty(value)
         .map(|text| text.len() + 1)
-        .map_err(|error| SthreadError::new(ErrorCode::Internal, error.to_string()))
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))
 }
 
 fn array_len(pack: &Value, key: &str) -> usize {

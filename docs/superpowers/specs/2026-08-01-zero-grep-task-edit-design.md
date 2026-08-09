@@ -10,15 +10,15 @@ The supported Kotlin/JVM workflow becomes:
 task intent
   -> one bounded task-context
   -> one generic role-complete structured Edit IR
-  -> one atomic SThread task commit
+  -> one atomic Clew task commit
   -> clean detached-worktree compile and tests
 ```
 
 The benchmark agent must not use external source search or broad file reads.
-SThread, rather than `apply_patch`, applies every production and test-source
+Clew, rather than `apply_patch`, applies every production and test-source
 change. The model follows emitted graph roles and provides compact exact
 substitutions without repository-specific knowledge in the global worker or
-skill. SThread owns target selection, source assembly, imports, syntax checks,
+skill. Clew owns target selection, source assembly, imports, syntax checks,
 write scope, clean validation, Git commit, and evidence.
 
 ## Why the old pack failed
@@ -86,7 +86,7 @@ A run is eligible only if:
 - fresh hidden acceptance passes;
 - no external `rg`, `grep`, `sed`, `find`, source-file shell reads, or direct
   production `apply_patch` occur in the benchmark rollout;
-- SThread structured edit creates the committed source changes;
+- Clew structured edit creates the committed source changes;
 - context stdout is at most 16 KiB;
 - commit time is below 171 seconds, tool calls below 21, noncached tokens below
   72,925, and raw tokens below 1,099,997.

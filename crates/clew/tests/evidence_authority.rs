@@ -1,11 +1,11 @@
+use clew::error::ErrorCode;
+use clew::evidence_authority::{EvidenceAuthority, ProducerTransformConsumerGoal};
+use clew::model::{Edge, ThreadIr};
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use sthread::error::ErrorCode;
-use sthread::evidence_authority::{EvidenceAuthority, ProducerTransformConsumerGoal};
-use sthread::model::{Edge, ThreadIr};
-use sthread::worker::{WorkerClient, workspace_root};
 
 fn committed_fixture() -> (tempfile::TempDir, PathBuf) {
     let workspace = workspace_root();
@@ -72,7 +72,7 @@ fn git_head(repo: &Path) -> String {
 }
 
 fn live_thread(repo: &Path, symbol: &str) -> ThreadIr {
-    let output = Command::new(env!("CARGO_BIN_EXE_sthread"))
+    let output = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args([
             "slice",
             "--repo",

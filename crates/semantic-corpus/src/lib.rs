@@ -294,7 +294,7 @@ fn vocabulary(seed: u64, family: TaskFamily, build_system: BuildSystem) -> Vocab
 fn repository_layout(seed: u64, family: TaskFamily, build_system: BuildSystem) -> RepositoryLayout {
     let digest =
         sha256_hex(format!("{GENERATOR_VERSION}:shape:{seed}:{family}:{build_system}").as_bytes());
-    if digest.as_bytes()[0] % 2 == 0 {
+    if digest.as_bytes()[0].is_multiple_of(2) {
         RepositoryLayout::Flat
     } else {
         RepositoryLayout::Module

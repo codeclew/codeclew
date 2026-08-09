@@ -1,5 +1,5 @@
 use crate::canonical;
-use crate::error::{ErrorCode, SthreadError};
+use crate::error::{ClewError, ErrorCode};
 use crate::graph;
 use crate::index::{REPOSITORY_INDEX_FACT, RepositoryIndex, StagedIndex};
 use crate::model::*;
@@ -17,10 +17,10 @@ pub fn preview(
     thread: &ThreadIr,
     edit: &EditIr,
     worker: &mut WorkerClient,
-) -> Result<PreviewReport, SthreadError> {
+) -> Result<PreviewReport, ClewError> {
     let head = git_output(repo, &["rev-parse", "HEAD"])?;
     if head != edit.base_revision || head != thread.snapshot.base_revision {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::ProjectModelChanged,
             format!(
                 "snapshot base {} does not match HEAD {head}",
@@ -29,13 +29,13 @@ pub fn preview(
         ));
     }
     if edit.thread_id != thread.thread_id {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
             "Edit IR threadId does not match Thread IR",
         ));
     }
     if edit.operations.is_empty() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "Edit IR has no operations",
         ));
@@ -60,13 +60,13 @@ pub fn preview(
             && operation.kind != "REWRITE_DECLARATION"
             && operation.kind != "CREATE_FILE"
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("unsupported edit operation {}", operation.kind),
             ));
         }
         let target = operation.target.as_object().ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 "operation target must be an anchor object",
             )
@@ -74,7 +74,7 @@ pub fn preview(
         let file = target
             .get("fileId")
             .and_then(Value::as_str)
-            .ok_or_else(|| SthreadError::new(ErrorCode::InvalidInput, "target has no fileId"))?;
+            .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "target has no fileId"))?;
         if operation.kind == "CREATE_FILE" {
             preview_create_file(
                 repo,
@@ -93,7 +93,7 @@ pub fn preview(
             .and_then(Value::as_str)
             && target.get("exactTextHash").and_then(Value::as_str) != Some(expected)
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
                 "nodeTextHash precondition does not match the target anchor",
             ));
@@ -116,7 +116,7 @@ pub fn preview(
                 .and_then(Value::as_str)
                 != Some(expected)
             {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::PreconditionFailed,
                     "ownerSignatureHash precondition failed",
                 ));
@@ -155,7 +155,7 @@ pub fn preview(
             .get("source")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::WorkerProtocolMismatch,
                     "candidate response has no source",
                 )
@@ -178,7 +178,7 @@ pub fn preview(
                 .filter_map(Value::as_str)
                 .any(|blocked| blocked == *effect)
         }) {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::EffectChanged,
                 format!("replacement introduces forbidden effect {effect}"),
             ));
@@ -215,7 +215,7 @@ pub fn preview(
                 .get("ownerSymbolId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
-                    SthreadError::new(
+                    ClewError::new(
                         ErrorCode::InvalidInput,
                         "declaration edit target has no ownerSymbolId",
                     )
@@ -303,7 +303,7 @@ pub fn preview(
                         continue;
                     }
                     if kind == "ABI" || kind == "SIGNATURE" {
-                        return Err(SthreadError::new(
+                        return Err(ClewError::new(
                             ErrorCode::AbiChanged,
                             format!("edit changes protected {kind} for {owner}"),
                         ));
@@ -341,7 +341,7 @@ pub fn preview(
         .iter()
         .find(|fact| !expected_scope.contains(&(&fact.kind, &fact.key)))
     {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::WritesetExceeded,
             format!(
                 "actual write {}:{} is outside ExpectedWriteSet",
@@ -379,22 +379,22 @@ fn preview_create_file(
     writes: &mut Vec<WriteFact>,
     expected_writes: &mut Vec<ExpectedWriteFact>,
     worker: &mut WorkerClient,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     if !file.ends_with(".kt") {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "CREATE_FILE only supports Kotlin .kt files",
         ));
     }
     let path = safe_join(repo, file)?;
     if path.exists() || candidates.contains_key(file) {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
             format!("CREATE_FILE target already exists: {file}"),
         ));
     }
     if operation.replacement.kotlin.trim().is_empty() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "CREATE_FILE replacement must not be empty",
         ));
@@ -404,7 +404,7 @@ fn preview_create_file(
         &json!({"repo":repo,"file":file,"source":operation.replacement.kotlin}),
     )?;
     if validation.get("valid").and_then(Value::as_bool) != Some(true) {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::ReplacementParseError,
             format!(
                 "CREATE_FILE Kotlin syntax is invalid: {}",
@@ -431,7 +431,7 @@ pub fn commit(
     transaction: &mut Transaction,
     target_ref: &str,
     worker: &mut WorkerClient,
-) -> Result<Value, SthreadError> {
+) -> Result<Value, ClewError> {
     validate_required_threads(transaction)?;
     let qualified_target_ref;
     let target_ref = if target_ref.starts_with("refs/") {
@@ -452,7 +452,7 @@ pub fn commit(
                 .then(|| transaction.thread.snapshot.index_snapshot.clone())
         })
         .ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 "transaction must start with an immutable repository index snapshot",
             )
@@ -465,7 +465,7 @@ pub fn commit(
     if current == transaction.base_revision
         && current_index_snapshot.as_deref() != Some(base_index_snapshot.as_str())
     {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::StaleRequiresReslice,
             format!(
                 "repository index snapshot changed since transaction start: expected {base_index_snapshot}, current {}",
@@ -483,7 +483,7 @@ pub fn commit(
             if repository_index.published_revision()?.as_deref() == Some(current.as_str()) {
                 (
                     repository_index.hash()?.ok_or_else(|| {
-                        SthreadError::new(
+                        ClewError::new(
                             ErrorCode::TransactionRecoveryRequired,
                             "published revision has no repository index hash",
                         )
@@ -608,7 +608,7 @@ pub fn commit(
             .map_err(io_error)?;
         if !output.status.success() {
             log_output(&output);
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::Internal,
                 "candidate commit failed",
             ));
@@ -633,7 +633,7 @@ pub fn commit(
             &candidate,
         )?;
         git(repo, &["update-ref", target_ref, &candidate, &current]).map_err(|_| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::RefCompareAndSwapFailed,
                 "target ref changed during commit CAS",
             )
@@ -642,7 +642,7 @@ pub fn commit(
             Ok(published) => published,
             Err(publication_error) => {
                 if git(repo, &["update-ref", target_ref, &current, &candidate]).is_ok() {
-                    return Err(SthreadError::new(
+                    return Err(ClewError::new(
                         ErrorCode::Internal,
                         format!(
                             "repository index publication failed; target ref was rolled back: {}",
@@ -650,7 +650,7 @@ pub fn commit(
                         ),
                     ));
                 }
-                return Err(index_recovery_error(SthreadError::new(
+                return Err(index_recovery_error(ClewError::new(
                     ErrorCode::TransactionRecoveryRequired,
                     format!(
                         "index publication failed and target ref rollback also failed: {}",
@@ -706,7 +706,7 @@ fn publish_index_for_revision(
     revision: &str,
     compilation: &str,
     worker: &mut WorkerClient,
-) -> Result<(String, Vec<String>), SthreadError> {
+) -> Result<(String, Vec<String>), ClewError> {
     stage_index_for_revision(repo, revision, compilation, worker)
         .and_then(StagedIndex::publish)
         .map_err(index_recovery_error)
@@ -717,7 +717,7 @@ fn stage_index_for_revision(
     revision: &str,
     compilation: &str,
     worker: &mut WorkerClient,
-) -> Result<StagedIndex, SthreadError> {
+) -> Result<StagedIndex, ClewError> {
     let temporary = tempfile::tempdir().map_err(io_error)?;
     let path = temporary.path().join("index-recovery");
     git(
@@ -745,7 +745,7 @@ fn stage_index_for_revision(
     result
 }
 
-fn index_recovery_error(mut error: SthreadError) -> SthreadError {
+fn index_recovery_error(mut error: ClewError) -> ClewError {
     error.code = ErrorCode::TransactionRecoveryRequired;
     error.retryable = true;
     error.message = format!(
@@ -760,7 +760,7 @@ fn preview_for_commit(
     transaction: &mut Transaction,
     current: &str,
     worker: &mut WorkerClient,
-) -> Result<PreviewReport, SthreadError> {
+) -> Result<PreviewReport, ClewError> {
     if current == transaction.base_revision {
         return preview(repo, &transaction.thread, &transaction.edit, worker);
     }
@@ -788,7 +788,7 @@ fn preview_for_commit(
             .and_then(Value::as_str)
             != Some(transaction.project_model_hash.as_str())
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 format!(
                     "project model changed since slice: expected {}, current {}",
@@ -829,7 +829,7 @@ fn revalidate_semantic_read_set(
     project: &Value,
     current: &str,
     worker: &mut WorkerClient,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let required = transaction_threads(transaction);
     let rebuilt = required
         .iter()
@@ -871,13 +871,13 @@ pub(crate) fn rebuild_thread(
     project: &Value,
     current: &str,
     worker: &mut WorkerClient,
-) -> Result<ThreadIr, SthreadError> {
+) -> Result<ThreadIr, ClewError> {
     let symbol = thread
         .seed
         .get("symbol")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 "thread seed has no owner symbol",
             )
@@ -886,9 +886,10 @@ pub(crate) fn rebuild_thread(
         RequestKind::BuildLocalGraph,
         &json!({"repo":repo,"symbol":symbol,"compilation":thread.snapshot.compilation}),
     )?;
-    let graph = graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(|error| {
-        SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
-    })?);
+    let graph =
+        graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(|error| {
+            ClewError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
+        })?);
     let old_seed_id = thread.seed.get("nodeId").and_then(Value::as_str);
     let seed_anchor = thread
         .seed
@@ -912,7 +913,7 @@ pub(crate) fn rebuild_thread(
                 .map(|node| node.id.clone())
         })
         .ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 "slice seed no longer resolves",
             )
@@ -957,7 +958,7 @@ fn read_set_change_error(
     old: &BTreeSet<ReadFact>,
     new: &BTreeSet<ReadFact>,
     thread_id: Option<&str>,
-) -> SthreadError {
+) -> ClewError {
     let removed: Vec<_> = old
         .difference(new)
         .take(8)
@@ -987,7 +988,7 @@ fn read_set_change_error(
         || old
             .difference(new)
             .any(|fact| fact.kind == "SOURCE_NODE" && target_anchors.contains(fact.key.as_str()));
-    let mut error = SthreadError::new(
+    let mut error = ClewError::new(
         if write_conflict {
             ErrorCode::WwConflict
         } else {
@@ -1018,13 +1019,13 @@ fn transaction_threads(transaction: &Transaction) -> Vec<&ThreadIr> {
     }
 }
 
-pub fn validate_required_threads(transaction: &Transaction) -> Result<(), SthreadError> {
+pub fn validate_required_threads(transaction: &Transaction) -> Result<(), ClewError> {
     let threads = transaction_threads(transaction);
     if !transaction.required_threads.is_empty() {
         let primary_hash = canonical::hash(&transaction.thread).map_err(internal)?;
         let required_primary_hash = canonical::hash(threads[0]).map_err(internal)?;
         if primary_hash != required_primary_hash {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 "requiredThreads must begin with the exact primary thread",
             ));
@@ -1037,13 +1038,13 @@ pub fn validate_required_threads(transaction: &Transaction) -> Result<(), Sthrea
             || thread.snapshot.compilation != transaction.thread.snapshot.compilation
             || thread.seed.get("symbol").and_then(Value::as_str).is_none()
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 "required transaction threads must share revision, project model, and compilation and have a symbol seed",
             ));
         }
         if !ids.insert(&thread.thread_id) {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 "required transaction thread IDs must be unique",
             ));
@@ -1058,7 +1059,7 @@ pub(crate) fn validate_worktree(
     build_launcher: &str,
     compile_task: &str,
     tests: &[String],
-) -> Result<(u64, u64), SthreadError> {
+) -> Result<(u64, u64), ClewError> {
     validate_worktree_with_options(
         worktree,
         build_system,
@@ -1075,7 +1076,7 @@ pub(crate) fn validate_worktree_fresh(
     build_launcher: &str,
     compile_task: &str,
     tests: &[String],
-) -> Result<(u64, u64), SthreadError> {
+) -> Result<(u64, u64), ClewError> {
     validate_worktree_with_options(
         worktree,
         build_system,
@@ -1093,7 +1094,7 @@ fn validate_worktree_with_options(
     compile_task: &str,
     tests: &[String],
     force_tests: bool,
-) -> Result<(u64, u64), SthreadError> {
+) -> Result<(u64, u64), ClewError> {
     if build_system == BuildSystem::Maven && !tests.is_empty() {
         // Maven's test lifecycle already includes main/test compilation. A
         // separate `compile` invocation repeats dependency resolution and
@@ -1110,7 +1111,7 @@ fn validate_worktree_with_options(
             return Ok((0, test_duration_ms));
         }
         log_output(&output);
-        let mut error = SthreadError::new(
+        let mut error = ClewError::new(
             ErrorCode::TestFailed,
             format!(
                 "candidate worktree {build_system:?} test lifecycle {} failed",
@@ -1142,7 +1143,7 @@ fn validate_worktree_with_options(
     let compile_duration_ms = compile_started.elapsed().as_millis() as u64;
     if !output.status.success() {
         log_output(&output);
-        let mut error = SthreadError::new(
+        let mut error = ClewError::new(
             ErrorCode::CompileFailed,
             format!("candidate worktree {build_system:?} compile task {compile_task} failed"),
         );
@@ -1177,7 +1178,7 @@ fn validate_worktree_with_options(
         Ok((compile_duration_ms, test_duration_ms))
     } else {
         log_output(&output);
-        let mut error = SthreadError::new(
+        let mut error = ClewError::new(
             ErrorCode::TestFailed,
             format!(
                 "candidate worktree {build_system:?} test tasks {} failed",
@@ -1207,20 +1208,20 @@ fn build_command(
     worktree: &Path,
     build_system: BuildSystem,
     build_launcher: &str,
-) -> Result<Command, SthreadError> {
+) -> Result<Command, ClewError> {
     let launcher = match (build_system, build_launcher) {
         (BuildSystem::Gradle, "./gradlew") => worktree.join("gradlew"),
         (BuildSystem::Maven, "./mvnw") => worktree.join("mvnw"),
         (BuildSystem::Maven, "mvn") => PathBuf::from("mvn"),
         _ => {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::UnsupportedProjectConfiguration,
                 format!("unsupported {build_system:?} build launcher policy {build_launcher}"),
             ));
         }
     };
     if launcher.is_absolute() && !launcher.is_file() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::UnsupportedProjectConfiguration,
             format!("stored build launcher is missing: {}", launcher.display()),
         ));
@@ -1228,8 +1229,8 @@ fn build_command(
     Ok(Command::new(launcher))
 }
 
-fn build_start_error(build_launcher: &str, error: std::io::Error) -> SthreadError {
-    SthreadError::new(
+fn build_start_error(build_launcher: &str, error: std::io::Error) -> ClewError {
+    ClewError::new(
         ErrorCode::UnsupportedProjectConfiguration,
         format!("build launcher {build_launcher} could not start: {error}"),
     )
@@ -1240,7 +1241,7 @@ pub struct Ledger {
     repo: PathBuf,
 }
 impl Ledger {
-    pub fn open(repo: &Path) -> Result<Self, SthreadError> {
+    pub fn open(repo: &Path) -> Result<Self, ClewError> {
         let dir = repo.join(".semantic-thread");
         std::fs::create_dir_all(&dir).map_err(io_error)?;
         let connection = Connection::open(dir.join("ledger.sqlite3")).map_err(db_error)?;
@@ -1253,7 +1254,7 @@ impl Ledger {
             repo: repo.to_path_buf(),
         })
     }
-    pub fn append(&self, tx: &Transaction, evidence: &str) -> Result<(), SthreadError> {
+    pub fn append(&self, tx: &Transaction, evidence: &str) -> Result<(), ClewError> {
         self.connection
             .execute(
                 "INSERT INTO events(tx_id,status,record_json,evidence) VALUES(?1,?2,?3,?4)",
@@ -1267,20 +1268,20 @@ impl Ledger {
             .map_err(db_error)?;
         Ok(())
     }
-    pub fn inspect(&self, id: &str) -> Result<Value, SthreadError> {
+    pub fn inspect(&self, id: &str) -> Result<Value, ClewError> {
         let latest: Option<(String, Vec<u8>)> = self.connection.query_row(
             "SELECT status,record_json FROM events WHERE tx_id=?1 ORDER BY sequence DESC LIMIT 1",
             [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).optional().map_err(db_error)?;
         let (mut status, record) = latest.ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("transaction not found: {id}"),
             )
         })?;
         let mut transaction: Transaction = serde_json::from_slice(&record).map_err(|error| {
-            SthreadError::new(ErrorCode::TransactionRecoveryRequired, error.to_string())
+            ClewError::new(ErrorCode::TransactionRecoveryRequired, error.to_string())
         })?;
         let terminal = matches!(
             status.as_str(),
@@ -1392,7 +1393,7 @@ enum CandidateRecovery {
 fn recover_candidate_commit(
     repo: &Path,
     transaction: &Transaction,
-) -> Result<CandidateRecovery, SthreadError> {
+) -> Result<CandidateRecovery, ClewError> {
     let Some(candidate) = transaction.candidate_commit.as_deref() else {
         return Ok(CandidateRecovery::Aborted(
             "COMMITTING record has no candidate commit; no ref was changed".into(),
@@ -1438,7 +1439,7 @@ fn recover_candidate_commit(
     git(repo, &["update-ref", target_ref, candidate, &current])?;
     if let Err(publication_error) = staged.publish() {
         if git(repo, &["update-ref", target_ref, &current, candidate]).is_ok() {
-            return Err(index_recovery_error(SthreadError::new(
+            return Err(index_recovery_error(ClewError::new(
                 ErrorCode::TransactionRecoveryRequired,
                 format!(
                     "candidate index publication failed; target ref was rolled back: {}",
@@ -1446,7 +1447,7 @@ fn recover_candidate_commit(
                 ),
             )));
         }
-        return Err(index_recovery_error(SthreadError::new(
+        return Err(index_recovery_error(ClewError::new(
             ErrorCode::TransactionRecoveryRequired,
             format!(
                 "candidate index publication failed and target ref rollback failed: {}",
@@ -1461,14 +1462,14 @@ fn find_transaction_commit(
     repo: &Path,
     revision: &str,
     id: &str,
-) -> Result<Option<String>, SthreadError> {
+) -> Result<Option<String>, ClewError> {
     let output = Command::new("git")
         .args(["log", revision, "--format=%H%x1f%B%x1e"])
         .current_dir(repo)
         .output()
         .map_err(io_error)?;
     if !output.status.success() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::TransactionRecoveryRequired,
             "cannot scan Git history for transaction trailers",
         ));
@@ -1488,14 +1489,14 @@ fn find_matching_transaction_commit(
     revision: &str,
     id: &str,
     edit_hash: &str,
-) -> Result<Option<String>, SthreadError> {
+) -> Result<Option<String>, ClewError> {
     let output = Command::new("git")
         .args(["log", revision, "--format=%H%x1f%B%x1e"])
         .current_dir(repo)
         .output()
         .map_err(io_error)?;
     if !output.status.success() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::Internal,
             format!("cannot scan target history {revision} for transaction trailers"),
         ));
@@ -1517,7 +1518,7 @@ fn find_matching_transaction_commit(
                 .map(str::to_owned)
         });
         if recorded_hash.as_deref() != Some(edit_hash) {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("transaction id {id} is already associated with a different edit"),
             ));
@@ -1526,7 +1527,7 @@ fn find_matching_transaction_commit(
     }
     Ok(None)
 }
-pub fn ledger(repo: &Path) -> Result<Ledger, SthreadError> {
+pub fn ledger(repo: &Path) -> Result<Ledger, ClewError> {
     Ledger::open(repo)
 }
 
@@ -1541,10 +1542,10 @@ fn unified_diff(file: &str, old: &str, new: &str) -> String {
         .to_string()
 }
 
-fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, SthreadError> {
+fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, ClewError> {
     let path = root.join(relative);
     if relative.starts_with('/') || relative.split('/').any(|p| p == "..") {
-        Err(SthreadError::new(
+        Err(ClewError::new(
             ErrorCode::InvalidInput,
             "path escapes repository",
         ))
@@ -1552,7 +1553,7 @@ fn safe_join(root: &Path, relative: &str) -> Result<PathBuf, SthreadError> {
         Ok(path)
     }
 }
-fn git(repo: &Path, args: &[&str]) -> Result<(), SthreadError> {
+fn git(repo: &Path, args: &[&str]) -> Result<(), ClewError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(repo)
@@ -1562,7 +1563,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<(), SthreadError> {
         Ok(())
     } else {
         log_output(&output);
-        Err(SthreadError::new(
+        Err(ClewError::new(
             ErrorCode::Internal,
             format!("git {} failed", args.join(" ")),
         ))
@@ -1576,7 +1577,7 @@ fn log_output(output: &std::process::Output) {
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
     }
 }
-fn git_output(repo: &Path, args: &[&str]) -> Result<String, SthreadError> {
+fn git_output(repo: &Path, args: &[&str]) -> Result<String, ClewError> {
     let output = Command::new("git")
         .args(args)
         .current_dir(repo)
@@ -1585,20 +1586,20 @@ fn git_output(repo: &Path, args: &[&str]) -> Result<String, SthreadError> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     } else {
-        Err(SthreadError::new(
+        Err(ClewError::new(
             ErrorCode::InvalidInput,
             String::from_utf8_lossy(&output.stderr).trim(),
         ))
     }
 }
-fn io_error(e: std::io::Error) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, e.to_string())
+fn io_error(e: std::io::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, e.to_string())
 }
-fn db_error(e: rusqlite::Error) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, e.to_string())
+fn db_error(e: rusqlite::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, e.to_string())
 }
-fn internal(e: anyhow::Error) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, e.to_string())
+fn internal(e: anyhow::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, e.to_string())
 }
 
 #[cfg(test)]

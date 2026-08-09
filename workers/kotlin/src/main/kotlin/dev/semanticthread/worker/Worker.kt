@@ -397,6 +397,7 @@ internal class Worker : AutoCloseable {
         val declarationId = "declaration:" + sha("$module|$sourceSet|$relative|$symbol|${declaration::class.simpleName}|$signatureHash".toByteArray()).removePrefix("sha256:")
         return buildJsonObject {
             put("declarationId", declarationId); put("symbolId", symbol); put("symbolIdentity", identity); put("legacySymbolId", legacySymbolId(pkg, declaration)); put("name", declaration.name.orEmpty()); put("kind", declaration::class.simpleName ?: "KtDeclaration")
+            resolvedTypes?.get("symbol")?.let { put("compilerSymbol", it) }
             if (containing != null) put("containingDeclaration", containing)
             putJsonObject("sourceOrigin") { put("file", relative); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset) }
             put("file", relative); put("rangeStart", declaration.textRange.startOffset); put("rangeEnd", declaration.textRange.endOffset)
@@ -745,6 +746,10 @@ internal class Worker : AutoCloseable {
                 val conditionText = kt.text.substring(start.coerceAtLeast(0), end.coerceAtMost(kt.text.length)).trim()
                 if (conditionText.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) uses = listOf(conditionText)
             }
+            if (uses.isEmpty() && start != null && end != null && "Jump" in rawKind) {
+                val returnedName = kt.text.substring(start.coerceAtLeast(0), end.coerceAtMost(kt.text.length)).trim()
+                if (returnedName.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) uses = listOf(returnedName)
+            }
             graphNode("fir:$rawId", kind, defines, psi?.let { anchor(file, owner, it, kt.text) }, uses).let { node ->
                 buildJsonObject { node.forEach { (key, item) -> put(key, item) }; putJsonObject("attributes") {
                     put("firNodeKind", rawKind); put("firDead", raw["dead"] ?: JsonPrimitive(false)); put("analysis", "K2_FIR_CFG")
@@ -806,7 +811,12 @@ internal class Worker : AutoCloseable {
             val node = graphNode("param:$index", "PARAMETER", parameter.name, anchor(file, owner, parameter, kt.text))
             buildJsonObject {
                 node.forEach { (key, value) -> put(key, value) }
-                cfg["symbol"]?.let { symbol -> putJsonObject("attributes") { put("analysis", "K2_FIR"); put("ownerCompilerSymbol", symbol) } }
+                putJsonObject("attributes") {
+                    put("analysis", "K2_FIR")
+                    cfg["symbol"]?.let { put("ownerCompilerSymbol", it) }
+                    cfg["parameterTypes"]?.jsonArray?.getOrNull(index)?.let { put("declaredType", it) }
+                    cfg["returnType"]?.let { put("ownerReturnType", it) }
+                }
             }
         }
         if (entry != null && parameterNodes.isNotEmpty()) {

@@ -12,3 +12,9 @@ fun transformAndConsume(input: Int): Int {
     val transformed = input * 2
     return transformed
 }
+
+fun mappingContext(): Int = 2
+
+fun applyMappingContext(value: Int, context: Int): Int = value + context
+
+fun valuesAwaitingContext(values: List<Int>): List<Int> = values

@@ -198,7 +198,7 @@
         "docs/research/codeclew/source-manifest.json",
         "docs/research/codeclew/source-to-claim-trace.md",
         "docs/research/codeclew/gap-register.yaml",
-        "crates/sthread/src",
+        "crates/clew/src",
         "workers/kotlin/src",
         "schemas/worker.proto",
         "scripts/verify.sh"

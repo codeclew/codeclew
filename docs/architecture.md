@@ -2,7 +2,7 @@
 
 The authoritative state is the tuple `(Git revision, exact source bytes, project model hash)`. Every index, anchor, local graph and Thread IR is derived and disposable.
 
-`sthread` starts a version-pinned Kotlin worker per CLI invocation. Project inspection first discovers the compilation's compiler version; the Rust client then selects the matching 2.1.21 or 2.4.10 worker before any K2 analysis. The separate `semanticd` Rust service keeps the selected worker alive across JSONL service requests. Both use length-prefixed Protobuf envelopes internally and canonical JSON DTO payloads with snapshots, batches, and content-addressed blobs. The worker owns Kotlin PSI construction, declaration/source facts, source-backed graph origins and PSI-copy edits. No Kotlin compiler object crosses the protocol.
+`clew` starts a version-pinned Kotlin worker per CLI invocation. Project inspection first discovers the compilation's compiler version; the Rust client then selects the matching 2.1.21 or 2.4.10 worker before any K2 analysis. The separate `semanticd` Rust service keeps the selected worker alive across JSONL service requests. Both use length-prefixed Protobuf envelopes internally and canonical JSON DTO payloads with snapshots, batches, and content-addressed blobs. The worker owns Kotlin PSI construction, declaration/source facts, source-backed graph origins and PSI-copy edits. No Kotlin compiler object crosses the protocol.
 
 The Rust boundary owns SQLite WAL state, canonical serialization, graph normalization, SSA PHI and def-use edges, control dependencies, bounded slicing, ReadSet/WriteSet, validation orchestration, Git detached worktrees, compare-and-swap ref updates and the append-only ledger.
 

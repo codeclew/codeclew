@@ -1620,23 +1620,23 @@ withheld experiment.
 
 | Область | Файл / диапазон / функция |
 | --- | --- |
-| CLI project/index/context pipeline | `crates/sthread/src/main.rs`, ≈250–405: `Command::Project`, `Command::Index`, `Command::AgentContext` |
-| Goal/plan to transaction | `crates/sthread/src/main.rs`, ≈405–535: `Command::TaskApply` |
-| Context limits и root selection | `crates/sthread/src/task_context.rs`, ≈1–240: constants, `TaskContextSelection::root_symbols`, `followup_symbols` |
-| Task-surface assembly | `crates/sthread/src/task_context.rs`, ≈620–940: `build` |
-| `COMPLETE_TASK` и bounded/full evidence | `crates/sthread/src/task_context.rs`, ≈880–980 |
-| Surface/contract compaction | `crates/sthread/src/task_context.rs`, ≈950–1120 |
-| Existing semantic-goal compiler | `crates/sthread/src/task_plan.rs`, ≈1–240: `expand_transient_transform` |
-| Resolved-path check | `crates/sthread/src/task_plan.rs`, ≈260–325: `verify_resolved_path` |
-| Source-shape parsers | `crates/sthread/src/task_plan.rs`, ≈325–580: JPQL/signature/loop/test helpers |
-| IR | `crates/sthread/src/model.rs`: `ThreadIr`, `ReadFact`, `EditIr`, `EditOperation`, `Transaction` |
-| Graph enrichment | `crates/sthread/src/graph.rs`, ≈1–340: `enrich_profiled`, type/call/effect edges |
-| Slicing and Thread ReadSet | `crates/sthread/src/graph.rs`, ≈660–880: `slice` |
-| Preview and write-set validation | `crates/sthread/src/transaction.rs`, ≈1–520 |
-| Semantic replay/worktree/CAS | `crates/sthread/src/transaction.rs`, ≈500–1150 |
-| Ledger recovery/index rollback | `crates/sthread/src/transaction.rs`, ≈1150–end |
-| Persistent index | `crates/sthread/src/index.rs`: `RepositoryIndex`, `stage_update`, `update_from_root` |
-| Worker protocol | `schemas/worker.proto`; `crates/sthread/src/worker.rs` |
+| CLI project/index/context pipeline | `crates/clew/src/main.rs`, ≈250–405: `Command::Project`, `Command::Index`, `Command::AgentContext` |
+| Goal/plan to transaction | `crates/clew/src/main.rs`, ≈405–535: `Command::TaskApply` |
+| Context limits и root selection | `crates/clew/src/task_context.rs`, ≈1–240: constants, `TaskContextSelection::root_symbols`, `followup_symbols` |
+| Task-surface assembly | `crates/clew/src/task_context.rs`, ≈620–940: `build` |
+| `COMPLETE_TASK` и bounded/full evidence | `crates/clew/src/task_context.rs`, ≈880–980 |
+| Surface/contract compaction | `crates/clew/src/task_context.rs`, ≈950–1120 |
+| Existing semantic-goal compiler | `crates/clew/src/task_plan.rs`, ≈1–240: `expand_transient_transform` |
+| Resolved-path check | `crates/clew/src/task_plan.rs`, ≈260–325: `verify_resolved_path` |
+| Source-shape parsers | `crates/clew/src/task_plan.rs`, ≈325–580: JPQL/signature/loop/test helpers |
+| IR | `crates/clew/src/model.rs`: `ThreadIr`, `ReadFact`, `EditIr`, `EditOperation`, `Transaction` |
+| Graph enrichment | `crates/clew/src/graph.rs`, ≈1–340: `enrich_profiled`, type/call/effect edges |
+| Slicing and Thread ReadSet | `crates/clew/src/graph.rs`, ≈660–880: `slice` |
+| Preview and write-set validation | `crates/clew/src/transaction.rs`, ≈1–520 |
+| Semantic replay/worktree/CAS | `crates/clew/src/transaction.rs`, ≈500–1150 |
+| Ledger recovery/index rollback | `crates/clew/src/transaction.rs`, ≈1150–end |
+| Persistent index | `crates/clew/src/index.rs`: `RepositoryIndex`, `stage_update`, `update_from_root` |
+| Worker protocol | `schemas/worker.proto`; `crates/clew/src/worker.rs` |
 | Kotlin project/K2 environment | `workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt`, ≈1–500 |
 | Symbol resolution/anchors/local graph | `Worker.kt`, ≈500–1100 |
 | PSI expression/body apply | `Worker.kt`, ≈1100–1320: `applyEdit` |

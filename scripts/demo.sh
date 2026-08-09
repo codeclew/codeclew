@@ -3,7 +3,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 command -v jq >/dev/null 2>&1 || { echo 'jq is required for the demo' >&2; exit 2; }
 cd "$ROOT"
-cargo build --quiet --bin sthread
+cargo build --quiet --bin clew
 ./gradlew :workers:kotlin:installDist --no-daemon --quiet
 DEMO_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/semantic-thread-demo.XXXXXX")
 trap 'rm -rf "$DEMO_ROOT"' EXIT INT TERM
@@ -15,7 +15,7 @@ git add .
 git -c user.name=Demo -c user.email=demo@localhost commit -qm baseline
 BASE=$(git rev-parse HEAD)
 cd "$ROOT"
-BIN="$ROOT/target/debug/sthread"
+BIN="$ROOT/target/debug/clew"
 "$BIN" slice --repo "$DEMO_ROOT/repo" --symbol com.acme.total --direction both --output "$DEMO_ROOT/thread.json" >/dev/null
 jq --arg base "$BASE" '{schema:"semantic-edit/0.1",threadId:.threadId,baseRevision:$base,operations:[{opId:"op:1",kind:"REPLACE_EXPRESSION",target:first(.nodes[]|select(.origin.sourceText=="value *= 2")|.origin),preconditions:{},replacement:{kotlin:"value = value + value"},postconditions:{}}]}' "$DEMO_ROOT/thread.json" > "$DEMO_ROOT/edit.json"
 jq '.operations[0].replacement.kotlin="value ="' "$DEMO_ROOT/edit.json" > "$DEMO_ROOT/invalid-edit.json"

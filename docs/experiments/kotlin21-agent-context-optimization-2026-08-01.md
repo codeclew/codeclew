@@ -3,7 +3,7 @@
 Дата: 2026-08-01
 
 Это продолжение эксперимента на `pim-migrator` с Kotlin 2.1.21. Цель — убрать
-конкретные причины проигрыша режима `sthread`: несовместимый compiler worker,
+конкретные причины проигрыша режима `clew`: несовместимый compiler worker,
 нерабочий lookup extension-функции и необходимость вручную искать тесты.
 
 ## Изменения
@@ -13,7 +13,7 @@
 - Rust-клиент автоматически выбирает worker 2.1.21 или 2.4.10 до K2-анализа;
 - обычные `applyAdaptive` и `io.private-product.pim.migrator.engine.applyAdaptive`
   разрешают extension-функцию; неоднозначный short name возвращает ошибку;
-- команда `sthread context` за один запуск строит индекс и semantic slice,
+- команда `clew context` за один запуск строит индекс и semantic slice,
   выдаёт компактный edit-ready JSON и перечисляет тесты с текстовой ссылкой на
   seed.
 
@@ -22,7 +22,7 @@
 Команда:
 
 ```text
-sthread context --repo <pim-migrator> --symbol applyAdaptive --max-nodes 40
+clew context --repo <pim-migrator> --symbol applyAdaptive --max-nodes 40
 ```
 
 получила `COMPLETE_SUPPORTED_SUBSET` на Kotlin 2.1.21 и нашла
@@ -42,7 +42,7 @@ tool output, а не полный token usage rollout; корректное ср
 Независимый `gpt-5.6-terra` повторил исходную задачу на commit `be34782d` и
 создал commit `0e5dd5b`. Корректность улучшилась, но общая эффективность — нет:
 
-| Метрика | sthread v1 | sthread v2 | Изменение |
+| Метрика | clew v1 | clew v2 | Изменение |
 |---|---:|---:|---:|
 | Время до commit | 185 с | 185 с | 0% |
 | Команд до первого edit | 37 | 20 | -45,9% |

@@ -1,6 +1,6 @@
+use clew::worker::workspace_root;
 use serde_json::Value;
 use std::process::Command;
-use sthread::worker::workspace_root;
 
 #[test]
 fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
@@ -8,7 +8,7 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
     let fixture = root.join("fixtures/kotlin-2-1");
     let temporary = tempfile::tempdir().unwrap();
     let evidence = temporary.path().join("evidence.json");
-    let output = Command::new(env!("CARGO_BIN_EXE_sthread"))
+    let output = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args([
             "agent-context",
             "--repo",
@@ -109,7 +109,7 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
             .is_some_and(|kind| kind.starts_with("Kt"))
     );
 
-    let rejected = Command::new(env!("CARGO_BIN_EXE_sthread"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args([
             "task-apply",
             "--repo",

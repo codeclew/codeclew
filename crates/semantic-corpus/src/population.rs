@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn product_worker_does_not_depend_on_corpus_generator() {
-        let product_manifest = include_str!("../../sthread/Cargo.toml");
+        let product_manifest = include_str!("../../clew/Cargo.toml");
         assert!(!product_manifest.contains("semantic-corpus"));
     }
 }

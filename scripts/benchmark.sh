@@ -3,7 +3,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 mkdir -p benchmarks/reports
-cargo build --quiet --release --bin sthread
+cargo build --quiet --release --bin clew
 cargo build --quiet --release --example stage_benchmark
 ./gradlew :workers:kotlin:installDist --no-daemon --quiet
 STAGES=$($ROOT/target/release/examples/stage_benchmark)

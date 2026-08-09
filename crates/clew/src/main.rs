@@ -1,28 +1,26 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clew::canonical;
+use clew::error::{ClewError, ErrorCode};
+use clew::evidence_authority::{EvidenceAuthority, MapEdgeWithContextDecision};
+use clew::graph;
+use clew::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
+use clew::model::*;
+use clew::projection::{
+    self, BoundaryPolicy, ProjectionBudget, ProjectionLevel, ProjectionQuery, ThreadKind, Traversal,
+};
+use clew::proto::RequestKind;
+use clew::semantic_goal::SemanticGoal;
+use clew::task_context;
+use clew::thread_projection;
+use clew::transaction;
+use clew::worker::{WorkerClient, workspace_root};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use sthread::canonical;
-use sthread::error::{ErrorCode, SthreadError};
-use sthread::graph;
-use sthread::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
-use sthread::model::*;
-use sthread::projection::{
-    self, BoundaryPolicy, ProjectionBudget, ProjectionLevel, ProjectionQuery, ThreadKind, Traversal,
-};
-use sthread::proto::RequestKind;
-use sthread::task_context;
-use sthread::thread_projection;
-use sthread::transaction;
-use sthread::worker::{WorkerClient, workspace_root};
 
 #[derive(Parser)]
-#[command(
-    name = "sthread",
-    version,
-    about = "Semantic Thread Platform Kotlin MVP"
-)]
+#[command(name = "clew", version, about = "Semantic Thread Platform Kotlin MVP")]
 struct Cli {
     #[arg(
         long,
@@ -50,6 +48,11 @@ enum Command {
     Slice(SliceArgs),
     #[command(about = "Query a bounded, evidence-backed semantic view without filesystem search")]
     Projection(ProjectionArgs),
+    #[command(about = "Prove a source-free semantic change plan from live compiler evidence")]
+    Prove {
+        #[command(subcommand)]
+        command: ProveCommand,
+    },
     #[command(
         name = "agent-context",
         visible_alias = "context",
@@ -89,6 +92,14 @@ enum TxCommand {
     Validate(TxFileArgs),
     Commit(CommitArgs),
     Inspect(InspectTxArgs),
+}
+#[derive(Subcommand)]
+enum ProveCommand {
+    #[command(
+        name = "map-edge-with-context",
+        about = "Bind a typed collection-edge change and prove its preservation invariants"
+    )]
+    MapEdgeWithContext(MapEdgeWithContextArgs),
 }
 
 #[derive(Args)]
@@ -177,6 +188,21 @@ struct ProjectionArgs {
     refuse_on_boundary: bool,
     #[arg(long)]
     output: Option<PathBuf>,
+}
+#[derive(Args)]
+struct MapEdgeWithContextArgs {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long, default_value = ":/main")]
+    compilation: String,
+    #[arg(long = "workflow-symbol")]
+    workflow_symbol: String,
+    #[arg(long = "test-symbol")]
+    test_symbol: String,
+    #[arg(long = "test-compilation", default_value = ":/test")]
+    test_compilation: String,
+    #[arg(long, default_value_t = 200)]
+    max_nodes: usize,
 }
 #[derive(Args)]
 struct AgentContextArgs {
@@ -324,7 +350,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> Result<Value, SthreadError> {
+fn run(cli: Cli) -> Result<Value, ClewError> {
     let workspace = workspace_root();
     match cli.command {
         Command::Doctor => {
@@ -393,6 +419,55 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         Command::Projection(args) => {
             with_worker(&workspace, |worker| projection_command(worker, args))
         }
+        Command::Prove {
+            command: ProveCommand::MapEdgeWithContext(args),
+        } => with_worker(&workspace, |worker| {
+            let repo = absolute(&args.repo)?;
+            let revision = git_head(&repo)?;
+            let thread = build_thread(
+                worker,
+                SliceArgs {
+                    repo: repo.clone(),
+                    compilation: args.compilation,
+                    symbol: Some(args.workflow_symbol),
+                    file: None,
+                    offset: None,
+                    direction: DirectionArg::Both,
+                    max_nodes: args.max_nodes,
+                    output: None,
+                },
+            )?;
+            let mut authority = EvidenceAuthority::open(&repo, &revision)?;
+            let verified = authority.verify_thread(&thread, worker)?;
+            let goal = SemanticGoal::map_edge_with_context(revision);
+            match authority.bind_map_edge_with_context(
+                &goal,
+                &verified,
+                &args.test_symbol,
+                &args.test_compilation,
+                worker,
+            )? {
+                MapEdgeWithContextDecision::Bound(receipt) => {
+                    if !authority.recognizes_map_edge_with_context(&receipt)? {
+                        return Err(ClewError::new(
+                            ErrorCode::Internal,
+                            "authority did not recognize the proof it just issued",
+                        ));
+                    }
+                    Ok(json!({
+                        "schema": "map-edge-with-context-decision/0.1",
+                        "status": "BOUND",
+                        "proof": receipt.summary(),
+                    }))
+                }
+                MapEdgeWithContextDecision::Ambiguous(ambiguity) => {
+                    serde_json::to_value(ambiguity).map_err(parse_error)
+                }
+                MapEdgeWithContextDecision::Refused(refusal) => {
+                    serde_json::to_value(refusal).map_err(parse_error)
+                }
+            }
+        }),
         Command::AgentContext(args) => with_worker(&workspace, |worker| {
             let repo = absolute(&args.repo)?;
             let project = worker.request(
@@ -485,13 +560,13 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             let repo = absolute(&args.repo)?;
             let evidence: Value = read_json(&args.context)?;
             if evidence["schema"] != "semantic-task-context-evidence/0.2" {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "task-apply needs semantic-task-context-evidence/0.2",
                 ));
             }
             if !args.allow_legacy_heuristic {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::IncompleteSemanticAnalysis,
                     "task-apply received legacy heuristic context; pass --allow-legacy-heuristic explicitly or use proof-backed apply when available",
                 ));
@@ -506,7 +581,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                     .and_then(Value::as_str)
                     != Some("LEGACY_HEURISTIC_READY")
             {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::IncompleteSemanticAnalysis,
                     "legacy task context or its bounded stdout projection is not LEGACY_HEURISTIC_READY; rebuild or inspect its boundaries",
                 ));
@@ -517,18 +592,15 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                     .cloned()
                     .map(Value::Array)
                     .ok_or_else(|| {
-                        SthreadError::new(
-                            ErrorCode::InvalidInput,
-                            "task context has no threads array",
-                        )
+                        ClewError::new(ErrorCode::InvalidInput, "task context has no threads array")
                     })?,
             )
             .map_err(parse_error)?;
             let thread = required_threads.first().cloned().ok_or_else(|| {
-                SthreadError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
+                ClewError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
             })?;
             let mut plan: Value = read_json(&args.edit_plan)?;
-            sthread::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
+            clew::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
             normalize_task_plan(&mut plan)?;
             expand_task_targets(&mut plan, context)?;
             inject_created_type_imports(&mut plan)?;
@@ -540,10 +612,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                     .cloned()
                     .map(Value::Array)
                     .ok_or_else(|| {
-                        SthreadError::new(
-                            ErrorCode::InvalidInput,
-                            "edit plan has no operations array",
-                        )
+                        ClewError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
                     })?,
             )
             .map_err(parse_error)?;
@@ -560,7 +629,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 .unwrap_or_default()
                 .to_owned();
             if base_revision != thread.snapshot.base_revision {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::PreconditionFailed,
                     "task context snapshot does not match its Thread IR",
                 ));
@@ -570,7 +639,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                     || required.snapshot.project_model_hash != thread.snapshot.project_model_hash
                     || required.snapshot.compilation != thread.snapshot.compilation
             }) {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::PreconditionFailed,
                     "task context threads do not share one revision, project model, and compilation",
                 ));
@@ -732,17 +801,14 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
     }
 }
 
-fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, SthreadError> {
+fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, ClewError> {
     let output = args.output.clone();
     let thread = build_thread(worker, args)?;
     write_optional(output.as_deref(), &thread)?;
     serde_json::to_value(thread).map_err(parse_error)
 }
 
-fn projection_command(
-    worker: &mut WorkerClient,
-    args: ProjectionArgs,
-) -> Result<Value, SthreadError> {
+fn projection_command(worker: &mut WorkerClient, args: ProjectionArgs) -> Result<Value, ClewError> {
     let output = args.output.clone();
     let level = projection_level(args.level);
     let thread_kind = projection_thread_kind(args.thread_kind);
@@ -761,7 +827,7 @@ fn projection_command(
     )?;
     let adapted = thread_projection::from_thread(&thread, thread_kind, args.claim.as_deref())
         .map_err(|error| {
-            SthreadError::new(ErrorCode::IncompleteSemanticAnalysis, error.to_string())
+            ClewError::new(ErrorCode::IncompleteSemanticAnalysis, error.to_string())
         })?;
     let query = ProjectionQuery {
         schema: projection::PROJECTION_SCHEMA.into(),
@@ -785,10 +851,10 @@ fn projection_command(
         } else {
             ErrorCode::IncompleteSemanticAnalysis
         };
-        SthreadError::new(code, error.to_string())
+        ClewError::new(code, error.to_string())
     })?;
     projection::validate_projection(&adapted.input, &query, &result).map_err(|error| {
-        SthreadError::new(ErrorCode::IncompleteSemanticAnalysis, error.to_string())
+        ClewError::new(ErrorCode::IncompleteSemanticAnalysis, error.to_string())
     })?;
     write_optional(output.as_deref(), &result)?;
     serde_json::to_value(result).map_err(parse_error)
@@ -826,12 +892,12 @@ fn build_task_thread(
     project: &Value,
     index_snapshot: &str,
     resolution: &Value,
-) -> Result<ThreadIr, SthreadError> {
+) -> Result<ThreadIr, ClewError> {
     let symbol = resolution
         .pointer("/declaration/legacySymbolId")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
                 "resolved task root has no legacySymbolId",
             )
@@ -868,7 +934,7 @@ fn build_task_thread(
         })
         .map(|node| node.id.clone())
         .ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 format!("task root {symbol} has no source-backed graph seed"),
             )
@@ -910,10 +976,10 @@ fn build_task_thread(
         "anchor":seed_node.and_then(|node|node.origin.clone())
     });
     graph::slice(&graph, &seed_id, SlicePolicy::default(), snapshot, seed)
-        .map_err(|error| SthreadError::new(ErrorCode::Internal, error.to_string()))
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))
 }
 
-fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, SthreadError> {
+fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, ClewError> {
     let repo = absolute(&args.repo)?;
     let project = worker.request(
         RequestKind::OpenProject,
@@ -948,7 +1014,7 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
                 .map(str::to_owned)
         })
         .ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 "slice needs --symbol or --file with --offset",
             )
@@ -973,7 +1039,7 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
             })
             .map(|n| n.id.clone())
             .ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::ExpressionNotFound,
                     "resolved expression has no source-backed CFG node",
                 )
@@ -1006,7 +1072,7 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
                     .map(|n| n.id.clone())
             })
             .ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::IncompleteSemanticAnalysis,
                     "function has no source-backed CFG seed",
                 )
@@ -1053,13 +1119,13 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
             .collect(),
     };
     let thread = graph::slice(&graph, &seed_id, policy, snapshot, seed)
-        .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?;
+        .map_err(|e| ClewError::new(ErrorCode::Internal, e.to_string()))?;
     Ok(thread)
 }
 
-fn with_worker<F>(workspace: &Path, action: F) -> Result<Value, SthreadError>
+fn with_worker<F>(workspace: &Path, action: F) -> Result<Value, ClewError>
 where
-    F: FnOnce(&mut WorkerClient) -> Result<Value, SthreadError>,
+    F: FnOnce(&mut WorkerClient) -> Result<Value, ClewError>,
 {
     let mut worker = WorkerClient::start(workspace)?;
     let result = action(&mut worker);
@@ -1070,55 +1136,54 @@ where
         (_, Err(e)) => Err(e),
     }
 }
-fn absolute(path: &Path) -> Result<PathBuf, SthreadError> {
+fn absolute(path: &Path) -> Result<PathBuf, ClewError> {
     path.canonicalize()
-        .map_err(|e| SthreadError::new(ErrorCode::InvalidInput, format!("{}: {e}", path.display())))
+        .map_err(|e| ClewError::new(ErrorCode::InvalidInput, format!("{}: {e}", path.display())))
 }
-fn git_head(repo: &Path) -> Result<String, SthreadError> {
+fn git_head(repo: &Path) -> Result<String, ClewError> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo)
         .output()
-        .map_err(|e| SthreadError::new(ErrorCode::InvalidInput, e.to_string()))?;
+        .map_err(|e| ClewError::new(ErrorCode::InvalidInput, e.to_string()))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().into())
     } else {
-        Err(SthreadError::new(
+        Err(ClewError::new(
             ErrorCode::InvalidInput,
             "repository must have a committed Git HEAD",
         ))
     }
 }
-fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, SthreadError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| SthreadError::new(ErrorCode::InvalidInput, e.to_string()))?;
+fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ClewError> {
+    let bytes =
+        std::fs::read(path).map_err(|e| ClewError::new(ErrorCode::InvalidInput, e.to_string()))?;
     serde_json::from_slice(&bytes).map_err(parse_error)
 }
-fn write_optional<T: serde::Serialize>(path: Option<&Path>, value: &T) -> Result<(), SthreadError> {
+fn write_optional<T: serde::Serialize>(path: Option<&Path>, value: &T) -> Result<(), ClewError> {
     if let Some(path) = path {
         std::fs::write(
             path,
             canonical::pretty(value)
-                .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?,
+                .map_err(|e| ClewError::new(ErrorCode::Internal, e.to_string()))?,
         )
-        .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?
+        .map_err(|e| ClewError::new(ErrorCode::Internal, e.to_string()))?
     }
     Ok(())
 }
-fn write_artifact<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), SthreadError> {
+fn write_artifact<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), ClewError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?;
+            .map_err(|e| ClewError::new(ErrorCode::Internal, e.to_string()))?;
     }
     std::fs::write(
         path,
-        canonical::pretty(value)
-            .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))?,
+        canonical::pretty(value).map_err(|e| ClewError::new(ErrorCode::Internal, e.to_string()))?,
     )
-    .map_err(|e| SthreadError::new(ErrorCode::Internal, e.to_string()))
+    .map_err(|e| ClewError::new(ErrorCode::Internal, e.to_string()))
 }
 
-fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadError> {
+fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), ClewError> {
     let mut targets = std::collections::BTreeMap::<String, Value>::new();
     for (key, prefix) in [("editSurfaces", "S"), ("contracts", "C"), ("tests", "T")] {
         for (index, item) in context[key].as_array().into_iter().flatten().enumerate() {
@@ -1146,13 +1211,13 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadE
             .and_then(Value::as_str)
             .map(str::to_owned)
         else {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 "every non-CREATE_FILE task operation must reference a context targetId",
             ));
         };
         operation["target"] = targets.get(&target_id).cloned().ok_or_else(|| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("edit plan references unknown task target {target_id}"),
             )
@@ -1160,25 +1225,25 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), SthreadE
     }
     Ok(())
 }
-fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
+fn normalize_task_plan(plan: &mut Value) -> Result<(), ClewError> {
     if plan.get("operations").is_none()
         && let Some(edits) = plan.as_object_mut().and_then(|plan| plan.remove("edits"))
     {
         plan["operations"] = edits;
     }
     let operations = plan["operations"].as_array_mut().ok_or_else(|| {
-        SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
+        ClewError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
     })?;
     for (index, operation) in operations.iter_mut().enumerate() {
         let object = operation.as_object_mut().ok_or_else(|| {
-            SthreadError::new(ErrorCode::InvalidInput, "task operation must be an object")
+            ClewError::new(ErrorCode::InvalidInput, "task operation must be an object")
         })?;
         object
             .entry("opId")
             .or_insert_with(|| json!(format!("task-op-{}", index + 1)));
         if !object.contains_key("kind") {
             let kind = object.remove("op").ok_or_else(|| {
-                SthreadError::new(ErrorCode::InvalidInput, "task operation must contain kind")
+                ClewError::new(ErrorCode::InvalidInput, "task operation must contain kind")
             })?;
             object.insert("kind".to_owned(), kind);
         }
@@ -1189,7 +1254,7 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
                 .remove("kotlinLines")
                 .or_else(|| object.remove("newLines"))
                 .ok_or_else(|| {
-                    SthreadError::new(
+                    ClewError::new(
                         ErrorCode::InvalidInput,
                         "CREATE_FILE needs replacement.kotlinLines or top-level kotlinLines/newLines",
                     )
@@ -1205,7 +1270,7 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
                         .map(|path| path.strip_prefix("file:").unwrap_or(path).to_owned())
                 })
                 .ok_or_else(|| {
-                    SthreadError::new(ErrorCode::InvalidInput, "CREATE_FILE needs a path")
+                    ClewError::new(ErrorCode::InvalidInput, "CREATE_FILE needs a path")
                 })?;
             object.insert("target".to_owned(), json!({"fileId":path}));
             object.insert("replacement".to_owned(), json!({"kotlinLines":lines}));
@@ -1231,7 +1296,7 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
         }
         if let Some(substitutions) = object.remove("substitutions") {
             if object.contains_key("preconditions") {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "task operation cannot contain both substitutions and preconditions",
                 ));
@@ -1251,7 +1316,7 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), SthreadError> {
         {
             for substitution in substitutions {
                 let substitution = substitution.as_object_mut().ok_or_else(|| {
-                    SthreadError::new(
+                    ClewError::new(
                         ErrorCode::InvalidInput,
                         "task substitution must be an object",
                     )
@@ -1299,12 +1364,12 @@ fn join_plan_lines(
     object: &mut serde_json::Map<String, Value>,
     lines_key: &str,
     text_key: &str,
-) -> Result<bool, SthreadError> {
+) -> Result<bool, ClewError> {
     let Some(lines) = object.remove(lines_key) else {
         return Ok(false);
     };
     if object.contains_key(text_key) {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             format!("task edit cannot contain both {text_key} and {lines_key}"),
         ));
@@ -1315,7 +1380,7 @@ fn join_plan_lines(
         lines
             .as_array()
             .ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::InvalidInput,
                     format!("task edit field {lines_key} must be a string or array of strings"),
                 )
@@ -1324,7 +1389,7 @@ fn join_plan_lines(
             .map(Value::as_str)
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::InvalidInput,
                     format!("task edit field {lines_key} must contain only strings"),
                 )
@@ -1354,7 +1419,7 @@ fn join_plan_lines(
     object.insert(text_key.to_owned(), Value::String(text));
     Ok(true)
 }
-fn inject_created_contract_overrides(plan: &mut Value) -> Result<(), SthreadError> {
+fn inject_created_contract_overrides(plan: &mut Value) -> Result<(), ClewError> {
     let contracts = plan["operations"]
         .as_array()
         .into_iter()
@@ -1403,7 +1468,7 @@ fn inject_created_contract_overrides(plan: &mut Value) -> Result<(), SthreadErro
             .pointer_mut("/preconditions/substitutions")
             .and_then(Value::as_array_mut)
             .ok_or_else(|| {
-                SthreadError::new(
+                ClewError::new(
                     ErrorCode::InvalidInput,
                     "normalized rewrite has no substitutions",
                 )
@@ -1433,9 +1498,9 @@ fn inject_created_contract_overrides(plan: &mut Value) -> Result<(), SthreadErro
     }
     Ok(())
 }
-fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
+fn inject_created_type_imports(plan: &mut Value) -> Result<(), ClewError> {
     let operations = plan["operations"].as_array().ok_or_else(|| {
-        SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
+        ClewError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
     })?;
     let created_types = operations
         .iter()
@@ -1517,9 +1582,9 @@ fn inject_created_type_imports(plan: &mut Value) -> Result<(), SthreadError> {
     Ok(())
 }
 
-fn inject_explicit_target_imports(plan: &mut Value, context: &Value) -> Result<(), SthreadError> {
+fn inject_explicit_target_imports(plan: &mut Value, context: &Value) -> Result<(), ClewError> {
     let operations = plan["operations"].as_array().ok_or_else(|| {
-        SthreadError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
+        ClewError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
     })?;
     let explicit_targets = context["editSurfaces"]
         .as_array()
@@ -1727,8 +1792,8 @@ fn contains_identifier(source: &str, identifier: &str) -> bool {
                 .is_none_or(|character| !is_identifier(character))
     })
 }
-fn parse_error(e: impl std::fmt::Display) -> SthreadError {
-    SthreadError::new(ErrorCode::InvalidInput, e.to_string())
+fn parse_error(e: impl std::fmt::Display) -> ClewError {
+    ClewError::new(ErrorCode::InvalidInput, e.to_string())
 }
 fn exit_code(code: &ErrorCode) -> u8 {
     match code {

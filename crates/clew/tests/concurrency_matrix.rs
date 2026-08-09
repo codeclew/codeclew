@@ -1,16 +1,16 @@
+use clew::error::ErrorCode;
+use clew::graph;
+use clew::index::RepositoryIndex;
+use clew::model::{
+    EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, Transaction,
+};
+use clew::proto::RequestKind;
+use clew::transaction;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use sthread::error::ErrorCode;
-use sthread::graph;
-use sthread::index::RepositoryIndex;
-use sthread::model::{
-    EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, Transaction,
-};
-use sthread::proto::RequestKind;
-use sthread::transaction;
-use sthread::worker::{WorkerClient, workspace_root};
 
 fn copy_fixture(from: &Path, to: &Path) {
     for entry in walkdir::WalkDir::new(from).into_iter().map(Result::unwrap) {
@@ -128,7 +128,7 @@ fn make_tx(
             base_revision: base.clone(),
             project_model_hash: project_hash.into(),
             compiler_version: "2.4.10".into(),
-            build_system: sthread::model::BuildSystem::Gradle,
+            build_system: clew::model::BuildSystem::Gradle,
             build_launcher: "./gradlew".into(),
             index_snapshot: index_snapshot.clone(),
             compilation: ":/main".into(),

@@ -13,4 +13,9 @@ class RunnerTest {
     fun `transforms the produced value before consumption`() {
         assertEquals(8, transformAndConsume(4))
     }
+
+    @Test
+    fun `applies the mapping context to one value`() {
+        assertEquals(6, applyMappingContext(4, mappingContext()))
+    }
 }

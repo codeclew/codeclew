@@ -6,9 +6,13 @@
 //! snapshot's configured compile/tests before issuing session-bound handles.
 
 use crate::canonical;
-use crate::error::{ErrorCode, SthreadError};
+use crate::error::{ClewError, ErrorCode};
 use crate::model::{BuildSystem, CompletenessStatus, ThreadIr};
 use crate::proto::RequestKind;
+use crate::semantic_goal::{
+    BindingRole, ChangeGraph, ChangeObligation, DischargeStatus, GoalFamily, ObligationKind,
+    SemanticGoal,
+};
 use crate::transaction;
 use crate::worker::WorkerClient;
 use serde::{Deserialize, Serialize};
@@ -97,6 +101,116 @@ pub struct CompleteForReceipt {
     summary: CompleteForSummary,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MapEdgeInvariant {
+    TypeAssignable,
+    ContextEvaluatedOnce,
+    PlacementDominatesUses,
+    OrderPreserved,
+    CardinalityPreserved,
+    LazinessPreserved,
+    EffectsPreserved,
+    NullabilityPreserved,
+    ConsumerContractPreserved,
+    AbiPreserved,
+    BehavioralOracleAvailable,
+    NoUnsupportedBoundary,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeInvariantProof {
+    pub invariant: MapEdgeInvariant,
+    pub evidence_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeBindingSummary {
+    pub workflow_symbol: String,
+    pub context_producer_symbol: String,
+    pub transformer_symbol: String,
+    pub value_edge_from: String,
+    pub value_edge_to: String,
+    pub placement: String,
+    pub collection_type: String,
+    pub element_type: String,
+    pub context_type: String,
+    pub strategy: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeProofSummary {
+    pub schema: String,
+    pub revision: String,
+    pub goal_fingerprint: String,
+    pub bindings: MapEdgeBindingSummary,
+    pub invariants: Vec<MapEdgeInvariantProof>,
+    pub change_graph: ChangeGraph,
+    pub evidence_fingerprint: String,
+}
+
+#[derive(Debug)]
+pub struct MapEdgeWithContextReceipt {
+    session_id: Uuid,
+    receipt_id: Uuid,
+    summary: MapEdgeProofSummary,
+}
+
+impl MapEdgeWithContextReceipt {
+    pub fn summary(&self) -> &MapEdgeProofSummary {
+        &self.summary
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeChoice {
+    pub context_producer_symbol: String,
+    pub transformer_symbol: String,
+    pub element_type: String,
+    pub context_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeAmbiguity {
+    pub schema: String,
+    pub status: String,
+    pub choices: Vec<MapEdgeChoice>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MapEdgeRefusalReason {
+    InvalidGoal,
+    SnapshotMismatch,
+    NonUniqueValueEdge,
+    UnsupportedCollectionModality,
+    UnsupportedBoundary,
+    IdentityOrAliasExposure,
+    NoCompatibleContextAndTransformer,
+    UnknownEffects,
+    MissingBehavioralOracle,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeRefusal {
+    pub schema: String,
+    pub status: String,
+    pub reason: MapEdgeRefusalReason,
+}
+
+#[derive(Debug)]
+pub enum MapEdgeWithContextDecision {
+    Bound(Box<MapEdgeWithContextReceipt>),
+    Ambiguous(MapEdgeAmbiguity),
+    Refused(MapEdgeRefusal),
+}
+
 impl CompleteForReceipt {
     pub fn summary(&self) -> &CompleteForSummary {
         &self.summary
@@ -156,6 +270,32 @@ struct ValidationRun {
     test_duration_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+struct MapValueEdge {
+    workflow_symbol: String,
+    from: String,
+    to: String,
+    placement: String,
+    collection_type: String,
+    element_type: String,
+}
+
+#[derive(Debug, Clone)]
+struct CallableCandidate {
+    compiler_symbol: String,
+    query_symbol: String,
+    parameter_types: Vec<String>,
+    return_type: String,
+}
+
+#[derive(Debug, Clone)]
+struct MapCandidate {
+    context: CallableCandidate,
+    transformer: CallableCandidate,
+    context_resolution_hash: String,
+    transformer_resolution_hash: String,
+}
+
 /// Process-local authority. Receipts from one instance are meaningless to
 /// every other instance, even for the same checkout and revision.
 pub struct EvidenceAuthority {
@@ -166,19 +306,20 @@ pub struct EvidenceAuthority {
     tests: BTreeMap<Uuid, VerifiedBehavioralTest>,
     validations: BTreeMap<Uuid, ValidationRun>,
     completions: BTreeSet<Uuid>,
+    map_edge_proofs: BTreeSet<Uuid>,
 }
 
 impl EvidenceAuthority {
-    pub fn open(repo: &Path, expected_revision: &str) -> Result<Self, SthreadError> {
+    pub fn open(repo: &Path, expected_revision: &str) -> Result<Self, ClewError> {
         let repo = repo.canonicalize().map_err(|error| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("cannot resolve evidence repository: {error}"),
             )
         })?;
         let revision = git_head(&repo)?;
         if revision != expected_revision {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
                 format!("authority expected revision {expected_revision}, found {revision}"),
             ));
@@ -192,6 +333,7 @@ impl EvidenceAuthority {
             tests: BTreeMap::new(),
             validations: BTreeMap::new(),
             completions: BTreeSet::new(),
+            map_edge_proofs: BTreeSet::new(),
         })
     }
 
@@ -201,10 +343,10 @@ impl EvidenceAuthority {
         &mut self,
         proposed: &ThreadIr,
         worker: &mut WorkerClient,
-    ) -> Result<VerifiedThreadReceipt, SthreadError> {
+    ) -> Result<VerifiedThreadReceipt, ClewError> {
         self.ensure_revision()?;
         if proposed.snapshot.base_revision != self.revision {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 "proposed thread belongs to another revision",
             ));
@@ -216,7 +358,7 @@ impl EvidenceAuthority {
         if project.get("projectModelHash").and_then(Value::as_str)
             != Some(proposed.snapshot.project_model_hash.as_str())
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 "live project model does not match proposed Thread IR",
             ));
@@ -226,7 +368,7 @@ impl EvidenceAuthority {
         let proposed_hash = canonical::hash(proposed).map_err(internal)?;
         let rebuilt_hash = canonical::hash(&rebuilt).map_err(internal)?;
         if proposed_hash != rebuilt_hash {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 "worker-rebuilt Thread IR differs from the proposed evidence packet",
             ));
@@ -235,7 +377,7 @@ impl EvidenceAuthority {
             || !rebuilt.completeness.boundaries.is_empty()
             || !rebuilt.external_summaries.is_empty()
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 "worker-rebuilt Thread IR has an unsupported boundary",
             ));
@@ -264,7 +406,7 @@ impl EvidenceAuthority {
         compilation: &str,
         target: &VerifiedThreadReceipt,
         worker: &mut WorkerClient,
-    ) -> Result<VerifiedBehavioralTestReceipt, SthreadError> {
+    ) -> Result<VerifiedBehavioralTestReceipt, ClewError> {
         self.ensure_revision()?;
         let targets = self.resolve_threads(&[target])?;
         let [target] = targets.as_slice() else {
@@ -272,7 +414,7 @@ impl EvidenceAuthority {
         };
         let candidates = producer_transform_consumer_candidates(&target.thread);
         let [binding] = candidates.as_slice() else {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 "target thread does not have one unique producer-transform-consumer binding",
             ));
@@ -285,12 +427,29 @@ impl EvidenceAuthority {
             &target.thread.snapshot.compile_task,
             &[],
         )?;
+        self.issue_behavioral_test(
+            test_symbol,
+            compilation,
+            &target_compiler_symbol,
+            None,
+            worker,
+        )
+    }
+
+    fn issue_behavioral_test(
+        &mut self,
+        test_symbol: &str,
+        compilation: &str,
+        target_compiler_symbol: &str,
+        required_context_symbol: Option<&str>,
+        worker: &mut WorkerClient,
+    ) -> Result<VerifiedBehavioralTestReceipt, ClewError> {
         let project = worker.request(
             RequestKind::OpenProject,
             &json!({"repo":self.repo,"compilation":compilation}),
         )?;
         if project.get("sourceSet").and_then(Value::as_str) != Some("test") {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 "behavioral evidence must come from the test compilation",
             ));
@@ -309,12 +468,18 @@ impl EvidenceAuthority {
                         .any(|item| item.get("severity").and_then(Value::as_str) == Some("ERROR"))
                 })
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
-                "behavioral test is not cleanly resolved by K2",
+                format!(
+                    "behavioral test is not cleanly resolved by K2: {}",
+                    resolution.get("diagnostics").unwrap_or(&Value::Null)
+                ),
             ));
         }
-        verify_assertion_of_target(&resolution, &target_compiler_symbol)?;
+        verify_assertion_of_target(&resolution, target_compiler_symbol)?;
+        if let Some(context_symbol) = required_context_symbol {
+            verify_context_argument_of_target(&resolution, target_compiler_symbol, context_symbol)?;
+        }
         let declaration = resolution
             .get("declaration")
             .ok_or_else(|| invalid_source("test resolution has no declaration"))?;
@@ -341,7 +506,7 @@ impl EvidenceAuthority {
         let fingerprint = canonical::hash(&(
             &self.revision,
             compilation,
-            &target_compiler_symbol,
+            target_compiler_symbol,
             &class_name,
             &test_name,
             &resolution,
@@ -352,7 +517,7 @@ impl EvidenceAuthority {
             receipt_id,
             VerifiedBehavioralTest {
                 fingerprint,
-                target_compiler_symbol,
+                target_compiler_symbol: target_compiler_symbol.to_owned(),
                 class_name,
                 test_name,
                 source_files,
@@ -370,7 +535,7 @@ impl EvidenceAuthority {
         &mut self,
         receipts: &[&VerifiedThreadReceipt],
         tests: &[&VerifiedBehavioralTestReceipt],
-    ) -> Result<ValidationReceipt, SthreadError> {
+    ) -> Result<ValidationReceipt, ClewError> {
         self.ensure_revision()?;
         let verified = self.resolve_threads(receipts)?;
         let verified_tests = self.resolve_tests(tests)?;
@@ -382,7 +547,7 @@ impl EvidenceAuthority {
                 || item.thread.snapshot.compile_task != primary.thread.snapshot.compile_task
                 || item.thread.snapshot.test_tasks != primary.thread.snapshot.test_tasks
             {
-                return Err(SthreadError::new(
+                return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "one validation receipt cannot cover different build plans",
                 ));
@@ -392,13 +557,13 @@ impl EvidenceAuthority {
             verify_sources_current(&self.repo, &test.source_files)?;
         }
         if primary.thread.snapshot.test_tasks.is_empty() {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 "snapshot has no configured behavioral test task",
             ));
         }
         if primary.thread.snapshot.build_system != BuildSystem::Gradle {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::UnsupportedProjectConfiguration,
                 "fresh behavioral-test receipts currently support Gradle only",
             ));
@@ -455,7 +620,7 @@ impl EvidenceAuthority {
         receipts: &[&VerifiedThreadReceipt],
         tests: &[&VerifiedBehavioralTestReceipt],
         validation: &ValidationReceipt,
-    ) -> Result<AuthoritativeEvidenceBundle, SthreadError> {
+    ) -> Result<AuthoritativeEvidenceBundle, ClewError> {
         self.ensure_revision()?;
         if validation.session_id != self.session_id {
             return Err(wrong_session("validation"));
@@ -475,13 +640,13 @@ impl EvidenceAuthority {
             .get(&validation.receipt_id)
             .ok_or_else(|| invalid_receipt("validation"))?;
         if run.thread_set_fingerprint != thread_set_fingerprint {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
                 "validation receipt covers a different exact thread set",
             ));
         }
         if run.test_set_fingerprint != test_set_fingerprint {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
                 "validation receipt covers a different exact behavioral-test set",
             ));
@@ -518,9 +683,9 @@ impl EvidenceAuthority {
         receipts: &[&VerifiedThreadReceipt],
         tests: &[&VerifiedBehavioralTestReceipt],
         validation: &ValidationReceipt,
-    ) -> Result<CompleteForReceipt, SthreadError> {
+    ) -> Result<CompleteForReceipt, ClewError> {
         if !goal.is_valid_for(&self.revision) {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
                 "producer-transform-consumer goal does not match authority revision",
             ));
@@ -541,7 +706,7 @@ impl EvidenceAuthority {
         candidates.sort();
         candidates.dedup();
         let [binding] = candidates.as_slice() else {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 if candidates.is_empty() {
                     ErrorCode::IncompleteSemanticAnalysis
                 } else {
@@ -563,7 +728,7 @@ impl EvidenceAuthority {
             .iter()
             .any(|test| test.target_compiler_symbol == target_compiler_symbol)
         {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 "no verified behavioral test asserts the bound production callable",
             ));
@@ -594,10 +759,200 @@ impl EvidenceAuthority {
         })
     }
 
-    pub fn recognizes_complete_for(
+    /// Computes a source-free MAP_EDGE_WITH_CONTEXT plan from live compiler
+    /// evidence. The model supplies only the typed goal and a test candidate;
+    /// bindings, placement and preservation invariants are authority-owned.
+    pub fn bind_map_edge_with_context(
+        &mut self,
+        goal: &SemanticGoal,
+        workflow: &VerifiedThreadReceipt,
+        test_symbol: &str,
+        test_compilation: &str,
+        worker: &mut WorkerClient,
+    ) -> Result<MapEdgeWithContextDecision, ClewError> {
+        self.ensure_revision()?;
+        if goal.validate().is_err() || goal.family != GoalFamily::MapEdgeWithContext {
+            return Ok(map_edge_refused(MapEdgeRefusalReason::InvalidGoal));
+        }
+        if goal.base_revision != self.revision {
+            return Ok(map_edge_refused(MapEdgeRefusalReason::SnapshotMismatch));
+        }
+        let (thread, thread_fingerprint) = {
+            let verified = self.resolve_threads(&[workflow])?;
+            let [workflow] = verified.as_slice() else {
+                unreachable!("one receipt resolves to one thread")
+            };
+            (workflow.thread.clone(), workflow.fingerprint.clone())
+        };
+        let edge = match map_value_edge(&thread) {
+            Ok(edge) => edge,
+            Err(reason) => return Ok(map_edge_refused(reason)),
+        };
+        let index = worker.request(
+            RequestKind::IndexFiles,
+            &json!({"repo":self.repo,"compilation":thread.snapshot.compilation,"syntaxOnly":false}),
+        )?;
+        if index.get("k2Validated").and_then(Value::as_bool) != Some(true)
+            || has_error_diagnostic(&index)
+        {
+            return Ok(map_edge_refused(MapEdgeRefusalReason::UnsupportedBoundary));
+        }
+        let structural_candidates = discover_map_candidates(&index, &edge)?;
+        if structural_candidates.is_empty() {
+            return Ok(map_edge_refused(
+                MapEdgeRefusalReason::NoCompatibleContextAndTransformer,
+            ));
+        }
+        let mut safe_candidates = Vec::new();
+        for (context, transformer) in structural_candidates {
+            let context_resolution =
+                resolve_safe_callable(&self.repo, &thread.snapshot.compilation, &context, worker)?;
+            let transformer_resolution = resolve_safe_callable(
+                &self.repo,
+                &thread.snapshot.compilation,
+                &transformer,
+                worker,
+            )?;
+            let (Some(context_resolution_hash), Some(transformer_resolution_hash)) =
+                (context_resolution, transformer_resolution)
+            else {
+                continue;
+            };
+            safe_candidates.push(MapCandidate {
+                context,
+                transformer,
+                context_resolution_hash,
+                transformer_resolution_hash,
+            });
+        }
+        if safe_candidates.is_empty() {
+            return Ok(map_edge_refused(MapEdgeRefusalReason::UnknownEffects));
+        }
+        safe_candidates.sort_by(|left, right| {
+            (
+                &left.context.compiler_symbol,
+                &left.transformer.compiler_symbol,
+            )
+                .cmp(&(
+                    &right.context.compiler_symbol,
+                    &right.transformer.compiler_symbol,
+                ))
+        });
+        safe_candidates.dedup_by(|left, right| {
+            left.context.compiler_symbol == right.context.compiler_symbol
+                && left.transformer.compiler_symbol == right.transformer.compiler_symbol
+        });
+        if safe_candidates.len() != 1 {
+            return Ok(MapEdgeWithContextDecision::Ambiguous(MapEdgeAmbiguity {
+                schema: "map-edge-with-context-decision/0.1".into(),
+                status: "AMBIGUOUS".into(),
+                choices: safe_candidates
+                    .into_iter()
+                    .map(|candidate| MapEdgeChoice {
+                        context_producer_symbol: candidate.context.compiler_symbol,
+                        transformer_symbol: candidate.transformer.compiler_symbol,
+                        element_type: edge.element_type.clone(),
+                        context_type: candidate.context.return_type,
+                    })
+                    .collect(),
+            }));
+        }
+        let candidate = safe_candidates.pop().expect("one candidate");
+        transaction::validate_worktree(
+            &self.repo,
+            thread.snapshot.build_system,
+            &thread.snapshot.build_launcher,
+            &thread.snapshot.compile_task,
+            &[],
+        )?;
+        let test = match self.issue_behavioral_test(
+            test_symbol,
+            test_compilation,
+            &candidate.transformer.compiler_symbol,
+            Some(&candidate.context.compiler_symbol),
+            worker,
+        ) {
+            Ok(test) => test,
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::IncompleteSemanticAnalysis
+                        | ErrorCode::SymbolNotFound
+                        | ErrorCode::AmbiguousSymbol
+                ) =>
+            {
+                return Ok(map_edge_refused(
+                    MapEdgeRefusalReason::MissingBehavioralOracle,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let validation = self.run_validation(&[workflow], &[&test])?;
+        let bundle = self.authorize_bundle(&[workflow], &[&test], &validation)?;
+        let bindings = MapEdgeBindingSummary {
+            workflow_symbol: edge.workflow_symbol.clone(),
+            context_producer_symbol: candidate.context.compiler_symbol.clone(),
+            transformer_symbol: candidate.transformer.compiler_symbol.clone(),
+            value_edge_from: edge.from.clone(),
+            value_edge_to: edge.to.clone(),
+            placement: edge.placement.clone(),
+            collection_type: edge.collection_type.clone(),
+            element_type: edge.element_type.clone(),
+            context_type: candidate.context.return_type.clone(),
+            strategy: "KOTLIN_EAGER_LIST_MAP_WITH_CONTEXT_ONCE".into(),
+        };
+        let goal_fingerprint = canonical::hash(goal).map_err(internal)?;
+        let base_evidence = canonical::hash(&(
+            &thread_fingerprint,
+            index.get("indexHash"),
+            &candidate.context_resolution_hash,
+            &candidate.transformer_resolution_hash,
+            bundle.summary(),
+            &bindings,
+        ))
+        .map_err(internal)?;
+        let invariants = map_edge_invariants(&base_evidence, &bindings)?;
+        let change_graph = map_edge_change_graph(goal, &bindings, &invariants);
+        change_graph
+            .validate_closure()
+            .map_err(|error| internal(format!("invalid authority change graph: {error:?}")))?;
+        let evidence_fingerprint = canonical::hash(&(
+            &goal_fingerprint,
+            &base_evidence,
+            &invariants,
+            &change_graph,
+        ))
+        .map_err(internal)?;
+        let summary = MapEdgeProofSummary {
+            schema: "map-edge-with-context-proof/0.1".into(),
+            revision: self.revision.clone(),
+            goal_fingerprint,
+            bindings,
+            invariants,
+            change_graph,
+            evidence_fingerprint,
+        };
+        let receipt_id = Uuid::new_v4();
+        self.map_edge_proofs.insert(receipt_id);
+        Ok(MapEdgeWithContextDecision::Bound(Box::new(
+            MapEdgeWithContextReceipt {
+                session_id: self.session_id,
+                receipt_id,
+                summary,
+            },
+        )))
+    }
+
+    pub fn recognizes_map_edge_with_context(
         &self,
-        receipt: &CompleteForReceipt,
-    ) -> Result<bool, SthreadError> {
+        receipt: &MapEdgeWithContextReceipt,
+    ) -> Result<bool, ClewError> {
+        self.ensure_revision()?;
+        Ok(receipt.session_id == self.session_id
+            && self.map_edge_proofs.contains(&receipt.receipt_id))
+    }
+
+    pub fn recognizes_complete_for(&self, receipt: &CompleteForReceipt) -> Result<bool, ClewError> {
         self.ensure_revision()?;
         Ok(receipt.session_id == self.session_id && self.completions.contains(&receipt.receipt_id))
     }
@@ -605,9 +960,9 @@ impl EvidenceAuthority {
     fn resolve_threads<'a>(
         &'a self,
         receipts: &[&VerifiedThreadReceipt],
-    ) -> Result<Vec<&'a VerifiedThread>, SthreadError> {
+    ) -> Result<Vec<&'a VerifiedThread>, ClewError> {
         if receipts.is_empty() {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 "authority needs at least one verified thread",
             ));
@@ -620,7 +975,7 @@ impl EvidenceAuthority {
                     return Err(wrong_session("thread"));
                 }
                 if !ids.insert(receipt.receipt_id) {
-                    return Err(SthreadError::new(
+                    return Err(ClewError::new(
                         ErrorCode::InvalidInput,
                         "duplicate verified thread receipt",
                     ));
@@ -635,9 +990,9 @@ impl EvidenceAuthority {
     fn resolve_tests<'a>(
         &'a self,
         receipts: &[&VerifiedBehavioralTestReceipt],
-    ) -> Result<Vec<&'a VerifiedBehavioralTest>, SthreadError> {
+    ) -> Result<Vec<&'a VerifiedBehavioralTest>, ClewError> {
         if receipts.is_empty() {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 "authority needs at least one verified behavioral test",
             ));
@@ -650,7 +1005,7 @@ impl EvidenceAuthority {
                     return Err(wrong_session("behavioral test"));
                 }
                 if !ids.insert(receipt.receipt_id) {
-                    return Err(SthreadError::new(
+                    return Err(ClewError::new(
                         ErrorCode::InvalidInput,
                         "duplicate behavioral-test receipt",
                     ));
@@ -662,10 +1017,10 @@ impl EvidenceAuthority {
             .collect()
     }
 
-    fn ensure_revision(&self) -> Result<(), SthreadError> {
+    fn ensure_revision(&self) -> Result<(), ClewError> {
         let current = git_head(&self.repo)?;
         if current != self.revision {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 format!(
                     "authority revision changed from {} to {current}",
@@ -674,6 +1029,470 @@ impl EvidenceAuthority {
             ));
         }
         ensure_clean_checkout(&self.repo)
+    }
+}
+
+fn map_edge_refused(reason: MapEdgeRefusalReason) -> MapEdgeWithContextDecision {
+    MapEdgeWithContextDecision::Refused(MapEdgeRefusal {
+        schema: "map-edge-with-context-decision/0.1".into(),
+        status: "REFUSED".into(),
+        reason,
+    })
+}
+
+fn has_error_diagnostic(value: &Value) -> bool {
+    value
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("severity").and_then(Value::as_str) == Some("ERROR"))
+        })
+}
+
+fn map_value_edge(thread: &ThreadIr) -> Result<MapValueEdge, MapEdgeRefusalReason> {
+    if !thread.completeness.boundaries.is_empty() || !thread.external_summaries.is_empty() {
+        return Err(MapEdgeRefusalReason::UnsupportedBoundary);
+    }
+    if thread.nodes.iter().any(|node| {
+        matches!(
+            node.kind.as_str(),
+            "BRANCH" | "LOOP" | "CAPTURE" | "THROW" | "ASSIGNMENT"
+        )
+    }) {
+        return Err(MapEdgeRefusalReason::UnsupportedBoundary);
+    }
+    let node_by_id = thread
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    let mut candidates = Vec::new();
+    let parameters = thread
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "PARAMETER")
+        .collect::<Vec<_>>();
+    for parameter in &parameters {
+        let Some(name) = parameter.defines.as_deref() else {
+            continue;
+        };
+        let Some(collection_type) = parameter
+            .attributes
+            .get("declaredType")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(element_type) = eager_list_element_type(collection_type) else {
+            continue;
+        };
+        let return_type = parameter
+            .attributes
+            .get("ownerReturnType")
+            .and_then(Value::as_str);
+        if return_type != Some(collection_type) || collection_type.contains('?') {
+            continue;
+        }
+        let Some(workflow_symbol) = parameter
+            .attributes
+            .get("ownerCompilerSymbol")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        for edge in thread
+            .edges
+            .iter()
+            .filter(|edge| edge.from == parameter.id && edge.kind == "DEF_USE")
+        {
+            let Some(consumer) = node_by_id.get(edge.to.as_str()) else {
+                continue;
+            };
+            if consumer.kind != "RETURN"
+                || !consumer.uses.iter().any(|used| used == name)
+                || !thread
+                    .edges
+                    .iter()
+                    .any(|item| item.from == consumer.id && item.kind == "RETURN")
+            {
+                continue;
+            }
+            candidates.push(MapValueEdge {
+                workflow_symbol: workflow_symbol.to_owned(),
+                from: parameter.id.clone(),
+                to: consumer.id.clone(),
+                placement: format!("{workflow_symbol}#FUNCTION_ENTRY"),
+                collection_type: collection_type.to_owned(),
+                element_type: element_type.clone(),
+            });
+        }
+    }
+    if candidates.is_empty()
+        && parameters.iter().any(|parameter| {
+            parameter
+                .attributes
+                .get("declaredType")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| {
+                    kind.contains("Sequence<")
+                        || kind.contains("Flow<")
+                        || kind.contains("Iterable<")
+                })
+        })
+    {
+        return Err(MapEdgeRefusalReason::UnsupportedCollectionModality);
+    }
+    if candidates.len() != 1 {
+        return Err(MapEdgeRefusalReason::NonUniqueValueEdge);
+    }
+    let selected = candidates.pop().expect("one edge");
+    if thread
+        .edges
+        .iter()
+        .any(|edge| edge.from == selected.from && edge.kind == "DEF_USE" && edge.to != selected.to)
+        || thread.nodes.iter().any(|node| {
+            node.id != selected.to
+                && node
+                    .uses
+                    .iter()
+                    .any(|name| node_by_id[&selected.from.as_str()].defines.as_ref() == Some(name))
+        })
+    {
+        return Err(MapEdgeRefusalReason::IdentityOrAliasExposure);
+    }
+    Ok(selected)
+}
+
+fn eager_list_element_type(collection_type: &str) -> Option<String> {
+    collection_type
+        .strip_prefix("kotlin/collections/List<")
+        .and_then(|value| value.strip_suffix('>'))
+        .filter(|value| !value.is_empty() && !value.contains('?'))
+        .map(str::to_owned)
+}
+
+fn discover_map_candidates(
+    index: &Value,
+    edge: &MapValueEdge,
+) -> Result<Vec<(CallableCandidate, CallableCandidate)>, ClewError> {
+    let mut contexts = Vec::new();
+    let mut transformers = Vec::new();
+    for declaration in index
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|file| {
+            file.get("declarations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+    {
+        if declaration.get("kind").and_then(Value::as_str) != Some("KtNamedFunction") {
+            continue;
+        }
+        let Some(identity) = declaration.get("symbolIdentity") else {
+            continue;
+        };
+        if identity.get("suspendFlag").and_then(Value::as_bool) != Some(false) {
+            continue;
+        }
+        let is_empty_identity_list = |field: &str| {
+            identity
+                .get(field)
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        };
+        if !is_empty_identity_list("containingDeclarations")
+            || !is_empty_identity_list("receiverTypes")
+            || !is_empty_identity_list("contextReceiverTypes")
+        {
+            continue;
+        }
+        let Some(compiler_symbol) = declaration.get("compilerSymbol").and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Some(query_symbol) = declaration.get("legacySymbolId").and_then(Value::as_str) else {
+            continue;
+        };
+        let parameter_types = identity
+            .get("parameterTypes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let Some(return_type) = identity.get("returnType").and_then(Value::as_str) else {
+            continue;
+        };
+        let candidate = CallableCandidate {
+            compiler_symbol: compiler_symbol.to_owned(),
+            query_symbol: query_symbol.to_owned(),
+            parameter_types: parameter_types.clone(),
+            return_type: return_type.to_owned(),
+        };
+        if parameter_types.is_empty() && return_type != "kotlin/Unit" && !return_type.contains('?')
+        {
+            contexts.push(candidate.clone());
+        }
+        if parameter_types.len() == 2
+            && parameter_types[0] == edge.element_type
+            && return_type == edge.element_type
+            && !parameter_types.iter().any(|kind| kind.contains('?'))
+        {
+            transformers.push(candidate);
+        }
+    }
+    let mut pairs = Vec::new();
+    for transformer in transformers {
+        for context in contexts
+            .iter()
+            .filter(|context| context.return_type == transformer.parameter_types[1])
+        {
+            pairs.push((context.clone(), transformer.clone()));
+        }
+    }
+    Ok(pairs)
+}
+
+fn resolve_safe_callable(
+    repo: &Path,
+    compilation: &str,
+    candidate: &CallableCandidate,
+    worker: &mut WorkerClient,
+) -> Result<Option<String>, ClewError> {
+    let resolution = worker.request(
+        RequestKind::ResolveSymbol,
+        &json!({"repo":repo,"compilation":compilation,"symbol":candidate.query_symbol}),
+    )?;
+    if resolution.get("k2Validated").and_then(Value::as_bool) != Some(true)
+        || has_error_diagnostic(&resolution)
+        || resolution
+            .pointer("/declaration/compilerSymbol")
+            .and_then(Value::as_str)
+            != Some(candidate.compiler_symbol.as_str())
+    {
+        return Ok(None);
+    }
+    let has_effect = resolution
+        .get("semanticFacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|fact| {
+            fact.get("effects")
+                .and_then(Value::as_array)
+                .is_some_and(|effects| !effects.is_empty())
+        });
+    let calls_are_known_pure = resolution
+        .get("resolvedCalls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .all(|call| {
+            call.get("symbol")
+                .and_then(Value::as_str)
+                .is_some_and(known_pure_callable)
+        });
+    if has_effect || !calls_are_known_pure {
+        return Ok(None);
+    }
+    verify_resolution_source(repo, &resolution)?;
+    canonical::hash(&resolution).map(Some).map_err(internal)
+}
+
+fn known_pure_callable(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "kotlin/Int.plus"
+            | "kotlin/Int.minus"
+            | "kotlin/Int.times"
+            | "kotlin/Long.plus"
+            | "kotlin/Long.minus"
+            | "kotlin/Long.times"
+            | "kotlin/Double.plus"
+            | "kotlin/Double.minus"
+            | "kotlin/Double.times"
+            | "kotlin/Double.div"
+    )
+}
+
+fn map_edge_invariants(
+    base_evidence: &str,
+    bindings: &MapEdgeBindingSummary,
+) -> Result<Vec<MapEdgeInvariantProof>, ClewError> {
+    [
+        MapEdgeInvariant::TypeAssignable,
+        MapEdgeInvariant::ContextEvaluatedOnce,
+        MapEdgeInvariant::PlacementDominatesUses,
+        MapEdgeInvariant::OrderPreserved,
+        MapEdgeInvariant::CardinalityPreserved,
+        MapEdgeInvariant::LazinessPreserved,
+        MapEdgeInvariant::EffectsPreserved,
+        MapEdgeInvariant::NullabilityPreserved,
+        MapEdgeInvariant::ConsumerContractPreserved,
+        MapEdgeInvariant::AbiPreserved,
+        MapEdgeInvariant::BehavioralOracleAvailable,
+        MapEdgeInvariant::NoUnsupportedBoundary,
+    ]
+    .into_iter()
+    .map(|invariant| {
+        Ok(MapEdgeInvariantProof {
+            invariant,
+            evidence_fingerprint: canonical::hash(&(base_evidence, invariant, bindings))
+                .map_err(internal)?,
+        })
+    })
+    .collect()
+}
+
+fn map_edge_change_graph(
+    goal: &SemanticGoal,
+    bindings: &MapEdgeBindingSummary,
+    invariants: &[MapEdgeInvariantProof],
+) -> ChangeGraph {
+    let evidence = |invariant: MapEdgeInvariant| {
+        invariants
+            .iter()
+            .find(|item| item.invariant == invariant)
+            .map(|item| vec![item.evidence_fingerprint.clone()])
+            .unwrap_or_default()
+    };
+    let edge = format!(
+        "{}#{}->{}",
+        bindings.workflow_symbol, bindings.value_edge_from, bindings.value_edge_to
+    );
+    let binding = |id: &str, role: BindingRole, subject: String| ChangeObligation {
+        id: id.into(),
+        kind: ObligationKind::BindUnique,
+        binding_role: Some(role),
+        subject: vec![subject],
+        depends_on: vec![],
+        evidence: evidence(MapEdgeInvariant::NoUnsupportedBoundary),
+        status: DischargeStatus::Proved,
+    };
+    let item = |id: &str,
+                kind: ObligationKind,
+                subject: Vec<String>,
+                depends_on: Vec<&str>,
+                invariant: MapEdgeInvariant| ChangeObligation {
+        id: id.into(),
+        kind,
+        binding_role: None,
+        subject,
+        depends_on: depends_on.into_iter().map(str::to_owned).collect(),
+        evidence: evidence(invariant),
+        status: DischargeStatus::Proved,
+    };
+    let mut obligations = vec![
+        binding(
+            "bind-context",
+            BindingRole::ContextProducer,
+            bindings.context_producer_symbol.clone(),
+        ),
+        binding(
+            "bind-transformer",
+            BindingRole::Transformer,
+            bindings.transformer_symbol.clone(),
+        ),
+        binding("bind-edge", BindingRole::ValueEdge, edge.clone()),
+        item(
+            "type-assignable",
+            ObligationKind::TypeAssignable,
+            vec![bindings.transformer_symbol.clone(), edge.clone()],
+            vec!["bind-transformer", "bind-edge"],
+            MapEdgeInvariant::TypeAssignable,
+        ),
+        item(
+            "introduce-once",
+            ObligationKind::IntroduceOnce,
+            vec![
+                bindings.context_producer_symbol.clone(),
+                bindings.placement.clone(),
+            ],
+            vec!["bind-context", "bind-edge"],
+            MapEdgeInvariant::ContextEvaluatedOnce,
+        ),
+        item(
+            "map-edge",
+            ObligationKind::MapEdge,
+            vec![bindings.transformer_symbol.clone(), edge.clone()],
+            vec!["type-assignable", "introduce-once"],
+            MapEdgeInvariant::PlacementDominatesUses,
+        ),
+    ];
+    for (id, kind, invariant) in [
+        (
+            "preserve-order",
+            ObligationKind::PreserveOrder,
+            MapEdgeInvariant::OrderPreserved,
+        ),
+        (
+            "preserve-cardinality",
+            ObligationKind::PreserveCardinality,
+            MapEdgeInvariant::CardinalityPreserved,
+        ),
+        (
+            "preserve-laziness",
+            ObligationKind::PreserveLaziness,
+            MapEdgeInvariant::LazinessPreserved,
+        ),
+        (
+            "preserve-effects",
+            ObligationKind::PreserveEffects,
+            MapEdgeInvariant::EffectsPreserved,
+        ),
+        (
+            "preserve-nullability",
+            ObligationKind::PreserveNullability,
+            MapEdgeInvariant::NullabilityPreserved,
+        ),
+        (
+            "preserve-consumer-contract",
+            ObligationKind::PreserveConsumerContract,
+            MapEdgeInvariant::ConsumerContractPreserved,
+        ),
+        (
+            "preserve-abi",
+            ObligationKind::PreserveAbi,
+            MapEdgeInvariant::AbiPreserved,
+        ),
+    ] {
+        obligations.push(item(
+            id,
+            kind,
+            vec![edge.clone()],
+            vec!["map-edge"],
+            invariant,
+        ));
+    }
+    obligations.push(item(
+        "require-oracle",
+        ObligationKind::RequireOracle,
+        vec![bindings.transformer_symbol.clone(), edge.clone()],
+        vec!["map-edge"],
+        MapEdgeInvariant::BehavioralOracleAvailable,
+    ));
+    obligations.push(item(
+        "boundary-check",
+        ObligationKind::MustRefuseOnBoundary,
+        vec![
+            bindings.context_producer_symbol.clone(),
+            bindings.transformer_symbol.clone(),
+            edge,
+        ],
+        vec!["bind-context", "bind-transformer", "bind-edge"],
+        MapEdgeInvariant::NoUnsupportedBoundary,
+    ));
+    ChangeGraph {
+        schema: crate::semantic_goal::CHANGE_GRAPH_SCHEMA.into(),
+        goal_schema: goal.schema.clone(),
+        obligations,
     }
 }
 
@@ -739,7 +1558,7 @@ fn producer_transform_consumer_candidates(thread: &ThreadIr) -> Vec<(String, Str
     candidates
 }
 
-fn compiler_owner_symbol(thread: &ThreadIr, producer_id: &str) -> Result<String, SthreadError> {
+fn compiler_owner_symbol(thread: &ThreadIr, producer_id: &str) -> Result<String, ClewError> {
     thread
         .nodes
         .iter()
@@ -756,7 +1575,7 @@ fn compiler_owner_symbol(thread: &ThreadIr, producer_id: &str) -> Result<String,
 fn verify_assertion_of_target(
     resolution: &Value,
     target_compiler_symbol: &str,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let semantic_facts = resolution
         .get("semanticFacts")
         .and_then(Value::as_array)
@@ -815,10 +1634,52 @@ fn verify_assertion_of_target(
     Ok(())
 }
 
+fn verify_context_argument_of_target(
+    resolution: &Value,
+    target_compiler_symbol: &str,
+    context_compiler_symbol: &str,
+) -> Result<(), ClewError> {
+    let calls = resolution
+        .get("resolvedCalls")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_source("test resolution has no resolved calls"))?;
+    let targets = calls
+        .iter()
+        .filter(|call| call.get("symbol").and_then(Value::as_str) == Some(target_compiler_symbol))
+        .collect::<Vec<_>>();
+    let contexts = calls
+        .iter()
+        .filter(|call| call.get("symbol").and_then(Value::as_str) == Some(context_compiler_symbol))
+        .collect::<Vec<_>>();
+    let ([target], [context]) = (targets.as_slice(), contexts.as_slice()) else {
+        return Err(invalid_source(
+            "behavioral oracle must call the exact transformer and context producer once",
+        ));
+    };
+    let context_start = context
+        .get("start")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid_source("context call has no compiler source range"))?;
+    let context_is_target_argument = target
+        .get("argumentToParameter")
+        .and_then(Value::as_array)
+        .is_some_and(|arguments| {
+            arguments.iter().any(|argument| {
+                argument.get("argumentStart").and_then(Value::as_u64) == Some(context_start)
+            })
+        });
+    if !context_is_target_argument {
+        return Err(invalid_source(
+            "behavioral oracle does not pass the context producer to the transformer",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_live_sources(
     repo: &Path,
     thread: &ThreadIr,
-) -> Result<BTreeMap<PathBuf, String>, SthreadError> {
+) -> Result<BTreeMap<PathBuf, String>, ClewError> {
     let mut files = BTreeMap::new();
     let mut exact_origins = 0usize;
     for node in &thread.nodes {
@@ -879,7 +1740,7 @@ fn verify_live_sources(
 fn verify_resolution_source(
     repo: &Path,
     resolution: &Value,
-) -> Result<BTreeMap<PathBuf, String>, SthreadError> {
+) -> Result<BTreeMap<PathBuf, String>, ClewError> {
     let anchor = resolution
         .get("bodyAnchor")
         .ok_or_else(|| invalid_source("test resolution has no exact body anchor"))?;
@@ -923,13 +1784,13 @@ fn verify_resolution_source(
 fn verify_sources_current(
     repo: &Path,
     expected: &BTreeMap<PathBuf, String>,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     for (relative, hash) in expected {
         let current = std::fs::read(repo.join(relative)).map_err(|error| {
             invalid_source(format!("cannot reread {}: {error}", relative.display()))
         })?;
         if canonical::hash_bytes(&current) != *hash {
-            return Err(SthreadError::new(
+            return Err(ClewError::new(
                 ErrorCode::StaleRequiresReslice,
                 format!(
                     "source {} changed after authority verification",
@@ -941,14 +1802,14 @@ fn verify_sources_current(
     Ok(())
 }
 
-fn thread_set_fingerprint(verified: &[&VerifiedThread]) -> Result<String, SthreadError> {
+fn thread_set_fingerprint(verified: &[&VerifiedThread]) -> Result<String, ClewError> {
     let mut fingerprints = verified
         .iter()
         .map(|item| item.fingerprint.clone())
         .collect::<Vec<_>>();
     fingerprints.sort();
     if fingerprints.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "duplicate semantic thread evidence is not an independent required root",
         ));
@@ -956,14 +1817,14 @@ fn thread_set_fingerprint(verified: &[&VerifiedThread]) -> Result<String, Sthrea
     canonical::hash(&fingerprints).map_err(internal)
 }
 
-fn test_set_fingerprint(verified: &[&VerifiedBehavioralTest]) -> Result<String, SthreadError> {
+fn test_set_fingerprint(verified: &[&VerifiedBehavioralTest]) -> Result<String, ClewError> {
     let mut fingerprints = verified
         .iter()
         .map(|item| item.fingerprint.clone())
         .collect::<Vec<_>>();
     fingerprints.sort();
     if fingerprints.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "duplicate behavioral-test evidence is not an independent oracle",
         ));
@@ -975,7 +1836,7 @@ fn test_artifact(
     repo: &Path,
     build_system: BuildSystem,
     expected: &[&VerifiedBehavioralTest],
-) -> Result<(String, usize), SthreadError> {
+) -> Result<(String, usize), ClewError> {
     let result_root = match build_system {
         BuildSystem::Gradle => repo.join("build/test-results"),
         BuildSystem::Maven => repo.join("target/surefire-reports"),
@@ -985,7 +1846,7 @@ fn test_artifact(
     let mut matched = BTreeSet::new();
     for entry in WalkDir::new(&result_root).follow_links(false) {
         let entry = entry.map_err(|error| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 format!("cannot inspect validation reports: {error}"),
             )
@@ -996,7 +1857,7 @@ fn test_artifact(
             continue;
         }
         let bytes = std::fs::read(entry.path()).map_err(|error| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::IncompleteSemanticAnalysis,
                 format!("cannot read validation report: {error}"),
             )
@@ -1026,7 +1887,7 @@ fn test_artifact(
     }
     reports.sort();
     if executed == 0 || matched.len() != expected.len() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
             "validation lifecycle did not execute every compiler-linked behavioral test",
         ));
@@ -1072,7 +1933,7 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn safe_relative_path(value: &str) -> Result<PathBuf, SthreadError> {
+fn safe_relative_path(value: &str) -> Result<PathBuf, ClewError> {
     let path = Path::new(value);
     if path.is_absolute()
         || path
@@ -1084,7 +1945,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, SthreadError> {
     Ok(path.to_owned())
 }
 
-fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, SthreadError> {
+fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, ClewError> {
     value
         .get(field)
         .and_then(Value::as_str)
@@ -1092,19 +1953,19 @@ fn required_str<'a>(value: &'a Value, field: &str) -> Result<&'a str, SthreadErr
         .ok_or_else(|| invalid_source(format!("source origin has no {field}")))
 }
 
-fn git_head(repo: &Path) -> Result<String, SthreadError> {
+fn git_head(repo: &Path) -> Result<String, ClewError> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo)
         .output()
         .map_err(|error| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("cannot start git for evidence authority: {error}"),
             )
         })?;
     if !output.status.success() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "evidence repository has no readable Git HEAD",
         ));
@@ -1114,19 +1975,19 @@ fn git_head(repo: &Path) -> Result<String, SthreadError> {
         .map_err(internal)
 }
 
-fn ensure_clean_checkout(repo: &Path) -> Result<(), SthreadError> {
+fn ensure_clean_checkout(repo: &Path) -> Result<(), ClewError> {
     let output = Command::new("git")
         .args(["status", "--porcelain", "--untracked-files=all", "--", "."])
         .current_dir(repo)
         .output()
         .map_err(|error| {
-            SthreadError::new(
+            ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("cannot inspect authority checkout: {error}"),
             )
         })?;
     if !output.status.success() {
-        return Err(SthreadError::new(
+        return Err(ClewError::new(
             ErrorCode::InvalidInput,
             "cannot inspect authority checkout state",
         ));
@@ -1134,33 +1995,33 @@ fn ensure_clean_checkout(repo: &Path) -> Result<(), SthreadError> {
     if output.stdout.is_empty() {
         Ok(())
     } else {
-        Err(SthreadError::new(
+        Err(ClewError::new(
             ErrorCode::StaleRequiresReslice,
             "authority requires a clean repository subtree bound to Git HEAD",
         ))
     }
 }
 
-fn wrong_session(kind: &str) -> SthreadError {
-    SthreadError::new(
+fn wrong_session(kind: &str) -> ClewError {
+    ClewError::new(
         ErrorCode::PreconditionFailed,
         format!("{kind} receipt was issued by another authority session"),
     )
 }
 
-fn invalid_receipt(kind: &str) -> SthreadError {
-    SthreadError::new(
+fn invalid_receipt(kind: &str) -> ClewError {
+    ClewError::new(
         ErrorCode::PreconditionFailed,
         format!("unknown {kind} receipt"),
     )
 }
 
-fn invalid_source(message: impl Into<String>) -> SthreadError {
-    SthreadError::new(ErrorCode::IncompleteSemanticAnalysis, message)
+fn invalid_source(message: impl Into<String>) -> ClewError {
+    ClewError::new(ErrorCode::IncompleteSemanticAnalysis, message)
 }
 
-fn internal(error: impl std::fmt::Display) -> SthreadError {
-    SthreadError::new(ErrorCode::Internal, error.to_string())
+fn internal(error: impl std::fmt::Display) -> ClewError {
+    ClewError::new(ErrorCode::Internal, error.to_string())
 }
 
 #[cfg(test)]
@@ -1192,5 +2053,12 @@ mod tests {
         let tags = testcase_tags(report);
         assert_eq!(tags.len(), 1);
         assert!(tags[0].contains("name=\"real()\""));
+    }
+
+    #[test]
+    fn integer_operations_that_can_throw_are_not_in_the_pure_allow_list() {
+        assert!(known_pure_callable("kotlin/Int.plus"));
+        assert!(!known_pure_callable("kotlin/Int.div"));
+        assert!(!known_pure_callable("kotlin/Long.rem"));
     }
 }

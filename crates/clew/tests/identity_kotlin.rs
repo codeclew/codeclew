@@ -1,9 +1,9 @@
+use clew::canonical;
+use clew::identity::{IdentityLifecycle, SnapshotProvenance, decide_identity_delta};
+use clew::proto::RequestKind;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::{Value, json};
 use std::path::Path;
-use sthread::canonical;
-use sthread::identity::{IdentityLifecycle, SnapshotProvenance, decide_identity_delta};
-use sthread::proto::RequestKind;
-use sthread::worker::{WorkerClient, workspace_root};
 
 fn copy_fixture(from: &Path, to: &Path) {
     for entry in walkdir::WalkDir::new(from).into_iter().map(Result::unwrap) {

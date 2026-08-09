@@ -87,19 +87,19 @@ task text
 
 Минимальный набор исходников для проверки:
 
-- `crates/sthread/src/task_context.rs` — selection, requirements, roles,
+- `crates/clew/src/task_context.rs` — selection, requirements, roles,
   contracts, budgets и completeness;
-- `crates/sthread/src/task_plan.rs` — текущий transient compiler и его
+- `crates/clew/src/task_plan.rs` — текущий transient compiler и его
   structural assumptions;
-- `crates/sthread/src/main.rs` — `agent-context`, `task-apply`, plan
+- `crates/clew/src/main.rs` — `agent-context`, `task-apply`, plan
   normalization, imports и test routing;
-- `crates/sthread/src/agent_context.rs` — предыдущая модель context pack;
-- `crates/sthread/src/graph.rs` и `crates/sthread/src/ir.rs` — доступная
+- `crates/clew/src/agent_context.rs` — предыдущая модель context pack;
+- `crates/clew/src/graph.rs` и `crates/clew/src/ir.rs` — доступная
   графовая и типовая информация;
-- `crates/sthread/src/transaction.rs` и `crates/sthread/src/worker.rs` — границы
+- `crates/clew/src/transaction.rs` и `crates/clew/src/worker.rs` — границы
   validation и atomic apply;
 - `workers/kotlin*/` — что реально можно доказать через PSI/K2;
-- `crates/sthread/tests/` и `fixtures/` — текущая ширина тестового контура;
+- `crates/clew/tests/` и `fixtures/` — текущая ширина тестового контура;
 - `benchmarks/reports/*.json` — только сохранённые измерения и их ограничения;
 - `docs/experiments/universal-task-surface-model-2026-08-02.md` — гипотезы и
   отрицательный итог предыдущей цели.

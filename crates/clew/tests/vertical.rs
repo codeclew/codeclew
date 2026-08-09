@@ -1,8 +1,8 @@
+use clew::graph;
+use clew::model::LocalGraph;
+use clew::proto::RequestKind;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::json;
-use sthread::graph;
-use sthread::model::LocalGraph;
-use sthread::proto::RequestKind;
-use sthread::worker::{WorkerClient, workspace_root};
 
 #[test]
 fn worker_vertical_resolves_and_builds_total_graph() {

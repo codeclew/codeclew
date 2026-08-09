@@ -4,7 +4,7 @@ Date: 2026-08-01
 
 ## Objective
 
-Make Maven a first-class build backend for the supported Kotlin/JVM vertical, then compare default tools, ast-indexer, and `sthread agent-context` on the same realistic Spring task from `product-repo`.
+Make Maven a first-class build backend for the supported Kotlin/JVM vertical, then compare default tools, ast-indexer, and `clew agent-context` on the same realistic Spring task from `product-repo`.
 
 The Maven path is complete only when project inspection, worker selection, semantic indexing, agent context, candidate compilation, configured tests, and transaction commit all use the repository's Maven model and launcher. A source-only fallback is not acceptable because it would make semantic results incomplete while presenting them as validated.
 
@@ -85,7 +85,7 @@ Three independent `gpt-5.6-terra` agents at medium reasoning use separate worktr
 
 1. default repository tools;
 2. ast-indexer;
-3. one bounded `sthread agent-context` for navigation.
+3. one bounded `clew agent-context` for navigation.
 
 Each run must commit its change and record time to first edit, time to commit, commands before edit, total tool calls, navigation stdout, raw tokens, noncached tokens, tests, and commit SHA. A separate independent agent receives only the task, baseline, patches, and test evidence and judges correctness, scope, batching, and regressions without being told which method produced each patch.
 

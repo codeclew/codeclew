@@ -4,7 +4,7 @@
 
 ## Результат проектирования
 
-SThread планирует прикладное изменение не от одного «лучшего» символа, а от
+Clew планирует прикладное изменение не от одного «лучшего» символа, а от
 обязательств задачи:
 
 ```text
@@ -35,13 +35,13 @@ bounded projection и короткие стабильные anchors.
 ```text
 default:   k model turns + k searches/reads, model-visible source grows with S
 ast-index: q model turns + q index answers + r source reads
-SThread:   1 context turn + 1 compact plan + 1 atomic apply, context <= B
+Clew:   1 context turn + 1 compact plan + 1 atomic apply, context <= B
 ```
 
 Raw input tokens в агентном rollout повторно включают накопленный transcript.
 Поэтому несколько малых ответов стоят не только сумму их размеров: каждый
 следующий reasoning turn снова несёт предыдущие tool outputs. При фиксированном
-`B` model-visible navigation у SThread ограничена сверху, а число discovery
+`B` model-visible navigation у Clew ограничена сверху, а число discovery
 turns постоянно для bounded task. Полный evidence используется worker локально
 и не возвращается модели.
 
@@ -73,7 +73,7 @@ test. Оно не обещается для тривиальной правки 
    build-specific model workflow.
 5. Агент решает задачу без grep и чтения source вне одного bounded context,
    одним validated plan и одним atomic apply.
-6. На задачах wiring/configuration и typed cross-layer propagation SThread
+6. На задачах wiring/configuration и typed cross-layer propagation Clew
    уменьшает model/tool turns, wall time и raw/noncached tokens относительно
    зафиксированных default и ast-index baselines.
 

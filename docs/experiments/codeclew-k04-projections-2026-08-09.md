@@ -27,8 +27,8 @@ newline. Если даже error envelope не помещается, CLI воз�
 
 ## Исполняемые доказательства
 
-- `cargo test -p sthread projection --lib`: 19/19.
-- `cargo test -p sthread --test projection_cli`: 2/2 на Kotlin 2.1.21.
+- `cargo test -p clew projection --lib`: 19/19.
+- `cargo test -p clew --test projection_cli`: 2/2 на Kotlin 2.1.21.
 - `cargo test --workspace --all-targets`: зелёный полный regression до последних
   узких fail-closed поправок; после них повторены затронутые suites и compile.
 - Реальный L5 запрос `com.acme.applyAdaptive`: `COMPLETE`, 1 node, 1 evidence

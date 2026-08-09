@@ -1,15 +1,15 @@
+use clew::canonical;
+use clew::error::ErrorCode;
+use clew::graph;
+use clew::model::{
+    EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, ThreadIr,
+};
+use clew::proto::RequestKind;
+use clew::transaction;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::json;
 use std::path::Path;
 use std::process::Command;
-use sthread::canonical;
-use sthread::error::ErrorCode;
-use sthread::graph;
-use sthread::model::{
-    EditIr, EditOperation, LocalGraph, Replacement, SlicePolicy, Snapshot, ThreadIr,
-};
-use sthread::proto::RequestKind;
-use sthread::transaction;
-use sthread::worker::{WorkerClient, workspace_root};
 
 fn copy_fixture(from: &Path, to: &Path) {
     for entry in walkdir::WalkDir::new(from).into_iter().map(Result::unwrap) {

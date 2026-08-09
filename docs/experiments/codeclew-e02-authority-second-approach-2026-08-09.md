@@ -94,7 +94,7 @@ compiler symbol, and that call as the `actual` argument of
 ## Product changes
 
 - New process-local evidence authority and capability types in
-  `crates/sthread/src/evidence_authority.rs`.
+  `crates/clew/src/evidence_authority.rs`.
 - Kotlin FIR graph nodes now retain the compiler-issued owner callable symbol.
 - Kotlin variable declarations correctly export defines/uses for both entry
   and exit FIR declaration node shapes.
@@ -112,10 +112,10 @@ No source materializer or production transform was added in this node.
 Focused producer verification:
 
 ```text
-cargo test -p sthread evidence_authority --lib -- --nocapture
+cargo test -p clew evidence_authority --lib -- --nocapture
 2 passed
 
-cargo test -p sthread --test evidence_authority -- --nocapture
+cargo test -p clew --test evidence_authority -- --nocapture
 1 passed (live Kotlin 2.1 worker + Gradle validation)
 ```
 

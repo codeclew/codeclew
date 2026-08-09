@@ -1,4 +1,4 @@
-use crate::error::{ErrorCode, SthreadError};
+use crate::error::{ClewError, ErrorCode};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -9,7 +9,7 @@ pub fn expand_transient_transform(
     plan: &mut Value,
     context: &Value,
     evidence: &Value,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let Some(transform) = plan
         .get("transform")
         .or_else(|| plan.get("transformation"))
@@ -181,7 +181,7 @@ struct Field {
     source: String,
 }
 
-fn requested_fields(transform: &Value, context: &Value) -> Result<Vec<Field>, SthreadError> {
+fn requested_fields(transform: &Value, context: &Value) -> Result<Vec<Field>, ClewError> {
     let requested = transform["fields"]
         .as_array()
         .ok_or_else(|| invalid("transform needs a fields array"))?;
@@ -214,9 +214,7 @@ fn requested_fields(transform: &Value, context: &Value) -> Result<Vec<Field>, St
     Ok(fields)
 }
 
-fn role_surfaces<'a>(
-    context: &'a Value,
-) -> Result<BTreeMap<&'static str, &'a Value>, SthreadError> {
+fn role_surfaces(context: &Value) -> Result<BTreeMap<&'static str, &Value>, ClewError> {
     let mut result = BTreeMap::new();
     for role in ["WORKFLOW", "INTERMEDIARY", "OUTPUT_CONTRACT", "DATA_SOURCE"] {
         let matches = context["editSurfaces"]
@@ -236,7 +234,7 @@ fn role_surfaces<'a>(
     Ok(result)
 }
 
-fn unique_item<'a>(context: &'a Value, section: &str) -> Result<&'a Value, SthreadError> {
+fn unique_item<'a>(context: &'a Value, section: &str) -> Result<&'a Value, ClewError> {
     let items = context[section]
         .as_array()
         .ok_or_else(|| incomplete(format!("context has no {section} array")))?;
@@ -249,7 +247,7 @@ fn unique_item<'a>(context: &'a Value, section: &str) -> Result<&'a Value, Sthre
     Ok(&items[0])
 }
 
-fn require_planning_evidence(evidence: &Value) -> Result<(), SthreadError> {
+fn require_planning_evidence(evidence: &Value) -> Result<(), ClewError> {
     for section in ["resolutions", "threads"] {
         if evidence[section].as_array().is_none_or(Vec::is_empty) {
             return Err(incomplete(format!(
@@ -266,7 +264,7 @@ fn verify_resolved_path(
     intermediary: &Value,
     output: &Value,
     data_source: &Value,
-) -> Result<(), SthreadError> {
+) -> Result<(), ClewError> {
     let workflow_name = required_string(workflow, "name")?;
     let intermediary_name = required_string(intermediary, "name")?;
     let output_name = required_string(output, "name")?;
@@ -349,7 +347,7 @@ fn render_contract_source(
 fn contract_header_rewrite(
     source: &str,
     interface_name: &str,
-) -> Result<(String, String), SthreadError> {
+) -> Result<(String, String), ClewError> {
     let old = "\n) {\n";
     if source.matches(old).count() != 1 {
         return Err(incomplete(
@@ -364,7 +362,7 @@ fn projection_query_rewrite(
     package: &str,
     record_name: &str,
     fields: &[Field],
-) -> Result<(String, String, String), SthreadError> {
+) -> Result<(String, String, String), ClewError> {
     let lower = source.to_lowercase();
     let select = lower
         .find("select ")
@@ -403,7 +401,7 @@ fn projection_query_rewrite(
     ))
 }
 
-fn parameter_for_type(source: &str, type_name: &str) -> Result<String, SthreadError> {
+fn parameter_for_type(source: &str, type_name: &str) -> Result<String, ClewError> {
     let signature = source
         .split_once('{')
         .map(|(signature, _)| signature)
@@ -431,7 +429,7 @@ fn parameter_for_type(source: &str, type_name: &str) -> Result<String, SthreadEr
     Ok(parameters.into_iter().next().unwrap())
 }
 
-fn infer_identity_parameter(source: &str, loop_item: &str) -> Result<String, SthreadError> {
+fn infer_identity_parameter(source: &str, loop_item: &str) -> Result<String, ClewError> {
     let parameters = source
         .split([',', '\n', '('])
         .filter_map(|fragment| {
@@ -448,7 +446,7 @@ fn infer_identity_parameter(source: &str, loop_item: &str) -> Result<String, Sth
     Ok(parameters.into_iter().next().unwrap())
 }
 
-fn infer_test_expected(source: &str, matcher: &str) -> Result<String, SthreadError> {
+fn infer_test_expected(source: &str, matcher: &str) -> Result<String, ClewError> {
     let matcher_offset = source
         .find(matcher)
         .ok_or_else(|| incomplete("test payload matcher is absent"))?;
@@ -468,7 +466,7 @@ fn return_type_rewrite(
     source: &str,
     method_name: &str,
     record_name: &str,
-) -> Result<(String, String), SthreadError> {
+) -> Result<(String, String), ClewError> {
     let method = source
         .find(method_name)
         .ok_or_else(|| incomplete("data source method name is absent from its source"))?;
@@ -488,7 +486,7 @@ fn return_type_rewrite(
     ))
 }
 
-fn infer_collection(source: &str, method_name: &str) -> Result<String, SthreadError> {
+fn infer_collection(source: &str, method_name: &str) -> Result<String, ClewError> {
     let names = source
         .lines()
         .filter(|line| line.contains(method_name))
@@ -507,7 +505,7 @@ fn infer_collection(source: &str, method_name: &str) -> Result<String, SthreadEr
     Ok(names.into_iter().next().unwrap())
 }
 
-fn infer_loop_item(source: &str, collection: &str) -> Result<String, SthreadError> {
+fn infer_loop_item(source: &str, collection: &str) -> Result<String, ClewError> {
     let marker = format!("{collection}.forEach {{");
     let items = source
         .match_indices(&marker)
@@ -534,7 +532,7 @@ fn workflow_substitutions(
     identity_field: &str,
     identity_parameter: &str,
     payload_parameter: &str,
-) -> Result<Vec<Value>, SthreadError> {
+) -> Result<Vec<Value>, ClewError> {
     let specs = vec![
         (
             format!("{identity_parameter} = {old_item},"),
@@ -579,7 +577,7 @@ fn context_names(context: &Value) -> BTreeSet<&str> {
         .collect()
 }
 
-fn rewrite(target: &Value, substitutions: Vec<Value>) -> Result<Value, SthreadError> {
+fn rewrite(target: &Value, substitutions: Vec<Value>) -> Result<Value, ClewError> {
     Ok(json!({
         "kind":"REWRITE_DECLARATION",
         "target":{"targetId":target_id(target)?},
@@ -595,7 +593,7 @@ fn substitution_occurrence(old: &str, new: &str, occurrence: usize) -> Value {
     json!({"old":old,"new":new,"occurrence":occurrence})
 }
 
-fn target_id(item: &Value) -> Result<String, SthreadError> {
+fn target_id(item: &Value) -> Result<String, ClewError> {
     item["declarationTargetId"]
         .as_str()
         .map(str::to_owned)
@@ -607,7 +605,7 @@ fn target_id(item: &Value) -> Result<String, SthreadError> {
         .ok_or_else(|| incomplete("context item has no declaration target"))
 }
 
-fn kotlin_package(file: &str) -> Result<String, SthreadError> {
+fn kotlin_package(file: &str) -> Result<String, ClewError> {
     file.split_once("/kotlin/")
         .and_then(|(_, relative)| relative.rsplit_once('/'))
         .map(|(package, _)| package.replace('/', "."))
@@ -615,14 +613,14 @@ fn kotlin_package(file: &str) -> Result<String, SthreadError> {
         .ok_or_else(|| invalid("contract file is not under a Kotlin source root"))
 }
 
-fn required_string(value: &Value, key: &str) -> Result<String, SthreadError> {
+fn required_string(value: &Value, key: &str) -> Result<String, ClewError> {
     value[key]
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| invalid(format!("missing string field {key}")))
 }
 
-fn identifier(value: impl Into<String>, label: &str) -> Result<String, SthreadError> {
+fn identifier(value: impl Into<String>, label: &str) -> Result<String, ClewError> {
     let value = value.into();
     if value.is_empty()
         || value
@@ -638,12 +636,12 @@ fn identifier(value: impl Into<String>, label: &str) -> Result<String, SthreadEr
     Ok(value)
 }
 
-fn invalid(message: impl Into<String>) -> SthreadError {
-    SthreadError::new(ErrorCode::InvalidInput, message)
+fn invalid(message: impl Into<String>) -> ClewError {
+    ClewError::new(ErrorCode::InvalidInput, message)
 }
 
-fn incomplete(message: impl Into<String>) -> SthreadError {
-    SthreadError::new(ErrorCode::IncompleteSemanticAnalysis, message)
+fn incomplete(message: impl Into<String>) -> ClewError {
+    ClewError::new(ErrorCode::IncompleteSemanticAnalysis, message)
 }
 
 #[cfg(test)]

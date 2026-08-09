@@ -1,10 +1,10 @@
+use clew::canonical;
+use clew::error::ErrorCode;
+use clew::graph;
+use clew::model::{CompletenessStatus, Direction, LocalGraph, SlicePolicy, Snapshot};
+use clew::proto::RequestKind;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::json;
-use sthread::canonical;
-use sthread::error::ErrorCode;
-use sthread::graph;
-use sthread::model::{CompletenessStatus, Direction, LocalGraph, SlicePolicy, Snapshot};
-use sthread::proto::RequestKind;
-use sthread::worker::{WorkerClient, workspace_root};
 
 #[test]
 fn k2_fir_golden_language_and_slice_matrix() {

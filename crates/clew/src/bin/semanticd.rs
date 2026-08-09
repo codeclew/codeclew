@@ -1,15 +1,15 @@
+use clew::error::{ClewError, ErrorCode};
+use clew::graph;
+use clew::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
+use clew::model::{EditIr, LocalGraph, SlicePolicy, Snapshot, ThreadIr, Transaction};
+use clew::proto::RequestKind;
+use clew::transaction;
+use clew::worker::{WorkerClient, workspace_root};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
-use sthread::error::{ErrorCode, SthreadError};
-use sthread::graph;
-use sthread::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
-use sthread::model::{EditIr, LocalGraph, SlicePolicy, Snapshot, ThreadIr, Transaction};
-use sthread::proto::RequestKind;
-use sthread::transaction;
-use sthread::worker::{WorkerClient, workspace_root};
 
 #[derive(Default)]
 struct Metrics {
@@ -100,10 +100,7 @@ fn main() {
             Err(error) => (
                 Value::Null,
                 "<decode>".into(),
-                Err(SthreadError::new(
-                    ErrorCode::InvalidInput,
-                    error.to_string(),
-                )),
+                Err(ClewError::new(ErrorCode::InvalidInput, error.to_string())),
             ),
         };
         let elapsed = started.elapsed().as_millis() as u64;
@@ -149,7 +146,7 @@ fn dispatch(
     params: &Value,
     worker: &mut WorkerClient,
     metrics: &mut Metrics,
-) -> Result<Value, SthreadError> {
+) -> Result<Value, ClewError> {
     let repo = || {
         params
             .get("repo")
@@ -213,7 +210,7 @@ fn dispatch(
             let snapshot: Snapshot =
                 serde_json::from_value(params["snapshot"].clone()).map_err(parse_error)?;
             let seed_id = params["seedId"].as_str().ok_or_else(|| {
-                SthreadError::new(ErrorCode::InvalidInput, "thread.slice needs seedId")
+                ClewError::new(ErrorCode::InvalidInput, "thread.slice needs seedId")
             })?;
             let thread = graph::slice(&graph, seed_id, policy, snapshot, params["seed"].clone())
                 .map_err(parse_error)?;
@@ -257,7 +254,7 @@ fn dispatch(
                 .to_owned();
             let target = params["targetRef"].as_str().ok_or_else(|| {
                 with_transaction_context(
-                    SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef"),
+                    ClewError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef"),
                     &transaction_id,
                     &snapshot_id,
                     &relevant,
@@ -288,7 +285,7 @@ fn dispatch(
         "tx.inspect" => transaction::ledger(Path::new(repo()))?
             .inspect(params["transactionId"].as_str().unwrap_or_default()),
         "shutdown" => Ok(json!({"status":"SHUTTING_DOWN"})),
-        _ => Err(SthreadError::new(
+        _ => Err(ClewError::new(
             ErrorCode::InvalidInput,
             format!("unknown semanticd method {method}"),
         )),
@@ -296,11 +293,11 @@ fn dispatch(
 }
 
 fn with_transaction_context(
-    error: SthreadError,
+    error: ClewError,
     transaction_id: &str,
     snapshot_id: &str,
     relevant: &str,
-) -> SthreadError {
+) -> ClewError {
     error
         .with_transaction(transaction_id)
         .with_snapshot(snapshot_id)
@@ -312,14 +309,14 @@ fn profiled_worker_request(
     kind: RequestKind,
     params: &Value,
     metrics: &mut Metrics,
-) -> Result<Value, SthreadError> {
+) -> Result<Value, ClewError> {
     let result = worker.request(kind, params)?;
     metrics.add("cache_requests", worker.last_profile.cache_requests);
     metrics.add("cache_hits", worker.last_profile.cache_hits);
     Ok(result)
 }
 
-fn gradle_duration_from_evidence(error: &SthreadError) -> u64 {
+fn gradle_duration_from_evidence(error: &ClewError) -> u64 {
     error
         .evidence
         .iter()
@@ -372,8 +369,8 @@ fn worker_memory(pid: u32) -> u64 {
         * 1024
 }
 
-fn parse_error(error: impl std::fmt::Display) -> SthreadError {
-    SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
+fn parse_error(error: impl std::fmt::Display) -> ClewError {
+    ClewError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
 }
 
 #[cfg(test)]
@@ -383,7 +380,7 @@ mod tests {
     #[test]
     fn early_commit_errors_keep_transaction_context() {
         let error = with_transaction_context(
-            SthreadError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef"),
+            ClewError::new(ErrorCode::InvalidInput, "tx.commit needs targetRef"),
             "tx:context",
             "sha256:snapshot",
             "anchor:target",

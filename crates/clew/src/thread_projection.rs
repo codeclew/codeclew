@@ -224,36 +224,30 @@ fn read_hash(
 
 fn source_provenance(node: &GraphNode) -> Result<L0Source, ThreadProjectionError> {
     let invalid = || ThreadProjectionError::InvalidSourceProvenance(node.id.clone());
-    let origin = node.origin.as_ref().ok_or_else(|| invalid())?;
+    let origin = node.origin.as_ref().ok_or_else(&invalid)?;
     let range = origin
         .get("rangeHint")
         .and_then(Value::as_array)
-        .ok_or_else(|| invalid())?;
-    let range_start = range
-        .first()
-        .and_then(Value::as_u64)
-        .ok_or_else(|| invalid())?;
-    let range_end = range
-        .get(1)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| invalid())?;
+        .ok_or_else(&invalid)?;
+    let range_start = range.first().and_then(Value::as_u64).ok_or_else(&invalid)?;
+    let range_end = range.get(1).and_then(Value::as_u64).ok_or_else(&invalid)?;
     let file = origin
         .get("file")
         .or_else(|| origin.get("fileId"))
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid())?
+        .ok_or_else(&invalid)?
         .to_owned();
     let content_hash = origin
         .get("exactTextHash")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid())?
+        .ok_or_else(&invalid)?
         .to_owned();
     let snippet = origin
         .get("sourceText")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| invalid())?;
+        .ok_or_else(&invalid)?;
     if canonical::hash_bytes(snippet.as_bytes()) != content_hash {
         return Err(invalid());
     }
