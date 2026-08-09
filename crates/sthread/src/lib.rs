@@ -1,6 +1,7 @@
 pub mod agent_context;
 pub mod canonical;
 pub mod error;
+pub mod freshness;
 pub mod graph;
 pub mod identity;
 pub mod index;

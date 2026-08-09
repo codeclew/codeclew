@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
-use sthread::index::RepositoryIndex;
+use sthread::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
 use sthread::model::{EditIr, LocalGraph, SlicePolicy, Snapshot, ThreadIr, Transaction};
 use sthread::proto::RequestKind;
 use sthread::transaction;
@@ -176,6 +176,7 @@ fn dispatch(
             let mut index =
                 RepositoryIndex::open_compilation(Path::new(repo()), Some(compilation()))?;
             let snapshot = index.update(&facts)?;
+            let freshness = index.freshness_status(REPOSITORY_INDEX_FACT)?;
             let files = facts["files"].as_array().map_or(0, Vec::len) as u64;
             let semantic_facts = facts["files"]
                 .as_array()
@@ -186,7 +187,7 @@ fn dispatch(
             metrics.add("files_parsed", files);
             metrics.add("semantic_facts_extracted", semantic_facts);
             Ok(
-                json!({"indexSnapshot":snapshot,"invalidations":index.invalidations()?,"facts":facts}),
+                json!({"indexSnapshot":snapshot,"invalidations":index.invalidations()?,"freshness":freshness,"facts":facts}),
             )
         }
         "resolve.symbol" => {

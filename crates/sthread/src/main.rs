@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use sthread::canonical;
 use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
-use sthread::index::RepositoryIndex;
+use sthread::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
 use sthread::model::*;
 use sthread::proto::RequestKind;
 use sthread::task_context;
@@ -282,8 +282,9 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             )?;
             let persistent_hash = index.update(&facts)?;
             let invalidations = index.invalidations()?;
+            let freshness = index.freshness_status(REPOSITORY_INDEX_FACT)?;
             Ok(
-                json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len),"invalidations":invalidations}),
+                json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len),"invalidations":invalidations,"freshness":freshness}),
             )
         }),
         Command::Resolve {
@@ -327,6 +328,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             let mut repository_index =
                 RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
             let index_snapshot = repository_index.update(&index_facts)?;
+            repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
             let selection = task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
             let mut resolutions = selection
                 .root_symbols(1)
@@ -738,6 +740,7 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
     )?;
     let mut repository_index = RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
     let index_snapshot = repository_index.update(&index_facts)?;
+    repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
     let expression_anchor = if let (Some(file), Some(offset)) = (&args.file, args.offset) {
         Some(
             worker.request(

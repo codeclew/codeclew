@@ -373,6 +373,7 @@ internal class Worker : AutoCloseable {
         return buildJsonObject {
             put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requested.isNotEmpty()); put("analysisMode", if (syntaxOnly) "SYNTAX_DECLARATIONS" else "K2_SEMANTIC"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
             put("projectModelHash", project["projectModelHash"]!!); put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
+            put("compilerVersion", project["compilerVersion"]!!)
             put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
         }

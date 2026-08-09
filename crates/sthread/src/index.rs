@@ -1,9 +1,14 @@
 use crate::canonical;
 use crate::error::{ErrorCode, SthreadError};
+use crate::freshness::{
+    DependencyFact, FRESHNESS_EVENT_SCHEMA, FactDomain, FactFreshness, FactProvenance,
+    FreshnessCheckpoint, FreshnessEvent, FreshnessEventKind, FreshnessProjection, IngestOutcome,
+};
 use crate::identity::{
     IdentityLifecycle, IdentityReport, SnapshotProvenance, decide_identity_delta,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -12,6 +17,15 @@ pub struct RepositoryIndex {
     connection: Connection,
     repo: PathBuf,
     blobs: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryFreshnessCheckpoint {
+    pub schema: String,
+    pub projection: FreshnessCheckpoint,
+    pub published_revision: Option<String>,
+    pub index_snapshot_hash: Option<String>,
 }
 
 /// A fully built repository index that is not visible to readers yet.
@@ -90,6 +104,10 @@ impl RepositoryIndex {
              CREATE TABLE IF NOT EXISTS declarations (
                symbol_id TEXT NOT NULL, file_path TEXT NOT NULL, facts_json BLOB NOT NULL,
                PRIMARY KEY(symbol_id, file_path), FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS freshness_events (
+               sequence INTEGER PRIMARY KEY, event_id TEXT UNIQUE NOT NULL,
+               event_hash TEXT NOT NULL, event_json BLOB NOT NULL
              );"
         ).map_err(db_error)?;
         Ok(Self {
@@ -139,6 +157,7 @@ impl RepositoryIndex {
         let result = (|| {
             let mut staged = Self::open_database(repo, staging_path.clone(), blobs.clone())?;
             let hash = staged.update_from_root(facts, source_root)?;
+            staged.require_fresh(REPOSITORY_INDEX_FACT)?;
             let invalidations = staged.invalidations()?;
             staged.mark_published_revision(revision)?;
             // The renamed file must be self-contained; no staging WAL file may
@@ -218,6 +237,7 @@ impl RepositoryIndex {
                 "COMPILATION_SEMANTICS",
             ),
             ("classpathHash", "classpath_hash", "COMPILATION_CLASSPATH"),
+            ("compilerVersion", "compiler_version", "COMPILER_VERSION"),
             (
                 "compilerOptionsHash",
                 "compiler_options_hash",
@@ -353,6 +373,7 @@ impl RepositoryIndex {
         let index_hash = canonical::hash(&serde_json::json!({
             "projectModelHash":facts.get("projectModelHash"),
             "classpathHash":facts.get("classpathHash"),
+            "compilerVersion":facts.get("compilerVersion"),
             "compilerOptionsHash":facts.get("compilerOptionsHash"),
             "files":stored_files
         }))
@@ -397,6 +418,12 @@ impl RepositoryIndex {
             .filter(|value| !value.is_empty())
             .unwrap_or("UNAVAILABLE")
             .to_owned();
+        let incoming_compiler_version = facts
+            .get("compilerVersion")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("UNAVAILABLE")
+            .to_owned();
         let before_snapshot = SnapshotProvenance {
             composite_snapshot_hash: canonical::hash(&serde_json::json!({
                 "index":previous_index,
@@ -437,6 +464,15 @@ impl RepositoryIndex {
             [&identity_json],
         )
         .map_err(db_error)?;
+        record_freshness_update(
+            &tx,
+            facts,
+            &stored_files,
+            &index_hash,
+            &identity_report,
+            &incoming_compiler_version,
+            &invalidations,
+        )?;
         let invalidations_json = canonical::pretty(&invalidations).map_err(internal)?;
         tx.execute("INSERT INTO metadata(key,value) VALUES('last_invalidations',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&invalidations_json]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
@@ -484,6 +520,84 @@ impl RepositoryIndex {
         value
             .map(|json| serde_json::from_str(&json).map_err(|error| internal(error.into())))
             .transpose()
+    }
+
+    pub fn freshness_checkpoint(&self) -> Result<RepositoryFreshnessCheckpoint, SthreadError> {
+        Ok(RepositoryFreshnessCheckpoint {
+            schema: "repository-freshness-checkpoint/0.1".to_owned(),
+            projection: load_freshness_projection(&self.connection)?.checkpoint(),
+            published_revision: self.published_revision()?,
+            index_snapshot_hash: self.hash()?,
+        })
+    }
+
+    pub fn freshness_status(&self, fact_id: &str) -> Result<FactFreshness, SthreadError> {
+        Ok(load_freshness_projection(&self.connection)?.status(fact_id))
+    }
+
+    pub fn require_fresh(&self, fact_id: &str) -> Result<(), SthreadError> {
+        let status = self.freshness_status(fact_id)?;
+        if status == FactFreshness::Fresh {
+            Ok(())
+        } else {
+            Err(SthreadError::new(
+                ErrorCode::ProjectModelChanged,
+                format!("semantic fact {fact_id} is not fresh: {status:?}"),
+            ))
+        }
+    }
+
+    /// Persist one externally delivered at-least-once event. A sequence gap is
+    /// itself durably checkpointed before the fail-closed error is returned, so
+    /// no subsequent reader can continue serving the old projection as fresh.
+    pub fn ingest_freshness_event(
+        &mut self,
+        event: FreshnessEvent,
+    ) -> Result<IngestOutcome, SthreadError> {
+        let tx = self.connection.transaction().map_err(db_error)?;
+        let mut projection = load_freshness_projection(&tx)?;
+        match projection.ingest(event.clone()) {
+            Ok(outcome) => {
+                if matches!(outcome, IngestOutcome::Applied { .. }) {
+                    insert_freshness_event(&tx, &event)?;
+                }
+                store_freshness_checkpoint(&tx, &projection.checkpoint())?;
+                tx.commit().map_err(db_error)?;
+                Ok(outcome)
+            }
+            Err(error @ crate::freshness::FreshnessError::OutOfOrder { .. }) => {
+                store_freshness_checkpoint(&tx, &projection.checkpoint())?;
+                tx.commit().map_err(db_error)?;
+                Err(internal(error.into()))
+            }
+            Err(error) => Err(internal(error.into())),
+        }
+    }
+
+    /// Verify that the durable contiguous log reproduces the checkpoint.
+    /// A persisted gap cannot be cleared by replaying the older log; only a
+    /// complete authoritative index rebuild may supersede missing input.
+    pub fn recover_freshness_from_log(&mut self) -> Result<FreshnessCheckpoint, SthreadError> {
+        let tx = self.connection.transaction().map_err(db_error)?;
+        let current = load_freshness_projection(&tx)?;
+        if current.checkpoint().sequence_gap.is_some() {
+            return Err(SthreadError::new(
+                ErrorCode::ProjectModelChanged,
+                "freshness stream has a gap; a complete index rebuild is required",
+            ));
+        }
+        let events = load_freshness_events(&tx)?;
+        let projection =
+            FreshnessProjection::replay(events).map_err(|error| internal(error.into()))?;
+        let checkpoint = projection.checkpoint();
+        if checkpoint != current.checkpoint() {
+            return Err(SthreadError::new(
+                ErrorCode::Internal,
+                "freshness checkpoint differs from deterministic event replay",
+            ));
+        }
+        tx.commit().map_err(db_error)?;
+        Ok(checkpoint)
     }
 
     pub fn mark_published_revision(&self, revision: &str) -> Result<(), SthreadError> {
@@ -553,6 +667,357 @@ fn database_name(compilation: Option<&str>) -> String {
             format!("index{safe}.sqlite3")
         },
     )
+}
+
+const PROJECT_MODEL_FACT: &str = "input:project-model";
+const CLASSPATH_FACT: &str = "input:classpath";
+const COMPILER_VERSION_FACT: &str = "input:compiler-version";
+const COMPILER_OPTIONS_FACT: &str = "input:compiler-options";
+const SOURCE_SET_FACT: &str = "input:source-set";
+pub const REPOSITORY_INDEX_FACT: &str = "view:repository-index";
+pub const IDENTITY_VIEW_FACT: &str = "view:identity";
+pub const INVALIDATION_VIEW_FACT: &str = "view:invalidations";
+
+fn record_freshness_update(
+    tx: &Transaction<'_>,
+    facts: &Value,
+    stored_files: &[Value],
+    index_hash: &str,
+    identity_report: &IdentityReport,
+    compiler_version: &str,
+    invalidations: &BTreeSet<String>,
+) -> Result<(), SthreadError> {
+    let mut projection = load_freshness_projection(tx)?;
+    let partial = facts.get("partial").and_then(Value::as_bool) == Some(true);
+    if projection.checkpoint().sequence_gap.is_some() {
+        if partial {
+            return Err(SthreadError::new(
+                ErrorCode::ProjectModelChanged,
+                "partial index cannot recover a gapped freshness stream",
+            ));
+        }
+        append_freshness_event(
+            tx,
+            &mut projection,
+            provenance_for_reset(index_hash, identity_report, compiler_version)?,
+            FreshnessEventKind::AuthoritativeReset {
+                reason: "full-rebuild-after-gap".to_owned(),
+            },
+        )?;
+    }
+    let project_model_hash = identity_report.after.project_model_hash.clone();
+    let classpath_hash = identity_report.after.classpath_hash.clone();
+    let compiler_options_hash = identity_report.after.compiler_options_hash.clone();
+    let provenance = FactProvenance {
+        producer: "repository-index".to_owned(),
+        composite_snapshot_hash: canonical::hash(&serde_json::json!({
+            "index": index_hash,
+            "projectModel": project_model_hash,
+            "classpath": classpath_hash,
+            "compilerVersion": compiler_version,
+            "compilerOptions": compiler_options_hash,
+        }))
+        .map_err(internal)?,
+        index_snapshot_hash: index_hash.to_owned(),
+        project_model_hash: project_model_hash.clone(),
+        classpath_hash: classpath_hash.clone(),
+        compiler_version: compiler_version.to_owned(),
+        compiler_options_hash: compiler_options_hash.clone(),
+    };
+
+    for fact in [
+        DependencyFact {
+            id: PROJECT_MODEL_FACT.to_owned(),
+            domain: FactDomain::Build,
+            fingerprint: project_model_hash,
+            provenance: provenance.clone(),
+            depends_on: vec![],
+        },
+        DependencyFact {
+            id: CLASSPATH_FACT.to_owned(),
+            domain: FactDomain::Classpath,
+            fingerprint: classpath_hash,
+            provenance: provenance.clone(),
+            depends_on: vec![PROJECT_MODEL_FACT.to_owned()],
+        },
+        DependencyFact {
+            id: COMPILER_VERSION_FACT.to_owned(),
+            domain: FactDomain::Compiler,
+            fingerprint: compiler_version.to_owned(),
+            provenance: provenance.clone(),
+            depends_on: vec![],
+        },
+        DependencyFact {
+            id: COMPILER_OPTIONS_FACT.to_owned(),
+            domain: FactDomain::Compiler,
+            fingerprint: compiler_options_hash,
+            provenance: provenance.clone(),
+            depends_on: vec![COMPILER_VERSION_FACT.to_owned()],
+        },
+    ] {
+        append_observation(tx, &mut projection, fact)?;
+    }
+
+    if partial {
+        if projection.fact(SOURCE_SET_FACT).is_some() {
+            append_invalidation(
+                tx,
+                &mut projection,
+                provenance,
+                SOURCE_SET_FACT,
+                "partial-source-observation",
+            )?;
+        }
+    } else {
+        append_observation(
+            tx,
+            &mut projection,
+            DependencyFact {
+                id: SOURCE_SET_FACT.to_owned(),
+                domain: FactDomain::Source,
+                fingerprint: canonical::hash(&Value::Array(stored_files.to_vec()))
+                    .map_err(internal)?,
+                provenance: provenance.clone(),
+                depends_on: vec![
+                    PROJECT_MODEL_FACT.to_owned(),
+                    CLASSPATH_FACT.to_owned(),
+                    COMPILER_VERSION_FACT.to_owned(),
+                    COMPILER_OPTIONS_FACT.to_owned(),
+                ],
+            },
+        )?;
+        append_observation(
+            tx,
+            &mut projection,
+            DependencyFact {
+                id: REPOSITORY_INDEX_FACT.to_owned(),
+                domain: FactDomain::Source,
+                fingerprint: index_hash.to_owned(),
+                provenance: provenance.clone(),
+                depends_on: vec![SOURCE_SET_FACT.to_owned()],
+            },
+        )?;
+        append_observation(
+            tx,
+            &mut projection,
+            DependencyFact {
+                id: IDENTITY_VIEW_FACT.to_owned(),
+                domain: FactDomain::Source,
+                fingerprint: canonical::hash(identity_report).map_err(internal)?,
+                provenance: provenance.clone(),
+                depends_on: vec![REPOSITORY_INDEX_FACT.to_owned()],
+            },
+        )?;
+        append_observation(
+            tx,
+            &mut projection,
+            DependencyFact {
+                id: INVALIDATION_VIEW_FACT.to_owned(),
+                domain: FactDomain::Source,
+                fingerprint: canonical::hash(invalidations).map_err(internal)?,
+                provenance,
+                depends_on: vec![
+                    REPOSITORY_INDEX_FACT.to_owned(),
+                    IDENTITY_VIEW_FACT.to_owned(),
+                ],
+            },
+        )?;
+    }
+    store_freshness_checkpoint(tx, &projection.checkpoint())
+}
+
+fn provenance_for_reset(
+    index_hash: &str,
+    identity_report: &IdentityReport,
+    compiler_version: &str,
+) -> Result<FactProvenance, SthreadError> {
+    let project_model_hash = identity_report.after.project_model_hash.clone();
+    let classpath_hash = identity_report.after.classpath_hash.clone();
+    let compiler_options_hash = identity_report.after.compiler_options_hash.clone();
+    Ok(FactProvenance {
+        producer: "repository-index".to_owned(),
+        composite_snapshot_hash: canonical::hash(&serde_json::json!({
+            "index": index_hash,
+            "projectModel": project_model_hash,
+            "classpath": classpath_hash,
+            "compilerVersion": compiler_version,
+            "compilerOptions": compiler_options_hash,
+        }))
+        .map_err(internal)?,
+        index_snapshot_hash: index_hash.to_owned(),
+        project_model_hash,
+        classpath_hash,
+        compiler_version: compiler_version.to_owned(),
+        compiler_options_hash,
+    })
+}
+
+fn append_observation(
+    tx: &Transaction<'_>,
+    projection: &mut FreshnessProjection,
+    fact: DependencyFact,
+) -> Result<(), SthreadError> {
+    let provenance = fact.provenance.clone();
+    append_freshness_event(
+        tx,
+        projection,
+        provenance,
+        FreshnessEventKind::Observed { fact },
+    )
+}
+
+fn append_invalidation(
+    tx: &Transaction<'_>,
+    projection: &mut FreshnessProjection,
+    provenance: FactProvenance,
+    fact_id: &str,
+    reason: &str,
+) -> Result<(), SthreadError> {
+    append_freshness_event(
+        tx,
+        projection,
+        provenance,
+        FreshnessEventKind::Invalidated {
+            fact_id: fact_id.to_owned(),
+            reason: reason.to_owned(),
+        },
+    )
+}
+
+fn append_freshness_event(
+    tx: &Transaction<'_>,
+    projection: &mut FreshnessProjection,
+    provenance: FactProvenance,
+    event: FreshnessEventKind,
+) -> Result<(), SthreadError> {
+    let sequence = projection
+        .last_sequence()
+        .checked_add(1)
+        .ok_or_else(|| internal(crate::freshness::FreshnessError::SequenceOverflow.into()))?;
+    let event_id = canonical::hash(&serde_json::json!({
+        "schema":"freshness-event-id/0.1",
+        "sequence":sequence,
+        "provenance":provenance,
+        "event":event,
+    }))
+    .map_err(internal)?;
+    let event = FreshnessEvent {
+        schema: FRESHNESS_EVENT_SCHEMA.to_owned(),
+        event_id,
+        sequence,
+        provenance,
+        event,
+    };
+    projection
+        .ingest(event.clone())
+        .map_err(|error| internal(error.into()))?;
+    insert_freshness_event(tx, &event)
+}
+
+fn insert_freshness_event(
+    connection: &Connection,
+    event: &FreshnessEvent,
+) -> Result<(), SthreadError> {
+    let bytes = canonical::bytes(event).map_err(internal)?;
+    let hash = canonical::hash(event).map_err(internal)?;
+    connection
+        .execute(
+            "INSERT INTO freshness_events(sequence,event_id,event_hash,event_json) VALUES(?1,?2,?3,?4)",
+            params![
+                i64::try_from(event.sequence).map_err(|error| internal(error.into()))?,
+                event.event_id,
+                hash,
+                bytes
+            ],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
+fn store_freshness_checkpoint(
+    connection: &Connection,
+    checkpoint: &FreshnessCheckpoint,
+) -> Result<(), SthreadError> {
+    let json = canonical::pretty(checkpoint).map_err(internal)?;
+    connection
+        .execute(
+            "INSERT INTO metadata(key,value) VALUES('freshness_checkpoint',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&json],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
+fn load_freshness_projection(connection: &Connection) -> Result<FreshnessProjection, SthreadError> {
+    let checkpoint_json: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key='freshness_checkpoint'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let events = load_freshness_events(connection)?;
+    let replayed = FreshnessProjection::replay(events).map_err(|error| internal(error.into()))?;
+    let Some(json) = checkpoint_json else {
+        if replayed.last_sequence() != 0 {
+            return Err(SthreadError::new(
+                ErrorCode::Internal,
+                "freshness event log exists without a checkpoint",
+            ));
+        }
+        return Ok(replayed);
+    };
+    let checkpoint: FreshnessCheckpoint =
+        serde_json::from_str(&json).map_err(|error| internal(error.into()))?;
+    let projection = FreshnessProjection::from_checkpoint(checkpoint.clone())
+        .map_err(|error| internal(error.into()))?;
+    let mut replayed_checkpoint = replayed.checkpoint();
+    // The rejected future event is deliberately absent from the contiguous
+    // log. Its durable gap marker overlays that otherwise reproducible state.
+    replayed_checkpoint.sequence_gap = checkpoint.sequence_gap.clone();
+    if replayed_checkpoint != checkpoint {
+        return Err(SthreadError::new(
+            ErrorCode::Internal,
+            "freshness checkpoint differs from deterministic event replay",
+        ));
+    }
+    Ok(projection)
+}
+
+fn load_freshness_events(connection: &Connection) -> Result<Vec<FreshnessEvent>, SthreadError> {
+    let mut statement = connection
+        .prepare("SELECT sequence,event_hash,event_json FROM freshness_events ORDER BY sequence")
+        .map_err(db_error)?;
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .map_err(db_error)?
+        .map(|row| {
+            let (stored_sequence, expected_hash, bytes) = row.map_err(db_error)?;
+            let event: FreshnessEvent =
+                serde_json::from_slice(&bytes).map_err(|error| internal(error.into()))?;
+            if u64::try_from(stored_sequence).ok() != Some(event.sequence) {
+                return Err(SthreadError::new(
+                    ErrorCode::Internal,
+                    format!("freshness event {} sequence mismatch", event.event_id),
+                ));
+            }
+            let actual_hash = canonical::hash(&event).map_err(internal)?;
+            if actual_hash != expected_hash {
+                return Err(SthreadError::new(
+                    ErrorCode::Internal,
+                    format!("freshness event {} hash mismatch", event.event_id),
+                ));
+            }
+            Ok(event)
+        })
+        .collect()
 }
 
 fn record_identity_invalidations(report: &IdentityReport, invalidations: &mut BTreeSet<String>) {
@@ -668,6 +1133,22 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn freshness_facts(source: &str, partial: bool, compiler_version: &str) -> Value {
+        json!({
+            "partial":partial,
+            "projectModelHash":"model",
+            "classpathHash":"classpath",
+            "compilerVersion":compiler_version,
+            "compilerOptionsHash":"options",
+            "files":[{
+                "path":"A.kt",
+                "contentHash":canonical::hash_bytes(source.as_bytes()),
+                "declarations":[{"symbolId":"a"}],
+                "semanticFacts":[]
+            }]
+        })
+    }
+
     #[test]
     fn staged_index_is_invisible_until_atomic_publish() {
         let temp = tempfile::tempdir().unwrap();
@@ -690,6 +1171,7 @@ mod tests {
             .after
             .index_snapshot_hash;
         live.mark_published_revision("old").unwrap();
+        let old_freshness = live.freshness_checkpoint().unwrap();
         drop(live);
 
         std::fs::write(&source_path, "fun a() = 2\n").unwrap();
@@ -717,6 +1199,7 @@ mod tests {
                 .index_snapshot_hash,
             old_identity_snapshot
         );
+        assert_eq!(visible.freshness_checkpoint().unwrap(), old_freshness);
         drop(visible);
 
         stage.publish().unwrap();
@@ -734,6 +1217,18 @@ mod tests {
                 .after
                 .index_snapshot_hash,
             new_hash
+        );
+        let published_freshness = visible.freshness_checkpoint().unwrap();
+        assert_eq!(
+            published_freshness.published_revision.as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            published_freshness.index_snapshot_hash.as_deref(),
+            Some(new_hash.as_str())
+        );
+        assert!(
+            published_freshness.projection.last_sequence > old_freshness.projection.last_sequence
         );
     }
 
@@ -769,6 +1264,23 @@ mod tests {
             visible.published_revision().unwrap().as_deref(),
             Some("old")
         );
+    }
+
+    #[test]
+    fn staged_publication_refuses_a_partial_repository_view() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let error = RepositoryIndex::stage_update(
+            temp.path(),
+            None,
+            &freshness_facts(source, true, "2.1.21"),
+            temp.path(),
+            "candidate",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ProjectModelChanged);
+        assert!(!temp.path().join(".semantic-thread/index.sqlite3").exists());
     }
 
     #[test]
@@ -955,5 +1467,262 @@ mod tests {
         );
         assert_eq!(ambiguous.decisions[0].after.len(), 2);
         assert!(ambiguous.introduced.is_empty());
+    }
+
+    #[test]
+    fn full_and_partial_updates_publish_defensible_freshness() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+
+        index
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        assert_eq!(
+            index.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Fresh
+        );
+        assert_eq!(
+            index.freshness_status(IDENTITY_VIEW_FACT).unwrap(),
+            FactFreshness::Fresh
+        );
+
+        index
+            .update(&freshness_facts(source, true, "2.1.21"))
+            .unwrap();
+        assert!(matches!(
+            index.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Stale { .. } | FactFreshness::PartiallyFresh { .. }
+        ));
+        assert!(matches!(
+            index.freshness_status(IDENTITY_VIEW_FACT).unwrap(),
+            FactFreshness::Stale { .. } | FactFreshness::PartiallyFresh { .. }
+        ));
+
+        index
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        assert_eq!(
+            index.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Fresh
+        );
+    }
+
+    #[test]
+    fn compiler_change_never_leaves_a_derived_view_fresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        index
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        let checkpoint = index.freshness_checkpoint().unwrap();
+        let identity = checkpoint
+            .projection
+            .facts
+            .iter()
+            .find(|fact| fact.fact.id == IDENTITY_VIEW_FACT)
+            .unwrap();
+        let sequence = checkpoint.projection.last_sequence + 1;
+        index
+            .ingest_freshness_event(FreshnessEvent {
+                schema: FRESHNESS_EVENT_SCHEMA.to_owned(),
+                event_id: "task-context-observed".to_owned(),
+                sequence,
+                provenance: identity.fact.provenance.clone(),
+                event: FreshnessEventKind::Observed {
+                    fact: DependencyFact {
+                        id: "view:task-context".to_owned(),
+                        domain: FactDomain::Source,
+                        fingerprint: "task-context-v1".to_owned(),
+                        provenance: identity.fact.provenance.clone(),
+                        depends_on: vec![IDENTITY_VIEW_FACT.to_owned()],
+                    },
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            index.freshness_status("view:task-context").unwrap(),
+            FactFreshness::Fresh
+        );
+
+        index
+            .update(&freshness_facts(source, false, "2.3.0"))
+            .unwrap();
+        assert!(matches!(
+            index.freshness_status("view:task-context").unwrap(),
+            FactFreshness::Stale { .. } | FactFreshness::PartiallyFresh { .. }
+        ));
+    }
+
+    #[test]
+    fn durable_gap_blocks_reads_and_log_recovery_is_deterministic() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        index
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        let before = index.freshness_checkpoint().unwrap();
+        let repository = before
+            .projection
+            .facts
+            .iter()
+            .find(|fact| fact.fact.id == REPOSITORY_INDEX_FACT)
+            .unwrap();
+        let gap = FreshnessEvent {
+            schema: FRESHNESS_EVENT_SCHEMA.to_owned(),
+            event_id: "future-event".to_owned(),
+            sequence: before.projection.last_sequence + 2,
+            provenance: repository.fact.provenance.clone(),
+            event: FreshnessEventKind::Invalidated {
+                fact_id: REPOSITORY_INDEX_FACT.to_owned(),
+                reason: "future-input".to_owned(),
+            },
+        };
+        assert!(index.ingest_freshness_event(gap).is_err());
+        assert!(matches!(
+            index.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Unknown { .. }
+        ));
+        drop(index);
+
+        let mut recovered = RepositoryIndex::open(temp.path()).unwrap();
+        assert!(matches!(
+            recovered.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Unknown { .. }
+        ));
+        assert!(recovered.recover_freshness_from_log().is_err());
+        assert!(
+            recovered
+                .update(&freshness_facts(source, true, "2.1.21"))
+                .is_err()
+        );
+        assert!(matches!(
+            recovered.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Unknown { .. }
+        ));
+        recovered
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        let rebuilt = recovered.freshness_checkpoint().unwrap();
+        assert!(rebuilt.projection.last_sequence > before.projection.last_sequence);
+        assert_eq!(
+            recovered.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
+            FactFreshness::Fresh
+        );
+    }
+
+    #[test]
+    fn durable_duplicate_is_a_noop_and_conflict_preserves_checkpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        index
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        let checkpoint = index.freshness_checkpoint().unwrap();
+        let identity = checkpoint
+            .projection
+            .facts
+            .iter()
+            .find(|fact| fact.fact.id == IDENTITY_VIEW_FACT)
+            .unwrap();
+        let event = FreshnessEvent {
+            schema: FRESHNESS_EVENT_SCHEMA.to_owned(),
+            event_id: "derived-view-observed".to_owned(),
+            sequence: checkpoint.projection.last_sequence + 1,
+            provenance: identity.fact.provenance.clone(),
+            event: FreshnessEventKind::Observed {
+                fact: DependencyFact {
+                    id: "view:derived".to_owned(),
+                    domain: FactDomain::Source,
+                    fingerprint: "derived-v1".to_owned(),
+                    provenance: identity.fact.provenance.clone(),
+                    depends_on: vec![IDENTITY_VIEW_FACT.to_owned()],
+                },
+            },
+        };
+        assert!(matches!(
+            index.ingest_freshness_event(event.clone()).unwrap(),
+            IngestOutcome::Applied { .. }
+        ));
+        let applied = index.freshness_checkpoint().unwrap();
+        assert!(matches!(
+            index.ingest_freshness_event(event.clone()).unwrap(),
+            IngestOutcome::Duplicate { .. }
+        ));
+        assert_eq!(index.freshness_checkpoint().unwrap(), applied);
+
+        let mut conflicting = event;
+        if let FreshnessEventKind::Observed { fact } = &mut conflicting.event {
+            fact.fingerprint = "derived-v2".to_owned();
+        }
+        assert!(index.ingest_freshness_event(conflicting).is_err());
+        assert_eq!(index.freshness_checkpoint().unwrap(), applied);
+    }
+
+    #[test]
+    fn clean_rebuilds_have_identical_observable_freshness() {
+        let left = tempfile::tempdir().unwrap();
+        let right = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(left.path().join("A.kt"), source).unwrap();
+        std::fs::write(right.path().join("A.kt"), source).unwrap();
+        let facts = freshness_facts(source, false, "2.1.21");
+        let mut left_index = RepositoryIndex::open(left.path()).unwrap();
+        let mut right_index = RepositoryIndex::open(right.path()).unwrap();
+
+        assert_eq!(
+            left_index.update(&facts).unwrap(),
+            right_index.update(&facts).unwrap()
+        );
+        assert_eq!(
+            left_index.identity_report().unwrap(),
+            right_index.identity_report().unwrap()
+        );
+        assert_eq!(
+            left_index.invalidations().unwrap(),
+            right_index.invalidations().unwrap()
+        );
+        assert_eq!(
+            left_index.freshness_checkpoint().unwrap(),
+            right_index.freshness_checkpoint().unwrap()
+        );
+    }
+
+    #[test]
+    fn sequence_consistent_checkpoint_corruption_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = "fun a() = 1\n";
+        std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        index
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        let json: String = index
+            .connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key='freshness_checkpoint'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut checkpoint: Value = serde_json::from_str(&json).unwrap();
+        checkpoint["facts"] = json!([]);
+        index
+            .connection
+            .execute(
+                "UPDATE metadata SET value=?1 WHERE key='freshness_checkpoint'",
+                [canonical::pretty(&checkpoint).unwrap()],
+            )
+            .unwrap();
+
+        assert!(index.freshness_status(REPOSITORY_INDEX_FACT).is_err());
+        assert!(index.require_fresh(REPOSITORY_INDEX_FACT).is_err());
     }
 }

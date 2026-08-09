@@ -1,7 +1,7 @@
 use crate::canonical;
 use crate::error::{ErrorCode, SthreadError};
 use crate::graph;
-use crate::index::{RepositoryIndex, StagedIndex};
+use crate::index::{REPOSITORY_INDEX_FACT, RepositoryIndex, StagedIndex};
 use crate::model::*;
 use crate::proto::RequestKind;
 use crate::worker::{WorkerClient, workspace_root};
@@ -457,9 +457,10 @@ pub fn commit(
             )
         })?;
     transaction.base_index_snapshot = Some(base_index_snapshot.clone());
-    let current_index_snapshot =
-        RepositoryIndex::open_compilation(repo, Some(&transaction.thread.snapshot.compilation))?
-            .hash()?;
+    let current_repository_index =
+        RepositoryIndex::open_compilation(repo, Some(&transaction.thread.snapshot.compilation))?;
+    current_repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
+    let current_index_snapshot = current_repository_index.hash()?;
     if current == transaction.base_revision
         && current_index_snapshot.as_deref() != Some(base_index_snapshot.as_str())
     {
@@ -615,20 +616,12 @@ pub fn commit(
         transaction.candidate_commit = Some(candidate.clone());
         transaction.status = "COMMITTING".into();
         ledger(repo)?.append(transaction, "candidate commit created")?;
-        let changed_production_files = report
-            .candidates
-            .keys()
-            .filter(|file| file.contains("/src/main/") || file.starts_with("src/main/"))
-            .filter(|file| file.ends_with(".kt"))
-            .cloned()
-            .collect::<Vec<_>>();
         let index_facts = worker.request(
             RequestKind::IndexFiles,
             &json!({
                 "repo":worktree_path,
                 "compilation":transaction.thread.snapshot.compilation,
-                "syntaxOnly":true,
-                "files":changed_production_files
+                "syntaxOnly":true
             }),
         )?;
         let staged_index = RepositoryIndex::stage_update(

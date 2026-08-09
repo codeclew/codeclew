@@ -26,6 +26,7 @@ fn selects_matching_kotlin_21_worker_and_resolves_extension_names() {
             &json!({"repo":fixture,"compilation":":/main"}),
         )
         .unwrap();
+    assert_eq!(index["compilerVersion"], "2.1.21");
     assert_eq!(index["k2Validated"], true);
     assert!(
         index["diagnostics"]
