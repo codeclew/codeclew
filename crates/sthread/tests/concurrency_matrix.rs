@@ -172,6 +172,7 @@ fn make_tx(
         base_index_snapshot: Some(index_snapshot),
         status: "CREATED".into(),
         thread,
+        required_threads: vec![],
         edit,
         preview: None,
         expected_write_set_hash: None,
@@ -363,6 +364,68 @@ fn mandatory_concurrency_matrix() {
     let stale =
         transaction::commit(&repo_model, &mut old_tx, "refs/heads/main", &mut worker).unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleRequiresReslice);
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn change_in_second_required_thread_forces_reslice() {
+    let root = workspace_root();
+    let temp = tempfile::tempdir().unwrap();
+    let repo = init_repo(temp.path(), "goal-wide-read-set");
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let project = worker
+        .request(RequestKind::OpenProject, &json!({"repo":repo}))
+        .unwrap();
+    let project_hash = project["projectModelHash"].as_str().unwrap();
+
+    // The edit is anchored in `total`, while the second required semantic root
+    // is `namedCall`. A concurrent change to `decorate` affects only that
+    // second root's ReadSet.
+    let mut goal = make_tx(
+        &mut worker,
+        &repo,
+        project_hash,
+        "com.acme.total",
+        "{ var value = base; if (premium) value = value + value; return value }",
+        "goal-wide",
+    );
+    let dependent_root = make_tx(
+        &mut worker,
+        &repo,
+        project_hash,
+        "com.acme.namedCall",
+        "{ return value.decorate(prefix = \"(\") }",
+        "required-root",
+    );
+    goal.required_threads = vec![goal.thread.clone(), dependent_root.thread.clone()];
+    let second_thread_id = dependent_root.thread.thread_id;
+    let mut legacy_wire = serde_json::to_value(&goal).unwrap();
+    legacy_wire
+        .as_object_mut()
+        .unwrap()
+        .remove("requiredThreads");
+    let legacy: Transaction = serde_json::from_value(legacy_wire).unwrap();
+    assert!(legacy.required_threads.is_empty());
+
+    let mut concurrent = make_tx(
+        &mut worker,
+        &repo,
+        project_hash,
+        "String.com.acme.decorate",
+        "{ return \"$prefix$this]!\" }",
+        "concurrent-callee",
+    );
+    transaction::commit(&repo, &mut concurrent, "refs/heads/main", &mut worker).unwrap();
+
+    let error = transaction::commit(&repo, &mut goal, "refs/heads/main", &mut worker).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleRequiresReslice, "{error:?}");
+    assert!(
+        error
+            .evidence
+            .iter()
+            .any(|fact| fact == &format!("requiredThreadId={second_thread_id}")),
+        "second required root was not identified: {error:?}"
+    );
     worker.shutdown().unwrap();
 }
 

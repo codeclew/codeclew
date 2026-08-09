@@ -432,6 +432,7 @@ pub fn commit(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, SthreadError> {
+    validate_required_threads(transaction)?;
     let qualified_target_ref;
     let target_ref = if target_ref.starts_with("refs/") {
         target_ref
@@ -829,8 +830,49 @@ fn revalidate_semantic_read_set(
     current: &str,
     worker: &mut WorkerClient,
 ) -> Result<(), SthreadError> {
-    let symbol = transaction
-        .thread
+    let required = transaction_threads(transaction);
+    let rebuilt = required
+        .iter()
+        .map(|thread| rebuild_thread(repo, thread, project, current, worker))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut old_union = BTreeSet::new();
+    let mut new_union = BTreeSet::new();
+    for (old_thread, new_thread) in required.iter().zip(&rebuilt) {
+        let old = semantic_read_set(old_thread);
+        let new = semantic_read_set(new_thread);
+        old_union.extend(old.iter().cloned());
+        new_union.extend(new.iter().cloned());
+        if old != new {
+            return Err(read_set_change_error(
+                repo,
+                transaction,
+                &old,
+                &new,
+                Some(&old_thread.thread_id),
+            ));
+        }
+    }
+    if old_union != new_union {
+        return Err(read_set_change_error(
+            repo,
+            transaction,
+            &old_union,
+            &new_union,
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn rebuild_thread(
+    repo: &Path,
+    thread: &ThreadIr,
+    project: &Value,
+    current: &str,
+    worker: &mut WorkerClient,
+) -> Result<ThreadIr, SthreadError> {
+    let symbol = thread
         .seed
         .get("symbol")
         .and_then(Value::as_str)
@@ -842,18 +884,13 @@ fn revalidate_semantic_read_set(
         })?;
     let raw = worker.request(
         RequestKind::BuildLocalGraph,
-        &json!({"repo":repo,"symbol":symbol,"compilation":transaction.thread.snapshot.compilation}),
+        &json!({"repo":repo,"symbol":symbol,"compilation":thread.snapshot.compilation}),
     )?;
     let graph = graph::enrich(serde_json::from_value::<LocalGraph>(raw).map_err(|error| {
         SthreadError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
     })?);
-    let old_seed_id = transaction
-        .thread
-        .seed
-        .get("nodeId")
-        .and_then(Value::as_str);
-    let seed_anchor = transaction
-        .thread
+    let old_seed_id = thread.seed.get("nodeId").and_then(Value::as_str);
+    let seed_anchor = thread
         .seed
         .get("anchor")
         .and_then(|anchor| anchor.get("anchorId"))
@@ -887,79 +924,130 @@ fn revalidate_semantic_read_set(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .into(),
-        compiler_version: transaction.thread.snapshot.compiler_version.clone(),
-        build_system: transaction.thread.snapshot.build_system,
-        build_launcher: transaction.thread.snapshot.build_launcher.clone(),
-        index_snapshot: transaction.thread.snapshot.index_snapshot.clone(),
-        compilation: transaction.thread.snapshot.compilation.clone(),
-        compile_task: transaction.thread.snapshot.compile_task.clone(),
-        test_tasks: transaction.thread.snapshot.test_tasks.clone(),
+        compiler_version: thread.snapshot.compiler_version.clone(),
+        build_system: thread.snapshot.build_system,
+        build_launcher: thread.snapshot.build_launcher.clone(),
+        index_snapshot: thread.snapshot.index_snapshot.clone(),
+        compilation: thread.snapshot.compilation.clone(),
+        compile_task: thread.snapshot.compile_task.clone(),
+        test_tasks: thread.snapshot.test_tasks.clone(),
     };
-    let rebuilt = graph::slice(
+    graph::slice(
         &graph,
         &seed_id,
-        transaction.thread.policy.clone(),
+        thread.policy.clone(),
         snapshot,
-        transaction.thread.seed.clone(),
+        thread.seed.clone(),
     )
-    .map_err(internal)?;
-    let old: std::collections::BTreeSet<_> = transaction
-        .thread
+    .map_err(internal)
+}
+
+fn semantic_read_set(thread: &ThreadIr) -> BTreeSet<ReadFact> {
+    thread
         .read_set
         .iter()
         .filter(|fact| fact.kind != "PROJECT_MODEL")
         .cloned()
+        .collect()
+}
+
+fn read_set_change_error(
+    repo: &Path,
+    transaction: &Transaction,
+    old: &BTreeSet<ReadFact>,
+    new: &BTreeSet<ReadFact>,
+    thread_id: Option<&str>,
+) -> SthreadError {
+    let removed: Vec<_> = old
+        .difference(new)
+        .take(8)
+        .map(|fact| format!("- {} {} {}", fact.kind, fact.key, fact.hash))
         .collect();
-    let new: std::collections::BTreeSet<_> = rebuilt
-        .read_set
+    let added: Vec<_> = new
+        .difference(old)
+        .take(8)
+        .map(|fact| format!("+ {} {} {}", fact.kind, fact.key, fact.hash))
+        .collect();
+    let target_anchors: BTreeSet<_> = transaction
+        .edit
+        .operations
         .iter()
-        .filter(|fact| fact.kind != "PROJECT_MODEL")
-        .cloned()
+        .filter_map(|operation| operation.target.get("anchorId").and_then(Value::as_str))
         .collect();
-    if old != new {
-        let removed: Vec<_> = old
-            .difference(&new)
-            .take(8)
-            .map(|fact| format!("- {} {} {}", fact.kind, fact.key, fact.hash))
-            .collect();
-        let added: Vec<_> = new
-            .difference(&old)
-            .take(8)
-            .map(|fact| format!("+ {} {} {}", fact.kind, fact.key, fact.hash))
-            .collect();
-        let target_anchors: std::collections::BTreeSet<_> = transaction
-            .edit
-            .operations
-            .iter()
-            .filter_map(|operation| operation.target.get("anchorId").and_then(Value::as_str))
-            .collect();
-        let target_text_changed = transaction.edit.operations.iter().any(|operation| {
-            let Some(file) = operation.target.get("fileId").and_then(Value::as_str) else {
-                return true;
-            };
-            let Some(text) = operation.target.get("sourceText").and_then(Value::as_str) else {
-                return true;
-            };
-            std::fs::read_to_string(repo.join(file)).map_or(true, |source| !source.contains(text))
-        });
-        let write_conflict = target_text_changed
-            || old.difference(&new).any(|fact| {
-                fact.kind == "SOURCE_NODE" && target_anchors.contains(fact.key.as_str())
-            });
-        let mut error = SthreadError::new(
-            if write_conflict {
-                ErrorCode::WwConflict
-            } else {
-                ErrorCode::StaleRequiresReslice
-            },
-            if write_conflict {
-                "concurrent write changed the target anchor"
-            } else {
-                "semantic ReadSet changed since slice"
-            },
-        );
-        error.evidence = removed.into_iter().chain(added).collect();
-        return Err(error);
+    let target_text_changed = transaction.edit.operations.iter().any(|operation| {
+        let Some(file) = operation.target.get("fileId").and_then(Value::as_str) else {
+            return true;
+        };
+        let Some(text) = operation.target.get("sourceText").and_then(Value::as_str) else {
+            return true;
+        };
+        std::fs::read_to_string(repo.join(file)).map_or(true, |source| !source.contains(text))
+    });
+    let write_conflict = target_text_changed
+        || old
+            .difference(new)
+            .any(|fact| fact.kind == "SOURCE_NODE" && target_anchors.contains(fact.key.as_str()));
+    let mut error = SthreadError::new(
+        if write_conflict {
+            ErrorCode::WwConflict
+        } else {
+            ErrorCode::StaleRequiresReslice
+        },
+        if write_conflict {
+            "concurrent write changed the target anchor"
+        } else {
+            "semantic ReadSet changed since slice"
+        },
+    );
+    if let Some(thread_id) = thread_id {
+        error.evidence.push(format!("requiredThreadId={thread_id}"));
+    } else {
+        error
+            .evidence
+            .push("requiredThreadUnionChanged=true".into());
+    }
+    error.evidence.extend(removed.into_iter().chain(added));
+    error
+}
+
+fn transaction_threads(transaction: &Transaction) -> Vec<&ThreadIr> {
+    if transaction.required_threads.is_empty() {
+        vec![&transaction.thread]
+    } else {
+        transaction.required_threads.iter().collect()
+    }
+}
+
+pub fn validate_required_threads(transaction: &Transaction) -> Result<(), SthreadError> {
+    let threads = transaction_threads(transaction);
+    if !transaction.required_threads.is_empty() {
+        let primary_hash = canonical::hash(&transaction.thread).map_err(internal)?;
+        let required_primary_hash = canonical::hash(threads[0]).map_err(internal)?;
+        if primary_hash != required_primary_hash {
+            return Err(SthreadError::new(
+                ErrorCode::InvalidInput,
+                "requiredThreads must begin with the exact primary thread",
+            ));
+        }
+    }
+    let mut ids = BTreeSet::new();
+    for thread in threads {
+        if thread.snapshot.base_revision != transaction.base_revision
+            || thread.snapshot.project_model_hash != transaction.project_model_hash
+            || thread.snapshot.compilation != transaction.thread.snapshot.compilation
+            || thread.seed.get("symbol").and_then(Value::as_str).is_none()
+        {
+            return Err(SthreadError::new(
+                ErrorCode::InvalidInput,
+                "required transaction threads must share revision, project model, and compilation and have a symbol seed",
+            ));
+        }
+        if !ids.insert(&thread.thread_id) {
+            return Err(SthreadError::new(
+                ErrorCode::InvalidInput,
+                "required transaction thread IDs must be unique",
+            ));
+        }
     }
     Ok(())
 }

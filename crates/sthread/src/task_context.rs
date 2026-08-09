@@ -921,7 +921,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), SthreadError
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{
-            "status":if boundaries.is_empty(){"COMPLETE_TASK"}else{"PARTIAL_TASK"},
+            "status":if boundaries.is_empty(){"LEGACY_HEURISTIC_READY"}else{"LEGACY_HEURISTIC_PARTIAL"},
             "boundaries":boundaries,
             "coverage":{"roots":root_candidates.len(),"resolvedCalls":execution_path.len(),"internalCalls":internal_calls,"contracts":contracts.len(),"tests":tests.len()},
             "stdoutLimitBytes":max_bytes,
@@ -1928,7 +1928,7 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, SthreadErr
             .iter()
             .any(|(key, count)| key != "editSurfaces" && *count > 0);
     if partial {
-        pack["completeness"]["status"] = json!("PARTIAL_BUDGET");
+        pack["completeness"]["status"] = json!("LEGACY_HEURISTIC_PARTIAL_BUDGET");
         pack["completeness"]["boundaries"]
             .as_array_mut()
             .expect("boundaries array")
@@ -2223,7 +2223,7 @@ mod tests {
             "contracts":[],
             "tests":[],
             "completeness":{
-                "status":"COMPLETE_TASK",
+                "status":"LEGACY_HEURISTIC_READY",
                 "boundaries":[],
                 "omitted":{}
             }
@@ -2231,7 +2231,7 @@ mod tests {
 
         let bounded = enforce_budget(pack, 4_096).unwrap();
 
-        assert_eq!(bounded["completeness"]["status"], "COMPLETE_TASK");
+        assert_eq!(bounded["completeness"]["status"], "LEGACY_HEURISTIC_READY");
         assert_eq!(bounded["editSurfaces"].as_array().unwrap().len(), 2);
         assert_eq!(bounded["editSurfaces"][0]["name"], "main");
         assert_eq!(
@@ -2255,12 +2255,15 @@ mod tests {
             "executionPath":[],
             "contracts":[],
             "tests":[],
-            "completeness":{"status":"COMPLETE_TASK","boundaries":[],"omitted":{}}
+            "completeness":{"status":"LEGACY_HEURISTIC_READY","boundaries":[],"omitted":{}}
         });
 
         let bounded = enforce_budget(pack, 4_096).unwrap();
 
-        assert_eq!(bounded["completeness"]["status"], "PARTIAL_BUDGET");
+        assert_eq!(
+            bounded["completeness"]["status"],
+            "LEGACY_HEURISTIC_PARTIAL_BUDGET"
+        );
         assert!(
             bounded["completeness"]["omitted"]["sourceBytes"]
                 .as_u64()

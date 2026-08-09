@@ -464,6 +464,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
         base_index_snapshot: Some(index_snapshot),
         status: "CREATED".into(),
         thread,
+        required_threads: vec![],
         edit,
         preview: None,
         expected_write_set_hash: None,

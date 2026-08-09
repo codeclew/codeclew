@@ -211,6 +211,10 @@ struct TaskApplyArgs {
     actor: String,
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Temporarily opt in to the pre-proof heuristic task surface. This path
+    /// remains available for compatibility, but is never enabled implicitly.
+    #[arg(long, default_value_t = false)]
+    allow_legacy_heuristic: bool,
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum DirectionArg {
@@ -484,31 +488,43 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                     "task-apply needs semantic-task-context-evidence/0.2",
                 ));
             }
+            if !args.allow_legacy_heuristic {
+                return Err(SthreadError::new(
+                    ErrorCode::IncompleteSemanticAnalysis,
+                    "task-apply received legacy heuristic context; pass --allow-legacy-heuristic explicitly or use proof-backed apply when available",
+                ));
+            }
             let context = &evidence["context"];
             if context
                 .pointer("/completeness/status")
                 .and_then(Value::as_str)
-                != Some("COMPLETE_TASK")
+                != Some("LEGACY_HEURISTIC_READY")
                 || evidence
                     .pointer("/stdoutCompleteness/status")
                     .and_then(Value::as_str)
-                    != Some("COMPLETE_TASK")
+                    != Some("LEGACY_HEURISTIC_READY")
             {
                 return Err(SthreadError::new(
                     ErrorCode::IncompleteSemanticAnalysis,
-                    "task context or its bounded stdout projection is not COMPLETE_TASK; rebuild or inspect its boundaries",
+                    "legacy task context or its bounded stdout projection is not LEGACY_HEURISTIC_READY; rebuild or inspect its boundaries",
                 ));
             }
-            let thread: ThreadIr = serde_json::from_value(
+            let required_threads: Vec<ThreadIr> = serde_json::from_value(
                 evidence["threads"]
                     .as_array()
-                    .and_then(|threads| threads.first())
                     .cloned()
+                    .map(Value::Array)
                     .ok_or_else(|| {
-                        SthreadError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
+                        SthreadError::new(
+                            ErrorCode::InvalidInput,
+                            "task context has no threads array",
+                        )
                     })?,
             )
             .map_err(parse_error)?;
+            let thread = required_threads.first().cloned().ok_or_else(|| {
+                SthreadError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
+            })?;
             let mut plan: Value = read_json(&args.edit_plan)?;
             sthread::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
             normalize_task_plan(&mut plan)?;
@@ -545,6 +561,16 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 return Err(SthreadError::new(
                     ErrorCode::PreconditionFailed,
                     "task context snapshot does not match its Thread IR",
+                ));
+            }
+            if required_threads.iter().any(|required| {
+                required.snapshot.base_revision != base_revision
+                    || required.snapshot.project_model_hash != thread.snapshot.project_model_hash
+                    || required.snapshot.compilation != thread.snapshot.compilation
+            }) {
+                return Err(SthreadError::new(
+                    ErrorCode::PreconditionFailed,
+                    "task context threads do not share one revision, project model, and compilation",
                 ));
             }
             let edit = EditIr {
@@ -584,6 +610,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
                 base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
                 status: "CREATED".into(),
                 thread,
+                required_threads,
                 edit,
                 preview: None,
                 expected_write_set_hash: None,
@@ -635,6 +662,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         } => with_worker(&workspace, |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
+            transaction::validate_required_threads(&tx)?;
             let transaction_id = tx.tx_id.clone();
             let snapshot_id = tx.thread.snapshot.index_snapshot.clone();
             let relevant = tx

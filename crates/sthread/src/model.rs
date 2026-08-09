@@ -274,7 +274,14 @@ pub struct Transaction {
     #[serde(default)]
     pub base_index_snapshot: Option<String>,
     pub status: String,
+    /// The primary edit thread retained for semantic-transaction/0.1 wire
+    /// compatibility and explicit low-level transactions.
     pub thread: ThreadIr,
+    /// Every semantic root required by a goal-bound transaction. Empty means
+    /// that this is a legacy explicit single-thread transaction and `thread`
+    /// is its complete read surface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_threads: Vec<ThreadIr>,
     pub edit: EditIr,
     #[serde(default)]
     pub preview: Option<PreviewReport>,
