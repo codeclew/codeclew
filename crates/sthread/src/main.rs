@@ -8,8 +8,12 @@ use sthread::error::{ErrorCode, SthreadError};
 use sthread::graph;
 use sthread::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
 use sthread::model::*;
+use sthread::projection::{
+    self, BoundaryPolicy, ProjectionBudget, ProjectionLevel, ProjectionQuery, ThreadKind, Traversal,
+};
 use sthread::proto::RequestKind;
 use sthread::task_context;
+use sthread::thread_projection;
 use sthread::transaction;
 use sthread::worker::{WorkerClient, workspace_root};
 
@@ -44,6 +48,8 @@ enum Command {
     },
     Cfg(SymbolArgs),
     Slice(SliceArgs),
+    #[command(about = "Query a bounded, evidence-backed semantic view without filesystem search")]
+    Projection(ProjectionArgs),
     #[command(
         name = "agent-context",
         visible_alias = "context",
@@ -142,6 +148,35 @@ struct SliceArgs {
     output: Option<PathBuf>,
 }
 #[derive(Args)]
+struct ProjectionArgs {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long, default_value = ":/main")]
+    compilation: String,
+    #[arg(long, required_unless_present = "file", conflicts_with = "file")]
+    symbol: Option<String>,
+    #[arg(long, requires = "offset", conflicts_with = "symbol")]
+    file: Option<String>,
+    #[arg(long, requires = "file")]
+    offset: Option<usize>,
+    #[arg(long, value_enum, default_value = "both")]
+    direction: DirectionArg,
+    #[arg(long, value_enum, default_value = "l4")]
+    level: ProjectionLevelArg,
+    #[arg(long = "thread", value_enum, default_value = "data")]
+    thread_kind: ProjectionThreadKindArg,
+    #[arg(long, default_value_t = 200)]
+    max_nodes: usize,
+    #[arg(long, default_value_t = 32 * 1024)]
+    max_bytes: usize,
+    #[arg(long)]
+    claim: Option<String>,
+    #[arg(long)]
+    refuse_on_boundary: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+#[derive(Args)]
 struct AgentContextArgs {
     #[arg(long)]
     repo: PathBuf,
@@ -177,11 +212,32 @@ struct TaskApplyArgs {
     #[arg(long)]
     output: Option<PathBuf>,
 }
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Copy, ValueEnum)]
 enum DirectionArg {
     Forward,
     Backward,
     Both,
+}
+#[derive(Clone, Copy, ValueEnum)]
+enum ProjectionLevelArg {
+    L0,
+    L1,
+    L2,
+    L3,
+    L4,
+    L5,
+}
+#[derive(Clone, Copy, ValueEnum)]
+enum ProjectionThreadKindArg {
+    Control,
+    Data,
+    Journey,
+    State,
+    Effect,
+    Failure,
+    Config,
+    TestEvidence,
+    Change,
 }
 #[derive(Args)]
 struct PreviewArgs {
@@ -220,27 +276,43 @@ struct InspectTxArgs {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let stdout_budget = match &cli.command {
+        Command::Projection(args) => Some(args.max_bytes),
+        _ => None,
+    };
     let started = std::time::Instant::now();
     let result = run(cli);
+    let rendered_fits = |rendered: &str| {
+        stdout_budget.is_none_or(|budget| rendered.len().saturating_add(1) <= budget)
+    };
+    let success = result
+        .as_ref()
+        .is_ok_and(|value| canonical::pretty(value).is_ok_and(|rendered| rendered_fits(&rendered)));
     eprintln!(
         "{}",
         serde_json::to_string(&json!({
             "event":"request_completed",
             "durationMs":started.elapsed().as_millis(),
-            "success":result.is_ok()
+            "success":success
         }))
         .unwrap_or_default()
     );
     match result {
         Ok(value) => {
-            println!("{}", canonical::pretty(&value).unwrap());
-            ExitCode::SUCCESS
+            let rendered = canonical::pretty(&value).unwrap();
+            if rendered_fits(&rendered) {
+                println!("{rendered}");
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(exit_code(&ErrorCode::SliceBudgetExceeded))
+            }
         }
         Err(error) => {
-            println!(
-                "{}",
-                canonical::pretty(&json!({"schema":"semantic-error/0.1","error":error})).unwrap()
-            );
+            let rendered =
+                canonical::pretty(&json!({"schema":"semantic-error/0.1","error":error})).unwrap();
+            if rendered_fits(&rendered) {
+                println!("{rendered}");
+            }
             ExitCode::from(exit_code(&error.code))
         }
     }
@@ -312,6 +384,9 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
             serde_json::to_value(graph::enrich(graph)).map_err(parse_error)
         }),
         Command::Slice(args) => with_worker(&workspace, |w| slice_command(w, args)),
+        Command::Projection(args) => {
+            with_worker(&workspace, |worker| projection_command(worker, args))
+        }
         Command::AgentContext(args) => with_worker(&workspace, |worker| {
             let repo = absolute(&args.repo)?;
             let project = worker.request(
@@ -632,6 +707,86 @@ fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, St
     let thread = build_thread(worker, args)?;
     write_optional(output.as_deref(), &thread)?;
     serde_json::to_value(thread).map_err(parse_error)
+}
+
+fn projection_command(
+    worker: &mut WorkerClient,
+    args: ProjectionArgs,
+) -> Result<Value, SthreadError> {
+    let output = args.output.clone();
+    let level = projection_level(args.level);
+    let thread_kind = projection_thread_kind(args.thread_kind);
+    let thread = build_thread(
+        worker,
+        SliceArgs {
+            repo: args.repo,
+            compilation: args.compilation,
+            symbol: args.symbol,
+            file: args.file,
+            offset: args.offset,
+            direction: args.direction,
+            max_nodes: args.max_nodes,
+            output: None,
+        },
+    )?;
+    let adapted = thread_projection::from_thread(&thread, thread_kind, args.claim.as_deref())
+        .map_err(|error| {
+            SthreadError::new(ErrorCode::IncompleteSemanticAnalysis, error.to_string())
+        })?;
+    let query = ProjectionQuery {
+        schema: projection::PROJECTION_SCHEMA.into(),
+        level,
+        roots: vec![adapted.root_fact_id],
+        thread_kinds: vec![thread_kind],
+        traversal: Traversal::Both,
+        budget: ProjectionBudget {
+            max_nodes: args.max_nodes,
+            max_bytes: args.max_bytes,
+        },
+        boundary_policy: if args.refuse_on_boundary {
+            BoundaryPolicy::Refuse
+        } else {
+            BoundaryPolicy::ReturnPartial
+        },
+    };
+    let result = projection::project(&adapted.input, &query).map_err(|error| {
+        let code = if error == projection::ProjectionError::BudgetTooSmall {
+            ErrorCode::SliceBudgetExceeded
+        } else {
+            ErrorCode::IncompleteSemanticAnalysis
+        };
+        SthreadError::new(code, error.to_string())
+    })?;
+    projection::validate_projection(&adapted.input, &query, &result).map_err(|error| {
+        SthreadError::new(ErrorCode::IncompleteSemanticAnalysis, error.to_string())
+    })?;
+    write_optional(output.as_deref(), &result)?;
+    serde_json::to_value(result).map_err(parse_error)
+}
+
+fn projection_level(level: ProjectionLevelArg) -> ProjectionLevel {
+    match level {
+        ProjectionLevelArg::L0 => ProjectionLevel::L0,
+        ProjectionLevelArg::L1 => ProjectionLevel::L1,
+        ProjectionLevelArg::L2 => ProjectionLevel::L2,
+        ProjectionLevelArg::L3 => ProjectionLevel::L3,
+        ProjectionLevelArg::L4 => ProjectionLevel::L4,
+        ProjectionLevelArg::L5 => ProjectionLevel::L5,
+    }
+}
+
+fn projection_thread_kind(kind: ProjectionThreadKindArg) -> ThreadKind {
+    match kind {
+        ProjectionThreadKindArg::Control => ThreadKind::Control,
+        ProjectionThreadKindArg::Data => ThreadKind::Data,
+        ProjectionThreadKindArg::Journey => ThreadKind::Journey,
+        ProjectionThreadKindArg::State => ThreadKind::State,
+        ProjectionThreadKindArg::Effect => ThreadKind::Effect,
+        ProjectionThreadKindArg::Failure => ThreadKind::Failure,
+        ProjectionThreadKindArg::Config => ThreadKind::Config,
+        ProjectionThreadKindArg::TestEvidence => ThreadKind::TestEvidence,
+        ProjectionThreadKindArg::Change => ThreadKind::Change,
+    }
 }
 
 fn build_task_thread(

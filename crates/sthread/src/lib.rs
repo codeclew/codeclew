@@ -6,10 +6,12 @@ pub mod graph;
 pub mod identity;
 pub mod index;
 pub mod model;
+pub mod projection;
 pub mod semantic_goal;
 pub mod semantic_kernel;
 pub mod task_context;
 pub mod task_plan;
+pub mod thread_projection;
 pub mod transaction;
 pub mod worker;
 
