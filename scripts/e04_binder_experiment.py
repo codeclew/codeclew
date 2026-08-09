@@ -342,7 +342,11 @@ def plan_packets(output: Path, experiment: Path | None, check_tools: bool) -> di
 
 def source_digest(root: Path) -> str:
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
+    entries = sorted(
+        ((path.relative_to(root).as_posix(), path) for path in root.rglob("*")),
+        key=lambda entry: entry[0],
+    )
+    for relative_text, path in entries:
         relative_path = path.relative_to(root)
         if any(part in STATE_DIRECTORIES for part in relative_path.parts):
             continue
@@ -350,7 +354,7 @@ def source_digest(root: Path) -> str:
             raise RuntimeError(f"source snapshot contains a symlink: {relative_path}")
         if not path.is_file():
             continue
-        relative = relative_path.as_posix().encode()
+        relative = relative_text.encode()
         digest.update(relative); digest.update(b"\0")
         digest.update(path.read_bytes()); digest.update(b"\0")
     return digest.hexdigest()
