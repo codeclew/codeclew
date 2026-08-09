@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "codeclew-bibliography-lock/1",
+  "retrievedAt": "2026-08-09",
+  "policy": {
+    "resolved": "A RESOLVED_PRIMARY entry has a primary URL or DOI and, when HTTP content was available, a SHA-256 digest of the retrieved bytes.",
+    "unverified": "An UNVERIFIED entry is retained for provenance but is ineligible for any gate, threshold, measured fact, or product claim.",
+    "gateRule": "Every bibliography entry is background evidence only. Gate decisions require later measured packets and verified receipts even when the entry is RESOLVED_PRIMARY."
+  },
+  "entries": [
+    {"id":"B01","title":"SWE-bench: Can Language Models Resolve Real-World GitHub Issues?","locator":"https://arxiv.org/abs/2310.06770","doi":null,"publicationDate":"2023-10-10","status":"RESOLVED_PRIMARY","retrievedContentSha256":"7921e38f14f841714f30a3d07851faded5f5ad717f473848907575dfe0af7776","sourceRoles":["S1","S5"],"gateEligible":false},
+    {"id":"B02","title":"Agentless: Demystifying LLM-based Software Engineering Agents","locator":"https://arxiv.org/abs/2407.01489","doi":null,"publicationDate":"2024-07-01","status":"RESOLVED_PRIMARY","retrievedContentSha256":"03735617c30ca97d95fcae08a42772bab78778ced0608b5da0f1d068d571c1b1","sourceRoles":["S1"],"gateEligible":false},
+    {"id":"B03","title":"Interprocedural Slicing Using Dependence Graphs","locator":"https://doi.org/10.1145/77606.77608","doi":"10.1145/77606.77608","publicationDate":"1990","status":"UNVERIFIED","retrievedContentSha256":null,"unverifiedReason":"DOI resolved to an access-denied response; article bytes were not retrieved.","sourceRoles":["S1","S5"],"gateEligible":false},
+    {"id":"B04","title":"The Oracle Problem in Software Testing: A Survey","locator":"https://doi.org/10.1109/TSE.2014.2372785","doi":"10.1109/TSE.2014.2372785","publicationDate":"2015","status":"UNVERIFIED","retrievedContentSha256":null,"unverifiedReason":"DOI locator identified, but no response body was retrieved.","sourceRoles":["S1"],"gateEligible":false},
+    {"id":"B05","title":"Metamorphic Testing for Cybersecurity","locator":"https://doi.org/10.1109/MC.2016.176","doi":"10.1109/MC.2016.176","publicationDate":"2016","status":"UNVERIFIED","retrievedContentSha256":null,"unverifiedReason":"DOI locator identified, but no response body was retrieved.","sourceRoles":["S1"],"gateEligible":false},
+    {"id":"B06","title":"Kotlin Analysis API documentation","locator":"https://kotlin.github.io/analysis-api/","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"45ee1c82b371ff0739388bfdc4e0903231a3153a3be97f2ceb6ab98d0152fbc3","sourceRoles":["S1"],"gateEligible":false},
+    {"id":"B07","title":"Git Internals — Git Objects","locator":"https://git-scm.com/book/en/v2/Git-Internals-Git-Objects","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"7750c55986821064198924c2d819fb69b39879ab305bc3e6af45080b6e893d8e","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B08","title":"Joern Code Property Graph documentation","locator":"https://docs.joern.io/code-property-graph/","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"b7444ca74c15c429dce03a9e0ae89ba49c3fb2becebc513a0bf1f606717a900c","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B09","title":"About CodeQL","locator":"https://codeql.github.com/docs/codeql-overview/about-codeql/","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"c3f7032fe1692bb4c095bacba5782c7325f434e4cf6e335471f8347963dde5cd","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B10","title":"Bazel Skyframe","locator":"https://bazel.build/reference/skyframe","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"fa21aec9193a54b2e7e52ad2d7f9f6edded854961270eda45e998ab6b8e7ed45","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B11","title":"PROV-O: The PROV Ontology","locator":"https://www.w3.org/TR/prov-o/","doi":null,"publicationDate":"2013-04-30","status":"RESOLVED_PRIMARY","retrievedContentSha256":"6b96671ab84faf12ce3f041aca12c3f93a6df2ed242348810743179a68e69555","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B12","title":"OpenTelemetry Specification","locator":"https://opentelemetry.io/docs/specs/otel/","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"07ba5d7d12984b6aec572eefeeb3c9c81f553c8004d1fb784ce2cf2fed80025f","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B13","title":"Agent2Agent Protocol specification","locator":"https://a2a-protocol.org/latest/","doi":null,"publicationDate":null,"status":"RESOLVED_PRIMARY","retrievedContentSha256":"6fa9ce146dccb9c55c06cc6986ccad5e2f074686a6cd48c4f824fac30f971b3a","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B14","title":"Lost in the Middle: How Language Models Use Long Contexts","locator":"https://arxiv.org/abs/2307.03172","doi":null,"publicationDate":"2023-07-06","status":"RESOLVED_PRIMARY","retrievedContentSha256":"17c0e4eb2ef37828cd18b2c313ccc0ab82c3c17875bc61a9b395881fe2ce6e4d","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B15","title":"Long Code Arena: a Set of Benchmarks for Long-Context Code Models","locator":"https://arxiv.org/abs/2406.11612","doi":null,"publicationDate":"2024-06-17","status":"RESOLVED_PRIMARY","retrievedContentSha256":"9eaadcb5bddd382b76d29f8144c5ec4b19811462f25821588af1f911dd4f7b16","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B16","title":"SWE-bench Verified","locator":null,"doi":null,"publicationDate":null,"status":"UNVERIFIED","retrievedContentSha256":null,"unverifiedReason":"S5 names the benchmark but its opaque citation cannot be mapped to a primary locator without inference.","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B17","title":"OWL 2 Web Ontology Language Document Overview","locator":"https://www.w3.org/TR/owl2-overview/","doi":null,"publicationDate":"2012-12-11","status":"RESOLVED_PRIMARY","retrievedContentSha256":"d5d22b811eb348c845c5aa5aaa5c05448e61b63e3a8ee24b129075916d6115a5","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B18","title":"Differential Dataflow","locator":"https://www.cidrdb.org/cidr2013/Papers/CIDR13_Paper111.pdf","doi":null,"publicationDate":"2013","status":"RESOLVED_PRIMARY","retrievedContentSha256":"611ac8e9cf0eb8a1c83a28e7e9c0d4b26de2a50f10446da205cb8b49ada92055","sourceRoles":["S5"],"gateEligible":false},
+    {"id":"B19","title":"Introducing the Kotlin Benchmark for AI Coding Agents","locator":null,"doi":null,"publicationDate":"2026","status":"UNVERIFIED","retrievedContentSha256":null,"unverifiedReason":"S1 names the item but contains no stable URL or DOI.","sourceRoles":["S1"],"gateEligible":false},
+    {"id":"B20","title":"Kotlin Benchmark: Methodology and Outlook","locator":null,"doi":null,"publicationDate":"2026","status":"UNVERIFIED","retrievedContentSha256":null,"unverifiedReason":"S1 names the item but contains no stable URL or DOI.","sourceRoles":["S1"],"gateEligible":false}
+  ],
+  "opaqueCitations": [
+    "turn0file0","turn0search0","turn0search1","turn0search2","turn0search3","turn0search11",
+    "turn1academia49","turn1search0","turn1search2","turn1search4","turn1search6","turn1search11","turn1search12",
+    "turn2search0","turn2search3","turn2search6","turn2search14","turn3academia48","turn3search0",
+    "turn4academia48","turn4academia49","turn4search2","turn5search0","turn5search6","turn5search7","turn5search12","turn5search13",
+    "turn6search0","turn6search2","turn6search3","turn6search6","turn6search12","turn6search16","turn6search17",
+    "turn7view0","turn9search0","turn10academia50","turn10search2","turn10search5","turn10search8","turn10search10",
+    "turn11search0","turn11search5","turn12search0","turn12search2","turn12search12"
+  ],
+  "opaqueCitationStatus": "UNVERIFIED",
+  "opaqueCitationReason": "S5 preserves provider-internal turn identifiers without title-to-identifier resolution, primary URL/DOI, publication date, or retrievable content. No inferred mapping is accepted.",
+  "opaqueCitationGateEligible": false
+}

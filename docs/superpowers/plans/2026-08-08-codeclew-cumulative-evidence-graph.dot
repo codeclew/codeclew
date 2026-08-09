@@ -1,0 +1,294 @@
+digraph CodeclewEvidencePlan {
+  graph [rankdir=TB, compound=true, newrank=true, splines=ortho,
+         label="Codeclew cumulative evidence graph — proposed, human approval required",
+         labelloc=t, fontsize=18,
+         eligibility="receipt.verdict=ACCEPT AND controller.verdict=CONTROL_ACCEPT AND controller.effectiveOutcome IN edge.acceptedOutcomes AND (controller.effectiveBranchCode IN edge.acceptedBranchCodes OR edge.branchMatch=ANY_SOURCE_REGISTERED_CODE) AND allDigestsCurrent=true",
+         effectiveProjectionSemantics="controller recomputes producer+verifier+prior-attempt team cost and authoritative effectiveEligibleNextEdges; within budget copies packet outcome/branch; exceeded cumulative budget projects exhausted NO_PROGRESS+BUDGET_EXCEEDED; token-unavailable forbids TOKEN-domain claims; producer proposedNextEdges never authorize; mismatch CONTROL_REJECT",
+         retrySemantics="positive remaining budget: SUCCESS plus registered retry code creates immutable RETRY_OF; cumulative budget exceeded or zero remaining budget forbids retry and follows exhausted synthesis; old attempt retained",
+         invalidationSemantics="changed ancestor digest marks descendants STALE and closes their outgoing edges",
+         terminalSemantics="controller.effectiveOutcome IN node.terminalOutcomes OR controller.effectiveBranchCode IN node.terminalBranchCodes emits terminal record and closes current graph branch",
+         branchCodeSemantics="branchCode MUST exist in versioned NodeSpec.branchCodes; default NONE; ANY_SOURCE_REGISTERED_CODE includes NONE only for generic outcomes",
+         genericBranchPolicyRef="2026-08-08-codeclew-terminal-synthesis-v0.json#genericBranchPolicy",
+         edgeRoleSemantics="CONTINUATION uses source continuation outcomes/codes; TERMINAL_SYNTHESIS uses SUCCESS plus terminal codes; BRANCH_SYNTHESIS uses SUCCESS plus either code set; OUTCOME_SYNTHESIS requires all generic terminal outcomes, ANY_SOURCE_REGISTERED_CODE and exhausted retry"];
+  node [shape=record, style="rounded,filled", fontname="Helvetica", fontsize=10,
+        fillcolor="#f7f7f7", label="\N | work | independent receipt",
+        continuationOutcomes="SUCCESS",
+        terminalOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR",
+        continuationBranchCodes="NONE",
+        terminalBranchCodes="",
+        retryBranchCodes=""];
+  edge [fontname="Helvetica", fontsize=8, color="#475569",
+        receiptVerdict="ACCEPT", controllerVerdict="CONTROL_ACCEPT", acceptedOutcomes="SUCCESS",
+        acceptedBranchCodes="NONE", allDigestsCurrent="true",
+        edgeRole="CONTINUATION", branchMatch="EXACT", retryState="NOT_APPLICABLE"];
+
+  A00 [shape=diamond, fillcolor="#fee2e2", label="A00\nHUMAN APPROVAL",
+       continuationBranchCodes="HUMAN_APPROVED",
+       terminalBranchCodes="HUMAN_REVISE,HUMAN_REJECTED"];
+
+  subgraph cluster_root {
+    label="Evidence governance and preregistration";
+    color="#94a3b8";
+    R01 [label="R01 | source, hypothesis, gap freeze | independent receipt"];
+    R02 [label="R02 | evidence, telemetry, budgets | independent receipt",
+         continuationBranchCodes="NONE,TOKEN_TELEMETRY_UNAVAILABLE"];
+    R03 [label="R03 | reuse/gap audit + storage ADR | independent receipt",
+         continuationBranchCodes="NONE,NARROW_BASELINE_CONTOUR"];
+  }
+
+  subgraph cluster_corpus {
+    label="Neutral corpora";
+    color="#94a3b8";
+    D01 [label="D01 | generator + hidden manifest | independent receipt"];
+    D02 [label="D02 | editing families + ecology | independent receipt",
+         continuationBranchCodes="NONE,NARROW_POPULATION"];
+    D03 [label="D03 | coordination pilot + event labels | independent receipt"];
+  }
+
+  subgraph cluster_kernel {
+    label="Shared semantic kernel";
+    color="#60a5fa";
+    K01 [label="K01 | executable semantic records + anti-dup | independent receipt",
+         continuationBranchCodes="NONE,NARROW_RECORD_TYPES",
+         terminalBranchCodes="STOP_SECOND_IMPLEMENTATION"];
+    K02 [label="K02 | stable identity + Kotlin deltas | independent receipt",
+         continuationBranchCodes="NONE,NARROW_IDENTITY_CONTOUR",
+         terminalBranchCodes="STOP_SILENT_IDENTITY_RETARGETING"];
+    K03 [label="K03 | invalidation + freshness | independent receipt",
+         continuationBranchCodes="NONE,NARROW_TO_REBUILD_MODE",
+         terminalBranchCodes="STOP_STALE_FACT_AS_FRESH"];
+    K04 [label="K04 | L0-L5 projections + threads | independent receipt",
+         continuationBranchCodes="NONE,NARROW_PROJECTIONS",
+         terminalBranchCodes="STOP_ABSTRACTION_CLAIM"];
+    GK [shape=diamond, fillcolor="#dbeafe", label="GK\nFOUNDATION GATE",
+        continuationBranchCodes="PASS,NARROW_SUPPORTED_CONTOUR",
+        terminalBranchCodes="GO_FORMALIZE_MODEL_FIRST,STOP_SECOND_IMPLEMENTATION,INCONCLUSIVE_FOUNDATION",
+        retryBranchCodes="REWORK_FOUNDATION",
+        joinSemantics="K04_SUCCESS_OR_WAVE_QUIESCENT_COMPLETE_SHARED_FOUNDATION_SYNTHESIS"];
+  }
+
+  subgraph cluster_edit {
+    label="Grep-free semantic editing branch";
+    color="#34d399";
+    E01 [label="E01 | Goal + ChangeGraph + Proof | independent receipt",
+         terminalBranchCodes="STOP_UNSAFE_GOAL_PROOF"];
+    E02 [label="E02 | COMPLETE_FOR + binders | independent receipt",
+         continuationBranchCodes="NONE,NARROW_BINDER_FAMILIES",
+         terminalBranchCodes="STOP_FALSE_COMPLETENESS"];
+    E03 [label="E03 | MAP_EDGE probe + legacy adapter | independent receipt",
+         terminalBranchCodes="STOP_MAP_EDGE_GENERALIZATION"];
+    E04 [label="E04 | blind binder-only benchmark | independent receipt"];
+    GE1 [shape=diamond, fillcolor="#d1fae5", label="GE1\nBINDER GATE",
+         continuationBranchCodes="PASS_TO_MATERIALIZATION,NARROW_FAMILY_SET",
+         terminalBranchCodes="GO_BUILD_CORPUS_FIRST,STOP_UNIVERSAL_EDITING",
+         retryBranchCodes="CONDITIONAL_BINDER_ITERATION_REQUIRED"];
+    E05 [label="E05 | PSI-native operations | independent receipt",
+         continuationBranchCodes="NONE,NARROW_PSI_OPERATIONS",
+         terminalBranchCodes="STOP_RECIPE_DEPENDENCY"];
+    E06 [label="E06 | oracle, mutation, goal-wide CAS | independent receipt",
+         continuationBranchCodes="NONE,NARROW_ORACLE_CLASS",
+         terminalBranchCodes="STOP_UNSAFE_COMMIT"];
+    GES [shape=diamond, fillcolor="#d1fae5", label="GES\nMATERIALIZATION SAFETY",
+         continuationBranchCodes="PASS_SAFE,NARROW_SAFE_FAMILY_ACCEPTED",
+         terminalBranchCodes="STOP_UNSAFE_COMMIT",
+         retryBranchCodes="REWORK_MATERIALIZATION"];
+    E07 [label="E07 | grep-free single-agent E2E | independent receipt"];
+    GE2 [shape=diamond, fillcolor="#d1fae5", label="GE2\nEDITING VERDICT",
+         joinSemantics="ANY_EXCLUSIVE_PATH:E07_SUCCESS|SUCCESSFUL_EDITING_FALSIFIER|GE1_EARLY_TERMINAL|GES_EARLY_TERMINAL|WAVE_QUIESCENT_EDITING_OUTCOME_SYNTHESIS",
+         continuationBranchCodes="GO_EDITING,NARROW_EDITING",
+         terminalBranchCodes="GO_BUILD_CORPUS_FIRST,STOP_UNIVERSAL_EDITING,INCONCLUSIVE_TOKEN_TELEMETRY,INCONCLUSIVE_ORACLE,INCONCLUSIVE_EDITING"];
+  }
+
+  subgraph cluster_coord {
+    label="Continuous multi-agent coordination branch";
+    color="#f59e0b";
+    M01 [label="M01 | sessions + semantic transactions | independent receipt",
+         continuationBranchCodes="NONE,NARROW_SESSION_SCOPE",
+         terminalBranchCodes="STOP_UNSAFE_SEMANTIC_TRANSACTION"];
+    M02 [label="M02 | claims + structured protocol | independent receipt",
+         continuationBranchCodes="NONE,NARROW_PROTOCOL_RECORDS",
+         terminalBranchCodes="STOP_LOCK_EMULATION"];
+    M03 [label="M03 | provenance + replay/recovery | independent receipt",
+         terminalBranchCodes="STOP_STALE_COORDINATION_STATE"];
+    M04 [label="M04 | supported conflict detectors | independent receipt",
+         terminalBranchCodes="STOP_SUPPORTED_CONFLICT_FALSE_NEGATIVE"];
+    M05 [label="M05 | fair core-arm + ablation MA harness | independent receipt"];
+    M06 [label="M06 | preregistered 30-pair pilot | independent receipt"];
+    GM [shape=diamond, fillcolor="#fef3c7", label="GM\nCOORDINATION VERDICT",
+        continuationBranchCodes="GO_FULL_COORDINATION_CORPUS,NARROW_CONFLICT_CLASSES,NARROW_COORDINATION_ONLY",
+        terminalBranchCodes="STOP_COORDINATION_USE_GIT_AST,INCONCLUSIVE_COORDINATION",
+        retryBranchCodes="CONDITIONAL_ONE_ITERATION_REQUIRED",
+        joinSemantics="M06_SUCCESS_OR_SUCCESSFUL_COORDINATION_FALSIFIER_OR_WAVE_QUIESCENT_COORDINATION_OUTCOME_SYNTHESIS"];
+  }
+
+  subgraph cluster_research {
+    label="Cross-cutting evidence";
+    color="#a78bfa";
+    Q01 [label="Q01 | test evidence + criticality | independent receipt",
+         continuationBranchCodes="NONE,NARROW_TO_EVIDENCE_LINKS"];
+    Q02 [label="Q02 | long refactor saga | independent receipt",
+         continuationBranchCodes="NONE,NARROW_TO_SHORT_SESSIONS",
+         retryBranchCodes="REWORK_CHECKPOINTS"];
+    Q03 [label="Q03 | human views, security, governance | independent receipt",
+         continuationBranchCodes="NONE,NARROW_EXPOSURE",
+         terminalBranchCodes="BLOCK_SECURITY,REQUIRE_HUMAN_GOVERNANCE_DECISION"];
+  }
+
+  subgraph cluster_full {
+    label="Full paired proof";
+    color="#ef4444";
+    X00 [label="X00 | full-corpus protocol + entropy commitment | independent receipt",
+         continuationBranchCodes="NONE,NARROW_FINAL_POPULATION_SPEC"];
+    X01 [label="X01 | final lock + post-freeze materialization | independent receipt",
+         terminalBranchCodes="INVALID_CORPUS_LEAKAGE",
+         continuationBranchCodes="NONE,NARROW_FINAL_POPULATION"];
+    X02 [label="X02 | randomized MA crossover | independent receipt"];
+    X03 [label="X03 | statistics, cost, scaling | independent receipt",
+         continuationBranchCodes="NONE,INCONCLUSIVE_STATISTICS,STOP_COST_ADVANTAGE"];
+    X04 [label="X04 | final independent audit | independent receipt",
+       terminalBranchCodes="INCONCLUSIVE_AUDIT,STOP_H12_TEST_ROUTING_SAFETY,STOP_H12_UNSAFE_ACCEPTED_COMMIT",
+         retryBranchCodes="REOPEN_EARLIEST_INVALID_NODE"];
+    GF0 [shape=diamond, fillcolor="#fee2e2", label="GF0\nEARLY TERMINAL SYNTHESIS",
+         joinSemantics="GK_TERMINAL OR (GE2_AND_GM_TOTAL_VERDICTS AND NOT_BOTH_FULL_ELIGIBLE)",
+         continuationBranchCodes="",
+         terminalBranchCodes="GO_FORMALIZE_MODEL_FIRST,GO_BUILD_CORPUS_FIRST,NARROW_EDITING_ONLY,NARROW_COORDINATION_NOT_GREP_FREE,STOP_USE_EXISTING_TOOLS,INCONCLUSIVE_FOUNDATION,INCONCLUSIVE_EDITING,INCONCLUSIVE_TOKEN_TELEMETRY,INCONCLUSIVE_EXTERNAL_ORACLE,INCONCLUSIVE_COORDINATION"];
+    GF [shape=diamond, fillcolor="#fee2e2", label="GF\nFINAL PRODUCT VERDICT",
+        joinSemantics="GF0_EARLY_DECISION_OR_X04_SUCCESS_OR_ANY_FULL_STAGE_OUTCOME_OR_TERMINAL_SYNTHESIS",
+        continuationBranchCodes="GO_MULTI_AGENT_CODECLEW",
+        terminalBranchCodes="NARROW_EDITING_ONLY,NARROW_COORDINATION_ONLY,NARROW_COORDINATION_NOT_GREP_FREE,NARROW_WITHOUT_AUTOMATED_TEST_ROUTING,GO_FORMALIZE_MODEL_FIRST,GO_BUILD_CORPUS_FIRST,STOP_USE_EXISTING_TOOLS,INCONCLUSIVE_FOUNDATION,INCONCLUSIVE_EDITING,INCONCLUSIVE_TOKEN_TELEMETRY,INCONCLUSIVE_EXTERNAL_ORACLE,INCONCLUSIVE_COORDINATION,INCONCLUSIVE_FULL_EVALUATION"];
+  }
+
+  A01 [shape=diamond, fillcolor="#fee2e2", label="A01\nPOST-GO HUMAN APPROVAL",
+       continuationBranchCodes="HUMAN_APPROVED",
+       terminalBranchCodes="HUMAN_DECLINED"];
+  Z01 [style="rounded,dashed,filled", fillcolor="#f3f4f6",
+       label="Z01 | post-GO cross-language scaffold validation | independent receipt",
+       continuationBranchCodes="",
+       terminalBranchCodes="BOUNDED_CROSS_LANGUAGE_EVIDENCE,INCONCLUSIVE_CROSS_LANGUAGE,STOP_CROSS_LANGUAGE_OVERCLAIM"];
+
+  A00 -> R01 [label="approve", acceptedBranchCodes="HUMAN_APPROVED"];
+  R01 -> R02;
+  R01 -> R03;
+  R02 -> K01 [acceptedBranchCodes="NONE,TOKEN_TELEMETRY_UNAVAILABLE"];
+  R03 -> K01 [acceptedBranchCodes="NONE,NARROW_BASELINE_CONTOUR"];
+  K01 -> D01 [acceptedBranchCodes="NONE,NARROW_RECORD_TYPES"];
+  K01 -> D03 [acceptedBranchCodes="NONE,NARROW_RECORD_TYPES"];
+  D01 -> D02;
+  K01 -> K02 [acceptedBranchCodes="NONE,NARROW_RECORD_TYPES"];
+  K02 -> K03 [acceptedBranchCodes="NONE,NARROW_IDENTITY_CONTOUR"];
+  K03 -> K04 [acceptedBranchCodes="NONE,NARROW_TO_REBUILD_MODE"];
+  K04 -> GK [acceptedBranchCodes="NONE,NARROW_PROJECTIONS"];
+
+  GK -> E01 [label="PASS/NARROW", acceptedBranchCodes="PASS,NARROW_SUPPORTED_CONTOUR"];
+  D02 -> E01 [acceptedBranchCodes="NONE,NARROW_POPULATION"];
+  E01 -> E02;
+  E02 -> E03 [acceptedBranchCodes="NONE,NARROW_BINDER_FAMILIES"];
+  E03 -> E04;
+  E04 -> GE1;
+  GE1 -> E05 [label="PASS/NARROW", acceptedBranchCodes="PASS_TO_MATERIALIZATION,NARROW_FAMILY_SET"];
+  GE1 -> GE2 [style=dashed, label="early terminal", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="GO_BUILD_CORPUS_FIRST,STOP_UNIVERSAL_EDITING"];
+  E05 -> E06 [acceptedBranchCodes="NONE,NARROW_PSI_OPERATIONS"];
+  E06 -> GES [acceptedBranchCodes="NONE,NARROW_ORACLE_CLASS"];
+  GES -> E07 [label="SAFE", acceptedBranchCodes="PASS_SAFE,NARROW_SAFE_FAMILY_ACCEPTED"];
+  GES -> GE2 [style=dashed, label="unsafe terminal", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_UNSAFE_COMMIT"];
+  E07 -> GE2;
+
+  GK -> M01 [label="PASS/NARROW", acceptedBranchCodes="PASS,NARROW_SUPPORTED_CONTOUR"];
+  D03 -> M01;
+  M01 -> M02 [acceptedBranchCodes="NONE,NARROW_SESSION_SCOPE"];
+  M02 -> M03 [acceptedBranchCodes="NONE,NARROW_PROTOCOL_RECORDS"];
+  M03 -> M04;
+  M04 -> M05;
+  M05 -> M06;
+  M06 -> GM;
+
+  K04 -> Q03 [acceptedBranchCodes="NONE,NARROW_PROJECTIONS"];
+  M03 -> Q03;
+  E06 -> Q01 [acceptedBranchCodes="NONE,NARROW_ORACLE_CLASS"];
+  K04 -> Q01 [acceptedBranchCodes="NONE,NARROW_PROJECTIONS"];
+  GM -> Q02 [acceptedBranchCodes="GO_FULL_COORDINATION_CORPUS,NARROW_CONFLICT_CLASSES,NARROW_COORDINATION_ONLY"];
+  E06 -> Q02 [acceptedBranchCodes="NONE,NARROW_ORACLE_CLASS"];
+  GE2 -> Q01 [acceptedBranchCodes="GO_EDITING,NARROW_EDITING"];
+  GM -> Q01 [acceptedBranchCodes="GO_FULL_COORDINATION_CORPUS,NARROW_CONFLICT_CLASSES,NARROW_COORDINATION_ONLY"];
+  GE2 -> Q02 [acceptedBranchCodes="GO_EDITING,NARROW_EDITING"];
+  GE2 -> Q03 [acceptedBranchCodes="GO_EDITING,NARROW_EDITING"];
+  GM -> Q03 [acceptedBranchCodes="GO_FULL_COORDINATION_CORPUS,NARROW_CONFLICT_CLASSES,NARROW_COORDINATION_ONLY"];
+
+  GE2 -> X00 [acceptedBranchCodes="GO_EDITING,NARROW_EDITING"];
+  GM -> X00 [acceptedBranchCodes="GO_FULL_COORDINATION_CORPUS,NARROW_CONFLICT_CLASSES,NARROW_COORDINATION_ONLY"];
+  GK -> GF0 [style=dashed, label="foundation terminal", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="GO_FORMALIZE_MODEL_FIRST,STOP_SECOND_IMPLEMENTATION,INCONCLUSIVE_FOUNDATION"];
+  GE2 -> GF0 [style=dashed, label="editing branch verdict", edgeRole="BRANCH_SYNTHESIS", acceptedBranchCodes="GO_EDITING,NARROW_EDITING,GO_BUILD_CORPUS_FIRST,STOP_UNIVERSAL_EDITING,INCONCLUSIVE_TOKEN_TELEMETRY,INCONCLUSIVE_ORACLE,INCONCLUSIVE_EDITING"];
+  GM -> GF0 [style=dashed, label="coordination branch verdict", edgeRole="BRANCH_SYNTHESIS", acceptedBranchCodes="GO_FULL_COORDINATION_CORPUS,NARROW_CONFLICT_CLASSES,NARROW_COORDINATION_ONLY,STOP_COORDINATION_USE_GIT_AST,INCONCLUSIVE_COORDINATION"];
+  D02 -> X00 [acceptedBranchCodes="NONE,NARROW_POPULATION"];
+  D03 -> X00;
+  X00 -> Q01 [acceptedBranchCodes="NONE,NARROW_FINAL_POPULATION_SPEC"];
+  X00 -> Q02 [acceptedBranchCodes="NONE,NARROW_FINAL_POPULATION_SPEC"];
+  X00 -> Q03 [acceptedBranchCodes="NONE,NARROW_FINAL_POPULATION_SPEC"];
+  Q01 -> X01 [acceptedBranchCodes="NONE,NARROW_TO_EVIDENCE_LINKS"];
+  Q02 -> X01 [acceptedBranchCodes="NONE,NARROW_TO_SHORT_SESSIONS"];
+  Q03 -> X01 [acceptedBranchCodes="NONE,NARROW_EXPOSURE"];
+  X00 -> X01 [acceptedBranchCodes="NONE,NARROW_FINAL_POPULATION_SPEC"];
+  X01 -> X02 [acceptedBranchCodes="NONE,NARROW_FINAL_POPULATION"];
+  X02 -> X03;
+  X03 -> X04 [acceptedBranchCodes="NONE,INCONCLUSIVE_STATISTICS,STOP_COST_ADVANTAGE"];
+  X04 -> GF;
+  X04 -> GF [style=dashed, label="audit terminal", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="INCONCLUSIVE_AUDIT,STOP_H12_TEST_ROUTING_SAFETY,STOP_H12_UNSAFE_ACCEPTED_COMMIT"];
+  Q03 -> GF [style=dashed, label="security/governance terminal", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="BLOCK_SECURITY,REQUIRE_HUMAN_GOVERNANCE_DECISION"];
+  X01 -> GF [style=dashed, label="corpus integrity terminal", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="INVALID_CORPUS_LEAKAGE"];
+  GF0 -> GF [style=dashed, label="universal final report", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="GO_FORMALIZE_MODEL_FIRST,GO_BUILD_CORPUS_FIRST,NARROW_EDITING_ONLY,NARROW_COORDINATION_NOT_GREP_FREE,STOP_USE_EXISTING_TOOLS,INCONCLUSIVE_FOUNDATION,INCONCLUSIVE_EDITING,INCONCLUSIVE_TOKEN_TELEMETRY,INCONCLUSIVE_EXTERNAL_ORACLE,INCONCLUSIVE_COORDINATION"];
+
+  // Successfully measured falsifiers are terminal evidence, never generic execution failures.
+  K01 -> GK [style=dashed, label="verified anti-dup falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_SECOND_IMPLEMENTATION"];
+  K02 -> GK [style=dashed, label="verified identity falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_SILENT_IDENTITY_RETARGETING"];
+  K03 -> GK [style=dashed, label="verified freshness falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_STALE_FACT_AS_FRESH"];
+  K04 -> GK [style=dashed, label="verified abstraction falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_ABSTRACTION_CLAIM"];
+  E01 -> GE2 [style=dashed, label="verified unsafe-goal falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_UNSAFE_GOAL_PROOF"];
+  E02 -> GE2 [style=dashed, label="verified false-completeness falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_FALSE_COMPLETENESS"];
+  E03 -> GE2 [style=dashed, label="verified generalization falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_MAP_EDGE_GENERALIZATION"];
+  E05 -> GE2 [style=dashed, label="verified recipe-dependency falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_RECIPE_DEPENDENCY"];
+  E06 -> GE2 [style=dashed, label="verified unsafe-commit falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_UNSAFE_COMMIT"];
+  M01 -> GM [style=dashed, label="verified transaction falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_UNSAFE_SEMANTIC_TRANSACTION"];
+  M02 -> GM [style=dashed, label="verified lock-emulation falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_LOCK_EMULATION"];
+  M03 -> GM [style=dashed, label="verified stale-coordination falsifier", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_STALE_COORDINATION_STATE"];
+  M04 -> GM [style=dashed, label="verified supported-conflict FN", edgeRole="TERMINAL_SYNTHESIS", acceptedBranchCodes="STOP_SUPPORTED_CONFLICT_FALSE_NEGATIVE"];
+
+  // Every exhausted generic negative has exactly one scope totalizer.
+  R01 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  R02 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  R03 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  K01 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  K02 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  K03 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  K04 -> GK [style=dotted, label="exhausted outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+
+  D01 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  D02 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E01 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E02 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E03 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E04 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  GE1 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E05 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E06 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  GES -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  E07 -> GE2 [style=dotted, label="exhausted editing outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+
+  D03 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  M01 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  M02 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  M03 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  M04 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  M05 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  M06 -> GM [style=dotted, label="exhausted coordination outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+
+  Q01 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  Q02 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  Q03 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  X00 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  X01 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  X02 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  X03 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  X04 -> GF [style=dotted, label="exhausted full-stage outcome", edgeRole="OUTCOME_SYNTHESIS", acceptedOutcomes="FAILURE,REFUSED,BLOCKED,NO_PROGRESS,INFRA_ERROR", acceptedBranchCodes="", branchMatch="ANY_SOURCE_REGISTERED_CODE", retryState="EXHAUSTED"];
+  GF -> A01 [style=dashed, label="only GO", acceptedBranchCodes="GO_MULTI_AGENT_CODECLEW"];
+  A01 -> Z01 [style=dashed, label="new approval", acceptedBranchCodes="HUMAN_APPROVED"];
+}

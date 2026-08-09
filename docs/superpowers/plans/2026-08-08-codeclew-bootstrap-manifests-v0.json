@@ -1,0 +1,335 @@
+{
+  "schemaVersion": "codeclew-node-contract/0",
+  "planStatus": "PROPOSED_AWAITING_HUMAN_APPROVAL",
+  "manifestScope": ["R01", "R02", "R03", "GK"],
+  "manifests": [
+    {
+      "id": "R01",
+      "status": "BLOCKED_ON_A00",
+      "kind": "CONTRACT",
+      "goal": "Freeze all source digests, research claims, hypotheses, gaps, bibliography provenance and supported boundaries.",
+      "hypothesisIds": ["ALL"],
+      "hardPredecessors": ["A00:HUMAN_APPROVED"],
+      "readFirst": [
+        "evidence/graphs/${PLAN_DIGEST}/approval-bundle.json",
+        "project.md",
+        "docs/experiments/deep-research-codeclew-semantic-editing-results.md",
+        "docs/superpowers/plans/2026-08-02-codeclew-corpus-first-plan.md",
+        "docs/experiments/codeclew-research-plan-coverage-verification-2026-08-02.md",
+        "/workspace/user/Downloads/codeclew_dr2.txt",
+        "/workspace/user/Downloads/codeclew_dr3.md",
+        "docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph-plan.md",
+        "docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph.dot",
+        "docs/superpowers/plans/2026-08-08-codeclew-terminal-synthesis-v0.json"
+      ],
+      "boundedWork": [
+        "Recompute S0-S5 hashes and archive external-source provenance.",
+        "Create bidirectional source-claim-hypothesis-gap mapping.",
+        "Resolve external citations to primary URL or DOI and mark unresolved items UNVERIFIED.",
+        "Freeze the supported Kotlin contour, forbidden claims and branch-code registry inputs.",
+        "Materialize the bounded untested cross-language specification scaffold required by S4 questions 25-26.",
+        "Materialize a synthetic-data clickable offline evidence-view prototype for later Q03 refinement."
+      ],
+      "nonGoals": [
+        "No product implementation, corpus generation, benchmark execution or threshold change."
+      ],
+      "expectedEvidenceDelta": "Every mandatory source claim has a falsifier, destination node, evidence class and verified provenance status.",
+      "outputArtifacts": [
+        "docs/research/codeclew/source-manifest.json",
+        "docs/research/codeclew/hypotheses.yaml",
+        "docs/research/codeclew/gap-register.yaml",
+        "docs/research/codeclew/coverage-boundary.md",
+        "docs/research/codeclew/bibliography-lock.json",
+        "docs/research/codeclew/source-to-claim-trace.md",
+        "docs/research/codeclew/cross-language-specification-scaffold.md",
+        "docs/research/codeclew/evidence-view-prototype/index.html",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R01/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R01/${ATTEMPT}/summary.md"
+      ],
+      "genericOutcomeArtifacts": [
+        "evidence/graphs/${PLAN_DIGEST}/diagnostics/R01/${ATTEMPT}/failure.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R01/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R01/${ATTEMPT}/summary.md"
+      ],
+      "verificationCommands": [
+        "shasum -a 256 project.md docs/experiments/deep-research-codeclew-semantic-editing-results.md docs/superpowers/plans/2026-08-02-codeclew-corpus-first-plan.md docs/experiments/codeclew-research-plan-coverage-verification-2026-08-02.md /workspace/user/Downloads/codeclew_dr2.txt /workspace/user/Downloads/codeclew_dr3.md",
+        "ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' docs/research/codeclew/source-manifest.json docs/research/codeclew/bibliography-lock.json",
+        "ruby -ryaml -e 'ARGV.each { |path| YAML.safe_load(File.read(path), aliases: false) }' docs/research/codeclew/hypotheses.yaml docs/research/codeclew/gap-register.yaml"
+      ],
+      "independentVerifierChecks": [
+        "Recompute every source digest and verify HEAD provenance.",
+        "Check all 32 DR2 questions, 22 deliverables and T00-T23 in both trace directions.",
+        "Confirm that unresolved literature is UNVERIFIED and cannot support a gate.",
+        "Verify that the cross-language scaffold is bounded to declared observables and explicitly forbids universal transpilation claims.",
+        "Exercise the offline prototype clickable provenance, Unknown and freshness paths with synthetic data."
+      ],
+      "requiredCheckIds": [
+        "SOURCE_DIGESTS",
+        "MANDATORY_TRACE_COVERAGE",
+        "UNVERIFIED_SOURCE_GATE_EXCLUSION",
+        "CROSS_LANGUAGE_SCAFFOLD_BOUNDARY",
+        "CLICKABLE_EVIDENCE_PROTOTYPE",
+        "TEAM_BUDGET_ENFORCEMENT"
+      ],
+      "budgets": {
+        "noncachedTokenCeiling": 180000,
+        "outputTokenCeiling": 30000,
+        "toolCallCeiling": 60,
+        "wallMinutesCeiling": 90,
+        "perTurnVisibleContextBytes": 65536
+      },
+      "retryPolicy": {
+        "maxProducerAttempts": 2,
+        "maxInfrastructureReruns": 1,
+        "noProgressRule": "same failure fingerprint twice without accepted evidence delta"
+      },
+      "retryableGenericBranchCodes": ["REVISE_PLAN_SOURCE_COVERAGE"],
+      "passPredicate": "All S0-S5 digests match, mandatory mappings are bidirectionally complete, no UNVERIFIED source supports a gate claim, and the bounded scaffold plus clickable synthetic prototype pass their source-level checks.",
+      "allowedOutcomes": ["SUCCESS", "FAILURE", "REFUSED", "BLOCKED", "NO_PROGRESS", "INFRA_ERROR"],
+      "branchCodes": ["NONE", "REVISE_PLAN_SOURCE_COVERAGE", "BLOCK_UNVERIFIED_PROVENANCE", "BUDGET_EXCEEDED"]
+    },
+    {
+      "id": "R02",
+      "status": "BLOCKED_ON_A00",
+      "kind": "CONTRACT",
+      "goal": "Publish and negatively test execution-time evidence, telemetry, budget, event-clock and experiment-integrity contracts.",
+      "hypothesisIds": ["H03", "H04", "H05", "H06", "H07", "H08", "H09", "H10", "H11", "H12"],
+      "hardPredecessors": ["R01:SUCCESS/NONE"],
+      "readFirst": [
+        "evidence/graphs/${PLAN_DIGEST}/approval-bundle.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph-plan.md",
+        "docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph.dot",
+        "docs/superpowers/plans/2026-08-08-codeclew-node-contract-v0.schema.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-bootstrap-manifests-v0.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-evidence-packet-v0.schema.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-verification-receipt-v0.schema.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-bootstrap-contract-fixtures-v0.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-terminal-synthesis-v0.json",
+        "docs/research/codeclew/source-manifest.json",
+        "docs/research/codeclew/hypotheses.yaml",
+        "docs/research/codeclew/gap-register.yaml"
+      ],
+      "boundedWork": [
+        "Create NodeContract-v1, EvidencePacket and VerificationReceipt schemas and validator.",
+        "Freeze outcome, branch-code, retry, invalidation and conditional-join semantics.",
+        "Freeze native token, preprocessing, event-clock, compute and full-team cost accounting.",
+        "Freeze exact statistical estimands, non-inferiority margin, missing-data, exclusions and budgets.",
+        "Freeze corpus-commitment, final-system-lock, X04-only H12 decision and exact GF 1-32/1-22 report contracts."
+      ],
+      "nonGoals": [
+        "No semantic kernel, editing transform, conflict detector or benchmark outcome."
+      ],
+      "expectedEvidenceDelta": "All descendant runs become schema-valid, cost-complete and unable to unlock a successor with a verified negative outcome.",
+      "outputArtifacts": [
+        "schemas/evidence/node-contract-v1.schema.json",
+        "schemas/evidence/evidence-packet-v1.schema.json",
+        "schemas/evidence/verification-receipt-v1.schema.json",
+        "schemas/evidence/corpus-commitment-v1.schema.json",
+        "schemas/evidence/final-system-lock-v1.schema.json",
+        "schemas/evidence/h12-decision-v1.schema.json",
+        "schemas/evidence/answers-01-32-v1.schema.json",
+        "schemas/evidence/deliverable-manifest-v1.schema.json",
+        "benchmarks/protocol/run-manifest-v1.schema.json",
+        "benchmarks/protocol/events-v1.json",
+        "benchmarks/protocol/budgets-v1.json",
+        "docs/experiments/codeclew-benchmark-protocol-v1.md",
+        "scripts/validate-evidence-contracts.sh",
+        "evidence/graphs/${PLAN_DIGEST}/checks/R02/negative-packets.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/R02/team-token-reconciliation.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/R02/token-unavailable-branch.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/R02/dot-vocabulary-closure.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/R02/final-freeze-report-contracts.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/R02/team-budget-enforcement.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R02/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R02/${ATTEMPT}/summary.md"
+      ],
+      "genericOutcomeArtifacts": [
+        "evidence/graphs/${PLAN_DIGEST}/diagnostics/R02/${ATTEMPT}/failure.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R02/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R02/${ATTEMPT}/summary.md"
+      ],
+      "verificationCommands": [
+        "ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' schemas/evidence/node-contract-v1.schema.json schemas/evidence/evidence-packet-v1.schema.json schemas/evidence/verification-receipt-v1.schema.json schemas/evidence/corpus-commitment-v1.schema.json schemas/evidence/final-system-lock-v1.schema.json schemas/evidence/h12-decision-v1.schema.json schemas/evidence/answers-01-32-v1.schema.json schemas/evidence/deliverable-manifest-v1.schema.json benchmarks/protocol/run-manifest-v1.schema.json benchmarks/protocol/events-v1.json benchmarks/protocol/budgets-v1.json",
+        "./scripts/validate-evidence-contracts.sh --negative-fixtures",
+        "dot -Tjson docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph.dot >/tmp/codeclew-evidence-graph.json"
+      ],
+      "independentVerifierChecks": [
+        "Reject synthetic packets with accepted receipts but negative or mismatched outcomes.",
+        "Reconcile parent, children, retries, preprocessing and operational-verifier token totals.",
+        "Prove that missing native token telemetry yields TOKEN_TELEMETRY_UNAVAILABLE rather than a byte estimate.",
+        "Check every DOT edge outcome and branch-code set against its source vocabulary.",
+        "Reject corpus reveal before final lock, non-X04 H12 decisions, and incomplete GF answer or deliverable sets."
+      ],
+      "requiredCheckIds": [
+        "NEGATIVE_PACKET_REJECTION",
+        "TEAM_TOKEN_RECONCILIATION",
+        "TOKEN_UNAVAILABLE_BRANCH",
+        "DOT_VOCABULARY_CLOSURE",
+        "FINAL_FREEZE_REPORT_CONTRACTS",
+        "TEAM_BUDGET_ENFORCEMENT"
+      ],
+      "budgets": {
+        "noncachedTokenCeiling": 100000,
+        "outputTokenCeiling": 20000,
+        "toolCallCeiling": 50,
+        "wallMinutesCeiling": 60,
+        "perTurnVisibleContextBytes": 65536
+      },
+      "retryPolicy": {
+        "maxProducerAttempts": 2,
+        "maxInfrastructureReruns": 1,
+        "noProgressRule": "same failure fingerprint twice without accepted evidence delta"
+      },
+      "retryableGenericBranchCodes": ["REWORK_EVIDENCE_SCHEMA"],
+      "passPredicate": "All schemas and negative fixtures pass, DOT eligibility is closed over outcomes and branch codes, and all primary metrics have frozen formulas and missing-data rules.",
+      "allowedOutcomes": ["SUCCESS", "FAILURE", "REFUSED", "BLOCKED", "NO_PROGRESS", "INFRA_ERROR"],
+      "branchCodes": ["NONE", "TOKEN_TELEMETRY_UNAVAILABLE", "BLOCK_MEASUREMENT_CONTRACT", "REWORK_EVIDENCE_SCHEMA", "BUDGET_EXCEEDED"]
+    },
+    {
+      "id": "R03",
+      "status": "BLOCKED_ON_A00",
+      "kind": "AUDIT",
+      "goal": "Verify the current Codeclew baseline, map reuse and gaps, and make a measurement-backed storage decision without adding product code.",
+      "hypothesisIds": ["H01", "H02", "H11", "H13"],
+      "hardPredecessors": ["R01:SUCCESS/NONE"],
+      "readFirst": [
+        "evidence/graphs/${PLAN_DIGEST}/approval-bundle.json",
+        "project.md",
+        "docs/research/codeclew/source-manifest.json",
+        "docs/research/codeclew/source-to-claim-trace.md",
+        "docs/research/codeclew/gap-register.yaml",
+        "crates/sthread/src",
+        "workers/kotlin/src",
+        "schemas/worker.proto",
+        "scripts/verify.sh"
+      ],
+      "boundedWork": [
+        "Run clean baseline verification and map every project.md requirement to current evidence.",
+        "Classify required capabilities as reuse, extend or replace with code links.",
+        "Measure representative index, query, update, rebuild, storage and recovery workloads.",
+        "Publish a storage ADR that defaults to current SQLite unless a frozen threshold is met."
+      ],
+      "nonGoals": [
+        "No graph database, OWL service, semantic product feature or broad refactor."
+      ],
+      "expectedEvidenceDelta": "Every proposed component is tied to a measured current-code gap and storage remains a falsifiable decision rather than a greenfield assumption.",
+      "outputArtifacts": [
+        "docs/architecture/codeclew-current-capability-gap.md",
+        "docs/research/codeclew/baseline-conformance.json",
+        "benchmarks/reports/codeclew-storage-baseline.json",
+        "docs/decisions/ADR-codeclew-storage.md",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R03/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R03/${ATTEMPT}/summary.md"
+      ],
+      "genericOutcomeArtifacts": [
+        "evidence/graphs/${PLAN_DIGEST}/diagnostics/R03/${ATTEMPT}/failure.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R03/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/R03/${ATTEMPT}/summary.md"
+      ],
+      "verificationCommands": [
+        "./scripts/verify.sh",
+        "ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' docs/research/codeclew/baseline-conformance.json benchmarks/reports/codeclew-storage-baseline.json",
+        "git diff --check"
+      ],
+      "independentVerifierChecks": [
+        "Re-run the clean baseline suite and representative read/update/rebuild workloads.",
+        "Sample every project.md area and verify code-linked reuse or measured gap evidence.",
+        "Reject the ADR if a new operational store lacks the H13 threshold or rollback path."
+      ],
+      "requiredCheckIds": [
+        "BASELINE_REPRODUCTION",
+        "CAPABILITY_GAP_SAMPLE",
+        "STORAGE_ADR_THRESHOLD",
+        "TEAM_BUDGET_ENFORCEMENT"
+      ],
+      "budgets": {
+        "noncachedTokenCeiling": 120000,
+        "outputTokenCeiling": 25000,
+        "toolCallCeiling": 80,
+        "wallMinutesCeiling": 120,
+        "perTurnVisibleContextBytes": 65536
+      },
+      "retryPolicy": {
+        "maxProducerAttempts": 2,
+        "maxInfrastructureReruns": 1,
+        "noProgressRule": "same failure fingerprint twice without accepted evidence delta"
+      },
+      "retryableGenericBranchCodes": ["REWORK_ARCHITECTURE"],
+      "passPredicate": "The baseline suite passes from clean checkout, S0 has a complete capability-gap matrix, and the storage ADR follows measured H13 thresholds.",
+      "allowedOutcomes": ["SUCCESS", "FAILURE", "REFUSED", "BLOCKED", "NO_PROGRESS", "INFRA_ERROR"],
+      "branchCodes": ["NONE", "REWORK_ARCHITECTURE", "NARROW_BASELINE_CONTOUR", "BLOCK_BASELINE_REGRESSION", "BUDGET_EXCEEDED"]
+    },
+    {
+      "id": "GK",
+      "status": "BLOCKED_ON_A00",
+      "kind": "AUDIT",
+      "goal": "Terminalize every exhausted bootstrap-foundation outcome set before v1 exists without unlocking implementation.",
+      "hypothesisIds": ["ALL"],
+      "hardPredecessors": ["WAVE_QUIESCENT_EXHAUSTED_SET:R01|R02|R03"],
+      "readFirst": [
+        "evidence/graphs/${PLAN_DIGEST}/approval-bundle.json",
+        "docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph-plan.md",
+        "docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph.dot",
+        "docs/superpowers/plans/2026-08-08-codeclew-terminal-synthesis-v0.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/${EXHAUSTED_SOURCE}/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/receipts/${EXHAUSTED_SOURCE}/${ATTEMPT}/receipt.json"
+      ],
+      "boundedWork": [
+        "Wait for reachable bootstrap-wave quiescence and select the exact sorted set of accepted exhausted R01-R03 outcomes.",
+        "Recompute every parent packet and receipt digest and retain every primary and secondary cause.",
+        "Emit only SUCCESS plus INCONCLUSIVE_FOUNDATION and prove that no implementation continuation is eligible."
+      ],
+      "nonGoals": [
+        "No repair, implementation, product verdict, v1 contract assumption or selection of a preferred failure cause."
+      ],
+      "expectedEvidenceDelta": "A failed bootstrap becomes a verified deterministic foundation limitation instead of an unreceipted dead end.",
+      "outputArtifacts": [
+        "evidence/graphs/${PLAN_DIGEST}/decisions/GK/bootstrap-foundation-decision.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/GK/foundation-exhausted-source-set.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/GK/inconclusive-foundation-normalization.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/GK/no-implementation-unlock.json",
+        "evidence/graphs/${PLAN_DIGEST}/checks/GK/team-budget-enforcement.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/GK/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/GK/${ATTEMPT}/summary.md"
+      ],
+      "genericOutcomeArtifacts": [
+        "evidence/graphs/${PLAN_DIGEST}/diagnostics/GK/${ATTEMPT}/failure.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/GK/${ATTEMPT}/packet.json",
+        "evidence/graphs/${PLAN_DIGEST}/packets/GK/${ATTEMPT}/summary.md"
+      ],
+      "verificationCommands": [
+        "ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' evidence/graphs/${PLAN_DIGEST}/decisions/GK/bootstrap-foundation-decision.json",
+        "dot -Tjson docs/superpowers/plans/2026-08-08-codeclew-cumulative-evidence-graph.dot >/tmp/codeclew-evidence-graph.json",
+        "jq -e '.terminalSetReduction.scopeOutcomeReduction[] | select(.scope == \"FOUNDATION\")' docs/superpowers/plans/2026-08-08-codeclew-terminal-synthesis-v0.json"
+      ],
+      "independentVerifierChecks": [
+        "Recompute the full wave-quiescent exhausted R01-R03 source set and exact parent receipt set.",
+        "Confirm deterministic normalization to INCONCLUSIVE_FOUNDATION while retaining every cause and digest.",
+        "Prove that the bootstrap terminal profile exposes only GK to GF0 and unlocks no implementation edge.",
+        "Recompute producer, verifier and prior-attempt cost totals against the frozen GK bootstrap budget."
+      ],
+      "requiredCheckIds": [
+        "FOUNDATION_EXHAUSTED_SOURCE_SET",
+        "INCONCLUSIVE_FOUNDATION_NORMALIZATION",
+        "NO_IMPLEMENTATION_UNLOCK",
+        "TEAM_BUDGET_ENFORCEMENT"
+      ],
+      "budgets": {
+        "noncachedTokenCeiling": 30000,
+        "outputTokenCeiling": 8000,
+        "toolCallCeiling": 20,
+        "wallMinutesCeiling": 20,
+        "perTurnVisibleContextBytes": 65536
+      },
+      "retryPolicy": {
+        "maxProducerAttempts": 2,
+        "maxInfrastructureReruns": 1,
+        "noProgressRule": "same failure fingerprint twice without accepted evidence delta"
+      },
+      "retryableGenericBranchCodes": [],
+      "passPredicate": "The exact current exhausted bootstrap source set is normalized to INCONCLUSIVE_FOUNDATION and every implementation edge remains closed.",
+      "allowedOutcomes": ["SUCCESS", "FAILURE", "REFUSED", "BLOCKED", "NO_PROGRESS", "INFRA_ERROR"],
+      "branchCodes": ["NONE", "INCONCLUSIVE_FOUNDATION", "INCONCLUSIVE_FINALIZATION", "BUDGET_EXCEEDED"]
+    }
+  ]
+}

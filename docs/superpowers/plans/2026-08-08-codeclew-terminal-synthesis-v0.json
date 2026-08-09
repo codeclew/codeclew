@@ -1,0 +1,782 @@
+{
+  "schemaVersion": "codeclew-terminal-synthesis/0",
+  "genericTerminalOutcomes": [
+    "FAILURE",
+    "REFUSED",
+    "BLOCKED",
+    "NO_PROGRESS",
+    "INFRA_ERROR"
+  ],
+  "genericBranchPolicy": {
+    "match": "ANY_SOURCE_REGISTERED_CODE",
+    "registry": "NodeSpec.branchCodes",
+    "evaluatedField": "controller.effectiveBranchCode",
+    "includesDefaultNone": true,
+    "appliesOnlyWhenOutcomeIn": "genericTerminalOutcomes",
+    "acceptedBranchCodesFieldMustBeEmpty": true
+  },
+  "controllerEffectiveProjection": {
+    "sourceFields": ["packet.outcome", "packet.branchCode"],
+    "producerEdgeField": "packet.proposedNextEdges_NON_AUTHORITATIVE",
+    "authoritativeEdgeField": "controller.effectiveEligibleNextEdges_DERIVED_FROM_DOT",
+    "withinBudget": "COPY_PACKET_OUTCOME_AND_BRANCH",
+    "tokenTelemetryUnavailable": "COPY_PACKET_OUTCOME_AND_BRANCH_BUT_FORBID_TOKEN_DOMAIN_CLAIMS",
+    "budgetExceeded": {
+      "effectiveOutcome": "NO_PROGRESS",
+      "effectiveBranchCode": "BUDGET_EXCEEDED",
+      "retainRawPacketCause": true,
+      "retryEligibility": "NONE_CUMULATIVE_BUDGET_CANNOT_RECOVER",
+      "nextAction": "EXHAUSTED_SCOPE_SYNTHESIS"
+    },
+    "formulaOrDigestMismatch": "CONTROL_REJECT"
+  },
+  "retryBranches": [
+    {
+      "node": "GK",
+      "branchCode": "REWORK_FOUNDATION",
+      "maxAdditionalAttempts": 1,
+      "exhaustionAction": "FINALIZE_SUCCESS_TERMINAL_AT_SOURCE",
+      "exhaustionSink": "GK",
+      "exhaustedNormalizer": "INCONCLUSIVE_FOUNDATION"
+    },
+    {
+      "node": "GE1",
+      "branchCode": "CONDITIONAL_BINDER_ITERATION_REQUIRED",
+      "maxAdditionalAttempts": 1,
+      "exhaustionAction": "FINALIZE_GENERIC_NO_PROGRESS_THEN_OUTCOME_SYNTHESIS",
+      "exhaustionSink": "GE2",
+      "exhaustedNormalizer": "INCONCLUSIVE_EDITING"
+    },
+    {
+      "node": "GES",
+      "branchCode": "REWORK_MATERIALIZATION",
+      "maxAdditionalAttempts": 1,
+      "exhaustionAction": "FINALIZE_GENERIC_NO_PROGRESS_THEN_OUTCOME_SYNTHESIS",
+      "exhaustionSink": "GE2",
+      "exhaustedNormalizer": "INCONCLUSIVE_EDITING"
+    },
+    {
+      "node": "GM",
+      "branchCode": "CONDITIONAL_ONE_ITERATION_REQUIRED",
+      "maxAdditionalAttempts": 1,
+      "exhaustionAction": "FINALIZE_SUCCESS_TERMINAL_AT_SOURCE",
+      "exhaustionSink": "GM",
+      "exhaustedNormalizer": "INCONCLUSIVE_COORDINATION"
+    },
+    {
+      "node": "Q02",
+      "branchCode": "REWORK_CHECKPOINTS",
+      "maxAdditionalAttempts": 1,
+      "exhaustionAction": "FINALIZE_GENERIC_NO_PROGRESS_THEN_OUTCOME_SYNTHESIS",
+      "exhaustionSink": "GF",
+      "exhaustedNormalizer": "INCONCLUSIVE_FULL_EVALUATION"
+    },
+    {
+      "node": "X04",
+      "branchCode": "REOPEN_EARLIEST_INVALID_NODE",
+      "maxAdditionalAttempts": 1,
+      "exhaustionAction": "FINALIZE_GENERIC_NO_PROGRESS_THEN_OUTCOME_SYNTHESIS",
+      "exhaustionSink": "GF",
+      "exhaustedNormalizer": "INCONCLUSIVE_FULL_EVALUATION"
+    }
+  ],
+  "outcomeSynthesisGroups": [
+    {
+      "scope": "FOUNDATION",
+      "sources": [
+        "R01",
+        "R02",
+        "R03",
+        "K01",
+        "K02",
+        "K03",
+        "K04"
+      ],
+      "sink": "GK",
+      "exhaustedNormalizer": "INCONCLUSIVE_FOUNDATION"
+    },
+    {
+      "scope": "EDITING",
+      "sources": [
+        "D01",
+        "D02",
+        "E01",
+        "E02",
+        "E03",
+        "E04",
+        "GE1",
+        "E05",
+        "E06",
+        "GES",
+        "E07"
+      ],
+      "sink": "GE2",
+      "exhaustedNormalizer": "INCONCLUSIVE_EDITING"
+    },
+    {
+      "scope": "COORDINATION",
+      "sources": [
+        "D03",
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M05",
+        "M06"
+      ],
+      "sink": "GM",
+      "exhaustedNormalizer": "INCONCLUSIVE_COORDINATION"
+    },
+    {
+      "scope": "FULL",
+      "sources": [
+        "X00",
+        "Q01",
+        "Q02",
+        "Q03",
+        "X01",
+        "X02",
+        "X03",
+        "X04"
+      ],
+      "sink": "GF",
+      "exhaustedNormalizer": "INCONCLUSIVE_FULL_EVALUATION"
+    }
+  ],
+  "successfulNormalization": [
+    {
+      "source": "K01",
+      "input": "STOP_SECOND_IMPLEMENTATION",
+      "sink": "GK",
+      "output": "STOP_SECOND_IMPLEMENTATION"
+    },
+    {
+      "source": "K02",
+      "input": "STOP_SILENT_IDENTITY_RETARGETING",
+      "sink": "GK",
+      "output": "GO_FORMALIZE_MODEL_FIRST"
+    },
+    {
+      "source": "K03",
+      "input": "STOP_STALE_FACT_AS_FRESH",
+      "sink": "GK",
+      "output": "GO_FORMALIZE_MODEL_FIRST"
+    },
+    {
+      "source": "K04",
+      "input": "STOP_ABSTRACTION_CLAIM",
+      "sink": "GK",
+      "output": "GO_FORMALIZE_MODEL_FIRST"
+    },
+    {
+      "source": "E01",
+      "input": "STOP_UNSAFE_GOAL_PROOF",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "E02",
+      "input": "STOP_FALSE_COMPLETENESS",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "E03",
+      "input": "STOP_MAP_EDGE_GENERALIZATION",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "E05",
+      "input": "STOP_RECIPE_DEPENDENCY",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "E06",
+      "input": "STOP_UNSAFE_COMMIT",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "M01",
+      "input": "STOP_UNSAFE_SEMANTIC_TRANSACTION",
+      "sink": "GM",
+      "output": "STOP_COORDINATION_USE_GIT_AST"
+    },
+    {
+      "source": "M02",
+      "input": "STOP_LOCK_EMULATION",
+      "sink": "GM",
+      "output": "STOP_COORDINATION_USE_GIT_AST"
+    },
+    {
+      "source": "M03",
+      "input": "STOP_STALE_COORDINATION_STATE",
+      "sink": "GM",
+      "output": "STOP_COORDINATION_USE_GIT_AST"
+    },
+    {
+      "source": "M04",
+      "input": "STOP_SUPPORTED_CONFLICT_FALSE_NEGATIVE",
+      "sink": "GM",
+      "output": "STOP_COORDINATION_USE_GIT_AST"
+    },
+    {
+      "source": "GK",
+      "input": "GO_FORMALIZE_MODEL_FIRST",
+      "sink": "GF0",
+      "output": "GO_FORMALIZE_MODEL_FIRST"
+    },
+    {
+      "source": "GK",
+      "input": "STOP_SECOND_IMPLEMENTATION",
+      "sink": "GF0",
+      "output": "STOP_USE_EXISTING_TOOLS"
+    },
+    {
+      "source": "GK",
+      "input": "INCONCLUSIVE_FOUNDATION",
+      "sink": "GF0",
+      "output": "INCONCLUSIVE_FOUNDATION"
+    },
+    {
+      "source": "GE1",
+      "input": "GO_BUILD_CORPUS_FIRST",
+      "sink": "GE2",
+      "output": "GO_BUILD_CORPUS_FIRST"
+    },
+    {
+      "source": "GE1",
+      "input": "STOP_UNIVERSAL_EDITING",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "GES",
+      "input": "STOP_UNSAFE_COMMIT",
+      "sink": "GE2",
+      "output": "STOP_UNIVERSAL_EDITING"
+    },
+    {
+      "source": "GF0",
+      "input": "GO_FORMALIZE_MODEL_FIRST",
+      "sink": "GF",
+      "output": "GO_FORMALIZE_MODEL_FIRST"
+    },
+    {
+      "source": "GF0",
+      "input": "GO_BUILD_CORPUS_FIRST",
+      "sink": "GF",
+      "output": "GO_BUILD_CORPUS_FIRST"
+    },
+    {
+      "source": "GF0",
+      "input": "NARROW_EDITING_ONLY",
+      "sink": "GF",
+      "output": "NARROW_EDITING_ONLY"
+    },
+    {
+      "source": "GF0",
+      "input": "NARROW_COORDINATION_NOT_GREP_FREE",
+      "sink": "GF",
+      "output": "NARROW_COORDINATION_NOT_GREP_FREE"
+    },
+    {
+      "source": "GF0",
+      "input": "STOP_USE_EXISTING_TOOLS",
+      "sink": "GF",
+      "output": "STOP_USE_EXISTING_TOOLS"
+    },
+    {
+      "source": "GF0",
+      "input": "INCONCLUSIVE_FOUNDATION",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_FOUNDATION"
+    },
+    {
+      "source": "GF0",
+      "input": "INCONCLUSIVE_EDITING",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_EDITING"
+    },
+    {
+      "source": "GF0",
+      "input": "INCONCLUSIVE_TOKEN_TELEMETRY",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_TOKEN_TELEMETRY"
+    },
+    {
+      "source": "GF0",
+      "input": "INCONCLUSIVE_EXTERNAL_ORACLE",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_EXTERNAL_ORACLE"
+    },
+    {
+      "source": "GF0",
+      "input": "INCONCLUSIVE_COORDINATION",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_COORDINATION"
+    },
+    {
+      "source": "Q03",
+      "input": "BLOCK_SECURITY",
+      "sink": "GF",
+      "output": "STOP_USE_EXISTING_TOOLS"
+    },
+    {
+      "source": "Q03",
+      "input": "REQUIRE_HUMAN_GOVERNANCE_DECISION",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_FULL_EVALUATION"
+    },
+    {
+      "source": "X01",
+      "input": "INVALID_CORPUS_LEAKAGE",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_FULL_EVALUATION"
+    },
+    {
+      "source": "X04",
+      "input": "INCONCLUSIVE_AUDIT",
+      "sink": "GF",
+      "output": "INCONCLUSIVE_FULL_EVALUATION"
+    },
+    {
+      "source": "X04",
+      "input": "STOP_H12_TEST_ROUTING_SAFETY",
+      "sink": "GF",
+      "output": "NARROW_WITHOUT_AUTOMATED_TEST_ROUTING"
+    },
+    {
+      "source": "X04",
+      "input": "STOP_H12_UNSAFE_ACCEPTED_COMMIT",
+      "sink": "GF",
+      "output": "STOP_USE_EXISTING_TOOLS"
+    },
+    {
+      "source": "X04",
+      "input": "NONE",
+      "sink": "GF",
+      "outputOperation": {
+        "kind": "COPY_VALIDATED_FIELD",
+        "sourceField": "auditDecision",
+        "requiredBindings": [
+          "auditDecisionEnum",
+          "auditPredicateDigest",
+          "auditEvidenceSetDigest"
+        ],
+        "allowedOutputs": [
+          "GO_MULTI_AGENT_CODECLEW",
+          "NARROW_EDITING_ONLY",
+          "NARROW_COORDINATION_ONLY",
+          "NARROW_COORDINATION_NOT_GREP_FREE",
+          "NARROW_WITHOUT_AUTOMATED_TEST_ROUTING",
+          "GO_FORMALIZE_MODEL_FIRST",
+          "GO_BUILD_CORPUS_FIRST",
+          "STOP_USE_EXISTING_TOOLS",
+          "INCONCLUSIVE_FOUNDATION",
+          "INCONCLUSIVE_EDITING",
+          "INCONCLUSIVE_TOKEN_TELEMETRY",
+          "INCONCLUSIVE_EXTERNAL_ORACLE",
+          "INCONCLUSIVE_COORDINATION",
+          "INCONCLUSIVE_FULL_EVALUATION"
+        ]
+      }
+    }
+  ],
+  "terminalSetReduction": {
+    "waitForReachableWaveQuiescence": true,
+    "retainAllPrimaryAndSecondaryCauses": true,
+    "scopeOutcomeReduction": [
+      {
+        "scope": "FOUNDATION",
+        "sink": "GK",
+        "eligibleSourcesRef": "outcomeSynthesisGroups[scope=FOUNDATION].sources",
+        "inputSelection": "ALL_ACCEPTED_EXHAUSTED_GENERIC_INPUTS_IN_CURRENT_REACHABLE_WAVE",
+        "parentSet": "EXACT_SORTED_PACKET_AND_RECEIPT_DIGEST_SET",
+        "requireNoReachableContinuationInWave": true,
+        "output": "INCONCLUSIVE_FOUNDATION"
+      },
+      {
+        "scope": "EDITING",
+        "sink": "GE2",
+        "eligibleSourcesRef": "outcomeSynthesisGroups[scope=EDITING].sources",
+        "inputSelection": "ALL_ACCEPTED_EXHAUSTED_GENERIC_INPUTS_IN_CURRENT_REACHABLE_WAVE",
+        "parentSet": "EXACT_SORTED_PACKET_AND_RECEIPT_DIGEST_SET",
+        "requireNoReachableContinuationInWave": true,
+        "output": "INCONCLUSIVE_EDITING"
+      },
+      {
+        "scope": "COORDINATION",
+        "sink": "GM",
+        "eligibleSourcesRef": "outcomeSynthesisGroups[scope=COORDINATION].sources",
+        "inputSelection": "ALL_ACCEPTED_EXHAUSTED_GENERIC_INPUTS_IN_CURRENT_REACHABLE_WAVE",
+        "parentSet": "EXACT_SORTED_PACKET_AND_RECEIPT_DIGEST_SET",
+        "requireNoReachableContinuationInWave": true,
+        "output": "INCONCLUSIVE_COORDINATION"
+      },
+      {
+        "scope": "FULL",
+        "sink": "GF",
+        "eligibleSourcesRef": "outcomeSynthesisGroups[scope=FULL].sources",
+        "inputSelection": "ALL_ACCEPTED_EXHAUSTED_GENERIC_INPUTS_IN_CURRENT_REACHABLE_WAVE",
+        "parentSet": "EXACT_SORTED_PACKET_AND_RECEIPT_DIGEST_SET",
+        "requireNoReachableContinuationInWave": true,
+        "output": "INCONCLUSIVE_FULL_EVALUATION"
+      }
+    ],
+    "bootstrapTerminalProfile": {
+      "node": "GK",
+      "contractVersion": "codeclew-node-contract/0",
+      "eligibleSources": ["R01", "R02", "R03"],
+      "activation": "ANY_ACCEPTED_EXHAUSTED_BOOTSTRAP_INPUT_BEFORE_NORMAL_FOUNDATION_CONTINUATION",
+      "usesScopeOutcomeReduction": "FOUNDATION",
+      "onlyOutput": "INCONCLUSIVE_FOUNDATION",
+      "onlySuccessor": "GF0",
+      "implementationUnlock": false
+    },
+    "gf0Rules": [
+      {
+        "priority": 1,
+        "when": "ANY_VERIFIED_FOUNDATION_TERMINAL_INPUT",
+        "action": "APPLY_EXACT_GK_SUCCESSFUL_NORMALIZATION",
+        "secondaryBranchInputsAffectOutput": false
+      },
+      {
+        "priority": 2,
+        "when": "NO_FOUNDATION_INPUT_AND_EXACTLY_ONE_TOTAL_GE2_AND_ONE_TOTAL_GM",
+        "action": "APPLY_EXHAUSTIVE_GF0_PAIR_TABLE"
+      }
+    ],
+    "gfRules": [
+      {
+        "priority": 1,
+        "when": "ANY_SUCCESS_Q03_BLOCK_SECURITY_OR_X04_STOP_H12_UNSAFE_ACCEPTED_COMMIT",
+        "output": "STOP_USE_EXISTING_TOOLS"
+      },
+      {
+        "priority": 2,
+        "when": "EXACTLY_ONE_SUCCESS_GF0_TERMINAL_INPUT",
+        "action": "APPLY_EXACT_GF0_SUCCESSFUL_NORMALIZATION"
+      },
+      {
+        "priority": 3,
+        "when": "ANY_SUCCESS_X04_STOP_H12_TEST_ROUTING_SAFETY",
+        "output": "NARROW_WITHOUT_AUTOMATED_TEST_ROUTING"
+      },
+      {
+        "priority": 4,
+        "when": "ANY_GENERIC_FULL_TERMINAL_OR_SUCCESS_X01_INVALID_CORPUS_LEAKAGE_OR_SUCCESS_Q03_REQUIRE_HUMAN_GOVERNANCE_DECISION_OR_SUCCESS_X04_INCONCLUSIVE_AUDIT",
+        "output": "INCONCLUSIVE_FULL_EVALUATION"
+      },
+      {
+        "priority": 5,
+        "when": "ONLY_SUCCESS_X04_NONE_AND_NO_OTHER_TERMINAL_CAUSE",
+        "action": "APPLY_X04_COPY_VALIDATED_FIELD"
+      }
+    ],
+    "selection": "LOWEST_MATCHING_PRIORITY_NUMBER_WINS",
+    "noMatchOrMultipleSamePriority": "INCONCLUSIVE_FINALIZATION"
+  },
+  "gf0": {
+    "editingDomain": [
+      "GO_EDITING",
+      "NARROW_EDITING",
+      "GO_BUILD_CORPUS_FIRST",
+      "STOP_UNIVERSAL_EDITING",
+      "INCONCLUSIVE_TOKEN_TELEMETRY",
+      "INCONCLUSIVE_ORACLE",
+      "INCONCLUSIVE_EDITING"
+    ],
+    "coordinationDomain": [
+      "GO_FULL_COORDINATION_CORPUS",
+      "NARROW_CONFLICT_CLASSES",
+      "NARROW_COORDINATION_ONLY",
+      "STOP_COORDINATION_USE_GIT_AST",
+      "INCONCLUSIVE_COORDINATION"
+    ],
+    "fullEligibleEditing": [
+      "GO_EDITING",
+      "NARROW_EDITING"
+    ],
+    "fullEligibleCoordination": [
+      "GO_FULL_COORDINATION_CORPUS",
+      "NARROW_CONFLICT_CLASSES",
+      "NARROW_COORDINATION_ONLY"
+    ],
+    "pairCount": 35,
+    "expectedFullPathPairs": 6,
+    "exhaustivePairs": [
+      {
+        "editing": "GO_EDITING",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "FULL_PATH",
+        "target": "X00",
+        "rule": "BOTH_FULL"
+      },
+      {
+        "editing": "GO_EDITING",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "FULL_PATH",
+        "target": "X00",
+        "rule": "BOTH_FULL"
+      },
+      {
+        "editing": "GO_EDITING",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "FULL_PATH",
+        "target": "X00",
+        "rule": "BOTH_FULL"
+      },
+      {
+        "editing": "GO_EDITING",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "NARROW_EDITING_ONLY",
+        "rule": "EDITING_ONLY"
+      },
+      {
+        "editing": "GO_EDITING",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_COORDINATION",
+        "rule": "COORDINATION_INCONCLUSIVE"
+      },
+      {
+        "editing": "NARROW_EDITING",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "FULL_PATH",
+        "target": "X00",
+        "rule": "BOTH_FULL"
+      },
+      {
+        "editing": "NARROW_EDITING",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "FULL_PATH",
+        "target": "X00",
+        "rule": "BOTH_FULL"
+      },
+      {
+        "editing": "NARROW_EDITING",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "FULL_PATH",
+        "target": "X00",
+        "rule": "BOTH_FULL"
+      },
+      {
+        "editing": "NARROW_EDITING",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "NARROW_EDITING_ONLY",
+        "rule": "EDITING_ONLY"
+      },
+      {
+        "editing": "NARROW_EDITING",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_COORDINATION",
+        "rule": "COORDINATION_INCONCLUSIVE"
+      },
+      {
+        "editing": "GO_BUILD_CORPUS_FIRST",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "GF0",
+        "target": "GO_BUILD_CORPUS_FIRST",
+        "rule": "CORPUS_FIRST"
+      },
+      {
+        "editing": "GO_BUILD_CORPUS_FIRST",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "GF0",
+        "target": "GO_BUILD_CORPUS_FIRST",
+        "rule": "CORPUS_FIRST"
+      },
+      {
+        "editing": "GO_BUILD_CORPUS_FIRST",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "GF0",
+        "target": "GO_BUILD_CORPUS_FIRST",
+        "rule": "CORPUS_FIRST"
+      },
+      {
+        "editing": "GO_BUILD_CORPUS_FIRST",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "GO_BUILD_CORPUS_FIRST",
+        "rule": "CORPUS_FIRST"
+      },
+      {
+        "editing": "GO_BUILD_CORPUS_FIRST",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_COORDINATION",
+        "rule": "COORDINATION_INCONCLUSIVE"
+      },
+      {
+        "editing": "STOP_UNIVERSAL_EDITING",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "GF0",
+        "target": "NARROW_COORDINATION_NOT_GREP_FREE",
+        "rule": "COORDINATION_WITHOUT_EDITING_PROOF"
+      },
+      {
+        "editing": "STOP_UNIVERSAL_EDITING",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "GF0",
+        "target": "NARROW_COORDINATION_NOT_GREP_FREE",
+        "rule": "COORDINATION_WITHOUT_EDITING_PROOF"
+      },
+      {
+        "editing": "STOP_UNIVERSAL_EDITING",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "GF0",
+        "target": "NARROW_COORDINATION_NOT_GREP_FREE",
+        "rule": "COORDINATION_WITHOUT_EDITING_PROOF"
+      },
+      {
+        "editing": "STOP_UNIVERSAL_EDITING",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "STOP_USE_EXISTING_TOOLS",
+        "rule": "BOTH_STOP"
+      },
+      {
+        "editing": "STOP_UNIVERSAL_EDITING",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_COORDINATION",
+        "rule": "COORDINATION_INCONCLUSIVE"
+      },
+      {
+        "editing": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "rule": "TOKEN_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "rule": "TOKEN_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "rule": "TOKEN_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "rule": "TOKEN_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_TOKEN_TELEMETRY",
+        "rule": "TOKEN_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_ORACLE",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EXTERNAL_ORACLE",
+        "rule": "ORACLE_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_ORACLE",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EXTERNAL_ORACLE",
+        "rule": "ORACLE_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_ORACLE",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EXTERNAL_ORACLE",
+        "rule": "ORACLE_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_ORACLE",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EXTERNAL_ORACLE",
+        "rule": "ORACLE_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_ORACLE",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EXTERNAL_ORACLE",
+        "rule": "ORACLE_PRECEDENCE"
+      },
+      {
+        "editing": "INCONCLUSIVE_EDITING",
+        "coordination": "GO_FULL_COORDINATION_CORPUS",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EDITING",
+        "rule": "EDITING_INCONCLUSIVE"
+      },
+      {
+        "editing": "INCONCLUSIVE_EDITING",
+        "coordination": "NARROW_CONFLICT_CLASSES",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EDITING",
+        "rule": "EDITING_INCONCLUSIVE"
+      },
+      {
+        "editing": "INCONCLUSIVE_EDITING",
+        "coordination": "NARROW_COORDINATION_ONLY",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EDITING",
+        "rule": "EDITING_INCONCLUSIVE"
+      },
+      {
+        "editing": "INCONCLUSIVE_EDITING",
+        "coordination": "STOP_COORDINATION_USE_GIT_AST",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_EDITING",
+        "rule": "EDITING_INCONCLUSIVE"
+      },
+      {
+        "editing": "INCONCLUSIVE_EDITING",
+        "coordination": "INCONCLUSIVE_COORDINATION",
+        "route": "GF0",
+        "target": "INCONCLUSIVE_COORDINATION",
+        "rule": "COORDINATION_INCONCLUSIVE"
+      }
+    ]
+  },
+  "causePresentationOrder": [
+    "FOUNDATION",
+    "EDITING",
+    "COORDINATION",
+    "X00",
+    "Q01",
+    "Q02",
+    "Q03",
+    "X01",
+    "X02",
+    "X03",
+    "X04"
+  ],
+  "finalizerTrustBoundary": {
+    "nodes": [
+      "GK",
+      "GE2",
+      "GM",
+      "GF0",
+      "GF"
+    ],
+    "infrastructureFailureRecord": "INCONCLUSIVE_FINALIZATION",
+    "rule": "A totalizer/controller failure cannot recurse; emit no product verdict, retain all verified inputs, and require human or external recovery."
+  }
+}

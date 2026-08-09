@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codeclew evidence view — R01 synthetic prototype</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 1050px; margin: 0 auto; padding: 2rem; line-height: 1.45; }
+    header, article, aside { border: 1px solid #8888; border-radius: .7rem; padding: 1rem; }
+    header { margin-bottom: 1rem; }
+    .grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr); gap: 1rem; }
+    .cards { display: grid; gap: .7rem; }
+    button { font: inherit; text-align: left; padding: .8rem; border-radius: .5rem; border: 1px solid #8888; cursor: pointer; }
+    button[aria-pressed="true"] { outline: 3px solid #4c9ffe; }
+    .status { display: inline-block; padding: .1rem .45rem; border-radius: 1rem; font-size: .82rem; }
+    .proved { background: #237a3b; color: white; }
+    .unknown { background: #a56500; color: white; }
+    .stale { background: #a22; color: white; }
+    code { overflow-wrap: anywhere; }
+    dt { font-weight: 700; margin-top: .65rem; }
+    .notice { border-left: .35rem solid #a56500; padding-left: .8rem; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Evidence view</h1>
+    <p class="notice"><strong>R01 synthetic prototype.</strong> This is not a product UI and proves no H14 product-value claim. All records below are fabricated to test navigation only.</p>
+    <p>Choose a record to inspect its provenance, coverage boundary, and freshness state.</p>
+  </header>
+
+  <main class="grid">
+    <section class="cards" aria-label="Synthetic evidence records">
+      <button type="button" data-record="claim" aria-pressed="true">
+        <span class="status proved">PROVED IN FIXTURE</span><br>
+        Claim C-101: one symbol binding is unique inside the selected Kotlin contour
+      </button>
+      <button type="button" data-record="unknown" aria-pressed="false">
+        <span class="status unknown">UNKNOWN</span><br>
+        Boundary U-204: reflective Spring registration has no static target
+      </button>
+      <button type="button" data-record="stale" aria-pressed="false">
+        <span class="status stale">STALE</span><br>
+        Fact F-309: caller set was observed before the latest source snapshot
+      </button>
+    </section>
+
+    <aside aria-live="polite" aria-label="Selected record details">
+      <h2 id="title"></h2>
+      <p id="summary"></p>
+      <dl>
+        <dt>Evidence class</dt><dd id="evidence"></dd>
+        <dt>Provenance</dt><dd><code id="provenance"></code></dd>
+        <dt>Freshness</dt><dd id="freshness"></dd>
+        <dt>Coverage boundary</dt><dd id="boundary"></dd>
+        <dt>Allowed action</dt><dd id="action"></dd>
+      </dl>
+    </aside>
+  </main>
+
+  <script>
+    const records = {
+      claim: {
+        title: "Claim C-101",
+        summary: "A synthetic binder found exactly one compatible declaration.",
+        evidence: "COMPILER_FACT + FIXTURE_ASSERTION",
+        provenance: "fixture://kotlin/service-a/snapshot-17#symbol:demo.Target",
+        freshness: "CURRENT — snapshot 17 equals the selected task snapshot",
+        boundary: "Kotlin/JVM source visible to the pinned compiler worker; reflection excluded",
+        action: "May discharge only the unique-binding obligation in this fixture"
+      },
+      unknown: {
+        title: "Unknown U-204",
+        summary: "No static edge proves which implementation Spring creates at runtime.",
+        evidence: "ABSENCE_OF_REQUIRED_EVIDENCE",
+        provenance: "boundary://spring/reflection/bean-registration",
+        freshness: "CURRENT unknown — re-observed at snapshot 17",
+        boundary: "Runtime reflection and external configuration are outside this static slice",
+        action: "Refuse completeness; request runtime evidence or a bounded human choice"
+      },
+      stale: {
+        title: "Fact F-309",
+        summary: "The fact was valid at snapshot 16, but source now points to snapshot 17.",
+        evidence: "COMPILER_FACT (INVALIDATED)",
+        provenance: "snapshot://16/callers/demo.Repository.save",
+        freshness: "STALE — dependency digest changed in snapshot 17",
+        boundary: "No claim may consume this fact until recomputation succeeds",
+        action: "Rebuild the affected slice; do not silently treat stale as current"
+      }
+    }
+
+    const fields = ["title", "summary", "evidence", "provenance", "freshness", "boundary", "action"]
+    function selectRecord(id) {
+      const record = records[id]
+      fields.forEach(field => document.getElementById(field).textContent = record[field])
+      document.querySelectorAll("button[data-record]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.record === id))
+      })
+      location.hash = id
+    }
+    document.querySelectorAll("button[data-record]").forEach(button => {
+      button.addEventListener("click", () => selectRecord(button.dataset.record))
+    })
+    const initial = location.hash.slice(1)
+    selectRecord(Object.hasOwn(records, initial) ? initial : "claim")
+  </script>
+</body>
+</html>

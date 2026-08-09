@@ -1,0 +1,825 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/approval-bundle-v0.schema.json",
+  "title": "Codeclew bootstrap approval bundle v0",
+  "description": "Fail-closed A00 bundle. The human decision signs approvalSubjectDigest, not the bundle that embeds it, so the bundle has no circular self-hash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "planStatus",
+    "approvalSubject",
+    "approvalSubjectDigest",
+    "humanDecisionRef",
+    "humanDecision",
+    "createdAt",
+    "digestScope"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "codeclew-approval-bundle/0"
+    },
+    "planStatus": {
+      "const": "PROPOSED_AWAITING_HUMAN_APPROVAL"
+    },
+    "approvalSubject": {
+      "$ref": "#/$defs/approvalSubject"
+    },
+    "approvalSubjectDigest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "humanDecisionRef": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "HUMAN_DECISION"
+            }
+          }
+        }
+      ]
+    },
+    "humanDecision": {
+      "$ref": "#/$defs/humanDecision"
+    },
+    "createdAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "digestScope": {
+      "const": "RFC8785_CANONICAL_JSON"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "approvalSubject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planStatus",
+        "plan",
+        "authoritativeDot",
+        "bootstrapArtifacts",
+        "planningVerificationReport",
+        "sources"
+      ],
+      "properties": {
+        "planStatus": {
+          "const": "PROPOSED_AWAITING_HUMAN_APPROVAL"
+        },
+        "plan": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "const": "PLAN"
+                }
+              }
+            }
+          ]
+        },
+        "authoritativeDot": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "const": "AUTHORITATIVE_DOT"
+                }
+              }
+            }
+          ]
+        },
+        "bootstrapArtifacts": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "allOf": [
+            {
+              "contains": {
+                "$ref": "#/$defs/nodeContractSchemaRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/bootstrapManifestsRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/evidencePacketSchemaRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/verificationReceiptSchemaRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/bootstrapFixturesRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/terminalSynthesisRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/approvalBundleSchemaRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/bootstrapControllerRef"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          ],
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/nodeContractSchemaRef"
+              },
+              {
+                "$ref": "#/$defs/bootstrapManifestsRef"
+              },
+              {
+                "$ref": "#/$defs/evidencePacketSchemaRef"
+              },
+              {
+                "$ref": "#/$defs/verificationReceiptSchemaRef"
+              },
+              {
+                "$ref": "#/$defs/bootstrapFixturesRef"
+              },
+              {
+                "$ref": "#/$defs/terminalSynthesisRef"
+              },
+              {
+                "$ref": "#/$defs/approvalBundleSchemaRef"
+              },
+              {
+                "$ref": "#/$defs/bootstrapControllerRef"
+              }
+            ]
+          }
+        },
+        "planningVerificationReport": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "const": "PLANNING_VERIFICATION_REPORT"
+                }
+              }
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "allOf": [
+            {
+              "contains": {
+                "$ref": "#/$defs/sourceS0"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/sourceS1"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/sourceS2"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/sourceS3"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/sourceS4"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            },
+            {
+              "contains": {
+                "$ref": "#/$defs/sourceS5"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          ],
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/sourceS0"
+              },
+              {
+                "$ref": "#/$defs/sourceS1"
+              },
+              {
+                "$ref": "#/$defs/sourceS2"
+              },
+              {
+                "$ref": "#/$defs/sourceS3"
+              },
+              {
+                "$ref": "#/$defs/sourceS4"
+              },
+              {
+                "$ref": "#/$defs/sourceS5"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "humanDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "decision",
+        "subjectDigest",
+        "actor",
+        "sessionEvidence"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "codeclew-human-decision/0"
+        },
+        "decision": {
+          "const": "HUMAN_APPROVED"
+        },
+        "subjectDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "actor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "subjectId"
+          ],
+          "properties": {
+            "type": {
+              "const": "HUMAN"
+            },
+            "subjectId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "sessionEvidence": {
+          "$ref": "#/$defs/sessionEvidence"
+        }
+      }
+    },
+    "sessionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "threadId",
+        "messages",
+        "checkedAt"
+      ],
+      "properties": {
+        "provenance": {
+          "const": "CURRENT_CODEX_SESSION"
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/observedMessage"
+          }
+        },
+        "checkedAt": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "messageIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "turnId",
+        "messageId",
+        "authorRole",
+        "messageTextDigest"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorRole": {
+          "const": "USER"
+        },
+        "messageTextDigest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "observedMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "turnId",
+        "messageId",
+        "authorRole",
+        "messageText",
+        "messageTextDigest"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "messageText": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authorRole": {
+          "const": "USER"
+        },
+        "messageTextDigest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "codexObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "provenance",
+        "observerSessionId",
+        "sourceTool",
+        "amendmentAuthorization",
+        "advanceApproval",
+        "observedAt",
+        "decision",
+        "receiptDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "codeclew-codex-observation/1"
+        },
+        "provenance": {
+          "const": "CODEX_READ_ONLY_THREAD_OBSERVATION"
+        },
+        "observerSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceTool": {
+          "const": "CODEX_READ_THREAD"
+        },
+        "amendmentAuthorization": {
+          "$ref": "#/$defs/observedMessage"
+        },
+        "advanceApproval": {
+          "$ref": "#/$defs/observedMessage"
+        },
+        "observedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "decision": {
+          "const": "OBSERVED_EXACT_THREAD_EVENTS"
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "scopeConformance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "verifierSessionId",
+        "decision",
+        "allowedDeltaId",
+        "basePlanDigest",
+        "amendmentProposalDigest",
+        "subjectDigest",
+        "blockingFindings",
+        "verifiedAt",
+        "receiptDigest"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "codeclew-a00-scope-conformance/1"
+        },
+        "verifierSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "const": "SCOPE_CONFORMANCE_ACCEPT"
+        },
+        "allowedDeltaId": {
+          "const": "A00_PROVENANCE_AND_BOOTSTRAP_ONLY"
+        },
+        "basePlanDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "amendmentProposalDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "subjectDigest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "blockingFindings": {
+          "const": 0
+        },
+        "verifiedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "receiptDigest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "codexApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "mode",
+        "observations",
+        "scopeConformance"
+      ],
+      "properties": {
+        "provenance": {
+          "const": "CODEX_READ_ONLY_APPROVAL_V1"
+        },
+        "mode": {
+          "const": "ADVANCE_SCOPE_BOUND"
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/codexObservation"
+          }
+        },
+        "scopeConformance": {
+          "$ref": "#/$defs/scopeConformance"
+        }
+      }
+    },
+    "nodeContractSchemaRef": {
+      "$ref": "#/$defs/artifactRefWithNodeContractSchemaRole"
+    },
+    "bootstrapManifestsRef": {
+      "$ref": "#/$defs/artifactRefWithBootstrapManifestsRole"
+    },
+    "evidencePacketSchemaRef": {
+      "$ref": "#/$defs/artifactRefWithEvidencePacketSchemaRole"
+    },
+    "verificationReceiptSchemaRef": {
+      "$ref": "#/$defs/artifactRefWithVerificationReceiptSchemaRole"
+    },
+    "bootstrapFixturesRef": {
+      "$ref": "#/$defs/artifactRefWithBootstrapFixturesRole"
+    },
+    "terminalSynthesisRef": {
+      "$ref": "#/$defs/artifactRefWithTerminalSynthesisRole"
+    },
+    "approvalBundleSchemaRef": {
+      "$ref": "#/$defs/artifactRefWithApprovalBundleSchemaRole"
+    },
+    "bootstrapControllerRef": {
+      "$ref": "#/$defs/artifactRefWithBootstrapControllerRole"
+    },
+    "artifactRefWithNodeContractSchemaRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "NODE_CONTRACT_SCHEMA"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithBootstrapManifestsRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "BOOTSTRAP_MANIFESTS"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithEvidencePacketSchemaRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "EVIDENCE_PACKET_SCHEMA"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithVerificationReceiptSchemaRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "VERIFICATION_RECEIPT_SCHEMA"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithBootstrapFixturesRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "BOOTSTRAP_FIXTURES"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithTerminalSynthesisRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "TERMINAL_SYNTHESIS"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithApprovalBundleSchemaRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "APPROVAL_BUNDLE_SCHEMA"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithBootstrapControllerRole": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "BOOTSTRAP_CONTROLLER"
+            }
+          }
+        }
+      ]
+    },
+    "sourceS0": {
+      "$ref": "#/$defs/artifactRefWithS0Role"
+    },
+    "sourceS1": {
+      "$ref": "#/$defs/artifactRefWithS1Role"
+    },
+    "sourceS2": {
+      "$ref": "#/$defs/artifactRefWithS2Role"
+    },
+    "sourceS3": {
+      "$ref": "#/$defs/artifactRefWithS3Role"
+    },
+    "sourceS4": {
+      "$ref": "#/$defs/artifactRefWithS4Role"
+    },
+    "sourceS5": {
+      "$ref": "#/$defs/artifactRefWithS5Role"
+    },
+    "artifactRefWithS0Role": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "S0"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithS1Role": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "S1"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithS2Role": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "S2"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithS3Role": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "S3"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithS4Role": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "S4"
+            }
+          }
+        }
+      ]
+    },
+    "artifactRefWithS5Role": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "S5"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
