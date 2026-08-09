@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use semantic_corpus::{BuildSystem, GenerateOptions, TaskFamily, generate};
+use semantic_corpus::{BuildSystem, GenerateOptions, TaskFamily, generate, verify_hidden_package};
 
 #[derive(Debug, Parser)]
 #[command(name = "semantic-corpus")]
@@ -25,6 +25,13 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Verify a public task package against its controller-owned hidden manifest.
+    VerifyHidden {
+        #[arg(long)]
+        agent_dir: PathBuf,
+        #[arg(long)]
+        controller_dir: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -44,6 +51,13 @@ fn main() -> Result<()> {
             })?;
             println!("agent package: {}", generated.agent_dir.display());
             println!("controller package: {}", generated.controller_dir.display());
+        }
+        Command::VerifyHidden {
+            agent_dir,
+            controller_dir,
+        } => {
+            verify_hidden_package(&agent_dir, &controller_dir)?;
+            println!("hidden package verification: ok");
         }
     }
     Ok(())
