@@ -1,5 +1,10 @@
 # E02: goal-wide transaction safety and completeness falsifier
 
+> Historical first attempt. Its falsifier remains valid for self-attested
+> serialized evidence. After explicit user authorization, the authority-bound
+> second approach was implemented and independently accepted for one narrow
+> family; see `codeclew-e02-authority-second-approach-2026-08-09.md`.
+
 Date: 2026-08-09
 
 Outcome: `SUCCESS + STOP_FALSE_COMPLETENESS`

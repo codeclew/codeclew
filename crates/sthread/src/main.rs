@@ -116,6 +116,8 @@ struct IndexArgs {
 struct SymbolArgs {
     #[arg(long)]
     repo: PathBuf,
+    #[arg(long, default_value = ":/main")]
+    compilation: String,
     #[arg(long)]
     symbol: String,
 }
@@ -368,7 +370,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         } => with_worker(&workspace, |w| {
             w.request(
                 RequestKind::ResolveSymbol,
-                &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol}),
+                &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol,"compilation":args.compilation}),
             )
         }),
         Command::Resolve {
@@ -382,7 +384,7 @@ fn run(cli: Cli) -> Result<Value, SthreadError> {
         Command::Cfg(args) => with_worker(&workspace, |w| {
             let raw = w.request(
                 RequestKind::BuildLocalGraph,
-                &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol}),
+                &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol,"compilation":args.compilation}),
             )?;
             let graph: LocalGraph = serde_json::from_value(raw).map_err(parse_error)?;
             serde_json::to_value(graph::enrich(graph)).map_err(parse_error)

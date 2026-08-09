@@ -865,7 +865,7 @@ fn revalidate_semantic_read_set(
     Ok(())
 }
 
-fn rebuild_thread(
+pub(crate) fn rebuild_thread(
     repo: &Path,
     thread: &ThreadIr,
     project: &Value,
@@ -1052,12 +1052,47 @@ pub fn validate_required_threads(transaction: &Transaction) -> Result<(), Sthrea
     Ok(())
 }
 
-fn validate_worktree(
+pub(crate) fn validate_worktree(
     worktree: &Path,
     build_system: BuildSystem,
     build_launcher: &str,
     compile_task: &str,
     tests: &[String],
+) -> Result<(u64, u64), SthreadError> {
+    validate_worktree_with_options(
+        worktree,
+        build_system,
+        build_launcher,
+        compile_task,
+        tests,
+        false,
+    )
+}
+
+pub(crate) fn validate_worktree_fresh(
+    worktree: &Path,
+    build_system: BuildSystem,
+    build_launcher: &str,
+    compile_task: &str,
+    tests: &[String],
+) -> Result<(u64, u64), SthreadError> {
+    validate_worktree_with_options(
+        worktree,
+        build_system,
+        build_launcher,
+        compile_task,
+        tests,
+        true,
+    )
+}
+
+fn validate_worktree_with_options(
+    worktree: &Path,
+    build_system: BuildSystem,
+    build_launcher: &str,
+    compile_task: &str,
+    tests: &[String],
+    force_tests: bool,
 ) -> Result<(u64, u64), SthreadError> {
     if build_system == BuildSystem::Maven && !tests.is_empty() {
         // Maven's test lifecycle already includes main/test compilation. A
@@ -1125,6 +1160,9 @@ fn validate_worktree(
     match build_system {
         BuildSystem::Gradle => {
             test.arg("--no-daemon").arg("--quiet");
+            if force_tests {
+                test.arg("--rerun-tasks");
+            }
         }
         BuildSystem::Maven => {
             test.arg("-q");

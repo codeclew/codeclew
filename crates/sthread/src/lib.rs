@@ -1,6 +1,7 @@
 pub mod agent_context;
 pub mod canonical;
 pub mod error;
+pub mod evidence_authority;
 pub mod freshness;
 pub mod graph;
 pub mod identity;

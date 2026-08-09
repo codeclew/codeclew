@@ -730,13 +730,13 @@ internal class Worker : AutoCloseable {
                 else -> "EXPRESSION"
             }
             val defines = when {
-                "VariableDeclarationExit" in rawKind -> expression?.let(::definedName)
+                "VariableDeclaration" in rawKind -> expression?.let(::definedName)
                 "VariableAssignment" in rawKind -> expression?.let(::definedName)
                 else -> null
             }
             var uses = when {
                 "QualifiedAccess" in rawKind -> expression?.let(::usedNames).orEmpty()
-                "FunctionCallExit" in rawKind || "VariableAssignment" in rawKind || "VariableDeclarationExit" in rawKind -> expression?.let(::normalizedUses).orEmpty()
+                "FunctionCallExit" in rawKind || "VariableAssignment" in rawKind || "VariableDeclaration" in rawKind -> expression?.let(::normalizedUses).orEmpty()
                 "ConditionExit" in rawKind -> expression?.let(::usedNames).orEmpty()
                 "Jump" in rawKind || "Throw" in rawKind -> expression?.let(::usedNames).orEmpty()
                 else -> emptyList()
@@ -748,6 +748,7 @@ internal class Worker : AutoCloseable {
             graphNode("fir:$rawId", kind, defines, psi?.let { anchor(file, owner, it, kt.text) }, uses).let { node ->
                 buildJsonObject { node.forEach { (key, item) -> put(key, item) }; putJsonObject("attributes") {
                     put("firNodeKind", rawKind); put("firDead", raw["dead"] ?: JsonPrimitive(false)); put("analysis", "K2_FIR_CFG")
+                    cfg["symbol"]?.let { put("ownerCompilerSymbol", it) }
                     if (hasClassReceiver && ((defines != null && defines !in functionLocals) || uses.any { it !in functionLocals })) {
                         putJsonArray("effects") {
                             if (uses.any { it !in functionLocals }) add("READ_STATE")
@@ -801,7 +802,13 @@ internal class Worker : AutoCloseable {
         val entry = rawKinds.entries.firstOrNull { "FunctionEnter" in it.value }?.key
         val entryEdges = if (entry == null || fn.valueParameters.isEmpty()) emptyList() else rawEdges.filter { it["from"]?.jsonPrimitive?.content == "fir:$entry" }
         val normalizedEdges = rawEdges.filterNot { it in entryEdges }.toMutableList()
-        val parameterNodes = fn.valueParameters.mapIndexed { index, parameter -> graphNode("param:$index", "PARAMETER", parameter.name, anchor(file, owner, parameter, kt.text)) }
+        val parameterNodes = fn.valueParameters.mapIndexed { index, parameter ->
+            val node = graphNode("param:$index", "PARAMETER", parameter.name, anchor(file, owner, parameter, kt.text))
+            buildJsonObject {
+                node.forEach { (key, value) -> put(key, value) }
+                cfg["symbol"]?.let { symbol -> putJsonObject("attributes") { put("analysis", "K2_FIR"); put("ownerCompilerSymbol", symbol) } }
+            }
+        }
         if (entry != null && parameterNodes.isNotEmpty()) {
             normalizedEdges += edge("fir:$entry", "param:0", "CFG_NORMAL")
             for (index in 0 until parameterNodes.lastIndex) normalizedEdges += edge("param:$index", "param:${index + 1}", "CFG_NORMAL")
