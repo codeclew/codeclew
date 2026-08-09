@@ -4,6 +4,8 @@ pub mod error;
 pub mod graph;
 pub mod index;
 pub mod model;
+pub mod semantic_goal;
+pub mod semantic_kernel;
 pub mod task_context;
 pub mod task_plan;
 pub mod transaction;
