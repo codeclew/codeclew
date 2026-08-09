@@ -8,6 +8,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod e04;
 pub mod population;
 
 pub const GENERATOR_VERSION: &str = "semantic-corpus/0.2";
@@ -160,18 +161,25 @@ struct GeneratedFile {
 
 /// Generate one isolated corpus task. The output directory must be absent or empty.
 pub fn generate(options: &GenerateOptions) -> Result<GeneratedCorpus> {
+    generate_with_variant(options, None)
+}
+
+/// E04 uses the frozen slot variant rather than deriving it from the seed.
+/// This remains corpus generation only; it does not invoke a model or binder.
+pub fn generate_with_variant(
+    options: &GenerateOptions,
+    frozen_variant: Option<TaskVariant>,
+) -> Result<GeneratedCorpus> {
     ensure_empty_output(&options.output)?;
 
     let vocabulary = vocabulary(options.seed, options.family, options.build_system);
     let layout = repository_layout(options.seed, options.family, options.build_system);
-    let variant = task_variant(options.seed, options.family, options.build_system);
+    let variant = frozen_variant
+        .unwrap_or_else(|| task_variant(options.seed, options.family, options.build_system));
     let repository_files = repository_files(options.build_system, layout, &vocabulary);
     let source_snapshot_sha256 = hash_files(&repository_files);
     let task_id = format!("{}-{}", options.family, &source_snapshot_sha256[..16]);
-    let kotlin_version = match options.build_system {
-        BuildSystem::Gradle => "2.1.0",
-        BuildSystem::Maven => "2.3.0",
-    };
+    let kotlin_version = "2.1.21";
 
     let mut public_manifest = PublicTaskManifest {
         schema: "semantic-corpus-public-task/0.1".to_owned(),
@@ -486,13 +494,13 @@ fn gradle_build(layout: RepositoryLayout) -> String {
     match layout {
         RepositoryLayout::Flat => gradle_module_build(),
         RepositoryLayout::Module => {
-            "plugins {\n    kotlin(\"jvm\") version \"2.1.0\" apply false\n}\n".to_owned()
+            "plugins {\n    kotlin(\"jvm\") version \"2.1.21\" apply false\n}\n".to_owned()
         }
     }
 }
 
 fn gradle_module_build() -> String {
-    "plugins {\n    kotlin(\"jvm\") version \"2.1.0\"\n}\n\nrepositories {\n    mavenCentral()\n}\n\ndependencies {\n    testImplementation(kotlin(\"test\"))\n}\n\nkotlin {\n    jvmToolchain(21)\n}\n\ntasks.test {\n    useJUnitPlatform()\n}\n".to_owned()
+    "plugins {\n    kotlin(\"jvm\") version \"2.1.21\"\n}\n\nrepositories {\n    mavenCentral()\n}\n\ndependencies {\n    testImplementation(kotlin(\"test\"))\n}\n\nkotlin {\n    jvmToolchain(21)\n}\n\ntasks.test {\n    useJUnitPlatform()\n}\n".to_owned()
 }
 
 fn production_source(vocabulary: &Vocabulary) -> String {
@@ -540,7 +548,7 @@ fn maven_root_pom(vocabulary: &Vocabulary) -> String {
 
 fn maven_module_pom(vocabulary: &Vocabulary) -> String {
     format!(
-        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>generated.sample</groupId>\n  <artifactId>{}</artifactId>\n  <version>1.0.0</version>\n  <properties>\n    <kotlin.version>2.3.0</kotlin.version>\n    <maven.compiler.release>21</maven.compiler.release>\n    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-stdlib</artifactId>\n      <version>${{kotlin.version}}</version>\n    </dependency>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-test-junit5</artifactId>\n      <version>${{kotlin.version}}</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n  <build>\n    <sourceDirectory>${{project.basedir}}/src/main/kotlin</sourceDirectory>\n    <testSourceDirectory>${{project.basedir}}/src/test/kotlin</testSourceDirectory>\n    <plugins>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>kotlin-maven-plugin</artifactId>\n        <version>${{kotlin.version}}</version>\n        <executions>\n          <execution><id>compile</id><goals><goal>compile</goal></goals></execution>\n          <execution><id>test-compile</id><goals><goal>test-compile</goal></goals></execution>\n        </executions>\n      </plugin>\n      <plugin>\n        <groupId>org.apache.maven.plugins</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>\n        <version>3.5.2</version>\n      </plugin>\n    </plugins>\n  </build>\n</project>\n",
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>generated.sample</groupId>\n  <artifactId>{}</artifactId>\n  <version>1.0.0</version>\n  <properties>\n    <kotlin.version>2.1.21</kotlin.version>\n    <maven.compiler.release>21</maven.compiler.release>\n    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-stdlib</artifactId>\n      <version>${{kotlin.version}}</version>\n    </dependency>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-test-junit5</artifactId>\n      <version>${{kotlin.version}}</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n  <build>\n    <sourceDirectory>${{project.basedir}}/src/main/kotlin</sourceDirectory>\n    <testSourceDirectory>${{project.basedir}}/src/test/kotlin</testSourceDirectory>\n    <plugins>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>kotlin-maven-plugin</artifactId>\n        <version>${{kotlin.version}}</version>\n        <executions>\n          <execution><id>compile</id><goals><goal>compile</goal></goals></execution>\n          <execution><id>test-compile</id><goals><goal>test-compile</goal></goals></execution>\n        </executions>\n      </plugin>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>\n        <version>3.5.2</version>\n      </plugin>\n    </plugins>\n  </build>\n</project>\n",
         vocabulary.project_name
     )
 }
