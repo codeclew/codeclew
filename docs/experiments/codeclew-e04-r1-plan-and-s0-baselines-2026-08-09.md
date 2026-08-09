@@ -4,7 +4,7 @@ Date: 2026-08-09
 
 Status: planning after `E04-S0 = INFRA_ERROR / NO_DECISION`
 
-## 1. Why the next product operation is `bind-task`
+## 1. Why the next product operation is a generic typed-goal binder
 
 The proposal is not primarily about adding another CLI command. It establishes
 one stable product boundary:
@@ -15,14 +15,68 @@ task intent + repository snapshot
   -> typed roles, obligations, provenance and proof boundaries
 ```
 
-The first transport can be:
+The first transport is a stable CLI/tool boundary:
 
 ```text
-clew bind-task --repo . --intent "..."
+clew bind --repo . --goal goal.json
 ```
 
 The same Rust operation can later be exposed as an MCP/tool call without
 changing its semantics or benchmark contract.
+
+`goal.json` is model-owned only where business intent is irreducible. It does
+not contain worker graph IDs, source ranges, hashes, patches, hidden family
+labels or repository recipes. It declares typed variables and generic semantic
+constraints, for example:
+
+```json
+{
+  "schema": "semantic-goal/0.3",
+  "baseRevision": "...",
+  "variables": [
+    {"id": "values", "domain": "VALUE_EDGE", "hints": ["itemsAwaitingContext"]},
+    {"id": "context", "domain": "CALLABLE", "hints": ["mappingContext"]},
+    {"id": "transform", "domain": "CALLABLE", "hints": ["applyMappingContext"]}
+  ],
+  "constraints": [
+    {"kind": "BIND_UNIQUE", "args": ["values"]},
+    {"kind": "BIND_UNIQUE", "args": ["context"]},
+    {"kind": "BIND_UNIQUE", "args": ["transform"]},
+    {"kind": "TYPE_ASSIGNABLE", "args": ["values", "transform"]},
+    {"kind": "INTRODUCE_ONCE", "args": ["context"]},
+    {"kind": "MAP_VALUE_EDGE", "args": ["values", "transform", "context"]},
+    {"kind": "PRESERVE_ORDER", "args": ["values"]},
+    {"kind": "PRESERVE_CARDINALITY", "args": ["values"]},
+    {"kind": "MUST_REFUSE_ON_BOUNDARY", "args": ["values", "transform", "context"]}
+  ]
+}
+```
+
+The production binder has no `family` field and no `match family` dispatch.
+Benchmark families are labels used only by the hidden evaluator. A new task is
+supported when its goal composes from the same domains, relations and proof
+rules. A genuinely new semantic boundary may add one reusable fact provider or
+predicate, but never a task/repository-specific source recipe.
+
+The caller-owned constraint list is not the proof closure. Every operator has a
+worker-owned specification:
+
+```text
+ConstraintOpSpec {
+  arity
+  operandDomains
+  requiredEvidenceRelations
+  mandatoryClosure
+  refusalOnUnknown
+}
+```
+
+The worker type-checks the goal and expands `mandatoryClosure` to a fixed point.
+For example, `MAP_VALUE_EDGE` adds type compatibility, placement,
+effects/nullability/order/cardinality/laziness/consumer preservation, boundary
+closure and the selected oracle policy even if the caller omitted them. A proof
+is complete only when its obligations exactly equal the normalized closure,
+with no missing or extra items.
 
 This is preferred to the available alternatives for the following reasons:
 
@@ -33,15 +87,16 @@ This is preferred to the available alternatives for the following reasons:
 | Improve only `agent-context` | Better bounded navigation | It returns evidence surfaces, not the exact typed goal, ambiguity set or must-refuse decision. Model-owned planning and transcript replay remain. |
 | Add more transform macros | Fast on known shapes | It risks recipe proliferation and does not define a common goal/proof boundary. |
 | Permit grep fallback | Makes more runs finish | It directly falsifies the no-grep hypothesis and hides applicability failure. |
-| Build all seven family binders now | Broad nominal coverage | It spends heavily before one family demonstrates that the abstraction reduces calls and tokens. |
+| Add one hardcoded binder per benchmark family | Broad nominal coverage | It turns evaluation labels into production recipes and cannot generalize to unseen compositions. |
 | Put all source into a larger model context | Simplifies tooling | It recreates the default workflow and loses repository-size-independent context. |
 
-The bounded first implementation supports only
-`producer-transform-consumer`. It must auto-select semantic roots, normalize
-FQNs, and return `UNSUPPORTED_FAMILY` for every other family. Binder-only
-`EXTERNAL_SPEC` may be accepted as a stated intended behavior, but it must not
-be promoted to a materialization/test proof. This preserves the later safety
-gate.
+The first executable composition may use `MAP_EDGE_WITH_CONTEXT` as a cheap
+probe, but it is not an E04 candidate by itself. Before E04-R1, at least five
+preregistered D02 families must be expressible by the same family-neutral goal
+schema and proof kernel without adding five production dispatch branches.
+Binder-only `EXTERNAL_SPEC` may be accepted as a stated intended behavior, but
+it must not be promoted to a materialization/test proof. This preserves the
+later safety gate.
 
 The reason this can reduce tokens is structural: one model call provides only
 the irreducible task intent; one worker call owns discovery, candidate
@@ -168,20 +223,59 @@ audit. `audit-redir` is the false default write flag. Every AST row has
 
 ## 4. Harness changes before E04-R1
 
-### R1. Product entrypoint
+### R1. Generic product entrypoint and proof kernel
 
-Implement the narrow PTC `bind-task` operation first. It owns root discovery,
-candidate enumeration, FQN normalization, exact role binding, the three frozen
-obligations, ambiguity and typed refusal. It returns a stable JSON schema and
-never edits source. Other families return `UNSUPPORTED_FAMILY`.
+Replace the current single-family `SemanticGoal` validation branch with a
+family-neutral `semantic-goal/0.3` language of typed variables, constraints and
+policies. `clew bind --goal` owns root discovery, candidate enumeration, FQN
+normalization, exact variable binding, obligation discharge, bounded ambiguity
+and typed refusal. It returns a stable JSON schema and never edits source.
+
+The proof kernel must:
+
+- dispatch only on individual registered operators/domains and derive their
+  mandatory closure to a fixed point; it must never dispatch on a whole-goal
+  signature, family label, variable ID or hint;
+- require proof obligations to equal that worker-derived closure exactly, so a
+  caller cannot weaken a goal by omitting oracle, preservation or boundary
+  constraints;
+- require every variable and constraint exactly once in the proof receipt;
+- tie every binding and relation to current, sound, source-provenanced compiler
+  evidence from the exact clean Git snapshot;
+- reject current `Unknown`, unsupported boundaries, stale evidence, missing
+  oracle ownership, extra obligations and relabelled/filler facts;
+- return no Change Graph for `AMBIGUOUS` or `REFUSED`;
+- keep model hints non-authoritative: name matches can select candidates but
+  cannot exclude compiler candidates, issue regex/source search or discharge
+  semantic constraints;
+- expose an opaque authority receipt that cannot be serialized, forged or
+  replayed across session/revision boundaries.
+
+The CLI returns only a canonical serializable `BoundSummary`. It cannot
+authorize apply/materialization. Only the live authority session owns the
+opaque capability; apply must reuse it or rebuild and revalidate the full
+closure. `AMBIGUOUS` and `REFUSED` contain neither a capability nor a Change
+Graph.
 
 Exit criteria:
 
-- one command on a clean committed Gradle fixture returns a valid result;
-- positive, two-candidate and must-refuse fixtures all pass;
-- no workflow/test symbol is required from the caller;
+- one command on clean committed Gradle and supported Maven fixtures returns a
+  valid result or an explicit supported-contour refusal;
+- positive, two-candidate, missing-evidence, stale, forged and must-refuse
+  fixtures pass for each implemented semantic composition;
+- at least five D02 families compile to the same public constraint language and
+  kernel, with no family enum/dispatch in the product path;
+- alpha-renaming variables, reordering constraints and deleting hints preserve
+  the candidate set, status and proof fingerprint;
+- one test-only unseen composition binds through existing operators without a
+  production-code change;
+- no corpus-generator dependency or D02 family/task vocabulary exists in the
+  worker, CLI, skill or product prompt;
+- no workflow/test symbol beyond model-owned goal hints is required from the
+  caller;
 - result contains no source patch or repository-specific recipe;
-- an independent source/test review finds no false `BOUND`.
+- an independent source/test review finds no false `BOUND` and confirms that
+  removing family labels does not change binding behavior.
 
 ### R2. Audit real Codex events
 
@@ -229,7 +323,12 @@ roles, obligations, oracle and refusal code before any arm runs.
 
 Before final seed derivation:
 
-1. Run all no-model environment/audit checks: zero model tokens.
+1. Run all no-model environment/audit checks: zero model tokens. This includes
+   public positive/ambiguous/refuse suites for every claimed composition on
+   Gradle and every claimed Maven cell; missing/extra constraint, wrong
+   arity/domain, forged evidence, relabelled edge, stale/cross-session receipt,
+   current Unknown, partial/truncated coverage, alpha-renaming, reordered
+   constraints, hint deletion and unseen-composition mutations.
 2. Run one disposable canary per arm: three model calls total.
 3. Require native telemetry, unchanged source digest, correct tool recognition,
    at least one successful non-help semantic/navigation result, valid output
@@ -238,6 +337,13 @@ Before final seed derivation:
    calls. Crossing the ceiling stops before corpus materialization.
 
 Canaries are infrastructure/protocol tests, not benchmark evidence.
+
+Before R6, a machine-readable coverage guard must prove that the frozen
+supported contour can reach GE1: at least five semantic compositions and at
+least 9 of the 14 positive family×build cells are executable. Exact ambiguity
+enumeration is required for every claimed cell, and the full preregistered
+must-refuse denominator must classify correctly. Five Gradle-only cells are
+only 35.7% and therefore cannot open R6.
 
 ### R6. Freeze and new withheld series
 
@@ -249,11 +355,15 @@ Canaries are infrastructure/protocol tests, not benchmark evidence.
   decision-bearing result.
 - Materialize 42 fresh tasks; complete blind annotation and independent freeze
   verification before opening any arm.
+- Run a zero-token preflight across all 42 fresh agent repositories: clean Git
+  HEAD, source digest, build model, AST index, non-help Codeclew result, cache
+  availability and controller isolation must all pass before model arms.
 
 ### R7. Live-run circuit breaker
 
-The full matrix remains 126 runs with all failures retained. Before continuing
-past the first two complete task triplets, automatically stop the series on
+The full matrix remains 126 runs with all failures retained. The first two
+complete task triplets are preregistered to span Gradle and Maven. Before
+continuing past them, automatically stop the series on
 infrastructure-only conditions:
 
 - missing native telemetry;
@@ -263,6 +373,9 @@ infrastructure-only conditions:
 - zero successful non-help tool executions in a specialized arm;
 - cache/path/no-HEAD error;
 - broken controller/public commitment.
+
+Each specialized arm must also have at least one successful non-help tool
+execution in those triplets.
 
 Do not stop or repair based on semantic correctness. Per-run ceiling: one model
 turn, at most eight action calls, 32 KiB model-visible context and 1 KiB goal.
@@ -291,3 +404,59 @@ events. Only an accepted E04-R1 receipt can evaluate `GE1`.
 
 This order spends product effort before benchmark scale, and limits the next
 harness failure to three canary calls instead of another 126-run series.
+
+## 6. Execution checkpoint: 2026-08-10
+
+Status: `PAUSE / REJECT`. The stop condition fired during zero-token focused
+testing. No canary, freeze, fresh seed derivation or model run was started.
+
+Accepted progress:
+
+- the corrected R1 plan, including worker-owned fixed-point closure, exact
+  proof equality, anti-recipe invariants, the 9/14 coverage guard and the
+  preflight/circuit breaker, received an independent `ACCEPT`;
+- real Codex shell-envelope fixtures now demonstrate how S0 audit must parse
+  commands and safe stderr redirection;
+- the diagnostic harness self-test passes without model calls.
+
+Rejected product prototype:
+
+- every executable `ValueFlow` goal is still converted to the old
+  `SemanticGoal::map_edge_with_context` recipe;
+- the request still requires one caller-selected target root and one
+  caller-selected oracle symbol/compilation;
+- proof roles remain hardcoded to `contextProducer`, `transformer` and
+  `valueEdge`;
+- a goal containing only `BIND_UNIQUE` can reach the PTC binder and receive
+  three role obligations that the goal never declared, because exact
+  variable/arity correspondence is absent;
+- tests cover renamed PTC rather than variables, operand domains, unseen
+  compositions or the five-family/9-of-14 contour.
+
+The product prototype is therefore retained only as an uncommitted rejected
+experiment and must not be described as generic product progress.
+
+Rejected preflight state:
+
+- `project inspect --repo .` defaults to root `:/main`/`compileKotlin`, while
+  multi-module generated repositories contain Kotlin in an included
+  `:unit-*` module; Codeclew returns `::compileKotlin` not found;
+- populated `.e04-state`/`.semantic-thread` directories live inside the Git
+  checkout and are not ignored, so authority can reject the repository as
+  dirty after tools run;
+- consequently the harness delta is not yet safe to freeze or commit as a
+  complete R1 runner.
+
+Exact resume point:
+
+1. Introduce typed variables and explicit operator operands/arity/domains.
+2. Make mandatory closure and proof equality variable-aware; demonstrate that
+   bare `BIND_UNIQUE` cannot synthesize undeclared roles.
+3. Remove the `ValueFlow -> map_edge_with_context` conversion and hardcoded PTC
+   proof roles; pass one unseen-composition test without product-code changes.
+4. Move tool state outside the committed checkout or explicitly exclude it
+   from authority cleanliness without excluding source/config inputs.
+5. Make preflight enumerate/select the actual Kotlin compilation for each
+   project/module and recheck Git cleanliness after every tool.
+6. Re-run only zero-token focused tests and independent review. Canaries remain
+   forbidden until all six corrections pass.
