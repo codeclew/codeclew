@@ -50,6 +50,7 @@ fn committed_fixture() -> (tempfile::TempDir, PathBuf) {
             "user.email=codeclew@example.invalid",
             "commit",
             "--quiet",
+            "--allow-empty",
             "-m",
             "authority fixture",
         ])

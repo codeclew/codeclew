@@ -234,6 +234,7 @@ fn anchors_ir_and_candidate_validation_are_metamorphic() {
             replacement: Replacement {
                 kotlin: "value + 2".into(),
             },
+            semantic_operation: None,
             preconditions: Default::default(),
             postconditions: Default::default(),
         }],

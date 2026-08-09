@@ -412,6 +412,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                 replacement: Replacement {
                     kotlin: String::new(),
                 },
+                semantic_operation: None,
                 preconditions: BTreeMap::from([(
                     "substitutions".into(),
                     json!([
@@ -428,6 +429,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                 replacement: Replacement {
                     kotlin: "{ return formatArchive(product) }".into(),
                 },
+                semantic_operation: None,
                 preconditions: BTreeMap::new(),
                 postconditions: BTreeMap::new(),
             },
@@ -438,6 +440,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                 replacement: Replacement {
                     kotlin: "package com.acme.archive\n\ninternal fun formatArchive(product: ProductIdentity): String =\n    \"${product.id}:${product.code}:${product.title}\"\n".into(),
                 },
+                semantic_operation: None,
                 preconditions: BTreeMap::new(),
                 postconditions: BTreeMap::new(),
             },
@@ -448,6 +451,7 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                 replacement: Replacement {
                     kotlin: "package com.acme.archive\n\ninternal class GeneratedArchiveMarker\n".into(),
                 },
+                semantic_operation: None,
                 preconditions: BTreeMap::new(),
                 postconditions: BTreeMap::new(),
             },

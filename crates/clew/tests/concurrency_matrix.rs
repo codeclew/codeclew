@@ -157,6 +157,7 @@ fn make_tx(
             replacement: Replacement {
                 kotlin: replacement.into(),
             },
+            semantic_operation: None,
             preconditions: BTreeMap::new(),
             postconditions: BTreeMap::new(),
         }],
@@ -206,6 +207,7 @@ fn make_import_tx(
         replacement: Replacement {
             kotlin: "java.time.Instant".into(),
         },
+        semantic_operation: None,
         preconditions: BTreeMap::new(),
         postconditions: BTreeMap::new(),
     }];

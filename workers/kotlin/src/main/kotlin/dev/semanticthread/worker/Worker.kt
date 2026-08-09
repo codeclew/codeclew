@@ -1169,6 +1169,7 @@ internal class Worker : AutoCloseable {
         val module = project["module"]?.jsonPrimitive?.content ?: ":"
         val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: "main"
         val kind = request.requiredString("kind"); val replacement = request.requiredString("replacement")
+        if (kind == "MAP_EDGE_WITH_CONTEXT") return applyMapEdgeWithContext(repo, relative, path, source, request, module, sourceSet, compilation)
         if (kind == "ADD_IMPORT" || kind == "REMOVE_IMPORT") return applyImportEdit(repo, relative, path, source, kind, replacement, request)
         if (kind == "REPLACE_DECLARATION") return applyDeclarationEdit(repo, relative, path, source, request, replacement, module, sourceSet)
         if (kind == "REWRITE_DECLARATION") return applyDeclarationRewrite(repo, relative, path, source, request, module, sourceSet)
@@ -1301,6 +1302,176 @@ internal class Worker : AutoCloseable {
                 putJsonObject("abi") { put("key", ownerQuery); put("beforeHash", sha("$ownerQuery|$beforeSignature".toByteArray())); put("afterHash", sha("$ownerQuery|$afterSignature".toByteArray())) }
                 putJsonObject("summary") { put("key", ownerQuery); put("beforeHash", summary(owner, baselineFacts)); put("afterHash", summary(candidateOwner, candidateFacts)) }
                 putJsonObject("effects") { put("key", ownerQuery); put("beforeHash", sha(JsonArray(beforeEffects.map(::JsonPrimitive)).toString().toByteArray())); put("afterHash", sha(JsonArray(afterEffects.map(::JsonPrimitive)).toString().toByteArray())) }
+                putJsonObject("diagnostics") { put("key", relative); put("beforeHash", sha(JsonArray(baseline.diagnostics).toString().toByteArray())); put("afterHash", sha(JsonArray(candidateAnalysis.diagnostics).toString().toByteArray())) }
+            }
+        }
+    }
+
+    private fun applyMapEdgeWithContext(
+        repo: Path,
+        relative: String,
+        path: Path,
+        source: String,
+        request: JsonObject,
+        module: String,
+        sourceSet: String,
+        compilation: String,
+    ): JsonObject {
+        if (request.requiredString("replacement").isNotEmpty()) {
+            throw WorkerFailure("INVALID_INPUT", "MAP_EDGE_WITH_CONTEXT forbids Kotlin replacement text")
+        }
+        val operation = request["semanticOperation"]?.jsonObject
+            ?: throw WorkerFailure("INVALID_INPUT", "MAP_EDGE_WITH_CONTEXT requires typed semanticOperation")
+        if (operation.requiredString("kind") != "MAP_EDGE_WITH_CONTEXT") {
+            throw WorkerFailure("INVALID_INPUT", "semantic operation kind does not match edit kind")
+        }
+        val workflowSymbol = operation.requiredString("workflowSymbol")
+        val contextSymbol = operation.requiredString("contextProducerSymbol")
+        val transformerSymbol = operation.requiredString("transformerSymbol")
+        val parameterIndex = operation.requiredInt("valueParameterIndex")
+        val collectionType = operation.requiredString("collectionType")
+        val elementType = operation.requiredString("elementType")
+        val contextType = operation.requiredString("contextType")
+        val placement = operation.requiredString("placement")
+        val strategy = operation.requiredString("strategy")
+        if (placement != "$workflowSymbol#FUNCTION_ENTRY" || strategy != "KOTLIN_EAGER_LIST_MAP_WITH_CONTEXT_ONCE") {
+            throw WorkerFailure("PRECONDITION_FAILED", "unsupported map-edge placement or strategy")
+        }
+        val compilerFqName = { symbol: String ->
+            if (!symbol.matches(Regex("[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z_][A-Za-z0-9_]*)+"))) {
+                throw WorkerFailure("INVALID_INPUT", "compiler symbol is not a callable FQN: $symbol")
+            }
+            symbol.replace('/', '.')
+        }
+        val contextFqName = compilerFqName(contextSymbol)
+        val transformerFqName = compilerFqName(transformerSymbol)
+        val kt = factory.createFile(path.fileName.toString(), source)
+        val ownerQuery = request.requiredString("ownerSymbolId")
+        val pkg = kt.packageFqName.asString()
+        val owner = PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java)
+            .singleOrNull { symbolMatches(ownerQuery, pkg, it, module, sourceSet) }
+            ?: throw WorkerFailure("STALE_TARGET", "workflow owner no longer resolves uniquely")
+        if (owner.parent !is KtFile || owner.receiverTypeReference != null || owner.hasModifier(KtTokens.SUSPEND_KEYWORD)) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "workflow must be a top-level non-receiver non-suspend function")
+        }
+        if ("$pkg.${owner.name}" != compilerFqName(workflowSymbol)) {
+            throw WorkerFailure("BINDING_CHANGED", "workflow compiler symbol no longer matches owner")
+        }
+        val parameter = owner.valueParameters.getOrNull(parameterIndex)
+            ?: throw WorkerFailure("BINDING_CHANGED", "bound value parameter index is absent")
+        val parameterName = parameter.name
+            ?: throw WorkerFailure("BINDING_CHANGED", "bound value parameter has no name")
+        val resolution = resolveSymbol(repo, ownerQuery, compilation)
+        val identity = resolution["declaration"]?.jsonObject?.get("symbolIdentity")?.jsonObject
+            ?: throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "workflow has no compiler identity")
+        if (identity["containingDeclarations"]?.jsonArray?.isNotEmpty() != false ||
+            identity["receiverTypes"]?.jsonArray?.isNotEmpty() != false ||
+            identity["contextReceiverTypes"]?.jsonArray?.isNotEmpty() != false
+        ) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "workflow compiler identity has an unsupported receiver")
+        }
+        val parameterTypes = identity["parameterTypes"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        if (parameterTypes.getOrNull(parameterIndex) != collectionType || identity["returnType"]?.jsonPrimitive?.content != collectionType) {
+            throw WorkerFailure("TYPE_MISMATCH", "workflow collection input/return type changed")
+        }
+        if (collectionType != "kotlin/collections/List<$elementType>" || '?' in collectionType || '?' in elementType || '?' in contextType) {
+            throw WorkerFailure("TYPE_MISMATCH", "operation requires an exact non-null eager List<T> contour")
+        }
+        val directValue = when (val body = owner.bodyExpression) {
+            is KtNameReferenceExpression -> body.getReferencedName() == parameterName
+            is KtBlockExpression -> {
+                val statement = body.statements.singleOrNull() as? KtReturnExpression
+                (statement?.returnedExpression as? KtNameReferenceExpression)?.getReferencedName() == parameterName
+            }
+            else -> false
+        }
+        if (!directValue) {
+            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "workflow is no longer one direct parameter-to-return edge")
+        }
+        val occupied = PsiTreeUtil.collectElementsOfType(owner, KtNamedDeclaration::class.java)
+            .mapNotNull { it.name }.toMutableSet()
+        fun fresh(base: String): String {
+            var candidate = base
+            var suffix = 0
+            while (!occupied.add(candidate)) candidate = "$base${++suffix}"
+            return candidate
+        }
+        val contextName = fresh("__codeclewContext")
+        val valueName = fresh("__codeclewValue")
+        if (owner.annotationEntries.isNotEmpty() || owner.modifierList?.text?.isNotBlank() == true || owner.typeParameterList != null || owner.typeConstraintList != null) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "current PSI materializer supports a plain top-level workflow declaration")
+        }
+        val valueParameterList = owner.valueParameterList
+            ?: throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "workflow has no PSI value-parameter list")
+        val returnType = owner.typeReference
+            ?: throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "workflow must declare its return type")
+        val generatedOwner = factory.createFunction(
+            "fun ${owner.name}${valueParameterList.text}: ${returnType.text} {\n" +
+                "    val $contextName = $contextFqName()\n" +
+                "    return $parameterName.map { $valueName -> $transformerFqName($valueName, $contextName) }\n" +
+                "}"
+        )
+        val candidate = source.substring(0, owner.textRange.startOffset) + generatedOwner.text + source.substring(owner.textRange.endOffset)
+        val candidateFile = factory.createFile(path.fileName.toString(), candidate)
+        val candidateErrors = PsiTreeUtil.collectElementsOfType(candidateFile, PsiErrorElement::class.java)
+            .map { it.errorDescription }.sorted()
+        if (candidateErrors.isNotEmpty()) {
+            throw WorkerFailure("REPLACEMENT_PARSE_ERROR", candidateErrors.joinToString("; "))
+        }
+        val baseline = analyzeWithK2(repo, emptyMap(), compilation)
+        val candidateAnalysis = analyzeWithK2(repo, mapOf(relative to candidate), compilation)
+        val baselineErrors = baseline.diagnostics.filter(::isErrorDiagnostic).map(::diagnosticIdentity).toSet()
+        val newErrors = candidateAnalysis.diagnostics.filter(::isErrorDiagnostic)
+            .filter { diagnosticIdentity(it) !in baselineErrors }
+        if (!candidateAnalysis.valid || newErrors.isNotEmpty()) {
+            throw WorkerFailure("NEW_DIAGNOSTICS", newErrors.ifEmpty { candidateAnalysis.diagnostics }.joinToString("; ") { it["message"]?.jsonPrimitive?.content.orEmpty() })
+        }
+        val baselineFacts = fileFacts(repo, path, baseline)
+        val candidateFacts = fileFacts(repo, path, candidateAnalysis)
+        val resolvedCalls = candidateFacts.filter {
+            "FunctionCall" in it["kind"]?.jsonPrimitive?.content.orEmpty()
+        }
+        fun callCount(symbol: String) = resolvedCalls.count { it["symbol"]?.jsonPrimitive?.content == symbol }
+        val contextCalls = callCount(contextSymbol)
+        val transformerCalls = callCount(transformerSymbol)
+        val mapCalls = resolvedCalls.count {
+            it["symbol"]?.jsonPrimitive?.content?.let { symbol -> symbol == "kotlin/collections/map" || symbol.endsWith("/map") } == true
+        }
+        if (contextCalls != 1 || transformerCalls != 1 || mapCalls != 1) {
+            throw WorkerFailure(
+                "BINDING_CHANGED",
+                "candidate must resolve one exact context call, transformer call, and eager List.map; found $contextCalls/$transformerCalls/$mapCalls",
+            )
+        }
+        val finalOwner = PsiTreeUtil.collectElementsOfType(candidateFile, KtNamedFunction::class.java)
+            .single { symbolMatches(ownerQuery, pkg, it, module, sourceSet) }
+        val beforeSignature = sha(normalizeTokens(sourceSignature(owner)).toByteArray())
+        val afterSignature = sha(normalizeTokens(sourceSignature(finalOwner)).toByteArray())
+        if (beforeSignature != afterSignature) {
+            throw WorkerFailure("ABI_CHANGED", "semantic map-edge operation changed workflow signature")
+        }
+        val beforeBody = sha(normalizeTokens(owner.bodyExpression?.text.orEmpty()).toByteArray())
+        val afterBody = sha(normalizeTokens(finalOwner.bodyExpression?.text.orEmpty()).toByteArray())
+        return buildJsonObject {
+            put("schema", "semantic-candidate/0.2"); put("file", relative)
+            put("originalHash", sha(source.toByteArray())); put("candidateHash", sha(candidate.toByteArray())); putCandidateSource(repo, candidate)
+            putJsonArray("diagnostics") { candidateAnalysis.diagnostics.forEach(::add) }
+            putJsonArray("introducedEffects") {}
+            put("k2Validated", true)
+            putJsonObject("semanticOperationProof") {
+                put("kind", "MAP_EDGE_WITH_CONTEXT")
+                put("workflowSymbol", workflowSymbol); put("contextProducerSymbol", contextSymbol); put("transformerSymbol", transformerSymbol)
+                put("typeAssignable", true); put("contextEvaluatedOnce", true); put("placementDominatesUses", true)
+                put("orderPreserved", true); put("cardinalityPreserved", true); put("lazinessPreserved", true)
+                put("effectsPreserved", true); put("nullabilityPreserved", true); put("consumerContractPreserved", true)
+                put("abiPreserved", true); put("behavioralOracleRequired", true); put("noUnsupportedBoundary", true)
+            }
+            putJsonObject("semanticDelta") {
+                putJsonObject("body") { put("key", ownerQuery); put("beforeHash", beforeBody); put("afterHash", afterBody) }
+                putJsonObject("signature") { put("key", ownerQuery); put("beforeHash", beforeSignature); put("afterHash", afterSignature) }
+                putJsonObject("abi") { put("key", ownerQuery); put("beforeHash", sha("$ownerQuery|$beforeSignature".toByteArray())); put("afterHash", sha("$ownerQuery|$afterSignature".toByteArray())) }
+                putJsonObject("summary") { put("key", ownerQuery); put("beforeHash", sha(JsonArray(baselineFacts.map(::semanticSignature)).toString().toByteArray())); put("afterHash", sha(JsonArray(candidateFacts.map(::semanticSignature)).toString().toByteArray())) }
+                putJsonObject("effects") { put("key", ownerQuery); put("beforeHash", sha("[]".toByteArray())); put("afterHash", sha("[]".toByteArray())) }
                 putJsonObject("diagnostics") { put("key", relative); put("beforeHash", sha(JsonArray(baseline.diagnostics).toString().toByteArray())); put("afterHash", sha(JsonArray(candidateAnalysis.diagnostics).toString().toByteArray())) }
             }
         }

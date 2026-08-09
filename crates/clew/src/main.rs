@@ -20,7 +20,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "clew", version, about = "Semantic Thread Platform Kotlin MVP")]
+#[command(
+    name = "clew",
+    version,
+    about = "Codeclew semantic change platform for Kotlin"
+)]
 struct Cli {
     #[arg(
         long,
@@ -52,6 +56,11 @@ enum Command {
     Prove {
         #[command(subcommand)]
         command: ProveCommand,
+    },
+    #[command(about = "Apply an authority-proved semantic change as an atomic commit")]
+    Apply {
+        #[command(subcommand)]
+        command: ApplyCommand,
     },
     #[command(
         name = "agent-context",
@@ -100,6 +109,14 @@ enum ProveCommand {
         about = "Bind a typed collection-edge change and prove its preservation invariants"
     )]
     MapEdgeWithContext(MapEdgeWithContextArgs),
+}
+#[derive(Subcommand)]
+enum ApplyCommand {
+    #[command(
+        name = "map-edge-with-context",
+        about = "Prove and atomically materialize a typed collection-edge change"
+    )]
+    MapEdgeWithContext(ApplyMapEdgeWithContextArgs),
 }
 
 #[derive(Args)]
@@ -203,6 +220,17 @@ struct MapEdgeWithContextArgs {
     test_compilation: String,
     #[arg(long, default_value_t = 200)]
     max_nodes: usize,
+}
+#[derive(Args)]
+struct ApplyMapEdgeWithContextArgs {
+    #[command(flatten)]
+    proof: MapEdgeWithContextArgs,
+    #[arg(long)]
+    target_ref: String,
+    #[arg(long, default_value = "codeclew-semantic-agent")]
+    actor: String,
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 #[derive(Args)]
 struct AgentContextArgs {
@@ -458,6 +486,63 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                         "schema": "map-edge-with-context-decision/0.1",
                         "status": "BOUND",
                         "proof": receipt.summary(),
+                    }))
+                }
+                MapEdgeWithContextDecision::Ambiguous(ambiguity) => {
+                    serde_json::to_value(ambiguity).map_err(parse_error)
+                }
+                MapEdgeWithContextDecision::Refused(refusal) => {
+                    serde_json::to_value(refusal).map_err(parse_error)
+                }
+            }
+        }),
+        Command::Apply {
+            command: ApplyCommand::MapEdgeWithContext(args),
+        } => with_worker(&workspace, |worker| {
+            let repo = absolute(&args.proof.repo)?;
+            let revision = git_head(&repo)?;
+            let thread = build_thread(
+                worker,
+                SliceArgs {
+                    repo: repo.clone(),
+                    compilation: args.proof.compilation,
+                    symbol: Some(args.proof.workflow_symbol),
+                    file: None,
+                    offset: None,
+                    direction: DirectionArg::Both,
+                    max_nodes: args.proof.max_nodes,
+                    output: None,
+                },
+            )?;
+            let mut authority = EvidenceAuthority::open(&repo, &revision)?;
+            let verified = authority.verify_thread(&thread, worker)?;
+            let goal = SemanticGoal::map_edge_with_context(revision);
+            match authority.bind_map_edge_with_context(
+                &goal,
+                &verified,
+                &args.proof.test_symbol,
+                &args.proof.test_compilation,
+                worker,
+            )? {
+                MapEdgeWithContextDecision::Bound(receipt) => {
+                    let proof = receipt.summary().clone();
+                    let (result, transaction) = authority.commit_map_edge_with_context(
+                        &receipt,
+                        &args.actor,
+                        &args.target_ref,
+                        worker,
+                    )?;
+                    if let Some(output) = args.output.as_deref() {
+                        write_artifact(output, &transaction)?;
+                    }
+                    Ok(json!({
+                        "schema":"map-edge-with-context-apply/0.1",
+                        "status":"COMMITTED",
+                        "proof":proof,
+                        "result":result,
+                        "changedFiles":transaction.preview.as_ref().map(|preview| &preview.changed_files),
+                        "finalCommit":transaction.final_commit,
+                        "transactionArtifact":args.output,
                     }))
                 }
                 MapEdgeWithContextDecision::Ambiguous(ambiguity) => {

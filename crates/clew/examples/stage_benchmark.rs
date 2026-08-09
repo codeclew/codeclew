@@ -266,6 +266,7 @@ fn main() {
                 replacement: Replacement {
                     kotlin: format!("value = value + value /* preview sample {sample} */"),
                 },
+                semantic_operation: None,
                 preconditions: BTreeMap::new(),
                 postconditions: BTreeMap::new(),
             }],

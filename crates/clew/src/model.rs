@@ -213,10 +213,32 @@ pub struct EditOperation {
     pub kind: String,
     pub target: Value,
     pub replacement: Replacement,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_operation: Option<SemanticOperation>,
     #[serde(default)]
     pub preconditions: BTreeMap<String, Value>,
     #[serde(default)]
     pub postconditions: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum SemanticOperation {
+    MapEdgeWithContext {
+        workflow_symbol: String,
+        context_producer_symbol: String,
+        transformer_symbol: String,
+        value_parameter_index: usize,
+        collection_type: String,
+        element_type: String,
+        context_type: String,
+        placement: String,
+        strategy: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -18,6 +18,16 @@ pub fn preview(
     edit: &EditIr,
     worker: &mut WorkerClient,
 ) -> Result<PreviewReport, ClewError> {
+    preview_with_authorization(repo, thread, edit, worker, false)
+}
+
+fn preview_with_authorization(
+    repo: &Path,
+    thread: &ThreadIr,
+    edit: &EditIr,
+    worker: &mut WorkerClient,
+    allow_authority_semantic_operation: bool,
+) -> Result<PreviewReport, ClewError> {
     let head = git_output(repo, &["rev-parse", "HEAD"])?;
     if head != edit.base_revision || head != thread.snapshot.base_revision {
         return Err(ClewError::new(
@@ -59,10 +69,36 @@ pub fn preview(
             && operation.kind != "REPLACE_DECLARATION"
             && operation.kind != "REWRITE_DECLARATION"
             && operation.kind != "CREATE_FILE"
+            && operation.kind != "MAP_EDGE_WITH_CONTEXT"
         {
             return Err(ClewError::new(
                 ErrorCode::InvalidInput,
                 format!("unsupported edit operation {}", operation.kind),
+            ));
+        }
+        let is_authority_semantic = operation.kind == "MAP_EDGE_WITH_CONTEXT";
+        if is_authority_semantic && !allow_authority_semantic_operation {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "MAP_EDGE_WITH_CONTEXT can only be applied from a live authority proof receipt",
+            ));
+        }
+        if is_authority_semantic {
+            if !operation.replacement.kotlin.is_empty()
+                || !matches!(
+                    operation.semantic_operation.as_ref(),
+                    Some(SemanticOperation::MapEdgeWithContext { .. })
+                )
+            {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "MAP_EDGE_WITH_CONTEXT requires typed arguments and forbids replacement text",
+                ));
+            }
+        } else if operation.semantic_operation.is_some() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "textual edit kinds cannot carry a semantic operation payload",
             ));
         }
         let target = operation.target.as_object().ok_or_else(|| {
@@ -139,11 +175,15 @@ pub fn preview(
             "leftContextHash": target.get("leftContextHash").cloned().unwrap_or(Value::Null),
             "rightContextHash": target.get("rightContextHash").cloned().unwrap_or(Value::Null),
             "kind": operation.kind, "replacement": operation.replacement.kotlin,
+            "semanticOperation": operation.semantic_operation,
             "compilation": thread.snapshot.compilation,
             "deferSemanticValidation":defer_semantic_validation,
             "preconditions": operation.preconditions, "postconditions": operation.postconditions
         });
         let response = worker.request(RequestKind::ApplyEdit, &request)?;
+        if is_authority_semantic {
+            validate_map_edge_operation_response(operation, &response)?;
+        }
         diagnostics.extend(
             response
                 .get("diagnostics")
@@ -242,44 +282,57 @@ pub fn preview(
                 after_hash: canonical::hash_bytes(operation.replacement.kotlin.as_bytes()),
             });
         } else {
-            let anchor = target
-                .get("anchorId")
-                .and_then(Value::as_str)
-                .unwrap_or(owner)
-                .to_owned();
-            expected_writes.extend([
-                ExpectedWriteFact {
+            if is_authority_semantic {
+                expected_writes.extend([
+                    ExpectedWriteFact {
+                        kind: "BODY".into(),
+                        key: owner.into(),
+                    },
+                    ExpectedWriteFact {
+                        kind: "SUMMARY".into(),
+                        key: owner.into(),
+                    },
+                ]);
+            } else {
+                let anchor = target
+                    .get("anchorId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(owner)
+                    .to_owned();
+                expected_writes.extend([
+                    ExpectedWriteFact {
+                        kind: "TARGET_ANCHOR".into(),
+                        key: anchor.clone(),
+                    },
+                    ExpectedWriteFact {
+                        kind: "BODY".into(),
+                        key: owner.into(),
+                    },
+                    ExpectedWriteFact {
+                        kind: "SUMMARY".into(),
+                        key: owner.into(),
+                    },
+                ]);
+                if operation
+                    .postconditions
+                    .contains_key("allowedEffectChanges")
+                {
+                    expected_writes.push(ExpectedWriteFact {
+                        kind: "EFFECTS".into(),
+                        key: owner.into(),
+                    });
+                }
+                writes.push(WriteFact {
                     kind: "TARGET_ANCHOR".into(),
-                    key: anchor.clone(),
-                },
-                ExpectedWriteFact {
-                    kind: "BODY".into(),
-                    key: owner.into(),
-                },
-                ExpectedWriteFact {
-                    kind: "SUMMARY".into(),
-                    key: owner.into(),
-                },
-            ]);
-            if operation
-                .postconditions
-                .contains_key("allowedEffectChanges")
-            {
-                expected_writes.push(ExpectedWriteFact {
-                    kind: "EFFECTS".into(),
-                    key: owner.into(),
+                    key: anchor,
+                    before_hash: target
+                        .get("exactTextHash")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                    after_hash: canonical::hash_bytes(operation.replacement.kotlin.as_bytes()),
                 });
             }
-            writes.push(WriteFact {
-                kind: "TARGET_ANCHOR".into(),
-                key: anchor,
-                before_hash: target
-                    .get("exactTextHash")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
-                after_hash: canonical::hash_bytes(operation.replacement.kotlin.as_bytes()),
-            });
             if let Some(delta) = response.get("semanticDelta").and_then(Value::as_object) {
                 for (field, kind) in [
                     ("body", "BODY"),
@@ -371,6 +424,79 @@ pub fn preview(
     })
 }
 
+fn validate_map_edge_operation_response(
+    operation: &EditOperation,
+    response: &Value,
+) -> Result<(), ClewError> {
+    let Some(SemanticOperation::MapEdgeWithContext {
+        workflow_symbol,
+        context_producer_symbol,
+        transformer_symbol,
+        ..
+    }) = operation.semantic_operation.as_ref()
+    else {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "map-edge edit has no typed operation payload",
+        ));
+    };
+    if response.get("k2Validated").and_then(Value::as_bool) != Some(true)
+        || response
+            .get("introducedEffects")
+            .and_then(Value::as_array)
+            .is_none_or(|effects| !effects.is_empty())
+    {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "semantic map-edge candidate lacks clean K2/effect evidence",
+        ));
+    }
+    let proof = response
+        .get("semanticOperationProof")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::IncompleteSemanticAnalysis,
+                "worker returned no semantic operation proof",
+            )
+        })?;
+    for (field, expected) in [
+        ("kind", "MAP_EDGE_WITH_CONTEXT"),
+        ("workflowSymbol", workflow_symbol.as_str()),
+        ("contextProducerSymbol", context_producer_symbol.as_str()),
+        ("transformerSymbol", transformer_symbol.as_str()),
+    ] {
+        if proof.get(field).and_then(Value::as_str) != Some(expected) {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                format!("semantic operation proof has wrong {field}"),
+            ));
+        }
+    }
+    for invariant in [
+        "typeAssignable",
+        "contextEvaluatedOnce",
+        "placementDominatesUses",
+        "orderPreserved",
+        "cardinalityPreserved",
+        "lazinessPreserved",
+        "effectsPreserved",
+        "nullabilityPreserved",
+        "consumerContractPreserved",
+        "abiPreserved",
+        "behavioralOracleRequired",
+        "noUnsupportedBoundary",
+    ] {
+        if proof.get(invariant).and_then(Value::as_bool) != Some(true) {
+            return Err(ClewError::new(
+                ErrorCode::IncompleteSemanticAnalysis,
+                format!("semantic operation did not prove {invariant}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn preview_create_file(
     repo: &Path,
     operation: &EditOperation,
@@ -432,6 +558,25 @@ pub fn commit(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, ClewError> {
+    commit_with_authorization(repo, transaction, target_ref, worker, false)
+}
+
+pub(crate) fn commit_authorized_semantic(
+    repo: &Path,
+    transaction: &mut Transaction,
+    target_ref: &str,
+    worker: &mut WorkerClient,
+) -> Result<Value, ClewError> {
+    commit_with_authorization(repo, transaction, target_ref, worker, true)
+}
+
+fn commit_with_authorization(
+    repo: &Path,
+    transaction: &mut Transaction,
+    target_ref: &str,
+    worker: &mut WorkerClient,
+    allow_authority_semantic_operation: bool,
+) -> Result<Value, ClewError> {
     validate_required_threads(transaction)?;
     let qualified_target_ref;
     let target_ref = if target_ref.starts_with("refs/") {
@@ -441,6 +586,12 @@ pub fn commit(
         &qualified_target_ref
     };
     let current = git_output(repo, &["rev-parse", target_ref])?;
+    if allow_authority_semantic_operation && current != transaction.base_revision {
+        return Err(ClewError::new(
+            ErrorCode::StaleRequiresReslice,
+            "authority semantic proof is bound to its exact target revision; re-prove on the current target",
+        ));
+    }
     let checked_out_target_is_clean = checked_out_target_is_clean(repo, target_ref, &current);
     transaction.target_ref = Some(target_ref.into());
     let base_index_snapshot = transaction
@@ -510,7 +661,14 @@ pub fn commit(
             json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":transaction.base_revision,"finalCommit":existing,"currentRevision":current,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED","idempotent":true,"ledgerRecorded":ledger_recorded}),
         );
     }
-    let report = preview_for_commit(repo, transaction, &current, worker).map_err(|mut e| {
+    let report = preview_for_commit(
+        repo,
+        transaction,
+        &current,
+        worker,
+        allow_authority_semantic_operation,
+    )
+    .map_err(|mut e| {
         if current != transaction.base_revision
             && matches!(
                 e.code,
@@ -596,9 +754,9 @@ pub fn commit(
         let output = Command::new("git")
             .args([
                 "-c",
-                "user.name=Semantic Thread",
+                "user.name=Codeclew",
                 "-c",
-                "user.email=semantic-thread@localhost",
+                "user.email=codeclew@localhost",
                 "commit",
                 "-m",
                 &message,
@@ -760,9 +918,16 @@ fn preview_for_commit(
     transaction: &mut Transaction,
     current: &str,
     worker: &mut WorkerClient,
+    allow_authority_semantic_operation: bool,
 ) -> Result<PreviewReport, ClewError> {
     if current == transaction.base_revision {
-        return preview(repo, &transaction.thread, &transaction.edit, worker);
+        return preview_with_authorization(
+            repo,
+            &transaction.thread,
+            &transaction.edit,
+            worker,
+            allow_authority_semantic_operation,
+        );
     }
     transaction.status = "REBASING".into();
     ledger(repo)?.append(transaction, "target ref moved; semantic replay requested")?;
@@ -805,7 +970,13 @@ fn preview_for_commit(
         let mut replay_edit = transaction.edit.clone();
         replay_thread.snapshot.base_revision = current.to_owned();
         replay_edit.base_revision = current.to_owned();
-        preview(&replay_path, &replay_thread, &replay_edit, worker)
+        preview_with_authorization(
+            &replay_path,
+            &replay_thread,
+            &replay_edit,
+            worker,
+            allow_authority_semantic_operation,
+        )
     })();
     let _ = git(
         repo,
@@ -1604,8 +1775,17 @@ fn internal(e: anyhow::Error) -> ClewError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuildSystem, validate_worktree};
+    use super::{BuildSystem, git_output, preview, validate_worktree};
+    use crate::error::ErrorCode;
+    use crate::model::{
+        Completeness, CompletenessStatus, EditIr, EditOperation, Replacement, SemanticOperation,
+        SlicePolicy, Snapshot, ThreadIr,
+    };
+    use crate::worker::{WorkerClient, workspace_root};
+    use serde_json::json;
+    use std::collections::BTreeMap;
     use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn validates_maven_compile_and_tests() {
@@ -1622,5 +1802,90 @@ mod tests {
         );
 
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn generic_preview_cannot_apply_an_authority_semantic_operation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet", "--initial-branch=main"])
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Codeclew Test",
+                    "-c",
+                    "user.email=codeclew@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "--allow-empty",
+                    "-m",
+                    "base",
+                ])
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let head = git_output(repo, &["rev-parse", "HEAD"]).unwrap();
+        let thread = ThreadIr {
+            schema: "semantic-thread/0.2".into(),
+            thread_id: "thread:authority".into(),
+            snapshot: Snapshot {
+                base_revision: head.clone(),
+                ..Snapshot::default()
+            },
+            seed: json!({}),
+            policy: SlicePolicy::default(),
+            completeness: Completeness {
+                status: CompletenessStatus::CompleteSupportedSubset,
+                boundaries: vec![],
+            },
+            nodes: vec![],
+            edges: vec![],
+            editable_units: vec![],
+            external_summaries: vec![],
+            read_set: vec![],
+            validation_plan: vec![],
+        };
+        let edit = EditIr {
+            schema: "semantic-edit/0.2".into(),
+            thread_id: thread.thread_id.clone(),
+            base_revision: head,
+            operations: vec![EditOperation {
+                op_id: "forged".into(),
+                kind: "MAP_EDGE_WITH_CONTEXT".into(),
+                target: json!({"fileId":"Runner.kt"}),
+                replacement: Replacement {
+                    kotlin: String::new(),
+                },
+                semantic_operation: Some(SemanticOperation::MapEdgeWithContext {
+                    workflow_symbol: "com/acme/workflow".into(),
+                    context_producer_symbol: "com/acme/context".into(),
+                    transformer_symbol: "com/acme/transform".into(),
+                    value_parameter_index: 0,
+                    collection_type: "kotlin/collections/List<kotlin/Int>".into(),
+                    element_type: "kotlin/Int".into(),
+                    context_type: "kotlin/Int".into(),
+                    placement: "com/acme/workflow#FUNCTION_ENTRY".into(),
+                    strategy: "KOTLIN_EAGER_LIST_MAP_WITH_CONTEXT_ONCE".into(),
+                }),
+                preconditions: BTreeMap::new(),
+                postconditions: BTreeMap::new(),
+            }],
+            expected_write_set: vec![],
+        };
+        let mut worker = WorkerClient::start(&workspace_root()).unwrap();
+        let error = preview(repo, &thread, &edit, &mut worker).unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert!(error.message.contains("live authority proof receipt"));
+        worker.shutdown().unwrap();
     }
 }

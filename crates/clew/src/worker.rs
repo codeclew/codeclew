@@ -265,6 +265,10 @@ impl WorkerClient {
                         .get("deferSemanticValidation")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    semantic_operation_json: serde_json::to_vec(
+                        payload.get("semanticOperation").unwrap_or(&Value::Null),
+                    )
+                    .map_err(internal)?,
                 })
             }
             RequestKind::ValidateCandidate => {

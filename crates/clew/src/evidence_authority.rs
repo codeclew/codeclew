@@ -7,7 +7,10 @@
 
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
-use crate::model::{BuildSystem, CompletenessStatus, ThreadIr};
+use crate::model::{
+    BuildSystem, CompletenessStatus, EditIr, EditOperation, Replacement, SemanticOperation,
+    ThreadIr, Transaction,
+};
 use crate::proto::RequestKind;
 use crate::semantic_goal::{
     BindingRole, ChangeGraph, ChangeObligation, DischargeStatus, GoalFamily, ObligationKind,
@@ -133,6 +136,7 @@ pub struct MapEdgeBindingSummary {
     pub transformer_symbol: String,
     pub value_edge_from: String,
     pub value_edge_to: String,
+    pub value_parameter_index: usize,
     pub placement: String,
     pub collection_type: String,
     pub element_type: String,
@@ -275,9 +279,16 @@ struct MapValueEdge {
     workflow_symbol: String,
     from: String,
     to: String,
+    parameter_index: usize,
     placement: String,
     collection_type: String,
     element_type: String,
+}
+
+#[derive(Debug)]
+struct AuthorizedMapEdgeProof {
+    thread_fingerprint: String,
+    summary: MapEdgeProofSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -306,7 +317,7 @@ pub struct EvidenceAuthority {
     tests: BTreeMap<Uuid, VerifiedBehavioralTest>,
     validations: BTreeMap<Uuid, ValidationRun>,
     completions: BTreeSet<Uuid>,
-    map_edge_proofs: BTreeSet<Uuid>,
+    map_edge_proofs: BTreeMap<Uuid, AuthorizedMapEdgeProof>,
 }
 
 impl EvidenceAuthority {
@@ -333,7 +344,7 @@ impl EvidenceAuthority {
             tests: BTreeMap::new(),
             validations: BTreeMap::new(),
             completions: BTreeSet::new(),
-            map_edge_proofs: BTreeSet::new(),
+            map_edge_proofs: BTreeMap::new(),
         })
     }
 
@@ -895,6 +906,7 @@ impl EvidenceAuthority {
             transformer_symbol: candidate.transformer.compiler_symbol.clone(),
             value_edge_from: edge.from.clone(),
             value_edge_to: edge.to.clone(),
+            value_parameter_index: edge.parameter_index,
             placement: edge.placement.clone(),
             collection_type: edge.collection_type.clone(),
             element_type: edge.element_type.clone(),
@@ -933,7 +945,13 @@ impl EvidenceAuthority {
             evidence_fingerprint,
         };
         let receipt_id = Uuid::new_v4();
-        self.map_edge_proofs.insert(receipt_id);
+        self.map_edge_proofs.insert(
+            receipt_id,
+            AuthorizedMapEdgeProof {
+                thread_fingerprint,
+                summary: summary.clone(),
+            },
+        );
         Ok(MapEdgeWithContextDecision::Bound(Box::new(
             MapEdgeWithContextReceipt {
                 session_id: self.session_id,
@@ -949,7 +967,134 @@ impl EvidenceAuthority {
     ) -> Result<bool, ClewError> {
         self.ensure_revision()?;
         Ok(receipt.session_id == self.session_id
-            && self.map_edge_proofs.contains(&receipt.receipt_id))
+            && self.map_edge_proofs.contains_key(&receipt.receipt_id))
+    }
+
+    /// Compiles an authority-issued E03 receipt into one typed semantic edit.
+    /// The returned operation contains no Kotlin replacement text. A summary
+    /// copied from JSON cannot enter this path because only a live receipt from
+    /// this exact authority session resolves in `map_edge_proofs`.
+    pub fn compile_map_edge_with_context_edit(
+        &self,
+        receipt: &MapEdgeWithContextReceipt,
+    ) -> Result<(ThreadIr, EditIr), ClewError> {
+        self.ensure_revision()?;
+        if receipt.session_id != self.session_id {
+            return Err(wrong_session("map-edge proof"));
+        }
+        let stored = self
+            .map_edge_proofs
+            .get(&receipt.receipt_id)
+            .ok_or_else(|| invalid_receipt("map-edge proof"))?;
+        if stored.summary != receipt.summary {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "map-edge receipt summary differs from authority storage",
+            ));
+        }
+        let verified = self
+            .threads
+            .values()
+            .find(|thread| thread.fingerprint == stored.thread_fingerprint)
+            .ok_or_else(|| invalid_receipt("map-edge thread"))?;
+        let binding = &stored.summary.bindings;
+        let mut target = verified
+            .thread
+            .nodes
+            .iter()
+            .find(|node| node.id == binding.value_edge_from && node.kind == "PARAMETER")
+            .and_then(|node| node.origin.clone())
+            .ok_or_else(|| invalid_source("bound value parameter has no exact source anchor"))?;
+        target
+            .as_object_mut()
+            .ok_or_else(|| invalid_source("bound source anchor is not an object"))?
+            .insert(
+                "ownerSymbolId".into(),
+                Value::String(binding.workflow_symbol.replace('/', ".")),
+            );
+        let edit = EditIr {
+            schema: "semantic-edit/0.2".into(),
+            thread_id: verified.thread.thread_id.clone(),
+            base_revision: self.revision.clone(),
+            operations: vec![EditOperation {
+                op_id: format!("map-edge:{}", receipt.receipt_id),
+                kind: "MAP_EDGE_WITH_CONTEXT".into(),
+                target: target.clone(),
+                replacement: Replacement {
+                    kotlin: String::new(),
+                },
+                semantic_operation: Some(SemanticOperation::MapEdgeWithContext {
+                    workflow_symbol: binding.workflow_symbol.clone(),
+                    context_producer_symbol: binding.context_producer_symbol.clone(),
+                    transformer_symbol: binding.transformer_symbol.clone(),
+                    value_parameter_index: binding.value_parameter_index,
+                    collection_type: binding.collection_type.clone(),
+                    element_type: binding.element_type.clone(),
+                    context_type: binding.context_type.clone(),
+                    placement: binding.placement.clone(),
+                    strategy: binding.strategy.clone(),
+                }),
+                preconditions: BTreeMap::from([(
+                    "nodeTextHash".into(),
+                    target.get("exactTextHash").cloned().unwrap_or(Value::Null),
+                )]),
+                postconditions: BTreeMap::from([(
+                    "authorityEvidenceFingerprint".into(),
+                    Value::String(stored.summary.evidence_fingerprint.clone()),
+                )]),
+            }],
+            expected_write_set: vec![],
+        };
+        Ok((verified.thread.clone(), edit))
+    }
+
+    /// Applies the typed edit through the isolated semantic transaction. The
+    /// generic preview and commit APIs reject this operation kind, so a live
+    /// authority receipt is required all the way to the commit boundary.
+    pub fn commit_map_edge_with_context(
+        &self,
+        receipt: &MapEdgeWithContextReceipt,
+        actor: &str,
+        target_ref: &str,
+        worker: &mut WorkerClient,
+    ) -> Result<(Value, Transaction), ClewError> {
+        ensure_repository_root(&self.repo)?;
+        let (thread, edit) = self.compile_map_edge_with_context_edit(receipt)?;
+        let proof_hash = canonical::hash(receipt.summary()).map_err(internal)?;
+        let mut transaction = Transaction {
+            schema: "semantic-transaction/0.2".into(),
+            tx_id: format!("tx:{}", Uuid::new_v4()),
+            actor_id: actor.into(),
+            intent: "MAP_EDGE_WITH_CONTEXT".into(),
+            base_revision: self.revision.clone(),
+            project_model_hash: thread.snapshot.project_model_hash.clone(),
+            base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
+            status: "CREATED".into(),
+            thread: thread.clone(),
+            required_threads: vec![thread.clone()],
+            edit,
+            preview: None,
+            expected_write_set_hash: None,
+            actual_write_set_hash: None,
+            validation_evidence: vec![json!({
+                "kind":"AUTHORITY_MAP_EDGE_PROOF",
+                "proofHash":proof_hash,
+                "evidenceFingerprint":receipt.summary().evidence_fingerprint,
+                "invariantCount":receipt.summary().invariants.len(),
+                "obligationCount":receipt.summary().change_graph.obligations.len()
+            })],
+            test_tasks: thread.snapshot.test_tasks.clone(),
+            candidate_commit: None,
+            final_commit: None,
+            target_ref: None,
+        };
+        let result = transaction::commit_authorized_semantic(
+            &self.repo,
+            &mut transaction,
+            target_ref,
+            worker,
+        )?;
+        Ok((result, transaction))
     }
 
     pub fn recognizes_complete_for(&self, receipt: &CompleteForReceipt) -> Result<bool, ClewError> {
@@ -1123,6 +1268,11 @@ fn map_value_edge(thread: &ThreadIr) -> Result<MapValueEdge, MapEdgeRefusalReaso
                 workflow_symbol: workflow_symbol.to_owned(),
                 from: parameter.id.clone(),
                 to: consumer.id.clone(),
+                parameter_index: parameter
+                    .id
+                    .strip_prefix("param:")
+                    .and_then(|value| value.parse().ok())
+                    .ok_or(MapEdgeRefusalReason::UnsupportedBoundary)?,
                 placement: format!("{workflow_symbol}#FUNCTION_ENTRY"),
                 collection_type: collection_type.to_owned(),
                 element_type: element_type.clone(),
@@ -1973,6 +2123,42 @@ fn git_head(repo: &Path) -> Result<String, ClewError> {
     String::from_utf8(output.stdout)
         .map(|value| value.trim().to_owned())
         .map_err(internal)
+}
+
+fn ensure_repository_root(repo: &Path) -> Result<(), ClewError> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(repo)
+        .output()
+        .map_err(|error| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                format!("cannot locate git root for semantic commit: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "semantic commit requires a readable Git repository root",
+        ));
+    }
+    let root = String::from_utf8(output.stdout)
+        .map_err(internal)
+        .and_then(|path| {
+            Path::new(path.trim())
+                .canonicalize()
+                .map_err(|error| internal(error.to_string()))
+        })?;
+    let repo = repo
+        .canonicalize()
+        .map_err(|error| internal(error.to_string()))?;
+    if root != repo {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedProjectConfiguration,
+            "semantic commit currently requires --repo to be the Git worktree root",
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_clean_checkout(repo: &Path) -> Result<(), ClewError> {
