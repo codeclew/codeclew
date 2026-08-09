@@ -8,9 +8,11 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod population;
+
 pub const GENERATOR_VERSION: &str = "semantic-corpus/0.2";
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskFamily {
     Smoke,
@@ -24,7 +26,7 @@ impl fmt::Display for TaskFamily {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum BuildSystem {
     Gradle,
@@ -40,7 +42,7 @@ impl fmt::Display for BuildSystem {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskVariant {
     Positive,
