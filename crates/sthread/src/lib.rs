@@ -2,6 +2,7 @@ pub mod agent_context;
 pub mod canonical;
 pub mod error;
 pub mod graph;
+pub mod identity;
 pub mod index;
 pub mod model;
 pub mod semantic_goal;

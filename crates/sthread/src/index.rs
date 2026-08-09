@@ -1,5 +1,8 @@
 use crate::canonical;
 use crate::error::{ErrorCode, SthreadError};
+use crate::identity::{
+    IdentityLifecycle, IdentityReport, SnapshotProvenance, decide_identity_delta,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -176,6 +179,37 @@ impl RepositoryIndex {
                 SthreadError::new(ErrorCode::InvalidInput, "worker index has no files")
             })?;
         let tx = self.connection.transaction().map_err(db_error)?;
+        let previous_metadata: BTreeMap<String, String> = [
+            "project_model_hash",
+            "classpath_hash",
+            "compiler_options_hash",
+            "index_hash",
+        ]
+        .into_iter()
+        .filter_map(|key| {
+            tx.query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()
+            .transpose()
+            .map(|result| result.map(|value| (key.to_owned(), value)))
+        })
+        .collect::<Result<_, _>>()
+        .map_err(db_error)?;
+        let previous_files: Vec<Value> = {
+            let mut statement = tx
+                .prepare("SELECT facts_json FROM files ORDER BY path")
+                .map_err(db_error)?;
+            statement
+                .query_map([], |row| row.get::<_, Vec<u8>>(0))
+                .map_err(db_error)?
+                .map(|bytes| {
+                    bytes.map_err(db_error).and_then(|bytes| {
+                        serde_json::from_slice(&bytes).map_err(|error| internal(error.into()))
+                    })
+                })
+                .collect::<Result<_, _>>()?
+        };
         let mut invalidations = BTreeSet::new();
         for (field, metadata_key, invalidation) in [
             (
@@ -325,6 +359,84 @@ impl RepositoryIndex {
         .map_err(internal)?;
         tx.execute("INSERT INTO metadata(key,value) VALUES('index_hash',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&index_hash]).map_err(db_error)?;
         tx.execute("INSERT INTO metadata(key,value) VALUES('last_changed_files',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [changed_files.to_string()]).map_err(db_error)?;
+        let unavailable = "UNAVAILABLE".to_owned();
+        let previous_project_model = previous_metadata
+            .get("project_model_hash")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_else(|| unavailable.clone());
+        let previous_classpath = previous_metadata
+            .get("classpath_hash")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_else(|| unavailable.clone());
+        let previous_options = previous_metadata
+            .get("compiler_options_hash")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_else(|| unavailable.clone());
+        let previous_index = previous_metadata
+            .get("index_hash")
+            .cloned()
+            .unwrap_or_else(|| canonical::hash_bytes(b"EMPTY_INDEX"));
+        let incoming_project_model = facts
+            .get("projectModelHash")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("UNAVAILABLE")
+            .to_owned();
+        let incoming_classpath = facts
+            .get("classpathHash")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("UNAVAILABLE")
+            .to_owned();
+        let incoming_options = facts
+            .get("compilerOptionsHash")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("UNAVAILABLE")
+            .to_owned();
+        let before_snapshot = SnapshotProvenance {
+            composite_snapshot_hash: canonical::hash(&serde_json::json!({
+                "index":previous_index,
+                "projectModel":previous_project_model,
+                "classpath":previous_classpath,
+                "compilerOptions":previous_options,
+            }))
+            .map_err(internal)?,
+            index_snapshot_hash: previous_index,
+            project_model_hash: previous_project_model,
+            classpath_hash: previous_classpath,
+            compiler_options_hash: previous_options,
+        };
+        let after_snapshot = SnapshotProvenance {
+            composite_snapshot_hash: canonical::hash(&serde_json::json!({
+                "index":index_hash,
+                "projectModel":incoming_project_model,
+                "classpath":incoming_classpath,
+                "compilerOptions":incoming_options,
+            }))
+            .map_err(internal)?,
+            index_snapshot_hash: index_hash.clone(),
+            project_model_hash: incoming_project_model,
+            classpath_hash: incoming_classpath,
+            compiler_options_hash: incoming_options,
+        };
+        let identity_report = decide_identity_delta(
+            before_snapshot,
+            after_snapshot,
+            &previous_files,
+            &stored_files,
+        )
+        .map_err(|error| internal(error.into()))?;
+        record_identity_invalidations(&identity_report, &mut invalidations);
+        let identity_json = canonical::pretty(&identity_report).map_err(internal)?;
+        tx.execute(
+            "INSERT INTO metadata(key,value) VALUES('last_identity_report',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [&identity_json],
+        )
+        .map_err(db_error)?;
         let invalidations_json = canonical::pretty(&invalidations).map_err(internal)?;
         tx.execute("INSERT INTO metadata(key,value) VALUES('last_invalidations',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&invalidations_json]).map_err(db_error)?;
         tx.commit().map_err(db_error)?;
@@ -357,6 +469,21 @@ impl RepositoryIndex {
             .map(|json| serde_json::from_str(&json).map_err(|error| internal(error.into())))
             .transpose()
             .map(Option::unwrap_or_default)
+    }
+
+    pub fn identity_report(&self) -> Result<Option<IdentityReport>, SthreadError> {
+        let value: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key='last_identity_report'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+        value
+            .map(|json| serde_json::from_str(&json).map_err(|error| internal(error.into())))
+            .transpose()
     }
 
     pub fn mark_published_revision(&self, revision: &str) -> Result<(), SthreadError> {
@@ -426,6 +553,47 @@ fn database_name(compilation: Option<&str>) -> String {
             format!("index{safe}.sqlite3")
         },
     )
+}
+
+fn record_identity_invalidations(report: &IdentityReport, invalidations: &mut BTreeSet<String>) {
+    for decision in &report.decisions {
+        let before = decision
+            .before
+            .iter()
+            .map(|identity| identity.symbol_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let after = decision
+            .after
+            .iter()
+            .map(|identity| identity.symbol_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        match decision.lifecycle {
+            IdentityLifecycle::Same => {}
+            IdentityLifecycle::Renamed => {
+                invalidations.insert(format!("IDENTITY_RENAMED:{before}->{after}"));
+            }
+            IdentityLifecycle::Moved => {
+                invalidations.insert(format!("IDENTITY_MOVED:{before}->{after}"));
+            }
+            IdentityLifecycle::Split => {
+                invalidations.insert(format!("IDENTITY_SPLIT:{before}->{after}"));
+            }
+            IdentityLifecycle::Merged => {
+                invalidations.insert(format!("IDENTITY_MERGED:{before}->{after}"));
+            }
+            IdentityLifecycle::Deleted => {
+                invalidations.insert(format!("IDENTITY_DELETED:{before}"));
+            }
+            IdentityLifecycle::Ambiguous => {
+                invalidations.insert(format!("IDENTITY_AMBIGUOUS:{before}->{after}"));
+            }
+        }
+    }
+    for identity in &report.introduced {
+        invalidations.insert(format!("IDENTITY_INTRODUCED:{}", identity.symbol_id));
+    }
 }
 
 fn classify_file_change(
@@ -515,6 +683,12 @@ mod tests {
         std::fs::write(&source_path, "fun a() = 1\n").unwrap();
         let mut live = RepositoryIndex::open(temp.path()).unwrap();
         let old_hash = live.update(&facts("fun a() = 1\n")).unwrap();
+        let old_identity_snapshot = live
+            .identity_report()
+            .unwrap()
+            .unwrap()
+            .after
+            .index_snapshot_hash;
         live.mark_published_revision("old").unwrap();
         drop(live);
 
@@ -534,6 +708,15 @@ mod tests {
             visible.published_revision().unwrap().as_deref(),
             Some("old")
         );
+        assert_eq!(
+            visible
+                .identity_report()
+                .unwrap()
+                .unwrap()
+                .after
+                .index_snapshot_hash,
+            old_identity_snapshot
+        );
         drop(visible);
 
         stage.publish().unwrap();
@@ -542,6 +725,15 @@ mod tests {
         assert_eq!(
             visible.published_revision().unwrap().as_deref(),
             Some("new")
+        );
+        assert_eq!(
+            visible
+                .identity_report()
+                .unwrap()
+                .unwrap()
+                .after
+                .index_snapshot_hash,
+            new_hash
         );
     }
 
@@ -678,5 +870,90 @@ mod tests {
         ] {
             assert!(invalidations.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn publishes_identity_reports_and_fails_closed_on_decoys() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_path = temp.path().join("A.kt");
+        let declaration = |symbol: &str, name: &str| {
+            json!({
+                "declarationId":format!("declaration:{symbol}"),
+                "symbolId":symbol,
+                "name":name,
+                "kind":"FUNCTION",
+                "symbolIdentity":{
+                    "module":":","sourceSet":"main","package":"p","declarationName":name,
+                    "containingDeclarations":[],"declarationKind":"FUNCTION","typeParameterArity":0,
+                    "receiverTypes":[],"contextReceiverTypes":[],
+                    "parameterTypes":["String"],
+                    "returnType":"String","suspendFlag":false,
+                    "jvmDescriptor":"(Ljava/lang/String;)Ljava/lang/String;"
+                },
+                "sourceOrigin":{"file":"A.kt","rangeStart":0,"rangeEnd":20},
+                "sourceSignatureHash":format!("signature:{name}"),
+                "bodyHash":"body:stable",
+                "abiHash":format!("abi:{symbol}"),
+                "semanticSummaryHash":"summary:stable"
+            })
+        };
+        let facts = |source: &str, declarations: Vec<Value>| {
+            json!({
+                "projectModelHash":"model",
+                "classpathHash":"classpath",
+                "compilerOptionsHash":"options",
+                "files":[{
+                    "path":"A.kt",
+                    "contentHash":canonical::hash_bytes(source.as_bytes()),
+                    "declarations":declarations,
+                    "semanticFacts":[]
+                }]
+            })
+        };
+        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        std::fs::write(&source_path, "fun old() = value\n").unwrap();
+        index
+            .update(&facts(
+                "fun old() = value\n",
+                vec![declaration("p.old", "old")],
+            ))
+            .unwrap();
+
+        std::fs::write(&source_path, "fun renamed() = value\n").unwrap();
+        index
+            .update(&facts(
+                "fun renamed() = value\n",
+                vec![declaration("p.renamed", "renamed")],
+            ))
+            .unwrap();
+        let renamed = index.identity_report().unwrap().unwrap();
+        assert_eq!(renamed.decisions.len(), 1);
+        assert_eq!(renamed.decisions[0].lifecycle, IdentityLifecycle::Renamed);
+        assert!(
+            index
+                .invalidations()
+                .unwrap()
+                .contains(&"IDENTITY_RENAMED:p.old->p.renamed".to_owned())
+        );
+
+        let decoy_source = "fun first() = value\nfun second() = value\n";
+        std::fs::write(&source_path, decoy_source).unwrap();
+        index
+            .update(&facts(
+                decoy_source,
+                vec![
+                    declaration("p.first", "first"),
+                    declaration("p.second", "second"),
+                ],
+            ))
+            .unwrap();
+        let ambiguous = index.identity_report().unwrap().unwrap();
+        assert_eq!(ambiguous.decisions.len(), 1);
+        assert_eq!(
+            ambiguous.decisions[0].lifecycle,
+            IdentityLifecycle::Ambiguous
+        );
+        assert_eq!(ambiguous.decisions[0].after.len(), 2);
+        assert!(ambiguous.introduced.is_empty());
     }
 }
