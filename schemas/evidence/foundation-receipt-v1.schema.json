@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/foundation-receipt-v1.schema.json",
+  "title": "Codeclew optimized foundation verification receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "nodeId", "attempt", "packetRawFileSha256", "packetCanonicalDigest", "approvalRawFileSha256", "manifestRawFileSha256", "planRawFileSha256", "sharedDigests", "budgetDigest", "producerSessionId", "verifier", "independenceAttestation", "checks", "verdict", "packetOutcome", "packetBranchCode", "costAccounting", "verifiedAt", "canonicalScope", "receiptDigestScope", "receiptDigest"],
+  "properties": {
+    "schemaVersion": {"const": "codeclew-foundation-receipt/1"},
+    "nodeId": {"enum": ["B01", "B02", "B03", "GB"]},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
+    "packetRawFileSha256": {"$ref": "#/$defs/sha256"},
+    "packetCanonicalDigest": {"$ref": "#/$defs/sha256"},
+    "approvalRawFileSha256": {"$ref": "#/$defs/sha256"},
+    "manifestRawFileSha256": {"$ref": "#/$defs/sha256"},
+    "planRawFileSha256": {"$ref": "#/$defs/sha256"},
+    "sharedDigests": {"type": "object"},
+    "budgetDigest": {"$ref": "#/$defs/sha256"},
+    "producerSessionId": {"type": "string", "minLength": 1},
+    "verifier": {"type": "object", "additionalProperties": false, "required": ["agentId", "sessionId"], "properties": {"agentId": {"type": "string", "minLength": 1}, "sessionId": {"type": "string", "minLength": 1}}},
+    "independenceAttestation": {"const": true},
+    "checks": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["checkId", "result"], "properties": {"checkId": {"type": "string", "minLength": 1}, "result": {"enum": ["PASS", "FAIL"]}}}},
+    "verdict": {"enum": ["ACCEPT", "REJECT_RETRYABLE", "REJECT_FATAL"]},
+    "packetOutcome": {"enum": ["SUCCESS", "BLOCKED", "NO_PROGRESS"]},
+    "packetBranchCode": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+    "costAccounting": {"type": "object"},
+    "verifiedAt": {"type": "string", "minLength": 1},
+    "canonicalScope": {"const": "JQ_1_7_SORTED_COMPACT_INTEGER_JSON"},
+    "receiptDigestScope": {"const": "JQ_1_7_SORTED_COMPACT_INTEGER_JSON_WITHOUT_RECEIPT_DIGEST"},
+    "receiptDigest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}
