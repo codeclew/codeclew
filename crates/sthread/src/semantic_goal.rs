@@ -2,12 +2,14 @@ use crate::semantic_kernel::{
     CoverageStatus, EvidencePurpose, Freshness, RecordId, RecordKind, ResolutionState,
     SemanticKernel, SemanticRecord, SemanticRelation, SemanticValue, Soundness,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-pub const SEMANTIC_GOAL_SCHEMA: &str = "semantic-goal/0.1";
-pub const CHANGE_GRAPH_SCHEMA: &str = "change-graph/0.1";
-pub const GOAL_PROOF_SCHEMA: &str = "semantic-goal-proof/0.1";
+pub const SEMANTIC_GOAL_SCHEMA: &str = "semantic-goal/0.2";
+pub const LEGACY_SEMANTIC_GOAL_SCHEMA: &str = "semantic-goal/0.1";
+pub const CONSTRAINT_LANGUAGE_SCHEMA: &str = "semantic-goal-constraints/0.1";
+pub const CHANGE_GRAPH_SCHEMA: &str = "change-graph/0.2";
+pub const GOAL_PROOF_SCHEMA: &str = "semantic-goal-proof/0.2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -15,9 +17,142 @@ pub enum GoalFamily {
     MapEdgeWithContext,
 }
 
+/// The complete, versioned vocabulary accepted by the goal language. It names
+/// semantic properties only: worker-discovered symbols and graph identifiers
+/// never cross the model-owned goal boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Preservation {
+pub enum PrimitiveConstraint {
+    BindUnique,
+    TypeAssignable,
+    IntroduceOnce,
+    MapEdge,
+    PreserveOrder,
+    PreserveCardinality,
+    PreserveLaziness,
+    PreserveEffects,
+    PreserveNullability,
+    PreserveConsumerContract,
+    PreserveAbi,
+    RequireOracle,
+    MustRefuseOnBoundary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TypedConstraints {
+    pub schema: String,
+    pub primitives: BTreeSet<PrimitiveConstraint>,
+}
+
+impl TypedConstraints {
+    fn map_edge_with_context() -> Self {
+        Self {
+            schema: CONSTRAINT_LANGUAGE_SCHEMA.into(),
+            primitives: [
+                PrimitiveConstraint::BindUnique,
+                PrimitiveConstraint::TypeAssignable,
+                PrimitiveConstraint::IntroduceOnce,
+                PrimitiveConstraint::MapEdge,
+                PrimitiveConstraint::PreserveOrder,
+                PrimitiveConstraint::PreserveCardinality,
+                PrimitiveConstraint::PreserveLaziness,
+                PrimitiveConstraint::PreserveEffects,
+                PrimitiveConstraint::PreserveNullability,
+                PrimitiveConstraint::PreserveConsumerContract,
+                PrimitiveConstraint::PreserveAbi,
+                PrimitiveConstraint::RequireOracle,
+                PrimitiveConstraint::MustRefuseOnBoundary,
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OraclePolicy {
+    RequireBehavioralOracle,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticGoal {
+    pub schema: String,
+    pub family: GoalFamily,
+    pub base_revision: String,
+    pub constraints: TypedConstraints,
+    pub oracle_policy: OraclePolicy,
+}
+
+impl SemanticGoal {
+    pub fn map_edge_with_context(base_revision: impl Into<String>) -> Self {
+        Self {
+            schema: SEMANTIC_GOAL_SCHEMA.into(),
+            family: GoalFamily::MapEdgeWithContext,
+            base_revision: base_revision.into(),
+            constraints: TypedConstraints::map_edge_with_context(),
+            oracle_policy: OraclePolicy::RequireBehavioralOracle,
+        }
+    }
+
+    fn validate(&self) -> Result<(), Refusal> {
+        if self.schema != SEMANTIC_GOAL_SCHEMA
+            || self.constraints.schema != CONSTRAINT_LANGUAGE_SCHEMA
+        {
+            return Err(Refusal::InvalidGoalSchema);
+        }
+        if self.base_revision.is_empty() {
+            return Err(Refusal::IncompleteGoal);
+        }
+        if self.family != GoalFamily::MapEdgeWithContext
+            || self.constraints.primitives != TypedConstraints::map_edge_with_context().primitives
+            || self.oracle_policy != OraclePolicy::RequireBehavioralOracle
+        {
+            return Err(Refusal::IncompleteGoal);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct CurrentSemanticGoal {
+    schema: String,
+    family: GoalFamily,
+    base_revision: String,
+    constraints: TypedConstraints,
+    oracle_policy: OraclePolicy,
+}
+
+/// Wire-compatible representation of the former MAP_EDGE goal. The inferred
+/// type strings are intentionally discarded during migration: type binding is
+/// now a worker obligation backed by kernel evidence, never model input.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ContextEvaluation {
+    OncePerRegion,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LegacyMapEdgeGoal {
+    pub schema: String,
+    pub family: GoalFamily,
+    pub base_revision: String,
+    pub element_type: String,
+    pub context_type: String,
+    pub result_type: String,
+    pub context_evaluation: ContextEvaluation,
+    pub preserve: BTreeSet<LegacyPreservation>,
+    #[serde(default)]
+    pub business_choices: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum LegacyPreservation {
     Order,
     Cardinality,
     Laziness,
@@ -27,81 +162,69 @@ pub enum Preservation {
     Abi,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SemanticGoal {
-    pub schema: String,
-    pub family: GoalFamily,
-    pub base_revision: String,
-    pub element_type: String,
-    pub context_type: String,
-    pub result_type: String,
-    pub context_evaluation: ContextEvaluation,
-    pub preserve: BTreeSet<Preservation>,
-    #[serde(default)]
-    pub business_choices: BTreeMap<String, String>,
+pub fn migrate_legacy_map_edge_goal(legacy: LegacyMapEdgeGoal) -> Result<SemanticGoal, Refusal> {
+    if legacy.schema != LEGACY_SEMANTIC_GOAL_SCHEMA
+        || legacy.family != GoalFamily::MapEdgeWithContext
+        || legacy.base_revision.is_empty()
+        || legacy.element_type.is_empty()
+        || legacy.context_type.is_empty()
+        || legacy.result_type != "SAME_AS_ELEMENT"
+        || legacy.context_evaluation != ContextEvaluation::OncePerRegion
+        || !legacy.business_choices.is_empty()
+    {
+        return Err(Refusal::UnsafeLegacyGoal);
+    }
+    let mut goal = SemanticGoal::map_edge_with_context(legacy.base_revision);
+    for preservation in legacy.preserve {
+        let primitive = match preservation {
+            LegacyPreservation::Order => PrimitiveConstraint::PreserveOrder,
+            LegacyPreservation::Cardinality => PrimitiveConstraint::PreserveCardinality,
+            LegacyPreservation::Laziness => PrimitiveConstraint::PreserveLaziness,
+            LegacyPreservation::Effects => PrimitiveConstraint::PreserveEffects,
+            LegacyPreservation::Nullability => PrimitiveConstraint::PreserveNullability,
+            LegacyPreservation::ConsumerContract => PrimitiveConstraint::PreserveConsumerContract,
+            LegacyPreservation::Abi => PrimitiveConstraint::PreserveAbi,
+        };
+        goal.constraints.primitives.insert(primitive);
+    }
+    goal.validate()?;
+    Ok(goal)
 }
 
-impl SemanticGoal {
-    pub fn map_edge_with_context(
-        base_revision: impl Into<String>,
-        element_type: impl Into<String>,
-        context_type: impl Into<String>,
-    ) -> Self {
-        Self {
-            schema: SEMANTIC_GOAL_SCHEMA.into(),
-            family: GoalFamily::MapEdgeWithContext,
-            base_revision: base_revision.into(),
-            element_type: element_type.into(),
-            context_type: context_type.into(),
-            result_type: "SAME_AS_ELEMENT".into(),
-            context_evaluation: ContextEvaluation::OncePerRegion,
-            preserve: [
-                Preservation::Order,
-                Preservation::Cardinality,
-                Preservation::Laziness,
-                Preservation::Effects,
-                Preservation::Nullability,
-                Preservation::ConsumerContract,
-            ]
-            .into_iter()
-            .collect(),
-            business_choices: BTreeMap::new(),
+impl<'de> Deserialize<'de> for SemanticGoal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum GoalWire {
+            Current(CurrentSemanticGoal),
+            Legacy(LegacyMapEdgeGoal),
         }
-    }
 
-    fn validate(&self) -> Result<(), Refusal> {
-        if self.schema != SEMANTIC_GOAL_SCHEMA {
-            return Err(Refusal::InvalidGoalSchema);
+        match GoalWire::deserialize(deserializer)? {
+            GoalWire::Current(current) => Ok(Self {
+                schema: current.schema,
+                family: current.family,
+                base_revision: current.base_revision,
+                constraints: current.constraints,
+                oracle_policy: current.oracle_policy,
+            }),
+            GoalWire::Legacy(legacy) => migrate_legacy_map_edge_goal(legacy).map_err(|reason| {
+                D::Error::custom(format!("unsafe legacy semantic goal: {reason:?}"))
+            }),
         }
-        if self.base_revision.is_empty()
-            || self.element_type.is_empty()
-            || self.context_type.is_empty()
-        {
-            return Err(Refusal::IncompleteGoal);
-        }
-        if self.result_type != "SAME_AS_ELEMENT" {
-            return Err(Refusal::ResultTypeNotPreserved);
-        }
-        Ok(())
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ContextEvaluation {
-    OncePerRegion,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ObligationKind {
-    BindUniqueContextProducer,
-    BindUniqueTransformer,
-    BindUniqueValueEdge,
+    BindUnique,
     TypeAssignable,
     IntroduceOnce,
-    MapValueEdge,
+    MapEdge,
     PreserveOrder,
     PreserveCardinality,
     PreserveLaziness,
@@ -121,11 +244,21 @@ pub enum DischargeStatus {
     Refused,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BindingRole {
+    ContextProducer,
+    Transformer,
+    ValueEdge,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ChangeObligation {
     pub id: String,
     pub kind: ObligationKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binding_role: Option<BindingRole>,
     pub subject: Vec<String>,
     pub depends_on: Vec<String>,
     pub evidence: Vec<String>,
@@ -133,7 +266,7 @@ pub struct ChangeObligation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ChangeGraph {
     pub schema: String,
     pub goal_schema: String,
@@ -195,7 +328,7 @@ impl ChangeGraph {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SemanticCandidate {
     pub symbol: String,
     pub evidence_ref: RecordId,
@@ -215,6 +348,7 @@ pub enum EvidencePredicate {
     ConsumerContractPreserved,
     AbiPreserved,
     BehavioralOracleAvailable,
+    NoUnsupportedBoundary,
 }
 
 impl EvidencePredicate {
@@ -231,6 +365,7 @@ impl EvidencePredicate {
             Self::ConsumerContractPreserved => "binding.consumer-contract-preserved",
             Self::AbiPreserved => "binding.abi-preserved",
             Self::BehavioralOracleAvailable => "binding.behavioral-oracle-available",
+            Self::NoUnsupportedBoundary => "binding.no-unsupported-boundary",
         }
     }
 }
@@ -249,7 +384,7 @@ pub enum SemanticBoundary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BindingEvidence {
     pub snapshot_revision: String,
     pub context_producers: Vec<SemanticCandidate>,
@@ -268,6 +403,7 @@ pub struct BindingEvidence {
     pub consumer_contract_preserved: bool,
     pub abi_preserved: bool,
     pub behavioral_oracle_available: bool,
+    pub no_unsupported_boundary: bool,
 }
 
 impl BindingEvidence {
@@ -284,6 +420,7 @@ impl BindingEvidence {
             EvidencePredicate::ConsumerContractPreserved => self.consumer_contract_preserved,
             EvidencePredicate::AbiPreserved => self.abi_preserved,
             EvidencePredicate::BehavioralOracleAvailable => self.behavioral_oracle_available,
+            EvidencePredicate::NoUnsupportedBoundary => self.no_unsupported_boundary,
         }
     }
 }
@@ -293,7 +430,7 @@ impl BindingEvidence {
 /// booleans: all consumed predicates must resolve to current, sound records in
 /// the same composite snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct KernelBindingEvidence {
     pub facts: BindingEvidence,
     pub predicate_evidence: BTreeMap<EvidencePredicate, RecordId>,
@@ -312,7 +449,7 @@ pub enum ProofStatus {
 pub enum Refusal {
     InvalidGoalSchema,
     IncompleteGoal,
-    ResultTypeNotPreserved,
+    UnsafeLegacyGoal,
     SnapshotMismatch,
     UnsupportedBoundary,
     TypeNotAssignable,
@@ -330,7 +467,7 @@ pub enum Refusal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GoalProof {
     pub schema: String,
     pub goal_fingerprint: String,
@@ -349,20 +486,13 @@ impl GoalProof {
         let expected_fingerprint = crate::canonical::hash(goal).ok();
         let expected_snapshot_fingerprint = crate::canonical::hash(kernel.snapshot()).ok();
         let required_bindings = ["contextProducer", "transformer", "valueEdge"];
-        let mut required_kinds = vec![
-            ObligationKind::BindUniqueContextProducer,
-            ObligationKind::BindUniqueTransformer,
-            ObligationKind::BindUniqueValueEdge,
-            ObligationKind::TypeAssignable,
-            ObligationKind::IntroduceOnce,
-            ObligationKind::MapValueEdge,
-            ObligationKind::RequireOracle,
-            ObligationKind::MustRefuseOnBoundary,
-        ];
-        required_kinds.extend(goal.preserve.iter().map(preservation_obligation));
+        let required_kinds = required_obligation_counts(goal);
         goal.validate().is_ok()
             && kernel.validate().is_ok()
             && kernel.coverage().status == CoverageStatus::Complete
+            && !kernel.records().any(|record| {
+                record.kind == RecordKind::Unknown && record.is_current_at(kernel.snapshot())
+            })
             && kernel.snapshot().base_revision == goal.base_revision
             && self.schema == GOAL_PROOF_SCHEMA
             && self.goal_fingerprint == expected_fingerprint.unwrap_or_default()
@@ -379,15 +509,16 @@ impl GoalProof {
                     .get(*role)
                     .is_some_and(|value| !value.is_empty())
             })
+            && self.bindings.values().collect::<BTreeSet<_>>().len() == required_bindings.len()
             && self.change_graph.validate_closure().is_ok()
-            && self.change_graph.obligations.len() == required_kinds.len()
-            && required_kinds.iter().all(|kind| {
+            && self.change_graph.obligations.len() == required_kinds.values().sum::<usize>()
+            && required_kinds.iter().all(|(kind, expected)| {
                 self.change_graph
                     .obligations
                     .iter()
                     .filter(|item| item.kind == *kind)
                     .count()
-                    == 1
+                    == *expected
             })
             && self.change_graph.obligations.iter().all(|item| {
                 item.status == DischargeStatus::Proved
@@ -431,29 +562,45 @@ fn proof_payload_matches_kernel(
     }) {
         return false;
     }
+    if proof
+        .change_graph
+        .obligations
+        .iter()
+        .any(|item| (item.kind == ObligationKind::BindUnique) != item.binding_role.is_some())
+    {
+        return false;
+    }
 
     let binding_specs = [
-        (ObligationKind::BindUniqueContextProducer, context.as_str()),
-        (ObligationKind::BindUniqueTransformer, transformer.as_str()),
-        (ObligationKind::BindUniqueValueEdge, edge.as_str()),
+        (BindingRole::ContextProducer, context.as_str()),
+        (BindingRole::Transformer, transformer.as_str()),
+        (BindingRole::ValueEdge, edge.as_str()),
     ];
-    if binding_specs.iter().any(|(kind, symbol)| {
-        obligation(kind.clone()).is_none_or(|item| {
-            item.subject != [(*symbol).to_owned()]
-                || !obligation_has_atom(
+    if binding_specs.iter().any(|(role, symbol)| {
+        proof
+            .change_graph
+            .obligations
+            .iter()
+            .find(|item| {
+                item.kind == ObligationKind::BindUnique
+                    && item.binding_role == Some(*role)
+                    && item.subject == [(*symbol).to_owned()]
+            })
+            .is_none_or(|item| {
+                !obligation_has_atom(
                     item,
                     kernel,
                     symbol,
                     SemanticRelation::Exists,
                     SemanticValue::Boolean(true),
                 )
-        })
+            })
     }) {
         return false;
     }
 
     let edge_subjects = [transformer.clone(), edge.clone()];
-    for kind in [ObligationKind::TypeAssignable, ObligationKind::MapValueEdge] {
+    for kind in [ObligationKind::TypeAssignable, ObligationKind::MapEdge] {
         if obligation(kind).is_none_or(|item| {
             item.subject != edge_subjects
                 || !obligation_has_candidate(item, kernel, transformer)
@@ -467,7 +614,10 @@ fn proof_payload_matches_kernel(
     }) || obligation(ObligationKind::RequireOracle).is_none_or(|item| {
         item.subject != [edge.clone()] || !obligation_has_candidate(item, kernel, edge)
     }) || obligation(ObligationKind::MustRefuseOnBoundary).is_none_or(|item| {
-        item.subject != [edge.clone()] || !obligation_has_candidate(item, kernel, edge)
+        item.subject != [context.clone(), transformer.clone(), edge.clone()]
+            || !obligation_has_candidate(item, kernel, context)
+            || !obligation_has_candidate(item, kernel, transformer)
+            || !obligation_has_candidate(item, kernel, edge)
     }) {
         return false;
     }
@@ -489,6 +639,10 @@ fn proof_payload_matches_kernel(
             ObligationKind::RequireOracle,
             EvidencePredicate::BehavioralOracleAvailable,
         ),
+        (
+            ObligationKind::MustRefuseOnBoundary,
+            EvidencePredicate::NoUnsupportedBoundary,
+        ),
     ];
     if predicate_specs.iter().any(|(kind, predicate)| {
         obligation(kind.clone()).is_none_or(|item| {
@@ -503,9 +657,7 @@ fn proof_payload_matches_kernel(
     }) {
         return false;
     }
-    for preservation in &goal.preserve {
-        let kind = preservation_obligation(preservation);
-        let predicate = preservation_predicate(preservation);
+    for (kind, predicate) in preservation_requirements(goal) {
         if obligation(kind).is_none_or(|item| {
             item.subject != [edge.clone()]
                 || !obligation_has_candidate(item, kernel, edge)
@@ -581,7 +733,7 @@ fn bind_facts(
     if goal.base_revision != evidence.snapshot_revision {
         return refused(Refusal::SnapshotMismatch, evidence.boundaries.clone());
     }
-    if !evidence.boundaries.is_empty() {
+    if !evidence.boundaries.is_empty() || !evidence.no_unsupported_boundary {
         return refused(Refusal::UnsupportedBoundary, evidence.boundaries.clone());
     }
     if !evidence.type_assignable {
@@ -640,6 +792,9 @@ fn bind_facts(
         .iter()
         .map(|(role, values)| ((*role).to_owned(), values[0].symbol.clone()))
         .collect();
+    if bindings.values().collect::<BTreeSet<_>>().len() != bindings.len() {
+        return refused(Refusal::InvalidKernelEvidence, vec![]);
+    }
     let change_graph = build_change_graph(goal, evidence, predicate_evidence);
     debug_assert!(change_graph.validate_closure().is_ok());
     GoalProof {
@@ -666,6 +821,12 @@ fn validate_kernel_evidence(
     if kernel.coverage().status != CoverageStatus::Complete {
         return Err(Refusal::IncompleteKernelCoverage);
     }
+    if kernel
+        .records()
+        .any(|record| record.kind == RecordKind::Unknown && record.is_current_at(kernel.snapshot()))
+    {
+        return Err(Refusal::IncompleteKernelCoverage);
+    }
     if goal.base_revision != kernel.snapshot().base_revision
         || evidence.facts.snapshot_revision != kernel.snapshot().base_revision
     {
@@ -684,6 +845,7 @@ fn validate_kernel_evidence(
         EvidencePredicate::ConsumerContractPreserved,
         EvidencePredicate::AbiPreserved,
         EvidencePredicate::BehavioralOracleAvailable,
+        EvidencePredicate::NoUnsupportedBoundary,
     ];
     for candidate in evidence
         .facts
@@ -748,40 +910,84 @@ fn usable_kernel_record<'a>(
     Ok(record)
 }
 
-fn preservation_obligation(value: &Preservation) -> ObligationKind {
+fn primitive_obligation(value: &PrimitiveConstraint) -> ObligationKind {
     match value {
-        Preservation::Order => ObligationKind::PreserveOrder,
-        Preservation::Cardinality => ObligationKind::PreserveCardinality,
-        Preservation::Laziness => ObligationKind::PreserveLaziness,
-        Preservation::Effects => ObligationKind::PreserveEffects,
-        Preservation::Nullability => ObligationKind::PreserveNullability,
-        Preservation::ConsumerContract => ObligationKind::PreserveConsumerContract,
-        Preservation::Abi => ObligationKind::PreserveAbi,
+        PrimitiveConstraint::BindUnique => ObligationKind::BindUnique,
+        PrimitiveConstraint::TypeAssignable => ObligationKind::TypeAssignable,
+        PrimitiveConstraint::IntroduceOnce => ObligationKind::IntroduceOnce,
+        PrimitiveConstraint::MapEdge => ObligationKind::MapEdge,
+        PrimitiveConstraint::PreserveOrder => ObligationKind::PreserveOrder,
+        PrimitiveConstraint::PreserveCardinality => ObligationKind::PreserveCardinality,
+        PrimitiveConstraint::PreserveLaziness => ObligationKind::PreserveLaziness,
+        PrimitiveConstraint::PreserveEffects => ObligationKind::PreserveEffects,
+        PrimitiveConstraint::PreserveNullability => ObligationKind::PreserveNullability,
+        PrimitiveConstraint::PreserveConsumerContract => ObligationKind::PreserveConsumerContract,
+        PrimitiveConstraint::PreserveAbi => ObligationKind::PreserveAbi,
+        PrimitiveConstraint::RequireOracle => ObligationKind::RequireOracle,
+        PrimitiveConstraint::MustRefuseOnBoundary => ObligationKind::MustRefuseOnBoundary,
     }
 }
 
-fn preservation_predicate(value: &Preservation) -> EvidencePredicate {
-    match value {
-        Preservation::Order => EvidencePredicate::OrderPreserved,
-        Preservation::Cardinality => EvidencePredicate::CardinalityPreserved,
-        Preservation::Laziness => EvidencePredicate::LazinessPreserved,
-        Preservation::Effects => EvidencePredicate::EffectsPreserved,
-        Preservation::Nullability => EvidencePredicate::NullabilityPreserved,
-        Preservation::ConsumerContract => EvidencePredicate::ConsumerContractPreserved,
-        Preservation::Abi => EvidencePredicate::AbiPreserved,
+fn required_obligation_counts(goal: &SemanticGoal) -> BTreeMap<ObligationKind, usize> {
+    let mut counts = BTreeMap::new();
+    for primitive in &goal.constraints.primitives {
+        let count = if primitive == &PrimitiveConstraint::BindUnique {
+            3
+        } else {
+            1
+        };
+        counts.insert(primitive_obligation(primitive), count);
     }
+    counts
+}
+
+fn preservation_requirement(
+    value: &PrimitiveConstraint,
+) -> Option<(ObligationKind, EvidencePredicate)> {
+    match value {
+        PrimitiveConstraint::PreserveOrder => Some((
+            ObligationKind::PreserveOrder,
+            EvidencePredicate::OrderPreserved,
+        )),
+        PrimitiveConstraint::PreserveCardinality => Some((
+            ObligationKind::PreserveCardinality,
+            EvidencePredicate::CardinalityPreserved,
+        )),
+        PrimitiveConstraint::PreserveLaziness => Some((
+            ObligationKind::PreserveLaziness,
+            EvidencePredicate::LazinessPreserved,
+        )),
+        PrimitiveConstraint::PreserveEffects => Some((
+            ObligationKind::PreserveEffects,
+            EvidencePredicate::EffectsPreserved,
+        )),
+        PrimitiveConstraint::PreserveNullability => Some((
+            ObligationKind::PreserveNullability,
+            EvidencePredicate::NullabilityPreserved,
+        )),
+        PrimitiveConstraint::PreserveConsumerContract => Some((
+            ObligationKind::PreserveConsumerContract,
+            EvidencePredicate::ConsumerContractPreserved,
+        )),
+        PrimitiveConstraint::PreserveAbi => {
+            Some((ObligationKind::PreserveAbi, EvidencePredicate::AbiPreserved))
+        }
+        _ => None,
+    }
+}
+
+fn preservation_requirements(goal: &SemanticGoal) -> Vec<(ObligationKind, EvidencePredicate)> {
+    goal.constraints
+        .primitives
+        .iter()
+        .filter_map(preservation_requirement)
+        .collect()
 }
 
 fn preservations_hold(goal: &SemanticGoal, evidence: &BindingEvidence) -> bool {
-    goal.preserve.iter().all(|item| match item {
-        Preservation::Order => evidence.order_preserved,
-        Preservation::Cardinality => evidence.cardinality_preserved,
-        Preservation::Laziness => evidence.laziness_preserved,
-        Preservation::Effects => evidence.effects_preserved,
-        Preservation::Nullability => evidence.nullability_preserved,
-        Preservation::ConsumerContract => evidence.consumer_contract_preserved,
-        Preservation::Abi => evidence.abi_preserved,
-    })
+    preservation_requirements(goal)
+        .into_iter()
+        .all(|(_, predicate)| evidence.predicate_value(predicate))
 }
 
 fn build_change_graph(
@@ -793,24 +999,9 @@ fn build_change_graph(
     let transformer = &evidence.transformers[0];
     let edge = &evidence.value_edges[0];
     let mut obligations = vec![
-        obligation(
-            "bind-context",
-            ObligationKind::BindUniqueContextProducer,
-            vec![context],
-            vec![],
-        ),
-        obligation(
-            "bind-transformer",
-            ObligationKind::BindUniqueTransformer,
-            vec![transformer],
-            vec![],
-        ),
-        obligation(
-            "bind-edge",
-            ObligationKind::BindUniqueValueEdge,
-            vec![edge],
-            vec![],
-        ),
+        binding_obligation("bind-context", BindingRole::ContextProducer, context),
+        binding_obligation("bind-transformer", BindingRole::Transformer, transformer),
+        binding_obligation("bind-edge", BindingRole::ValueEdge, edge),
         with_predicate_evidence(
             obligation(
                 "type-assignable",
@@ -836,7 +1027,7 @@ fn build_change_graph(
         ),
         obligation(
             "map-edge",
-            ObligationKind::MapValueEdge,
+            ObligationKind::MapEdge,
             vec![transformer, edge],
             vec!["type-assignable", "introduce-once"],
         ),
@@ -850,30 +1041,29 @@ fn build_change_graph(
             predicate_evidence,
             &[EvidencePredicate::BehavioralOracleAvailable],
         ),
-        obligation(
-            "boundary-check",
-            ObligationKind::MustRefuseOnBoundary,
-            vec![edge],
-            vec!["bind-edge"],
+        with_predicate_evidence(
+            obligation(
+                "boundary-check",
+                ObligationKind::MustRefuseOnBoundary,
+                vec![context, transformer, edge],
+                vec!["bind-context", "bind-transformer", "bind-edge"],
+            ),
+            predicate_evidence,
+            &[EvidencePredicate::NoUnsupportedBoundary],
         ),
     ];
-    for preservation in &goal.preserve {
+    for (kind, predicate) in preservation_requirements(goal) {
         let suffix = format!(
             "preserve-{}",
-            serde_json::to_string(preservation)
+            serde_json::to_string(&kind)
                 .unwrap()
                 .trim_matches('"')
                 .to_ascii_lowercase()
         );
         obligations.push(with_predicate_evidence(
-            obligation(
-                &suffix,
-                preservation_obligation(preservation),
-                vec![edge],
-                vec!["map-edge"],
-            ),
+            obligation(&suffix, kind, vec![edge], vec!["map-edge"]),
             predicate_evidence,
-            &[preservation_predicate(preservation)],
+            &[predicate],
         ));
     }
     ChangeGraph {
@@ -892,6 +1082,7 @@ fn obligation(
     ChangeObligation {
         id: id.into(),
         kind,
+        binding_role: None,
         subject: subjects.iter().map(|item| item.symbol.clone()).collect(),
         depends_on: depends_on.into_iter().map(str::to_owned).collect(),
         evidence: subjects
@@ -900,6 +1091,16 @@ fn obligation(
             .collect(),
         status: DischargeStatus::Proved,
     }
+}
+
+fn binding_obligation(
+    id: &str,
+    role: BindingRole,
+    subject: &SemanticCandidate,
+) -> ChangeObligation {
+    let mut item = obligation(id, ObligationKind::BindUnique, vec![subject], vec![]);
+    item.binding_role = Some(role);
+    item
 }
 
 fn with_predicate_evidence(
@@ -1004,6 +1205,7 @@ mod tests {
             EvidencePredicate::ConsumerContractPreserved,
             EvidencePredicate::AbiPreserved,
             EvidencePredicate::BehavioralOracleAvailable,
+            EvidencePredicate::NoUnsupportedBoundary,
         ];
         KernelBindingEvidence {
             facts: BindingEvidence {
@@ -1023,6 +1225,7 @@ mod tests {
                 consumer_contract_preserved: true,
                 abi_preserved: true,
                 behavioral_oracle_available: true,
+                no_unsupported_boundary: true,
             },
             predicate_evidence: predicates
                 .into_iter()
@@ -1086,7 +1289,7 @@ mod tests {
     #[test]
     fn unique_semantic_binding_builds_complete_change_graph() {
         let facts = evidence();
-        let goal = SemanticGoal::map_edge_with_context("base", "Item", "Context");
+        let goal = SemanticGoal::map_edge_with_context("base");
         let kernel = kernel_for(&facts);
         let proof = bind_goal(&goal, &facts, &kernel);
         assert_eq!(proof.status, ProofStatus::Bound);
@@ -1109,7 +1312,11 @@ mod tests {
         vacuous.bindings.clear();
         vacuous.change_graph.obligations.clear();
         assert!(!vacuous.is_complete_for_goal(&goal, &kernel));
-        let different_goal = SemanticGoal::map_edge_with_context("base", "Item", "OtherContext");
+        let mut different_goal = SemanticGoal::map_edge_with_context("base");
+        different_goal
+            .constraints
+            .primitives
+            .remove(&PrimitiveConstraint::PreserveAbi);
         assert!(!proof.is_complete_for_goal(&different_goal, &kernel));
 
         let mut forged = proof.clone();
@@ -1134,10 +1341,7 @@ mod tests {
     fn ambiguity_never_produces_obligations_or_bindings() {
         let mut facts = evidence();
         facts.facts.transformers.push(candidate("decorateOther"));
-        let proof = prove(
-            &SemanticGoal::map_edge_with_context("base", "Item", "Context"),
-            &facts,
-        );
+        let proof = prove(&SemanticGoal::map_edge_with_context("base"), &facts);
         assert_eq!(proof.status, ProofStatus::Ambiguous);
         assert!(proof.bindings.is_empty());
         assert!(proof.change_graph.obligations.is_empty());
@@ -1145,7 +1349,7 @@ mod tests {
 
     #[test]
     fn unsupported_boundary_and_missing_oracle_refuse() {
-        let goal = SemanticGoal::map_edge_with_context("base", "Item", "Context");
+        let goal = SemanticGoal::map_edge_with_context("base");
         let mut facts = evidence();
         facts
             .facts
@@ -1161,11 +1365,81 @@ mod tests {
             prove(&goal, &facts).refusal,
             Some(Refusal::MissingBehavioralOracle)
         );
+
+        let mut facts = evidence();
+        facts.facts.no_unsupported_boundary = false;
+        assert_eq!(
+            prove(&goal, &facts).refusal,
+            Some(Refusal::UnsupportedBoundary)
+        );
+    }
+
+    #[test]
+    fn boundary_and_binding_proof_attacks_fail_closed() {
+        let goal = SemanticGoal::map_edge_with_context("base");
+        let facts = evidence();
+        let kernel = kernel_for(&facts);
+        let proof = bind_goal(&goal, &facts, &kernel);
+        assert!(proof.is_complete_for_goal(&goal, &kernel));
+
+        let mut missing_boundary_fact = proof.clone();
+        let boundary_fact = &facts.predicate_evidence[&EvidencePredicate::NoUnsupportedBoundary].0;
+        missing_boundary_fact
+            .change_graph
+            .obligations
+            .iter_mut()
+            .find(|item| item.kind == ObligationKind::MustRefuseOnBoundary)
+            .unwrap()
+            .evidence
+            .retain(|id| id != boundary_fact);
+        assert!(!missing_boundary_fact.is_complete_for_goal(&goal, &kernel));
+
+        let mut aliased_roles = proof.clone();
+        aliased_roles
+            .bindings
+            .insert("transformer".into(), "loadContext".into());
+        assert!(!aliased_roles.is_complete_for_goal(&goal, &kernel));
+
+        let mut duplicate_role = proof.clone();
+        duplicate_role
+            .change_graph
+            .obligations
+            .iter_mut()
+            .find(|item| item.binding_role == Some(BindingRole::Transformer))
+            .unwrap()
+            .binding_role = Some(BindingRole::ContextProducer);
+        assert!(!duplicate_role.is_complete_for_goal(&goal, &kernel));
+    }
+
+    #[test]
+    fn complete_coverage_cannot_hide_a_current_unknown() {
+        let goal = SemanticGoal::map_edge_with_context("base");
+        let facts = evidence();
+        let current = snapshot("base");
+        let mut kernel = kernel_for(&facts);
+        let proof = bind_goal(&goal, &facts, &kernel);
+        assert!(proof.is_complete_for_goal(&goal, &kernel));
+        let unknown_id: RecordId = "unknown:hidden-boundary".into();
+        let mut unknown = record(
+            &unknown_id,
+            &current,
+            "hidden-boundary",
+            SemanticRelation::KnowledgeStatus,
+            SemanticValue::Unknown,
+        );
+        unknown.kind = RecordKind::Unknown;
+        unknown.resolution = ResolutionState::UnknownOpen;
+        kernel.insert(unknown).unwrap();
+        assert_eq!(
+            bind_goal(&goal, &facts, &kernel).refusal,
+            Some(Refusal::IncompleteKernelCoverage)
+        );
+        assert!(!proof.is_complete_for_goal(&goal, &kernel));
     }
 
     #[test]
     fn preservation_failure_and_stale_snapshot_refuse() {
-        let goal = SemanticGoal::map_edge_with_context("base", "Item", "Context");
+        let goal = SemanticGoal::map_edge_with_context("base");
         let mut facts = evidence();
         facts.facts.laziness_preserved = false;
         assert_eq!(
@@ -1182,7 +1456,7 @@ mod tests {
 
     #[test]
     fn missing_or_non_sound_kernel_records_refuse_before_binding() {
-        let goal = SemanticGoal::map_edge_with_context("base", "Item", "Context");
+        let goal = SemanticGoal::map_edge_with_context("base");
         let mut facts = evidence();
         facts
             .predicate_evidence
@@ -1204,7 +1478,7 @@ mod tests {
 
     #[test]
     fn semantically_mismatched_predicate_record_cannot_prove_an_obligation() {
-        let goal = SemanticGoal::map_edge_with_context("base", "Item", "Context");
+        let goal = SemanticGoal::map_edge_with_context("base");
         let facts = evidence();
         let current = snapshot("base");
         let mut kernel = kernel_for(&facts);
@@ -1228,7 +1502,7 @@ mod tests {
 
     #[test]
     fn invalidated_kernel_fact_makes_the_vertical_slice_fail_closed() {
-        let goal = SemanticGoal::map_edge_with_context("base", "Item", "Context");
+        let goal = SemanticGoal::map_edge_with_context("base");
         let facts = evidence();
         let mut kernel = kernel_for(&facts);
         let changed = facts.predicate_evidence[&EvidencePredicate::TypeAssignable].clone();
@@ -1248,6 +1522,7 @@ mod tests {
             obligations: vec![ChangeObligation {
                 id: "a".into(),
                 kind: ObligationKind::RequireOracle,
+                binding_role: None,
                 subject: vec![],
                 depends_on: vec!["missing".into()],
                 evidence: vec![],
@@ -1267,12 +1542,70 @@ mod tests {
 
     #[test]
     fn serialized_goal_has_no_source_patch_or_graph_id_escape_hatch() {
-        let json = serde_json::to_string(&SemanticGoal::map_edge_with_context(
-            "base", "Item", "Context",
-        ))
-        .unwrap();
+        let json = serde_json::to_string(&SemanticGoal::map_edge_with_context("base")).unwrap();
         for forbidden in ["sourceText", "replacement", "graphId", "regex", "EditIR"] {
             assert!(!json.contains(forbidden), "goal leaked {forbidden}: {json}");
         }
+    }
+
+    #[test]
+    fn unknown_or_textual_goal_fields_fail_deserialization() {
+        for (field, injected) in [
+            ("sourceText", "fun injected() = true"),
+            ("replacement", "unsafe source"),
+            ("regex", ".*"),
+            ("EditIR", "forged edit"),
+        ] {
+            let mut value =
+                serde_json::to_value(SemanticGoal::map_edge_with_context("base")).unwrap();
+            value[field] = serde_json::json!(injected);
+            assert!(
+                serde_json::from_value::<SemanticGoal>(value).is_err(),
+                "accepted unrestricted field {field}"
+            );
+        }
+
+        let mut value = serde_json::to_value(SemanticGoal::map_edge_with_context("base")).unwrap();
+        value["constraints"]["graphId"] = serde_json::json!("node:forged");
+        assert!(serde_json::from_value::<SemanticGoal>(value).is_err());
+    }
+
+    #[test]
+    fn every_typed_primitive_is_mandatory_and_consumed() {
+        let complete = SemanticGoal::map_edge_with_context("base");
+        for primitive in complete.constraints.primitives.clone() {
+            let mut incomplete = complete.clone();
+            incomplete.constraints.primitives.remove(&primitive);
+            let proof = prove(&incomplete, &evidence());
+            assert_eq!(proof.status, ProofStatus::Refused, "unused {primitive:?}");
+            assert!(proof.change_graph.obligations.is_empty());
+        }
+    }
+
+    #[test]
+    fn safe_legacy_goal_migrates_but_unbounded_choices_do_not() {
+        let legacy = serde_json::json!({
+            "schema": LEGACY_SEMANTIC_GOAL_SCHEMA,
+            "family": "MAP_EDGE_WITH_CONTEXT",
+            "baseRevision": "base",
+            "elementType": "Item",
+            "contextType": "Context",
+            "resultType": "SAME_AS_ELEMENT",
+            "contextEvaluation": "ONCE_PER_REGION",
+            "preserve": ["ORDER", "CARDINALITY", "LAZINESS", "EFFECTS", "NULLABILITY", "CONSUMER_CONTRACT"],
+            "businessChoices": {}
+        });
+        let migrated: SemanticGoal = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(migrated.schema, SEMANTIC_GOAL_SCHEMA);
+        assert!(
+            !serde_json::to_string(&migrated)
+                .unwrap()
+                .contains("elementType")
+        );
+
+        let mut unsafe_goal = legacy;
+        unsafe_goal["businessChoices"] =
+            serde_json::json!({"replacement": "fun injected() = true"});
+        assert!(serde_json::from_value::<SemanticGoal>(unsafe_goal).is_err());
     }
 }
