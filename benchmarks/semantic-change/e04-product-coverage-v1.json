@@ -1,0 +1,151 @@
+{
+  "schema": "semantic-editing-e04-product-coverage-contract/0.1",
+  "populationSchema": "codeclew-editing-population/0.1",
+  "populationSha256": "a209f115b0a175bb74859b0539f75932cd664a495332ccf10b634b3cf1c2b9f2",
+  "typedGoalSchema": "typed-goal-language-schema/0.1",
+  "typedGoalVersion": "0.1",
+  "positiveCellCount": 14,
+  "currentSupportedUpperBound": 2,
+  "cells": [
+    {
+      "family": "producer-transform-consumer",
+      "buildSystem": "gradle",
+      "requiredRoles": ["CONTEXT_PRODUCER", "TRANSFORMER", "VALUE_EDGE"],
+      "requiredObligations": ["bind producer and consumer", "preserve value-flow contract", "prove transform placement"],
+      "requiredRoot": {"operator": "MAP_EDGE", "operandRoles": ["CONTEXT_PRODUCER", "TRANSFORMER", "VALUE_EDGE"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 3,
+      "status": "SUPPORTED",
+      "unsupportedReason": null
+    },
+    {
+      "family": "producer-transform-consumer",
+      "buildSystem": "maven",
+      "requiredRoles": ["CONTEXT_PRODUCER", "TRANSFORMER", "VALUE_EDGE"],
+      "requiredObligations": ["bind producer and consumer", "preserve value-flow contract", "prove transform placement"],
+      "requiredRoot": {"operator": "MAP_EDGE", "operandRoles": ["CONTEXT_PRODUCER", "TRANSFORMER", "VALUE_EDGE"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 3,
+      "status": "SUPPORTED",
+      "unsupportedReason": null
+    },
+    {
+      "family": "type-signature-propagation",
+      "buildSystem": "gradle",
+      "requiredRoles": ["DECLARATION", "OVERRIDE", "CALL_SITE"],
+      "requiredObligations": ["propagate declared type", "preserve override compatibility", "preserve call-site assignability"],
+      "requiredRoot": {"operator": "PROPAGATE_DECLARED_TYPE", "operandRoles": ["DECLARATION", "OVERRIDE"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 2,
+      "status": "INCOMPLETE_REQUIRED_ROLE_CLOSURE",
+      "unsupportedReason": "ROOT_BINDS_2_OF_3_REQUIRED_ROLES"
+    },
+    {
+      "family": "type-signature-propagation",
+      "buildSystem": "maven",
+      "requiredRoles": ["DECLARATION", "OVERRIDE", "CALL_SITE"],
+      "requiredObligations": ["propagate declared type", "preserve override compatibility", "preserve call-site assignability"],
+      "requiredRoot": {"operator": "PROPAGATE_DECLARED_TYPE", "operandRoles": ["DECLARATION", "OVERRIDE"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 2,
+      "status": "INCOMPLETE_REQUIRED_ROLE_CLOSURE",
+      "unsupportedReason": "ROOT_BINDS_2_OF_3_REQUIRED_ROLES"
+    },
+    {
+      "family": "dto-event-api-evolution",
+      "buildSystem": "gradle",
+      "requiredRoles": ["CONTRACT_FIELD", "CONSTRUCTION_SITE", "COMPATIBILITY_POLICY"],
+      "requiredObligations": ["update contract field", "propagate construction sites", "preserve compatibility policy"],
+      "requiredRoot": {"operator": "NULL_HANDLES", "operandRoles": ["CONTRACT_FIELD", "COMPATIBILITY_POLICY", "CONSTRUCTION_SITE"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 3,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "UNSUPPORTED_CONSTRAINT_DOMAIN"
+    },
+    {
+      "family": "dto-event-api-evolution",
+      "buildSystem": "maven",
+      "requiredRoles": ["CONTRACT_FIELD", "CONSTRUCTION_SITE", "COMPATIBILITY_POLICY"],
+      "requiredObligations": ["update contract field", "propagate construction sites", "preserve compatibility policy"],
+      "requiredRoot": {"operator": "NULL_HANDLES", "operandRoles": ["CONTRACT_FIELD", "COMPATIBILITY_POLICY", "CONSTRUCTION_SITE"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 3,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "UNSUPPORTED_CONSTRAINT_DOMAIN"
+    },
+    {
+      "family": "persistence-nullability",
+      "buildSystem": "gradle",
+      "requiredRoles": ["PROJECTION", "DECLARED_TYPE", "QUERY_CONSUMER"],
+      "requiredObligations": ["align projection and declared type", "preserve nullability", "link query result to consumer"],
+      "requiredRoot": {"operator": "PROJECTS_VALUE", "operandRoles": ["DECLARED_TYPE", "PROJECTION", "QUERY_CONSUMER"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 3,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "UNSUPPORTED_CONSTRAINT_DOMAIN"
+    },
+    {
+      "family": "persistence-nullability",
+      "buildSystem": "maven",
+      "requiredRoles": ["PROJECTION", "DECLARED_TYPE", "QUERY_CONSUMER"],
+      "requiredObligations": ["align projection and declared type", "preserve nullability", "link query result to consumer"],
+      "requiredRoot": {"operator": "PROJECTS_VALUE", "operandRoles": ["DECLARED_TYPE", "PROJECTION", "QUERY_CONSUMER"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 3,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "UNSUPPORTED_CONSTRAINT_DOMAIN"
+    },
+    {
+      "family": "configuration-lifecycle",
+      "buildSystem": "gradle",
+      "requiredRoles": ["CONFIGURATION_PRODUCER", "INITIALIZATION_SITE", "LIFECYCLE_OWNER"],
+      "requiredObligations": ["bind configuration producer", "preserve initialization order", "respect lifecycle region"],
+      "requiredRoot": {"operator": "PRESERVE_OWNER_BOUNDARY", "operandRoles": ["INITIALIZATION_SITE", "LIFECYCLE_OWNER"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 2,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "NO_ISSUABLE_CONFIGURATION_PRODUCER_ROOT"
+    },
+    {
+      "family": "configuration-lifecycle",
+      "buildSystem": "maven",
+      "requiredRoles": ["CONFIGURATION_PRODUCER", "INITIALIZATION_SITE", "LIFECYCLE_OWNER"],
+      "requiredObligations": ["bind configuration producer", "preserve initialization order", "respect lifecycle region"],
+      "requiredRoot": {"operator": "PRESERVE_OWNER_BOUNDARY", "operandRoles": ["INITIALIZATION_SITE", "LIFECYCLE_OWNER"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 2,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "NO_ISSUABLE_CONFIGURATION_PRODUCER_ROOT"
+    },
+    {
+      "family": "error-retry-resource",
+      "buildSystem": "gradle",
+      "requiredRoles": ["FAILURE_PATH", "RESOURCE_OWNER", "RETRY_OPERATION"],
+      "requiredObligations": ["preserve failure path", "preserve resource closure", "preserve retry cardinality and order"],
+      "requiredRoot": {"operator": "PRESERVE_RESOURCE_LIFETIME", "operandRoles": ["RESOURCE_OWNER"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 1,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "UNSUPPORTED_CONSTRAINT_DOMAIN"
+    },
+    {
+      "family": "error-retry-resource",
+      "buildSystem": "maven",
+      "requiredRoles": ["FAILURE_PATH", "RESOURCE_OWNER", "RETRY_OPERATION"],
+      "requiredObligations": ["preserve failure path", "preserve resource closure", "preserve retry cardinality and order"],
+      "requiredRoot": {"operator": "PRESERVE_RESOURCE_LIFETIME", "operandRoles": ["RESOURCE_OWNER"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 1,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "UNSUPPORTED_CONSTRAINT_DOMAIN"
+    },
+    {
+      "family": "test-regression-strengthening",
+      "buildSystem": "gradle",
+      "requiredRoles": ["BEHAVIOR_UNDER_TEST", "INDEPENDENT_ORACLE", "PRODUCTION_CONTRACT"],
+      "requiredObligations": ["identify independent oracle", "detect omitted behavior", "preserve production contract"],
+      "requiredRoot": {"operator": "REQUIRE_OMISSION_DETECTION", "operandRoles": ["BEHAVIOR_UNDER_TEST"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 1,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "NO_COMPLETE_INDEPENDENT_ORACLE_COMPOSITION"
+    },
+    {
+      "family": "test-regression-strengthening",
+      "buildSystem": "maven",
+      "requiredRoles": ["BEHAVIOR_UNDER_TEST", "INDEPENDENT_ORACLE", "PRODUCTION_CONTRACT"],
+      "requiredObligations": ["identify independent oracle", "detect omitted behavior", "preserve production contract"],
+      "requiredRoot": {"operator": "REQUIRE_OMISSION_DETECTION", "operandRoles": ["BEHAVIOR_UNDER_TEST"], "compositionSource": "TYPED_GOAL_MANDATORY_CLOSURE"},
+      "expectedProviderBindingCardinality": 1,
+      "status": "UNSUPPORTED",
+      "unsupportedReason": "NO_COMPLETE_INDEPENDENT_ORACLE_COMPOSITION"
+    }
+  ]
+}

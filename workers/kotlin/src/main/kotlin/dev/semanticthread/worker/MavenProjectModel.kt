@@ -16,7 +16,15 @@ import kotlin.io.path.exists
 import kotlin.io.path.extension
 import kotlin.io.path.isExecutable
 import kotlin.io.path.isRegularFile
-import kotlin.io.path.readText
+
+internal fun mavenModelCommand(
+    launcher: List<String>,
+    repo: Path,
+    arguments: List<String>,
+): List<String> {
+    val localRepository = repoOwnedStateDirectory(repo, ".semantic-thread", "maven-repository")
+    return launcher + listOf("-o", "-Dmaven.repo.local=$localRepository") + arguments
+}
 
 internal class MavenProjectModelExtractor {
     fun extract(repo: Path, compilation: String?): JsonObject {
@@ -28,7 +36,7 @@ internal class MavenProjectModelExtractor {
             val classpathFile = temporary.resolve("classpath.txt")
             val launcher = launcher(repo)
             val scope = if (sourceSet == "test") "test" else "compile"
-            val command = launcher + listOf(
+            val command = mavenModelCommand(launcher, repo, listOf(
                 "-q",
                 "-DskipTests",
                 "-Doutput=$effectivePom",
@@ -36,7 +44,7 @@ internal class MavenProjectModelExtractor {
                 "-Dmdep.includeScope=$scope",
                 "help:effective-pom",
                 "dependency:build-classpath",
-            )
+            ))
             val process = start(command, repo, "Maven model extraction")
             val output = process.inputStream.bufferedReader().readText()
             val status = process.waitFor()
@@ -100,8 +108,27 @@ internal class MavenProjectModelExtractor {
                 ?.mapNotNull { it.textValue() }
                 .orEmpty()
                 .sorted()
-            val compilerPlugins = compilerPluginArtifacts(kotlinPlugin, repo, launcher)
+            val compilerPlugins = compilerPluginArtifacts(
+                kotlinPlugin,
+                repo,
+                mavenModelCommand(launcher, repo, emptyList()),
+            )
             val compilerPluginOptions = compilerPluginOptions(configuration)
+            val buildPlugins = project.directChild("build")
+                ?.directChild("plugins")
+                ?.directChildren("plugin")
+                .orEmpty()
+            val hasSurefire = buildPlugins.any {
+                it.directText("artifactId") == "maven-surefire-plugin"
+            }
+            val hasFailsafe = buildPlugins.any {
+                it.directText("artifactId") == "maven-failsafe-plugin"
+            }
+            val mavenTestLifecycle = when {
+                hasFailsafe -> "UNSUPPORTED_FAILSAFE"
+                hasSurefire -> "SUREFIRE"
+                else -> "UNSUPPORTED_AMBIGUOUS"
+            }
 
             return buildJsonObject {
                 put("buildSystem", "MAVEN")
@@ -129,7 +156,8 @@ internal class MavenProjectModelExtractor {
                 put("freeCompilerArguments", JsonArray(freeCompilerArguments.map(::JsonPrimitive)))
                 putJsonArray("optIns") {}
                 put("tasks", JsonArray(listOf(JsonPrimitive("test"))))
-                put("mavenVersion", mavenVersion(launcher, repo))
+                put("mavenTestLifecycle", mavenTestLifecycle)
+                put("mavenVersion", mavenVersion(mavenModelCommand(launcher, repo, emptyList()), repo))
                 put("jdkHome", System.getProperty("java.home"))
             }
         } finally {
@@ -214,17 +242,8 @@ internal class MavenProjectModelExtractor {
         }
     }
 
-    private fun localRepository(repo: Path): Path {
-        val configured = repo.resolve(".mvn/maven.config")
-            .takeIf { it.isRegularFile() }
-            ?.readText()
-            ?.lineSequence()
-            ?.flatMap { it.split(Regex("\\s+")).asSequence() }
-            ?.firstOrNull { it.startsWith("-Dmaven.repo.local=") }
-            ?.substringAfter('=')
-        return configured?.let(Path::of)?.let { if (it.isAbsolute) it else repo.resolve(it).normalize() }
-            ?: Path.of(System.getProperty("user.home"), ".m2", "repository")
-    }
+    private fun localRepository(repo: Path): Path =
+        repoOwnedStateDirectory(repo, ".semantic-thread", "maven-repository")
 
     private fun compilerPluginOptions(configuration: Element?): List<String> {
         val enabled = configuration
@@ -259,10 +278,7 @@ internal class MavenProjectModelExtractor {
 
     private fun mavenVersion(launcher: List<String>, repo: Path): String {
         return try {
-            val process = ProcessBuilder(launcher + "-version")
-                .directory(repo.toFile())
-                .redirectErrorStream(true)
-                .start()
+            val process = sanitizedProjectModelProcess(launcher + "-version", repo).start()
             val firstLine = process.inputStream.bufferedReader().readLine().orEmpty()
             if (process.waitFor() == 0) firstLine.removePrefix("Apache Maven ").trim().ifBlank { "unknown" } else "unknown"
         } catch (_: Exception) {
@@ -271,10 +287,7 @@ internal class MavenProjectModelExtractor {
     }
 
     private fun start(command: List<String>, repo: Path, operation: String) = try {
-        ProcessBuilder(command)
-            .directory(repo.toFile())
-            .redirectErrorStream(true)
-            .start()
+        sanitizedProjectModelProcess(command, repo).start()
     } catch (error: IOException) {
         throw WorkerFailure(
             "UNSUPPORTED_PROJECT_CONFIGURATION",

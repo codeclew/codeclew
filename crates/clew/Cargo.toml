@@ -8,6 +8,7 @@ build = "build.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+ed25519-dalek.workspace = true
 hex.workspace = true
 prost.workspace = true
 rusqlite.workspace = true
@@ -21,8 +22,12 @@ uuid.workspace = true
 walkdir.workspace = true
 
 [build-dependencies]
+hex.workspace = true
 prost-build = "0.14"
 protoc-bin-vendored = "3.2"
+sha2.workspace = true
+walkdir.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1.4"

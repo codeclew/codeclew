@@ -143,7 +143,7 @@ fn authority_requires_live_worker_source_and_validation_receipts() {
         )
         .unwrap();
     let validation = authority
-        .run_validation(&[&verified], &[&behavioral_test])
+        .run_validation(&[&verified], &[&behavioral_test], &mut worker)
         .unwrap();
     let bundle = authority
         .authorize_bundle(&[&verified], &[&behavioral_test], &validation)

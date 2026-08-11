@@ -8,6 +8,7 @@ pub enum ErrorCode {
     UnsupportedProjectConfiguration,
     ProjectModelChanged,
     WorkerProtocolMismatch,
+    WorkerPreparationRequired,
     WorkerCrashed,
     SymbolNotFound,
     AmbiguousSymbol,

@@ -38,6 +38,24 @@ gradle.beforeProject { project ->
             }
             def sourceFiles = []
             try { sourceFiles = compile.sources.files.collect { it.absolutePath }.sort() } catch (Throwable ignored) {}
+            // Kotlin's task-level `libraries` does not consistently expose the
+            // output of the associated production compilation.  Gradle's
+            // module-local SourceSet compileClasspath is authoritative for a
+            // test compilation and includes main output plus its dependencies.
+            def sourceSetName = "main"
+            if (compile.name.startsWith("compile") && compile.name.endsWith("Kotlin")) {
+                def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
+                sourceSetName = stem.isEmpty() ? "main" : stem.substring(0, 1).toLowerCase() + stem.substring(1)
+            }
+            def sourceSetClasspath = []
+            try {
+                def sourceSets = project.extensions.findByName("sourceSets")
+                def sourceSet = sourceSets?.findByName(sourceSetName)
+                if (sourceSet != null) {
+                    sourceSetClasspath = sourceSet.compileClasspath.files.collect { it.absolutePath }
+                }
+            } catch (Throwable ignored) {}
+            def classpath = (filesOf("libraries") + sourceSetClasspath).unique().sort()
             def compilerVersion = null
             try {
                 def versionClass = compile.class.classLoader.loadClass("org.jetbrains.kotlin.config.KotlinCompilerVersion")
@@ -49,7 +67,7 @@ gradle.beforeProject { project ->
                 projectDir: project.projectDir.absolutePath,
                 compileTask: compile.path,
                 sourceFiles: sourceFiles,
-                classpath: filesOf("libraries"),
+                classpath: classpath,
                 friendPaths: filesOf("friendPaths"),
                 compilerPlugins: filesOf("pluginClasspath"),
                 compilerVersion: compilerVersion,

@@ -22,6 +22,7 @@ pub fn enrich_profiled(mut graph: LocalGraph) -> (LocalGraph, EnrichTimings) {
     add_ast_and_type_edges(&mut graph);
     annotate_local_memory(&mut graph);
     add_call_edges(&mut graph);
+    add_direct_argument_def_use_edges(&mut graph);
     add_effect_edges(&mut graph);
     let rust_graph_construction_micros = graph_started.elapsed().as_micros() as u64;
     let entry = graph
@@ -68,6 +69,58 @@ pub fn enrich_profiled(mut graph: LocalGraph) -> (LocalGraph, EnrichTimings) {
             ssa_and_control_micros,
         },
     )
+}
+
+/// A compiler-mapped direct argument occurrence is also a value definition/use
+/// edge.  Keep this deliberately narrower than general expression flow: the
+/// worker has already resolved the argument occurrence to the destination
+/// call, and we only lift an occurrence whose complete compiler origin equals
+/// exactly one resolved call origin and whose exact source range is the mapped
+/// argument range. More complex expressions remain unsupported rather than
+/// being reconstructed from source text.
+fn add_direct_argument_def_use_edges(graph: &mut LocalGraph) {
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let direct = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == "ARG_PARAM")
+        .filter_map(|edge| {
+            let source = nodes.get(&edge.from)?;
+            let destination = nodes.get(&edge.to)?;
+            if destination.kind != "CALL" {
+                return None;
+            }
+            let source_start = source.origin.as_ref()?.pointer("/rangeHint/0")?.as_u64()?;
+            let exact_mapping = destination
+                .attributes
+                .get("argumentToParameter")?
+                .as_array()?
+                .iter()
+                .filter(|mapping| {
+                    mapping.get("argumentStart").and_then(Value::as_u64) == Some(source_start)
+                        && mapping
+                            .get("parameterIndex")
+                            .and_then(Value::as_u64)
+                            .is_some()
+                })
+                .count();
+            let resolved_call_occurrences = nodes
+                .values()
+                .filter(|candidate| candidate.kind == "CALL")
+                .filter(|candidate| candidate.origin == source.origin)
+                .count();
+            (exact_mapping == 1 && resolved_call_occurrences == 1).then(|| Edge {
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                kind: "DEF_USE".into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    graph.edges.extend(direct);
 }
 
 fn add_ast_and_type_edges(graph: &mut LocalGraph) {
@@ -189,7 +242,7 @@ fn add_call_edges(graph: &mut LocalGraph) {
     let calls: Vec<_> = graph
         .nodes
         .iter()
-        .filter(|node| node.kind == "CALL")
+        .filter(|node| is_resolved_semantic_call(node))
         .cloned()
         .collect();
     for call in calls {
@@ -263,7 +316,8 @@ fn add_effect_edges(graph: &mut LocalGraph) {
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        if node.kind == "CALL" && effects.is_empty() && !is_supported_intrinsic(&node) {
+        if is_resolved_semantic_call(&node) && effects.is_empty() && !is_supported_intrinsic(&node)
+        {
             effects.insert("READ_STATE".into());
         }
         for effect in effects {
@@ -338,6 +392,20 @@ fn is_supported_intrinsic(node: &GraphNode) -> bool {
             .get("effects")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty)
+}
+
+fn is_resolved_semantic_call(node: &GraphNode) -> bool {
+    node.kind == "CALL"
+        && node
+            .attributes
+            .get("symbol")
+            .and_then(Value::as_str)
+            .is_some_and(|symbol| !symbol.is_empty() && symbol != "<unresolved>")
+        && node
+            .attributes
+            .get("calleeSummaryHash")
+            .and_then(Value::as_str)
+            .is_some_and(|hash| !hash.is_empty() && hash != "sha256:unknown")
 }
 
 fn add_ssa_and_def_use(graph: &mut LocalGraph, entry: &str) {
@@ -717,7 +785,7 @@ pub fn slice(
     // summary proves otherwise, completeness must remain partial.
     let external_calls: Vec<_> = nodes
         .iter()
-        .filter(|n| n.kind == "CALL" && !is_supported_intrinsic(n))
+        .filter(|n| is_resolved_semantic_call(n) && !is_supported_intrinsic(n))
         .cloned()
         .collect();
     let external = !external_calls.is_empty();

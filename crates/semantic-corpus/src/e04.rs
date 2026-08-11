@@ -3,6 +3,7 @@
 //! This is deliberately an artifact generator. It never invokes a model,
 //! binder, source mutation path, or hidden judge.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,13 +11,24 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use crate::e04_authorization::{
+    MaterializationAuthorization, MaterializationAuthorizationInput, MaterializerIdentity,
+    R1_AUTHORIZATION_ENVELOPE_SCHEMA, R1_AUTHORIZATION_ISSUER, R1_AUTHORIZATION_PURPOSE,
+    R1_AUTHORIZATION_SCHEMA, authorize_materialization, materializer_contract_sha256,
+    materializer_identity,
+};
+use crate::e04_authorization::{MaterializationResultBinding, canonical_json_bytes};
 use crate::population::{self, EditingPopulationSpec, PopulationSlot};
 use crate::{
     BuildSystem, GenerateOptions, RepositoryLayout, TaskFamily, TaskVariant, generate_with_variant,
 };
 
 pub const E04_PUBLIC_SCHEMA: &str = "semantic-editing-e04-public-task/0.1";
-pub const E04_CONTROLLER_SCHEMA: &str = "semantic-editing-e04-controller/0.1";
+pub const E04_CONTROLLER_SCHEMA: &str = "semantic-editing-e04-controller/0.2";
+pub const E04_MATERIALIZER_IDENTITY_SCHEMA: &str =
+    "semantic-editing-e04-r1-materializer-identity/0.1";
+pub const E04_MATERIALIZATION_RESULT_SCHEMA: &str =
+    "semantic-editing-e04-r1-materialization-result/0.1";
 pub const FROZEN_PRODUCT_REVISION: &str = "a6ae1e48359eccef15060c1bb249a648857f30c9";
 pub const FROZEN_POPULATION_SHA256: &str =
     "a209f115b0a175bb74859b0539f75932cd664a495332ccf10b634b3cf1c2b9f2";
@@ -30,7 +42,31 @@ pub struct MaterializeOptions {
     pub binder_freeze: String,
     pub binder_tree_sha256: String,
     pub population_sha256: String,
-    pub tooling_root: Option<PathBuf>,
+    pub gradle_wrapper_assets: Option<GradleWrapperAssets>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GradleWrapperAssets {
+    pub tooling_root: PathBuf,
+    pub wrapper_script: PathBuf,
+    pub wrapper_jar: PathBuf,
+    pub wrapper_properties: PathBuf,
+    pub manifest: PathBuf,
+    pub codeclew_binary_sha256: String,
+    pub typed_goal_catalog_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolingAssetManifest {
+    tooling_sha256: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct ValidatedGradleWrapperAssets {
+    script: PathBuf,
+    jar: PathBuf,
+    properties: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +88,8 @@ pub struct PublicTask {
 pub struct ControllerTask {
     pub schema: String,
     pub task_id: String,
+    pub series_id: String,
+    pub controller_seed_commitment: String,
     pub slot: PopulationSlot,
     pub seed: u64,
     pub binder_freeze: String,
@@ -81,9 +119,88 @@ pub struct MaterializedExperiment {
     pub agent_root: PathBuf,
     pub controller_root: PathBuf,
     pub tasks: usize,
+    pub result: MaterializationResult,
 }
 
-pub fn materialize(options: &MaterializeOptions) -> Result<MaterializedExperiment> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MaterializerIdentityReport {
+    pub schema: String,
+    pub materializer: MaterializerIdentity,
+    pub materializer_contract_sha256: String,
+    pub readiness_graph_sha256: String,
+    pub readiness_checker_source_sha256: String,
+    pub issuer: String,
+    pub purpose: String,
+    pub authorization_envelope_schema: String,
+    pub authorization_payload_schema: String,
+    pub materialization_result_schema: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AgentPublicMember {
+    pub task_id: String,
+    pub public_manifest_sha256: String,
+    pub repository_source_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ControllerMember {
+    pub task_id: String,
+    pub controller_manifest_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MaterializationResult {
+    pub schema: String,
+    pub authorization_envelope_sha256: String,
+    pub root_receipt_sha256: String,
+    pub decision_freeze_sha256: String,
+    pub series_id: String,
+    pub output_path: String,
+    pub task_count: usize,
+    pub agent_public_members: Vec<AgentPublicMember>,
+    pub agent_public_set_sha256: String,
+    pub controller_members: Vec<ControllerMember>,
+    pub controller_set_sha256: String,
+    pub r1_public_set_sha256: String,
+    pub r1_controller_tree_sha256: String,
+}
+
+pub fn materializer_identity_report() -> MaterializerIdentityReport {
+    let materializer = materializer_identity();
+    MaterializerIdentityReport {
+        schema: E04_MATERIALIZER_IDENTITY_SCHEMA.into(),
+        materializer_contract_sha256: materializer_contract_sha256(),
+        readiness_graph_sha256: materializer.readiness_graph_sha256.clone(),
+        readiness_checker_source_sha256: materializer.readiness_checker_source_sha256.clone(),
+        materializer,
+        issuer: R1_AUTHORIZATION_ISSUER.into(),
+        purpose: R1_AUTHORIZATION_PURPOSE.into(),
+        authorization_envelope_schema: R1_AUTHORIZATION_ENVELOPE_SCHEMA.into(),
+        authorization_payload_schema: R1_AUTHORIZATION_SCHEMA.into(),
+        materialization_result_schema: E04_MATERIALIZATION_RESULT_SCHEMA.into(),
+    }
+}
+
+pub fn canonical_json<T: Serialize>(value: &T) -> Result<String> {
+    let bytes = canonical_json_bytes(&serde_json::to_value(value)?);
+    String::from_utf8(bytes).context("canonical JSON is not UTF-8")
+}
+
+pub fn materialize(
+    options: &MaterializeOptions,
+    authorization: MaterializationAuthorization,
+) -> Result<MaterializedExperiment> {
+    authorization.validate_for(options)?;
+    validate_materialize_options(options)?;
+    materialize_authorized(options, &authorization)
+}
+
+fn validate_materialize_options(options: &MaterializeOptions) -> Result<()> {
     if options.binder_freeze != FROZEN_PRODUCT_REVISION
         || options.population_sha256 != FROZEN_POPULATION_SHA256
     {
@@ -92,6 +209,16 @@ pub fn materialize(options: &MaterializeOptions) -> Result<MaterializedExperimen
     if options.binder_tree_sha256 != FROZEN_BINDER_TREE_SHA256 {
         bail!("E04 requires the canonical frozen binder-tree SHA-256");
     }
+    if sha256_hex(options.population_json.as_bytes()) != FROZEN_POPULATION_SHA256 {
+        bail!("E04 population JSON differs from the frozen population content");
+    }
+    Ok(())
+}
+
+fn materialize_authorized(
+    options: &MaterializeOptions,
+    authorization: &MaterializationAuthorization,
+) -> Result<MaterializedExperiment> {
     let spec = population::parse_and_validate(&options.population_json)?;
     if spec.slots.len() != 42 {
         bail!("E04 requires exactly 42 frozen slots");
@@ -99,15 +226,37 @@ pub fn materialize(options: &MaterializeOptions) -> Result<MaterializedExperimen
     if options.experiment_root.exists() && options.experiment_root.read_dir()?.next().is_some() {
         bail!("requested experiment root must be absent or empty");
     }
+    let gradle_assets = if spec
+        .slots
+        .iter()
+        .any(|slot| slot.build_system == BuildSystem::Gradle)
+    {
+        Some(validate_gradle_wrapper_assets(options.gradle_wrapper_assets.as_ref().context(
+            "Gradle E04 materialization requires explicit named wrapper assets and manifest provenance",
+        )?)?)
+    } else {
+        None
+    };
     let agent_root = options.experiment_root.join("agent");
     let controller_root = options.experiment_root.join("controller");
     for slot in &spec.slots {
-        materialize_slot(&spec, slot, options, &agent_root, &controller_root)?;
+        materialize_slot(
+            &spec,
+            slot,
+            options,
+            authorization,
+            gradle_assets.as_ref(),
+            &agent_root,
+            &controller_root,
+        )?;
     }
+    let result =
+        summarize_materialized_output(&options.experiment_root, &authorization.result_binding())?;
     Ok(MaterializedExperiment {
         agent_root,
         controller_root,
         tasks: spec.slots.len(),
+        result,
     })
 }
 
@@ -115,16 +264,19 @@ fn materialize_slot(
     spec: &EditingPopulationSpec,
     slot: &PopulationSlot,
     options: &MaterializeOptions,
+    authorization: &MaterializationAuthorization,
+    gradle_assets: Option<&ValidatedGradleWrapperAssets>,
     agent_root: &Path,
     controller_root: &Path,
 ) -> Result<()> {
-    let seed = population::derive_slot_seed(
+    let base_seed = population::derive_slot_seed(
         spec,
         &options.binder_tree_sha256,
         &options.population_sha256,
         slot,
     )?;
     let slot_key = slot_id(slot);
+    let seed = authorization.derive_slot_seed(base_seed, &slot_key);
     let task_id = format!(
         "e04-{}",
         &sha256_hex(format!("{}:{seed}", slot_key).as_bytes())[..16]
@@ -140,8 +292,10 @@ fn materialize_slot(
         Some(slot.variant),
     )?;
     if slot.build_system == BuildSystem::Gradle {
-        let tooling = options.tooling_root.as_ref().context("Gradle E04 materialization requires --tooling-root with gradlew and gradle/wrapper assets")?;
-        copy_gradle_wrapper(tooling, &generated.agent_dir.join("repository"))?;
+        copy_gradle_wrapper(
+            gradle_assets.context("validated Gradle wrapper assets are missing")?,
+            &generated.agent_dir.join("repository"),
+        )?;
     }
     let template = family_template_for(&slot.family, slot.variant, seed)?;
     write_dynamic_template(
@@ -161,6 +315,8 @@ fn materialize_slot(
     let mut controller = ControllerTask {
         schema: E04_CONTROLLER_SCHEMA.into(),
         task_id: task_id.clone(),
+        series_id: authorization.series_id().into(),
+        controller_seed_commitment: authorization.controller_seed_commitment(),
         slot: slot.clone(),
         seed,
         binder_freeze: options.binder_freeze.clone(),
@@ -180,6 +336,7 @@ fn materialize_slot(
             .unwrap_or_default(),
         refusal_reason: (slot.variant == TaskVariant::MustRefuse).then(|| template.refusal.clone()),
         commitments: vec![
+            format!("series:{}", authorization.series_id()),
             format!("slot:{slot_key}"),
             format!("seed:{seed}"),
             format!("source: {}", source_snapshot_sha256),
@@ -712,19 +869,165 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn copy_gradle_wrapper(tooling_root: &Path, repository: &Path) -> Result<()> {
-    for relative in [
-        "gradlew",
-        "gradle/wrapper/gradle-wrapper.jar",
-        "gradle/wrapper/gradle-wrapper.properties",
-    ] {
-        let source = tooling_root.join(relative);
-        if !source.is_file() {
-            bail!(
-                "missing canonical Gradle wrapper asset {}",
-                source.display()
-            );
+fn contained_regular_file(root: &Path, path: &Path, label: &str) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("missing named Gradle wrapper {label} {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        bail!(
+            "Gradle wrapper {label} must be a regular non-symlink file: {}",
+            path.display()
+        );
+    }
+    let canonical = fs::canonicalize(path)?;
+    if !canonical.starts_with(root) {
+        bail!(
+            "Gradle wrapper {label} escapes immutable tooling root: {}",
+            path.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    Ok(sha256_hex(&fs::read(path)?))
+}
+
+fn jar_contains_wrapper_main(bytes: &[u8]) -> bool {
+    let Some(eocd) = bytes.windows(4).rposition(|window| window == b"PK\x05\x06") else {
+        return false;
+    };
+    if eocd + 20 > bytes.len() {
+        return false;
+    }
+    let central_size = u32::from_le_bytes(bytes[eocd + 12..eocd + 16].try_into().unwrap()) as usize;
+    let central_offset =
+        u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let Some(end) = central_offset.checked_add(central_size) else {
+        return false;
+    };
+    if end > bytes.len() {
+        return false;
+    }
+    let mut cursor = central_offset;
+    while cursor < end {
+        if cursor + 46 > end || &bytes[cursor..cursor + 4] != b"PK\x01\x02" {
+            return false;
         }
+        let name_len =
+            u16::from_le_bytes(bytes[cursor + 28..cursor + 30].try_into().unwrap()) as usize;
+        let extra_len =
+            u16::from_le_bytes(bytes[cursor + 30..cursor + 32].try_into().unwrap()) as usize;
+        let comment_len =
+            u16::from_le_bytes(bytes[cursor + 32..cursor + 34].try_into().unwrap()) as usize;
+        let name_start = cursor + 46;
+        let Some(next) = name_start
+            .checked_add(name_len)
+            .and_then(|value| value.checked_add(extra_len))
+            .and_then(|value| value.checked_add(comment_len))
+        else {
+            return false;
+        };
+        if next > end {
+            return false;
+        }
+        if &bytes[name_start..name_start + name_len]
+            == b"org/gradle/wrapper/GradleWrapperMain.class"
+        {
+            return true;
+        }
+        cursor = next;
+    }
+    false
+}
+
+fn validate_gradle_wrapper_assets(
+    assets: &GradleWrapperAssets,
+) -> Result<ValidatedGradleWrapperAssets> {
+    if [
+        &assets.codeclew_binary_sha256,
+        &assets.typed_goal_catalog_sha256,
+    ]
+    .iter()
+    .any(|value| value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        bail!("Codeclew binary/catalog provenance must use SHA-256 hex digests");
+    }
+    let root_metadata = fs::symlink_metadata(&assets.tooling_root)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        bail!("Gradle immutable tooling root must be a regular directory");
+    }
+    let root = fs::canonicalize(&assets.tooling_root)?;
+    let script = contained_regular_file(&root, &assets.wrapper_script, "script")?;
+    let jar = contained_regular_file(&root, &assets.wrapper_jar, "JAR")?;
+    let properties = contained_regular_file(&root, &assets.wrapper_properties, "properties")?;
+    let manifest_path = contained_regular_file(&root, &assets.manifest, "manifest")?;
+    let manifest: ToolingAssetManifest = serde_json::from_slice(&fs::read(manifest_path)?)?;
+    let named = [
+        ("gradlew", &script),
+        ("gradle/wrapper/gradle-wrapper.jar", &jar),
+        ("gradle/wrapper/gradle-wrapper.properties", &properties),
+    ];
+    for (name, path) in named {
+        let expected = manifest
+            .tooling_sha256
+            .get(name)
+            .with_context(|| format!("tooling manifest does not bind named asset {name}"))?;
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("tooling manifest has invalid SHA-256 for {name}")
+        }
+        let actual = sha256_file(path)?;
+        if &actual != expected {
+            bail!("tooling manifest digest mismatch for {name}")
+        }
+    }
+    let jar_bytes = fs::read(&jar)?;
+    if !jar_bytes.starts_with(b"PK\x03\x04") || !jar_contains_wrapper_main(&jar_bytes) {
+        bail!("Gradle wrapper JAR is not a valid wrapper ZIP containing GradleWrapperMain.class");
+    }
+    let jar_sha = sha256_file(&jar)?;
+    if jar_sha == assets.codeclew_binary_sha256 || jar_sha == assets.typed_goal_catalog_sha256 {
+        bail!("Gradle wrapper JAR digest collides with Codeclew binary/catalog provenance");
+    }
+    let script_bytes = fs::read(&script)?;
+    if script_bytes.contains(&0)
+        || !(script_bytes.starts_with(b"#!/bin/sh\n")
+            || script_bytes.starts_with(b"#!/usr/bin/env sh\n"))
+        || std::str::from_utf8(&script_bytes).is_err()
+    {
+        bail!("Gradle wrapper script must be a recognized non-binary sh script");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if fs::metadata(&script)?.permissions().mode() & 0o111 == 0 {
+            bail!("Gradle wrapper script must have an executable bit");
+        }
+    }
+    let properties_text = fs::read_to_string(&properties)?;
+    let expected_distribution =
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.6.1-bin.zip";
+    if !properties_text
+        .lines()
+        .any(|line| line == expected_distribution)
+    {
+        bail!("Gradle wrapper distribution URL/version is not exactly Gradle 9.6.1 bin");
+    }
+    Ok(ValidatedGradleWrapperAssets {
+        script,
+        jar,
+        properties,
+    })
+}
+
+fn copy_gradle_wrapper(assets: &ValidatedGradleWrapperAssets, repository: &Path) -> Result<()> {
+    for (relative, source) in [
+        ("gradlew", &assets.script),
+        ("gradle/wrapper/gradle-wrapper.jar", &assets.jar),
+        (
+            "gradle/wrapper/gradle-wrapper.properties",
+            &assets.properties,
+        ),
+    ] {
         let destination = repository.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)?;
@@ -747,6 +1050,187 @@ fn repository_digest(root: &Path) -> Result<String> {
     }
     Ok(hex::encode(digest.finalize()))
 }
+
+fn summarize_materialized_output(
+    experiment_root: &Path,
+    binding: &MaterializationResultBinding,
+) -> Result<MaterializationResult> {
+    let members = inspect_materialized_member_sets(experiment_root, &binding.series_id)?;
+    if members.canonical_root != binding.output_path {
+        bail!("materialized experiment root differs from authorized output path");
+    }
+    Ok(MaterializationResult {
+        schema: E04_MATERIALIZATION_RESULT_SCHEMA.into(),
+        authorization_envelope_sha256: binding.authorization_envelope_sha256.clone(),
+        root_receipt_sha256: binding.root_receipt_sha256.clone(),
+        decision_freeze_sha256: binding.decision_freeze_sha256.clone(),
+        series_id: binding.series_id.clone(),
+        output_path: members.canonical_root.to_string_lossy().into_owned(),
+        task_count: 42,
+        agent_public_members: members.agent_public_members,
+        agent_public_set_sha256: members.agent_public_set_sha256,
+        controller_members: members.controller_members,
+        controller_set_sha256: members.controller_set_sha256,
+        r1_public_set_sha256: members.r1_public_set_sha256,
+        r1_controller_tree_sha256: members.r1_controller_tree_sha256,
+    })
+}
+
+pub(crate) struct E04MemberSets {
+    pub canonical_root: PathBuf,
+    pub agent_public_members: Vec<AgentPublicMember>,
+    pub agent_public_set_sha256: String,
+    pub controller_members: Vec<ControllerMember>,
+    pub controller_set_sha256: String,
+    pub r1_public_set_sha256: String,
+    pub r1_controller_tree_sha256: String,
+}
+
+pub(crate) fn inspect_materialized_member_sets(
+    experiment_root: &Path,
+    expected_series_id: &str,
+) -> Result<E04MemberSets> {
+    let root_metadata =
+        fs::symlink_metadata(experiment_root).context("materialized experiment root is missing")?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        bail!("materialized experiment root must be a real directory");
+    }
+    let canonical_root = fs::canonicalize(experiment_root)?;
+    let agent_dirs = exact_task_directories(&canonical_root.join("agent"), "agent")?;
+    let controller_dirs = exact_task_directories(&canonical_root.join("controller"), "controller")?;
+    if agent_dirs.len() != 42 || controller_dirs.len() != 42 {
+        bail!("materialization result requires exactly 42 agent and 42 controller tasks");
+    }
+    if agent_dirs.keys().collect::<Vec<_>>() != controller_dirs.keys().collect::<Vec<_>>() {
+        bail!("materialization agent/controller task ID sets differ");
+    }
+
+    let mut agent_public_members = Vec::with_capacity(42);
+    let mut controller_members = Vec::with_capacity(42);
+    for (task_id, agent_dir) in agent_dirs {
+        let controller_dir = controller_dirs
+            .get(&task_id)
+            .context("controller task disappeared during result validation")?;
+        let public_path =
+            exact_regular_file(&agent_dir.join("task-manifest.json"), "public manifest")?;
+        let controller_path =
+            exact_regular_file(&controller_dir.join("manifest.json"), "controller manifest")?;
+        let public_bytes = fs::read(&public_path)?;
+        let controller_bytes = fs::read(&controller_path)?;
+        let public: PublicTask =
+            serde_json::from_slice(&public_bytes).context("invalid public E04 manifest")?;
+        let controller: ControllerTask =
+            serde_json::from_slice(&controller_bytes).context("invalid controller E04 manifest")?;
+        if public.schema != E04_PUBLIC_SCHEMA
+            || controller.schema != E04_CONTROLLER_SCHEMA
+            || public.task_id != task_id
+            || controller.task_id != task_id
+            || controller.series_id != expected_series_id
+            || public.repository != "repository"
+            || public.controller_manifest_commitment != controller.commitment
+            || controller_commitment(&controller)? != controller.commitment
+            || controller.public_manifest_sha256 != sha256_hex(&public_bytes)
+        {
+            bail!("materialization manifest authority binding mismatch for {task_id}");
+        }
+        let repository = agent_dir.join("repository");
+        let repository_metadata = fs::symlink_metadata(&repository)
+            .context("materialized agent repository is missing")?;
+        if repository_metadata.file_type().is_symlink() || !repository_metadata.is_dir() {
+            bail!("materialized agent repository must be a real directory");
+        }
+        let source_sha = repository_digest(&repository)?;
+        if source_sha != public.source_snapshot_sha256 {
+            bail!("materialized repository source digest mismatch for {task_id}");
+        }
+        agent_public_members.push(AgentPublicMember {
+            task_id: task_id.clone(),
+            public_manifest_sha256: sha256_hex(&public_bytes),
+            repository_source_sha256: source_sha,
+        });
+        controller_members.push(ControllerMember {
+            task_id,
+            controller_manifest_sha256: sha256_hex(&controller_bytes),
+        });
+    }
+    let agent_public_set_sha256 = sha256_hex(&canonical_json_bytes(&serde_json::to_value(
+        &agent_public_members,
+    )?));
+    let controller_set_sha256 = sha256_hex(&canonical_json_bytes(&serde_json::to_value(
+        &controller_members,
+    )?));
+    let public_envelope_members = agent_public_members
+        .iter()
+        .map(|member| {
+            serde_json::json!({
+                "taskId":member.task_id,
+                "manifestSha256":member.public_manifest_sha256,
+                "sourceSha256":member.repository_source_sha256,
+            })
+        })
+        .collect::<Vec<_>>();
+    let r1_public_set_sha256 = sha256_hex(&canonical_json_bytes(&serde_json::json!({
+        "schema":"e04-public-set-envelope/0.1","series":"R1",
+        "root":canonical_root.to_string_lossy(),"members":public_envelope_members
+    })));
+    let controller_envelope_members = controller_members
+        .iter()
+        .map(|member| {
+            serde_json::json!({
+                "taskId":member.task_id,
+                "manifestSha256":member.controller_manifest_sha256,
+            })
+        })
+        .collect::<Vec<_>>();
+    let r1_controller_tree_sha256 = sha256_hex(&canonical_json_bytes(&serde_json::json!({
+        "schema":"e04-controller-set-envelope/0.1","series":"R1",
+        "root":canonical_root.to_string_lossy(),"members":controller_envelope_members
+    })));
+    Ok(E04MemberSets {
+        canonical_root,
+        agent_public_members,
+        agent_public_set_sha256,
+        controller_members,
+        controller_set_sha256,
+        r1_public_set_sha256,
+        r1_controller_tree_sha256,
+    })
+}
+
+fn exact_task_directories(root: &Path, label: &str) -> Result<BTreeMap<String, PathBuf>> {
+    let metadata =
+        fs::symlink_metadata(root).with_context(|| format!("materialized {label} root missing"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!("materialized {label} root must be a real directory");
+    }
+    let mut result = BTreeMap::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            bail!("materialized {label} root contains a non-task entry");
+        }
+        let task_id = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("materialized task ID is not UTF-8"))?;
+        if task_id.is_empty() || result.insert(task_id, path).is_some() {
+            bail!("materialized {label} task IDs are invalid or duplicated");
+        }
+    }
+    Ok(result)
+}
+
+fn exact_regular_file(path: &Path, label: &str) -> Result<PathBuf> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("materialized {label} missing"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("materialized {label} must be a regular non-symlink file");
+    }
+    fs::canonicalize(path).with_context(|| format!("cannot canonicalize materialized {label}"))
+}
+
 fn collect_files(root: &Path, directory: &Path, files: &mut Vec<String>) -> Result<()> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -771,11 +1255,173 @@ fn collect_files(root: &Path, directory: &Path, files: &mut Vec<String>) -> Resu
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::process::Command;
     const SPEC: &str =
         include_str!("../../../benchmarks/semantic-change/editing-population-v1.json");
+
+    pub(crate) fn materialization_result_fixture()
+    -> (tempfile::TempDir, MaterializationResultBinding) {
+        let temporary = tempfile::tempdir().unwrap();
+        let output = temporary.path().join("result");
+        let agent = output.join("agent");
+        let controller_root = output.join("controller");
+        fs::create_dir_all(&agent).unwrap();
+        fs::create_dir_all(&controller_root).unwrap();
+        let population = population::parse_and_validate(SPEC).unwrap();
+        let obligations = population
+            .families
+            .iter()
+            .map(|family| (family.id.clone(), family.required_obligations.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let slots = population.slots;
+        let series_id = "a".repeat(64);
+        for (index, slot) in slots.into_iter().enumerate() {
+            let slot_variant = slot.variant;
+            let required_obligations = obligations.get(&slot.family).unwrap().clone();
+            let task_id = format!("e04-result-{index:02}");
+            let agent_dir = agent.join(&task_id);
+            let repository = agent_dir.join("repository");
+            let controller_dir = controller_root.join(&task_id);
+            fs::create_dir_all(&repository).unwrap();
+            fs::create_dir_all(&controller_dir).unwrap();
+            fs::write(
+                repository.join("source.kt"),
+                format!("package p\nfun a(): Int = {index}\nfun b(): Int = {index}\n"),
+            )
+            .unwrap();
+            let source_snapshot_sha256 = repository_digest(&repository).unwrap();
+            let mut controller = ControllerTask {
+                schema: E04_CONTROLLER_SCHEMA.into(),
+                task_id: task_id.clone(),
+                series_id: series_id.clone(),
+                controller_seed_commitment: "b".repeat(64),
+                slot,
+                seed: index as u64,
+                binder_freeze: FROZEN_PRODUCT_REVISION.into(),
+                binder_tree_sha256: FROZEN_BINDER_TREE_SHA256.into(),
+                population_sha256: FROZEN_POPULATION_SHA256.into(),
+                required_bindings: vec!["DECLARATION=p.a".into()],
+                required_obligations,
+                expected_outcome: match slot_variant {
+                    TaskVariant::Positive => ExpectedOutcome::Bound,
+                    TaskVariant::Ambiguous => ExpectedOutcome::Ambiguous,
+                    TaskVariant::MustRefuse => ExpectedOutcome::Refused,
+                },
+                expected_oracle_class: (slot_variant == TaskVariant::Positive)
+                    .then(|| "EXTERNAL_SPEC".into()),
+                ambiguous_choices: (slot_variant == TaskVariant::Ambiguous)
+                    .then(|| {
+                        vec![
+                            vec!["DECLARATION=p.a".into()],
+                            vec!["DECLARATION=p.b".into()],
+                        ]
+                    })
+                    .unwrap_or_default(),
+                refusal_reason: (slot_variant == TaskVariant::MustRefuse)
+                    .then(|| "INCOMPLETE_SEMANTIC_EVIDENCE".into()),
+                commitments: vec![],
+                public_manifest_sha256: String::new(),
+                commitment: String::new(),
+            };
+            controller.commitment = controller_commitment(&controller).unwrap();
+            let public = PublicTask {
+                schema: E04_PUBLIC_SCHEMA.into(),
+                task_id: task_id.clone(),
+                build_system: controller.slot.build_system,
+                kotlin_version: "2.4.10".into(),
+                task: "Neutral result fixture.".into(),
+                repository: "repository".into(),
+                source_snapshot_sha256,
+                build_command: vec![],
+                controller_manifest_commitment: controller.commitment.clone(),
+            };
+            let public_bytes = serde_json::to_string_pretty(&public).unwrap().into_bytes();
+            controller.public_manifest_sha256 = sha256_hex(&public_bytes);
+            fs::write(agent_dir.join("task-manifest.json"), public_bytes).unwrap();
+            fs::write(
+                controller_dir.join("manifest.json"),
+                serde_json::to_string_pretty(&controller).unwrap(),
+            )
+            .unwrap();
+        }
+        let output = fs::canonicalize(output).unwrap();
+        (
+            temporary,
+            MaterializationResultBinding {
+                authorization_envelope_sha256: "c".repeat(64),
+                root_receipt_sha256: "d".repeat(64),
+                decision_freeze_sha256: "e".repeat(64),
+                series_id,
+                output_path: output,
+            },
+        )
+    }
+
+    #[test]
+    fn r1_materialization_result_is_canonical_and_recomputable() {
+        let (_temporary, binding) = materialization_result_fixture();
+        let result = summarize_materialized_output(&binding.output_path, &binding).unwrap();
+        assert_eq!(result.task_count, 42);
+        assert_eq!(result.agent_public_members.len(), 42);
+        assert_eq!(result.controller_members.len(), 42);
+        assert!(
+            result
+                .agent_public_members
+                .windows(2)
+                .all(|pair| pair[0].task_id < pair[1].task_id)
+        );
+        let canonical = canonical_json(&result).unwrap();
+        assert_eq!(
+            serde_json::from_str::<MaterializationResult>(&canonical).unwrap(),
+            result
+        );
+    }
+
+    #[test]
+    fn r1_materialization_result_refuses_partial_and_malformed_packages() {
+        let (_partial_temporary, partial) = materialization_result_fixture();
+        fs::remove_dir_all(partial.output_path.join("controller/e04-result-41")).unwrap();
+        assert!(summarize_materialized_output(&partial.output_path, &partial).is_err());
+
+        let (_malformed_temporary, malformed) = materialization_result_fixture();
+        fs::write(
+            malformed
+                .output_path
+                .join("agent/e04-result-00/task-manifest.json"),
+            b"{}\n",
+        )
+        .unwrap();
+        assert!(summarize_materialized_output(&malformed.output_path, &malformed).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r1_materialization_result_refuses_symlinked_output_evidence() {
+        use std::os::unix::fs::symlink;
+        let (temporary, binding) = materialization_result_fixture();
+        let manifest = binding
+            .output_path
+            .join("controller/e04-result-00/manifest.json");
+        let external = temporary.path().join("external-controller.json");
+        fs::rename(&manifest, &external).unwrap();
+        symlink(&external, &manifest).unwrap();
+        assert!(summarize_materialized_output(&binding.output_path, &binding).is_err());
+    }
+
+    fn repository_wrapper_assets() -> GradleWrapperAssets {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        GradleWrapperAssets {
+            tooling_root: root.clone(),
+            wrapper_script: root.join("gradlew"),
+            wrapper_jar: root.join("gradle/wrapper/gradle-wrapper.jar"),
+            wrapper_properties: root.join("gradle/wrapper/gradle-wrapper.properties"),
+            manifest: root.join("benchmarks/semantic-change/e04-freeze.json"),
+            codeclew_binary_sha256: "0".repeat(64),
+            typed_goal_catalog_sha256: "1".repeat(64),
+        }
+    }
 
     #[test]
     fn post_freeze_plan_has_all_slots_but_tests_do_not_materialize_them() {
@@ -786,16 +1432,78 @@ mod tests {
     #[test]
     fn wrong_freeze_is_rejected_before_any_materialization() {
         let root = tempfile::tempdir().unwrap();
-        let error = materialize(&MaterializeOptions {
+        let error = validate_materialize_options(&MaterializeOptions {
             experiment_root: root.path().join("out"),
             population_json: SPEC.into(),
             binder_freeze: "0".repeat(40),
             binder_tree_sha256: "0".repeat(64),
             population_sha256: FROZEN_POPULATION_SHA256.into(),
-            tooling_root: None,
+            gradle_wrapper_assets: None,
         })
         .unwrap_err();
         assert!(error.to_string().contains("approved binder"));
+    }
+
+    #[test]
+    fn r1_materialization_rejects_population_bytes_not_bound_by_the_freeze() {
+        let root = tempfile::tempdir().unwrap();
+        let error = validate_materialize_options(&MaterializeOptions {
+            experiment_root: root.path().join("out"),
+            population_json: format!("{SPEC}\n"),
+            binder_freeze: FROZEN_PRODUCT_REVISION.into(),
+            binder_tree_sha256: FROZEN_BINDER_TREE_SHA256.into(),
+            population_sha256: FROZEN_POPULATION_SHA256.into(),
+            gradle_wrapper_assets: None,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("population JSON differs"));
+    }
+
+    #[test]
+    fn gradle_wrapper_assets_reject_old_binary_as_jar_and_accept_named_manifest_assets() {
+        let valid = repository_wrapper_assets();
+        let validated = validate_gradle_wrapper_assets(&valid).unwrap();
+        assert_eq!(
+            sha256_file(&validated.jar).unwrap(),
+            "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7"
+        );
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        fs::copy(&valid.wrapper_script, root.join("gradlew")).unwrap();
+        fs::copy(
+            &valid.wrapper_properties,
+            root.join("gradle/wrapper/gradle-wrapper.properties"),
+        )
+        .unwrap();
+        let old_binary = b"\xcf\xfa\xed\xfeold-clew-mach-o-not-a-jar";
+        fs::write(root.join("gradle/wrapper/gradle-wrapper.jar"), old_binary).unwrap();
+        let manifest = serde_json::json!({"toolingSha256":{
+            "gradlew":sha256_file(&root.join("gradlew")).unwrap(),
+            "gradle/wrapper/gradle-wrapper.jar":sha256_hex(old_binary),
+            "gradle/wrapper/gradle-wrapper.properties":sha256_file(&root.join("gradle/wrapper/gradle-wrapper.properties")).unwrap()
+        }});
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let invalid = GradleWrapperAssets {
+            tooling_root: root.into(),
+            wrapper_script: root.join("gradlew"),
+            wrapper_jar: root.join("gradle/wrapper/gradle-wrapper.jar"),
+            wrapper_properties: root.join("gradle/wrapper/gradle-wrapper.properties"),
+            manifest: root.join("manifest.json"),
+            codeclew_binary_sha256: sha256_hex(old_binary),
+            typed_goal_catalog_sha256: "2".repeat(64),
+        };
+        assert!(
+            validate_gradle_wrapper_assets(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("not a valid wrapper ZIP")
+        );
     }
 
     #[test]
@@ -955,6 +1663,8 @@ mod tests {
         let mut controller = ControllerTask {
             schema: E04_CONTROLLER_SCHEMA.into(),
             task_id: "e04-0000000000000000".into(),
+            series_id: "c".repeat(64),
+            controller_seed_commitment: "d".repeat(64),
             slot,
             seed: 0,
             binder_freeze: FROZEN_PRODUCT_REVISION.into(),
@@ -1007,7 +1717,7 @@ mod tests {
             super::super::gradle_module_build(),
         )
         .unwrap();
-        let tooling = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tooling = validate_gradle_wrapper_assets(&repository_wrapper_assets()).unwrap();
         copy_gradle_wrapper(&tooling, repository).unwrap();
         for (family_index, family) in [
             "producer-transform-consumer",

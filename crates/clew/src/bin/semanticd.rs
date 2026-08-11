@@ -169,10 +169,13 @@ fn dispatch(
             profiled_worker_request(worker, RequestKind::OpenProject, params, metrics)
         }
         "index" => {
-            let facts = profiled_worker_request(worker, RequestKind::IndexFiles, params, metrics)?;
+            let verified_facts = worker.index_files_verified(params)?;
+            metrics.add("cache_requests", worker.last_profile.cache_requests);
+            metrics.add("cache_hits", worker.last_profile.cache_hits);
+            let facts = worker.inspect_verified_index(&verified_facts)?;
             let mut index =
                 RepositoryIndex::open_compilation(Path::new(repo()), Some(compilation()))?;
-            let snapshot = index.update(&facts)?;
+            let snapshot = index.update_verified(&verified_facts, worker)?;
             let freshness = index.freshness_status(REPOSITORY_INDEX_FACT)?;
             let files = facts["files"].as_array().map_or(0, Vec::len) as u64;
             let semantic_facts = facts["files"]

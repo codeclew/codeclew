@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod e04;
+pub mod e04_authorization;
+pub mod e04_hidden_verification;
 pub mod population;
+pub mod product_coverage;
 
 pub const GENERATOR_VERSION: &str = "semantic-corpus/0.2";
 
@@ -430,7 +433,7 @@ fn repository_files(
         BuildSystem::Maven => match layout {
             RepositoryLayout::Flat => files.push(GeneratedFile {
                 relative_path: "pom.xml".to_owned(),
-                content: maven_module_pom(vocabulary),
+                content: maven_module_pom(vocabulary, &vocabulary.project_name),
             }),
             RepositoryLayout::Module => {
                 files.push(GeneratedFile {
@@ -439,7 +442,7 @@ fn repository_files(
                 });
                 files.push(GeneratedFile {
                     relative_path: format!("{}/pom.xml", vocabulary.module_name),
-                    content: maven_module_pom(vocabulary),
+                    content: maven_module_pom(vocabulary, &vocabulary.module_name),
                 });
             }
         },
@@ -546,10 +549,10 @@ fn maven_root_pom(vocabulary: &Vocabulary) -> String {
     )
 }
 
-fn maven_module_pom(vocabulary: &Vocabulary) -> String {
+fn maven_module_pom(vocabulary: &Vocabulary, artifact_id: &str) -> String {
     format!(
-        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>generated.sample</groupId>\n  <artifactId>{}</artifactId>\n  <version>1.0.0</version>\n  <properties>\n    <kotlin.version>2.1.21</kotlin.version>\n    <maven.compiler.release>21</maven.compiler.release>\n    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-stdlib</artifactId>\n      <version>${{kotlin.version}}</version>\n    </dependency>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-test-junit5</artifactId>\n      <version>${{kotlin.version}}</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n  <build>\n    <sourceDirectory>${{project.basedir}}/src/main/kotlin</sourceDirectory>\n    <testSourceDirectory>${{project.basedir}}/src/test/kotlin</testSourceDirectory>\n    <plugins>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>kotlin-maven-plugin</artifactId>\n        <version>${{kotlin.version}}</version>\n        <executions>\n          <execution><id>compile</id><goals><goal>compile</goal></goals></execution>\n          <execution><id>test-compile</id><goals><goal>test-compile</goal></goals></execution>\n        </executions>\n      </plugin>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>\n        <version>3.5.2</version>\n      </plugin>\n    </plugins>\n  </build>\n</project>\n",
-        vocabulary.project_name
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>generated.sample</groupId>\n  <artifactId>{}</artifactId>\n  <version>1.0.0</version>\n  <properties>\n    <kotlin.version>2.1.21</kotlin.version>\n    <maven.compiler.release>21</maven.compiler.release>\n    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-stdlib</artifactId>\n      <version>${{kotlin.version}}</version>\n    </dependency>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-test-junit5</artifactId>\n      <version>${{kotlin.version}}</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n  <build>\n    <sourceDirectory>${{project.basedir}}/src/main/kotlin</sourceDirectory>\n    <testSourceDirectory>${{project.basedir}}/src/test/kotlin</testSourceDirectory>\n    <plugins>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>kotlin-maven-plugin</artifactId>\n        <version>${{kotlin.version}}</version>\n        <executions>\n          <execution><id>compile</id><goals><goal>compile</goal></goals></execution>\n          <execution><id>test-compile</id><goals><goal>test-compile</goal></goals></execution>\n        </executions>\n      </plugin>\n      <plugin>\n        <groupId>org.apache.maven.plugins</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>\n        <version>3.5.2</version>\n      </plugin>\n    </plugins>\n  </build>\n</project>\n",
+        artifact_id
     )
 }
 
@@ -582,6 +585,16 @@ pub fn verify_hidden_package(agent_dir: &Path, controller_dir: &Path) -> Result<
         .context("read public task manifest")?;
     let hidden_json = fs::read_to_string(controller_dir.join("manifest.json"))
         .context("read hidden controller manifest")?;
+    let hidden_schema = serde_json::from_str::<serde_json::Value>(&hidden_json)
+        .context("parse hidden controller manifest envelope")?
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if hidden_schema.as_deref() == Some(e04::E04_CONTROLLER_SCHEMA) {
+        bail!(
+            "E04 controller 0.2 requires signed R1 hidden-verification authority; generic verification is forbidden"
+        );
+    }
     let public: PublicTaskManifest =
         serde_json::from_str(&public_json).context("parse public task manifest")?;
     let hidden: HiddenManifest =
@@ -882,6 +895,65 @@ mod tests {
                 .chain(tree(&second_generated.agent_dir).keys())
                 .any(|path| path.contains("Archive"))
         );
+    }
+
+    fn first_xml_text<'a>(xml: &'a str, tag: &str) -> &'a str {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let start = xml.find(&open).unwrap() + open.len();
+        let end = xml[start..].find(&close).unwrap() + start;
+        &xml[start..end]
+    }
+
+    #[test]
+    fn generated_maven_reactors_have_unique_gavs_contained_modules_and_exact_plugins() {
+        for layout in [RepositoryLayout::Flat, RepositoryLayout::Module] {
+            let output = TempDir::new().unwrap();
+            let generated = generate_at(
+                output.path(),
+                seed_for_layout(layout, BuildSystem::Maven),
+                BuildSystem::Maven,
+            );
+            let repository = generated.agent_dir.join("repository");
+            let files = tree(&repository);
+            let poms = files
+                .iter()
+                .filter(|(path, _)| path.ends_with("pom.xml"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                poms.len(),
+                if layout == RepositoryLayout::Flat {
+                    1
+                } else {
+                    2
+                }
+            );
+            let mut gavs = std::collections::BTreeSet::new();
+            for (path, bytes) in poms {
+                let xml = std::str::from_utf8(bytes).unwrap();
+                let gav = (
+                    first_xml_text(xml, "groupId"),
+                    first_xml_text(xml, "artifactId"),
+                    first_xml_text(xml, "version"),
+                );
+                assert!(gavs.insert(gav), "duplicate Maven reactor GAV in {path}");
+                if xml.contains("<kotlin.version>") {
+                    assert!(xml.contains("<groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>kotlin-maven-plugin</artifactId>"));
+                    assert!(xml.contains("<groupId>org.apache.maven.plugins</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>"));
+                    assert!(!xml.contains("<groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>"));
+                }
+                if xml.contains("<modules>") {
+                    let module = first_xml_text(xml, "module");
+                    assert!(
+                        !module.is_empty()
+                            && !module.contains('/')
+                            && module != "."
+                            && module != ".."
+                    );
+                    assert!(files.contains_key(&format!("{module}/pom.xml")));
+                }
+            }
+        }
     }
 
     #[test]

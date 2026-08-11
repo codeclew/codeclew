@@ -6,8 +6,9 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import kotlin.io.path.readBytes
 
-private const val PROTOCOL_MAJOR = 1L
-private const val PROTOCOL_MINOR = 0L
+internal const val PROTOCOL_MAJOR = 1L
+internal const val PROTOCOL_MINOR = 0L
+internal const val WORKER_VERSION = "0.1.0"
 internal val WORKER_COMPILER_VERSION: String = KotlinCompilerVersion.VERSION
 
 fun main() {
@@ -73,7 +74,7 @@ private fun capabilities(): ByteArray {
     val features = listOf("functions", "locals", "assignments", "if", "when", "loops", "return", "throw", "calls", "safe_calls", "elvis")
     val unsupported = listOf("android", "multiplatform", "scripts", "expect_actual", "reflection", "compiler_plugins", "precise_coroutine_state_machine")
     return Proto.message(
-        Proto.string(1, "kotlin"), Proto.string(2, "0.1.0"), Proto.string(3, WORKER_COMPILER_VERSION), Proto.bytes(4, version()),
+        Proto.string(1, "kotlin"), Proto.string(2, WORKER_VERSION), Proto.string(3, WORKER_COMPILER_VERSION), Proto.bytes(4, version()),
         *supported.map { Proto.string(5, it) }.toTypedArray(), *features.map { Proto.string(6, it) }.toTypedArray(),
         *unsupported.map { Proto.string(7, it) }.toTypedArray()
     )
@@ -99,7 +100,7 @@ private fun typedResponsePayload(responseField: Int, payload: String): ByteArray
         ))
     }
     when (responseField) {
-        11 -> { string(4, "projectModelHash"); string(5, "compilerVersion"); string(6, "sourceSet") }
+        11 -> { string(4, "projectModelHash"); string(5, "compilerVersion"); string(6, "compilation") }
         12 -> {
             string(4, "indexHash"); string(5, "projectModelHash"); string(6, "compilation")
             fields += Proto.uint(7, value["files"]?.jsonArray?.size?.toLong() ?: 0); fields += Proto.uint(8, if (value["partial"]?.jsonPrimitive?.booleanOrNull == true) 1 else 0)

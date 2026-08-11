@@ -1,0 +1,166 @@
+[
+  {
+    "name": "ast_single_real_envelope",
+    "arm": "ast-index",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'ast-index rebuild'",
+        "aggregated_output": "Rebuilding full index...\nIndexed 4 files\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "expectedFlags": []
+  },
+  {
+    "name": "codeclew_project_only_is_not_a_decision",
+    "arm": "codeclew",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc '/opt/frozen/clew project inspect --repo . --compilation :unit/main'",
+        "aggregated_output": "{\"schema\":\"semantic-project/0.1\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "selectedCompilation": ":unit/main",
+    "expectedFlags": ["CODECLEW_PROOF_NOT_USED"]
+  },
+  {
+    "name": "stderr_suppression_is_not_a_write",
+    "arm": "default",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc \"rg -n target src 2>/dev/null\"",
+        "aggregated_output": "src/App.kt:1:target\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "expectedFlags": []
+  },
+  {
+    "name": "compound_ast_is_rejected",
+    "arm": "ast-index",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'ast-index rebuild && ast-index search Foo --format json'",
+        "aggregated_output": "Indexed 4 files\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "expectedFlags": ["AST_INDEX_NOT_USED", "COMPOUND_COMMAND"]
+  },
+  {
+    "name": "wrong_codeclew_repo_is_rejected",
+    "arm": "codeclew",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc '/opt/frozen/clew project inspect --repo repository --compilation :unit/main'",
+        "aggregated_output": "repository: No such file or directory\n",
+        "exit_code": 2,
+        "status": "failed"
+      }
+    },
+    "selectedCompilation": ":unit/main",
+    "expectedFlags": ["CODECLEW_PROOF_NOT_USED", "INVALID_REPO_PROTOCOL"]
+  },
+  {
+    "name": "stdout_write_is_rejected",
+    "arm": "default",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'rg target src > src/result.txt'",
+        "aggregated_output": "",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "expectedFlags": ["NON_SUBSTANTIVE_TOOL_OUTPUT", "SOURCE_EDIT_ATTEMPT"]
+  },
+  {
+    "name": "failed_ast_does_not_count_as_used",
+    "arm": "ast-index",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc 'ast-index search Missing --format json'",
+        "aggregated_output": "index unavailable\n",
+        "exit_code": 2,
+        "status": "failed"
+      }
+    },
+    "expectedFlags": ["AST_INDEX_NOT_USED", "TOOL_CALL_FAILED"]
+  },
+  {
+    "name": "extra_codeclew_argv_is_rejected",
+    "arm": "codeclew",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc '/opt/frozen/clew projection --repo . --compilation :unit/main --symbol p.f --thread change --refuse-on-boundary --max-nodes 999'",
+        "aggregated_output": "{\"schema\":\"semantic-projection/0.1\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "expectedFlags": ["CODECLEW_PROOF_NOT_USED", "INVALID_TOOL_ARGUMENTS"]
+  },
+  {
+    "name": "failed_codeclew_does_not_count_as_used",
+    "arm": "codeclew",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc '/opt/frozen/clew project inspect --repo . --compilation :unit/main'",
+        "aggregated_output": "{\"schema\":\"semantic-error/0.1\"}\n",
+        "exit_code": 2,
+        "status": "failed"
+      }
+    },
+    "selectedCompilation": ":unit/main",
+    "expectedFlags": ["CODECLEW_PROOF_NOT_USED", "TOOL_CALL_FAILED"]
+  },
+  {
+    "name": "wrong_codeclew_compilation_is_rejected",
+    "arm": "codeclew",
+    "event": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_0",
+        "type": "command_execution",
+        "command": "/bin/zsh -lc '/opt/frozen/clew project inspect --repo . --compilation :other/main'",
+        "aggregated_output": "{\"schema\":\"semantic-project/0.1\"}\n",
+        "exit_code": 0,
+        "status": "completed"
+      }
+    },
+    "selectedCompilation": ":unit/main",
+    "expectedFlags": ["CODECLEW_PROOF_NOT_USED", "INVALID_TOOL_ARGUMENTS"]
+  }
+]

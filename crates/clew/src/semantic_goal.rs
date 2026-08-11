@@ -10,6 +10,11 @@ pub const LEGACY_SEMANTIC_GOAL_SCHEMA: &str = "semantic-goal/0.1";
 pub const CONSTRAINT_LANGUAGE_SCHEMA: &str = "semantic-goal-constraints/0.1";
 pub const CHANGE_GRAPH_SCHEMA: &str = "change-graph/0.2";
 pub const GOAL_PROOF_SCHEMA: &str = "semantic-goal-proof/0.2";
+pub const TYPED_SEMANTIC_GOAL_SCHEMA: &str = "typed-semantic-goal/0.1";
+pub const TYPED_GOAL_LANGUAGE_SCHEMA: &str = "typed-goal-language-schema/0.1";
+pub const TYPED_GOAL_BINDING_REQUEST_SCHEMA: &str = "typed-goal-binding-request/0.1";
+pub const TYPED_GOAL_BINDING_DECISION_SCHEMA: &str = "typed-goal-binding-decision/0.1";
+pub const TYPED_GOAL_MAX_REQUEST_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -36,6 +41,125 @@ pub enum PrimitiveConstraint {
     PreserveAbi,
     RequireOracle,
     MustRefuseOnBoundary,
+    PreserveResourceLifetime,
+    PropagateDeclaredType,
+    PreserveOverrideCompatibility,
+    PreserveAssignableUse,
+    RelaxNullability,
+    PreserveConstruction,
+    ValueFlowsTo,
+    PreserveOwnerBoundary,
+    RequireIndependentOracle,
+    RequireOmissionDetection,
+    PreserveProductionContract,
+    NullHandles,
+    ProjectsValue,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConstraintDomain {
+    ValueFlow,
+    ResourceLifetime,
+    DeclarationChange,
+    NullableConstruction,
+    Projection,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TypedVariableDomain {
+    Callable,
+    ValueEdge,
+    Declaration,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvidenceRelation {
+    UniqueBinding,
+    TypeCompatibility,
+    EvaluationOnce,
+    EdgeMapping,
+    OrderPreservation,
+    CardinalityPreservation,
+    LazinessPreservation,
+    EffectPreservation,
+    NullabilityPreservation,
+    ConsumerContractPreservation,
+    AbiPreservation,
+    BehavioralOracle,
+    NoUnsupportedBoundary,
+    ResourceLifetimePreservation,
+    DeclaredTypePropagation,
+    OverrideCompatibility,
+    AssignableUsePreservation,
+    NullabilityRelaxation,
+    ConstructionPreservation,
+    DeclarationValueFlow,
+    OwnerBoundaryPreservation,
+    IndependentOracle,
+    OmissionDetection,
+    ProductionContractPreservation,
+    NullHandling,
+    ValueProjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintOpSpec {
+    pub operand_domains: Vec<Vec<TypedVariableDomain>>,
+    pub required_evidence_relations: &'static [EvidenceRelation],
+    pub auxiliary_only: bool,
+    pub refusal_on_unknown: bool,
+    pub domain: ConstraintDomain,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TypedGoalLanguageSchema {
+    pub schema: String,
+    pub version: String,
+    pub request_schema: String,
+    pub goal_schema: String,
+    pub decision_schema: String,
+    pub max_request_bytes: usize,
+    pub variable_domains: Vec<TypedVariableDomain>,
+    pub executable_domains: Vec<ConstraintDomain>,
+    pub product_refusal_reasons: Vec<TypedGoalRefusalReason>,
+    pub operators: Vec<TypedGoalOperatorSchema>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TypedGoalOperatorSchema {
+    pub operator: PrimitiveConstraint,
+    pub constraint_domain: ConstraintDomain,
+    pub arity: usize,
+    pub operand_domains: Vec<Vec<TypedVariableDomain>>,
+    pub auxiliary_only: bool,
+    pub refusal_on_unknown: bool,
+    pub required_evidence_relations: Vec<EvidenceRelation>,
+    pub mandatory_applications: Vec<MandatoryApplicationTemplate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MandatoryApplicationTemplate {
+    pub operator: PrimitiveConstraint,
+    pub operand_indices: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct OperatorApplication {
+    pub operator: PrimitiveConstraint,
+    pub operands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintExecutionPlan {
+    pub mandatory_closure: BTreeSet<OperatorApplication>,
+    pub domains: BTreeSet<ConstraintDomain>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +170,13 @@ pub struct TypedConstraints {
 }
 
 impl TypedConstraints {
+    pub fn new(primitives: impl IntoIterator<Item = PrimitiveConstraint>) -> Self {
+        Self {
+            schema: CONSTRAINT_LANGUAGE_SCHEMA.into(),
+            primitives: primitives.into_iter().collect(),
+        }
+    }
+
     fn map_edge_with_context() -> Self {
         Self {
             schema: CONSTRAINT_LANGUAGE_SCHEMA.into(),
@@ -68,6 +199,589 @@ impl TypedConstraints {
             .collect(),
         }
     }
+}
+
+/// Family-neutral model-owned intent.  The goal says which semantic
+/// properties must hold, but contains no repository symbols, graph ids,
+/// source locations or materialization recipe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TypedSemanticGoal {
+    pub schema: String,
+    pub base_revision: String,
+    pub variables: BTreeMap<String, TypedVariableDomain>,
+    pub operators: BTreeSet<OperatorApplication>,
+}
+
+impl TypedSemanticGoal {
+    pub fn new(
+        base_revision: impl Into<String>,
+        variables: impl IntoIterator<Item = (String, TypedVariableDomain)>,
+        operators: impl IntoIterator<Item = OperatorApplication>,
+    ) -> Self {
+        Self {
+            schema: TYPED_SEMANTIC_GOAL_SCHEMA.into(),
+            base_revision: base_revision.into(),
+            variables: variables.into_iter().collect(),
+            operators: operators.into_iter().collect(),
+        }
+    }
+
+    pub fn validate_language(&self) -> Result<(), TypedGoalLanguageError> {
+        if self.schema != TYPED_SEMANTIC_GOAL_SCHEMA {
+            return Err(TypedGoalLanguageError::InvalidSchema);
+        }
+        if self.base_revision.is_empty() || self.variables.is_empty() || self.operators.is_empty() {
+            return Err(TypedGoalLanguageError::IncompleteGoal);
+        }
+        if self
+            .variables
+            .keys()
+            .any(|id| id.is_empty() || id.chars().any(char::is_whitespace))
+        {
+            return Err(TypedGoalLanguageError::InvalidVariable);
+        }
+        for application in &self.operators {
+            validate_operator_application(application, &self.variables)?;
+            if constraint_op_spec(&application.operator).auxiliary_only {
+                return Err(TypedGoalLanguageError::AuxiliaryOperatorRequested);
+            }
+        }
+        let used = self
+            .operators
+            .iter()
+            .flat_map(|application| application.operands.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        if used != self.variables.keys().cloned().collect() {
+            return Err(TypedGoalLanguageError::UnusedVariable);
+        }
+        Ok(())
+    }
+
+    pub fn validate_executable(&self) -> Result<(), TypedGoalLanguageError> {
+        self.execution_plan().map(|_| ())
+    }
+
+    pub fn execution_plan(&self) -> Result<ConstraintExecutionPlan, TypedGoalLanguageError> {
+        self.validate_language()?;
+        let mut mandatory_closure = self.operators.clone();
+        loop {
+            let before = mandatory_closure.len();
+            let current: Vec<_> = mandatory_closure.iter().cloned().collect();
+            for application in current {
+                mandatory_closure.extend(mandatory_applications(&application));
+            }
+            if mandatory_closure.len() == before {
+                break;
+            }
+        }
+        let domains: BTreeSet<_> = mandatory_closure
+            .iter()
+            .map(|application| operator_domain(&application.operator))
+            .collect();
+        if domains.iter().any(|domain| !domain_has_executor(*domain)) {
+            return Err(TypedGoalLanguageError::UnsupportedConstraintDomain);
+        }
+        Ok(ConstraintExecutionPlan {
+            mandatory_closure,
+            domains,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TypedGoalLanguageError {
+    InvalidSchema,
+    IncompleteGoal,
+    InvalidVariable,
+    InvalidArity,
+    InvalidOperand,
+    AuxiliaryOperatorRequested,
+    UnusedVariable,
+    UnsupportedConstraintDomain,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TypedGoalRefusalReason {
+    InvalidGoal,
+    SnapshotMismatch,
+    UnsupportedConstraintDomain,
+    UnsupportedOperatorComposition,
+    InvalidEvidenceRoots,
+    NonUniqueValueEdge,
+    UnsupportedCollectionModality,
+    UnsupportedBoundary,
+    IdentityOrAliasExposure,
+    NoCompatibleBindings,
+    UnknownEffects,
+    InsufficientEvidence,
+    MissingBehavioralOracle,
+    MissingExternalSpecification,
+    ExternalSpecificationMismatch,
+}
+
+const ALL_TYPED_GOAL_REFUSAL_REASONS: [TypedGoalRefusalReason; 15] = [
+    TypedGoalRefusalReason::InvalidGoal,
+    TypedGoalRefusalReason::SnapshotMismatch,
+    TypedGoalRefusalReason::UnsupportedConstraintDomain,
+    TypedGoalRefusalReason::UnsupportedOperatorComposition,
+    TypedGoalRefusalReason::InvalidEvidenceRoots,
+    TypedGoalRefusalReason::NonUniqueValueEdge,
+    TypedGoalRefusalReason::UnsupportedCollectionModality,
+    TypedGoalRefusalReason::UnsupportedBoundary,
+    TypedGoalRefusalReason::IdentityOrAliasExposure,
+    TypedGoalRefusalReason::NoCompatibleBindings,
+    TypedGoalRefusalReason::UnknownEffects,
+    TypedGoalRefusalReason::InsufficientEvidence,
+    TypedGoalRefusalReason::MissingBehavioralOracle,
+    TypedGoalRefusalReason::MissingExternalSpecification,
+    TypedGoalRefusalReason::ExternalSpecificationMismatch,
+];
+
+fn operator_domain(operator: &PrimitiveConstraint) -> ConstraintDomain {
+    constraint_op_spec(operator).domain
+}
+
+pub fn constraint_op_spec(operator: &PrimitiveConstraint) -> ConstraintOpSpec {
+    use EvidenceRelation::*;
+    use PrimitiveConstraint::*;
+    use TypedVariableDomain::*;
+    match operator {
+        BindUnique => ConstraintOpSpec {
+            operand_domains: vec![vec![Callable, ValueEdge, Declaration]],
+            required_evidence_relations: &[UniqueBinding],
+            auxiliary_only: true,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::ValueFlow,
+        },
+        TypeAssignable => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[Callable, ValueEdge]),
+            required_evidence_relations: &[TypeCompatibility],
+            auxiliary_only: false,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::ValueFlow,
+        },
+        IntroduceOnce => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[Callable, ValueEdge]),
+            required_evidence_relations: &[EvaluationOnce],
+            auxiliary_only: false,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::ValueFlow,
+        },
+        MapEdge => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[Callable, Callable, ValueEdge]),
+            required_evidence_relations: &[EdgeMapping],
+            auxiliary_only: false,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::ValueFlow,
+        },
+        PreserveOrder => value_edge_spec(OrderPreservation),
+        PreserveCardinality => value_edge_spec(CardinalityPreservation),
+        PreserveLaziness => value_edge_spec(LazinessPreservation),
+        PreserveEffects => value_edge_spec(EffectPreservation),
+        PreserveNullability => value_edge_spec(NullabilityPreservation),
+        PreserveConsumerContract => value_edge_spec(ConsumerContractPreservation),
+        PreserveAbi => value_edge_spec(AbiPreservation),
+        RequireOracle => value_edge_spec(BehavioralOracle),
+        MustRefuseOnBoundary => value_edge_spec(NoUnsupportedBoundary),
+        PreserveResourceLifetime => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[ValueEdge]),
+            required_evidence_relations: &[ResourceLifetimePreservation],
+            auxiliary_only: false,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::ResourceLifetime,
+        },
+        PropagateDeclaredType => {
+            declaration_spec(&[Declaration, Declaration], &[DeclaredTypePropagation])
+        }
+        PreserveOverrideCompatibility => {
+            declaration_spec(&[Declaration, Declaration], &[OverrideCompatibility])
+        }
+        PreserveAssignableUse => {
+            declaration_spec(&[Declaration, Declaration], &[AssignableUsePreservation])
+        }
+        RelaxNullability => declaration_spec(&[Declaration, Declaration], &[NullabilityRelaxation]),
+        PreserveConstruction => {
+            declaration_spec(&[Declaration, Declaration], &[ConstructionPreservation])
+        }
+        ValueFlowsTo => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[Declaration, Declaration]),
+            required_evidence_relations: &[DeclarationValueFlow],
+            auxiliary_only: true,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::DeclarationChange,
+        },
+        PreserveOwnerBoundary => {
+            declaration_spec(&[Declaration, Declaration], &[OwnerBoundaryPreservation])
+        }
+        RequireIndependentOracle => {
+            declaration_spec(&[Declaration, Declaration], &[IndependentOracle])
+        }
+        RequireOmissionDetection => declaration_spec(&[Declaration], &[OmissionDetection]),
+        PreserveProductionContract => {
+            declaration_spec(&[Declaration], &[ProductionContractPreservation])
+        }
+        NullHandles => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[Declaration, Declaration, Declaration]),
+            required_evidence_relations: &[NullHandling],
+            auxiliary_only: false,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::NullableConstruction,
+        },
+        ProjectsValue => ConstraintOpSpec {
+            operand_domains: exact_operand_domains(&[Declaration, Declaration, Declaration]),
+            required_evidence_relations: &[ValueProjection],
+            auxiliary_only: false,
+            refusal_on_unknown: true,
+            domain: ConstraintDomain::Projection,
+        },
+    }
+}
+
+fn declaration_spec(
+    domains: &[TypedVariableDomain],
+    relations: &'static [EvidenceRelation],
+) -> ConstraintOpSpec {
+    ConstraintOpSpec {
+        operand_domains: exact_operand_domains(domains),
+        required_evidence_relations: relations,
+        auxiliary_only: false,
+        refusal_on_unknown: true,
+        domain: ConstraintDomain::DeclarationChange,
+    }
+}
+
+fn exact_operand_domains(domains: &[TypedVariableDomain]) -> Vec<Vec<TypedVariableDomain>> {
+    domains.iter().copied().map(|domain| vec![domain]).collect()
+}
+
+fn value_edge_spec(relation: EvidenceRelation) -> ConstraintOpSpec {
+    ConstraintOpSpec {
+        operand_domains: exact_operand_domains(&[TypedVariableDomain::ValueEdge]),
+        required_evidence_relations: match relation {
+            EvidenceRelation::OrderPreservation => &[EvidenceRelation::OrderPreservation],
+            EvidenceRelation::CardinalityPreservation => {
+                &[EvidenceRelation::CardinalityPreservation]
+            }
+            EvidenceRelation::LazinessPreservation => &[EvidenceRelation::LazinessPreservation],
+            EvidenceRelation::EffectPreservation => &[EvidenceRelation::EffectPreservation],
+            EvidenceRelation::NullabilityPreservation => {
+                &[EvidenceRelation::NullabilityPreservation]
+            }
+            EvidenceRelation::ConsumerContractPreservation => {
+                &[EvidenceRelation::ConsumerContractPreservation]
+            }
+            EvidenceRelation::AbiPreservation => &[EvidenceRelation::AbiPreservation],
+            EvidenceRelation::BehavioralOracle => &[EvidenceRelation::BehavioralOracle],
+            EvidenceRelation::NoUnsupportedBoundary => &[EvidenceRelation::NoUnsupportedBoundary],
+            _ => &[],
+        },
+        auxiliary_only: false,
+        refusal_on_unknown: true,
+        domain: ConstraintDomain::ValueFlow,
+    }
+}
+
+const ALL_PRIMITIVE_CONSTRAINTS: [PrimitiveConstraint; 26] = [
+    PrimitiveConstraint::BindUnique,
+    PrimitiveConstraint::TypeAssignable,
+    PrimitiveConstraint::IntroduceOnce,
+    PrimitiveConstraint::MapEdge,
+    PrimitiveConstraint::PreserveOrder,
+    PrimitiveConstraint::PreserveCardinality,
+    PrimitiveConstraint::PreserveLaziness,
+    PrimitiveConstraint::PreserveEffects,
+    PrimitiveConstraint::PreserveNullability,
+    PrimitiveConstraint::PreserveConsumerContract,
+    PrimitiveConstraint::PreserveAbi,
+    PrimitiveConstraint::RequireOracle,
+    PrimitiveConstraint::MustRefuseOnBoundary,
+    PrimitiveConstraint::PreserveResourceLifetime,
+    PrimitiveConstraint::PropagateDeclaredType,
+    PrimitiveConstraint::PreserveOverrideCompatibility,
+    PrimitiveConstraint::PreserveAssignableUse,
+    PrimitiveConstraint::RelaxNullability,
+    PrimitiveConstraint::PreserveConstruction,
+    PrimitiveConstraint::ValueFlowsTo,
+    PrimitiveConstraint::PreserveOwnerBoundary,
+    PrimitiveConstraint::RequireIndependentOracle,
+    PrimitiveConstraint::RequireOmissionDetection,
+    PrimitiveConstraint::PreserveProductionContract,
+    PrimitiveConstraint::NullHandles,
+    PrimitiveConstraint::ProjectsValue,
+];
+
+pub fn typed_goal_language_schema() -> TypedGoalLanguageSchema {
+    let operators: Vec<TypedGoalOperatorSchema> = ALL_PRIMITIVE_CONSTRAINTS
+        .iter()
+        .map(|operator| {
+            let spec = constraint_op_spec(operator);
+            let operands = (0..spec.operand_domains.len())
+                .map(|index| format!("operand{index}"))
+                .collect::<Vec<_>>();
+            let application = OperatorApplication {
+                operator: operator.clone(),
+                operands: operands.clone(),
+            };
+            let mut mandatory_applications = mandatory_applications(&application)
+                .into_iter()
+                .map(|required| MandatoryApplicationTemplate {
+                    operator: required.operator,
+                    operand_indices: required
+                        .operands
+                        .iter()
+                        .map(|operand| {
+                            operands
+                                .iter()
+                                .position(|candidate| candidate == operand)
+                                .expect("mandatory closure only references operator operands")
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+            mandatory_applications.sort();
+            TypedGoalOperatorSchema {
+                operator: operator.clone(),
+                constraint_domain: spec.domain,
+                arity: spec.operand_domains.len(),
+                operand_domains: spec.operand_domains,
+                auxiliary_only: spec.auxiliary_only,
+                refusal_on_unknown: spec.refusal_on_unknown,
+                required_evidence_relations: spec.required_evidence_relations.to_vec(),
+                mandatory_applications,
+            }
+        })
+        .collect();
+    let executable_domains = operators
+        .iter()
+        .map(|entry: &TypedGoalOperatorSchema| entry.constraint_domain)
+        .filter(|domain| domain_has_executor(*domain))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    TypedGoalLanguageSchema {
+        schema: TYPED_GOAL_LANGUAGE_SCHEMA.into(),
+        version: "0.1".into(),
+        request_schema: TYPED_GOAL_BINDING_REQUEST_SCHEMA.into(),
+        goal_schema: TYPED_SEMANTIC_GOAL_SCHEMA.into(),
+        decision_schema: TYPED_GOAL_BINDING_DECISION_SCHEMA.into(),
+        max_request_bytes: TYPED_GOAL_MAX_REQUEST_BYTES,
+        variable_domains: vec![
+            TypedVariableDomain::Callable,
+            TypedVariableDomain::ValueEdge,
+            TypedVariableDomain::Declaration,
+        ],
+        executable_domains,
+        product_refusal_reasons: ALL_TYPED_GOAL_REFUSAL_REASONS.to_vec(),
+        operators,
+    }
+}
+
+impl TypedGoalLanguageSchema {
+    pub fn validate_goal(&self, goal: &TypedSemanticGoal) -> Result<(), TypedGoalLanguageError> {
+        if self != &typed_goal_language_schema() {
+            return Err(TypedGoalLanguageError::InvalidSchema);
+        }
+        goal.validate_executable()
+    }
+}
+
+fn validate_operator_application(
+    application: &OperatorApplication,
+    variables: &BTreeMap<String, TypedVariableDomain>,
+) -> Result<(), TypedGoalLanguageError> {
+    let spec = constraint_op_spec(&application.operator);
+    if application.operands.len() != spec.operand_domains.len() {
+        return Err(TypedGoalLanguageError::InvalidArity);
+    }
+    if application
+        .operands
+        .iter()
+        .zip(&spec.operand_domains)
+        .any(|(operand, domains)| {
+            variables
+                .get(operand)
+                .is_none_or(|domain| !domains.contains(domain))
+        })
+    {
+        return Err(TypedGoalLanguageError::InvalidOperand);
+    }
+    Ok(())
+}
+
+fn mandatory_applications(application: &OperatorApplication) -> Vec<OperatorApplication> {
+    use PrimitiveConstraint::*;
+    let app = |operator, operands: Vec<String>| OperatorApplication { operator, operands };
+    match application.operator {
+        BindUnique => vec![],
+        TypeAssignable | IntroduceOnce => application
+            .operands
+            .iter()
+            .map(|operand| app(BindUnique, vec![operand.clone()]))
+            .collect(),
+        MapEdge => {
+            let context = application.operands[0].clone();
+            let transformer = application.operands[1].clone();
+            let edge = application.operands[2].clone();
+            vec![
+                app(BindUnique, vec![context.clone()]),
+                app(BindUnique, vec![transformer.clone()]),
+                app(BindUnique, vec![edge.clone()]),
+                app(TypeAssignable, vec![transformer, edge.clone()]),
+                app(IntroduceOnce, vec![context, edge.clone()]),
+                app(PreserveOrder, vec![edge.clone()]),
+                app(PreserveCardinality, vec![edge.clone()]),
+                app(PreserveLaziness, vec![edge.clone()]),
+                app(PreserveEffects, vec![edge.clone()]),
+                app(PreserveNullability, vec![edge.clone()]),
+                app(PreserveConsumerContract, vec![edge.clone()]),
+                app(PreserveAbi, vec![edge.clone()]),
+                app(RequireOracle, vec![edge.clone()]),
+                app(MustRefuseOnBoundary, vec![edge]),
+            ]
+        }
+        PreserveOrder
+        | PreserveCardinality
+        | PreserveLaziness
+        | PreserveEffects
+        | PreserveNullability
+        | PreserveConsumerContract
+        | PreserveAbi
+        | RequireOracle
+        | MustRefuseOnBoundary
+        | PreserveResourceLifetime => vec![app(BindUnique, application.operands.clone())],
+        PropagateDeclaredType => vec![
+            app(BindUnique, vec![application.operands[0].clone()]),
+            app(BindUnique, vec![application.operands[1].clone()]),
+            app(PreserveOverrideCompatibility, application.operands.clone()),
+            app(PreserveAssignableUse, application.operands.clone()),
+            app(
+                PreserveProductionContract,
+                vec![application.operands[1].clone()],
+            ),
+            app(RequireIndependentOracle, application.operands.clone()),
+        ],
+        NullHandles => vec![
+            app(BindUnique, vec![application.operands[0].clone()]),
+            app(BindUnique, vec![application.operands[1].clone()]),
+            app(BindUnique, vec![application.operands[2].clone()]),
+            app(
+                ValueFlowsTo,
+                vec![
+                    application.operands[0].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+            app(
+                PreserveConstruction,
+                vec![
+                    application.operands[1].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+            app(
+                PreserveAssignableUse,
+                vec![
+                    application.operands[0].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+            app(
+                PreserveOwnerBoundary,
+                vec![
+                    application.operands[0].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+            app(
+                PreserveProductionContract,
+                vec![application.operands[2].clone()],
+            ),
+            app(
+                RequireIndependentOracle,
+                vec![
+                    application.operands[0].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+        ],
+        ProjectsValue => vec![
+            app(BindUnique, vec![application.operands[0].clone()]),
+            app(BindUnique, vec![application.operands[1].clone()]),
+            app(BindUnique, vec![application.operands[2].clone()]),
+            app(
+                ValueFlowsTo,
+                vec![
+                    application.operands[1].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+            app(
+                PreserveAssignableUse,
+                vec![
+                    application.operands[0].clone(),
+                    application.operands[1].clone(),
+                ],
+            ),
+            app(
+                PreserveOwnerBoundary,
+                vec![
+                    application.operands[1].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+            app(
+                PreserveProductionContract,
+                vec![application.operands[2].clone()],
+            ),
+            app(
+                RequireIndependentOracle,
+                vec![
+                    application.operands[0].clone(),
+                    application.operands[2].clone(),
+                ],
+            ),
+        ],
+        RelaxNullability => vec![
+            app(BindUnique, vec![application.operands[0].clone()]),
+            app(BindUnique, vec![application.operands[1].clone()]),
+            app(
+                ValueFlowsTo,
+                vec![
+                    application.operands[1].clone(),
+                    application.operands[0].clone(),
+                ],
+            ),
+            app(
+                PreserveProductionContract,
+                vec![application.operands[0].clone()],
+            ),
+        ],
+        RequireOmissionDetection => vec![
+            app(BindUnique, application.operands.clone()),
+            app(PreserveProductionContract, application.operands.clone()),
+        ],
+        PreserveOverrideCompatibility
+        | PreserveAssignableUse
+        | PreserveConstruction
+        | ValueFlowsTo
+        | PreserveOwnerBoundary
+        | RequireIndependentOracle
+        | PreserveProductionContract => application
+            .operands
+            .iter()
+            .map(|operand| app(BindUnique, vec![operand.clone()]))
+            .collect(),
+    }
+}
+
+fn domain_has_executor(domain: ConstraintDomain) -> bool {
+    matches!(
+        domain,
+        ConstraintDomain::ValueFlow | ConstraintDomain::DeclarationChange
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,6 +948,19 @@ pub enum ObligationKind {
     PreserveAbi,
     RequireOracle,
     MustRefuseOnBoundary,
+    PreserveResourceLifetime,
+    PropagateDeclaredType,
+    PreserveOverrideCompatibility,
+    PreserveAssignableUse,
+    RelaxNullability,
+    PreserveConstruction,
+    ValueFlowsTo,
+    PreserveOwnerBoundary,
+    RequireIndependentOracle,
+    RequireOmissionDetection,
+    PreserveProductionContract,
+    NullHandles,
+    ProjectsValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -925,6 +1652,23 @@ fn primitive_obligation(value: &PrimitiveConstraint) -> ObligationKind {
         PrimitiveConstraint::PreserveAbi => ObligationKind::PreserveAbi,
         PrimitiveConstraint::RequireOracle => ObligationKind::RequireOracle,
         PrimitiveConstraint::MustRefuseOnBoundary => ObligationKind::MustRefuseOnBoundary,
+        PrimitiveConstraint::PreserveResourceLifetime => ObligationKind::PreserveResourceLifetime,
+        PrimitiveConstraint::PropagateDeclaredType => ObligationKind::PropagateDeclaredType,
+        PrimitiveConstraint::PreserveOverrideCompatibility => {
+            ObligationKind::PreserveOverrideCompatibility
+        }
+        PrimitiveConstraint::PreserveAssignableUse => ObligationKind::PreserveAssignableUse,
+        PrimitiveConstraint::RelaxNullability => ObligationKind::RelaxNullability,
+        PrimitiveConstraint::PreserveConstruction => ObligationKind::PreserveConstruction,
+        PrimitiveConstraint::ValueFlowsTo => ObligationKind::ValueFlowsTo,
+        PrimitiveConstraint::PreserveOwnerBoundary => ObligationKind::PreserveOwnerBoundary,
+        PrimitiveConstraint::RequireIndependentOracle => ObligationKind::RequireIndependentOracle,
+        PrimitiveConstraint::RequireOmissionDetection => ObligationKind::RequireOmissionDetection,
+        PrimitiveConstraint::PreserveProductionContract => {
+            ObligationKind::PreserveProductionContract
+        }
+        PrimitiveConstraint::NullHandles => ObligationKind::NullHandles,
+        PrimitiveConstraint::ProjectsValue => ObligationKind::ProjectsValue,
     }
 }
 
@@ -1568,6 +2312,366 @@ mod tests {
         let mut value = serde_json::to_value(SemanticGoal::map_edge_with_context("base")).unwrap();
         value["constraints"]["graphId"] = serde_json::json!("node:forged");
         assert!(serde_json::from_value::<SemanticGoal>(value).is_err());
+    }
+
+    #[test]
+    fn typed_operator_registry_closes_mandatory_safety_independent_of_order_or_hints() {
+        let variables = [
+            ("a".into(), TypedVariableDomain::Callable),
+            ("b".into(), TypedVariableDomain::Callable),
+            ("e".into(), TypedVariableDomain::ValueEdge),
+        ];
+        let map = OperatorApplication {
+            operator: PrimitiveConstraint::MapEdge,
+            operands: vec!["a".into(), "b".into(), "e".into()],
+        };
+        let preserve = OperatorApplication {
+            operator: PrimitiveConstraint::PreserveOrder,
+            operands: vec!["e".into()],
+        };
+        let minimal = TypedSemanticGoal::new("base", variables.clone(), [map.clone()]);
+        let reordered =
+            TypedSemanticGoal::new("base", variables.clone(), [preserve.clone(), map.clone()]);
+        let reverse = TypedSemanticGoal::new("base", variables, [map, preserve]);
+        let closure = minimal.execution_plan().unwrap().mandatory_closure;
+        assert_eq!(closure.len(), 15);
+        assert_eq!(
+            reordered.execution_plan().unwrap().mandatory_closure,
+            reverse.execution_plan().unwrap().mandatory_closure
+        );
+        assert_eq!(
+            crate::canonical::hash(&reordered).unwrap(),
+            crate::canonical::hash(&reverse).unwrap()
+        );
+
+        let alpha = TypedSemanticGoal::new(
+            "base",
+            [
+                ("left".into(), TypedVariableDomain::Callable),
+                ("right".into(), TypedVariableDomain::Callable),
+                ("path".into(), TypedVariableDomain::ValueEdge),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::MapEdge,
+                operands: vec!["left".into(), "right".into(), "path".into()],
+            }],
+        );
+        let shape = |goal: &TypedSemanticGoal| {
+            goal.execution_plan()
+                .unwrap()
+                .mandatory_closure
+                .into_iter()
+                .map(|application| {
+                    (
+                        application.operator,
+                        application
+                            .operands
+                            .iter()
+                            .map(|operand| goal.variables[operand])
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(shape(&minimal), shape(&alpha));
+
+        let mut with_hint = serde_json::to_value(minimal).unwrap();
+        with_hint["hint"] = serde_json::json!("pick repository-specific symbol");
+        assert!(serde_json::from_value::<TypedSemanticGoal>(with_hint).is_err());
+    }
+
+    #[test]
+    fn typed_operator_registry_refuses_domains_without_an_executor() {
+        let goal = TypedSemanticGoal::new(
+            "base",
+            [("edge".into(), TypedVariableDomain::ValueEdge)],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::PreserveResourceLifetime,
+                operands: vec!["edge".into()],
+            }],
+        );
+        assert_eq!(
+            goal.execution_plan(),
+            Err(TypedGoalLanguageError::UnsupportedConstraintDomain)
+        );
+
+        let partial = TypedSemanticGoal::new(
+            "base",
+            [("call".into(), TypedVariableDomain::Callable)],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::TypeAssignable,
+                operands: vec!["call".into(), "missing".into()],
+            }],
+        );
+        assert_eq!(
+            partial.execution_plan(),
+            Err(TypedGoalLanguageError::InvalidOperand)
+        );
+
+        let bare = TypedSemanticGoal::new(
+            "base",
+            [("call".into(), TypedVariableDomain::Callable)],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::BindUnique,
+                operands: vec!["call".into()],
+            }],
+        );
+        assert_eq!(
+            bare.execution_plan(),
+            Err(TypedGoalLanguageError::AuxiliaryOperatorRequested)
+        );
+
+        let bare_value_flow = TypedSemanticGoal::new(
+            "base",
+            [
+                ("source".into(), TypedVariableDomain::Declaration),
+                ("destination".into(), TypedVariableDomain::Declaration),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::ValueFlowsTo,
+                operands: vec!["source".into(), "destination".into()],
+            }],
+        );
+        assert_eq!(
+            bare_value_flow.execution_plan(),
+            Err(TypedGoalLanguageError::AuxiliaryOperatorRequested)
+        );
+
+        let unused = TypedSemanticGoal::new(
+            "base",
+            [
+                ("call".into(), TypedVariableDomain::Callable),
+                ("edge".into(), TypedVariableDomain::ValueEdge),
+                ("extra".into(), TypedVariableDomain::Callable),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::TypeAssignable,
+                operands: vec!["call".into(), "edge".into()],
+            }],
+        );
+        assert_eq!(
+            unused.execution_plan(),
+            Err(TypedGoalLanguageError::UnusedVariable)
+        );
+    }
+
+    #[test]
+    fn typed_goal_language_schema_is_complete_and_uses_product_validation() {
+        let schema = typed_goal_language_schema();
+        assert_eq!(schema.schema, TYPED_GOAL_LANGUAGE_SCHEMA);
+        assert_eq!(schema.request_schema, TYPED_GOAL_BINDING_REQUEST_SCHEMA);
+        assert_eq!(schema.goal_schema, TYPED_SEMANTIC_GOAL_SCHEMA);
+        assert_eq!(schema.decision_schema, TYPED_GOAL_BINDING_DECISION_SCHEMA);
+        assert_eq!(schema.max_request_bytes, 16_384);
+        assert_eq!(
+            schema.executable_domains,
+            vec![
+                ConstraintDomain::ValueFlow,
+                ConstraintDomain::DeclarationChange
+            ]
+        );
+        assert_eq!(
+            schema
+                .product_refusal_reasons
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            ALL_TYPED_GOAL_REFUSAL_REASONS.iter().copied().collect()
+        );
+        assert_eq!(
+            schema.product_refusal_reasons.len(),
+            ALL_TYPED_GOAL_REFUSAL_REASONS.len()
+        );
+        assert_eq!(schema.operators.len(), ALL_PRIMITIVE_CONSTRAINTS.len());
+        assert_eq!(
+            schema
+                .operators
+                .iter()
+                .map(|entry| entry.operator.clone())
+                .collect::<BTreeSet<_>>(),
+            ALL_PRIMITIVE_CONSTRAINTS.iter().cloned().collect()
+        );
+        assert!(schema.operators.iter().all(|entry| {
+            entry.arity == entry.operand_domains.len()
+                && entry.required_evidence_relations.iter().all(|relation| {
+                    constraint_op_spec(&entry.operator)
+                        .required_evidence_relations
+                        .contains(relation)
+                })
+        }));
+
+        let good = TypedSemanticGoal::new(
+            "base",
+            [
+                ("context".into(), TypedVariableDomain::Callable),
+                ("transform".into(), TypedVariableDomain::Callable),
+                ("edge".into(), TypedVariableDomain::ValueEdge),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::MapEdge,
+                operands: vec!["context".into(), "transform".into(), "edge".into()],
+            }],
+        );
+        assert!(schema.validate_goal(&good).is_ok());
+
+        let one_operand = TypedSemanticGoal::new(
+            "base",
+            [("context".into(), TypedVariableDomain::Callable)],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::MapEdge,
+                operands: vec!["context".into()],
+            }],
+        );
+        assert_eq!(
+            schema.validate_goal(&one_operand),
+            Err(TypedGoalLanguageError::InvalidArity)
+        );
+
+        let domain_swap = TypedSemanticGoal::new(
+            "base",
+            [
+                ("call".into(), TypedVariableDomain::ValueEdge),
+                ("edge".into(), TypedVariableDomain::Callable),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::TypeAssignable,
+                operands: vec!["call".into(), "edge".into()],
+            }],
+        );
+        assert_eq!(
+            schema.validate_goal(&domain_swap),
+            Err(TypedGoalLanguageError::InvalidOperand)
+        );
+
+        let bind_only = TypedSemanticGoal::new(
+            "base",
+            [("call".into(), TypedVariableDomain::Callable)],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::BindUnique,
+                operands: vec!["call".into()],
+            }],
+        );
+        assert_eq!(
+            schema.validate_goal(&bind_only),
+            Err(TypedGoalLanguageError::AuxiliaryOperatorRequested)
+        );
+
+        let unused = TypedSemanticGoal::new(
+            "base",
+            [
+                ("call".into(), TypedVariableDomain::Callable),
+                ("edge".into(), TypedVariableDomain::ValueEdge),
+                ("unused".into(), TypedVariableDomain::Callable),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::TypeAssignable,
+                operands: vec!["call".into(), "edge".into()],
+            }],
+        );
+        assert_eq!(
+            schema.validate_goal(&unused),
+            Err(TypedGoalLanguageError::UnusedVariable)
+        );
+    }
+
+    #[test]
+    fn typed_goal_language_schema_roundtrips_canonically_without_backend_vocabulary() {
+        let schema = typed_goal_language_schema();
+        let bytes = crate::canonical::bytes(&schema).unwrap();
+        let roundtrip: TypedGoalLanguageSchema = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(roundtrip, schema);
+        assert_eq!(crate::canonical::bytes(&roundtrip).unwrap(), bytes);
+        assert_eq!(
+            crate::canonical::hash(&roundtrip).unwrap(),
+            crate::canonical::hash(&schema).unwrap()
+        );
+        let rendered = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+        for forbidden in ["family", "task", "kotlin"] {
+            assert!(!rendered.contains(forbidden), "schema leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn declaration_change_language_is_public_and_executable_with_frozen_providers() {
+        let goal = TypedSemanticGoal::new(
+            "base",
+            [
+                ("source".into(), TypedVariableDomain::Declaration),
+                ("target".into(), TypedVariableDomain::Declaration),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::PropagateDeclaredType,
+                operands: vec!["source".into(), "target".into()],
+            }],
+        );
+        assert!(goal.validate_language().is_ok());
+        assert!(goal.validate_executable().is_ok());
+        let schema = typed_goal_language_schema();
+        assert!(
+            schema
+                .variable_domains
+                .contains(&TypedVariableDomain::Declaration)
+        );
+        assert!(
+            schema
+                .executable_domains
+                .contains(&ConstraintDomain::DeclarationChange)
+        );
+        let operator = schema
+            .operators
+            .iter()
+            .find(|entry| entry.operator == PrimitiveConstraint::PropagateDeclaredType)
+            .unwrap();
+        assert_eq!(operator.arity, 2);
+        assert_eq!(
+            operator.operand_domains,
+            exact_operand_domains(&[
+                TypedVariableDomain::Declaration,
+                TypedVariableDomain::Declaration,
+            ])
+        );
+        assert!(operator.mandatory_applications.iter().any(|application| {
+            application.operator == PrimitiveConstraint::PreserveOverrideCompatibility
+        }));
+        assert!(operator.mandatory_applications.iter().any(|application| {
+            application.operator == PrimitiveConstraint::PreserveProductionContract
+        }));
+    }
+
+    #[test]
+    fn bare_value_edge_binding_is_never_an_executable_goal() {
+        let goal = TypedSemanticGoal::new(
+            "base",
+            [("edge".into(), TypedVariableDomain::ValueEdge)],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::BindUnique,
+                operands: vec!["edge".into()],
+            }],
+        );
+        assert_eq!(
+            goal.execution_plan(),
+            Err(TypedGoalLanguageError::AuxiliaryOperatorRequested)
+        );
+    }
+
+    #[test]
+    fn declared_but_unused_variable_is_invalid() {
+        let goal = TypedSemanticGoal::new(
+            "base",
+            [
+                ("call".into(), TypedVariableDomain::Callable),
+                ("edge".into(), TypedVariableDomain::ValueEdge),
+                ("unused".into(), TypedVariableDomain::Callable),
+            ],
+            [OperatorApplication {
+                operator: PrimitiveConstraint::TypeAssignable,
+                operands: vec!["call".into(), "edge".into()],
+            }],
+        );
+        assert_eq!(
+            goal.execution_plan(),
+            Err(TypedGoalLanguageError::UnusedVariable)
+        );
     }
 
     #[test]

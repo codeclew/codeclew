@@ -1,7 +1,11 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
-use clew::evidence_authority::{EvidenceAuthority, MapEdgeWithContextDecision};
+use clew::evidence_authority::{
+    EvidenceAuthority, MapEdgeWithContextDecision, TYPED_GOAL_BINDING_DECISION_SCHEMA,
+    TYPED_GOAL_BINDING_REQUEST_SCHEMA, TypedGoalBindingDecision, TypedGoalBindingRequest,
+    TypedGoalRefusal, TypedGoalRefusalReason,
+};
 use clew::graph;
 use clew::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
 use clew::model::*;
@@ -9,7 +13,9 @@ use clew::projection::{
     self, BoundaryPolicy, ProjectionBudget, ProjectionLevel, ProjectionQuery, ThreadKind, Traversal,
 };
 use clew::proto::RequestKind;
-use clew::semantic_goal::SemanticGoal;
+use clew::semantic_goal::{
+    SemanticGoal, TYPED_GOAL_MAX_REQUEST_BYTES, TypedGoalLanguageError, typed_goal_language_schema,
+};
 use clew::task_context;
 use clew::thread_projection;
 use clew::transaction;
@@ -39,6 +45,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Doctor,
+    #[command(about = "Emit a deterministic machine-readable product schema")]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -84,6 +95,15 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum SchemaCommand {
+    #[command(
+        name = "typed-goal",
+        about = "Emit the typed-goal constraint language registry"
+    )]
+    TypedGoal,
+}
+
+#[derive(Subcommand)]
 enum ProjectCommand {
     Inspect(RepoArgs),
 }
@@ -104,6 +124,11 @@ enum TxCommand {
 }
 #[derive(Subcommand)]
 enum ProveCommand {
+    #[command(
+        name = "typed-goal",
+        about = "Bind a family-neutral typed constraint goal from compiler evidence"
+    )]
+    TypedGoal(TypedGoalArgs),
     #[command(
         name = "map-edge-with-context",
         about = "Bind a typed collection-edge change and prove its preservation invariants"
@@ -220,6 +245,28 @@ struct MapEdgeWithContextArgs {
     test_compilation: String,
     #[arg(long, default_value_t = 200)]
     max_nodes: usize,
+}
+#[derive(Args)]
+#[command(group(
+    ArgGroup::new("request_input")
+        .required(true)
+        .multiple(false)
+        .args(["request", "request_json"])
+))]
+struct TypedGoalArgs {
+    #[arg(long)]
+    repo: PathBuf,
+    #[arg(long, conflicts_with = "request_json")]
+    request: Option<PathBuf>,
+    #[arg(long, conflicts_with = "request")]
+    request_json: Option<String>,
+    #[arg(long)]
+    compilation: Option<String>,
+    #[arg(
+        long,
+        help = "Bind REQUIRE_ORACLE to an immutable external-task-spec/0.1 document"
+    )]
+    external_spec: Option<PathBuf>,
 }
 #[derive(Args)]
 struct ApplyMapEdgeWithContextArgs {
@@ -387,6 +434,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             worker.shutdown()?;
             Ok(result)
         }
+        Command::Schema {
+            command: SchemaCommand::TypedGoal,
+        } => serde_json::to_value(typed_goal_language_schema()).map_err(parse_error),
         Command::Project {
             command: ProjectCommand::Inspect(args),
         } => with_worker(&workspace, |w| {
@@ -401,10 +451,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 RequestKind::OpenProject,
                 &json!({"repo":repo,"compilation":args.compilation}),
             )?;
-            let facts = w.request(
-                RequestKind::IndexFiles,
+            let verified_facts = w.index_files_verified(
                 &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":args.syntax_only,"files":args.files}),
             )?;
+            let facts = w.inspect_verified_index(&verified_facts)?;
             let syntax_storage = args
                 .syntax_only
                 .then(|| format!("{}#syntax", args.compilation.as_deref().unwrap_or(":/main")));
@@ -412,12 +462,44 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 &repo,
                 syntax_storage.as_deref().or(args.compilation.as_deref()),
             )?;
-            let persistent_hash = index.update(&facts)?;
+            let persistent_hash = index.update_verified(&verified_facts, w)?;
+            let relation_snapshot = index.declaration_relations()?.ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::ProjectModelChanged,
+                    "persistent index has no validated declaration relation snapshot",
+                )
+            })?;
+            let descriptor_snapshot = index.declaration_descriptors()?.ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::ProjectModelChanged,
+                    "persistent index has no validated declaration descriptor snapshot",
+                )
+            })?;
             let invalidations = index.invalidations()?;
             let freshness = index.freshness_status(REPOSITORY_INDEX_FACT)?;
-            Ok(
-                json!({"schema":"semantic-index-result/0.1","projectModelHash":project["projectModelHash"],"workerIndexHash":facts["indexHash"],"persistentIndexHash":persistent_hash,"files":facts["files"].as_array().map_or(0,Vec::len),"invalidations":invalidations,"freshness":freshness}),
-            )
+            Ok(json!({
+                "schema":"semantic-index-result/0.1",
+                "projectModelHash":project["projectModelHash"],
+                "workerIndexHash":facts["indexHash"],
+                "persistentIndexHash":persistent_hash,
+                "declarationRelations":relation_snapshot.graph,
+                "declarationRelationHash":relation_snapshot.hash,
+                "relationProvenance":relation_snapshot.provenance,
+                "declarationDescriptors":descriptor_snapshot.graph,
+                "declarationDescriptorHash":descriptor_snapshot.hash,
+                "descriptorProvenance":descriptor_snapshot.provenance,
+                "snapshotProvenance":{
+                    "projectModelHash":project["projectModelHash"],
+                    "persistentIndexHash":persistent_hash,
+                    "declarationRelationHash":relation_snapshot.hash,
+                    "relationProvenance":relation_snapshot.provenance,
+                    "declarationDescriptorHash":descriptor_snapshot.hash,
+                    "descriptorProvenance":descriptor_snapshot.provenance,
+                },
+                "files":facts["files"].as_array().map_or(0,Vec::len),
+                "invalidations":invalidations,
+                "freshness":freshness
+            }))
         }),
         Command::Resolve {
             command: ResolveCommand::Symbol(args),
@@ -447,6 +529,84 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Projection(args) => {
             with_worker(&workspace, |worker| projection_command(worker, args))
         }
+        Command::Prove {
+            command: ProveCommand::TypedGoal(args),
+        } => with_worker(&workspace, |worker| {
+            let request = read_typed_goal_request(&args)?;
+            if request.schema != TYPED_GOAL_BINDING_REQUEST_SCHEMA {
+                return typed_goal_refusal_json(TypedGoalRefusalReason::InvalidGoal);
+            }
+            match request.goal.validate_executable() {
+                Ok(()) => {}
+                Err(TypedGoalLanguageError::UnsupportedConstraintDomain) => {
+                    return typed_goal_refusal_json(
+                        TypedGoalRefusalReason::UnsupportedConstraintDomain,
+                    );
+                }
+                Err(_) => {
+                    return typed_goal_refusal_json(TypedGoalRefusalReason::InvalidGoal);
+                }
+            }
+            let repo = absolute(&args.repo)?;
+            let revision = git_head(&repo)?;
+            if request.goal.base_revision != revision {
+                return typed_goal_refusal_json(TypedGoalRefusalReason::SnapshotMismatch);
+            }
+            let mut authority = EvidenceAuthority::open(&repo, &revision)?;
+            let compilation = match (args.compilation.as_deref(), request.compilation.as_deref()) {
+                (Some(cli), Some(requested)) if cli != requested => {
+                    return typed_goal_refusal_json(TypedGoalRefusalReason::InvalidGoal);
+                }
+                (Some(cli), _) => Some(cli),
+                (_, requested) => requested,
+            };
+            let decision = if let Some(specification) = args.external_spec.as_deref() {
+                let receipt = match authority.issue_external_spec(
+                    specification,
+                    &request,
+                    compilation,
+                    worker,
+                ) {
+                    Ok(receipt) => receipt,
+                    Err(_) => {
+                        return typed_goal_refusal_json(
+                            TypedGoalRefusalReason::ExternalSpecificationMismatch,
+                        );
+                    }
+                };
+                authority.bind_typed_goal_with_external_spec(
+                    &request,
+                    compilation,
+                    &receipt,
+                    worker,
+                )?
+            } else {
+                authority.bind_typed_goal(&request.goal, &request.hints, compilation, worker)?
+            };
+            match decision {
+                TypedGoalBindingDecision::Bound(receipt) => {
+                    if !authority.recognizes_typed_goal(&receipt)?
+                        || !authority.recognizes_typed_goal_summary(receipt.summary())?
+                    {
+                        return Err(ClewError::new(
+                            ErrorCode::Internal,
+                            "authority did not recognize the typed-goal proof it just issued",
+                        ));
+                    }
+                    Ok(json!({
+                        "schema": TYPED_GOAL_BINDING_DECISION_SCHEMA,
+                        "status": "BOUND",
+                        "proof": receipt.summary(),
+                    }))
+                }
+                TypedGoalBindingDecision::Ambiguous(ambiguity) => {
+                    serde_json::to_value(ambiguity).map_err(parse_error)
+                }
+                TypedGoalBindingDecision::Refused(refusal) => {
+                    serde_json::to_value(refusal).map_err(parse_error)
+                }
+            }
+        }),
         Command::Prove {
             command: ProveCommand::MapEdgeWithContext(args),
         } => with_worker(&workspace, |worker| {
@@ -559,16 +719,16 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 RequestKind::OpenProject,
                 &json!({"repo":repo,"compilation":args.compilation}),
             )?;
-            let index_facts = worker.request(
-                RequestKind::IndexFiles,
+            let verified_index_facts = worker.index_files_verified(
                 &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":true}),
             )?;
+            let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
             // A task context is the immutable base of the following transaction,
             // so its snapshot must be published in the same compilation namespace
             // that task-apply and commit validate.
             let mut repository_index =
                 RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
-            let index_snapshot = repository_index.update(&index_facts)?;
+            let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
             repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
             let selection = task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
             let mut resolutions = selection
@@ -1070,12 +1230,11 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
         RequestKind::OpenProject,
         &json!({"repo":repo,"compilation":args.compilation}),
     )?;
-    let index_facts = worker.request(
-        RequestKind::IndexFiles,
-        &json!({"repo":repo,"compilation":args.compilation}),
-    )?;
+    let verified_index_facts =
+        worker.index_files_verified(&json!({"repo":repo,"compilation":args.compilation}))?;
+    let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
     let mut repository_index = RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
-    let index_snapshot = repository_index.update(&index_facts)?;
+    let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
     repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
     let expression_anchor = if let (Some(file), Some(offset)) = (&args.file, args.offset) {
         Some(
@@ -1244,6 +1403,58 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ClewError> {
     let bytes =
         std::fs::read(path).map_err(|e| ClewError::new(ErrorCode::InvalidInput, e.to_string()))?;
     serde_json::from_slice(&bytes).map_err(parse_error)
+}
+fn read_typed_goal_request(args: &TypedGoalArgs) -> Result<TypedGoalBindingRequest, ClewError> {
+    let (bytes, require_canonical) = match (&args.request, &args.request_json) {
+        (Some(path), None) => {
+            let metadata = std::fs::metadata(path)
+                .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?;
+            if metadata.len() > TYPED_GOAL_MAX_REQUEST_BYTES as u64 {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "typed-goal request exceeds 16 KiB",
+                ));
+            }
+            let bytes = std::fs::read(path)
+                .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?;
+            (bytes, false)
+        }
+        (None, Some(inline)) => (inline.as_bytes().to_vec(), true),
+        _ => {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "exactly one typed-goal request transport is required",
+            ));
+        }
+    };
+    if bytes.len() > TYPED_GOAL_MAX_REQUEST_BYTES {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "typed-goal request exceeds 16 KiB",
+        ));
+    }
+    let request: TypedGoalBindingRequest = serde_json::from_slice(&bytes).map_err(parse_error)?;
+    if require_canonical
+        && canonical::bytes(&request)
+            .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?
+            != bytes
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "--request-json must use canonical JSON encoding",
+        ));
+    }
+    Ok(request)
+}
+fn typed_goal_refusal_json(reason: TypedGoalRefusalReason) -> Result<Value, ClewError> {
+    serde_json::to_value(TypedGoalRefusal {
+        schema: TYPED_GOAL_BINDING_DECISION_SCHEMA.into(),
+        status: "REFUSED".into(),
+        reason,
+        rejections: vec![],
+        declaration_rejections: vec![],
+    })
+    .map_err(parse_error)
 }
 fn write_optional<T: serde::Serialize>(path: Option<&Path>, value: &T) -> Result<(), ClewError> {
     if let Some(path) = path {

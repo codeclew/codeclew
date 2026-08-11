@@ -1,4 +1,5 @@
 use clew::canonical;
+use clew::evidence_authority::EvidenceAuthority;
 use clew::graph;
 use clew::index::RepositoryIndex;
 use clew::model::{
@@ -31,6 +32,44 @@ fn copy_maven_fixture(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), &target).unwrap();
         }
     }
+}
+
+fn copy_worker_distribution(source: &Path, target: &Path) {
+    for entry in walkdir::WalkDir::new(source)
+        .into_iter()
+        .map(Result::unwrap)
+    {
+        let relative = entry.path().strip_prefix(source).unwrap();
+        let destination = target.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&destination).unwrap();
+        } else if entry.file_type().is_file() {
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(entry.path(), &destination).unwrap();
+            std::fs::set_permissions(&destination, entry.metadata().unwrap().permissions())
+                .unwrap();
+        } else {
+            panic!(
+                "worker distribution contains unsupported path: {}",
+                entry.path().display()
+            );
+        }
+    }
+}
+
+fn declaration_relation_rows<'a>(index: &'a Value, kind: &str) -> Vec<&'a Value> {
+    index["declarationRelations"]["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|relation| relation["kind"] == kind)
+        .collect()
+}
+
+fn declaration_descriptor_rows(index: &Value) -> &[Value] {
+    index["declarationDescriptors"]["descriptors"]
+        .as_array()
+        .unwrap()
 }
 
 fn init_maven_repo(root: &Path) -> PathBuf {
@@ -73,6 +112,505 @@ fn git_output(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+fn live_thread(repo: &Path, symbol: &str) -> clew::model::ThreadIr {
+    let output = Command::new(env!("CARGO_BIN_EXE_clew"))
+        .args([
+            "slice",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--compilation",
+            ":/main",
+            "--symbol",
+            symbol,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn indexes_constructor_and_null_coalescing_facts_on_kotlin_23_maven() {
+    let root = workspace_root();
+    let fixture = root.join("fixtures/kotlin-maven");
+    let diagnostic_workspace = tempfile::tempdir().unwrap();
+    copy_worker_distribution(
+        &root.join("workers/kotlin/build/install/kotlin"),
+        &diagnostic_workspace
+            .path()
+            .join("workers/kotlin/build/install/kotlin"),
+    );
+    copy_worker_distribution(
+        &root.join("workers/kotlin23/build/install/kotlin23"),
+        &diagnostic_workspace
+            .path()
+            .join("workers/kotlin23/build/install/kotlin23"),
+    );
+    let mut worker = WorkerClient::start(diagnostic_workspace.path()).unwrap();
+    let project = worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    assert_eq!(project["compilerVersion"], "2.3.0");
+    let index = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}),
+        )
+        .unwrap();
+    let repeated = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}),
+        )
+        .unwrap();
+
+    assert_eq!(index["k2Validated"], true, "{:#}", index["diagnostics"]);
+    for graph in ["declarationDescriptors", "declarationRelations"] {
+        assert_eq!(
+            index[graph]["provenance"]["extractorSchema"],
+            "fir-facts-extractor/0.6"
+        );
+        assert_eq!(index[graph]["provenance"]["compilerVersion"], "2.3.0");
+        assert_eq!(index[graph], repeated[graph]);
+    }
+    assert_eq!(
+        index["declarationDescriptorHash"],
+        repeated["declarationDescriptorHash"]
+    );
+    assert_eq!(
+        index["declarationRelationHash"],
+        repeated["declarationRelationHash"]
+    );
+
+    let descriptors = declaration_descriptor_rows(&index);
+    let constructor = descriptors
+        .iter()
+        .find(|descriptor| {
+            descriptor["declarationKind"] == "CONSTRUCTOR"
+                && descriptor["compilerClassId"] == "com/acme/relations/NullableConstruction"
+        })
+        .expect("compiler constructor descriptor");
+    assert_eq!(constructor["resolution"], "PROVEN");
+    assert_eq!(constructor["provider"], "K2_FIR");
+    assert_eq!(constructor["compilerAuthority"], "fir-facts-extractor/0.6");
+    assert_eq!(
+        constructor["ownerIdentity"],
+        "class:com/acme/relations/NullableConstruction"
+    );
+    assert!(
+        constructor["symbolIdentity"]
+            .as_str()
+            .is_some_and(
+                |identity| identity.starts_with("constructor:") && identity.contains("#jvm:")
+            )
+    );
+    let parameters = constructor["parameterTypes"].as_array().unwrap();
+    assert_eq!(parameters.len(), 2);
+    assert!(parameters.iter().enumerate().all(|(index, parameter)| {
+        parameter["index"] == index
+            && parameter["type"] == "kotlin/String"
+            && parameter["nullable"] == false
+    }));
+
+    let construction = declaration_relation_rows(&index, "CONSTRUCTS")
+        .into_iter()
+        .find(|relation| {
+            relation["owner"]
+                .as_str()
+                .is_some_and(|owner| owner.contains("constructWithNullPolicy"))
+                && relation["target"] == constructor["compilerCallableId"]
+        })
+        .expect("exact constructor occurrence");
+    let mapping = construction["argumentToParameter"].as_array().unwrap();
+    assert_eq!(
+        mapping
+            .iter()
+            .map(|row| row["parameterIndex"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 0]
+    );
+    assert!(mapping.iter().all(|row| {
+        let index = row["parameterIndex"].as_u64().unwrap() as usize;
+        row["parameterType"] == parameters[index]["type"]
+    }));
+
+    let null_policy = declaration_relation_rows(&index, "NULL_COALESCES")
+        .into_iter()
+        .find(|relation| {
+            relation["owner"]
+                .as_str()
+                .is_some_and(|owner| owner.contains("constructWithNullPolicy"))
+        })
+        .expect("exact compiler null-coalescing relation");
+    assert_eq!(null_policy["resolution"], "PROVEN");
+    assert_eq!(null_policy["provider"], "K2_FIR");
+    assert_eq!(null_policy["sourceOccurrence"]["type"], "kotlin/String?");
+    assert_eq!(null_policy["sourceOccurrence"]["nullable"], true);
+    assert_eq!(null_policy["fallbackOccurrence"]["type"], "kotlin/String");
+    assert_eq!(null_policy["fallbackOccurrence"]["nullable"], false);
+    assert_eq!(null_policy["mergedOccurrence"]["type"], "kotlin/String");
+    assert_eq!(null_policy["mergedOccurrence"]["nullable"], false);
+    assert_eq!(
+        null_policy["branchProvenance"]["kind"],
+        "FIR_ELVIS_EXPRESSION"
+    );
+    for occurrence in ["sourceOccurrence", "fallbackOccurrence", "mergedOccurrence"] {
+        assert!(null_policy[occurrence]["start"].as_u64().is_some());
+        assert!(
+            null_policy[occurrence]["end"].as_u64().unwrap()
+                > null_policy[occurrence]["start"].as_u64().unwrap()
+        );
+    }
+    assert_eq!(
+        mapping
+            .iter()
+            .find(|row| row["parameterIndex"] == 1)
+            .unwrap()["argumentStart"],
+        null_policy["mergedOccurrence"]["start"]
+    );
+    assert!(
+        null_policy["sourceTarget"]
+            .as_str()
+            .is_some_and(|target| target.contains("compilerNullableSource"))
+    );
+    assert!(
+        null_policy["fallbackTarget"]
+            .as_str()
+            .is_some_and(|target| target.contains("compilerFallback") && !target.contains("Decoy"))
+    );
+    assert!(
+        null_policy["cfgNodeIds"]
+            .as_array()
+            .is_some_and(|ids| !ids.is_empty())
+    );
+    assert_eq!(null_policy["orderProvenance"], "K2_FIR_CFG");
+
+    assert!(
+        index["declarationRelations"]["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|boundary| {
+                boundary["resolution"] == "UNKNOWN"
+                    && boundary["stage"] == "NULL_POLICY"
+                    && matches!(
+                        boundary["code"].as_str(),
+                        Some(
+                            "SAFE_CALL_POLICY_UNSUPPORTED"
+                                | "UNRESOLVED_NULLABLE_SOURCE_OCCURRENCE"
+                        )
+                    )
+            })
+    );
+    assert!(
+        index["declarationDescriptors"]["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|boundary| {
+                boundary["resolution"] == "UNKNOWN"
+                    && matches!(
+                        boundary["code"].as_str(),
+                        Some(
+                            "LOCAL_CONSTRUCTOR_UNSUPPORTED"
+                                | "GENERATED_OR_NO_SOURCE"
+                                | "UNRESOLVED_CONSTRUCTOR_DESCRIPTOR"
+                        )
+                    )
+            })
+    );
+    assert!(
+        declaration_relation_rows(&index, "NULL_COALESCES")
+            .iter()
+            .all(|relation| !relation["fallbackTarget"]
+                .as_str()
+                .is_some_and(|target| target.contains("Decoy")))
+    );
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn indexes_direct_return_value_relations_on_kotlin_23_maven() {
+    let root = workspace_root();
+    let fixture = root.join("fixtures/kotlin-maven");
+    let diagnostic_workspace = tempfile::tempdir().unwrap();
+    copy_worker_distribution(
+        &root.join("workers/kotlin/build/install/kotlin"),
+        &diagnostic_workspace
+            .path()
+            .join("workers/kotlin/build/install/kotlin"),
+    );
+    copy_worker_distribution(
+        &root.join("workers/kotlin23/build/install/kotlin23"),
+        &diagnostic_workspace
+            .path()
+            .join("workers/kotlin23/build/install/kotlin23"),
+    );
+    let mut worker = WorkerClient::start(diagnostic_workspace.path()).unwrap();
+    let project = worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    assert_eq!(project["compilerVersion"], "2.3.0");
+    let index = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}),
+        )
+        .unwrap();
+    let repeated = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}),
+        )
+        .unwrap();
+    assert_eq!(index["k2Validated"], true, "{:#}", index["diagnostics"]);
+    assert_eq!(
+        index["declarationRelations"]["provenance"]["extractorSchema"],
+        "fir-facts-extractor/0.6"
+    );
+    assert_eq!(
+        index["declarationRelations"]["provenance"]["compilerVersion"],
+        "2.3.0"
+    );
+    assert_eq!(
+        index["declarationRelationHash"],
+        repeated["declarationRelationHash"]
+    );
+    assert_eq!(
+        index["declarationRelations"],
+        repeated["declarationRelations"]
+    );
+
+    let returned = declaration_relation_rows(&index, "RETURNS_VALUE_FROM");
+    assert_eq!(returned.len(), 2);
+    let property = returned
+        .iter()
+        .copied()
+        .find(|row| row["sourceKind"] == "PROPERTY_READ")
+        .expect("direct returned property read");
+    assert_eq!(
+        property["owner"],
+        "com/acme/relations/DirectReturnProjection.returnedProperty"
+    );
+    assert_eq!(
+        property["target"],
+        "com/acme/relations/DirectReturnProjection.projected"
+    );
+    assert_eq!(property["resultType"], "kotlin/String");
+    assert_eq!(property["resultNullable"], false);
+    assert_eq!(property["evaluationCount"], 1);
+    assert_eq!(property["valueProvenance"], "FIR_RETURN_RESULT_IDENTITY");
+    assert_eq!(property["cfgProvenance"]["sourceReachesReturn"], true);
+    assert_eq!(property["cfgProvenance"]["sourceDominatesReturn"], true);
+    assert_eq!(
+        property["cfgProvenance"]["sourceNodeKind"],
+        "QualifiedAccessNode"
+    );
+    assert_eq!(property["cfgProvenance"]["returnNodeKind"], "JumpNode");
+    assert_eq!(property["orderProvenance"], "K2_FIR_CFG");
+    let source_start = property["sourceOccurrence"]["start"].as_u64().unwrap();
+    let source_end = property["sourceOccurrence"]["end"].as_u64().unwrap();
+    let return_start = property["returnOccurrence"]["start"].as_u64().unwrap();
+    let return_end = property["returnOccurrence"]["end"].as_u64().unwrap();
+    assert!(return_start <= source_start && source_end <= return_end);
+    assert_eq!(property["sourceOccurrence"], property["resultOccurrence"]);
+    let cfg_ids = property["cfgNodeIds"].as_array().unwrap();
+    assert!(cfg_ids.contains(&property["sourceOccurrence"]["cfgNodeId"]));
+    assert!(cfg_ids.contains(&property["returnOccurrence"]["cfgNodeId"]));
+    assert!(
+        !property["target"]
+            .as_str()
+            .unwrap()
+            .contains("sameTypedDecoy")
+    );
+
+    let call = returned
+        .iter()
+        .copied()
+        .find(|row| row["sourceKind"] == "FUNCTION_CALL_RESULT")
+        .expect("direct returned function call");
+    assert_eq!(call["owner"], "com/acme/relations/directReturnedCall");
+    assert_eq!(call["target"], "com/acme/relations/internalDescriptor");
+    assert_eq!(call["resultType"], "kotlin/String");
+    assert_eq!(call["resultNullable"], false);
+    assert_eq!(call["evaluationCount"], 1);
+    assert_eq!(call["cfgProvenance"]["sourceReachesReturn"], true);
+    assert_eq!(call["cfgProvenance"]["sourceDominatesReturn"], true);
+    assert_eq!(
+        call["cfgProvenance"]["sourceNodeKind"],
+        "FunctionCallExitNode"
+    );
+    assert_eq!(call["cfgProvenance"]["returnNodeKind"], "JumpNode");
+
+    let boundaries = index["declarationRelations"]["boundaries"]
+        .as_array()
+        .unwrap();
+    let has_boundary = |owner_fragment: &str, codes: &[&str]| {
+        boundaries.iter().any(|boundary| {
+            boundary["resolution"] == "UNKNOWN"
+                && boundary["stage"] == "RETURN_VALUE"
+                && boundary["owner"]
+                    .as_str()
+                    .is_some_and(|owner| owner.contains(owner_fragment))
+                && boundary["code"]
+                    .as_str()
+                    .is_some_and(|code| codes.contains(&code))
+        })
+    };
+    for (owner, codes) in [
+        (
+            "aliasedProperty",
+            &["LOCAL_GENERATED_OR_UNRESOLVED_RETURN_VALUE"][..],
+        ),
+        (
+            "branchedProperty",
+            &["NON_LINEAR_OR_MULTIPLE_RETURN_FLOW"][..],
+        ),
+        (
+            "implicitProperty",
+            &[
+                "IMPLICIT_RETURN_UNSUPPORTED",
+                "IMPLICIT_OR_MISSING_RETURN_SOURCE",
+            ][..],
+        ),
+        (
+            "multipleReturnedCalls",
+            &["MULTIPLE_OR_AMBIGUOUS_RETURN_VALUE_OCCURRENCES"][..],
+        ),
+        (
+            "safeReturnedProperty",
+            &["NON_LINEAR_OR_MULTIPLE_RETURN_FLOW"][..],
+        ),
+        (
+            "elvisReturnedProperty",
+            &["NON_LINEAR_OR_MULTIPLE_RETURN_FLOW"][..],
+        ),
+        (
+            "unresolvedSourceReturn",
+            &["LOCAL_GENERATED_OR_UNRESOLVED_RETURN_VALUE"][..],
+        ),
+    ] {
+        assert!(
+            has_boundary(owner, codes),
+            "missing UNKNOWN boundary for rejected contour"
+        );
+        assert!(returned.iter().all(|relation| {
+            !relation["owner"]
+                .as_str()
+                .is_some_and(|candidate| candidate.contains(owner))
+        }));
+    }
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn maven_authority_executes_exact_compiler_linked_behavioral_test() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repo = init_maven_repo(temporary.path());
+    let thread = live_thread(&repo, "com.acme.flow.transformAndConsume");
+    let revision = git_output(&repo, &["rev-parse", "HEAD"]);
+    let root = workspace_root();
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
+    let verified = authority.verify_thread(&thread, &mut worker).unwrap();
+    let test = authority
+        .verify_behavioral_test(
+            "transformsProducedValueBeforeConsumption",
+            ":/test",
+            &verified,
+            &mut worker,
+        )
+        .unwrap();
+    let validation = authority
+        .run_validation(&[&verified], &[&test], &mut worker)
+        .unwrap();
+    let bundle = authority
+        .authorize_bundle(&[&verified], &[&test], &validation)
+        .unwrap();
+    assert_eq!(bundle.summary().behavioral_test_count, 1);
+    assert!(bundle.summary().executed_test_count >= 1);
+    assert!(!bundle.summary().validation_artifact_hash.is_empty());
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn maven_authority_rejects_runtime_skipped_compiler_linked_test() {
+    let temporary = tempfile::tempdir().unwrap();
+    let repo = init_maven_repo(temporary.path());
+    let source = repo.join("src/test/kotlin/com/acme/flow/MavenFlowTest.kt");
+    let original = std::fs::read_to_string(&source).unwrap();
+    let disabled = original
+        .replace(
+            "import kotlin.test.assertEquals",
+            "import kotlin.test.assertEquals\nimport org.junit.jupiter.api.Disabled",
+        )
+        .replace(
+            "    @Test\n    fun transformsProducedValueBeforeConsumption()",
+            "    @Test\n    @Disabled(\"authority regression\")\n    fun transformsProducedValueBeforeConsumption()",
+        );
+    assert_ne!(disabled, original);
+    std::fs::write(&source, disabled).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "src/test/kotlin/com/acme/flow/MavenFlowTest.kt"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@localhost",
+                "commit",
+                "-qm",
+                "disable linked test"
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let thread = live_thread(&repo, "com.acme.flow.transformAndConsume");
+    let revision = git_output(&repo, &["rev-parse", "HEAD"]);
+    let root = workspace_root();
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
+    let verified = authority.verify_thread(&thread, &mut worker).unwrap();
+    let test = authority
+        .verify_behavioral_test(
+            "transformsProducedValueBeforeConsumption",
+            ":/test",
+            &verified,
+            &mut worker,
+        )
+        .unwrap();
+
+    let error = authority
+        .run_validation(&[&verified], &[&test], &mut worker)
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        clew::error::ErrorCode::IncompleteSemanticAnalysis
+    );
+    assert!(error.message.contains("SKIPPED"), "{}", error.message);
+    worker.shutdown().unwrap();
 }
 
 #[test]
@@ -208,6 +746,426 @@ fn indexes_and_resolves_maven_sources_with_k2() {
 }
 
 #[test]
+fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
+    let root = workspace_root();
+    let fixture = root.join("fixtures/kotlin-maven");
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let project = worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    let verified = worker
+        .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
+        .unwrap();
+    let index = worker.inspect_verified_index(&verified).unwrap();
+    let mut repository_index = RepositoryIndex::open_compilation(&fixture, Some(":/main")).unwrap();
+    repository_index
+        .update_verified(&verified, &worker)
+        .unwrap();
+    assert!(
+        repository_index
+            .declaration_descriptors()
+            .unwrap()
+            .is_some()
+    );
+    let repeated_verified = worker
+        .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
+        .unwrap();
+    let repeated = worker.inspect_verified_index(&repeated_verified).unwrap();
+
+    assert_eq!(index["k2Validated"], true);
+    let graph = &index["declarationDescriptors"];
+    assert_eq!(graph["schema"], "declaration-descriptor-graph/0.1");
+    assert_eq!(graph["compilation"], ":/main");
+    assert_eq!(graph["provenance"]["provider"], "COMPILER_SEMANTIC_FACTS");
+    assert_eq!(graph["provenance"]["compilerVersion"], "2.3.0");
+    assert_eq!(
+        graph["provenance"]["projectModelHash"],
+        project["projectModelHash"]
+    );
+    assert_eq!(
+        graph["provenance"]["extractorSchema"],
+        "fir-facts-extractor/0.4"
+    );
+    assert!(
+        graph["provenance"]["pluginArtifactFingerprint"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
+    assert_eq!(
+        index["declarationDescriptorHash"],
+        repeated["declarationDescriptorHash"]
+    );
+    assert_eq!(graph, &repeated["declarationDescriptors"]);
+    let rows = declaration_descriptor_rows(&index);
+    assert!(!rows.is_empty());
+    let canonical_rows = rows.iter().map(Value::to_string).collect::<Vec<_>>();
+    assert!(canonical_rows.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(rows.iter().all(|descriptor| {
+        descriptor["resolution"] == "PROVEN"
+            && descriptor["provider"] == "K2_FIR"
+            && descriptor["module"] == ":"
+            && descriptor["sourceSet"] == "main"
+            && descriptor["sourceProvenance"] == "COMPILER_SOURCE_RANGE"
+            && descriptor["compilerAuthority"] == "fir-facts-extractor/0.4"
+            && descriptor["symbolIdentity"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && descriptor["declarationKind"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && descriptor["ownerIdentity"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && descriptor["containment"].is_array()
+            && descriptor["effectiveVisibility"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && descriptor["modality"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+            && descriptor.get("sourceText").is_none()
+    }));
+    let by_callable = |needle: &str| {
+        rows.iter()
+            .filter(|descriptor| {
+                descriptor["compilerCallableId"]
+                    .as_str()
+                    .is_some_and(|identity| identity.contains(needle))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(by_callable("publicDescriptor").iter().any(|descriptor| {
+        descriptor["visibility"] == "public"
+            && descriptor["exportBoundary"] == "PUBLIC_API"
+            && descriptor["declarationKind"] == "FUNCTION"
+            && descriptor["ownerIdentity"] == "package:com.acme.relations"
+            && descriptor["containment"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+            && descriptor["modality"] == "FINAL"
+            && descriptor["symbolIdentity"]
+                .as_str()
+                .is_some_and(|identity| {
+                    identity.starts_with(&format!(
+                        "callable:{}#jvm:",
+                        descriptor["compilerCallableId"].as_str().unwrap()
+                    ))
+                })
+            && descriptor["parameterTypes"][0]["type"] == "kotlin/String"
+            && descriptor["parameterTypes"][0]["nullable"] == false
+            && descriptor["returnType"] == "kotlin/String?"
+            && descriptor["returnNullable"] == true
+    }));
+    assert!(by_callable("internalDescriptor").iter().any(|descriptor| {
+        descriptor["visibility"] == "internal"
+            && descriptor["exportBoundary"] == "MODULE_API"
+            && descriptor["parameterTypes"][0]["nullable"] == true
+    }));
+    assert!(by_callable("privateDescriptor").iter().any(|descriptor| {
+        descriptor["visibility"] == "private" && descriptor["exportBoundary"] == "PRIVATE_API"
+    }));
+    let overloads = by_callable("overloadedDescriptor");
+    assert_eq!(overloads.len(), 2);
+    assert_ne!(
+        overloads[0]["symbolIdentity"],
+        overloads[1]["symbolIdentity"]
+    );
+    assert!(overloads.iter().any(|descriptor| {
+        descriptor["parameterTypes"][0]["nullable"] == true && descriptor["returnNullable"] == true
+    }));
+    assert!(by_callable("genericDescriptor").iter().any(|descriptor| {
+        descriptor["typeParameters"]
+            .as_array()
+            .is_some_and(|items| {
+                items.len() == 1
+                    && items[0]["index"] == 0
+                    && items[0]["compilerName"] == "T"
+                    && items[0]["bounds"].as_array().is_some_and(|bounds| {
+                        bounds.iter().any(|bound| bound == "kotlin/CharSequence")
+                    })
+            })
+    }));
+    assert!(by_callable("IntegerSource.read").iter().any(|descriptor| {
+        descriptor["isOverride"] == true
+            && descriptor["returnType"] == "kotlin/Int"
+            && descriptor["ownerIdentity"] == "class:com/acme/relations/IntegerSource"
+            && descriptor["containment"].as_array().is_some_and(|owners| {
+                owners
+                    .iter()
+                    .any(|owner| owner == "class:com/acme/relations/IntegerSource")
+            })
+    }));
+    assert!(by_callable("NumericSource.read").iter().any(|descriptor| {
+        descriptor["isOverride"] == false && descriptor["returnType"] == "kotlin/Number"
+    }));
+    assert!(
+        by_callable("LexicalDecoy.read")
+            .iter()
+            .all(|descriptor| descriptor["isOverride"] == false)
+    );
+    let override_relation = declaration_relation_rows(&index, "OVERRIDES")
+        .into_iter()
+        .find(|relation| {
+            relation["owner"]
+                .as_str()
+                .is_some_and(|owner| owner.contains("IntegerSource.read"))
+                && relation["target"]
+                    .as_str()
+                    .is_some_and(|target| target.contains("NumericSource.read"))
+        })
+        .unwrap();
+    assert!(
+        by_callable(override_relation["owner"].as_str().unwrap())
+            .iter()
+            .any(|descriptor| { descriptor["isOverride"] == true })
+    );
+    assert!(
+        by_callable(override_relation["target"].as_str().unwrap())
+            .iter()
+            .any(|descriptor| { descriptor["isOverride"] == false })
+    );
+    assert!(by_callable("RelationState.field").iter().any(|descriptor| {
+        descriptor["declarationKind"] == "MUTABLE_PROPERTY"
+            && descriptor["declaredType"] == "kotlin/String"
+            && descriptor["declaredNullable"] == false
+            && descriptor["ownerIdentity"] == "class:com/acme/relations/RelationState"
+    }));
+    assert!(
+        graph["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|boundary| {
+                boundary["resolution"] == "UNKNOWN"
+                    && boundary["code"] == "NO_COMPILER_CALLABLE_ID"
+                    && boundary["provider"] == "K2_FIR"
+                    && boundary["module"] == ":"
+                    && boundary["sourceSet"] == "main"
+                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.4"
+            })
+    );
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
+    let root = workspace_root();
+    let fixture = root.join("fixtures/kotlin-maven");
+    let mut worker = WorkerClient::start(&root).unwrap();
+    let project = worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    assert_eq!(project["compilerVersion"], "2.3.0");
+    assert_eq!(project["workerCompilerVersion"], "2.3.0");
+    assert_eq!(worker.capabilities.compiler_version, "2.3.0");
+    let verified = worker
+        .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
+        .unwrap();
+    let index = worker.inspect_verified_index(&verified).unwrap();
+    let mut repository_index = RepositoryIndex::open_compilation(&fixture, Some(":/main")).unwrap();
+    repository_index
+        .update_verified(&verified, &worker)
+        .unwrap();
+    assert!(repository_index.declaration_relations().unwrap().is_some());
+    let repeated_verified = worker
+        .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
+        .unwrap();
+    let repeated = worker.inspect_verified_index(&repeated_verified).unwrap();
+
+    assert_eq!(index["k2Validated"], true, "{:#}", index["diagnostics"]);
+    let graph = &index["declarationRelations"];
+    assert_eq!(graph["schema"], "declaration-relation-graph/0.1");
+    assert_eq!(graph["compilation"], ":/main");
+    assert_eq!(graph["provenance"]["provider"], "COMPILER_SEMANTIC_FACTS");
+    assert_eq!(graph["provenance"]["compilerVersion"], "2.3.0");
+    assert_eq!(
+        graph["provenance"]["projectModelHash"],
+        project["projectModelHash"]
+    );
+    assert_eq!(
+        index["declarationRelationHash"],
+        repeated["declarationRelationHash"]
+    );
+    assert_eq!(graph, &repeated["declarationRelations"]);
+    let serialized = graph["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>();
+    assert!(serialized.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(
+        graph["relations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|relation| {
+                relation["file"]
+                    .as_str()
+                    .is_some_and(|file| !file.starts_with('/') && !file.contains(".."))
+                    && relation["resolution"] == "PROVEN"
+                    && relation["provider"] == "K2_FIR"
+                    && relation.get("sourceText").is_none()
+            })
+    );
+
+    let overrides = declaration_relation_rows(&index, "OVERRIDES");
+    assert!(overrides.iter().any(|relation| {
+        relation["owner"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("IntegerSource.read")
+            && relation["target"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("NumericSource.read")
+            && relation["sourceReturnType"] == "kotlin/Int"
+            && relation["baseReturnType"] == "kotlin/Number"
+    }));
+    assert!(overrides.iter().all(|relation| {
+        !relation["target"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("LexicalDecoy")
+    }));
+    for kind in [
+        "CALLS",
+        "REFERENCES",
+        "CONSTRUCTS",
+        "READS",
+        "WRITES",
+        "INITIALIZES",
+    ] {
+        assert!(
+            !declaration_relation_rows(&index, kind).is_empty(),
+            "missing {kind}"
+        );
+    }
+    assert!(
+        declaration_relation_rows(&index, "CALLS")
+            .iter()
+            .any(|relation| {
+                relation["owner"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("callSource")
+                    && relation["target"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("NumericSource.read")
+                    && relation["argumentToParameter"]
+                        .as_array()
+                        .is_some_and(|arguments| !arguments.is_empty())
+            })
+    );
+    let reordered = declaration_relation_rows(&index, "CALLS")
+        .into_iter()
+        .find(|relation| {
+            relation["owner"]
+                .as_str()
+                .is_some_and(|owner| owner.contains("callEqualTypesByName"))
+                && relation["target"]
+                    .as_str()
+                    .is_some_and(|target| target.contains("combineEqualTypes"))
+        })
+        .expect("compiler must emit the reversed named-argument call");
+    assert_eq!(
+        reordered["argumentToParameter"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|argument| argument["parameterIndex"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 0],
+    );
+    assert!(
+        declaration_relation_rows(&index, "CONSTRUCTS")
+            .iter()
+            .any(|relation| {
+                relation["target"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Envelope")
+            })
+    );
+    assert!(
+        declaration_relation_rows(&index, "WRITES")
+            .iter()
+            .any(|relation| {
+                relation["target"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("RelationState.field")
+                    && relation["orderKey"].as_i64().is_some()
+            })
+    );
+    assert!(
+        declaration_relation_rows(&index, "INITIALIZES")
+            .iter()
+            .any(|relation| {
+                relation["target"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("RelationState.initial")
+                    && relation["orderProvenance"] == "FIR_SOURCE_RANGE"
+            })
+    );
+    let boundary_codes = graph["boundaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|boundary| boundary["code"].as_str())
+        .collect::<Vec<_>>();
+    assert!(boundary_codes.contains(&"NON_FUNCTION_OVERRIDE_UNSUPPORTED"));
+    assert!(boundary_codes.contains(&"DYNAMIC_REFLECTION_BOUNDARY"));
+    assert!(boundary_codes.contains(&"EXTERNAL_OR_LOCAL_ARGUMENT_TARGET"));
+    assert!(
+        declaration_relation_rows(&index, "CALLS")
+            .iter()
+            .all(|relation| {
+                let target = relation["target"].as_str().unwrap_or_default();
+                !target.starts_with("kotlin/reflect/") && !target.starts_with("java/lang/reflect/")
+            })
+    );
+
+    let temporary = tempfile::tempdir().unwrap();
+    let unresolved_fixture = temporary.path().join("kotlin-maven-relations");
+    copy_maven_fixture(&fixture, &unresolved_fixture);
+    let source = unresolved_fixture.join("src/main/kotlin/com/acme/relations/RelationFacts.kt");
+    let mut content = std::fs::read_to_string(&source).unwrap();
+    content.push_str("\nfun unresolvedRelation(): String = missingCompilerTarget()\n");
+    std::fs::write(source, content).unwrap();
+    worker
+        .request(
+            RequestKind::OpenProject,
+            &json!({"repo":unresolved_fixture,"compilation":":/main"}),
+        )
+        .unwrap();
+    let unresolved = worker
+        .request(
+            RequestKind::IndexFiles,
+            &json!({"repo":unresolved_fixture,"compilation":":/main","syntaxOnly":false}),
+        )
+        .unwrap();
+    assert_eq!(unresolved["k2Validated"], false);
+    assert!(
+        unresolved["declarationRelations"]["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
+    );
+
+    worker.shutdown().unwrap();
+}
+
+#[test]
 fn agent_context_renders_maven_targeted_test_command() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
@@ -334,13 +1292,12 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
         .unwrap();
     let base = git_output(&repo, &["rev-parse", "refs/heads/main"]);
     let index_facts = worker
-        .request(
-            RequestKind::IndexFiles,
-            &json!({"repo": repo, "compilation": ":/main"}),
-        )
+        .index_files_verified(&json!({"repo": repo, "compilation": ":/main"}))
         .unwrap();
     let mut repository_index = RepositoryIndex::open_compilation(&repo, Some(":/main")).unwrap();
-    let index_snapshot = repository_index.update(&index_facts).unwrap();
+    let index_snapshot = repository_index
+        .update_verified(&index_facts, &worker)
+        .unwrap();
     let raw = worker
         .request(
             RequestKind::BuildLocalGraph,

@@ -321,6 +321,117 @@ fn an_authority_receipt_cannot_overwrite_a_newer_worktree() {
     assert_eq!(fs::read_to_string(source).unwrap(), changed);
     worker.shutdown().unwrap();
 }
+
+#[test]
+fn differential_validation_accepts_candidate_and_failing_omission() {
+    let (_temporary, repo) = committed_fixture(|_, test| {
+        test.push_str(
+            r#"
+
+class DifferentialWorkflowAcceptance {
+    @Test
+    fun `workflow result requires the production change`() {
+        assertEquals(listOf(6), valuesAwaitingContext(listOf(4)))
+    }
+}
+"#,
+        );
+    });
+    let revision = git(&repo, &["rev-parse", "HEAD"]);
+    let thread = live_thread(&repo, "com.acme.valuesAwaitingContext");
+    let mut worker = WorkerClient::start(&workspace_root()).unwrap();
+    let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
+    let verified = authority.verify_thread(&thread, &mut worker).unwrap();
+    let decision = authority
+        .bind_map_edge_with_context(
+            &SemanticGoal::map_edge_with_context(&revision),
+            &verified,
+            "applies the mapping context to one value",
+            ":/test",
+            &mut worker,
+        )
+        .unwrap();
+    let MapEdgeWithContextDecision::Bound(proof) = decision else {
+        panic!("fixture must bind: {decision:?}")
+    };
+    let overlay = authority
+        .materialize_candidate_overlay(&proof, &mut worker)
+        .unwrap();
+    let _oracle = authority
+        .issue_candidate_behavioral_test(
+            &overlay,
+            "workflow result requires the production change",
+            ":/test",
+            &mut worker,
+        )
+        .unwrap();
+    let differential = authority
+        .run_differential_validation(&overlay, &mut worker)
+        .unwrap();
+    assert!(
+        authority
+            .recognizes_differential_validation(&differential)
+            .unwrap()
+    );
+    assert_eq!(differential.summary().production_write_count, 1);
+    assert_eq!(differential.summary().test_write_count, 0);
+    assert_ne!(
+        differential.summary().candidate_artifact_hash,
+        differential.summary().omission_artifact_hash
+    );
+    worker.shutdown().unwrap();
+}
+
+#[test]
+fn differential_validation_negative_omission_passes() {
+    let (_temporary, repo) = committed_fixture(|_, test| {
+        test.push_str(
+            r#"
+
+class DifferentialNonDiscriminatingOracle {
+    @Test
+    fun `workflow remains non empty`() {
+        assertEquals(1, valuesAwaitingContext(listOf(4)).size)
+    }
+}
+"#,
+        );
+    });
+    let revision = git(&repo, &["rev-parse", "HEAD"]);
+    let thread = live_thread(&repo, "com.acme.valuesAwaitingContext");
+    let mut worker = WorkerClient::start(&workspace_root()).unwrap();
+    let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
+    let verified = authority.verify_thread(&thread, &mut worker).unwrap();
+    let decision = authority
+        .bind_map_edge_with_context(
+            &SemanticGoal::map_edge_with_context(&revision),
+            &verified,
+            "applies the mapping context to one value",
+            ":/test",
+            &mut worker,
+        )
+        .unwrap();
+    let MapEdgeWithContextDecision::Bound(proof) = decision else {
+        panic!("fixture must bind: {decision:?}")
+    };
+    let overlay = authority
+        .materialize_candidate_overlay(&proof, &mut worker)
+        .unwrap();
+    let _oracle = authority
+        .issue_candidate_behavioral_test(
+            &overlay,
+            "workflow remains non empty",
+            ":/test",
+            &mut worker,
+        )
+        .unwrap();
+    let error = authority
+        .run_differential_validation(&overlay, &mut worker)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PreconditionFailed);
+    assert!(error.message.contains("omission mutant did not fail"));
+    worker.shutdown().unwrap();
+}
 use clew::error::ErrorCode;
 use clew::evidence_authority::{EvidenceAuthority, MapEdgeWithContextDecision};
 use clew::model::ThreadIr;

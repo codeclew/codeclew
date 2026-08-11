@@ -21,6 +21,15 @@ pub fn preview(
     preview_with_authorization(repo, thread, edit, worker, false)
 }
 
+pub(crate) fn preview_authorized_semantic_overlay(
+    repo: &Path,
+    thread: &ThreadIr,
+    edit: &EditIr,
+    worker: &mut WorkerClient,
+) -> Result<PreviewReport, ClewError> {
+    preview_with_authorization(repo, thread, edit, worker, true)
+}
+
 fn preview_with_authorization(
     repo: &Path,
     thread: &ThreadIr,
@@ -775,18 +784,16 @@ fn commit_with_authorization(
         transaction.candidate_commit = Some(candidate.clone());
         transaction.status = "COMMITTING".into();
         ledger(repo)?.append(transaction, "candidate commit created")?;
-        let index_facts = worker.request(
-            RequestKind::IndexFiles,
-            &json!({
-                "repo":worktree_path,
-                "compilation":transaction.thread.snapshot.compilation,
-                "syntaxOnly":true
-            }),
-        )?;
+        let index_facts = worker.index_files_verified(&json!({
+            "repo":worktree_path,
+            "compilation":transaction.thread.snapshot.compilation,
+            "syntaxOnly":true
+        }))?;
         let staged_index = RepositoryIndex::stage_update(
             repo,
             Some(&transaction.thread.snapshot.compilation),
             &index_facts,
+            worker,
             &worktree_path,
             &candidate,
         )?;
@@ -889,11 +896,8 @@ fn stage_index_for_revision(
         ],
     )?;
     let result = (|| {
-        let facts = worker.request(
-            RequestKind::IndexFiles,
-            &json!({"repo":path,"compilation":compilation}),
-        )?;
-        RepositoryIndex::stage_update(repo, Some(compilation), &facts, &path, revision)
+        let facts = worker.index_files_verified(&json!({"repo":path,"compilation":compilation}))?;
+        RepositoryIndex::stage_update(repo, Some(compilation), &facts, worker, &path, revision)
     })()
     .map_err(index_recovery_error);
     let _ = git(
@@ -1256,6 +1260,49 @@ pub(crate) fn validate_worktree_fresh(
         tests,
         true,
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TestLifecycleOutcome {
+    pub success: bool,
+    pub duration_ms: u64,
+}
+
+/// Runs an authority-selected exact test lifecycle while preserving the
+/// process result for differential validation. A failing selected test is an
+/// observation here, not yet a `TestFailed` error; the authority must pair it
+/// with the current-run structured report before accepting it as evidence.
+pub(crate) fn run_test_lifecycle_fresh(
+    worktree: &Path,
+    build_system: BuildSystem,
+    build_launcher: &str,
+    tests: &[String],
+) -> Result<TestLifecycleOutcome, ClewError> {
+    if tests.is_empty() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "exact differential test lifecycle is empty",
+        ));
+    }
+    let started = std::time::Instant::now();
+    let mut test = build_command(worktree, build_system, build_launcher)?;
+    test.args(tests);
+    match build_system {
+        BuildSystem::Gradle => {
+            test.args(["--no-daemon", "--quiet", "--rerun-tasks"]);
+        }
+        BuildSystem::Maven => {
+            test.arg("-q");
+        }
+    }
+    let output = test
+        .current_dir(worktree)
+        .output()
+        .map_err(|error| build_start_error(build_launcher, error))?;
+    Ok(TestLifecycleOutcome {
+        success: output.status.success(),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 fn validate_worktree_with_options(

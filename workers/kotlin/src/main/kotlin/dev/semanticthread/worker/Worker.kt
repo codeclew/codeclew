@@ -23,6 +23,61 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import kotlin.io.path.*
 
+internal const val FIR_FACTS_EXTRACTOR_SCHEMA = "fir-facts-extractor/0.6"
+internal const val SEMANTIC_K2_CACHE_SCHEMA = "semantic-k2-cache/0.4"
+internal const val SEMANTIC_K2_DISK_CACHE_AUTHORITY = "NON_AUTHORITATIVE"
+
+internal fun repoOwnedStateDirectory(repo: Path, vararg components: String): Path {
+    val canonicalRepo = repo.toRealPath()
+    var current = canonicalRepo
+    for (component in components) {
+        require(component.isNotBlank() && component != "." && component != ".." && '/' !in component && '\\' !in component) {
+            "invalid repository-owned state component"
+        }
+        val next = current.resolve(component)
+        if (Files.exists(next, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.isSymbolicLink(next) || !Files.isDirectory(next, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "repository-owned state path is not a real directory")
+            }
+        } else {
+            Files.createDirectory(next)
+        }
+        current = next
+    }
+    val resolved = current.toRealPath()
+    if (resolved == canonicalRepo || !resolved.startsWith(canonicalRepo)) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "repository-owned state path escapes repository")
+    }
+    return resolved
+}
+
+internal fun gradleModelCommand(
+    wrapper: Path,
+    repo: Path,
+    gradleUserHome: Path,
+    initScript: Path,
+    compileTask: String,
+    modelTask: String,
+): List<String> = listOf(
+    wrapper.toString(),
+    "-p", repo.toString(),
+    "--offline",
+    "--gradle-user-home", gradleUserHome.toString(),
+    "--no-daemon",
+    "--quiet",
+    "-I", initScript.toString(),
+    "-Dsemantic.thread.compileTask=$compileTask",
+    modelTask,
+)
+
+internal fun sanitizedProjectModelProcess(command: List<String>, repo: Path): ProcessBuilder =
+    ProcessBuilder(command).also { builder ->
+        for (key in listOf("GRADLE_OPTS", "GRADLE_USER_HOME", "MAVEN_OPTS", "MAVEN_ARGS", "MAVEN_CONFIG")) {
+            builder.environment().remove(key)
+        }
+        builder.directory(repo.toFile()).redirectErrorStream(true)
+    }
+
 internal class Worker : AutoCloseable {
     private val disposable = Disposer.newDisposable("semantic-thread-worker")
     private val environment = KotlinCoreEnvironment.createForProduction(
@@ -92,10 +147,19 @@ internal class Worker : AutoCloseable {
         val plugins = buildModel["compilerPlugins"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
         val compilerVersion = buildModel["compilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
         val compilerLine = compilerVersion.split('.').take(2).joinToString(".")
+        val module = buildModel["projectPath"]?.jsonPrimitive?.contentOrNull ?: ":"
+        val sourceSet = compilation?.substringAfterLast('/') ?: "main"
+        val canonicalCompilation = "$module/$sourceSet"
+        if (compilation != null && compilation != canonicalCompilation) {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "requested compilation differs from authoritative module/source set",
+            )
+        }
         val normalized = buildJsonObject {
             put("buildSystem", buildModel["buildSystem"] ?: JsonPrimitive("GRADLE"))
             put("buildLauncher", buildModel["buildLauncher"] ?: JsonPrimitive("./gradlew"))
-            put("module", buildModel["projectPath"] ?: JsonPrimitive(":")); put("sourceSet", compilation?.substringAfterLast('/') ?: "main")
+            put("module", module); put("sourceSet", sourceSet); put("compilation", canonicalCompilation)
             putJsonArray("sourceRoots") { sourceRoots.forEach(::add) }; putJsonArray("generatedSourceRoots") { generatedRoots.forEach(::add) }
             putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { buildModel["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.sorted()?.forEach(::add) }
             put("compilerVersion", compilerVersion)
@@ -104,6 +168,7 @@ internal class Worker : AutoCloseable {
             putJsonArray("optIns") { buildModel["optIns"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }; putJsonArray("compilerPlugins") { plugins.forEach(::add) }
             putJsonArray("compilerPluginOptions") { buildModel["compilerPluginOptions"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
             put("compileTask", buildModel["compileTask"] ?: JsonPrimitive(":compileKotlin")); putJsonArray("testTasks") { buildModel["tasks"]?.jsonArray?.map { it.jsonPrimitive.content }?.filter { it == "test" || it.endsWith("Test") }?.sorted()?.forEach(::add) }
+            buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
             put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown")); put("jdkHome", buildModel["jdkHome"] ?: JsonPrimitive(System.getProperty("java.home")))
             putJsonArray("modelInputs") { modelFiles.map { buildJsonObject { put("path", repo.relativize(it).invariantSeparatorsPathString); put("hash", sha(it.readBytes())) } }.sortedBy { it.toString() }.forEach(::add) }
         }
@@ -119,6 +184,7 @@ internal class Worker : AutoCloseable {
 
     private fun gradleModel(repo: Path, compilation: String?): JsonObject {
         val wrapper = repo.resolve("gradlew"); if (!wrapper.isRegularFile()) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper is required")
+        val gradleUserHome = repoOwnedStateDirectory(repo, ".gradle")
         val script = Files.createTempFile("semantic-thread-model", ".init.gradle")
         try {
             val resource = Worker::class.java.getResourceAsStream("/semantic-thread-model.init.gradle") ?: error("project model init script missing")
@@ -128,8 +194,10 @@ internal class Worker : AutoCloseable {
             val sourceSet = if ('/' in selected) selected.substringAfterLast('/') else if (selected.contains("compileTest", true)) "test" else "main"
             val compileTask = if ('/' in selected) if (sourceSet == "main") "compileKotlin" else "compile${sourceSet.replaceFirstChar(Char::uppercase)}Kotlin" else selected.substringAfterLast(':').ifBlank { "compileKotlin" }
             val modelTask = if (projectPath == ":") ":semanticThreadModel" else "$projectPath:semanticThreadModel"
-            val process = ProcessBuilder(wrapper.toString(), "-p", repo.toString(), "--no-daemon", "--quiet", "-I", script.toString(), "-Dsemantic.thread.compileTask=$compileTask", modelTask)
-                .directory(repo.toFile()).redirectErrorStream(true).start()
+            val process = sanitizedProjectModelProcess(
+                gradleModelCommand(wrapper, repo, gradleUserHome, script, compileTask, modelTask),
+                repo,
+            ).start()
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle model extraction failed: ${output.takeLast(2000)}")
             val line = output.lineSequence().lastOrNull { it.startsWith("__SEMANTIC_THREAD_MODEL__") }
@@ -200,6 +268,19 @@ internal class Worker : AutoCloseable {
         else -> "missing"
     }
 
+    private fun extractorAuthority(): JsonObject {
+        val pluginArtifact = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
+            .toAbsolutePath()
+            .normalize()
+        return buildJsonObject {
+            put("extractorSchema", FIR_FACTS_EXTRACTOR_SCHEMA)
+            put("pluginArtifactFingerprint", artifactFingerprint(pluginArtifact))
+            put("workerCompilerVersion", WORKER_COMPILER_VERSION)
+            put("workerVersion", WORKER_VERSION)
+            put("workerProtocolVersion", "$PROTOCOL_MAJOR.$PROTOCOL_MINOR")
+        }
+    }
+
     private fun projectModelFiles(repo: Path): List<Path> = Files.walk(repo).use { paths ->
         paths.filter { it.isRegularFile() }.filter {
             val relative = repo.relativize(it).invariantSeparatorsPathString
@@ -234,8 +315,11 @@ internal class Worker : AutoCloseable {
             ?.filter(Path::isRegularFile)
             ?.sorted()
             .orEmpty()
-        val cacheMaterial = buildString {
-            append("factsPluginSchema=3\u0000")
+        val pluginArtifact = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
+            .toAbsolutePath()
+            .normalize()
+        val extractorAuthority = extractorAuthority()
+        val semanticInput = buildString {
             sources.forEach { source ->
                 val relative = analysisRepo.relativize(source.toRealPath()).invariantSeparatorsPathString
                 append(relative).append('\u0000').append(overrides[relative] ?: source.readText()).append('\u0000')
@@ -251,23 +335,17 @@ internal class Worker : AutoCloseable {
                 append(field).append('=').append(model[field]).append('\u0000')
             }
         }
-        val cacheKey = sha(cacheMaterial.toByteArray())
+        val cacheKey = semanticK2CacheKey(extractorAuthority, semanticInput)
         val memoryKey = "$analysisRepo|$compilation|$cacheKey"
         analysisCache[memoryKey]?.let { requestCacheHits++; return it }
         val safeCompilation = compilation.replace(Regex("[^A-Za-z0-9]+"), "_")
         val diskCache = analysisRepo.resolve(".semantic-thread/cache/k2/$safeCompilation-${cacheKey.removePrefix("sha256:")}.json")
-        if (diskCache.isRegularFile()) {
-            runCatching { json.parseToJsonElement(diskCache.readText()).jsonObject }.getOrNull()?.let { cached ->
-                val result = K2Analysis(
-                    cached["valid"]?.jsonPrimitive?.booleanOrNull == true,
-                    cached["facts"]?.jsonArray?.map { it.jsonObject }.orEmpty(),
-                    cached["diagnostics"]?.jsonArray?.map { it.jsonObject }.orEmpty()
-                )
-                analysisCache[memoryKey] = result
-                requestCacheHits++
-                return result
-            }
-        }
+        // This file is under the repository owner's control. Metadata and an
+        // unkeyed integrity digest detect accidental corruption but cannot
+        // authenticate compiler issuance. A fresh worker therefore never
+        // returns semantic facts from disk: FIR is rerun before any PROVEN
+        // relation crosses the authority boundary. The in-process cache above
+        // and the separate project-model cache retain safe reuse.
         val temp = Files.createTempDirectory("semantic-thread-k2")
         try {
             val sourceArgs = sources.map { original ->
@@ -276,7 +354,6 @@ internal class Worker : AutoCloseable {
                 if (replacement == null) original else temp.resolve("sources").resolve(relative).also { it.parent.createDirectories(); it.writeText(replacement) }
             }
             val factsFile = temp.resolve("facts.jsonl"); val outputDir = temp.resolve("classes").also(Path::createDirectories)
-            val plugin = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
             val classpath = model["classpath"]?.jsonArray?.joinToString(File.pathSeparator) { it.jsonPrimitive.content }.orEmpty()
             val command = mutableListOf("-d", outputDir.toString(), "-classpath", classpath, "-no-stdlib", "-no-reflect", "-jdk-home", model["jdkHome"]!!.jsonPrimitive.content, "-jvm-target", model["jvmTarget"]?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
             model["languageVersion"]?.jsonPrimitive?.contentOrNull?.let { command += listOf("-language-version", it) }
@@ -289,7 +366,7 @@ internal class Worker : AutoCloseable {
             model["compilerPluginOptions"]?.jsonArray?.map { option ->
                 listOf("-P", option.jsonPrimitive.content)
             }?.flatten()?.let(command::addAll)
-            command += listOf("-Xplugin=$plugin", "-P", "plugin:$FACTS_PLUGIN_ID:output=$factsFile")
+            command += listOf("-Xplugin=$pluginArtifact", "-P", "plugin:$FACTS_PLUGIN_ID:output=$factsFile")
             command += sourceArgs.map(Path::toString)
             val compilerOutput = ByteArrayOutputStream()
             val k2Started = System.nanoTime()
@@ -306,10 +383,18 @@ internal class Worker : AutoCloseable {
                 .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
                 .sumOf { it["firExtractionMicros"]?.jsonPrimitive?.longOrNull ?: 0 }
             val result = K2Analysis(status == 0, facts.sortedBy { it.toString() }, diagnostics)
+            val cachePayload = buildJsonObject {
+                put("valid", result.valid)
+                putJsonArray("facts") { result.facts.forEach(::add) }
+                putJsonArray("diagnostics") { result.diagnostics.forEach(::add) }
+            }
             writeCacheAtomically(diskCache, buildJsonObject {
-                put("schema", "semantic-k2-cache/0.1"); put("valid", result.valid)
-                putJsonArray("facts") { result.facts.forEach(::add) }; putJsonArray("diagnostics") { result.diagnostics.forEach(::add) }
-            }.toString())
+                put("schema", SEMANTIC_K2_CACHE_SCHEMA)
+                put("authority", SEMANTIC_K2_DISK_CACHE_AUTHORITY)
+                extractorAuthority.forEach { (key, value) -> put(key, value) }
+                put("payloadIntegrity", semanticK2CachePayloadIntegrity(cachePayload))
+                cachePayload.forEach { (key, value) -> put(key, value) }
+            }.let(::canonicalJson))
             analysisCache[memoryKey] = result
             return result
         } finally { temp.toFile().deleteRecursively() }
@@ -344,6 +429,8 @@ internal class Worker : AutoCloseable {
         val selectedFiles = if (requested.isEmpty()) allFiles else allFiles.filter { repo.relativize(it).invariantSeparatorsPathString in requested }
         if (requested.isNotEmpty() && selectedFiles.size != requested.size) throw WorkerFailure("INVALID_INPUT", "requested index file is outside selected compilation")
         val analysis = if (syntaxOnly) K2Analysis(true, emptyList(), emptyList()) else analyzeWithK2(repo, compilation = selected)
+        val declarationRelations = declarationRelationGraph(repo, selected, syntaxOnly, analysis, project)
+        val declarationDescriptors = declarationDescriptorGraph(repo, selected, syntaxOnly, analysis, project, module, sourceSet)
         val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path); val pkg = kt.packageFqName.asString()
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
@@ -372,11 +459,240 @@ internal class Worker : AutoCloseable {
         val canonical = JsonArray(files)
         return buildJsonObject {
             put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requested.isNotEmpty()); put("analysisMode", if (syntaxOnly) "SYNTAX_DECLARATIONS" else "K2_SEMANTIC"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
+            put("declarationRelations", declarationRelations)
+            put("declarationRelationHash", sha(canonicalJson(declarationRelations).toByteArray()))
+            put("declarationDescriptors", declarationDescriptors)
+            put("declarationDescriptorHash", sha(canonicalJson(declarationDescriptors).toByteArray()))
             put("projectModelHash", project["projectModelHash"]!!); put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
             put("compilerVersion", project["compilerVersion"]!!)
             put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
         }
+    }
+
+    private fun declarationRelationGraph(
+        repo: Path,
+        compilation: String,
+        syntaxOnly: Boolean,
+        analysis: K2Analysis,
+        project: JsonObject,
+    ): JsonObject {
+        fun relativeFile(raw: String): String? {
+            val candidate = runCatching { Path.of(raw).toAbsolutePath().normalize() }.getOrNull() ?: return null
+            return runCatching { repo.relativize(candidate).invariantSeparatorsPathString }
+                .getOrNull()
+                ?.takeUnless { it.startsWith("../") || it == ".." }
+        }
+        val cfgByOwner = analysis.facts
+            .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
+            .groupBy { fact ->
+                val file = fact["file"]?.jsonPrimitive?.content?.let(::relativeFile).orEmpty()
+                "$file\u0000${fact["symbol"]?.jsonPrimitive?.content.orEmpty()}"
+            }
+        val generatedBoundaries = mutableListOf<JsonObject>()
+        val relations = analysis.facts
+            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_RELATION" }
+            .mapNotNull { raw ->
+                val file = raw["file"]?.jsonPrimitive?.content?.let(::relativeFile) ?: return@mapNotNull null
+                val owner = raw["owner"]?.jsonPrimitive?.content.orEmpty()
+                val target = raw["target"]?.jsonPrimitive?.content.orEmpty()
+                val kind = raw["kind"]?.jsonPrimitive?.content.orEmpty()
+                val start = raw["start"]?.jsonPrimitive?.intOrNull ?: -1
+                val end = raw["end"]?.jsonPrimitive?.intOrNull ?: -1
+                if (file.isEmpty() || owner.isEmpty() || target.isEmpty() || kind.isEmpty() || start < 0 || end < start) {
+                    generatedBoundaries += buildJsonObject {
+                        put("schema", "declaration-relation-boundary/0.1")
+                        put("file", file)
+                        put("stage", "NORMALIZE")
+                        put("code", "INCOMPLETE_COMPILER_RELATION")
+                        put("resolution", "UNKNOWN")
+                        put("provider", "COMPILER_RELATION_NORMALIZER")
+                    }
+                    return@mapNotNull null
+                }
+                val cfgNodes = cfgByOwner["$file\u0000$owner"].orEmpty()
+                    .flatMap { cfg -> cfg["nodes"]?.jsonArray.orEmpty() }
+                    .filter { node ->
+                        val nodeStart = node.jsonObject["start"]?.jsonPrimitive?.intOrNull ?: return@filter false
+                        val nodeEnd = node.jsonObject["end"]?.jsonPrimitive?.intOrNull ?: return@filter false
+                        nodeStart <= start && nodeEnd >= end || start <= nodeStart && end >= nodeEnd
+                    }
+                    .mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.intOrNull }
+                    .distinct()
+                    .sorted()
+                if (kind in setOf("CALLS", "CONSTRUCTS", "READS", "WRITES", "NULL_COALESCES", "RETURNS_VALUE_FROM") && cfgNodes.isEmpty()) {
+                    generatedBoundaries += buildJsonObject {
+                        put("schema", "declaration-relation-boundary/0.1")
+                        put("file", file)
+                        put("owner", owner)
+                        put("stage", "ORDER_PROVENANCE")
+                        put("code", "NO_CFG_NODE_FOR_RELATION")
+                        put("start", start)
+                        put("end", end)
+                        put("resolution", "UNKNOWN")
+                        put("provider", "K2_FIR_CFG")
+                    }
+                }
+                buildJsonObject {
+                    raw.entries.sortedBy { it.key }.forEach { (key, value) ->
+                        if (key !in setOf("recordType", "file")) put(key, value)
+                    }
+                    put("file", file)
+                    putJsonArray("cfgNodeIds") { cfgNodes.forEach(::add) }
+                    put("sourceProvenance", "COMPILER_SOURCE_RANGE")
+                    put("orderProvenance", if (cfgNodes.isEmpty()) raw["orderProvenance"] ?: JsonPrimitive("UNKNOWN") else JsonPrimitive("K2_FIR_CFG"))
+                }
+            }
+            .distinctBy(::canonicalJson)
+            .sortedBy(::canonicalJson)
+        val compilerBoundaries = analysis.facts
+            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_RELATION_BOUNDARY" }
+            .map { raw ->
+                buildJsonObject {
+                    raw.entries.sortedBy { it.key }.forEach { (key, value) ->
+                        if (key !in setOf("recordType", "file")) put(key, value)
+                    }
+                    raw["file"]?.jsonPrimitive?.content?.let(::relativeFile)?.let { put("file", it) }
+                }
+            }
+        val boundaries = (compilerBoundaries + generatedBoundaries)
+            .distinctBy(::canonicalJson)
+            .sortedBy(::canonicalJson)
+        return canonicalJsonValue(buildJsonObject {
+            put("schema", "declaration-relation-graph/0.1")
+            put("compilation", compilation)
+            put("coverage", if (syntaxOnly || boundaries.isNotEmpty()) "PARTIAL" else "COMPLETE_SUPPORTED_SUBSET")
+            putJsonArray("relations") { relations.forEach(::add) }
+            putJsonArray("boundaries") {
+                if (syntaxOnly) add(buildJsonObject {
+                    put("schema", "declaration-relation-boundary/0.1")
+                    put("stage", "ANALYSIS")
+                    put("code", "SYNTAX_ONLY")
+                    put("resolution", "UNKNOWN")
+                    put("provider", "WORKER")
+                })
+                boundaries.forEach(::add)
+            }
+            putJsonObject("provenance") {
+                put("provider", "COMPILER_SEMANTIC_FACTS")
+                extractorAuthority().forEach { (key, value) -> put(key, value) }
+                put("compilerVersion", project["compilerVersion"] ?: JsonPrimitive("<unknown>"))
+                put("projectModelHash", project["projectModelHash"] ?: JsonPrimitive("<unknown>"))
+                put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
+                put("compilerOptionsHash", sha(buildJsonObject {
+                    put("languageVersion", project["languageVersion"]!!)
+                    put("apiVersion", project["apiVersion"]!!)
+                    put("jvmTarget", project["jvmTarget"]!!)
+                    put("freeCompilerArguments", project["freeCompilerArguments"]!!)
+                    put("compilerPlugins", project["compilerPlugins"]!!)
+                    put("compilerPluginOptions", project["compilerPluginOptions"]!!)
+                }.toString().toByteArray()))
+            }
+        }).jsonObject
+    }
+
+    private fun declarationDescriptorGraph(
+        repo: Path,
+        compilation: String,
+        syntaxOnly: Boolean,
+        analysis: K2Analysis,
+        project: JsonObject,
+        module: String,
+        sourceSet: String,
+    ): JsonObject {
+        fun relativeFile(raw: String): String? {
+            val candidate = runCatching { Path.of(raw).toAbsolutePath().normalize() }.getOrNull() ?: return null
+            return runCatching { repo.relativize(candidate).invariantSeparatorsPathString }
+                .getOrNull()
+                ?.takeUnless { it.startsWith("../") || it == ".." || it.startsWith('/') }
+        }
+        val generatedBoundaries = mutableListOf<JsonObject>()
+        val descriptors = analysis.facts
+            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" }
+            .mapNotNull { raw ->
+                val file = raw["file"]?.jsonPrimitive?.content?.let(::relativeFile)
+                val identity = raw["symbolIdentity"]?.jsonPrimitive?.content.orEmpty()
+                val kind = raw["declarationKind"]?.jsonPrimitive?.content.orEmpty()
+                val owner = raw["ownerIdentity"]?.jsonPrimitive?.content.orEmpty()
+                val start = raw["start"]?.jsonPrimitive?.intOrNull ?: -1
+                val end = raw["end"]?.jsonPrimitive?.intOrNull ?: -1
+                if (file.isNullOrEmpty() || identity.isEmpty() || kind.isEmpty() || owner.isEmpty()
+                    || start < 0 || end < start
+                ) {
+                    generatedBoundaries += buildJsonObject {
+                        put("schema", "declaration-descriptor-boundary/0.1")
+                        file?.let { put("file", it) }
+                        identity.takeIf(String::isNotEmpty)?.let { put("symbolIdentity", it) }
+                        put("stage", "NORMALIZE")
+                        put("code", "INCOMPLETE_COMPILER_DESCRIPTOR")
+                        put("resolution", "UNKNOWN")
+                        put("provider", "COMPILER_DESCRIPTOR_NORMALIZER")
+                    }
+                    return@mapNotNull null
+                }
+                buildJsonObject {
+                    raw.entries.sortedBy { it.key }.forEach { (key, value) ->
+                        if (key !in setOf("recordType", "file")) put(key, value)
+                    }
+                    put("file", file)
+                    put("module", module)
+                    put("sourceSet", sourceSet)
+                    put("sourceProvenance", "COMPILER_SOURCE_RANGE")
+                    put("compilerAuthority", FIR_FACTS_EXTRACTOR_SCHEMA)
+                }
+            }
+            .distinctBy(::canonicalJson)
+            .sortedBy(::canonicalJson)
+        val compilerBoundaries = analysis.facts
+            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR_BOUNDARY" }
+            .map { raw ->
+                buildJsonObject {
+                    raw.entries.sortedBy { it.key }.forEach { (key, value) ->
+                        if (key !in setOf("recordType", "file")) put(key, value)
+                    }
+                    raw["file"]?.jsonPrimitive?.content?.let(::relativeFile)?.let { put("file", it) }
+                    put("module", module)
+                    put("sourceSet", sourceSet)
+                    put("compilerAuthority", FIR_FACTS_EXTRACTOR_SCHEMA)
+                }
+            }
+        val boundaries = (compilerBoundaries + generatedBoundaries)
+            .distinctBy(::canonicalJson)
+            .sortedBy(::canonicalJson)
+        return canonicalJsonValue(buildJsonObject {
+            put("schema", "declaration-descriptor-graph/0.1")
+            put("compilation", compilation)
+            put("coverage", if (syntaxOnly || boundaries.isNotEmpty()) "PARTIAL" else "COMPLETE_SUPPORTED_SUBSET")
+            putJsonArray("descriptors") { descriptors.forEach(::add) }
+            putJsonArray("boundaries") {
+                if (syntaxOnly) add(buildJsonObject {
+                    put("schema", "declaration-descriptor-boundary/0.1")
+                    put("stage", "ANALYSIS")
+                    put("code", "SYNTAX_ONLY")
+                    put("resolution", "UNKNOWN")
+                    put("provider", "WORKER")
+                    put("module", module)
+                    put("sourceSet", sourceSet)
+                    put("compilerAuthority", FIR_FACTS_EXTRACTOR_SCHEMA)
+                })
+                boundaries.forEach(::add)
+            }
+            putJsonObject("provenance") {
+                put("provider", "COMPILER_SEMANTIC_FACTS")
+                extractorAuthority().forEach { (key, value) -> put(key, value) }
+                put("compilerVersion", project["compilerVersion"] ?: JsonPrimitive("<unknown>"))
+                put("projectModelHash", project["projectModelHash"] ?: JsonPrimitive("<unknown>"))
+                put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
+                put("compilerOptionsHash", sha(buildJsonObject {
+                    put("languageVersion", project["languageVersion"]!!)
+                    put("apiVersion", project["apiVersion"]!!)
+                    put("jvmTarget", project["jvmTarget"]!!)
+                    put("freeCompilerArguments", project["freeCompilerArguments"]!!)
+                    put("compilerPlugins", project["compilerPlugins"]!!)
+                    put("compilerPluginOptions", project["compilerPluginOptions"]!!)
+                }.toString().toByteArray()))
+            }
+        }).jsonObject
     }
 
     private fun declarationJson(repo: Path, path: Path, pkg: String, declaration: KtNamedDeclaration, analysis: K2Analysis? = null, module: String = "", sourceSet: String = "main"): JsonObject {
@@ -1707,6 +2023,47 @@ private data class CfgLoopContext(val breakTarget: CfgNext, val continueTarget: 
 private data class K2Analysis(val valid: Boolean, val facts: List<JsonObject>, val diagnostics: List<JsonObject>)
 private fun JsonObject.requiredString(name: String) = this[name]?.jsonPrimitive?.content ?: error("missing field $name")
 private fun JsonObject.requiredInt(name: String) = this[name]?.jsonPrimitive?.int ?: error("missing field $name")
+internal fun semanticK2CacheKey(extractorAuthority: JsonObject, semanticInput: String): String = sha(
+    buildString {
+        append("extractorAuthority=")
+        append(canonicalJson(extractorAuthority))
+        append('\u0000')
+        append(semanticInput)
+    }.toByteArray()
+)
+internal fun cacheMatchesExtractorAuthority(cached: JsonObject, expected: JsonObject): Boolean =
+    cached["schema"]?.jsonPrimitive?.content == SEMANTIC_K2_CACHE_SCHEMA &&
+        listOf(
+            "extractorSchema",
+            "pluginArtifactFingerprint",
+            "workerCompilerVersion",
+            "workerVersion",
+            "workerProtocolVersion",
+        ).all { field -> cached[field] == expected[field] }
+internal fun semanticK2CachePayloadIntegrity(cache: JsonObject): String = sha(
+    canonicalJson(buildJsonObject {
+        put("valid", cache["valid"] ?: JsonNull)
+        put("facts", cache["facts"] ?: JsonNull)
+        put("diagnostics", cache["diagnostics"] ?: JsonNull)
+    }).toByteArray()
+)
+internal fun cachePayloadIntegrityMatches(cached: JsonObject): Boolean {
+    val integrity = cached["payloadIntegrity"]?.jsonPrimitive?.contentOrNull ?: return false
+    if (cached["valid"] == null || cached["facts"] !is JsonArray || cached["diagnostics"] !is JsonArray) {
+        return false
+    }
+    return integrity == semanticK2CachePayloadIntegrity(cached)
+}
+private fun canonicalJsonValue(value: JsonElement): JsonElement = when (value) {
+    is JsonObject -> JsonObject(linkedMapOf<String, JsonElement>().also { sorted ->
+        value.entries.sortedBy(Map.Entry<String, JsonElement>::key).forEach { (key, item) ->
+            sorted[key] = canonicalJsonValue(item)
+        }
+    })
+    is JsonArray -> JsonArray(value.map(::canonicalJsonValue))
+    else -> value
+}
+private fun canonicalJson(value: JsonElement): String = canonicalJsonValue(value).toString()
 private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
 private fun sha(bytes: ByteArray) = "sha256:" + MessageDigest.getInstance("SHA-256").digest(bytes).hex()
 private fun normalizeTokens(text: String): String {

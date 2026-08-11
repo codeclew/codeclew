@@ -18,6 +18,8 @@
   "reasoning": "low",
   "codexVersion": "codex-cli 0.147.0",
   "astIndexVersion": "ast-index 3.48.1",
+  "astIndexExecutableRealPath": "/opt/homebrew/Cellar/ast-index/3.48.1/bin/ast-index",
+  "astIndexBinarySha256": "c262d6bf5e01493ff149e1ceb5b4d3374840d666c48f91ca82c85323dc27533a",
   "codeclewBinarySha256": "a619ca0140cf61d62cb0e0fe09c196e0308e9b83d542923ed3d05386b493906a",
   "toolingSha256": {
     "gradle/wrapper/gradle-wrapper.jar": "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7",
