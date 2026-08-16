@@ -1,0 +1,448 @@
+syntax = "proto3";
+
+package codeclew.evidence.v1;
+
+// The common core transports evidence. It deliberately does not define a
+// universal AST, type system, call model, or language semantics.
+message SchemaRef {
+  string uri = 1;
+  uint32 major = 2;
+  uint32 minor = 3;
+  string specification_digest = 4;
+}
+
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+message TypedPayload {
+  SchemaRef schema = 1;
+  string media_type = 2;
+  bytes canonical_bytes = 3;
+  string content_digest = 4;
+}
+
+message EvidenceRef {
+  string kind_uri = 1;
+  string content_digest = 2;
+}
+
+message Assumption {
+  string kind_uri = 1;
+  TypedPayload details = 2;
+  string content_digest = 3;
+}
+
+message SnapshotMetadata {
+  string created_at = 1;
+}
+
+message AdapterIdentity {
+  string adapter_id = 1;
+  string version = 2;
+  string binary_digest = 3;
+}
+
+message ToolIdentity {
+  string tool_uri = 1;
+  string version = 2;
+  string distribution_digest = 3;
+  repeated KeyValue plugins = 4;
+  // Exact provider-owned toolchain/configuration details which the common
+  // core hashes and transports without assigning cross-language semantics.
+  TypedPayload language_payload = 5;
+}
+
+message BuildTarget {
+  string target_id = 1;
+  string configuration_digest = 2;
+  repeated string enabled_features = 3;
+  string platform = 4;
+  // Compiler flags are an ordered argument vector, not a mathematical set.
+  repeated string compiler_flags = 5;
+  // Adapter-owned target details. The common core validates and hashes but
+  // never interprets this payload.
+  TypedPayload language_payload = 6;
+}
+
+enum ArtifactOrigin {
+  ARTIFACT_ORIGIN_UNSPECIFIED = 0;
+  ARTIFACT_ORIGIN_USER = 1;
+  ARTIFACT_ORIGIN_GENERATED = 2;
+  ARTIFACT_ORIGIN_VENDORED = 3;
+  ARTIFACT_ORIGIN_EXTERNAL = 4;
+}
+
+message SourceMapRef {
+  string source_artifact_id = 1;
+  string map_digest = 2;
+  TypedPayload mapping = 3;
+}
+
+message SourceArtifact {
+  string artifact_id = 1;
+  string normalized_path = 2;
+  string content_digest = 3;
+  ArtifactOrigin origin = 4;
+  string generator_id = 5;
+  repeated SourceMapRef generated_from = 6;
+}
+
+message WorkspaceAnalysisSnapshot {
+  SchemaRef schema = 1;
+  string snapshot_id = 2;
+  string repository_tree_digest = 3;
+  optional string vcs_revision = 4;
+  bool dirty = 5;
+  repeated SourceArtifact sources = 6;
+  string build_system_uri = 7;
+  string build_model_digest = 8;
+  string build_configuration_digest = 9;
+  string dependency_graph_digest = 10;
+  ToolIdentity toolchain = 11;
+  repeated BuildTarget targets = 12;
+  repeated KeyValue relevant_environment = 13;
+  string generated_sources_manifest_digest = 14;
+  AdapterIdentity adapter = 15;
+  SnapshotMetadata metadata = 16;
+}
+
+message SourceRange {
+  string artifact_id = 1;
+  string artifact_content_digest = 2;
+  uint64 start_byte = 3;
+  uint64 end_byte = 4;
+}
+
+enum EntityResolution {
+  ENTITY_RESOLUTION_UNSPECIFIED = 0;
+  ENTITY_RESOLUTION_RESOLVED = 1;
+  ENTITY_RESOLUTION_UNRESOLVED = 2;
+  ENTITY_RESOLUTION_AMBIGUOUS = 3;
+  ENTITY_RESOLUTION_SYNTHETIC = 4;
+}
+
+enum CoarseEntityKind {
+  COARSE_ENTITY_KIND_UNSPECIFIED = 0;
+  COARSE_ENTITY_KIND_MODULE = 1;
+  COARSE_ENTITY_KIND_NAMESPACE = 2;
+  COARSE_ENTITY_KIND_TYPE_LIKE = 3;
+  COARSE_ENTITY_KIND_CALLABLE = 4;
+  COARSE_ENTITY_KIND_VALUE_LIKE = 5;
+  COARSE_ENTITY_KIND_FIELD_LIKE = 6;
+  COARSE_ENTITY_KIND_MACRO_LIKE = 7;
+}
+
+message EntityRef {
+  string adapter_namespace = 1;
+  string opaque_id = 2;
+  EntityResolution resolution = 3;
+  CoarseEntityKind coarse_kind = 4;
+  string display_name = 5;
+  SourceRange primary_definition = 6;
+  TypedPayload language_payload = 7;
+}
+
+enum OccurrenceRole {
+  OCCURRENCE_ROLE_UNSPECIFIED = 0;
+  OCCURRENCE_ROLE_DEFINITION = 1;
+  OCCURRENCE_ROLE_DECLARATION = 2;
+  OCCURRENCE_ROLE_REFERENCE = 3;
+  OCCURRENCE_ROLE_CALL = 4;
+  OCCURRENCE_ROLE_READ = 5;
+  OCCURRENCE_ROLE_WRITE = 6;
+  OCCURRENCE_ROLE_IMPORT = 7;
+  OCCURRENCE_ROLE_EXPORT = 8;
+}
+
+enum OccurrenceOrigin {
+  OCCURRENCE_ORIGIN_UNSPECIFIED = 0;
+  OCCURRENCE_ORIGIN_SOURCE = 1;
+  OCCURRENCE_ORIGIN_GENERATED = 2;
+  OCCURRENCE_ORIGIN_SYNTHETIC = 3;
+  OCCURRENCE_ORIGIN_MACRO_DERIVED = 4;
+  OCCURRENCE_ORIGIN_SOURCE_MAP_DERIVED = 5;
+}
+
+message Occurrence {
+  string occurrence_id = 1;
+  SourceRange range = 2;
+  repeated OccurrenceRole roles = 3;
+  OccurrenceOrigin origin = 4;
+  EntityRef entity = 5;
+  repeated EvidenceRef evidence = 6;
+  string content_digest = 7;
+}
+
+enum Enumeration {
+  ENUMERATION_UNSPECIFIED = 0;
+  ENUMERATION_COMPLETE_IN_SCOPE = 1;
+  ENUMERATION_PARTIAL = 2;
+  ENUMERATION_UNKNOWN = 3;
+}
+
+enum Approximation {
+  APPROXIMATION_UNSPECIFIED = 0;
+  APPROXIMATION_EXACT = 1;
+  APPROXIMATION_SOUND_OVER = 2;
+  APPROXIMATION_SOUND_UNDER = 3;
+  APPROXIMATION_HEURISTIC = 4;
+  APPROXIMATION_NOT_APPLICABLE = 5;
+}
+
+enum BoundaryConsequence {
+  BOUNDARY_CONSEQUENCE_UNSPECIFIED = 0;
+  BOUNDARY_CONSEQUENCE_LOCAL_ONLY = 1;
+  BOUNDARY_CONSEQUENCE_ENUMERATION_INCOMPLETE = 2;
+  BOUNDARY_CONSEQUENCE_PROOF_INVALID = 3;
+}
+
+message Scope {
+  string scope_uri = 1;
+  TypedPayload selector = 2;
+  string content_digest = 3;
+}
+
+message Boundary {
+  string boundary_id = 1;
+  string kind_uri = 2;
+  string origin = 3;
+  BoundaryConsequence consequence = 4;
+  TypedPayload details = 5;
+  repeated EvidenceRef evidence = 6;
+  string content_digest = 7;
+}
+
+message Coverage {
+  repeated Scope scopes = 1;
+  Enumeration enumeration = 2;
+  Approximation approximation = 3;
+  repeated Boundary boundaries = 4;
+  repeated Assumption assumptions = 5;
+  string content_digest = 6;
+}
+
+enum EvidenceGrade {
+  EVIDENCE_GRADE_UNSPECIFIED = 0;
+  EVIDENCE_GRADE_UNKNOWN = 1;
+  EVIDENCE_GRADE_NAVIGATION = 2;
+  EVIDENCE_GRADE_COMPILER_RESOLVED = 3;
+  EVIDENCE_GRADE_COMPILER_CHECKED = 4;
+  EVIDENCE_GRADE_SOUND_STATIC_IN_SCOPE = 5;
+  EVIDENCE_GRADE_TRANSLATION_VALIDATED = 6;
+  EVIDENCE_GRADE_BOUNDED_FORMAL = 7;
+  EVIDENCE_GRADE_CONTRACT_CHECKED = 8;
+  EVIDENCE_GRADE_STATICALLY_APPROXIMATED = 9;
+  EVIDENCE_GRADE_TESTED = 10;
+  EVIDENCE_GRADE_RUNTIME_OBSERVED = 11;
+}
+
+message OperationRef {
+  string uri = 1;
+  string version = 2;
+  string specification_digest = 3;
+}
+
+message CapabilityKey {
+  string language_id = 1;
+  AdapterIdentity adapter = 2;
+  string snapshot_id = 3;
+  string toolchain_digest = 4;
+  string build_configuration_digest = 5;
+  string target_digest = 6;
+  OperationRef operation = 7;
+  EvidenceGrade grade = 8;
+}
+
+enum SupportStatus {
+  SUPPORT_STATUS_UNSPECIFIED = 0;
+  SUPPORT_STATUS_SUPPORTED = 1;
+  SUPPORT_STATUS_UNSUPPORTED = 2;
+  SUPPORT_STATUS_UNKNOWN = 3;
+}
+
+message Refusal {
+  SchemaRef schema = 1;
+  string reason_uri = 2;
+  string operation_digest = 3;
+  string snapshot_id = 4;
+  repeated Boundary boundaries = 5;
+  TypedPayload details = 6;
+  string content_digest = 7;
+}
+
+message CapabilityDescriptor {
+  SchemaRef schema = 1;
+  CapabilityKey key = 2;
+  repeated string input_domain_uris = 3;
+  SchemaRef output_schema = 4;
+  Coverage guaranteed_coverage = 5;
+  repeated string required_capability_digests = 6;
+  repeated string known_boundary_kind_uris = 7;
+  repeated Assumption assumptions = 8;
+  repeated Scope supported_contour = 9;
+  repeated Scope unsupported_contour = 10;
+  string cost_class_uri = 11;
+  string content_digest = 12;
+}
+
+message CapabilityDecision {
+  SupportStatus status = 1;
+  CapabilityDescriptor descriptor = 2;
+  Refusal refusal = 3;
+  string content_digest = 4;
+}
+
+message Operand {
+  string name = 1;
+  oneof value {
+    EntityRef entity = 2;
+    Occurrence occurrence = 3;
+    TypedPayload opaque = 4;
+    string identity = 5;
+    sint64 integer = 6;
+    bool boolean = 7;
+  }
+}
+
+enum Truth {
+  TRUTH_UNSPECIFIED = 0;
+  TRUTH_TRUE = 1;
+  TRUTH_FALSE = 2;
+  TRUTH_UNKNOWN = 3;
+}
+
+message RelationAssertion {
+  OperationRef relation = 1;
+  repeated Operand operands = 2;
+  Truth truth = 3;
+  TypedPayload language_payload = 4;
+}
+
+message EvidenceFact {
+  SchemaRef schema = 1;
+  string fact_id = 2;
+  string snapshot_id = 3;
+  string capability_descriptor_digest = 4;
+  RelationAssertion assertion = 5;
+  repeated EvidenceRef provenance = 6;
+  Coverage coverage = 7;
+  string content_digest = 8;
+}
+
+message EvidenceBatch {
+  SchemaRef schema = 1;
+  string snapshot_id = 2;
+  string capability_descriptor_digest = 3;
+  repeated EntityRef entities = 4;
+  repeated Occurrence occurrences = 5;
+  repeated EvidenceFact facts = 6;
+  repeated EvidenceRef artifacts = 7;
+  string content_digest = 8;
+}
+
+enum ObligationStatus {
+  OBLIGATION_STATUS_UNSPECIFIED = 0;
+  OBLIGATION_STATUS_PENDING = 1;
+  OBLIGATION_STATUS_SATISFIED = 2;
+  OBLIGATION_STATUS_VIOLATED = 3;
+  OBLIGATION_STATUS_UNKNOWN = 4;
+  OBLIGATION_STATUS_UNSUPPORTED = 5;
+}
+
+message Obligation {
+  string obligation_id = 1;
+  string origin_intent_digest = 2;
+  OperationRef required_operation = 3;
+  Scope scope = 4;
+  TypedPayload precondition = 5;
+  TypedPayload postcondition = 6;
+  repeated EvidenceGrade accepted_grades = 7;
+  repeated string dependency_ids = 8;
+  bool mandatory = 9;
+  ObligationStatus status = 10;
+  repeated string evidence_fact_ids = 11;
+  string unknown_reason = 12;
+  string content_digest = 13;
+}
+
+message ObligationGraph {
+  SchemaRef schema = 1;
+  string snapshot_id = 2;
+  string intent_digest = 3;
+  string closure_capability_digest = 4;
+  string closure_specification_digest = 5;
+  repeated Obligation obligations = 6;
+  string content_digest = 7;
+}
+
+enum ClaimResult {
+  CLAIM_RESULT_UNSPECIFIED = 0;
+  CLAIM_RESULT_SATISFIED = 1;
+  CLAIM_RESULT_VIOLATED = 2;
+  CLAIM_RESULT_UNKNOWN = 3;
+  CLAIM_RESULT_UNSUPPORTED = 4;
+}
+
+message ClaimSpec {
+  RelationAssertion claim = 1;
+  repeated EvidenceGrade accepted_grades = 2;
+  Enumeration required_enumeration = 3;
+  repeated Approximation accepted_approximations = 4;
+  bool reject_proof_invalid_boundary = 5;
+  string composition_rule_uri = 6;
+  string content_digest = 7;
+}
+
+message VerificationReceipt {
+  SchemaRef schema = 1;
+  string receipt_id = 2;
+  string before_snapshot_id = 3;
+  optional string after_snapshot_id = 4;
+  AdapterIdentity verifier = 5;
+  ClaimSpec claim = 6;
+  ClaimResult result = 7;
+  string obligation_graph_digest = 8;
+  Coverage coverage = 9;
+  repeated Assumption assumptions = 10;
+  repeated EvidenceRef evidence = 11;
+  string evidence_merkle_root = 12;
+  string content_digest = 13;
+}
+
+enum ImpactClass {
+  IMPACT_CLASS_UNSPECIFIED = 0;
+  IMPACT_CLASS_DEFINITE = 1;
+  IMPACT_CLASS_POSSIBLE = 2;
+}
+
+message ImpactedEntity {
+  EntityRef entity = 1;
+  ImpactClass impact_class = 2;
+  repeated string relation_fact_ids = 3;
+}
+
+message CostTelemetry {
+  uint64 build_discovery_micros = 1;
+  uint64 cold_index_micros = 2;
+  uint64 warm_index_micros = 3;
+  uint64 adapter_micros = 4;
+  uint64 query_micros = 5;
+  uint64 stored_fact_bytes = 6;
+  uint64 model_visible_source_bytes = 7;
+}
+
+message ImpactReceipt {
+  SchemaRef schema = 1;
+  string receipt_id = 2;
+  string snapshot_id = 3;
+  string intent_digest = 4;
+  repeated ImpactedEntity affected = 5;
+  string obligation_graph_digest = 6;
+  Coverage coverage = 7;
+  repeated Boundary unknown_boundaries = 8;
+  CostTelemetry cost = 9;
+  ClaimResult result = 10;
+  string content_digest = 11;
+}

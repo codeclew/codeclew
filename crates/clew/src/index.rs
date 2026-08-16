@@ -1058,6 +1058,15 @@ fn declaration_source_binding(facts: &Value) -> Result<Value, ClewError> {
     }))
 }
 
+fn is_canonical_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
 pub(crate) fn validate_declaration_relation_snapshot(
     facts: &Value,
 ) -> Result<DeclarationRelationSnapshot, ClewError> {
@@ -1421,10 +1430,8 @@ pub(crate) fn validate_declaration_relation_snapshot(
             "SOURCE_BINDING",
         ));
     }
-    if !matches!(
-        graph.get("coverage").and_then(Value::as_str),
-        Some("COMPLETE_SUPPORTED_SUBSET" | "PARTIAL")
-    ) {
+    let coverage = graph.get("coverage").and_then(Value::as_str);
+    if !matches!(coverage, Some("COMPLETE_SUPPORTED_SUBSET" | "PARTIAL")) {
         return Err(invalid("unknown declaration relation coverage status"));
     }
     let relations = graph
@@ -1461,6 +1468,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
         })
         .collect::<Result<BTreeMap<_, _>, ClewError>>()?;
     canonical_rows(relations, "rows")?;
+    let mut partial_relations = BTreeMap::new();
     for relation in relations {
         if relation.get("schema").and_then(Value::as_str) != Some("declaration-relation/0.1")
             || relation.get("resolution").and_then(Value::as_str) != Some("PROVEN")
@@ -1486,6 +1494,80 @@ pub(crate) fn validate_declaration_relation_snapshot(
         ) {
             return Err(invalid("unknown declaration relation kind"));
         }
+        let has_partial_marker =
+            relation.get("attributeCoverage").is_some() || relation.get("sourceRowHash").is_some();
+        if has_partial_marker {
+            if coverage != Some("PARTIAL")
+                || relation.get("attributeCoverage").and_then(Value::as_str) != Some("PARTIAL")
+            {
+                return Err(invalid(
+                    "partial declaration relation requires PARTIAL row and graph coverage",
+                ));
+            }
+            if !matches!(
+                relation.get("kind").and_then(Value::as_str),
+                Some("CALLS" | "CONSTRUCTS")
+            ) {
+                return Err(invalid(
+                    "partial declaration relation cannot retain a special flow kind",
+                ));
+            }
+            let allowed = BTreeSet::from([
+                "schema",
+                "file",
+                "start",
+                "end",
+                "kind",
+                "owner",
+                "target",
+                "resolution",
+                "provider",
+                "cfgNodeIds",
+                "sourceProvenance",
+                "orderProvenance",
+                "attributeCoverage",
+                "sourceRowHash",
+            ]);
+            let object = relation
+                .as_object()
+                .ok_or_else(|| invalid("partial declaration relation is not an object"))?;
+            if object.keys().any(|field| !allowed.contains(field.as_str())) {
+                return Err(invalid(
+                    "partial declaration relation has an unexpected or typed field",
+                ));
+            }
+            let cfg_nodes = relation
+                .get("cfgNodeIds")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("partial declaration relation has no CFG node set"))?;
+            let mut previous_cfg_node = None;
+            for cfg_node in cfg_nodes {
+                let cfg_node = cfg_node.as_u64().ok_or_else(|| {
+                    invalid("partial declaration relation CFG node is not a nonnegative integer")
+                })?;
+                if previous_cfg_node.is_some_and(|previous| previous >= cfg_node) {
+                    return Err(invalid(
+                        "partial declaration relation CFG nodes are not canonical and unique",
+                    ));
+                }
+                previous_cfg_node = Some(cfg_node);
+            }
+            let source_row_hash = required_string(relation, "sourceRowHash")?;
+            if !is_canonical_sha256(source_row_hash) {
+                return Err(invalid(
+                    "partial declaration relation source row hash is malformed",
+                ));
+            }
+            let retained_hash = canonical::hash(relation).map_err(internal)?;
+            if partial_relations
+                .insert(source_row_hash.to_owned(), (retained_hash, relation))
+                .is_some()
+            {
+                return Err(invalid(
+                    "partial declaration relations repeat a source row link",
+                ));
+            }
+        }
         let file = required_string(relation, "file")?;
         if Path::new(file).is_absolute()
             || Path::new(file)
@@ -1505,7 +1587,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
             || !relation.get("cfgNodeIds").is_some_and(Value::is_array)
             || !source_compilations.contains_key(file)
             || relation.get("sourceProvenance").and_then(Value::as_str)
-                != Some("COMPILER_SOURCE_RANGE")
+                != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
             || !matches!(
                 relation.get("orderProvenance").and_then(Value::as_str),
                 Some("K2_FIR_CFG" | "FIR_SOURCE_RANGE" | "UNKNOWN")
@@ -1660,18 +1742,116 @@ pub(crate) fn validate_declaration_relation_snapshot(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("declaration relation graph has no boundaries"))?;
     canonical_rows(boundaries, "boundaries")?;
+    let mut paired_partial_relations = BTreeSet::new();
     for boundary in boundaries {
         if boundary.get("schema").and_then(Value::as_str)
             != Some("declaration-relation-boundary/0.1")
             || boundary.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
             || !matches!(
                 boundary.get("provider").and_then(Value::as_str),
-                Some("K2_FIR" | "K2_FIR_CFG" | "COMPILER_RELATION_NORMALIZER" | "WORKER")
+                Some(
+                    "K2_FIR"
+                        | "K2_FIR_CFG"
+                        | "COMPILER_RELATION_NORMALIZER"
+                        | "CODECLEW_RELATION_NORMALIZER"
+                        | "WORKER"
+                )
             )
             || required_string(boundary, "stage").is_err()
             || required_string(boundary, "code").is_err()
         {
             return Err(invalid("malformed declaration relation Unknown boundary"));
+        }
+        if matches!(
+            boundary.get("provider").and_then(Value::as_str),
+            Some("COMPILER_RELATION_NORMALIZER" | "CODECLEW_RELATION_NORMALIZER")
+        ) {
+            let hash_field = if boundary.get("provider").and_then(Value::as_str)
+                == Some("CODECLEW_RELATION_NORMALIZER")
+            {
+                "rawRowsHash"
+            } else {
+                "rawRowHash"
+            };
+            let row_hash = required_string(boundary, hash_field)?;
+            if !is_canonical_sha256(row_hash) {
+                return Err(invalid("relation boundary raw row hash is malformed"));
+            }
+            if hash_field == "rawRowsHash"
+                && boundary
+                    .get("affectedRowCount")
+                    .and_then(Value::as_u64)
+                    .is_none_or(|count| count == 0)
+            {
+                return Err(invalid("relation boundary affected row count is malformed"));
+            }
+            let valid_code = match boundary.get("provider").and_then(Value::as_str) {
+                Some("COMPILER_RELATION_NORMALIZER") => matches!(
+                    boundary.get("code").and_then(Value::as_str),
+                    Some(
+                        "INCOMPLETE_COMPILER_RELATION"
+                            | "MALFORMED_COMPILER_FACT_ROW"
+                            | "INVALID_RELATION_SOURCE_PATH"
+                            | "INVALID_RELATION_IDENTITY"
+                            | "UNKNOWN_RELATION_KIND"
+                            | "REFERENCE_TO_QUARANTINED_DESCRIPTOR"
+                            | "RELATION_SOURCE_NOT_IN_COMPILATION"
+                            | "INVALID_RELATION_SOURCE_RANGE"
+                            | "UNRESOLVED_RELATION_TYPE"
+                    )
+                ),
+                Some("CODECLEW_RELATION_NORMALIZER") => matches!(
+                    boundary.get("code").and_then(Value::as_str),
+                    Some(
+                        "ARGUMENT_MAPPING_UNAVAILABLE"
+                            | "NULL_COALESCING_FLOW_UNAVAILABLE"
+                            | "RETURN_VALUE_FLOW_UNAVAILABLE"
+                    )
+                ),
+                _ => false,
+            };
+            if !valid_code {
+                return Err(invalid("unknown normalized relation boundary code"));
+            }
+        }
+        if let Some(retained_hash) = boundary.get("retainedRelationHash") {
+            let retained_hash = retained_hash.as_str().ok_or_else(|| {
+                invalid("relation boundary retained relation hash is not a string")
+            })?;
+            if boundary.get("provider").and_then(Value::as_str)
+                != Some("COMPILER_RELATION_NORMALIZER")
+                || boundary.get("stage").and_then(Value::as_str) != Some("NORMALIZE")
+                || boundary.get("code").and_then(Value::as_str) != Some("UNRESOLVED_RELATION_TYPE")
+                || !is_canonical_sha256(retained_hash)
+            {
+                return Err(invalid(
+                    "retained relation link is outside the partial-core contract",
+                ));
+            }
+            let source_row_hash = required_string(boundary, "rawRowHash")?;
+            let Some((expected_retained_hash, relation)) = partial_relations.get(source_row_hash)
+            else {
+                return Err(invalid(
+                    "retained relation boundary has no matching partial relation",
+                ));
+            };
+            if retained_hash != expected_retained_hash
+                || boundary.get("file") != relation.get("file")
+                || boundary.get("owner") != relation.get("owner")
+                || boundary.get("target") != relation.get("target")
+                || boundary.get("relationKind") != relation.get("kind")
+                || boundary.get("start") != relation.get("start")
+                || boundary.get("end") != relation.get("end")
+            {
+                return Err(invalid(
+                    "retained relation boundary disagrees with its exact partial relation",
+                ));
+            }
+            if !paired_partial_relations.insert(source_row_hash.to_owned()) {
+                return Err(invalid(
+                    "partial declaration relation has duplicate retained boundary links",
+                ));
+            }
         }
         if boundary.get("stage").and_then(Value::as_str) == Some("RETURN_VALUE") {
             let allowed_codes = BTreeSet::from([
@@ -1723,6 +1903,11 @@ pub(crate) fn validate_declaration_relation_snapshot(
                 }
             }
         }
+    }
+    if paired_partial_relations.len() != partial_relations.len() {
+        return Err(invalid(
+            "partial declaration relation has no matching retained boundary link",
+        ));
     }
 
     let provenance = graph
@@ -1947,6 +2132,87 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         }
         Ok(())
     }
+    fn validate_partial_descriptor(value: &Value, kind: &str) -> Result<(), ClewError> {
+        let mut allowed = BTreeSet::from([
+            "schema",
+            "file",
+            "start",
+            "end",
+            "symbolIdentity",
+            "declarationKind",
+            "ownerIdentity",
+            "containment",
+            "resolution",
+            "provider",
+            "module",
+            "sourceSet",
+            "sourceProvenance",
+            "compilerAuthority",
+            "attributeCoverage",
+            "sourceRowHash",
+        ]);
+        match kind {
+            "FUNCTION" => allowed.extend(["compilerCallableId"]),
+            "CONSTRUCTOR" => {
+                allowed.extend(["compilerCallableId", "compilerClassId", "jvmDescriptor"])
+            }
+            "PROPERTY" | "MUTABLE_PROPERTY" => allowed.extend(["compilerCallableId"]),
+            "CLASS" => allowed.extend(["compilerClassId"]),
+            _ => return Err(invalid("unknown partial declaration descriptor kind")),
+        }
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("partial declaration descriptor row is not an object"))?;
+        if object.keys().any(|field| !allowed.contains(field.as_str())) {
+            return Err(invalid(
+                "partial declaration descriptor has an unexpected or attributed field",
+            ));
+        }
+        match kind {
+            "FUNCTION" => {
+                let callable = required_string(value, "compilerCallableId")?;
+                let identity = required_string(value, "symbolIdentity")?;
+                if !identity.starts_with(&format!("callable:{callable}#jvm:")) {
+                    return Err(invalid(
+                        "partial function descriptor compiler identity is inconsistent",
+                    ));
+                }
+            }
+            "CONSTRUCTOR" => {
+                let callable = required_string(value, "compilerCallableId")?;
+                let class = required_string(value, "compilerClassId")?;
+                let jvm = required_string(value, "jvmDescriptor")?;
+                if required_string(value, "symbolIdentity")?
+                    != format!("constructor:{callable}#jvm:{jvm}")
+                    || required_string(value, "ownerIdentity")? != format!("class:{class}")
+                    || !jvm.starts_with('(')
+                    || !jvm.contains(')')
+                {
+                    return Err(invalid(
+                        "partial constructor descriptor compiler/JVM identity is inconsistent",
+                    ));
+                }
+            }
+            "PROPERTY" | "MUTABLE_PROPERTY" => {
+                let callable = required_string(value, "compilerCallableId")?;
+                if required_string(value, "symbolIdentity")? != format!("property:{callable}") {
+                    return Err(invalid(
+                        "partial property descriptor compiler identity is inconsistent",
+                    ));
+                }
+            }
+            "CLASS" => {
+                let class = required_string(value, "compilerClassId")?;
+                if required_string(value, "symbolIdentity")? != format!("class:{class}") {
+                    return Err(invalid(
+                        "partial class descriptor compiler identity is inconsistent",
+                    ));
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
 
     let graph = facts
         .get("declarationDescriptors")
@@ -1962,10 +2228,8 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
             "declaration descriptor graph compilation differs from worker index snapshot",
         ));
     }
-    if !matches!(
-        graph.get("coverage").and_then(Value::as_str),
-        Some("COMPLETE_SUPPORTED_SUBSET" | "PARTIAL")
-    ) {
+    let coverage = graph.get("coverage").and_then(Value::as_str);
+    if !matches!(coverage, Some("COMPLETE_SUPPORTED_SUBSET" | "PARTIAL")) {
         return Err(invalid("unknown declaration descriptor coverage status"));
     }
     let descriptors = graph
@@ -1988,12 +2252,13 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         })
         .collect::<Result<BTreeMap<_, _>, ClewError>>()?;
     canonical_rows(descriptors, "rows")?;
+    let mut partial_descriptors = BTreeMap::new();
     for descriptor in descriptors {
         if descriptor.get("schema").and_then(Value::as_str) != Some("declaration-descriptor/0.1")
             || descriptor.get("resolution").and_then(Value::as_str) != Some("PROVEN")
             || descriptor.get("provider").and_then(Value::as_str) != Some("K2_FIR")
             || descriptor.get("sourceProvenance").and_then(Value::as_str)
-                != Some("COMPILER_SOURCE_RANGE")
+                != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
             || descriptor.get("compilerAuthority").and_then(Value::as_str)
                 != Some("fir-facts-extractor/0.6")
         {
@@ -2040,6 +2305,38 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "declaration descriptor owner differs from compiler containment",
             ));
         }
+        let declaration_kind = descriptor
+            .get("declarationKind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("declaration descriptor has no declarationKind"))?;
+        let has_partial_marker = descriptor.get("attributeCoverage").is_some()
+            || descriptor.get("sourceRowHash").is_some();
+        if has_partial_marker {
+            if coverage != Some("PARTIAL")
+                || descriptor.get("attributeCoverage").and_then(Value::as_str) != Some("PARTIAL")
+            {
+                return Err(invalid(
+                    "partial declaration descriptor requires PARTIAL row and graph coverage",
+                ));
+            }
+            validate_partial_descriptor(descriptor, declaration_kind)?;
+            let source_row_hash = required_string(descriptor, "sourceRowHash")?;
+            if !is_canonical_sha256(source_row_hash) {
+                return Err(invalid(
+                    "partial declaration descriptor source row hash is malformed",
+                ));
+            }
+            let retained_hash = canonical::hash(descriptor).map_err(internal)?;
+            if partial_descriptors
+                .insert(source_row_hash.to_owned(), (retained_hash, descriptor))
+                .is_some()
+            {
+                return Err(invalid(
+                    "partial declaration descriptors repeat a source row link",
+                ));
+            }
+            continue;
+        }
         if !matches!(
             descriptor.get("visibility").and_then(Value::as_str),
             Some("public" | "internal" | "private" | "protected")
@@ -2074,10 +2371,6 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
             ));
         }
         validate_type_parameters(descriptor)?;
-        let declaration_kind = descriptor
-            .get("declarationKind")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("declaration descriptor has no declarationKind"))?;
         validate_field_closure(descriptor, declaration_kind)?;
         match declaration_kind {
             "FUNCTION" => {
@@ -2166,6 +2459,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("declaration descriptor graph has no boundaries"))?;
     canonical_rows(boundaries, "boundaries")?;
+    let mut paired_partial_descriptors = BTreeSet::new();
     for boundary in boundaries {
         if boundary.get("schema").and_then(Value::as_str)
             != Some("declaration-descriptor-boundary/0.1")
@@ -2189,6 +2483,16 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                         | "LOCAL_CONSTRUCTOR_UNSUPPORTED"
                         | "UNRESOLVED_CONSTRUCTOR_DESCRIPTOR"
                         | "INCOMPLETE_COMPILER_DESCRIPTOR"
+                        | "MALFORMED_COMPILER_FACT_ROW"
+                        | "INVALID_DESCRIPTOR_SOURCE_PATH"
+                        | "INVALID_DESCRIPTOR_IDENTITY"
+                        | "UNKNOWN_DECLARATION_KIND"
+                        | "UNKNOWN_VISIBILITY"
+                        | "UNKNOWN_EFFECTIVE_VISIBILITY"
+                        | "UNKNOWN_MODALITY"
+                        | "DESCRIPTOR_SOURCE_NOT_IN_COMPILATION"
+                        | "INVALID_DESCRIPTOR_SOURCE_RANGE"
+                        | "UNRESOLVED_DESCRIPTOR_TYPE"
                         | "SYNTAX_ONLY"
                 )
             )
@@ -2198,6 +2502,66 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 != Some("fir-facts-extractor/0.6")
         {
             return Err(invalid("malformed declaration descriptor Unknown boundary"));
+        }
+        let compiler_normalized = boundary.get("provider").and_then(Value::as_str)
+            == Some("COMPILER_DESCRIPTOR_NORMALIZER");
+        if boundary.get("retainedDescriptorHash").is_some() && !compiler_normalized {
+            return Err(invalid(
+                "retained descriptor link is outside the partial-core contract",
+            ));
+        }
+        if compiler_normalized {
+            let row_hash = required_string(boundary, "rawRowHash")?;
+            if !is_canonical_sha256(row_hash) {
+                return Err(invalid("descriptor boundary raw row hash is malformed"));
+            }
+            let optional_attribute_code = matches!(
+                boundary.get("code").and_then(Value::as_str),
+                Some(
+                    "UNKNOWN_VISIBILITY"
+                        | "UNKNOWN_EFFECTIVE_VISIBILITY"
+                        | "UNKNOWN_MODALITY"
+                        | "UNRESOLVED_DESCRIPTOR_TYPE"
+                )
+            );
+            let retained_hash = boundary.get("retainedDescriptorHash");
+            if optional_attribute_code && retained_hash.is_none() {
+                return Err(invalid(
+                    "optional descriptor attribute boundary has no retained core link",
+                ));
+            }
+            if let Some(retained_hash) = retained_hash {
+                let retained_hash = retained_hash.as_str().ok_or_else(|| {
+                    invalid("descriptor boundary retained descriptor hash is not a string")
+                })?;
+                if !optional_attribute_code
+                    || boundary.get("stage").and_then(Value::as_str) != Some("NORMALIZE")
+                    || !is_canonical_sha256(retained_hash)
+                {
+                    return Err(invalid(
+                        "retained descriptor link is outside the partial-core contract",
+                    ));
+                }
+                let Some((expected_retained_hash, descriptor)) = partial_descriptors.get(row_hash)
+                else {
+                    return Err(invalid(
+                        "retained descriptor boundary has no matching partial descriptor",
+                    ));
+                };
+                if retained_hash != expected_retained_hash
+                    || boundary.get("file") != descriptor.get("file")
+                    || boundary.get("symbolIdentity") != descriptor.get("symbolIdentity")
+                {
+                    return Err(invalid(
+                        "retained descriptor boundary disagrees with its exact partial descriptor",
+                    ));
+                }
+                if !paired_partial_descriptors.insert(row_hash.to_owned()) {
+                    return Err(invalid(
+                        "partial declaration descriptor has duplicate retained boundary links",
+                    ));
+                }
+            }
         }
         if boundary.get("file").is_some() {
             safe_file(boundary)?;
@@ -2215,6 +2579,11 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 ));
             }
         }
+    }
+    if paired_partial_descriptors.len() != partial_descriptors.len() {
+        return Err(invalid(
+            "partial declaration descriptor has no matching retained boundary link",
+        ));
     }
 
     let provenance = graph
@@ -2352,7 +2721,7 @@ pub(crate) fn descriptor_validation_diagnostic(facts: &Value) -> Value {
             || descriptor.get("resolution").and_then(Value::as_str) != Some("PROVEN")
             || descriptor.get("provider").and_then(Value::as_str) != Some("K2_FIR")
             || descriptor.get("sourceProvenance").and_then(Value::as_str)
-                != Some("COMPILER_SOURCE_RANGE")
+                != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
             || descriptor.get("compilerAuthority").and_then(Value::as_str)
                 != Some("fir-facts-extractor/0.6")
             || !matches!(
@@ -3011,7 +3380,7 @@ mod tests {
                 "resolution":"PROVEN",
                 "provider":"K2_FIR",
                 "cfgNodeIds":[],
-                "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "orderProvenance":"UNKNOWN"
             }],
             "boundaries":[{
@@ -3085,7 +3454,7 @@ mod tests {
                 "typeParameters":[],
                 "module":":",
                 "sourceSet":"main",
-                "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "compilerAuthority":"fir-facts-extractor/0.6",
                 "resolution":"PROVEN",
                 "provider":"K2_FIR"
@@ -3121,6 +3490,102 @@ mod tests {
         facts
     }
 
+    fn partial_core_ingestion_facts(source: &str) -> Value {
+        let mut facts = descriptor_ingestion_facts(source, "kotlin/Int");
+        let descriptor_source_hash = format!("sha256:{}", "1".repeat(64));
+        let descriptor = facts
+            .pointer_mut("/declarationDescriptors/descriptors/0")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            descriptor.remove(field);
+        }
+        descriptor.insert("attributeCoverage".into(), json!("PARTIAL"));
+        descriptor.insert("sourceRowHash".into(), json!(descriptor_source_hash));
+        let retained_descriptor_hash =
+            canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap();
+        facts["declarationDescriptors"]["boundaries"] = json!([{
+            "schema":"declaration-descriptor-boundary/0.1",
+            "file":"A.kt",
+            "symbolIdentity":"callable:p/Derived.read#jvm:()I",
+            "stage":"NORMALIZE",
+            "code":"UNRESOLVED_DESCRIPTOR_TYPE",
+            "resolution":"UNKNOWN",
+            "provider":"COMPILER_DESCRIPTOR_NORMALIZER",
+            "module":":",
+            "sourceSet":"main",
+            "compilerAuthority":"fir-facts-extractor/0.6",
+            "rawRowHash":descriptor_source_hash,
+            "retainedDescriptorHash":retained_descriptor_hash
+        }]);
+
+        let relation_source_hash = format!("sha256:{}", "2".repeat(64));
+        let relation = json!({
+            "schema":"declaration-relation/0.1",
+            "file":"A.kt",
+            "start":0,
+            "end":12,
+            "kind":"CALLS",
+            "owner":"p/Caller.call",
+            "target":"p/Derived.read",
+            "resolution":"PROVEN",
+            "provider":"K2_FIR",
+            "cfgNodeIds":[],
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "orderProvenance":"UNKNOWN",
+            "attributeCoverage":"PARTIAL",
+            "sourceRowHash":relation_source_hash
+        });
+        let retained_relation_hash = canonical::hash(&relation).unwrap();
+        facts["declarationRelations"]["relations"] = json!([relation]);
+        facts["declarationRelations"]["boundaries"] = json!([{
+            "schema":"declaration-relation-boundary/0.1",
+            "file":"A.kt",
+            "start":0,
+            "end":12,
+            "owner":"p/Caller.call",
+            "target":"p/Derived.read",
+            "relationKind":"CALLS",
+            "stage":"NORMALIZE",
+            "code":"UNRESOLVED_RELATION_TYPE",
+            "resolution":"UNKNOWN",
+            "provider":"COMPILER_RELATION_NORMALIZER",
+            "rawRowHash":relation_source_hash,
+            "retainedRelationHash":retained_relation_hash
+        }]);
+        refresh_partial_core_hashes(&mut facts);
+        facts
+    }
+
+    fn refresh_partial_core_hashes(facts: &mut Value) {
+        for (graph, rows) in [
+            ("declarationDescriptors", "descriptors"),
+            ("declarationDescriptors", "boundaries"),
+            ("declarationRelations", "relations"),
+            ("declarationRelations", "boundaries"),
+        ] {
+            facts[graph][rows]
+                .as_array_mut()
+                .unwrap()
+                .sort_by_key(|value| canonical::bytes(value).unwrap());
+        }
+        facts["declarationDescriptorHash"] =
+            Value::String(canonical::hash(&facts["declarationDescriptors"]).unwrap());
+        facts["declarationRelationHash"] =
+            Value::String(canonical::hash(&facts["declarationRelations"]).unwrap());
+    }
+
     fn constructor_null_ingestion_facts(source: &str, fallback: &str) -> Value {
         let descriptor_graph = json!({
             "schema":"declaration-descriptor-graph/0.1",
@@ -3150,7 +3615,7 @@ mod tests {
                 "typeParameters":[],
                 "module":":",
                 "sourceSet":"main",
-                "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "compilerAuthority":"fir-facts-extractor/0.6",
                 "resolution":"PROVEN",
                 "provider":"K2_FIR"
@@ -3201,7 +3666,7 @@ mod tests {
                     "resultType":"p/NullableConstruction",
                     "orderKey":20,
                     "cfgNodeIds":[1],
-                    "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                    "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                     "orderProvenance":"K2_FIR_CFG",
                     "resolution":"PROVEN",
                     "provider":"K2_FIR"
@@ -3222,7 +3687,7 @@ mod tests {
                     "branchProvenance":{"kind":"FIR_ELVIS_EXPRESSION","nullableBranchStart":60,"fallbackBranchStart":75,"mergeStart":60,"mergeEnd":90},
                     "orderKey":60,
                     "cfgNodeIds":[2,3],
-                    "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                    "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                     "orderProvenance":"K2_FIR_CFG",
                     "resolution":"PROVEN",
                     "provider":"K2_FIR"
@@ -3308,7 +3773,7 @@ mod tests {
                 "typeParameters":[],
                 "module":":",
                 "sourceSet":"main",
-                "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "compilerAuthority":"fir-facts-extractor/0.6",
                 "resolution":"PROVEN",
                 "provider":"K2_FIR"
@@ -3338,7 +3803,7 @@ mod tests {
                 "typeParameters":[],
                 "module":":",
                 "sourceSet":"main",
-                "sourceProvenance":"COMPILER_SOURCE_RANGE",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "compilerAuthority":"fir-facts-extractor/0.6",
                 "resolution":"PROVEN",
                 "provider":"K2_FIR"
@@ -3370,7 +3835,7 @@ mod tests {
                 "file":"A.kt","start":12,"end":20,"kind":"READS",
                 "owner":"p/project","target":source_target,
                 "resultType":"kotlin/String","argumentToParameter":[],"orderKey":12,
-                "cfgNodeIds":[2],"sourceProvenance":"COMPILER_SOURCE_RANGE",
+                "cfgNodeIds":[2],"sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
                 "orderProvenance":"K2_FIR_CFG","resolution":"PROVEN","provider":"K2_FIR"
             }),
             json!({
@@ -3386,7 +3851,7 @@ mod tests {
                     "sourceDominatesReturn":true,"sourceNodeKind":"QualifiedAccessNode",
                     "returnNodeKind":"JumpNode"},
                 "evaluationCount":1,"orderKey":12,"cfgNodeIds":[2,3],
-                "sourceProvenance":"COMPILER_SOURCE_RANGE","orderProvenance":"K2_FIR_CFG",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES","orderProvenance":"K2_FIR_CFG",
                 "resolution":"PROVEN","provider":"K2_FIR"
             }),
             json!({
@@ -3394,7 +3859,7 @@ mod tests {
                 "file":"A.kt","start":52,"end":60,"kind":"CALLS",
                 "owner":"p/projectCall","target":"p/read","resultType":"kotlin/String",
                 "argumentToParameter":[],"orderKey":52,"cfgNodeIds":[4],
-                "sourceProvenance":"COMPILER_SOURCE_RANGE","orderProvenance":"K2_FIR_CFG",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES","orderProvenance":"K2_FIR_CFG",
                 "resolution":"PROVEN","provider":"K2_FIR"
             }),
             json!({
@@ -3410,7 +3875,7 @@ mod tests {
                     "sourceDominatesReturn":true,"sourceNodeKind":"FunctionCallExitNode",
                     "returnNodeKind":"JumpNode"},
                 "evaluationCount":1,"orderKey":52,"cfgNodeIds":[4,5],
-                "sourceProvenance":"COMPILER_SOURCE_RANGE","orderProvenance":"K2_FIR_CFG",
+                "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES","orderProvenance":"K2_FIR_CFG",
                 "resolution":"PROVEN","provider":"K2_FIR"
             }),
         ];
@@ -3766,6 +4231,179 @@ mod tests {
     }
 
     #[test]
+    fn partial_descriptor_and_relation_cores_require_exact_retained_links() {
+        let facts = partial_core_ingestion_facts("fun read() = 1\n");
+        validate_declaration_descriptor_snapshot(&facts).unwrap();
+        validate_declaration_relation_snapshot(&facts).unwrap();
+    }
+
+    #[test]
+    fn partial_descriptor_core_rejects_missing_duplicate_dangling_or_mismatched_links() {
+        let source = "fun read() = 1\n";
+        let reject = |mut facts: Value, expected: &str| {
+            refresh_partial_core_hashes(&mut facts);
+            let error = validate_declaration_descriptor_snapshot(&facts).unwrap_err();
+            assert!(
+                error.message.contains(expected),
+                "expected {expected:?}, got {:?}",
+                error.message
+            );
+        };
+
+        let mut missing = partial_core_ingestion_facts(source);
+        missing["declarationDescriptors"]["boundaries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("retainedDescriptorHash");
+        reject(missing, "no retained core link");
+
+        let mut duplicate = partial_core_ingestion_facts(source);
+        let mut duplicate_boundary = duplicate["declarationDescriptors"]["boundaries"][0].clone();
+        duplicate_boundary["diagnostic"] = json!("duplicate-link");
+        duplicate["declarationDescriptors"]["boundaries"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate_boundary);
+        reject(duplicate, "duplicate retained boundary links");
+
+        let mut dangling = partial_core_ingestion_facts(source);
+        dangling["declarationDescriptors"]["boundaries"][0]["rawRowHash"] =
+            json!(format!("sha256:{}", "3".repeat(64)));
+        reject(dangling, "no matching partial descriptor");
+
+        let mut mismatched = partial_core_ingestion_facts(source);
+        mismatched["declarationDescriptors"]["boundaries"][0]["retainedDescriptorHash"] =
+            json!(format!("sha256:{}", "4".repeat(64)));
+        reject(mismatched, "disagrees with its exact partial descriptor");
+
+        let mut wrong_identity = partial_core_ingestion_facts(source);
+        wrong_identity["declarationDescriptors"]["boundaries"][0]["symbolIdentity"] =
+            json!("callable:p/Decoy.read#jvm:()I");
+        reject(
+            wrong_identity,
+            "disagrees with its exact partial descriptor",
+        );
+    }
+
+    #[test]
+    fn partial_descriptor_core_rejects_noncanonical_hashes_attributes_and_full_coverage() {
+        let source = "fun read() = 1\n";
+        let reject = |mut facts: Value, expected: &str| {
+            refresh_partial_core_hashes(&mut facts);
+            let error = validate_declaration_descriptor_snapshot(&facts).unwrap_err();
+            assert!(
+                error.message.contains(expected),
+                "expected {expected:?}, got {:?}",
+                error.message
+            );
+        };
+
+        let uppercase_hash = format!("sha256:{}", "A".repeat(64));
+        let mut uppercase = partial_core_ingestion_facts(source);
+        uppercase["declarationDescriptors"]["descriptors"][0]["sourceRowHash"] =
+            json!(uppercase_hash.clone());
+        uppercase["declarationDescriptors"]["boundaries"][0]["rawRowHash"] = json!(uppercase_hash);
+        reject(uppercase, "source row hash is malformed");
+
+        for (field, value) in [
+            ("returnType", json!("kotlin/Int")),
+            ("isOverride", json!(false)),
+        ] {
+            let mut attributed = partial_core_ingestion_facts(source);
+            attributed["declarationDescriptors"]["descriptors"][0][field] = value;
+            reject(attributed, "unexpected or attributed field");
+        }
+
+        let mut full_coverage = partial_core_ingestion_facts(source);
+        full_coverage["declarationDescriptors"]["coverage"] = json!("COMPLETE_SUPPORTED_SUBSET");
+        reject(full_coverage, "requires PARTIAL row and graph coverage");
+    }
+
+    #[test]
+    fn partial_relation_core_rejects_missing_duplicate_dangling_or_mismatched_links() {
+        let source = "fun read() = 1\n";
+        let reject = |mut facts: Value, expected: &str| {
+            refresh_partial_core_hashes(&mut facts);
+            let error = validate_declaration_relation_snapshot(&facts).unwrap_err();
+            assert!(
+                error.message.contains(expected),
+                "expected {expected:?}, got {:?}",
+                error.message
+            );
+        };
+
+        let mut missing = partial_core_ingestion_facts(source);
+        missing["declarationRelations"]["boundaries"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("retainedRelationHash");
+        reject(missing, "no matching retained boundary link");
+
+        let mut duplicate = partial_core_ingestion_facts(source);
+        let mut duplicate_boundary = duplicate["declarationRelations"]["boundaries"][0].clone();
+        duplicate_boundary["diagnostic"] = json!("duplicate-link");
+        duplicate["declarationRelations"]["boundaries"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate_boundary);
+        reject(duplicate, "duplicate retained boundary links");
+
+        let mut dangling = partial_core_ingestion_facts(source);
+        dangling["declarationRelations"]["boundaries"][0]["rawRowHash"] =
+            json!(format!("sha256:{}", "3".repeat(64)));
+        reject(dangling, "no matching partial relation");
+
+        let mut mismatched = partial_core_ingestion_facts(source);
+        mismatched["declarationRelations"]["boundaries"][0]["retainedRelationHash"] =
+            json!(format!("sha256:{}", "4".repeat(64)));
+        reject(mismatched, "disagrees with its exact partial relation");
+
+        let mut wrong_target = partial_core_ingestion_facts(source);
+        wrong_target["declarationRelations"]["boundaries"][0]["target"] = json!("p/Decoy.read");
+        reject(wrong_target, "disagrees with its exact partial relation");
+    }
+
+    #[test]
+    fn partial_relation_core_rejects_noncanonical_hashes_typed_fields_and_special_flows() {
+        let source = "fun read() = 1\n";
+        let reject = |mut facts: Value, expected: &str| {
+            refresh_partial_core_hashes(&mut facts);
+            let error = validate_declaration_relation_snapshot(&facts).unwrap_err();
+            assert!(
+                error.message.contains(expected),
+                "expected {expected:?}, got {:?}",
+                error.message
+            );
+        };
+
+        let uppercase_hash = format!("sha256:{}", "A".repeat(64));
+        let mut uppercase = partial_core_ingestion_facts(source);
+        uppercase["declarationRelations"]["relations"][0]["sourceRowHash"] =
+            json!(uppercase_hash.clone());
+        uppercase["declarationRelations"]["boundaries"][0]["rawRowHash"] = json!(uppercase_hash);
+        reject(uppercase, "source row hash is malformed");
+
+        for (field, value) in [("resultType", json!("kotlin/Int")), ("orderKey", json!(0))] {
+            let mut attributed = partial_core_ingestion_facts(source);
+            attributed["declarationRelations"]["relations"][0][field] = value;
+            reject(attributed, "unexpected or typed field");
+        }
+
+        let mut malformed_cfg = partial_core_ingestion_facts(source);
+        malformed_cfg["declarationRelations"]["relations"][0]["cfgNodeIds"] = json!([1, 1]);
+        reject(malformed_cfg, "CFG nodes are not canonical and unique");
+
+        let mut special_flow = partial_core_ingestion_facts(source);
+        special_flow["declarationRelations"]["relations"][0]["kind"] = json!("READS");
+        special_flow["declarationRelations"]["boundaries"][0]["relationKind"] = json!("READS");
+        reject(special_flow, "cannot retain a special flow kind");
+
+        let mut full_coverage = partial_core_ingestion_facts(source);
+        full_coverage["declarationRelations"]["coverage"] = json!("COMPLETE_SUPPORTED_SUBSET");
+        reject(full_coverage, "requires PARTIAL row and graph coverage");
+    }
+
+    #[test]
     fn declaration_descriptor_ingestion_roundtrips_unknown_and_commits_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun read() = 1\n";
@@ -3909,7 +4547,10 @@ mod tests {
         let source = "fun read() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
         let mut index = RepositoryIndex::open(temp.path()).unwrap();
-        let first = relation_ingestion_facts(source, "p/Base.read");
+        let descriptor_facts = descriptor_ingestion_facts(source, "kotlin/Int");
+        let mut first = relation_ingestion_facts(source, "p/Base.read");
+        first["declarationDescriptors"] = descriptor_facts["declarationDescriptors"].clone();
+        first["declarationDescriptorHash"] = descriptor_facts["declarationDescriptorHash"].clone();
         let first_snapshot = index.update(&first).unwrap();
         let stored = index.declaration_relations().unwrap().unwrap();
         assert_eq!(stored.graph, first["declarationRelations"]);
@@ -3920,7 +4561,9 @@ mod tests {
             Some(first_snapshot.as_str())
         );
 
-        let second = relation_ingestion_facts(source, "p/OtherBase.read");
+        let mut second = relation_ingestion_facts(source, "p/OtherBase.read");
+        second["declarationDescriptors"] = descriptor_facts["declarationDescriptors"].clone();
+        second["declarationDescriptorHash"] = descriptor_facts["declarationDescriptorHash"].clone();
         let second_snapshot = index.update(&second).unwrap();
         assert_ne!(first_snapshot, second_snapshot);
         assert_eq!(
@@ -3942,7 +4585,10 @@ mod tests {
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
         let mut index = RepositoryIndex::open(temp.path()).unwrap();
 
-        let mut hash_mismatch = relation_ingestion_facts(source, "p/Base.read");
+        // Relation validation is intentionally cross-graph: exercise relation
+        // failures with the authoritative descriptor graph present so the
+        // expected error is not masked by an earlier applicability boundary.
+        let mut hash_mismatch = descriptor_ingestion_facts(source, "kotlin/Int");
         hash_mismatch["declarationRelationHash"] = Value::String("sha256:forged".into());
         assert_eq!(
             index.update(&hash_mismatch).unwrap_err().code,
@@ -3967,7 +4613,7 @@ mod tests {
                 json!("CALLER"),
             ),
         ] {
-            let mut malformed = relation_ingestion_facts(source, "p/Base.read");
+            let mut malformed = descriptor_ingestion_facts(source, "kotlin/Int");
             *malformed.pointer_mut(pointer).unwrap() = replacement;
             malformed["declarationRelationHash"] =
                 Value::String(canonical::hash(&malformed["declarationRelations"]).unwrap());
@@ -3977,7 +4623,7 @@ mod tests {
             );
         }
 
-        let mut snapshot_mismatch = relation_ingestion_facts(source, "p/Base.read");
+        let mut snapshot_mismatch = descriptor_ingestion_facts(source, "kotlin/Int");
         snapshot_mismatch["declarationRelations"]["provenance"]["projectModelHash"] =
             Value::String("other-model".into());
         snapshot_mismatch["declarationRelationHash"] =

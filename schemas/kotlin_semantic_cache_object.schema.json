@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codeclew.kotlin-semantic-cache-object/0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "cacheKey",
+    "inputs",
+    "k2Validated",
+    "semanticOutputDigest",
+    "semanticFactsDigest",
+    "adapterOutput",
+    "evidenceCore",
+    "objectDigest"
+  ],
+  "properties": {
+    "schema": { "const": "codeclew.kotlin-semantic-cache-object/0.1" },
+    "cacheKey": { "$ref": "#/$defs/digest" },
+    "inputs": {
+      "type": "object",
+      "required": [
+        "schema",
+        "repositoryTreeDigest",
+        "compilation",
+        "adapter",
+        "workerDistribution",
+        "workerCapabilities",
+        "semanticInputManifestHash",
+        "semanticInputManifest"
+      ]
+    },
+    "k2Validated": { "const": true },
+    "semanticOutputDigest": { "$ref": "#/$defs/digest" },
+    "semanticFactsDigest": { "$ref": "#/$defs/digest" },
+    "adapterOutput": { "type": "object" },
+    "evidenceCore": { "type": "object" },
+    "objectDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

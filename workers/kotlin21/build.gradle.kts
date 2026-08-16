@@ -18,7 +18,13 @@ kotlin {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.1.21")
+    implementation("org.jetbrains.kotlin:kotlin-serialization-compiler-plugin-embeddable:2.1.21")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    implementation("org.jetbrains.kotlin:kotlin-build-tools-api:2.1.21")
+    runtimeOnly("org.jetbrains.kotlin:kotlin-build-tools-impl:2.1.21") {
+        isTransitive = false
+    }
+    runtimeOnly("org.jetbrains.kotlin:kotlin-compiler-runner:2.1.21")
     testImplementation(kotlin("test"))
 }
 

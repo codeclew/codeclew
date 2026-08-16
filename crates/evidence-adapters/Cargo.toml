@@ -1,0 +1,28 @@
+[package]
+name = "evidence-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autobins = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clew = { path = "../clew" }
+evidence-core = { path = "../evidence-core" }
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+
+[[bin]]
+name = "codeclew-kotlin-evidence"
+path = "src/bin/kotlin.rs"
+
+[[bin]]
+name = "codeclew-evidence"
+path = "src/bin/evidence.rs"

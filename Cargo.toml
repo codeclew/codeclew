@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/semantic-corpus", "crates/clew"]
+members = [
+  "crates/semantic-corpus",
+  "crates/clew",
+  "crates/evidence-core",
+  "crates/evidence-adapters",
+]
 
 [workspace.package]
 version = "0.1.0"

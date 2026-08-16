@@ -1,4 +1,5 @@
 import groovy.json.JsonOutput
+import java.security.MessageDigest
 
 gradle.beforeProject { project ->
     project.tasks.register("semanticThreadModel") {
@@ -11,74 +12,180 @@ gradle.beforeProject { project ->
             def filesOf = { String property ->
                 try {
                     def value = compile.property(property)
-                    return value == null ? [] : value.files.collect { it.absolutePath }.sort()
+                    return [available: true, values: value == null ? [] : value.files.collect { it.absolutePath }]
                 } catch (Throwable ignored) {
-                    return []
+                    return [available: false, values: []]
                 }
             }
             def option = { String property ->
                 try {
                     def value = compile.compilerOptions."${property}"
-                    if (value == null) return null
-                    if (value.metaClass.respondsTo(value, "getOrNull")) return value.getOrNull()?.toString()
-                    return value.toString()
+                    if (value == null) return [available: true, value: null]
+                    if (value.metaClass.respondsTo(value, "getOrNull")) return [available: true, value: value.getOrNull()?.toString()]
+                    return [available: true, value: value.toString()]
                 } catch (Throwable ignored) {
-                    return null
+                    return [available: false, value: null]
                 }
             }
             def listOption = { String property ->
                 try {
                     def value = compile.compilerOptions."${property}"
-                    if (value == null) return []
+                    if (value == null) return [available: true, values: []]
                     def resolved = value.metaClass.respondsTo(value, "getOrElse") ? value.getOrElse([]) : value
-                    return resolved.collect { it.toString() }.sort()
+                    return [available: true, values: resolved.collect { it.toString() }]
                 } catch (Throwable ignored) {
-                    return []
+                    return [available: false, values: []]
                 }
             }
             def sourceFiles = []
-            try { sourceFiles = compile.sources.files.collect { it.absolutePath }.sort() } catch (Throwable ignored) {}
-            // Kotlin's task-level `libraries` does not consistently expose the
-            // output of the associated production compilation.  Gradle's
-            // module-local SourceSet compileClasspath is authoritative for a
-            // test compilation and includes main output plus its dependencies.
+            def sourceFilesAvailable = true
+            try { sourceFiles = compile.sources.files.collect { it.absolutePath }.sort() } catch (Throwable ignored) { sourceFilesAvailable = false }
+            // Kotlin's task-level `libraries` is the first-choice compilation
+            // authority when the plugin exposes it. The named resolvable
+            // configuration is the explicit fallback across other plugin lines.
             def sourceSetName = "main"
             if (compile.name.startsWith("compile") && compile.name.endsWith("Kotlin")) {
                 def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
                 sourceSetName = stem.isEmpty() ? "main" : stem.substring(0, 1).toLowerCase() + stem.substring(1)
             }
+            def configurationName = sourceSetName == "main" ? "compileClasspath" : sourceSetName + "CompileClasspath"
             def sourceSetClasspath = []
+            def sourceSetClasspathAvailable = false
             try {
-                def sourceSets = project.extensions.findByName("sourceSets")
-                def sourceSet = sourceSets?.findByName(sourceSetName)
-                if (sourceSet != null) {
-                    sourceSetClasspath = sourceSet.compileClasspath.files.collect { it.absolutePath }
+                def configuration = project.configurations.findByName(configurationName)
+                if (configuration != null) {
+                    sourceSetClasspath = configuration.files.collect { it.absolutePath }
+                    sourceSetClasspathAvailable = true
                 }
             } catch (Throwable ignored) {}
-            def classpath = (filesOf("libraries") + sourceSetClasspath).unique().sort()
+            def libraries = filesOf("libraries")
+            def friendPaths = filesOf("friendPaths")
+            def pluginClasspath = filesOf("pluginClasspath")
+            def freeCompilerArgs = listOption("freeCompilerArgs")
+            def optIns = listOption("optIn")
+            def languageVersion = option("languageVersion")
+            def apiVersion = option("apiVersion")
+            def jvmTarget = option("jvmTarget")
+            // Preserve exactly one provider order. Classpath order participates
+            // in symbol resolution; combining providers can add artifacts that
+            // the Kotlin compilation itself never sees.
+            def taskLibrariesUsable = libraries.available && !libraries.values.isEmpty()
+            def configurationUsable = sourceSetClasspathAvailable && !sourceSetClasspath.isEmpty()
+            def classpath = taskLibrariesUsable ? libraries.values :
+                (configurationUsable ? sourceSetClasspath : [])
+            def classpathAuthority = taskLibrariesUsable ? "KOTLIN_TASK_LIBRARIES" :
+                (configurationUsable ? "GRADLE_RESOLVABLE_CONFIGURATION" : "UNAVAILABLE")
+            def orderedDigest = { List<String> values ->
+                def digest = MessageDigest.getInstance("SHA-256")
+                values.each { value -> digest.update(value.getBytes("UTF-8")); digest.update((byte) 0) }
+                return "sha256:" + digest.digest().collect { String.format("%02x", it & 0xff) }.join("")
+            }
+            def classpathAuthoritiesDiffer = taskLibrariesUsable && configurationUsable &&
+                libraries.values != sourceSetClasspath
             def compilerVersion = null
+            def compilerVersionAvailable = true
             try {
                 def versionClass = compile.class.classLoader.loadClass("org.jetbrains.kotlin.config.KotlinCompilerVersion")
                 compilerVersion = versionClass.getField("VERSION").get(null)?.toString()
+            } catch (Throwable ignored) { compilerVersionAvailable = false }
+            def dependencyCoordinates = []
+            def dependencyCoordinatesAvailable = true
+            try {
+                def configuration = project.configurations.findByName(configurationName)
+                def byFile = [:]
+                configuration?.resolvedConfiguration?.resolvedArtifacts?.each { artifact ->
+                    def id = artifact.moduleVersion.id
+                    byFile[artifact.file.absolutePath] = [
+                        group: id.group, name: artifact.name, version: id.version,
+                        classifier: artifact.hasProperty("classifier") ? artifact.classifier : null,
+                        extension: artifact.hasProperty("extension") ? artifact.extension :
+                            (artifact.file.name.contains('.') ? artifact.file.name.substring(artifact.file.name.lastIndexOf('.') + 1) : ""),
+                        scope: configurationName
+                    ]
+                }
+                classpath.each { path -> if (byFile.containsKey(path)) dependencyCoordinates.add(byFile[path]) }
+            } catch (Throwable ignored) { dependencyCoordinatesAvailable = false }
+            def repositories = []
+            def repositoriesAvailable = true
+            try {
+                project.repositories.each { repository ->
+                    def url = null
+                    try { url = repository.hasProperty("url") ? repository.url?.toString() : null } catch (Throwable ignored) {}
+                    repositories.add([name: repository.name, url: url])
+                }
+            } catch (Throwable ignored) { repositoriesAvailable = false }
+            def generatedRoots = sourceFiles.findAll { path ->
+                path.replace('\\', '/').contains('/build/generated/')
+            }.collect { new File(it).parentFile.absolutePath }.unique().sort()
+            def jdkHome = System.getProperty("java.home")
+            def jdkHomeAvailable = false
+            try {
+                def launcherProvider = compile.hasProperty("javaLauncher") ? compile.property("javaLauncher") : null
+                def launcher = launcherProvider?.metaClass?.respondsTo(launcherProvider, "getOrNull") ? launcherProvider.getOrNull() : launcherProvider
+                def installation = launcher?.metadata?.installationPath?.asFile
+                if (installation != null) {
+                    jdkHome = installation.absolutePath
+                    jdkHomeAvailable = true
+                }
             } catch (Throwable ignored) {}
+            def buildModelBoundaries = []
+            if (!sourceFilesAvailable) buildModelBoundaries.add("GRADLE_SOURCE_FILES_UNAVAILABLE_REFLECTION")
+            if (!sourceSetClasspathAvailable) buildModelBoundaries.add("GRADLE_SOURCE_SET_CLASSPATH_UNAVAILABLE_REFLECTION")
+            if (classpathAuthoritiesDiffer) buildModelBoundaries.add("GRADLE_CLASSPATH_AUTHORITIES_DIFFER")
+            if (!compilerVersionAvailable) buildModelBoundaries.add("GRADLE_COMPILER_VERSION_UNAVAILABLE_REFLECTION")
+            if (!dependencyCoordinatesAvailable) buildModelBoundaries.add("GRADLE_DEPENDENCY_COORDINATES_UNAVAILABLE")
+            if (!repositoriesAvailable) buildModelBoundaries.add("GRADLE_REPOSITORIES_UNAVAILABLE")
+            if (!jdkHomeAvailable) buildModelBoundaries.add("GRADLE_COMPILE_TOOLCHAIN_UNAVAILABLE_USING_BUILD_JVM")
+            buildModelBoundaries.add("GRADLE_BUILDSCRIPT_PLUGIN_COORDINATES_UNAVAILABLE")
+            if (!generatedRoots.isEmpty()) buildModelBoundaries.add("GRADLE_GENERATED_SOURCE_PRODUCERS_UNAVAILABLE")
             def tasks = project.tasks.collect { it.name }.sort()
             def model = [
                 projectPath: project.path,
                 projectDir: project.projectDir.absolutePath,
+                platform: "JVM",
                 compileTask: compile.path,
                 sourceFiles: sourceFiles,
                 classpath: classpath,
-                friendPaths: filesOf("friendPaths"),
-                compilerPlugins: filesOf("pluginClasspath"),
+                classpathAuthority: [
+                    chosen: classpathAuthority,
+                    taskLibrariesDigest: taskLibrariesUsable ? orderedDigest(libraries.values) : null,
+                    configurationDigest: configurationUsable ? orderedDigest(sourceSetClasspath) : null,
+                    orderedEquivalent: taskLibrariesUsable && configurationUsable ? !classpathAuthoritiesDiffer : null
+                ],
+                friendPaths: friendPaths.values,
+                compilerPlugins: pluginClasspath.values,
                 compilerVersion: compilerVersion,
-                languageVersion: option("languageVersion"),
-                apiVersion: option("apiVersion"),
-                jvmTarget: option("jvmTarget"),
-                freeCompilerArguments: listOption("freeCompilerArgs"),
-                optIns: listOption("optIn"),
+                languageVersion: languageVersion.value,
+                apiVersion: apiVersion.value,
+                jvmTarget: jvmTarget.value,
+                freeCompilerArguments: freeCompilerArgs.values,
+                optIns: optIns.values,
+                dependencyCoordinates: dependencyCoordinates,
+                repositories: repositories,
+                reactorPoms: [],
+                buildPlugins: [],
+                generatedSourceConfiguration: [
+                    roots: generatedRoots,
+                    producers: [],
+                    status: generatedRoots.isEmpty() ? "NONE_DISCOVERED" : "ROOTS_WITH_PRODUCER_BOUNDARY"
+                ],
+                buildModelBoundaries: buildModelBoundaries.sort(),
+                fieldBoundaries: [
+                    libraries: taskLibrariesUsable ? "AVAILABLE_ORDERED_KOTLIN_TASK" :
+                        (configurationUsable ? "AVAILABLE_ORDERED_CONFIGURATION_FALLBACK" : "UNAVAILABLE"),
+                    friendPaths: friendPaths.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    compilerPlugins: pluginClasspath.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    freeCompilerArguments: freeCompilerArgs.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    optIns: optIns.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    languageVersion: languageVersion.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    apiVersion: apiVersion.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    jvmTarget: jvmTarget.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    compilerVersion: compilerVersionAvailable ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    jdkHome: jdkHomeAvailable ? "AVAILABLE_COMPILE_TOOLCHAIN" : "BOUNDARY_BUILD_JVM_FALLBACK"
+                ],
                 tasks: tasks,
                 gradleVersion: gradle.gradleVersion,
-                jdkHome: System.getProperty("java.home")
+                jdkHome: jdkHome
             ]
             println("__SEMANTIC_THREAD_MODEL__" + JsonOutput.toJson(model))
         }

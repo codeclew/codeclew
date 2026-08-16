@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codeclew.kotlin-k1-dependency-preparation-refusal/0.11",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "seriesId",
+    "cohort",
+    "entry",
+    "commit",
+    "gitTree",
+    "selectedCompilation",
+    "buildDsl",
+    "failureStage",
+    "reasonCode",
+    "safeDetailDigest",
+    "cost",
+    "sandboxProfileSha256",
+    "sourceTreeSha256",
+    "candidateToolsSha256",
+    "buildInputDigest",
+    "preparationReceiptDigest",
+    "objectDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew.kotlin-k1-dependency-preparation-refusal/0.11"
+    },
+    "seriesId": {
+      "const": "KOTLIN_REAL_REPOSITORY_K1_12_2026_08_13"
+    },
+    "cohort": {
+      "enum": [
+        "QUALIFICATION",
+        "BLIND_HOLDOUT"
+      ]
+    },
+    "entry": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commit": {
+      "$ref": "#/$defs/gitObject"
+    },
+    "gitTree": {
+      "$ref": "#/$defs/gitObject"
+    },
+    "selectedCompilation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "buildDsl": {
+      "enum": [
+        "MAVEN",
+        "GRADLE_KOTLIN_DSL",
+        "GRADLE_GROOVY_DSL"
+      ]
+    },
+    "failureStage": {
+      "const": "DEPENDENCY_PREPARATION"
+    },
+    "reasonCode": {
+      "enum": [
+        "DEPENDENCY_CLOSURE_UNAVAILABLE",
+        "OFFLINE_MODEL_PROBE_FAILED",
+        "UNSUPPORTED_BUILD_CONFIGURATION"
+      ]
+    },
+    "safeDetailDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wallMicros",
+        "stdoutBytes",
+        "stderrBytes",
+        "exitCode"
+      ],
+      "properties": {
+        "wallMicros": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stdoutBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stderrBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exitCode": {
+          "type": "integer",
+          "not": {
+            "const": 0
+          }
+        }
+      }
+    },
+    "sandboxProfileSha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "sourceTreeSha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "candidateToolsSha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "buildInputDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "preparationReceiptDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "objectDigest": {
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitObject": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

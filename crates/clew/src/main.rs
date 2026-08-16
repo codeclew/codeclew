@@ -287,6 +287,10 @@ struct AgentContextArgs {
     compilation: String,
     #[arg(long = "term", visible_alias = "symbol", required = true)]
     terms: Vec<String>,
+    /// Add one exact OpenProject model input as a required whole-file edit
+    /// surface. Repeat the flag to expose more than one manifest-owned input.
+    #[arg(long = "model-input")]
+    model_inputs: Vec<String>,
     #[arg(long, default_value = "")]
     intent: String,
     #[arg(long, default_value_t = 16_384)]
@@ -719,8 +723,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 RequestKind::OpenProject,
                 &json!({"repo":repo,"compilation":args.compilation}),
             )?;
+            let model_input_surfaces =
+                task_context::resolve_model_input_surfaces(&repo, &project, &args.model_inputs)?;
             let verified_index_facts = worker.index_files_verified(
-                &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":true}),
+                &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
             )?;
             let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
             // A task context is the immutable base of the following transaction,
@@ -788,6 +794,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 base_revision: &base_revision,
                 index_snapshot: &index_snapshot,
                 evidence_path: &evidence_path,
+                model_input_surfaces: &model_input_surfaces,
                 max_bytes: args.max_bytes,
             })?;
             write_artifact(&evidence_path, &evidence)?;
@@ -810,25 +817,22 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     "task-apply needs semantic-task-context-evidence/0.2",
                 ));
             }
-            if !args.allow_legacy_heuristic {
-                return Err(ClewError::new(
-                    ErrorCode::IncompleteSemanticAnalysis,
-                    "task-apply received legacy heuristic context; pass --allow-legacy-heuristic explicitly or use proof-backed apply when available",
-                ));
-            }
             let context = &evidence["context"];
-            if context
+            let context_status = context
                 .pointer("/completeness/status")
-                .and_then(Value::as_str)
-                != Some("LEGACY_HEURISTIC_READY")
-                || evidence
-                    .pointer("/stdoutCompleteness/status")
-                    .and_then(Value::as_str)
-                    != Some("LEGACY_HEURISTIC_READY")
-            {
+                .and_then(Value::as_str);
+            let stdout_status = evidence
+                .pointer("/stdoutCompleteness/status")
+                .and_then(Value::as_str);
+            let complete =
+                context_status == Some("COMPLETE_TASK") && stdout_status == Some("COMPLETE_TASK");
+            let explicitly_allowed_legacy = args.allow_legacy_heuristic
+                && context_status == Some("LEGACY_HEURISTIC_READY")
+                && stdout_status == Some("LEGACY_HEURISTIC_READY");
+            if !complete && !explicitly_allowed_legacy {
                 return Err(ClewError::new(
                     ErrorCode::IncompleteSemanticAnalysis,
-                    "legacy task context or its bounded stdout projection is not LEGACY_HEURISTIC_READY; rebuild or inspect its boundaries",
+                    "task context and its bounded stdout projection must both be COMPLETE_TASK",
                 ));
             }
             let required_threads: Vec<ThreadIr> = serde_json::from_value(
@@ -911,7 +915,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     .pointer("/validationPlan/buildSystem")
                     .and_then(Value::as_str)
                     .unwrap_or("GRADLE"),
-            );
+            )?;
             let mut transaction = Transaction {
                 schema: "semantic-transaction/0.1".into(),
                 tx_id: format!("tx:{}", uuid::Uuid::new_v4()),
@@ -1496,6 +1500,25 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), ClewErro
             }
         }
     }
+    let mut model_input_targets = std::collections::BTreeMap::<String, Value>::new();
+    for (index, item) in context["modelInputSurfaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(target) = item.get("modelInputTarget") else {
+            continue;
+        };
+        let alias = format!("M{}", index + 1);
+        model_input_targets.insert(alias, target.clone());
+        if let Some(target_id) = item.get("targetId").and_then(Value::as_str) {
+            model_input_targets.insert(target_id.to_owned(), target.clone());
+        }
+        if let Some(anchor_id) = target.get("anchorId").and_then(Value::as_str) {
+            model_input_targets.insert(anchor_id.to_owned(), target.clone());
+        }
+    }
     for operation in plan["operations"].as_array_mut().into_iter().flatten() {
         if operation["kind"] == "CREATE_FILE" {
             continue;
@@ -1512,10 +1535,21 @@ fn expand_task_targets(plan: &mut Value, context: &Value) -> Result<(), ClewErro
                 "every non-CREATE_FILE task operation must reference a context targetId",
             ));
         };
-        operation["target"] = targets.get(&target_id).cloned().ok_or_else(|| {
+        let is_model_input = operation["kind"] == "REPLACE_MODEL_INPUT";
+        operation["target"] = if is_model_input {
+            model_input_targets.get(&target_id)
+        } else {
+            targets.get(&target_id)
+        }
+        .cloned()
+        .ok_or_else(|| {
             ClewError::new(
                 ErrorCode::InvalidInput,
-                format!("edit plan references unknown task target {target_id}"),
+                if is_model_input {
+                    format!("model input edit references unknown emitted M target {target_id}")
+                } else {
+                    format!("edit plan references unknown declaration target {target_id}")
+                },
             )
         })?;
     }
@@ -1542,6 +1576,31 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), ClewError> {
                 ClewError::new(ErrorCode::InvalidInput, "task operation must contain kind")
             })?;
             object.insert("kind".to_owned(), kind);
+        }
+        if object.get("kind").and_then(Value::as_str) == Some("REPLACE_MODEL_INPUT") {
+            if object.contains_key("path")
+                || object.contains_key("replacement")
+                || object.contains_key("substitutions")
+                || object.contains_key("old")
+                || object.contains_key("oldLines")
+                || object.contains_key("new")
+            {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "REPLACE_MODEL_INPUT accepts only an emitted M target and top-level newLines",
+                ));
+            }
+            let lines = object.remove("newLines").ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "REPLACE_MODEL_INPUT requires a complete newLines array",
+                )
+            })?;
+            let replacement = join_exact_plan_lines(&lines)?;
+            object.insert("replacement".to_owned(), json!({"kotlin":replacement}));
+            object.entry("preconditions").or_insert_with(|| json!({}));
+            object.entry("postconditions").or_insert_with(|| json!({}));
+            continue;
         }
         if object.get("kind").and_then(Value::as_str) == Some("CREATE_FILE")
             && !object.contains_key("replacement")
@@ -1655,6 +1714,35 @@ fn normalize_task_plan(plan: &mut Value) -> Result<(), ClewError> {
     }
     *operations = merged;
     Ok(())
+}
+
+fn join_exact_plan_lines(lines: &Value) -> Result<String, ClewError> {
+    let lines = lines.as_array().ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::InvalidInput,
+            "REPLACE_MODEL_INPUT newLines must be an array of strings",
+        )
+    })?;
+    let lines = lines
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                "REPLACE_MODEL_INPUT newLines must contain only strings",
+            )
+        })?;
+    if lines
+        .iter()
+        .any(|line| line.contains('\n') || line.contains('\r'))
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "REPLACE_MODEL_INPUT newLines items must each contain exactly one line",
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 fn join_plan_lines(
     object: &mut serde_json::Map<String, Value>,
@@ -2018,31 +2106,33 @@ fn canonicalize_extension_calls(source: &str, fq_name: &str, name: &str) -> Stri
     result
 }
 
-fn include_created_tests(test_tasks: &mut Vec<String>, plan: &Value, build_system: &str) {
-    if build_system != "MAVEN"
-        && test_tasks.iter().any(|argument| argument == "--tests")
-        && !test_tasks.iter().any(|argument| argument == "test")
-    {
-        let position = test_tasks
-            .iter()
-            .position(|argument| argument == "cleanTest")
-            .map_or(0, |index| index + 1);
-        test_tasks.insert(position, "test".into());
-    }
-    let stems = plan["operations"]
+fn include_created_tests(
+    test_tasks: &mut Vec<String>,
+    plan: &Value,
+    build_system: &str,
+) -> Result<(), ClewError> {
+    let mut created_tests = std::collections::BTreeSet::new();
+    for operation in plan["operations"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|operation| operation["kind"] == "CREATE_FILE")
-        .filter_map(|operation| operation.pointer("/target/fileId").and_then(Value::as_str))
-        .filter(|path| path.contains("/src/test/") || path.starts_with("src/test/"))
-        .filter_map(|path| Path::new(path).file_stem()?.to_str())
-        .map(str::to_owned)
-        .collect::<std::collections::BTreeSet<_>>();
-    if stems.is_empty() {
-        return;
+    {
+        if let Some(route) = created_kotlin_test_route(operation)? {
+            created_tests.insert(route);
+        }
+    }
+    if created_tests.is_empty() {
+        if build_system != "MAVEN" {
+            validate_gradle_test_filter_ownership(test_tasks)?;
+        }
+        return Ok(());
     }
     if build_system == "MAVEN" {
+        let stems = created_tests
+            .into_iter()
+            .map(|(_, stem)| stem)
+            .collect::<std::collections::BTreeSet<_>>();
         if let Some(filter) = test_tasks
             .iter_mut()
             .find(|argument| argument.starts_with("-Dtest="))
@@ -2063,16 +2153,301 @@ fn include_created_tests(test_tasks: &mut Vec<String>, plan: &Value, build_syste
                 format!("-Dtest={}", stems.into_iter().collect::<Vec<_>>().join(",")),
             );
         }
-        return;
+        return Ok(());
     }
-    for stem in stems {
-        let selector = format!("*{stem}");
-        if test_tasks.iter().any(|argument| argument == &selector) {
+    validate_gradle_test_filter_ownership(test_tasks)?;
+    test_tasks.retain(|argument| argument != "test");
+    for (test_task, stem) in created_tests {
+        include_gradle_test_filter(test_tasks, &test_task, &format!("*{stem}"))?;
+    }
+    validate_gradle_test_filter_ownership(test_tasks)
+}
+
+fn created_kotlin_test_route(operation: &Value) -> Result<Option<(String, String)>, ClewError> {
+    let path = operation
+        .pointer("/target/fileId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                "CREATE_FILE test routing requires an exact target.fileId",
+            )
+        })?;
+    if !has_kotlin_test_contour(path) {
+        return Ok(None);
+    }
+    let route = task_context::gradle_test_route(path).ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::InvalidInput,
+            format!("CREATE_FILE Kotlin test path is not a canonical module-owned route: {path}"),
+        )
+    })?;
+    let source = operation
+        .pointer("/replacement/kotlin")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                format!("CREATE_FILE Kotlin test has no exact replacement source: {path}"),
+            )
+        })?;
+    if !has_top_level_kotlin_test_declaration(source, &route.1) {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "CREATE_FILE Kotlin test {path} must declare a top-level class or object named {}",
+                route.1
+            ),
+        ));
+    }
+    Ok(Some(route))
+}
+
+fn has_kotlin_test_contour(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let components = normalized
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".")
+        .collect::<Vec<_>>();
+    components
+        .windows(3)
+        .any(|window| window == ["src", "test", "kotlin"])
+}
+
+fn has_top_level_kotlin_test_declaration(source: &str, expected: &str) -> bool {
+    let projection = kotlin_code_projection(source);
+    let modifiers = [
+        "public",
+        "private",
+        "protected",
+        "internal",
+        "expect",
+        "actual",
+        "final",
+        "open",
+        "abstract",
+        "sealed",
+        "external",
+        "data",
+        "enum",
+        "annotation",
+        "value",
+    ];
+    let mut brace_depth = 0usize;
+    for line in projection.lines() {
+        if brace_depth == 0 {
+            let tokens = line
+                .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+                .filter(|token| !token.is_empty())
+                .collect::<Vec<_>>();
+            if tokens.iter().enumerate().any(|(index, token)| {
+                matches!(*token, "class" | "object")
+                    && tokens.get(index + 1) == Some(&expected)
+                    && tokens[..index]
+                        .iter()
+                        .all(|modifier| modifiers.contains(modifier))
+            }) {
+                return true;
+            }
+        }
+        for character in line.chars() {
+            match character {
+                '{' => brace_depth = brace_depth.saturating_add(1),
+                '}' => brace_depth = brace_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn kotlin_code_projection(source: &str) -> String {
+    const NORMAL: u8 = 0;
+    const LINE_COMMENT: u8 = 1;
+    const BLOCK_COMMENT: u8 = 2;
+    const STRING: u8 = 3;
+    const RAW_STRING: u8 = 4;
+    const CHARACTER: u8 = 5;
+
+    let bytes = source.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut state = NORMAL;
+    let mut block_depth = 0usize;
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let pair = bytes.get(cursor..cursor + 2);
+        let triple = bytes.get(cursor..cursor + 3);
+        match state {
+            NORMAL if pair == Some(b"//") => {
+                output.extend_from_slice(b"  ");
+                cursor += 2;
+                state = LINE_COMMENT;
+            }
+            NORMAL if pair == Some(b"/*") => {
+                output.extend_from_slice(b"  ");
+                cursor += 2;
+                block_depth = 1;
+                state = BLOCK_COMMENT;
+            }
+            NORMAL if triple == Some(b"\"\"\"") => {
+                output.extend_from_slice(b"   ");
+                cursor += 3;
+                state = RAW_STRING;
+            }
+            NORMAL if bytes[cursor] == b'\"' => {
+                output.push(b' ');
+                cursor += 1;
+                state = STRING;
+            }
+            NORMAL if bytes[cursor] == b'\'' => {
+                output.push(b' ');
+                cursor += 1;
+                state = CHARACTER;
+            }
+            NORMAL => {
+                output.push(bytes[cursor]);
+                cursor += 1;
+            }
+            LINE_COMMENT if bytes[cursor] == b'\n' => {
+                output.push(b'\n');
+                cursor += 1;
+                state = NORMAL;
+            }
+            LINE_COMMENT => {
+                output.push(b' ');
+                cursor += 1;
+            }
+            BLOCK_COMMENT if pair == Some(b"/*") => {
+                output.extend_from_slice(b"  ");
+                cursor += 2;
+                block_depth += 1;
+            }
+            BLOCK_COMMENT if pair == Some(b"*/") => {
+                output.extend_from_slice(b"  ");
+                cursor += 2;
+                block_depth -= 1;
+                if block_depth == 0 {
+                    state = NORMAL;
+                }
+            }
+            BLOCK_COMMENT => {
+                output.push(if bytes[cursor] == b'\n' { b'\n' } else { b' ' });
+                cursor += 1;
+            }
+            RAW_STRING if triple == Some(b"\"\"\"") => {
+                output.extend_from_slice(b"   ");
+                cursor += 3;
+                state = NORMAL;
+            }
+            RAW_STRING => {
+                output.push(if bytes[cursor] == b'\n' { b'\n' } else { b' ' });
+                cursor += 1;
+            }
+            STRING | CHARACTER if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() => {
+                output.extend_from_slice(b"  ");
+                cursor += 2;
+            }
+            STRING if bytes[cursor] == b'\"' => {
+                output.push(b' ');
+                cursor += 1;
+                state = NORMAL;
+            }
+            CHARACTER if bytes[cursor] == b'\'' => {
+                output.push(b' ');
+                cursor += 1;
+                state = NORMAL;
+            }
+            STRING | CHARACTER => {
+                output.push(if bytes[cursor] == b'\n' { b'\n' } else { b' ' });
+                cursor += 1;
+            }
+            _ => unreachable!("known Kotlin lexical projection state"),
+        }
+    }
+    String::from_utf8(output).expect("Kotlin lexical projection preserves UTF-8")
+}
+
+fn include_gradle_test_filter(
+    arguments: &mut Vec<String>,
+    owning_task: &str,
+    selector: &str,
+) -> Result<(), ClewError> {
+    let Some(task_position) = arguments
+        .iter()
+        .position(|argument| argument == owning_task)
+    else {
+        arguments.extend([
+            owning_task.to_owned(),
+            "--tests".to_owned(),
+            selector.to_owned(),
+        ]);
+        return Ok(());
+    };
+    let mut cursor = task_position + 1;
+    let mut insertion = arguments.len();
+    while cursor < arguments.len() {
+        if arguments[cursor] == "--tests" {
+            let selected = arguments.get(cursor + 1).ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "Gradle --tests option has no selector",
+                )
+            })?;
+            if selected == selector {
+                return Ok(());
+            }
+            cursor += 2;
             continue;
         }
-        test_tasks.push("--tests".into());
-        test_tasks.push(selector);
+        if !arguments[cursor].starts_with('-') {
+            insertion = cursor;
+            break;
+        }
+        cursor += 1;
     }
+    arguments.splice(
+        insertion..insertion,
+        ["--tests".to_owned(), selector.to_owned()],
+    );
+    Ok(())
+}
+
+fn validate_gradle_test_filter_ownership(arguments: &[String]) -> Result<(), ClewError> {
+    if arguments.iter().any(|argument| argument == "--tests")
+        && arguments.iter().any(|argument| argument == "test")
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "bare Gradle test selector cannot own or accompany targeted test filters",
+        ));
+    }
+    let mut owning_task = None::<&str>;
+    let mut cursor = 0usize;
+    while cursor < arguments.len() {
+        let argument = &arguments[cursor];
+        if argument == "--tests" {
+            if owning_task.is_none() {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "Gradle --tests filter has no exact owning test task",
+                ));
+            }
+            if arguments.get(cursor + 1).is_none() {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "Gradle --tests option has no selector",
+                ));
+            }
+            cursor += 2;
+            continue;
+        }
+        if !argument.starts_with('-') {
+            owning_task = (argument.starts_with(':') && argument.ends_with(":test"))
+                .then_some(argument.as_str());
+        }
+        cursor += 1;
+    }
+    Ok(())
 }
 
 fn contains_identifier(source: &str, identifier: &str) -> bool {
@@ -2211,15 +2586,21 @@ mod task_plan_tests {
     fn created_tests_are_added_to_gradle_and_maven_validation() {
         let plan = json!({"operations":[{
             "kind":"CREATE_FILE",
-            "target":{"fileId":"src/test/kotlin/com/acme/RunnerTest.kt"}
+            "target":{"fileId":"src/test/kotlin/com/acme/RunnerTest.kt"},
+            "replacement":{"kotlin":"package com.acme\n\nclass RunnerTest"}
         }]});
-        let mut gradle = vec!["cleanTest".into(), "--tests".into(), "*ExistingTest".into()];
-        include_created_tests(&mut gradle, &plan, "GRADLE");
+        let mut gradle = vec![
+            "cleanTest".into(),
+            ":test".into(),
+            "--tests".into(),
+            "*ExistingTest".into(),
+        ];
+        include_created_tests(&mut gradle, &plan, "GRADLE").unwrap();
         assert_eq!(
             gradle,
             vec![
                 "cleanTest",
-                "test",
+                ":test",
                 "--tests",
                 "*ExistingTest",
                 "--tests",
@@ -2228,8 +2609,314 @@ mod task_plan_tests {
         );
 
         let mut maven = vec!["-Dtest=ExistingTest".into(), "test".into()];
-        include_created_tests(&mut maven, &plan, "MAVEN");
+        include_created_tests(&mut maven, &plan, "MAVEN").unwrap();
         assert_eq!(maven, vec!["-Dtest=ExistingTest,RunnerTest", "test"]);
+
+        let module_plan = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin21/src/test/kotlin/dev/acme/BtaBackendTest.kt"},
+            "replacement":{"kotlin":"package dev.acme\n\nclass BtaBackendTest"}
+        }]});
+        let mut module_tasks = Vec::new();
+        include_created_tests(&mut module_tasks, &module_plan, "GRADLE").unwrap();
+        assert_eq!(
+            module_tasks,
+            vec![":workers:kotlin21:test", "--tests", "*BtaBackendTest"]
+        );
+
+        let mut default_gradle_tasks = vec!["cleanTest".into(), "test".into()];
+        include_created_tests(&mut default_gradle_tasks, &module_plan, "GRADLE").unwrap();
+        assert_eq!(
+            default_gradle_tasks,
+            vec![
+                "cleanTest",
+                ":workers:kotlin21:test",
+                "--tests",
+                "*BtaBackendTest"
+            ]
+        );
+    }
+
+    #[test]
+    fn created_k21_test_shares_only_its_owning_module_task_with_surfaced_test() {
+        let plan = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin21/src/test/kotlin/dev/semanticthread/worker/BtaIncrementalBackend21Test.kt"},
+            "replacement":{"kotlin":"package dev.semanticthread.worker\n\nclass BtaIncrementalBackend21Test"}
+        }]});
+        let mut tasks = vec![
+            "cleanTest".into(),
+            ":workers:kotlin21:test".into(),
+            "--tests".into(),
+            "*K2FactGenerationStore21Test".into(),
+        ];
+
+        include_created_tests(&mut tasks, &plan, "GRADLE").unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                "cleanTest",
+                ":workers:kotlin21:test",
+                "--tests",
+                "*K2FactGenerationStore21Test",
+                "--tests",
+                "*BtaIncrementalBackend21Test",
+            ]
+        );
+        assert!(!tasks.iter().any(|argument| argument == "test"));
+    }
+
+    #[test]
+    fn created_gradle_test_is_inserted_before_the_next_module_route() {
+        let plan = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin/src/test/kotlin/dev/semanticthread/worker/CommonCreatedTest.kt"},
+            "replacement":{"kotlin":"package dev.semanticthread.worker\n\ninternal class CommonCreatedTest"}
+        }]});
+        let mut tasks = vec![
+            "cleanTest".into(),
+            ":workers:kotlin:test".into(),
+            "--tests".into(),
+            "*ExistingCommonTest".into(),
+            ":workers:kotlin21:test".into(),
+            "--tests".into(),
+            "*ExistingK21Test".into(),
+        ];
+
+        include_created_tests(&mut tasks, &plan, "GRADLE").unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                "cleanTest",
+                ":workers:kotlin:test",
+                "--tests",
+                "*ExistingCommonTest",
+                "--tests",
+                "*CommonCreatedTest",
+                ":workers:kotlin21:test",
+                "--tests",
+                "*ExistingK21Test",
+            ]
+        );
+    }
+
+    #[test]
+    fn created_common_runtime_test_is_added_alongside_existing_context_filter() {
+        let plan = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin/src/test/kotlin/dev/semanticthread/worker/IncrementalK2RuntimeTest.kt"},
+            "replacement":{"kotlin":"package dev.semanticthread.worker\n\nclass IncrementalK2RuntimeTest"}
+        }]});
+        let mut tasks = vec![
+            "cleanTest".into(),
+            ":workers:kotlin:test".into(),
+            "--tests".into(),
+            "*TransportProjectModelCommandTest".into(),
+        ];
+
+        include_created_tests(&mut tasks, &plan, "GRADLE").unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                "cleanTest",
+                ":workers:kotlin:test",
+                "--tests",
+                "*TransportProjectModelCommandTest",
+                "--tests",
+                "*IncrementalK2RuntimeTest",
+            ]
+        );
+    }
+
+    #[test]
+    fn created_common_runtime_test_replaces_bare_model_fallback_gate() {
+        let plan = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin/src/test/kotlin/dev/semanticthread/worker/IncrementalK2RuntimeTest.kt"},
+            "replacement":{"kotlin":"package dev.semanticthread.worker\n\nobject IncrementalK2RuntimeTest"}
+        }]});
+        let mut tasks = vec!["cleanTest".into(), "test".into()];
+
+        include_created_tests(&mut tasks, &plan, "GRADLE").unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                "cleanTest",
+                ":workers:kotlin:test",
+                "--tests",
+                "*IncrementalK2RuntimeTest",
+            ]
+        );
+    }
+
+    #[test]
+    fn created_test_routes_are_sorted_deduplicated_and_do_not_repeat_existing_filter() {
+        let operation = |name: &str| {
+            json!({
+                "kind":"CREATE_FILE",
+                "target":{"fileId":format!("workers/kotlin/src/test/kotlin/dev/acme/{name}.kt")},
+                "replacement":{"kotlin":format!("package dev.acme\n\nclass {name}")}
+            })
+        };
+        let plan = json!({"operations":[
+            operation("ZuluTest"),
+            operation("AlphaTest"),
+            operation("ZuluTest"),
+        ]});
+        let mut tasks = vec![
+            "cleanTest".into(),
+            ":workers:kotlin:test".into(),
+            "--tests".into(),
+            "*AlphaTest".into(),
+        ];
+
+        include_created_tests(&mut tasks, &plan, "GRADLE").unwrap();
+
+        assert_eq!(
+            tasks,
+            vec![
+                "cleanTest",
+                ":workers:kotlin:test",
+                "--tests",
+                "*AlphaTest",
+                "--tests",
+                "*ZuluTest",
+            ]
+        );
+    }
+
+    #[test]
+    fn created_kotlin_test_paths_fail_closed_when_not_canonical_or_routable() {
+        for path in [
+            "workers/kotlin/src/test/kotlin/../RuntimeTest.kt",
+            "workers\\kotlin\\src\\test\\kotlin\\dev\\acme\\RuntimeTest.kt",
+            "/workers/kotlin/src/test/kotlin/dev/acme/RuntimeTest.kt",
+            "workers/kotlin/src/test/kotlin/dev/acme/RuntimeTest.java",
+            "workers/kotlin/src/test/kotlin/dev/acme/RuntimeSpec.kt",
+            "src/test/kotlin",
+            "workers/src/test/kotlin/dev/src/test/kotlin/AmbiguousTest.kt",
+        ] {
+            let plan = json!({"operations":[{
+                "kind":"CREATE_FILE",
+                "target":{"fileId":path},
+                "replacement":{"kotlin":"class RuntimeTest"}
+            }]});
+            let mut tasks = vec!["cleanTest".into()];
+
+            let error = include_created_tests(&mut tasks, &plan, "GRADLE").unwrap_err();
+
+            assert_eq!(error.code, ErrorCode::InvalidInput, "path={path}");
+            assert!(error.message.contains("canonical module-owned route"));
+            assert_eq!(tasks, vec!["cleanTest"]);
+        }
+    }
+
+    #[test]
+    fn created_kotlin_test_requires_matching_top_level_type_and_ignores_main_source() {
+        let unmatched = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin/src/test/kotlin/dev/acme/RuntimeTest.kt"},
+            "replacement":{"kotlin":"// class RuntimeTest\nval decoy = \"class RuntimeTest\"\nclass OtherTest"}
+        }]});
+        let mut tasks = vec!["cleanTest".into()];
+        let error = include_created_tests(&mut tasks, &unmatched, "GRADLE").unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(
+            error
+                .message
+                .contains("top-level class or object named RuntimeTest")
+        );
+
+        let main_source = json!({"operations":[{
+            "kind":"CREATE_FILE",
+            "target":{"fileId":"workers/kotlin/src/main/kotlin/dev/acme/Runtime.kt"},
+            "replacement":{"kotlin":"package dev.acme\n\nclass Runtime"}
+        }]});
+        include_created_tests(&mut tasks, &main_source, "GRADLE").unwrap();
+        assert_eq!(tasks, vec!["cleanTest"]);
+    }
+
+    #[test]
+    fn bare_gradle_test_selector_cannot_own_a_targeted_filter() {
+        let mut tasks = vec![
+            "cleanTest".into(),
+            "test".into(),
+            "--tests".into(),
+            "*UnownedTest".into(),
+        ];
+        let error =
+            include_created_tests(&mut tasks, &json!({"operations":[]}), "GRADLE").unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.contains("bare Gradle test selector"));
+    }
+
+    #[test]
+    fn normalizes_and_expands_only_emitted_model_input_targets() {
+        let exact_hash = canonical::hash_bytes(b"plugins {}\n");
+        let context = json!({
+            "editSurfaces":[],
+            "contracts":[],
+            "tests":[],
+            "modelInputSurfaces":[{
+                "targetId":"M1",
+                "path":"workers/kotlin21/build.gradle.kts",
+                "sourceText":"plugins {}\n",
+                "modelInputTarget":{
+                    "anchorId":"model-input:one",
+                    "fileId":"workers/kotlin21/build.gradle.kts",
+                    "exactTextHash":exact_hash,
+                    "syntaxKind":"MODEL_INPUT_FILE",
+                    "semanticInputManifestHash":"sha256:manifest"
+                }
+            }]
+        });
+        let mut plan = json!({"operations":[{
+            "kind":"REPLACE_MODEL_INPUT",
+            "target":{"targetId":"M1"},
+            "newLines":["plugins {", "    kotlin(\"jvm\")", "}", ""]
+        }]});
+
+        normalize_task_plan(&mut plan).unwrap();
+        expand_task_targets(&mut plan, &context).unwrap();
+
+        assert_eq!(
+            plan["operations"][0]["replacement"]["kotlin"],
+            "plugins {\n    kotlin(\"jvm\")\n}\n"
+        );
+        assert_eq!(
+            plan["operations"][0]["target"]["fileId"],
+            "workers/kotlin21/build.gradle.kts"
+        );
+        assert_eq!(plan["operations"][0]["target"]["exactTextHash"], exact_hash);
+
+        for rejected in [
+            json!({"operations":[{
+                "kind":"REPLACE_MODEL_INPUT",
+                "target":{"targetId":"workers/kotlin21/build.gradle.kts"},
+                "newLines":["plugins {}"]
+            }]}),
+            json!({"operations":[{
+                "kind":"REPLACE_MODEL_INPUT",
+                "target":{"targetId":"M1"},
+                "path":"workers/kotlin21/build.gradle.kts",
+                "newLines":["plugins {}"]
+            }]}),
+            json!({"operations":[{
+                "kind":"REPLACE_MODEL_INPUT",
+                "target":{"targetId":"M1"},
+                "newLines":["plugins {}\nrepositories {}"]
+            }]}),
+        ] {
+            let mut rejected = rejected;
+            let result = normalize_task_plan(&mut rejected)
+                .and_then(|_| expand_task_targets(&mut rejected, &context));
+            assert!(result.is_err());
+        }
     }
 
     #[test]

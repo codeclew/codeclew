@@ -11,6 +11,8 @@ import stat
 import subprocess
 import tempfile
 import shutil
+import argparse
+from contextlib import nullcontext
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,7 @@ INJECTION_ENV = {
     "GRADLE_USER_HOME",
     "JAVA_TOOL_OPTIONS",
     "JDK_JAVA_OPTIONS",
+    "JAVA_OPTS",
     "_JAVA_OPTIONS",
 }
 
@@ -68,29 +71,60 @@ def tree_hash(rows: list[dict[str, object]]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--variant",
+        action="append",
+        choices=[variant for variant, _, _ in VARIANTS],
+        help="build only this worker variant; may be repeated",
+    )
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument(
+        "--gradle-user-home",
+        type=Path,
+        help="use an existing Gradle cache instead of a fresh temporary one",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    selected = tuple(
+        row for row in VARIANTS if not args.variant or row[0] in set(args.variant)
+    )
     MANIFEST_ROOT.parent.mkdir(parents=True, exist_ok=True)
+    gradle_home_context = (
+        nullcontext(args.gradle_user_home.resolve())
+        if args.gradle_user_home is not None
+        else tempfile.TemporaryDirectory(prefix="codeclew-authority-gradle-")
+    )
     with tempfile.TemporaryDirectory(
         prefix=".trusted-worker-manifests-", dir=MANIFEST_ROOT.parent
-    ) as staged_manifest_root, tempfile.TemporaryDirectory(
-        prefix="codeclew-authority-gradle-"
-    ) as gradle_home:
+    ) as staged_manifest_root, gradle_home_context as gradle_home:
         staged_manifest_root = Path(staged_manifest_root)
+        gradle_home = Path(gradle_home)
+        if args.variant and MANIFEST_ROOT.exists():
+            for manifest in MANIFEST_ROOT.glob("*.json"):
+                shutil.copy2(manifest, staged_manifest_root / manifest.name)
         environment = {
             key: value
             for key, value in os.environ.items()
             if key not in INJECTION_ENV and not key.startswith("ORG_GRADLE_PROJECT_")
         }
-        environment["GRADLE_USER_HOME"] = gradle_home
-        for variant, task, relative_distribution in VARIANTS:
+        environment["GRADLE_USER_HOME"] = str(gradle_home)
+        for variant, task, relative_distribution in selected:
+            command = [
+                str(ROOT / "gradlew"),
+                task,
+                "--rerun-tasks",
+                "--no-daemon",
+                "--quiet",
+            ]
+            if args.offline:
+                command.append("--offline")
             subprocess.run(
-                [
-                    str(ROOT / "gradlew"),
-                    task,
-                    "--rerun-tasks",
-                    "--no-daemon",
-                    "--quiet",
-                ],
+                command,
                 cwd=ROOT,
                 env=environment,
                 check=True,

@@ -6,8 +6,9 @@ use crate::proto::{
     WorkerRequest, WorkerResponse, worker_request, worker_response,
 };
 use prost::Message;
+use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -16,7 +17,42 @@ use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/worker_build_inputs.rs"));
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CompilerIndexBackend {
+    BtaPersistent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CompilerIndexStatus {
+    UnchangedHit,
+    ColdFull,
+    Incremental,
+    RecoveredFull,
+    Busy,
+    FailedRecoverable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompilerIndexProfile {
+    pub backend: CompilerIndexBackend,
+    pub status: CompilerIndexStatus,
+    pub valid: bool,
+    pub total_micros: u64,
+    pub compiler_micros: u64,
+    pub fir_extraction_micros: u64,
+    pub total_files: u64,
+    pub compiled_files: u64,
+    pub reused_files: u64,
+    pub recovered: bool,
+    pub fallback_used: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct RequestProfile {
     pub serialization_micros: u64,
     pub ipc_micros: u64,
@@ -26,6 +62,7 @@ pub struct RequestProfile {
     pub psi_parse_micros: u64,
     pub k2_analysis_micros: u64,
     pub fir_extraction_micros: u64,
+    pub compiler_index: Option<CompilerIndexProfile>,
 }
 
 pub struct WorkerClient {
@@ -40,10 +77,19 @@ pub struct WorkerClient {
     pub last_profile: RequestProfile,
     authority_session: Uuid,
     trusted_distribution: Option<TrustedWorkerDistribution>,
+    build_state_root: Option<PathBuf>,
+    compiler_index_root: Option<PathBuf>,
+    _transport_root: tempfile::TempDir,
+    transport_root: PathBuf,
     issued_index_facts: BTreeMap<Uuid, String>,
+    issued_source_syntax: BTreeMap<Uuid, String>,
 }
 
-/// Opaque authority capability for one exact, live `IndexFiles` response.
+const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const MAX_WORKER_RESPONSE_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Opaque `COMPILER_SEMANTIC` authority capability for one exact, live
+/// `IndexFiles` response.
 ///
 /// It deliberately has no `Clone`, serde implementation, public fields, or
 /// constructor. Reading the index response does not grant authority to persist
@@ -63,6 +109,39 @@ pub struct VerifiedIndexFacts {
     relation_hash: String,
     descriptor_hash: String,
     payload: Value,
+}
+
+/// Opaque `SOURCE_SYNTAX` capability for current source declarations.
+///
+/// This type is intentionally disjoint from [`VerifiedIndexFacts`]. It cannot
+/// authorize compiler facts, relation graphs, descriptor graphs, edits, or
+/// transactions. The issuing live worker session rechecks the exact files on
+/// every inspection, so a source change invalidates the capability even when
+/// Git HEAD does not change.
+pub struct VerifiedSourceSyntax {
+    receipt_id: Uuid,
+    authority_session: Uuid,
+    repo: PathBuf,
+    compilation: String,
+    distribution_tree_hash: String,
+    build_input_digest: String,
+    requested_files: Vec<String>,
+    source_manifest_hash: String,
+    payload_hash: String,
+    payload: Value,
+}
+
+pub const COMPILER_SEMANTIC_AUTHORITY: &str = "COMPILER_SEMANTIC";
+pub const SOURCE_SYNTAX_AUTHORITY: &str = "SOURCE_SYNTAX";
+
+/// Stable, read-only identity of the exact worker distribution trusted by this
+/// client.  Callers may use it as a cache-key input, but it grants no authority
+/// to issue or replay compiler receipts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedDistributionIdentity {
+    pub tree_hash: String,
+    pub build_input_digest: String,
+    pub plugin_fingerprint: String,
 }
 
 fn verified_index_failure_stage(error: &ClewError, default: &str) -> String {
@@ -88,6 +167,29 @@ fn attach_verified_index_failure(
         crate::canonical::hash(value.unwrap_or(&Value::Null))
             .unwrap_or_else(|_| "unavailable".into())
     };
+    let worker_diagnostics = facts
+        .and_then(|value| value.get("diagnostics"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .take(16)
+                .map(|row| {
+                    let message = row
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let mut bounded = message.chars().take(1_024).collect::<String>();
+                    if message.chars().count() > 1_024 {
+                        bounded.push_str("…");
+                    }
+                    serde_json::json!({
+                        "severity":row.get("severity").and_then(Value::as_str).unwrap_or("INFO"),
+                        "message":bounded,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let diagnostic = serde_json::json!({
         "schema":"verified-index-failure-diagnostic/0.1",
         "stage":stage,
@@ -101,6 +203,8 @@ fn attach_verified_index_failure(
         "relationBoundaryCount":relation_graph.and_then(|value| value.get("boundaries")).and_then(Value::as_array).map_or(0, Vec::len),
         "descriptorCount":descriptor_graph.and_then(|value| value.get("descriptors")).and_then(Value::as_array).map_or(0, Vec::len),
         "descriptorBoundaryCount":descriptor_graph.and_then(|value| value.get("boundaries")).and_then(Value::as_array).map_or(0, Vec::len),
+        "workerDiagnosticCount":facts.and_then(|value| value.get("diagnostics")).and_then(Value::as_array).map_or(0, Vec::len),
+        "workerDiagnostics":worker_diagnostics,
         "descriptorFailure":if stage == "DESCRIPTOR_GRAPH" {
             facts.map(crate::index::descriptor_validation_diagnostic).unwrap_or(Value::Null)
         } else {
@@ -113,8 +217,500 @@ fn attach_verified_index_failure(
     error
 }
 
+fn require_k2_validated(facts: &Value) -> Result<(), ClewError> {
+    if facts.get("k2Validated").and_then(Value::as_bool) != Some(true) {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "verified compiler facts require a successful K2 analysis",
+        ));
+    }
+    Ok(())
+}
+
+fn source_syntax_protocol_error(message: impl Into<String>) -> ClewError {
+    ClewError::new(ErrorCode::WorkerProtocolMismatch, message)
+}
+
+fn require_absent_or_empty_rows(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    context: &str,
+) -> Result<(), ClewError> {
+    let Some(value) = object.get(key) else {
+        return Ok(());
+    };
+    if value.as_array().is_some_and(Vec::is_empty) {
+        return Ok(());
+    }
+    Err(source_syntax_protocol_error(format!(
+        "SOURCE_SYNTAX response contains {context}"
+    )))
+}
+
+fn require_empty_semantic_graph(
+    facts: &Value,
+    graph_key: &str,
+    row_keys: &[&str],
+    hash_key: &str,
+) -> Result<(), ClewError> {
+    let Some(graph) = facts.get(graph_key) else {
+        if facts.get(hash_key).is_some_and(|value| !value.is_null()) {
+            return Err(source_syntax_protocol_error(format!(
+                "SOURCE_SYNTAX response has {hash_key} without {graph_key}"
+            )));
+        }
+        return Ok(());
+    };
+    if let Some(rows) = graph.as_array() {
+        if !rows.is_empty() {
+            return Err(source_syntax_protocol_error(format!(
+                "SOURCE_SYNTAX {graph_key} contains semantic rows"
+            )));
+        }
+        if let Some(expected) = facts.get(hash_key) {
+            let expected = expected.as_str().ok_or_else(|| {
+                source_syntax_protocol_error(format!("SOURCE_SYNTAX {hash_key} is not a string"))
+            })?;
+            if crate::canonical::hash(graph).map_err(internal)? != expected {
+                return Err(source_syntax_protocol_error(format!(
+                    "SOURCE_SYNTAX {graph_key} hash differs"
+                )));
+            }
+        }
+        return Ok(());
+    }
+    let object = graph.as_object().ok_or_else(|| {
+        source_syntax_protocol_error(format!(
+            "SOURCE_SYNTAX {graph_key} must be absent or an empty graph"
+        ))
+    })?;
+    for key in row_keys {
+        require_absent_or_empty_rows(object, key, &format!("{graph_key}.{key} rows"))?;
+    }
+    if let Some(provenance) = object.get("provenance") {
+        let empty = provenance.is_null()
+            || provenance
+                .as_object()
+                .is_some_and(serde_json::Map::is_empty);
+        if !empty {
+            return Err(source_syntax_protocol_error(format!(
+                "SOURCE_SYNTAX {graph_key} carries semantic provenance"
+            )));
+        }
+    }
+    if let Some(expected) = facts.get(hash_key) {
+        let expected = expected.as_str().ok_or_else(|| {
+            source_syntax_protocol_error(format!("SOURCE_SYNTAX {hash_key} is not a string"))
+        })?;
+        if crate::canonical::hash(graph).map_err(internal)? != expected {
+            return Err(source_syntax_protocol_error(format!(
+                "SOURCE_SYNTAX {graph_key} hash differs"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn source_syntax_relative_path(repo: &Path, raw: &str) -> Result<(PathBuf, Vec<u8>), ClewError> {
+    let relative = Path::new(raw);
+    if raw.is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX file path is not a normalized repository-relative path",
+        ));
+    }
+    let joined = repo.join(relative);
+    let metadata = std::fs::symlink_metadata(&joined).map_err(|error| {
+        ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            format!("SOURCE_SYNTAX file is no longer current: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "SOURCE_SYNTAX file is no longer a regular source file",
+        ));
+    }
+    let canonical = joined.canonicalize().map_err(internal)?;
+    if canonical != joined || !canonical.starts_with(repo) {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX file resolves through a symlink or outside the repository",
+        ));
+    }
+    let bytes = std::fs::read(&canonical).map_err(internal)?;
+    Ok((canonical, bytes))
+}
+
+/// Validate the deliberately narrow claim made by a `SOURCE_SYNTAX` response
+/// and return a stable manifest hash for the exact current declarations.
+fn validate_source_syntax_response(
+    repo: &Path,
+    compilation: &str,
+    requested_files: &[String],
+    facts: &Value,
+) -> Result<String, ClewError> {
+    let repo = repo.canonicalize().map_err(internal)?;
+    if facts.get("schema").and_then(Value::as_str) != Some("semantic-index/0.1")
+        || facts.get("compilation").and_then(Value::as_str) != Some(compilation)
+    {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX response schema or compilation differs from the request",
+        ));
+    }
+    if facts.get("analysisMode").and_then(Value::as_str) != Some("SYNTAX_DECLARATIONS") {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX response requires analysisMode SYNTAX_DECLARATIONS",
+        ));
+    }
+    if facts.get("k2Validated").and_then(Value::as_bool) != Some(false) {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX response must explicitly report k2Validated false",
+        ));
+    }
+    if facts.get("partial").and_then(Value::as_bool) != Some(!requested_files.is_empty()) {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX response partial flag differs from the exact request selector",
+        ));
+    }
+    require_empty_semantic_graph(
+        facts,
+        "declarationRelations",
+        &["relations", "boundaries"],
+        "declarationRelationHash",
+    )?;
+    require_empty_semantic_graph(
+        facts,
+        "declarationDescriptors",
+        &["descriptors", "boundaries"],
+        "declarationDescriptorHash",
+    )?;
+    let top = facts.as_object().ok_or_else(|| {
+        source_syntax_protocol_error("SOURCE_SYNTAX response is not a JSON object")
+    })?;
+    require_absent_or_empty_rows(top, "semanticFacts", "top-level semantic facts")?;
+
+    let files = facts
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            source_syntax_protocol_error("SOURCE_SYNTAX response has no file payload")
+        })?;
+    let mut manifest = BTreeMap::<String, Value>::new();
+    for file in files {
+        let object = file.as_object().ok_or_else(|| {
+            source_syntax_protocol_error("SOURCE_SYNTAX file payload is not an object")
+        })?;
+        for (key, context) in [
+            ("semanticFacts", "per-file semantic facts"),
+            ("inheritance", "per-file inheritance facts"),
+            ("overrides", "per-file override facts"),
+            ("functionSummaries", "per-file function summaries"),
+        ] {
+            require_absent_or_empty_rows(object, key, context)?;
+        }
+        let relative = object.get("path").and_then(Value::as_str).ok_or_else(|| {
+            source_syntax_protocol_error("SOURCE_SYNTAX file payload has no path")
+        })?;
+        if object.get("normalizedRelativePath").and_then(Value::as_str) != Some(relative) {
+            return Err(source_syntax_protocol_error(
+                "SOURCE_SYNTAX file path is not its normalizedRelativePath",
+            ));
+        }
+        let (_, bytes) = source_syntax_relative_path(&repo, relative)?;
+        let content_hash = crate::canonical::hash_bytes(&bytes);
+        if object.get("contentHash").and_then(Value::as_str) != Some(content_hash.as_str()) {
+            return Err(ClewError::new(
+                ErrorCode::ProjectModelChanged,
+                format!("SOURCE_SYNTAX content hash is stale for {relative}"),
+            ));
+        }
+        let source = std::str::from_utf8(&bytes).map_err(|_| {
+            source_syntax_protocol_error(format!(
+                "SOURCE_SYNTAX Kotlin source is not UTF-8: {relative}"
+            ))
+        })?;
+        let source_utf16_len = source.encode_utf16().count() as u64;
+        let declarations = object
+            .get("declarations")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                source_syntax_protocol_error(format!(
+                    "SOURCE_SYNTAX file has no declaration payload: {relative}"
+                ))
+            })?;
+        // SOURCE_SYNTAX identities are deliberately non-semantic: overloads
+        // and declarations from an unknown compilation may share the worker's
+        // provisional declarationId/symbolId.  The authority is the exact
+        // current source occurrence, which must still be unique.
+        let mut declaration_origins = BTreeSet::<(u64, u64)>::new();
+        let mut previous_range: Option<(u64, u64)> = None;
+        for declaration in declarations {
+            let declaration = declaration.as_object().ok_or_else(|| {
+                source_syntax_protocol_error("SOURCE_SYNTAX declaration is not an object")
+            })?;
+            if declaration.contains_key("compilerSymbol")
+                || declaration.contains_key("compilerAuthority")
+            {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration contains compiler-semantic authority",
+                ));
+            }
+            for key in ["declarationId", "symbolId", "kind"] {
+                if declaration
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_none_or(str::is_empty)
+                {
+                    return Err(source_syntax_protocol_error(format!(
+                        "SOURCE_SYNTAX declaration has no {key}"
+                    )));
+                }
+            }
+            if declaration.get("name").and_then(Value::as_str).is_none() {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration has no string name",
+                ));
+            }
+            if declaration.get("file").and_then(Value::as_str) != Some(relative) {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration file differs from its containing file",
+                ));
+            }
+            let start = declaration.get("rangeStart").and_then(Value::as_u64);
+            let end = declaration.get("rangeEnd").and_then(Value::as_u64);
+            let (Some(start), Some(end)) = (start, end) else {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration has no source range",
+                ));
+            };
+            if start > end || end > source_utf16_len {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration range is outside current source",
+                ));
+            }
+            if previous_range.is_some_and(|previous| previous > (start, end)) {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declarations are not in source order",
+                ));
+            }
+            previous_range = Some((start, end));
+            let origin = declaration
+                .get("sourceOrigin")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    source_syntax_protocol_error("SOURCE_SYNTAX declaration has no source origin")
+                })?;
+            if origin.get("file").and_then(Value::as_str) != Some(relative)
+                || origin.get("rangeStart").and_then(Value::as_u64) != Some(start)
+                || origin.get("rangeEnd").and_then(Value::as_u64) != Some(end)
+            {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration source origin differs from its range",
+                ));
+            }
+            if !declaration_origins.insert((start, end)) {
+                return Err(source_syntax_protocol_error(
+                    "SOURCE_SYNTAX declaration source occurrences are not unique within a file",
+                ));
+            }
+        }
+        let declaration_hash =
+            crate::canonical::hash(&Value::Array(declarations.clone())).map_err(internal)?;
+        if manifest
+            .insert(
+                relative.to_owned(),
+                serde_json::json!({
+                    "contentHash":content_hash,
+                    "declarationHash":declaration_hash,
+                }),
+            )
+            .is_some()
+        {
+            return Err(source_syntax_protocol_error(
+                "SOURCE_SYNTAX response contains a duplicate file path",
+            ));
+        }
+    }
+
+    let mut requested = BTreeMap::<String, ()>::new();
+    for relative in requested_files {
+        let _ = source_syntax_relative_path(&repo, relative)?;
+        if requested.insert(relative.clone(), ()).is_some() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "SOURCE_SYNTAX request contains duplicate files",
+            ));
+        }
+    }
+    if requested.keys().ne(manifest.keys()) {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX response does not contain exactly the requested files",
+        ));
+    }
+
+    crate::canonical::hash(&serde_json::json!({
+        "authority":SOURCE_SYNTAX_AUTHORITY,
+        "compilation":compilation,
+        "files":manifest,
+    }))
+    .map_err(internal)
+}
+
+/// Preserve compiler-proven base relations while quarantining optional
+/// relation enrichments whose coordinate/CFG contract is not yet reliable.
+///
+/// The worker's original graph hash is verified before any transformation.
+/// Nothing is upgraded to PROVEN here: uncertain enrichments are removed and
+/// represented by typed UNKNOWN boundaries, then the ordinary strict graph
+/// validator authorizes the remaining facts.
+fn normalize_optional_relation_evidence(facts: &mut Value) -> Result<(), ClewError> {
+    fn invalid(message: impl Into<String>) -> ClewError {
+        ClewError::new(ErrorCode::InvalidInput, message)
+    }
+
+    let expected_hash = facts
+        .get("declarationRelationHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("worker index has no declarationRelationHash"))?
+        .to_owned();
+    let graph = facts
+        .get_mut("declarationRelations")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| invalid("worker index has no declaration relation graph"))?;
+    if crate::canonical::hash(graph).map_err(internal)? != expected_hash {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "declaration relation hash differs before optional evidence normalization",
+        ));
+    }
+
+    for label in ["relations", "boundaries"] {
+        let rows = graph
+            .get(label)
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(format!("declaration relation graph has no {label}")))?;
+        let encoded = rows
+            .iter()
+            .map(crate::canonical::bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+        if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(invalid(format!(
+                "declaration relation {label} must be canonical before normalization"
+            )));
+        }
+    }
+
+    let original_relations = graph["relations"]
+        .as_array_mut()
+        .ok_or_else(|| invalid("declaration relation graph has no relations"))?;
+    let mut retained = Vec::with_capacity(original_relations.len());
+    let mut normalized_rows = BTreeMap::<String, Vec<String>>::new();
+    for mut relation in std::mem::take(original_relations) {
+        let kind = relation
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let raw_row_hash = crate::canonical::hash(&relation).map_err(internal)?;
+        let boundary_code = match kind.as_str() {
+            "NULL_COALESCES" => Some("NULL_COALESCING_FLOW_UNAVAILABLE"),
+            "RETURNS_VALUE_FROM" => Some("RETURN_VALUE_FLOW_UNAVAILABLE"),
+            _ => None,
+        };
+        if let Some(code) = boundary_code {
+            normalized_rows
+                .entry(code.to_owned())
+                .or_default()
+                .push(raw_row_hash);
+            continue;
+        }
+
+        let argument_mapping = relation.get("argumentToParameter");
+        let has_argument_mapping_evidence = argument_mapping
+            .is_some_and(|value| value.as_array().map_or(true, |rows| !rows.is_empty()));
+        if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS") && argument_mapping.is_some() {
+            relation
+                .as_object_mut()
+                .expect("relation was already an object")
+                .remove("argumentToParameter");
+        }
+        if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS") && has_argument_mapping_evidence {
+            normalized_rows
+                .entry("ARGUMENT_MAPPING_UNAVAILABLE".to_owned())
+                .or_default()
+                .push(raw_row_hash);
+        }
+        retained.push(relation);
+    }
+
+    let mut unique_relations = BTreeMap::new();
+    for relation in retained {
+        unique_relations.insert(
+            crate::canonical::bytes(&relation).map_err(internal)?,
+            relation,
+        );
+    }
+    *original_relations = unique_relations.into_values().collect();
+
+    if !normalized_rows.is_empty() {
+        let boundaries = graph["boundaries"]
+            .as_array_mut()
+            .ok_or_else(|| invalid("declaration relation graph has no boundaries"))?;
+        for (code, mut row_hashes) in normalized_rows {
+            row_hashes.sort();
+            row_hashes.dedup();
+            boundaries.push(serde_json::json!({
+                "schema":"declaration-relation-boundary/0.1",
+                "stage":"OPTIONAL_RELATION_EVIDENCE",
+                "code":code,
+                "resolution":"UNKNOWN",
+                "provider":"CODECLEW_RELATION_NORMALIZER",
+                "affectedRowCount":row_hashes.len(),
+                "rawRowsHash":crate::canonical::hash(&serde_json::json!(row_hashes)).map_err(internal)?,
+            }));
+        }
+        let mut unique_boundaries = BTreeMap::new();
+        for boundary in std::mem::take(boundaries) {
+            unique_boundaries.insert(
+                crate::canonical::bytes(&boundary).map_err(internal)?,
+                boundary,
+            );
+        }
+        *boundaries = unique_boundaries.into_values().collect();
+        graph["coverage"] = Value::String("PARTIAL".to_owned());
+    }
+
+    let normalized_hash = crate::canonical::hash(graph).map_err(internal)?;
+    facts["declarationRelationHash"] = Value::String(normalized_hash);
+    Ok(())
+}
+
 impl VerifiedIndexFacts {
+    pub fn authority(&self) -> &'static str {
+        COMPILER_SEMANTIC_AUTHORITY
+    }
+
     pub(crate) fn compilation(&self) -> &str {
+        &self.compilation
+    }
+
+    pub(crate) fn project_model_hash(&self) -> &str {
+        &self.project_model_hash
+    }
+}
+
+impl VerifiedSourceSyntax {
+    pub fn authority(&self) -> &'static str {
+        SOURCE_SYNTAX_AUTHORITY
+    }
+
+    pub fn compilation(&self) -> &str {
         &self.compilation
     }
 }
@@ -164,6 +760,20 @@ impl WorkerVariant {
             Self::Kotlin23 => "2.3.0",
             Self::Kotlin24 => "2.4.10",
         }
+    }
+
+    fn discovery_bit(self) -> u8 {
+        match self {
+            Self::Kotlin21 => 1 << 0,
+            Self::Kotlin23 => 1 << 1,
+            Self::Kotlin24 => 1 << 2,
+        }
+    }
+
+    fn next_untried_for_abi_discovery(tried: u8) -> Option<Self> {
+        [Self::Kotlin24, Self::Kotlin23, Self::Kotlin21]
+            .into_iter()
+            .find(|variant| tried & variant.discovery_bit() == 0)
     }
 
     fn install_task(self) -> &'static str {
@@ -237,16 +847,130 @@ struct PinnedInputs {
     output_digest: &'static str,
 }
 
+fn validate_compiler_index_root(workspace: &Path, root: &Path) -> Result<PathBuf, ClewError> {
+    if !root.is_absolute() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "compiler index root must be absolute",
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(root).map_err(internal)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "compiler index root must be a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "compiler index root must be private",
+            ));
+        }
+    }
+    let canonical = root.canonicalize().map_err(internal)?;
+    if canonical != root {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "compiler index root must be canonical and have no symlinked ancestor",
+        ));
+    }
+    let workspace = workspace.canonicalize().map_err(internal)?;
+    if canonical.starts_with(&workspace) || workspace.starts_with(&canonical) {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "compiler index root must be external to the worker workspace",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn configure_worker_state_environment(
+    command: &mut Command,
+    build_state_root: Option<&Path>,
+    compiler_index_root: Option<&Path>,
+) {
+    command
+        .env_remove("CODECLEW_K1_BUILD_STATE_ROOT")
+        .env_remove("CODECLEW_K2_INDEX_ROOT");
+    if let Some(root) = build_state_root {
+        command.env("CODECLEW_K1_BUILD_STATE_ROOT", root);
+    }
+    if let Some(root) = compiler_index_root {
+        command.env("CODECLEW_K2_INDEX_ROOT", root);
+    }
+}
+
 impl WorkerClient {
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
 
-    pub fn start(workspace: &Path) -> Result<Self, ClewError> {
-        Self::start_variant(workspace, WorkerVariant::Kotlin24)
+    pub fn trusted_distribution_identity(&self) -> Option<TrustedDistributionIdentity> {
+        self.trusted_distribution
+            .as_ref()
+            .map(|trusted| TrustedDistributionIdentity {
+                tree_hash: trusted.tree_hash.clone(),
+                build_input_digest: trusted.build_input_digest.clone(),
+                plugin_fingerprint: trusted.plugin_fingerprint.clone(),
+            })
     }
 
-    fn start_variant(workspace: &Path, variant: WorkerVariant) -> Result<Self, ClewError> {
+    pub fn start(workspace: &Path) -> Result<Self, ClewError> {
+        let inherited_build_state =
+            std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT").map(PathBuf::from);
+        Self::start_variant(
+            workspace,
+            WorkerVariant::Kotlin24,
+            inherited_build_state.as_deref(),
+            None,
+        )
+    }
+
+    pub fn start_with_build_state(
+        workspace: &Path,
+        build_state_root: &Path,
+    ) -> Result<Self, ClewError> {
+        Self::start_variant(
+            workspace,
+            WorkerVariant::Kotlin24,
+            Some(build_state_root),
+            None,
+        )
+    }
+
+    /// Start with distinct immutable build-input authority and mutable
+    /// compiler-owned derived state. The latter is never an input proof and
+    /// must be a private external directory.
+    pub fn start_with_states(
+        workspace: &Path,
+        build_state_root: Option<&Path>,
+        compiler_index_root: Option<&Path>,
+    ) -> Result<Self, ClewError> {
+        Self::start_variant(
+            workspace,
+            WorkerVariant::Kotlin24,
+            build_state_root,
+            compiler_index_root,
+        )
+    }
+
+    /// Start in repository-local development mode without consulting ambient
+    /// build-state environment. This is intentionally distinct from `start`,
+    /// whose inherited environment behavior remains for legacy callers.
+    pub fn start_without_build_state(workspace: &Path) -> Result<Self, ClewError> {
+        Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None)
+    }
+
+    fn start_variant(
+        workspace: &Path,
+        variant: WorkerVariant,
+        build_state_root: Option<&Path>,
+        compiler_index_root: Option<&Path>,
+    ) -> Result<Self, ClewError> {
         let trusted_distribution = prepare_trusted_worker_distribution(workspace, variant)?;
         let launcher = trusted_distribution
             .as_ref()
@@ -276,17 +1000,51 @@ impl WorkerClient {
                 ));
             }
         }
-        let mut child = Command::new(&launcher)
+        let canonical_build_state = build_state_root
+            .map(|root| root.canonicalize().map_err(internal))
+            .transpose()?;
+        let canonical_compiler_index = compiler_index_root
+            .map(|root| validate_compiler_index_root(workspace, root))
+            .transpose()?;
+        if let (Some(build_state), Some(compiler_index)) =
+            (&canonical_build_state, &canonical_compiler_index)
+            && (build_state.starts_with(compiler_index) || compiler_index.starts_with(build_state))
+        {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "compiler index root and sealed build-state root must be disjoint",
+            ));
+        }
+        let transport_root = tempfile::Builder::new()
+            .prefix("codeclew-worker-transport-")
+            .tempdir()
+            .map_err(internal)?;
+        let canonical_transport_root = transport_root.path().canonicalize().map_err(internal)?;
+        let transport_metadata =
+            std::fs::symlink_metadata(transport_root.path()).map_err(internal)?;
+        if transport_metadata.file_type().is_symlink() || !transport_metadata.is_dir() {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "worker transport root is not a private real directory",
+            ));
+        }
+        let mut command = Command::new(&launcher);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| {
-                ClewError::new(
-                    ErrorCode::WorkerCrashed,
-                    format!("cannot start {}: {e}", launcher.display()),
-                )
-            })?;
+            .env("CODECLEW_WORKER_TRANSPORT_ROOT", &canonical_transport_root);
+        configure_worker_state_environment(
+            &mut command,
+            canonical_build_state.as_deref(),
+            canonical_compiler_index.as_deref(),
+        );
+        let mut child = command.spawn().map_err(|e| {
+            ClewError::new(
+                ErrorCode::WorkerCrashed,
+                format!("cannot start {}: {e}", launcher.display()),
+            )
+        })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
         let hello = read_message(&mut stdout)?;
@@ -319,7 +1077,12 @@ impl WorkerClient {
             last_profile: RequestProfile::default(),
             authority_session: Uuid::new_v4(),
             trusted_distribution,
+            build_state_root: canonical_build_state,
+            compiler_index_root: canonical_compiler_index,
+            _transport_root: transport_root,
+            transport_root: canonical_transport_root,
             issued_index_facts: BTreeMap::new(),
+            issued_source_syntax: BTreeMap::new(),
         })
     }
 
@@ -327,14 +1090,28 @@ impl WorkerClient {
         if self.variant == variant {
             return Ok(());
         }
-        let replacement = Self::start_variant(&self.workspace, variant)?;
+        let replacement = Self::start_variant(
+            &self.workspace,
+            variant,
+            self.build_state_root.as_deref(),
+            self.compiler_index_root.as_deref(),
+        )?;
         let previous = std::mem::replace(self, replacement);
         previous.shutdown()
     }
 
     pub fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
+        self.request_with_discovery_variants(kind, payload, 0)
+    }
+
+    fn request_with_discovery_variants(
+        &mut self,
+        kind: RequestKind,
+        payload: &Value,
+        tried_discovery_variants: u8,
+    ) -> Result<Value, ClewError> {
         if self.snapshot.is_none()
-            && !matches!(kind, RequestKind::OpenProject | RequestKind::Shutdown)
+            && request_requires_project_snapshot(kind, payload)
             && payload.get("repo").and_then(Value::as_str).is_some()
         {
             let bootstrap = serde_json::json!({
@@ -398,7 +1175,8 @@ impl WorkerClient {
                 })
             }
             RequestKind::ApplyEdit => {
-                let (source_inline, source_blob) = source_transport(payload)?;
+                let (source_inline, source_blob) =
+                    source_transport(payload, self.build_state_root.as_deref())?;
                 worker_request::Payload::ApplyEdit(ApplyEditRequest {
                     schema_version: schema_version(),
                     repo: repo(),
@@ -435,7 +1213,8 @@ impl WorkerClient {
                 })
             }
             RequestKind::ValidateCandidate => {
-                let (source_inline, source_blob) = source_transport(payload)?;
+                let (source_inline, source_blob) =
+                    source_transport(payload, self.build_state_root.as_deref())?;
                 worker_request::Payload::ValidateCandidate(ValidateCandidateRequest {
                     schema_version: schema_version(),
                     repo: repo(),
@@ -458,9 +1237,15 @@ impl WorkerClient {
             request_id,
             protocol_version: Some(ProtocolVersion { major: 1, minor: 0 }),
             snapshot: Some(
-                self.snapshot
-                    .clone()
-                    .unwrap_or_else(|| snapshot_from(payload)),
+                if kind == RequestKind::IndexFiles
+                    && payload.get("syntaxOnly").and_then(Value::as_bool) == Some(true)
+                {
+                    snapshot_from(payload)
+                } else {
+                    self.snapshot
+                        .clone()
+                        .unwrap_or_else(|| snapshot_from(payload))
+                },
             ),
             payload: Some(request_payload),
         };
@@ -494,7 +1279,7 @@ impl WorkerClient {
                     .map(str::to_owned)
                     .into_iter()
                     .collect();
-                return Err(ClewError {
+                let failure = ClewError {
                     code: parse_worker_code(&error.code),
                     message: error.message,
                     transaction_id: None,
@@ -502,7 +1287,17 @@ impl WorkerClient {
                     evidence: error.evidence,
                     relevant_anchors_or_symbols: relevant.into_boxed_slice(),
                     retryable: error.retryable,
-                });
+                };
+                if kind == RequestKind::OpenProject
+                    && failure.code == ErrorCode::UnsupportedCompilerPluginAbi
+                {
+                    let tried = tried_discovery_variants | self.variant.discovery_bit();
+                    if let Some(next) = WorkerVariant::next_untried_for_abi_discovery(tried) {
+                        self.switch_variant(next)?;
+                        return self.request_with_discovery_variants(kind, payload, tried);
+                    }
+                }
+                return Err(failure);
             }
             Some(worker_response::Payload::OpenProject(value)) => {
                 validate_typed_string(
@@ -522,16 +1317,18 @@ impl WorkerClient {
                 crate::canonical::bytes(&canonical).map_err(internal)?
             }
             Some(worker_response::Payload::IndexFiles(value)) => {
-                validate_typed_string(&value.canonical_json, "/indexHash", &value.index_hash)?;
+                let canonical_json =
+                    index_response_body(value.canonical_json, &value.blobs, &self.transport_root)?;
+                validate_typed_string(&canonical_json, "/indexHash", &value.index_hash)?;
                 validate_typed_string(
-                    &value.canonical_json,
+                    &canonical_json,
                     "/projectModelHash",
                     &value.project_model_hash,
                 )?;
-                validate_typed_string(&value.canonical_json, "/compilation", &value.compilation)?;
-                validate_typed_count(&value.canonical_json, "/files", value.file_count)?;
-                validate_typed_bool(&value.canonical_json, "/partial", value.partial)?;
-                value.canonical_json
+                validate_typed_string(&canonical_json, "/compilation", &value.compilation)?;
+                validate_typed_count(&canonical_json, "/files", value.file_count)?;
+                validate_typed_bool(&canonical_json, "/partial", value.partial)?;
+                canonical_json
             }
             Some(worker_response::Payload::ResolveSymbol(value)) => {
                 validate_typed_string(
@@ -595,13 +1392,21 @@ impl WorkerClient {
         }
         if kind == RequestKind::OpenProject {
             let project_compiler = value
-                .get("compilerVersion")
+                .get("declaredCompilerVersion")
+                .or_else(|| value.get("compilerVersion"))
                 .and_then(Value::as_str)
                 .unwrap_or(self.capabilities.compiler_version.as_str());
             let desired = WorkerVariant::for_project(project_compiler)?;
             if desired != self.variant {
+                let tried = tried_discovery_variants | self.variant.discovery_bit();
+                if tried & desired.discovery_bit() != 0 {
+                    return Err(ClewError::new(
+                        ErrorCode::UnsupportedCompilerPluginAbi,
+                        "declared Kotlin compiler variant could not open the project with its own compiler plugins",
+                    ));
+                }
                 self.switch_variant(desired)?;
-                return self.request(kind, payload);
+                return self.request_with_discovery_variants(kind, payload, tried);
             }
             self.snapshot = Some(SnapshotId {
                 base_revision: snapshot_from(payload).base_revision,
@@ -612,8 +1417,10 @@ impl WorkerClient {
                     .into(),
             });
         }
-        let worker_processing_micros = value
-            .pointer("/profiling/workerProcessingMicros")
+        let profiling = take_worker_profiling(&mut value);
+        let worker_processing_micros = profiling
+            .as_ref()
+            .and_then(|profile| profile.get("workerProcessingMicros"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
         self.last_profile = RequestProfile {
@@ -623,31 +1430,196 @@ impl WorkerClient {
                 + json_micros,
             ipc_micros: (write_micros + read_micros).saturating_sub(worker_processing_micros),
             worker_processing_micros,
-            cache_requests: value
-                .pointer("/profiling/cacheRequests")
+            cache_requests: profiling
+                .as_ref()
+                .and_then(|profile| profile.get("cacheRequests"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            cache_hits: value
-                .pointer("/profiling/cacheHits")
+            cache_hits: profiling
+                .as_ref()
+                .and_then(|profile| profile.get("cacheHits"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            psi_parse_micros: value
-                .pointer("/profiling/psiParseMicros")
+            psi_parse_micros: profiling
+                .as_ref()
+                .and_then(|profile| profile.get("psiParseMicros"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            k2_analysis_micros: value
-                .pointer("/profiling/k2AnalysisMicros")
+            k2_analysis_micros: profiling
+                .as_ref()
+                .and_then(|profile| profile.get("k2AnalysisMicros"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            fir_extraction_micros: value
-                .pointer("/profiling/firExtractionMicros")
+            fir_extraction_micros: profiling
+                .as_ref()
+                .and_then(|profile| profile.get("firExtractionMicros"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
+            compiler_index: (kind == RequestKind::IndexFiles
+                && payload.get("syntaxOnly").and_then(Value::as_bool) != Some(true))
+            .then(|| profiling.as_ref().and_then(parse_compiler_index_profile))
+            .flatten(),
         };
-        if let Some(object) = value.as_object_mut() {
-            object.remove("profiling");
-        }
         Ok(value)
+    }
+
+    /// Issue a `SOURCE_SYNTAX` capability without opening or trusting a build
+    /// model. The capability proves only the current file/declaration payload;
+    /// compiler-semantic consumers cannot accept this distinct type.
+    pub fn index_files_source_syntax_verified(
+        &mut self,
+        payload: &Value,
+    ) -> Result<VerifiedSourceSyntax, ClewError> {
+        if payload.get("syntaxOnly").and_then(Value::as_bool) != Some(true) {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "SOURCE_SYNTAX indexing requires syntaxOnly true",
+            ));
+        }
+        let repo = payload
+            .get("repo")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "SOURCE_SYNTAX needs repo"))?;
+        let repo = Path::new(repo).canonicalize().map_err(internal)?;
+        let metadata = std::fs::symlink_metadata(&repo).map_err(internal)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "SOURCE_SYNTAX repo must be a real directory",
+            ));
+        }
+        let requested_compilation = payload
+            .get("compilation")
+            .and_then(Value::as_str)
+            .unwrap_or(":/main")
+            .to_owned();
+        let requested_files = match payload.get("files") {
+            Some(Value::Array(files)) => files
+                .iter()
+                .map(|file| {
+                    file.as_str().map(str::to_owned).ok_or_else(|| {
+                        ClewError::new(
+                            ErrorCode::InvalidInput,
+                            "SOURCE_SYNTAX files must be strings",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "SOURCE_SYNTAX requires an exact files array",
+                ));
+            }
+        };
+        let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "SOURCE_SYNTAX requires the pinned workspace worker distribution",
+            )
+        })?;
+        if trusted.workspace != workspace_root() {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "SOURCE_SYNTAX worker workspace identity changed",
+            ));
+        }
+        verify_trusted_distribution(trusted)?;
+        let trusted_tree_hash = trusted.tree_hash.clone();
+        let trusted_build_input_digest = trusted.build_input_digest.clone();
+
+        let mut exact_payload = payload.clone();
+        if !exact_payload.is_object() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "SOURCE_SYNTAX request must be an object",
+            ));
+        }
+        exact_payload["repo"] = Value::String(repo.to_string_lossy().into_owned());
+        exact_payload["compilation"] = Value::String(requested_compilation.clone());
+        exact_payload["syntaxOnly"] = Value::Bool(true);
+        let facts = self.request(RequestKind::IndexFiles, &exact_payload)?;
+        let source_manifest_hash = validate_source_syntax_response(
+            &repo,
+            &requested_compilation,
+            &requested_files,
+            &facts,
+        )?;
+        let payload_hash = crate::canonical::hash(&facts).map_err(internal)?;
+        let receipt_id = Uuid::new_v4();
+        let seal = crate::canonical::hash(&serde_json::json!({
+            "authority":SOURCE_SYNTAX_AUTHORITY,
+            "receiptId":receipt_id,
+            "session":self.authority_session,
+            "repo":repo,
+            "compilation":requested_compilation,
+            "distributionTree":trusted_tree_hash,
+            "buildInputs":trusted_build_input_digest,
+            "requestedFiles":requested_files,
+            "sourceManifestHash":source_manifest_hash,
+            "payloadHash":payload_hash,
+        }))
+        .map_err(internal)?;
+        self.issued_source_syntax.insert(receipt_id, seal);
+        Ok(VerifiedSourceSyntax {
+            receipt_id,
+            authority_session: self.authority_session,
+            repo,
+            compilation: requested_compilation,
+            distribution_tree_hash: trusted_tree_hash,
+            build_input_digest: trusted_build_input_digest,
+            requested_files,
+            source_manifest_hash,
+            payload_hash,
+            payload: facts,
+        })
+    }
+
+    /// Inspect current declaration-only facts. This grants no persistence or
+    /// transaction authority and fails if any bound source changed.
+    pub fn inspect_verified_source_syntax<'a>(
+        &self,
+        syntax: &'a VerifiedSourceSyntax,
+    ) -> Result<&'a Value, ClewError> {
+        let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "SOURCE_SYNTAX worker session is not trusted",
+            )
+        })?;
+        verify_trusted_distribution(trusted)?;
+        let current_manifest_hash = validate_source_syntax_response(
+            &syntax.repo,
+            &syntax.compilation,
+            &syntax.requested_files,
+            &syntax.payload,
+        )?;
+        let seal = crate::canonical::hash(&serde_json::json!({
+            "authority":SOURCE_SYNTAX_AUTHORITY,
+            "receiptId":syntax.receipt_id,
+            "session":syntax.authority_session,
+            "repo":syntax.repo,
+            "compilation":syntax.compilation,
+            "distributionTree":syntax.distribution_tree_hash,
+            "buildInputs":syntax.build_input_digest,
+            "requestedFiles":syntax.requested_files,
+            "sourceManifestHash":syntax.source_manifest_hash,
+            "payloadHash":syntax.payload_hash,
+        }))
+        .map_err(internal)?;
+        if syntax.authority_session != self.authority_session
+            || syntax.distribution_tree_hash != trusted.tree_hash
+            || syntax.build_input_digest != trusted.build_input_digest
+            || current_manifest_hash != syntax.source_manifest_hash
+            || crate::canonical::hash(&syntax.payload).map_err(internal)? != syntax.payload_hash
+            || self.issued_source_syntax.get(&syntax.receipt_id) != Some(&seal)
+        {
+            return Err(ClewError::new(
+                ErrorCode::ProjectModelChanged,
+                "SOURCE_SYNTAX capability is stale, altered, forged, or belongs to another session",
+            ));
+        }
+        Ok(&syntax.payload)
     }
 
     /// Execute OpenProject + IndexFiles through the pinned worker distribution
@@ -656,6 +1628,12 @@ impl WorkerClient {
         &mut self,
         payload: &Value,
     ) -> Result<VerifiedIndexFacts, ClewError> {
+        if payload.get("syntaxOnly").and_then(Value::as_bool) == Some(true) {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "COMPILER_SEMANTIC indexing cannot use syntaxOnly",
+            ));
+        }
         let repo = payload
             .get("repo")
             .and_then(Value::as_str)
@@ -697,10 +1675,24 @@ impl WorkerClient {
             ));
         }
         let project_model_hash = required_payload_string(&project, "projectModelHash")?.to_owned();
+        let semantic_input_manifest_hash =
+            required_payload_string(&project, "semanticInputManifestHash")?.to_owned();
+        let manifest = project.get("semanticInputManifest").ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                "OpenProject has no semantic input manifest",
+            )
+        })?;
+        if crate::canonical::hash(manifest).map_err(internal)? != semantic_input_manifest_hash {
+            return Err(ClewError::new(
+                ErrorCode::ProjectModelChanged,
+                "OpenProject semantic input manifest hash is invalid",
+            ));
+        }
         let mut exact_payload = payload.clone();
         exact_payload["repo"] = Value::String(repo.to_string_lossy().into_owned());
         exact_payload["compilation"] = Value::String(requested_compilation.clone());
-        let facts = self
+        let mut facts = self
             .request(RequestKind::IndexFiles, &exact_payload)
             .map_err(|error| attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None))?;
         if facts.get("compilation").and_then(Value::as_str) != Some(requested_compilation.as_str())
@@ -708,6 +1700,11 @@ impl WorkerClient {
                 != Some(project_model_hash.as_str())
             || facts.get("compilerVersion").and_then(Value::as_str)
                 != Some(self.capabilities.compiler_version.as_str())
+            || facts
+                .get("semanticInputManifestHash")
+                .and_then(Value::as_str)
+                != Some(semantic_input_manifest_hash.as_str())
+            || facts.get("semanticInputManifest") != project.get("semanticInputManifest")
         {
             return Err(attach_verified_index_failure(
                 ClewError::new(
@@ -718,10 +1715,25 @@ impl WorkerClient {
                 Some(&facts),
             ));
         }
+        require_k2_validated(&facts)
+            .map_err(|error| attach_verified_index_failure(error, "K2_VALIDATION", Some(&facts)))?;
+        if facts.get("analysisMode").and_then(Value::as_str) != Some("K2_SEMANTIC") {
+            return Err(attach_verified_index_failure(
+                ClewError::new(
+                    ErrorCode::IncompleteSemanticAnalysis,
+                    "COMPILER_SEMANTIC response requires analysisMode K2_SEMANTIC",
+                ),
+                "K2_VALIDATION",
+                Some(&facts),
+            ));
+        }
         let descriptor =
             crate::index::validate_declaration_descriptor_snapshot(&facts).map_err(|error| {
                 attach_verified_index_failure(error, "DESCRIPTOR_GRAPH", Some(&facts))
             })?;
+        normalize_optional_relation_evidence(&mut facts).map_err(|error| {
+            attach_verified_index_failure(error, "RELATION_NORMALIZATION", Some(&facts))
+        })?;
         let relation =
             crate::index::validate_declaration_relation_snapshot(&facts).map_err(|error| {
                 attach_verified_index_failure(error, "RELATION_GRAPH", Some(&facts))
@@ -793,7 +1805,30 @@ impl WorkerClient {
         &self,
         facts: &'a VerifiedIndexFacts,
     ) -> Result<&'a Value, ClewError> {
-        self.authorize_index_facts(facts, &facts.repo, &facts.compilation)
+        let seal = crate::canonical::hash(&serde_json::json!({
+            "receiptId":facts.receipt_id,
+            "session":facts.authority_session,
+            "repo":facts.repo,
+            "compilation":facts.compilation,
+            "baseRevision":facts.base_revision,
+            "projectModelHash":facts.project_model_hash,
+            "distribution":facts.distribution_fingerprint,
+            "distributionTree":facts.distribution_tree_hash,
+            "buildInputs":facts.build_input_digest,
+            "payloadHash":facts.payload_hash,
+            "relationHash":facts.relation_hash,
+            "descriptorHash":facts.descriptor_hash,
+        }))
+        .map_err(internal)?;
+        if facts.authority_session != self.authority_session
+            || self.issued_index_facts.get(&facts.receipt_id) != Some(&seal)
+        {
+            return Err(ClewError::new(
+                ErrorCode::ProjectModelChanged,
+                "verified index capability is not issued by this live session",
+            ));
+        }
+        Ok(&facts.payload)
     }
 
     pub(crate) fn safe_verified_index_diagnostic(&self, facts: &VerifiedIndexFacts) -> Value {
@@ -861,6 +1896,7 @@ impl WorkerClient {
                 "verified index capability is stale, altered, forged, or belongs to another session",
             ));
         }
+        require_k2_validated(&facts.payload)?;
         let relation = crate::index::validate_declaration_relation_snapshot(&facts.payload)?;
         let descriptor = crate::index::validate_declaration_descriptor_snapshot(&facts.payload)?;
         if relation.hash != facts.relation_hash || descriptor.hash != facts.descriptor_hash {
@@ -970,6 +2006,14 @@ impl WorkerClient {
     }
 }
 
+fn request_requires_project_snapshot(kind: RequestKind, payload: &Value) -> bool {
+    match kind {
+        RequestKind::OpenProject | RequestKind::ValidateCandidate | RequestKind::Shutdown => false,
+        RequestKind::IndexFiles => payload.get("syntaxOnly").and_then(Value::as_bool) != Some(true),
+        _ => true,
+    }
+}
+
 impl Drop for WorkerClient {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -1019,14 +2063,21 @@ fn snapshot_label(snapshot: &SnapshotId) -> String {
     )
 }
 
-fn source_transport(payload: &Value) -> Result<(Vec<u8>, Option<BlobRef>), ClewError> {
+fn source_transport(
+    payload: &Value,
+    build_state_root: Option<&Path>,
+) -> Result<(Vec<u8>, Option<BlobRef>), ClewError> {
     let source = payload
         .get("source")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .as_bytes()
         .to_vec();
-    if source.len() <= 64 * 1024 {
+    // K1's external build-state contour must not create transport blobs in the
+    // checkout. Protobuf bytes can carry the large source directly.
+    // An external K1 worker must never materialize transport blobs in the
+    // checkout. Protobuf bytes can carry the large source directly.
+    if source.len() <= 64 * 1024 || build_state_root.is_some() {
         return Ok((source, None));
     }
     let repo = payload
@@ -1122,6 +2173,116 @@ fn read_response_blob(payload: &Value, blob: &Value) -> Result<Vec<u8>, ClewErro
             "response BlobRef content hash mismatch",
         ));
     }
+    Ok(bytes)
+}
+
+fn index_response_body(
+    inline: Vec<u8>,
+    blobs: &[BlobRef],
+    transport_root: &Path,
+) -> Result<Vec<u8>, ClewError> {
+    match (inline.is_empty(), blobs) {
+        (false, []) => Ok(inline),
+        (true, [blob]) => read_worker_transport_blob(transport_root, blob),
+        (false, _) => Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "IndexFiles response contains both inline and blob bodies",
+        )),
+        (true, []) => Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "IndexFiles response has no canonical body",
+        )),
+        (true, _) => Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "IndexFiles response has multiple canonical body blobs",
+        )),
+    }
+}
+
+fn read_worker_transport_blob(root: &Path, blob: &BlobRef) -> Result<Vec<u8>, ClewError> {
+    fn mismatch(message: impl Into<String>) -> ClewError {
+        ClewError::new(ErrorCode::WorkerProtocolMismatch, message)
+    }
+
+    if !root.is_absolute() {
+        return Err(mismatch("worker transport root is not absolute"));
+    }
+    let root_metadata =
+        std::fs::symlink_metadata(root).map_err(|error| mismatch(error.to_string()))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(mismatch("worker transport root is not a real directory"));
+    }
+    if root
+        .canonicalize()
+        .map_err(|error| mismatch(error.to_string()))?
+        != root
+    {
+        return Err(mismatch("worker transport root canonical identity changed"));
+    }
+
+    let digest = blob
+        .content_hash
+        .strip_prefix("sha256:")
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| mismatch("worker transport BlobRef hash is malformed"))?;
+    let expected_relative = format!("sha256/{digest}");
+    if blob.relative_path != expected_relative {
+        return Err(mismatch(
+            "worker transport BlobRef path is not its content-addressed name",
+        ));
+    }
+    if blob.size_bytes == 0 || blob.size_bytes > MAX_WORKER_RESPONSE_BLOB_BYTES {
+        return Err(mismatch(
+            "worker transport BlobRef size exceeds the bounded response policy",
+        ));
+    }
+
+    let directory = root.join("sha256");
+    let directory_metadata =
+        std::fs::symlink_metadata(&directory).map_err(|error| mismatch(error.to_string()))?;
+    if directory_metadata.file_type().is_symlink() || !directory_metadata.is_dir() {
+        return Err(mismatch("worker transport CAS directory is unsafe"));
+    }
+    if directory
+        .canonicalize()
+        .map_err(|error| mismatch(error.to_string()))?
+        .parent()
+        != Some(root)
+    {
+        return Err(mismatch("worker transport CAS directory escapes its root"));
+    }
+
+    let path = root.join(&blob.relative_path);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| mismatch(error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != blob.size_bytes
+    {
+        return Err(mismatch(
+            "worker transport blob is not the declared regular file",
+        ));
+    }
+    let file = std::fs::File::open(&path).map_err(|error| mismatch(error.to_string()))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| mismatch(error.to_string()))?;
+    if !opened_metadata.is_file() || opened_metadata.len() != blob.size_bytes {
+        return Err(mismatch("worker transport blob changed while opening"));
+    }
+    let mut bytes = Vec::with_capacity(blob.size_bytes as usize);
+    file.take(MAX_WORKER_RESPONSE_BLOB_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| mismatch(error.to_string()))?;
+    if bytes.len() as u64 != blob.size_bytes {
+        return Err(mismatch("worker transport blob size changed while reading"));
+    }
+    if crate::canonical::hash_bytes(&bytes) != blob.content_hash {
+        return Err(mismatch("worker transport blob content hash mismatch"));
+    }
+    let _ = std::fs::remove_file(path);
     Ok(bytes)
 }
 
@@ -1406,6 +2567,87 @@ fn required_payload_string<'a>(payload: &'a Value, field: &str) -> Result<&'a st
         })
 }
 
+/// Return the mount-independent identity of one exact OpenProject response.
+///
+/// Gradle exposes provider digests that include absolute cache paths.  When it
+/// also proves that both providers selected the exact ordered classpath, that
+/// ordered, content-addressed classpath is the semantic authority; a detached
+/// worktree or private CoW cache must not look like a model change.  A real
+/// provider disagreement remains part of the identity and therefore remains
+/// fail-closed.
+pub(crate) fn stable_project_model_identity(project: &Value) -> Result<String, ClewError> {
+    let raw_manifest = project.get("semanticInputManifest").ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "OpenProject response has no semantic input manifest",
+        )
+    })?;
+    let raw_manifest_hash = required_payload_string(project, "semanticInputManifestHash")?;
+    if crate::canonical::hash(raw_manifest).map_err(internal)? != raw_manifest_hash {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "OpenProject semantic input manifest hash is invalid",
+        ));
+    }
+
+    let mut stable_manifest = raw_manifest.clone();
+    let ordered_classpath = stable_manifest
+        .get("orderedCompileClasspath")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "semantic input manifest has no ordered compile classpath",
+            )
+        })?;
+    let mut ordered_bytes = Vec::new();
+    for entry in ordered_classpath {
+        let entry = entry.as_str().ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "semantic input classpath contains a non-string entry",
+            )
+        })?;
+        ordered_bytes.extend_from_slice(entry.as_bytes());
+        ordered_bytes.push(0);
+    }
+    let ordered_digest = Value::String(crate::canonical::hash_bytes(&ordered_bytes));
+    if let Some(authority) = stable_manifest
+        .get_mut("classpathAuthority")
+        .and_then(Value::as_object_mut)
+    {
+        if authority.contains_key("orderedDigest") {
+            authority.insert("orderedDigest".to_owned(), ordered_digest.clone());
+        }
+        if authority.get("orderedEquivalent").and_then(Value::as_bool) == Some(true) {
+            for field in ["taskLibrariesDigest", "configurationDigest"] {
+                if authority.get(field).is_some_and(|value| !value.is_null()) {
+                    authority.insert(field.to_owned(), ordered_digest.clone());
+                }
+            }
+        }
+    }
+    let stable_manifest_hash = crate::canonical::hash(&stable_manifest).map_err(internal)?;
+
+    let mut stable_project = project.clone();
+    let object = stable_project.as_object_mut().ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "OpenProject response is not an object",
+        )
+    })?;
+    object.remove("projectModelHash");
+    object.insert("semanticInputManifest".to_owned(), stable_manifest.clone());
+    object.insert(
+        "semanticInputManifestHash".to_owned(),
+        Value::String(stable_manifest_hash),
+    );
+    if let Some(authority) = stable_manifest.get("classpathAuthority") {
+        object.insert("classpathAuthority".to_owned(), authority.clone());
+    }
+    crate::canonical::hash(&stable_project).map_err(internal)
+}
+
 fn bind_open_project_compilation(
     canonical: &mut Value,
     typed_compilation: &str,
@@ -1488,7 +2730,7 @@ fn read_message(reader: &mut impl Read) -> Result<WorkerResponse, ClewError> {
         )
     })?;
     let size = u32::from_be_bytes(header) as usize;
-    if size > 64 * 1024 * 1024 {
+    if size > MAX_WORKER_FRAME_BYTES {
         return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             "worker frame exceeds 64MiB",
@@ -1515,7 +2757,7 @@ fn read_message_profiled(reader: &mut impl Read) -> Result<(WorkerResponse, u64,
         )
     })?;
     let size = u32::from_be_bytes(header) as usize;
-    if size > 64 * 1024 * 1024 {
+    if size > MAX_WORKER_FRAME_BYTES {
         return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
             "worker frame exceeds 64MiB",
@@ -1539,25 +2781,135 @@ fn read_message_profiled(reader: &mut impl Read) -> Result<(WorkerResponse, u64,
     ))
 }
 
+fn take_worker_profiling(value: &mut Value) -> Option<Value> {
+    value
+        .as_object_mut()
+        .and_then(|object| object.remove("profiling"))
+}
+
+fn parse_compiler_index_profile(profiling: &Value) -> Option<CompilerIndexProfile> {
+    let object = profiling.as_object()?;
+    let backend = match object.get("backend")?.as_str()? {
+        "BTA_PERSISTENT" => CompilerIndexBackend::BtaPersistent,
+        _ => return None,
+    };
+    let status = match object.get("status")?.as_str()? {
+        "UNCHANGED_HIT" => CompilerIndexStatus::UnchangedHit,
+        "COLD_FULL" => CompilerIndexStatus::ColdFull,
+        "INCREMENTAL" => CompilerIndexStatus::Incremental,
+        "RECOVERED_FULL" => CompilerIndexStatus::RecoveredFull,
+        "BUSY" => CompilerIndexStatus::Busy,
+        "FAILED_RECOVERABLE" => CompilerIndexStatus::FailedRecoverable,
+        _ => return None,
+    };
+    let valid = object.get("valid")?.as_bool()?;
+    let total_micros = object.get("totalMicros")?.as_u64()?;
+    let compiler_micros = object.get("compilerMicros")?.as_u64()?;
+    let fir_extraction_micros = object.get("firExtractionMicros")?.as_u64()?;
+    let total_files = object.get("totalFiles")?.as_u64()?;
+    let compiled_files = object.get("compiledFiles")?.as_u64()?;
+    let reused_files = object.get("reusedFiles")?.as_u64()?;
+    let recovered = object.get("recovered")?.as_bool()?;
+    let fallback_used = object.get("fallbackUsed")?.as_bool()?;
+    let graph_digest = match object.get("graphDigest") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(digest)) if is_lowercase_sha256(digest) => Some(digest.clone()),
+        Some(_) => return None,
+    };
+
+    let covered_files = compiled_files.checked_add(reused_files)?;
+    let no_compiled_graph = compiled_files == 0 && reused_files == 0 && graph_digest.is_none();
+    let profile_is_consistent = match (status, valid) {
+        (CompilerIndexStatus::UnchangedHit, true) => {
+            compiled_files == 0 && reused_files == total_files && !recovered && !fallback_used
+        }
+        (CompilerIndexStatus::ColdFull, true) => {
+            compiled_files == total_files && reused_files == 0 && !recovered && !fallback_used
+        }
+        (CompilerIndexStatus::Incremental, true) => {
+            covered_files == total_files && !recovered && !fallback_used
+        }
+        (CompilerIndexStatus::RecoveredFull, true) => {
+            compiled_files == total_files && reused_files == 0 && recovered && !fallback_used
+        }
+        (CompilerIndexStatus::ColdFull | CompilerIndexStatus::Incremental, false) => {
+            no_compiled_graph && !recovered && !fallback_used
+        }
+        (CompilerIndexStatus::RecoveredFull, false) => {
+            no_compiled_graph && recovered && !fallback_used
+        }
+        (CompilerIndexStatus::Busy | CompilerIndexStatus::FailedRecoverable, false) => {
+            no_compiled_graph && fallback_used
+        }
+        (CompilerIndexStatus::UnchangedHit, false)
+        | (CompilerIndexStatus::Busy | CompilerIndexStatus::FailedRecoverable, true) => false,
+    };
+    if !profile_is_consistent {
+        return None;
+    }
+
+    Some(CompilerIndexProfile {
+        backend,
+        status,
+        valid,
+        total_micros,
+        compiler_micros,
+        fir_extraction_micros,
+        total_files,
+        compiled_files,
+        reused_files,
+        recovered,
+        fallback_used,
+        graph_digest,
+    })
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn internal(error: impl std::fmt::Display) -> ClewError {
     ClewError::new(ErrorCode::Internal, error.to_string())
 }
 
 fn parse_worker_code(code: &str) -> ErrorCode {
     match code {
+        "UNSUPPORTED_KOTLIN_VERSION" => ErrorCode::UnsupportedKotlinVersion,
+        "UNSUPPORTED_COMPILER_PLUGIN_ABI" => ErrorCode::UnsupportedCompilerPluginAbi,
+        "UNSUPPORTED_PROJECT_CONFIGURATION" => ErrorCode::UnsupportedProjectConfiguration,
+        "PROJECT_MODEL_CHANGED" => ErrorCode::ProjectModelChanged,
+        "WORKER_PROTOCOL_MISMATCH" => ErrorCode::WorkerProtocolMismatch,
+        "WORKER_PREPARATION_REQUIRED" => ErrorCode::WorkerPreparationRequired,
+        "WORKER_CRASHED" => ErrorCode::WorkerCrashed,
         "SYMBOL_NOT_FOUND" => ErrorCode::SymbolNotFound,
         "AMBIGUOUS_SYMBOL" => ErrorCode::AmbiguousSymbol,
         "EXPRESSION_NOT_FOUND" => ErrorCode::ExpressionNotFound,
         "STALE_TARGET" => ErrorCode::StaleTarget,
         "AMBIGUOUS_TARGET" => ErrorCode::AmbiguousTarget,
+        "PRECONDITION_FAILED" => ErrorCode::PreconditionFailed,
         "REPLACEMENT_PARSE_ERROR" => ErrorCode::ReplacementParseError,
         "UNSUPPORTED_CONTROL_FLOW" => ErrorCode::UnsupportedControlFlow,
-        "UNSUPPORTED_PROJECT_CONFIGURATION" => ErrorCode::UnsupportedProjectConfiguration,
+        "INCOMPLETE_SEMANTIC_ANALYSIS" => ErrorCode::IncompleteSemanticAnalysis,
+        "SLICE_BUDGET_EXCEEDED" => ErrorCode::SliceBudgetExceeded,
         "TYPE_MISMATCH" => ErrorCode::TypeMismatch,
         "BINDING_CHANGED" => ErrorCode::BindingChanged,
         "NEW_DIAGNOSTICS" => ErrorCode::NewDiagnostics,
         "EFFECT_CHANGED" => ErrorCode::EffectChanged,
-        _ => ErrorCode::IncompleteSemanticAnalysis,
+        "WRITESET_EXCEEDED" => ErrorCode::WritesetExceeded,
+        "COMPILE_FAILED" => ErrorCode::CompileFailed,
+        "TEST_FAILED" => ErrorCode::TestFailed,
+        "ABI_CHANGED" => ErrorCode::AbiChanged,
+        "RW_CONFLICT" => ErrorCode::RwConflict,
+        "WW_CONFLICT" => ErrorCode::WwConflict,
+        "STALE_REQUIRES_RESLICE" => ErrorCode::StaleRequiresReslice,
+        "REF_COMPARE_AND_SWAP_FAILED" => ErrorCode::RefCompareAndSwapFailed,
+        "TRANSACTION_RECOVERY_REQUIRED" => ErrorCode::TransactionRecoveryRequired,
+        "INVALID_INPUT" => ErrorCode::InvalidInput,
+        "INTERNAL" => ErrorCode::Internal,
+        _ => ErrorCode::WorkerProtocolMismatch,
     }
 }
 
@@ -1573,7 +2925,798 @@ mod tests {
     use super::*;
     use crate::index::RepositoryIndex;
     use serde_json::json;
+    use std::ffi::OsStr;
     use walkdir::WalkDir;
+
+    #[test]
+    fn source_syntax_index_does_not_bootstrap_a_project_model() {
+        assert!(!request_requires_project_snapshot(
+            RequestKind::ValidateCandidate,
+            &json!({}),
+        ));
+        assert!(!request_requires_project_snapshot(
+            RequestKind::IndexFiles,
+            &json!({"syntaxOnly":true}),
+        ));
+        assert!(request_requires_project_snapshot(
+            RequestKind::IndexFiles,
+            &json!({"syntaxOnly":false}),
+        ));
+        assert!(request_requires_project_snapshot(
+            RequestKind::IndexFiles,
+            &json!({}),
+        ));
+        assert!(request_requires_project_snapshot(
+            RequestKind::ApplyEdit,
+            &json!({"syntaxOnly":true}),
+        ));
+    }
+
+    fn valid_compiler_index_profiling() -> Value {
+        json!({
+            "backend":"BTA_PERSISTENT",
+            "status":"INCREMENTAL",
+            "valid":true,
+            "totalMicros":120,
+            "compilerMicros":80,
+            "firExtractionMicros":30,
+            "totalFiles":5,
+            "compiledFiles":2,
+            "reusedFiles":3,
+            "recovered":false,
+            "fallbackUsed":false,
+            "graphDigest":"a".repeat(64),
+            "workerProcessingMicros":140,
+            "cacheRequests":1,
+            "privatePath":"/must/not/escape",
+        })
+    }
+
+    #[test]
+    fn compiler_index_profile_is_typed_and_profiling_is_removed_from_body() {
+        let mut body = json!({
+            "indexHash":"semantic-index",
+            "facts":[],
+            "profiling":valid_compiler_index_profiling(),
+        });
+
+        let profiling = take_worker_profiling(&mut body).unwrap();
+        let profile = parse_compiler_index_profile(&profiling).unwrap();
+
+        assert_eq!(body, json!({"indexHash":"semantic-index","facts":[]}));
+        assert_eq!(profile.backend, CompilerIndexBackend::BtaPersistent);
+        assert_eq!(profile.status, CompilerIndexStatus::Incremental);
+        assert!(profile.valid);
+        assert_eq!(profile.compiled_files, 2);
+        assert_eq!(profile.reused_files, 3);
+        assert_eq!(
+            profile.graph_digest.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+        let transported = serde_json::to_value(profile).unwrap();
+        assert_eq!(transported["backend"], "BTA_PERSISTENT");
+        assert_eq!(transported["status"], "INCREMENTAL");
+        assert_eq!(transported["valid"], true);
+        assert!(transported.get("privatePath").is_none());
+    }
+
+    #[test]
+    fn unknown_or_partial_compiler_index_profile_is_ignored() {
+        let mut unknown = valid_compiler_index_profiling();
+        unknown["backend"] = Value::String("OTHER_BACKEND".to_owned());
+        let mut body = json!({"semantic":"preserved","profiling":unknown});
+        let profiling = take_worker_profiling(&mut body).unwrap();
+        assert!(parse_compiler_index_profile(&profiling).is_none());
+        assert_eq!(body, json!({"semantic":"preserved"}));
+
+        let mut partial = valid_compiler_index_profiling();
+        partial.as_object_mut().unwrap().remove("valid");
+        assert!(parse_compiler_index_profile(&partial).is_none());
+
+        let mut unknown_status = valid_compiler_index_profiling();
+        unknown_status["status"] = Value::String("NEW_STATUS".to_owned());
+        assert!(parse_compiler_index_profile(&unknown_status).is_none());
+    }
+
+    #[test]
+    fn malformed_compiler_index_profile_is_ignored() {
+        let mut negative = valid_compiler_index_profiling();
+        negative["totalFiles"] = Value::from(-1);
+        assert!(parse_compiler_index_profile(&negative).is_none());
+
+        let mut inconsistent = valid_compiler_index_profiling();
+        inconsistent["reusedFiles"] = Value::from(4);
+        assert!(parse_compiler_index_profile(&inconsistent).is_none());
+
+        let mut uppercase_digest = valid_compiler_index_profiling();
+        uppercase_digest["graphDigest"] = Value::String("A".repeat(64));
+        assert!(parse_compiler_index_profile(&uppercase_digest).is_none());
+
+        let mut null_digest = valid_compiler_index_profiling();
+        null_digest["graphDigest"] = Value::Null;
+        let normalized = parse_compiler_index_profile(&null_digest).unwrap();
+        assert!(normalized.graph_digest.is_none());
+        assert!(
+            serde_json::to_value(normalized)
+                .unwrap()
+                .get("graphDigest")
+                .is_none()
+        );
+
+        let mut wrong_digest_type = valid_compiler_index_profiling();
+        wrong_digest_type["graphDigest"] = Value::from(7);
+        assert!(parse_compiler_index_profile(&wrong_digest_type).is_none());
+    }
+
+    #[test]
+    fn valid_compiler_index_statuses_require_complete_counts_and_no_fallback() {
+        for (status, compiled, reused, recovered) in [
+            ("UNCHANGED_HIT", 0, 5, false),
+            ("COLD_FULL", 5, 0, false),
+            ("INCREMENTAL", 2, 3, false),
+            ("RECOVERED_FULL", 5, 0, true),
+        ] {
+            let mut value = valid_compiler_index_profiling();
+            value["status"] = Value::String(status.to_owned());
+            value["compiledFiles"] = Value::from(compiled);
+            value["reusedFiles"] = Value::from(reused);
+            value["recovered"] = Value::Bool(recovered);
+            assert!(
+                parse_compiler_index_profile(&value).is_some(),
+                "valid {status} profile was rejected"
+            );
+        }
+
+        let mut invalid_hit = valid_compiler_index_profiling();
+        invalid_hit["status"] = Value::String("UNCHANGED_HIT".to_owned());
+        invalid_hit["valid"] = Value::Bool(false);
+        invalid_hit["reusedFiles"] = Value::from(0);
+        invalid_hit["graphDigest"] = Value::Null;
+        assert!(parse_compiler_index_profile(&invalid_hit).is_none());
+
+        let mut fallback_success = valid_compiler_index_profiling();
+        fallback_success["fallbackUsed"] = Value::Bool(true);
+        assert!(parse_compiler_index_profile(&fallback_success).is_none());
+    }
+
+    #[test]
+    fn attempted_compiler_failures_retain_status_without_claiming_facts() {
+        for (status, recovered) in [
+            ("COLD_FULL", false),
+            ("INCREMENTAL", false),
+            ("RECOVERED_FULL", true),
+        ] {
+            let mut value = valid_compiler_index_profiling();
+            value["status"] = Value::String(status.to_owned());
+            value["valid"] = Value::Bool(false);
+            value["compiledFiles"] = Value::from(0);
+            value["reusedFiles"] = Value::from(0);
+            value["recovered"] = Value::Bool(recovered);
+            value["graphDigest"] = Value::Null;
+            let profile = parse_compiler_index_profile(&value)
+                .unwrap_or_else(|| panic!("honest failed {status} attempt was rejected"));
+            assert!(!profile.valid);
+            assert!(profile.graph_digest.is_none());
+        }
+
+        let mut invalid_with_graph = valid_compiler_index_profiling();
+        invalid_with_graph["valid"] = Value::Bool(false);
+        invalid_with_graph["compiledFiles"] = Value::from(0);
+        invalid_with_graph["reusedFiles"] = Value::from(0);
+        assert!(parse_compiler_index_profile(&invalid_with_graph).is_none());
+
+        invalid_with_graph["graphDigest"] = Value::Null;
+        invalid_with_graph["compiledFiles"] = Value::from(1);
+        assert!(parse_compiler_index_profile(&invalid_with_graph).is_none());
+
+        invalid_with_graph["compiledFiles"] = Value::from(0);
+        invalid_with_graph["fallbackUsed"] = Value::Bool(true);
+        assert!(parse_compiler_index_profile(&invalid_with_graph).is_none());
+    }
+
+    #[test]
+    fn infrastructure_failures_are_invalid_fallbacks_with_no_fact_counts() {
+        for (status, total, recovered) in [
+            ("BUSY", 0, false),
+            ("BUSY", 0, true),
+            ("FAILED_RECOVERABLE", 0, false),
+            ("FAILED_RECOVERABLE", 5, false),
+            ("FAILED_RECOVERABLE", 5, true),
+        ] {
+            let mut value = valid_compiler_index_profiling();
+            value["status"] = Value::String(status.to_owned());
+            value["valid"] = Value::Bool(false);
+            value["totalFiles"] = Value::from(total);
+            value["compiledFiles"] = Value::from(0);
+            value["reusedFiles"] = Value::from(0);
+            value["recovered"] = Value::Bool(recovered);
+            value["fallbackUsed"] = Value::Bool(true);
+            value["graphDigest"] = Value::Null;
+            assert!(
+                parse_compiler_index_profile(&value).is_some(),
+                "honest {status} profile with recovered={recovered} was rejected"
+            );
+        }
+
+        let mut inconsistent = valid_compiler_index_profiling();
+        inconsistent["status"] = Value::String("FAILED_RECOVERABLE".to_owned());
+        inconsistent["valid"] = Value::Bool(false);
+        inconsistent["totalFiles"] = Value::from(0);
+        inconsistent["compiledFiles"] = Value::from(0);
+        inconsistent["reusedFiles"] = Value::from(0);
+        inconsistent["graphDigest"] = Value::Null;
+        assert!(parse_compiler_index_profile(&inconsistent).is_none());
+
+        inconsistent["fallbackUsed"] = Value::Bool(true);
+        inconsistent["valid"] = Value::Bool(true);
+        assert!(parse_compiler_index_profile(&inconsistent).is_none());
+
+        inconsistent["valid"] = Value::Bool(false);
+        inconsistent["reusedFiles"] = Value::from(1);
+        assert!(parse_compiler_index_profile(&inconsistent).is_none());
+
+        inconsistent["reusedFiles"] = Value::from(0);
+        inconsistent["totalFiles"] = Value::from(1);
+        assert!(parse_compiler_index_profile(&inconsistent).is_some());
+
+        inconsistent["graphDigest"] = Value::String("a".repeat(64));
+        assert!(parse_compiler_index_profile(&inconsistent).is_none());
+    }
+
+    #[test]
+    fn compiler_index_root_is_private_canonical_and_external() {
+        let workspace = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let state_path = state.path().canonicalize().unwrap();
+        assert_eq!(
+            validate_compiler_index_root(workspace.path(), &state_path).unwrap(),
+            state_path
+        );
+
+        let nested = workspace.path().join("compiler-index");
+        std::fs::create_dir(&nested).unwrap();
+        assert_eq!(
+            validate_compiler_index_root(workspace.path(), &nested)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+            let public = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(public.path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            assert_eq!(
+                validate_compiler_index_root(workspace.path(), public.path())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidInput
+            );
+            let link = state_path.parent().unwrap().join("compiler-index-link");
+            let _ = std::fs::remove_file(&link);
+            symlink(&state_path, &link).unwrap();
+            assert_eq!(
+                validate_compiler_index_root(workspace.path(), &link)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidInput
+            );
+            std::fs::remove_file(link).unwrap();
+        }
+    }
+
+    fn configured_command_environment(command: &Command, key: &str) -> Option<Option<PathBuf>> {
+        command
+            .get_envs()
+            .find_map(|(name, value)| (name == OsStr::new(key)).then(|| value.map(PathBuf::from)))
+    }
+
+    #[test]
+    fn worker_state_environment_scrubs_ambient_authority_when_disabled() {
+        let mut command = Command::new("not-executed");
+        command
+            .env("CODECLEW_K1_BUILD_STATE_ROOT", "ambient-k1")
+            .env("CODECLEW_K2_INDEX_ROOT", "ambient-k2");
+
+        configure_worker_state_environment(&mut command, None, None);
+
+        assert_eq!(
+            configured_command_environment(&command, "CODECLEW_K1_BUILD_STATE_ROOT"),
+            Some(None)
+        );
+        assert_eq!(
+            configured_command_environment(&command, "CODECLEW_K2_INDEX_ROOT"),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn worker_state_environment_passes_only_explicit_canonical_roots() {
+        let build_state = tempfile::tempdir().unwrap();
+        let compiler_index = tempfile::tempdir().unwrap();
+        let canonical_build_state = build_state.path().canonicalize().unwrap();
+        let canonical_compiler_index = compiler_index.path().canonicalize().unwrap();
+        let mut command = Command::new("not-executed");
+        command
+            .env("CODECLEW_K1_BUILD_STATE_ROOT", "ambient-k1")
+            .env("CODECLEW_K2_INDEX_ROOT", "ambient-k2");
+
+        configure_worker_state_environment(
+            &mut command,
+            Some(&canonical_build_state),
+            Some(&canonical_compiler_index),
+        );
+
+        assert_eq!(
+            configured_command_environment(&command, "CODECLEW_K1_BUILD_STATE_ROOT"),
+            Some(Some(canonical_build_state))
+        );
+        assert_eq!(
+            configured_command_environment(&command, "CODECLEW_K2_INDEX_ROOT"),
+            Some(Some(canonical_compiler_index))
+        );
+    }
+
+    fn source_syntax_fixture() -> (tempfile::TempDir, String, Value) {
+        let repo = tempfile::tempdir().unwrap();
+        let relative = "src/main/kotlin/p/Value.kt".to_owned();
+        let path = repo.path().join(&relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = "package p\nfun value() = 1\n";
+        std::fs::write(&path, source).unwrap();
+        let start = source.find("fun").unwrap() as u64;
+        let end = source.trim_end().encode_utf16().count() as u64;
+        let declaration = json!({
+            "declarationId":"declaration:syntax-value",
+            "symbolId":"p.value()",
+            "name":"value",
+            "kind":"KtNamedFunction",
+            "file":relative,
+            "rangeStart":start,
+            "rangeEnd":end,
+            "sourceOrigin":{"file":relative,"rangeStart":start,"rangeEnd":end},
+        });
+        let files = json!([{
+            "path":relative,
+            "normalizedRelativePath":relative,
+            "contentHash":crate::canonical::hash_bytes(source.as_bytes()),
+            "declarations":[declaration],
+            "semanticFacts":[],
+        }]);
+        let response = json!({
+            "schema":"semantic-index/0.1",
+            "compilation":":/main",
+            "partial":true,
+            "analysisMode":"SYNTAX_DECLARATIONS",
+            "files":files,
+            "indexHash":"sha256:transport-bound",
+            "projectModelHash":"SOURCE_SYNTAX",
+            "k2Validated":false,
+            "diagnostics":[],
+        });
+        (repo, relative, response)
+    }
+
+    #[test]
+    fn source_syntax_accepts_current_declaration_only_response() {
+        let (repo, relative, response) = source_syntax_fixture();
+        let manifest = validate_source_syntax_response(
+            repo.path(),
+            ":/main",
+            std::slice::from_ref(&relative),
+            &response,
+        )
+        .unwrap();
+        assert!(manifest.starts_with("sha256:"));
+
+        let mut partial = response.clone();
+        partial["partial"] = Value::Bool(false);
+        assert!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &partial,
+            )
+            .is_err()
+        );
+        assert!(validate_source_syntax_response(repo.path(), ":/main", &[], &response).is_err());
+
+        let mut empty_graphs = response.clone();
+        empty_graphs["declarationRelations"] = json!([]);
+        empty_graphs["declarationRelationHash"] =
+            Value::String(crate::canonical::hash(&json!([])).unwrap());
+        empty_graphs["declarationDescriptors"] = json!([]);
+        empty_graphs["declarationDescriptorHash"] =
+            Value::String(crate::canonical::hash(&json!([])).unwrap());
+        assert!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &empty_graphs,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn source_syntax_allows_provisional_id_collisions_but_not_duplicate_occurrences() {
+        let (repo, relative, response) = source_syntax_fixture();
+        let mut colliding_ids = response.clone();
+        let mut second = colliding_ids["files"][0]["declarations"][0].clone();
+        second["name"] = json!("packageOccurrence");
+        second["rangeStart"] = json!(0);
+        second["rangeEnd"] = json!(7);
+        second["sourceOrigin"] = json!({"file":relative,"rangeStart":0,"rangeEnd":7});
+        colliding_ids["files"][0]["declarations"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, second);
+        assert!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &colliding_ids,
+            )
+            .is_ok()
+        );
+
+        let mut duplicate_occurrence = response;
+        let mut duplicate = duplicate_occurrence["files"][0]["declarations"][0].clone();
+        duplicate["declarationId"] = json!("provisional:distinct-declaration");
+        duplicate["symbolId"] = json!("provisional:distinct-symbol");
+        duplicate_occurrence["files"][0]["declarations"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert_eq!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &duplicate_occurrence,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn source_syntax_rejects_semantic_row_forgery() {
+        let (repo, relative, response) = source_syntax_fixture();
+        let mut forged_fact = response.clone();
+        forged_fact["files"][0]["semanticFacts"] = json!([{"kind":"CALL"}]);
+        assert_eq!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &forged_fact,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        let mut forged_override = response.clone();
+        forged_override["files"][0]["overrides"] = json!([{"symbolId":"p.value()"}]);
+        assert_eq!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &forged_override,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        let mut forged_relation = response.clone();
+        forged_relation["declarationRelations"] = json!({
+            "relations":[{"kind":"CALLS"}],
+            "boundaries":[],
+        });
+        assert_eq!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &forged_relation,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        let mut forged_descriptor = response;
+        forged_descriptor["declarationDescriptors"] = json!({
+            "descriptors":[{"symbolId":"p.value()"}],
+            "boundaries":[],
+        });
+        assert_eq!(
+            validate_source_syntax_response(
+                repo.path(),
+                ":/main",
+                std::slice::from_ref(&relative),
+                &forged_descriptor,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn source_syntax_worker_indexes_without_a_build_model() {
+        let workspace = workspace_root();
+        let repo = tempfile::tempdir().unwrap();
+        let relative = "src/main/kotlin/p/Value.kt";
+        let source = repo.path().join(relative);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "package p\n// 😀\nfun value() = 1\n").unwrap();
+        assert!(!repo.path().join("build.gradle.kts").exists());
+        assert!(!repo.path().join("pom.xml").exists());
+
+        let mut worker = WorkerClient::start(&workspace).unwrap();
+        let verified = worker
+            .index_files_source_syntax_verified(&json!({
+                "repo":repo.path(),
+                "compilation":":/main",
+                "syntaxOnly":true,
+                "files":[relative],
+            }))
+            .unwrap();
+        let facts = worker.inspect_verified_source_syntax(&verified).unwrap();
+        assert_eq!(facts["analysisMode"], "SYNTAX_DECLARATIONS");
+        assert_eq!(facts["k2Validated"], false);
+        assert_eq!(facts["partial"], true);
+        assert_eq!(facts["files"].as_array().unwrap().len(), 1);
+        assert!(
+            facts["files"][0]["declarations"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty())
+        );
+        assert_eq!(facts["declarationRelations"], json!([]));
+        assert_eq!(facts["declarationDescriptors"], json!([]));
+        std::fs::write(&source, "package p\n// changed\nfun value() = 2\n").unwrap();
+        assert_eq!(
+            worker
+                .inspect_verified_source_syntax(&verified)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProjectModelChanged
+        );
+        worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn source_syntax_rejects_k2_authority_forgery() {
+        let (repo, relative, mut response) = source_syntax_fixture();
+        response["k2Validated"] = Value::Bool(true);
+        assert_eq!(
+            validate_source_syntax_response(repo.path(), ":/main", &[relative], &response)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+    }
+
+    fn project_model_fixture(
+        classpath: &[&str],
+        task_digest: &str,
+        configuration_digest: &str,
+        ordered_equivalent: bool,
+    ) -> Value {
+        let manifest = json!({
+            "orderedCompileClasspath":classpath,
+            "classpathAuthority":{
+                "orderedDigest":"sha256:raw-ordered",
+                "taskLibrariesDigest":task_digest,
+                "configurationDigest":configuration_digest,
+                "orderedEquivalent":ordered_equivalent,
+            },
+            "declaredCompilerVersion":"2.4.10",
+        });
+        json!({
+            "schema":"semantic-project/0.1",
+            "compilation":":/main",
+            "projectModelHash":"sha256:raw-project",
+            "semanticInputManifestHash":crate::canonical::hash(&manifest).unwrap(),
+            "semanticInputManifest":manifest.clone(),
+            "classpathAuthority":manifest["classpathAuthority"].clone(),
+        })
+    }
+
+    #[test]
+    fn stable_project_model_identity_ignores_equivalent_cache_mounts() {
+        let first = project_model_fixture(
+            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
+            "sha256:/first/task",
+            "sha256:/first/configuration",
+            true,
+        );
+        let second = project_model_fixture(
+            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
+            "sha256:/second/task",
+            "sha256:/second/configuration",
+            true,
+        );
+        assert_eq!(
+            stable_project_model_identity(&first).unwrap(),
+            stable_project_model_identity(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn stable_project_model_identity_preserves_semantic_disagreement() {
+        let baseline = project_model_fixture(
+            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
+            "sha256:task",
+            "sha256:configuration",
+            true,
+        );
+        let reordered = project_model_fixture(
+            &["repo:.gradle/b.jar:sha256:b", "repo:.gradle/a.jar:sha256:a"],
+            "sha256:task",
+            "sha256:configuration",
+            true,
+        );
+        let provider_disagreement = project_model_fixture(
+            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
+            "sha256:other-task",
+            "sha256:other-configuration",
+            false,
+        );
+        assert_ne!(
+            stable_project_model_identity(&baseline).unwrap(),
+            stable_project_model_identity(&reordered).unwrap()
+        );
+        assert_ne!(
+            stable_project_model_identity(&baseline).unwrap(),
+            stable_project_model_identity(&provider_disagreement).unwrap()
+        );
+    }
+
+    #[test]
+    fn compiler_plugin_abi_failure_is_not_collapsed_into_generic_k2_failure() {
+        assert_eq!(
+            parse_worker_code("UNSUPPORTED_COMPILER_PLUGIN_ABI"),
+            ErrorCode::UnsupportedCompilerPluginAbi,
+        );
+        assert_eq!(
+            parse_worker_code("INCOMPLETE_SEMANTIC_ANALYSIS"),
+            ErrorCode::IncompleteSemanticAnalysis,
+        );
+        assert_eq!(parse_worker_code("INVALID_INPUT"), ErrorCode::InvalidInput);
+        assert_eq!(
+            parse_worker_code("FUTURE_OR_MISSPELLED_CODE"),
+            ErrorCode::WorkerProtocolMismatch,
+        );
+    }
+
+    #[test]
+    fn compiler_plugin_abi_discovery_visits_each_supported_variant_once() {
+        let mut tried = 0;
+        let first = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
+        assert_eq!(first, WorkerVariant::Kotlin24);
+        tried |= first.discovery_bit();
+
+        let second = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
+        assert_eq!(second, WorkerVariant::Kotlin23);
+        tried |= second.discovery_bit();
+
+        let third = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
+        assert_eq!(third, WorkerVariant::Kotlin21);
+        tried |= third.discovery_bit();
+        assert!(WorkerVariant::next_untried_for_abi_discovery(tried).is_none());
+    }
+    fn relation_normalization_facts(relations: Vec<Value>) -> Value {
+        let mut relations = relations;
+        relations.sort_by_key(|row| crate::canonical::bytes(row).unwrap());
+        let graph = json!({
+            "schema":"declaration-relation-graph/0.1",
+            "compilation":":/main",
+            "coverage":"COMPLETE_SUPPORTED_SUBSET",
+            "relations":relations,
+            "boundaries":[],
+            "provenance":{},
+        });
+        json!({
+            "declarationRelationHash":crate::canonical::hash(&graph).unwrap(),
+            "declarationRelations":graph,
+        })
+    }
+
+    #[test]
+    fn optional_relation_evidence_becomes_typed_unknown_without_losing_base_call() {
+        let call = json!({
+            "schema":"declaration-relation/0.1",
+            "kind":"CALLS",
+            "owner":"p/caller",
+            "target":"p/callee",
+            "argumentToParameter":[{"argumentStart":9,"parameterIndex":0,"parameterType":"kotlin/String"}],
+        });
+        let raw_hash = crate::canonical::hash(&call).unwrap();
+        let mut facts = relation_normalization_facts(vec![call]);
+
+        normalize_optional_relation_evidence(&mut facts).unwrap();
+
+        let graph = &facts["declarationRelations"];
+        assert_eq!(graph["coverage"], "PARTIAL");
+        assert_eq!(graph["relations"].as_array().unwrap().len(), 1);
+        assert!(graph["relations"][0].get("argumentToParameter").is_none());
+        assert_eq!(
+            graph["boundaries"][0]["code"],
+            "ARGUMENT_MAPPING_UNAVAILABLE"
+        );
+        assert_eq!(graph["boundaries"][0]["affectedRowCount"], 1);
+        assert_eq!(
+            graph["boundaries"][0]["rawRowsHash"],
+            crate::canonical::hash(&json!([raw_hash])).unwrap()
+        );
+        assert_eq!(
+            facts["declarationRelationHash"],
+            crate::canonical::hash(graph).unwrap()
+        );
+    }
+
+    #[test]
+    fn unreliable_flow_rows_do_not_discard_independent_compiler_relations() {
+        let mut facts = relation_normalization_facts(vec![
+            json!({"schema":"declaration-relation/0.1","kind":"OVERRIDES","owner":"p/impl","target":"p/api"}),
+            json!({"schema":"declaration-relation/0.1","kind":"NULL_COALESCES","owner":"p/f","target":"p/fallback"}),
+            json!({"schema":"declaration-relation/0.1","kind":"RETURNS_VALUE_FROM","owner":"p/f","target":"p/source"}),
+        ]);
+
+        normalize_optional_relation_evidence(&mut facts).unwrap();
+
+        let relations = facts["declarationRelations"]["relations"]
+            .as_array()
+            .unwrap();
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0]["kind"], "OVERRIDES");
+        let codes = facts["declarationRelations"]["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["code"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            codes,
+            std::collections::BTreeSet::from([
+                "NULL_COALESCING_FLOW_UNAVAILABLE",
+                "RETURN_VALUE_FLOW_UNAVAILABLE",
+            ])
+        );
+    }
+
+    #[test]
+    fn optional_relation_normalization_rejects_a_forged_input_hash() {
+        let mut facts = relation_normalization_facts(vec![json!({
+            "schema":"declaration-relation/0.1",
+            "kind":"CALLS",
+            "owner":"p/caller",
+            "target":"p/callee",
+        })]);
+        facts["declarationRelationHash"] = json!("sha256:forged");
+        assert_eq!(
+            normalize_optional_relation_evidence(&mut facts)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProjectModelChanged
+        );
+    }
 
     #[test]
     fn embedded_worker_distribution_rejects_workspace_and_private_tree_mutation() {
@@ -1633,7 +3776,10 @@ mod tests {
         let launcher_permissions = std::fs::metadata(&private_launcher).unwrap().permissions();
         std::fs::write(&private_launcher, "#!/bin/sh\nexit 88\n").unwrap();
         assert_eq!(
-            worker.inspect_verified_index(&verified).unwrap_err().code,
+            worker
+                .authorize_index_facts(&verified, &repo, ":/main")
+                .unwrap_err()
+                .code,
             ErrorCode::WorkerProtocolMismatch
         );
         std::fs::write(&private_launcher, launcher_bytes).unwrap();
@@ -1646,7 +3792,10 @@ mod tests {
         let plugin_bytes = std::fs::read(&plugin).unwrap();
         std::fs::write(&plugin, b"changed").unwrap();
         assert_eq!(
-            worker.inspect_verified_index(&verified).unwrap_err().code,
+            worker
+                .authorize_index_facts(&verified, &repo, ":/main")
+                .unwrap_err()
+                .code,
             ErrorCode::WorkerProtocolMismatch
         );
         std::fs::write(&plugin, plugin_bytes).unwrap();
@@ -1654,7 +3803,10 @@ mod tests {
         let extra = trusted.distribution_root.join("unexpected-authority-input");
         std::fs::write(&extra, b"extra").unwrap();
         assert_eq!(
-            worker.inspect_verified_index(&verified).unwrap_err().code,
+            worker
+                .authorize_index_facts(&verified, &repo, ":/main")
+                .unwrap_err()
+                .code,
             ErrorCode::WorkerProtocolMismatch
         );
         std::fs::remove_file(extra).unwrap();
@@ -1744,6 +3896,154 @@ mod tests {
             warm_started.elapsed().as_millis()
         );
         restored.shutdown().unwrap();
+    }
+
+    #[test]
+    fn trusted_distribution_identity_is_read_only_cache_key_material() {
+        let workspace = workspace_root();
+        let worker = WorkerClient::start(&workspace).unwrap();
+        let identity = worker.trusted_distribution_identity().unwrap();
+        assert!(identity.tree_hash.starts_with("sha256:"));
+        assert!(identity.build_input_digest.starts_with("sha256:"));
+        assert!(identity.plugin_fingerprint.starts_with("sha256:"));
+        worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn compiler_receipt_requires_explicit_successful_k2_validation() {
+        assert_eq!(
+            require_k2_validated(&json!({"k2Validated":false}))
+                .unwrap_err()
+                .code,
+            ErrorCode::IncompleteSemanticAnalysis
+        );
+        assert_eq!(
+            require_k2_validated(&json!({})).unwrap_err().code,
+            ErrorCode::IncompleteSemanticAnalysis
+        );
+        require_k2_validated(&json!({"k2Validated":true})).unwrap();
+    }
+
+    #[test]
+    fn external_build_state_uses_inline_large_source_transport() {
+        let source = "x".repeat(64 * 1024 + 1);
+        let state = tempfile::tempdir().unwrap();
+        let (inline, blob) =
+            source_transport(&json!({"source":source}), Some(state.path())).unwrap();
+        assert_eq!(inline.len(), 64 * 1024 + 1);
+        assert!(blob.is_none());
+    }
+
+    fn transport_blob(root: &Path, bytes: &[u8]) -> BlobRef {
+        let hash = crate::canonical::hash_bytes(bytes);
+        let digest = hash.trim_start_matches("sha256:").to_owned();
+        std::fs::create_dir_all(root.join("sha256")).unwrap();
+        std::fs::write(root.join("sha256").join(&digest), bytes).unwrap();
+        BlobRef {
+            content_hash: hash,
+            relative_path: format!("sha256/{digest}"),
+            size_bytes: bytes.len() as u64,
+        }
+    }
+
+    #[test]
+    fn index_response_body_supports_bounded_inline_or_one_verified_blob() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = root.path().canonicalize().unwrap();
+        let inline = br#"{"schema":"semantic-index/0.1"}"#.to_vec();
+        assert_eq!(
+            index_response_body(inline.clone(), &[], &canonical_root).unwrap(),
+            inline
+        );
+
+        let body = br#"{"schema":"semantic-index/0.1","large":true}"#;
+        let blob = transport_blob(&canonical_root, body);
+        let path = canonical_root.join(&blob.relative_path);
+        assert_eq!(
+            index_response_body(Vec::new(), std::slice::from_ref(&blob), &canonical_root).unwrap(),
+            body
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn index_response_body_rejects_ambiguous_or_tampered_blob_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = root.path().canonicalize().unwrap();
+        let body = b"bounded canonical body";
+        let blob = transport_blob(&canonical_root, body);
+        assert_eq!(
+            index_response_body(
+                b"inline".to_vec(),
+                std::slice::from_ref(&blob),
+                &canonical_root,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+        assert_eq!(
+            index_response_body(Vec::new(), &[], &canonical_root)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+        assert_eq!(
+            index_response_body(Vec::new(), &[blob.clone(), blob.clone()], &canonical_root,)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        let mut wrong_size = blob.clone();
+        wrong_size.size_bytes += 1;
+        assert_eq!(
+            read_worker_transport_blob(&canonical_root, &wrong_size)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+        let mut escaping = blob.clone();
+        escaping.relative_path = "../body".into();
+        assert_eq!(
+            read_worker_transport_blob(&canonical_root, &escaping)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        std::fs::write(
+            canonical_root.join(&blob.relative_path),
+            b"tampered canonical bod",
+        )
+        .unwrap();
+        assert_eq!(
+            read_worker_transport_blob(&canonical_root, &blob)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_response_body_rejects_symlinked_cas_objects() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = root.path().canonicalize().unwrap();
+        let body = b"bounded canonical body";
+        let blob = transport_blob(&canonical_root, body);
+        let target = canonical_root.join(&blob.relative_path);
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::fs::remove_file(&target).unwrap();
+        symlink(outside.path(), target).unwrap();
+        assert_eq!(
+            read_worker_transport_blob(&canonical_root, &blob)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
     }
 
     #[test]
@@ -1860,7 +4160,10 @@ mod tests {
         );
         verified.payload_hash = crate::canonical::hash(&verified.payload).unwrap();
         assert_eq!(
-            worker.inspect_verified_index(&verified).unwrap_err().code,
+            worker
+                .authorize_index_facts(&verified, &repo, ":/main")
+                .unwrap_err()
+                .code,
             ErrorCode::ProjectModelChanged
         );
         worker.shutdown().unwrap();

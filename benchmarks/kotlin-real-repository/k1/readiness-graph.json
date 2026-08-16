@@ -1,0 +1,185 @@
+{
+  "schema": "codeclew.kotlin-real-repository-readiness-graph/0.1",
+  "graphId": "KOTLIN_REAL_REPOSITORY_K1_12_2026_08_13",
+  "receiptStates": ["READY", "FAILED", "CANCELLED"],
+  "derivedStates": ["ABSENT", "BLOCKED", "RUNNING", "STALE"],
+  "rules": {
+    "readyRecognition": "A READY receipt is recognized only from the production-pinned graph/store, exact selected live inputs, exact direct dependency receipt hashes and current checker identity.",
+    "dependencyPrecedence": "Any dependency not recognized READY makes a descendant BLOCKED before local staleness evaluation.",
+    "mutation": "Only PREPARE nodes may mutate, inside unique staging roots followed by independent verification and atomic publication.",
+    "directAuthority": "DIRECT, IMPORT, DECISION and CONDITIONAL_ROOT nodes cannot be issued by generic verify or caller-authored evidence. K1_SERIES_GUARD is an internal irreversible OPEN/FATAL store authority. An OPEN K1_DECISION requires every declared dependency and selected input; a FATAL K1_DECISION is current only from the exact guard object and can issue STOP but never GO or PIVOT.",
+    "postHoldoutChange": "Any candidate source, binary, worker, schema, runner, graph, requirement, corpus, dependency seed or threshold change after CANDIDATE_FREEZE_VERIFY cancels the series."
+  },
+  "nodes": [
+    {
+      "id": "INPUT_AUTHORITY_VERIFY",
+      "action": "VERIFY",
+      "deps": [],
+      "selectedInputs": ["researchInput", "executionContract", "priorM1Failure", "repositoryBaseRevision"]
+    },
+    {
+      "id": "K0_1_BYTE_EXACT_VERIFY",
+      "action": "VERIFY",
+      "deps": ["INPUT_AUTHORITY_VERIFY"],
+      "selectedInputs": ["k0Lock", "k0Portability", "evidenceCoreProto", "k0AuthoritySet"]
+    },
+    {
+      "id": "REQUIREMENTS_FREEZE_VERIFY",
+      "action": "VERIFY",
+      "deps": ["INPUT_AUTHORITY_VERIFY", "K0_1_BYTE_EXACT_VERIFY"],
+      "selectedInputs": ["requirements", "readinessGraph"]
+    },
+    {
+      "id": "CORPUS_FREEZE_VERIFY",
+      "action": "VERIFY",
+      "deps": ["REQUIREMENTS_FREEZE_VERIFY"],
+      "selectedInputs": ["corpus", "corpusEligibilityEvidence"]
+    },
+    {
+      "id": "HOLDOUT_ELIGIBILITY_AUDIT_IMPORT",
+      "action": "IMPORT",
+      "deps": ["CORPUS_FREEZE_VERIFY"],
+      "selectedInputs": ["holdoutEligibilityAudit"]
+    },
+    {
+      "id": "BASELINE_CAPTURE",
+      "action": "DIRECT",
+      "deps": ["INPUT_AUTHORITY_VERIFY", "CORPUS_FREEZE_VERIFY", "K0_1_BYTE_EXACT_VERIFY"],
+      "selectedInputs": ["baselinePacket", "candidateSources", "candidateTools", "repositoryBaseRevision"]
+    },
+    {
+      "id": "HARNESS_SELF_TEST",
+      "action": "DIRECT",
+      "deps": ["REQUIREMENTS_FREEZE_VERIFY"],
+      "selectedInputs": ["harnessSource", "harnessSelfTestPacket"]
+    },
+    {
+      "id": "QUALIFICATION_DEPENDENCY_SEED_PREPARE",
+      "action": "PREPARE",
+      "deps": ["BASELINE_CAPTURE", "HARNESS_SELF_TEST", "CORPUS_FREEZE_VERIFY"],
+      "selectedInputs": ["qualificationDependencySeed", "qualificationSourceSet", "candidateTools"]
+    },
+    {
+      "id": "QUALIFICATION_DEPENDENCY_SEED_VERIFY",
+      "action": "VERIFY",
+      "deps": ["QUALIFICATION_DEPENDENCY_SEED_PREPARE"],
+      "selectedInputs": ["qualificationDependencySeed"]
+    },
+    {
+      "id": "HOLDOUT_DEPENDENCY_SEED_PREPARE",
+      "action": "PREPARE",
+      "deps": ["HOLDOUT_SOURCE_MATERIALIZE", "CANDIDATE_FREEZE_VERIFY", "HOLDOUT_ELIGIBILITY_AUDIT_IMPORT"],
+      "selectedInputs": ["holdoutDependencySeed", "holdoutSourceSet", "candidateTools"]
+    },
+    {
+      "id": "QUALIFICATION_RUN_6_COMPLETE",
+      "action": "DIRECT",
+      "deps": ["QUALIFICATION_DEPENDENCY_SEED_VERIFY", "HARNESS_SELF_TEST"],
+      "selectedInputs": ["qualificationMatrix", "candidateSources", "candidateTools"]
+    },
+    {
+      "id": "CANDIDATE_FREEZE_PREPARE",
+      "action": "PREPARE",
+      "deps": ["QUALIFICATION_RUN_6_COMPLETE", "K0_1_BYTE_EXACT_VERIFY"],
+      "selectedInputs": ["candidateFreeze", "candidateSources", "candidateBinaries", "candidateTools", "harnessSource", "independentAuditorSource", "requirements", "readinessGraph", "corpus"]
+    },
+    {
+      "id": "CANDIDATE_FREEZE_VERIFY",
+      "action": "VERIFY",
+      "deps": ["CANDIDATE_FREEZE_PREPARE"],
+      "selectedInputs": ["candidateFreeze", "candidateSources", "candidateBinaries", "candidateTools", "harnessSource", "independentAuditorSource", "requirements", "readinessGraph", "corpus"]
+    },
+    {
+      "id": "HOLDOUT_SOURCE_MATERIALIZE",
+      "action": "PREPARE",
+      "deps": ["CANDIDATE_FREEZE_VERIFY", "HOLDOUT_ELIGIBILITY_AUDIT_IMPORT"],
+      "selectedInputs": ["holdoutSourceSet"]
+    },
+    {
+      "id": "HOLDOUT_DEPENDENCY_SEED_VERIFY",
+      "action": "VERIFY",
+      "deps": ["HOLDOUT_DEPENDENCY_SEED_PREPARE", "CANDIDATE_FREEZE_VERIFY"],
+      "selectedInputs": ["holdoutDependencySeed"]
+    },
+    {
+      "id": "HOLDOUT_RUN_6_COMPLETE",
+      "action": "DIRECT",
+      "deps": ["HOLDOUT_DEPENDENCY_SEED_VERIFY", "CANDIDATE_FREEZE_VERIFY"],
+      "selectedInputs": ["holdoutMatrix", "holdoutSourceSet", "holdoutDependencySeed", "candidateFreeze"]
+    },
+    {
+      "id": "MATRIX_TOTALITY_AND_SAFETY_VERIFY",
+      "action": "DIRECT",
+      "deps": ["QUALIFICATION_RUN_6_COMPLETE", "HOLDOUT_RUN_6_COMPLETE", "K0_1_BYTE_EXACT_VERIFY"],
+      "selectedInputs": ["qualificationMatrix", "holdoutMatrix", "candidateFreeze"]
+    },
+    {
+      "id": "APPLICABILITY_VERIFY",
+      "action": "DIRECT",
+      "deps": ["MATRIX_TOTALITY_AND_SAFETY_VERIFY"],
+      "selectedInputs": ["qualificationMatrix", "holdoutMatrix", "requirements"]
+    },
+    {
+      "id": "CACHE_AND_COST_VERIFY",
+      "action": "DIRECT",
+      "deps": ["MATRIX_TOTALITY_AND_SAFETY_VERIFY"],
+      "selectedInputs": ["qualificationMatrix", "holdoutMatrix", "requirements"]
+    },
+    {
+      "id": "REQUIREMENT_CONFORMANCE_VERIFY",
+      "action": "DIRECT",
+      "deps": ["MATRIX_TOTALITY_AND_SAFETY_VERIFY", "APPLICABILITY_VERIFY", "CACHE_AND_COST_VERIFY", "CANDIDATE_FREEZE_VERIFY", "BASELINE_CAPTURE", "HARNESS_SELF_TEST"],
+      "selectedInputs": ["requirementConformance", "matrixSafetyReceipt", "applicabilityReceipt", "cacheCostReceipt", "requirements", "qualificationMatrix", "holdoutMatrix", "candidateFreeze", "baselinePacket", "harnessSelfTestPacket"]
+    },
+    {
+      "id": "K1_INDEPENDENT_AUDITOR_RUN",
+      "action": "DIRECT",
+      "deps": ["REQUIREMENT_CONFORMANCE_VERIFY", "HOLDOUT_RUN_6_COMPLETE", "CANDIDATE_FREEZE_VERIFY"],
+      "selectedInputs": ["independentAuditorSource", "independentAuditorRunReceipt", "independentAudit", "requirementConformance", "matrixSafetyReceipt", "applicabilityReceipt", "cacheCostReceipt", "candidateFreeze", "qualificationMatrix", "holdoutMatrix", "requirements", "corpus", "candidateTools", "baselinePacket", "harnessSelfTestPacket"]
+    },
+    {
+      "id": "K1_SERIES_GUARD",
+      "action": "DIRECT",
+      "deps": [],
+      "selectedInputs": []
+    },
+    {
+      "id": "K1_INDEPENDENT_AUDIT_IMPORT",
+      "action": "IMPORT",
+      "deps": ["K1_INDEPENDENT_AUDITOR_RUN", "REQUIREMENT_CONFORMANCE_VERIFY", "MATRIX_TOTALITY_AND_SAFETY_VERIFY", "APPLICABILITY_VERIFY", "CACHE_AND_COST_VERIFY", "HOLDOUT_RUN_6_COMPLETE", "CANDIDATE_FREEZE_VERIFY"],
+      "selectedInputs": ["independentAuditorSource", "independentAuditorRunReceipt", "matrixSafetyReceipt", "applicabilityReceipt", "cacheCostReceipt", "requirementConformance", "independentAudit", "qualificationMatrix", "holdoutMatrix", "requirements", "corpus", "candidateTools", "baselinePacket", "harnessSelfTestPacket", "candidateFreeze"]
+    },
+    {
+      "id": "K1_DECISION",
+      "action": "DECISION",
+      "deps": ["K1_SERIES_GUARD", "K1_INDEPENDENT_AUDIT_IMPORT", "REQUIREMENT_CONFORMANCE_VERIFY", "MATRIX_TOTALITY_AND_SAFETY_VERIFY", "APPLICABILITY_VERIFY", "CACHE_AND_COST_VERIFY", "HOLDOUT_RUN_6_COMPLETE", "CANDIDATE_FREEZE_VERIFY"],
+      "selectedInputs": ["matrixSafetyReceipt", "applicabilityReceipt", "cacheCostReceipt", "requirementConformance", "decision", "requirements", "corpus", "candidateFreeze", "qualificationMatrix", "holdoutMatrix", "independentAudit"]
+    },
+    {
+      "id": "KOTLIN_REAL_REPOSITORY_READY",
+      "action": "CONDITIONAL_ROOT",
+      "condition": "K1_DECISION.status == GO",
+      "deps": ["K1_DECISION"],
+      "selectedInputs": []
+    },
+    {
+      "id": "KOTLIN_APPLICABILITY_OR_COST_GAP",
+      "action": "CONDITIONAL_ROOT",
+      "condition": "K1_DECISION.status == PIVOT",
+      "deps": ["K1_DECISION"],
+      "selectedInputs": []
+    },
+    {
+      "id": "K1_SERIES_STOPPED",
+      "action": "CONDITIONAL_ROOT",
+      "condition": "K1_DECISION.status == STOP",
+      "deps": ["K1_DECISION"],
+      "selectedInputs": []
+    }
+  ],
+  "roots": [
+    "KOTLIN_REAL_REPOSITORY_READY",
+    "KOTLIN_APPLICABILITY_OR_COST_GAP",
+    "K1_SERIES_STOPPED"
+  ]
+}

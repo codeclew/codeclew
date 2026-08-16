@@ -1,0 +1,193 @@
+{
+  "schema": "codeclew.kotlin-real-repository-requirements/0.1",
+  "seriesId": "KOTLIN_REAL_REPOSITORY_K1_12_2026_08_13",
+  "track": "B_REPOSITORY_UNDERSTANDING_AND_CHANGE_IMPACT",
+  "frozenBeforeProductionChanges": true,
+  "preregistrationAmendmentSha256": "sha256:2a7569c622118516782ebc5d6a6bb45ea5a17ef8b16337ac87210496f8a70869",
+  "historicalCorePolicy": {
+    "k0_1MustRemainByteExact": true,
+    "coreContractLockSha256": "sha256:2fe26d4605f20137f4309067773c6764fffe2933696a338ec269f9d240bf4d91",
+    "kotlinK0PortabilitySha256": "sha256:5d1b9495a861b5997295452e3960e4c94cad5df9541a7aa216465c4c7dc5fa4b",
+    "evidenceCoreProtoSha256": "sha256:0a3c001b94991afedf13b1a011ecef37882378e0f240da318ac2e45e633323d9"
+  },
+  "requirements": [
+    {
+      "id": "K1-R01",
+      "category": "SCOPE",
+      "requirement": "The K1 product path is read-only Repository Understanding plus conservative Change Impact; it exposes no edit, apply, patch, or reusable mutation authority.",
+      "verification": "Static API and CLI scan plus source-before/source-after equality for every corpus run."
+    },
+    {
+      "id": "K1-R02",
+      "category": "CORPUS",
+      "requirement": "The immutable corpus contains exactly 12 pinned real Kotlin/JVM repositories split into 6 qualification and 6 blind holdout entries, from at least 6 organizations and no more than 2 repositories per organization.",
+      "verification": "Corpus manifest schema, exact commit/tree pins, uniqueness, cohort and organization counts."
+    },
+    {
+      "id": "K1-R03",
+      "category": "BUILD_SYSTEM",
+      "requirement": "The corpus contains at least 3 Gradle Kotlin DSL, 3 Gradle Groovy DSL, and 3 Maven repositories; the selected JVM compilation is explicit for every entry.",
+      "verification": "Frozen build metadata and selected-compilation manifest fields."
+    },
+    {
+      "id": "K1-R04",
+      "category": "TOOLCHAIN",
+      "requirement": "The corpus covers declared Kotlin 2.1.x, 2.3.x, and 2.4.x projects. Evidence binds both the declared project compiler/toolchain and the exact trusted analyzer compiler; minor-line compatibility is never represented as exact compiler identity.",
+      "verification": "Snapshot and provider provenance comparison for at least one validated output in each line."
+    },
+    {
+      "id": "K1-R05",
+      "category": "BUILD_MODEL",
+      "requirement": "Gradle and Maven discovery preserves ordered compiler arguments and binds build root, project/module, source set, target, platform, JDK, plugin identities, generated-source configuration, and every unavailable field as an explicit boundary.",
+      "verification": "Build-model conformance fixtures, argument-order mutation, absent reflective field, multi-module Gradle and Maven runs."
+    },
+    {
+      "id": "K1-R06",
+      "category": "DEPENDENCIES",
+      "requirement": "Dependency identity is more than a classpath string list: it commits ordered classpath members and bytes, resolved coordinates/scopes when the build provider exposes them, repositories, selected module/reactor, and plugin/buildscript inputs. Missing closure produces a typed boundary or refusal.",
+      "verification": "Jar-byte, classpath-order, coordinate, scope, repository, plugin and missing-artifact mutations."
+    },
+    {
+      "id": "K1-R07",
+      "category": "SNAPSHOT",
+      "requirement": "Every result is bound to an exact clean Git commit/tree and a content-addressed source/build/dependency/toolchain snapshot. Generated, user, vendored and external artifacts are distinguished; source and Git state are unchanged after analysis.",
+      "verification": "Before/after hashes and Git status, dirty/source/generated/config/toolchain mutation counterexamples."
+    },
+    {
+      "id": "K1-R08",
+      "category": "TOTALITY",
+      "requirement": "Kotlin-owned translation is total over future compiler enum values and malformed individual FIR rows. Unknown declaration kind, visibility, effective visibility, modality, type rendering, relation, identity or range becomes a deterministic typed boundary and cannot panic or silently disappear.",
+      "verification": "Table-driven known enum contour, synthetic future values, the effectiveVisibility=local constructor regression, malformed-row and reference-to-quarantined-row tests."
+    },
+    {
+      "id": "K1-R09",
+      "category": "FAILURE_PROTOCOL",
+      "requirement": "Every selected run produces exactly one canonical retained attempt: either a validated AdapterOutput plus evidence-core binding or a typed PARTIAL, REFUSED or FAILED attempt with stage, reason code, safe detail hash, snapshot/provenance and cost. Panic, OOM, timeout, nonzero child exit, invalid JSON or empty stdout cannot be the only artifact.",
+      "verification": "Injected worker crash, timeout, OOM-like termination, invalid/truncated JSON, build failure and direct-adapter exception tests."
+    },
+    {
+      "id": "K1-R10",
+      "category": "PROOF_SAFETY",
+      "requirement": "UNKNOWN is contagious through mandatory closure. No quarantined row, incomplete enumeration, unsupported build feature, generated/source-map gap or dynamic boundary may yield false PROVEN, COMPILER_CHECKED, COMPLETE_IN_SCOPE, or an omitted mandatory obligation.",
+      "verification": "Adversarial completeness, grade, boundary and obligation tests; zero false-positive counter."
+    },
+    {
+      "id": "K1-R11",
+      "category": "PROJECTION",
+      "requirement": "A successful result provides a canonical bounded source-free repository projection and a conservative may-impact result. Budget exhaustion is PARTIAL_BUDGET; unsupported closure is PARTIAL_BOUNDARY, UNKNOWN or REFUSED.",
+      "verification": "Byte/node/depth caps, deterministic expansion, unrelated-padding and mandatory-boundary tests."
+    },
+    {
+      "id": "K1-R12",
+      "category": "CACHE",
+      "requirement": "A cross-process warm semantic cache is content-addressed by every semantic input, revalidated before use, and never trusts caller-owned cache JSON. Cache corruption, stale build/plugin/dependency/source state and symlink/path escape fail closed.",
+      "verification": "Cold/warm process pair plus forged, stale, truncated, corrupted, symlink and input-drift cache tests."
+    },
+    {
+      "id": "K1-R13",
+      "category": "OFFLINE_REPLAY",
+      "requirement": "After an explicit network-enabled dependency preparation phase, decision runs execute with network denied and build tools in offline mode. Two runs over the same snapshot have identical semantic projection digests.",
+      "verification": "macOS sandbox network denial, Gradle --offline/Maven -o evidence, no download marker, two-run semantic digest equality."
+    },
+    {
+      "id": "K1-R14",
+      "category": "TELEMETRY",
+      "requirement": "Every attempt records external wall time and maximum RSS plus internal source hashing, build discovery, dependency preparation/verification, adapter startup, cold/warm index, provider processing, serialization, store, query, bytes read/written/emitted, fact/boundary counts and cache request/hit telemetry.",
+      "verification": "Exact telemetry schema and nonnegative/presence checks for all 12 entries; UNKNOWN is explicit when the platform cannot observe a metric."
+    },
+    {
+      "id": "K1-R15",
+      "category": "HOLDOUT",
+      "requirement": "Holdout source semantics, tests, issues and adapter outcomes are not inspected before the candidate source/binary/harness/threshold freeze. Only repository identity and build/config metadata may be used for eligibility.",
+      "verification": "Stage journal, immutable implementation freeze and independent eligibility audit."
+    },
+    {
+      "id": "K1-R16",
+      "category": "AUTHORITY",
+      "requirement": "The readiness graph, requirements and corpus are production-pinned. Caller-supplied alternate graphs, thresholds, corpus rows, digests, success strings or failure reports cannot mint readiness.",
+      "verification": "Alternate-graph/corpus/threshold, forged receipt, cross-store and stale-input executable counterexamples."
+    },
+    {
+      "id": "K1-R17",
+      "category": "DETERMINISM",
+      "requirement": "Canonical success and failure identities exclude timestamps and volatile paths but include exact semantic inputs, ordered compiler arguments, boundaries, facts, impact obligations and provider identities.",
+      "verification": "Reordered true sets remain equivalent; ordered-argument changes do not; timestamp/path-only changes preserve semantic digest."
+    },
+    {
+      "id": "K1-R18",
+      "category": "SECURITY",
+      "requirement": "Repository-owned build code is executed only in an explicit isolated preparation/analysis contour with no production credentials, an external output/cache root, path/symlink checks, bounded subprocess groups and no model/controller access.",
+      "verification": "Environment allowlist, path containment, timeout/process-group and denied-secret tripwires."
+    },
+    {
+      "id": "K1-R19",
+      "category": "BASELINE",
+      "requirement": "Existing baseline failures remain visible and are not attributed to K1. K0.1 verification and focused new-package tests must be green before the holdout freeze.",
+      "verification": "Retained pre/post command packets and byte-exact K0.1 verification."
+    },
+    {
+      "id": "K1-R20",
+      "category": "NON_GOALS",
+      "requirement": "K1 performs zero model calls and does not implement Rust/TypeScript portability, edit/apply, JBMC, ByteBack, universal AST/IR, benchmark-family dispatch or repository-specific semantic recipes.",
+      "verification": "Static scan, command audit and modelCalls=0 in the final matrix."
+    }
+  ],
+  "decisionThresholds": {
+    "canonicalAttemptCount": 12,
+    "holdoutCount": 6,
+    "holdoutValidatedNonemptyProjectionMinimum": 5,
+    "totalTypedRefusalMaximum": 2,
+    "holdoutTypedRefusalMaximum": 1,
+    "falseProvenMaximum": 0,
+    "falseCompleteMaximum": 0,
+    "sourceMutationMaximum": 0,
+    "untypedFailureMaximum": 0,
+    "offlineTerminalSemanticReplayEqualityRequired": 12,
+    "requiredSuccessfulBuildDslClasses": [
+      "GRADLE_KOTLIN_DSL",
+      "GRADLE_GROOVY_DSL",
+      "MAVEN"
+    ],
+    "requiredSuccessfulKotlinMinorLines": [
+      "2.1",
+      "2.3",
+      "2.4"
+    ],
+    "holdoutRealWarmCacheHitMinimum": 5,
+    "holdoutMedianWarmProviderWallRatioMaximum": 0.8,
+    "holdoutMedianWarmEndToEndWallRatioMaximum": 0.9,
+    "perInvocationWallSecondsMaximum": 900,
+    "perInvocationMaximumResidentBytes": 8589934592,
+    "modelCalls": 0
+  },
+  "workloadPolicy": {
+    "selectionAuthority": "HARNESS_DERIVED_ONLY",
+    "selectionRule": "For each frozen selected compilation, enumerate validated adapter entities after the cold run and choose the lexicographically smallest RESOLVED entity with a source definition and at least one incident relation fact. If none exists, the repository is a typed refusal and is not a projection success.",
+    "query": {
+      "maxDepth": 2,
+      "maxEntities": 128,
+      "requiredLayers": ["DEFINITION", "RELATION", "CHANGE_IMPACT"],
+      "sourcePolicy": "ANCHORS_ONLY",
+      "boundaryPolicy": "RETURN_PARTIAL"
+    },
+    "nonemptyProjectionDefinition": "The generic runtime validates the output into evidence-core, emits at least one entity, one relation fact, one source-bound occurrence and one impact receipt with at least one affected entity or a mandatory boundary obligation tied to the selected seed.",
+    "antiGaming": [
+      "A projection without an evidence-core binding is not a success.",
+      "An all-repository may-impact set without evidence paths is not a success.",
+      "A caller-selected seed, source name, repository recipe or post-outcome fallback seed is forbidden."
+    ]
+  },
+  "pairedRunPolicy": {
+    "attemptsPerRepository": 2,
+    "cold": "Fresh external Codeclew state and semantic cache; preverified dependency seed remains available; network denied.",
+    "warm": "New adapter and worker processes over the exact same source/build/dependency/tool snapshot and the cold run's externally published semantic cache; network denied.",
+    "terminalSemanticDigest": "For ADAPTER_OUTPUT, hash the evidence-core bundle/projection after removing only preregistered timing and absolute staging-path metadata. For TYPED_REFUSAL or FAILED, hash the canonical stage, reason, safe detail hash, selected inputs, boundaries and provenance after removing only timing and absolute staging paths.",
+    "warmRatioPopulation": "Warm/cold ratios are computed only for repositories with two validated ADAPTER_OUTPUT results and a verified semantic cache hit. Refusals remain in applicability and replay denominators but never improve cache ratios.",
+    "retryPolicy": "Qualification may rerun only after a new candidate version and then all six qualification members restart. Holdout has no product-fix retry; a byte-identical rerun is allowed only when the retained supervisor proves failure occurred before the candidate process was started."
+  },
+  "decisionRules": {
+    "GO": "All requirements and numeric thresholds pass; issue KOTLIN_REAL_REPOSITORY_READY.",
+    "PIVOT": "Totality and proof safety pass, but applicability, offline closure, cache or cost thresholds fail; issue KOTLIN_APPLICABILITY_OR_COST_GAP without changing the corpus or thresholds.",
+    "STOP": "Any false PROVEN/COMPLETE, source mutation, K0.1 drift, authority bypass, post-freeze holdout tuning, corpus/threshold rewrite, or unretained failure invalidates the series."
+  }
+}

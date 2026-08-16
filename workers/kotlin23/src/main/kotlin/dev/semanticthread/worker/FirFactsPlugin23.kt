@@ -209,6 +209,10 @@ private class FirFactsConstructorDescriptorChecker(
             return
         }
         val symbolIdentity = "$provisionalIdentity#jvm:$jvmDescriptor"
+        val ownerAuthority = constructorOwnerAuthority(
+            ownerClass.symbol.classId.toString(),
+            descriptorContainment(context, declaration),
+        )
         val record = descriptorBase(
             context,
             source,
@@ -222,8 +226,12 @@ private class FirFactsConstructorDescriptorChecker(
             status.effectiveVisibility.privateApi,
             "FINAL",
         ).toMutableMap()
+        record["ownerIdentity"] = JsonPrimitive(ownerAuthority.ownerIdentity)
+        record["containment"] = kotlinx.serialization.json.JsonArray(
+            ownerAuthority.containment.map(::JsonPrimitive),
+        )
         record["compilerCallableId"] = JsonPrimitive(callableId.toString())
-        record["compilerClassId"] = JsonPrimitive(ownerClass.symbol.classId.toString())
+        record["compilerClassId"] = JsonPrimitive(ownerAuthority.compilerClassId)
         record["isPrimary"] = JsonPrimitive(declaration.isPrimary)
         record["jvmDescriptor"] = JsonPrimitive(jvmDescriptor)
         record["parameterTypes"] = kotlinx.serialization.json.JsonArray(
@@ -406,6 +414,18 @@ private class FirFactsPropertyDescriptorChecker(
         val source = declaration.source
         val symbol = declaration.symbol
         val callableId = symbol.callableId
+        val provisionalSymbolIdentity = callableId?.let { "property:$it" }
+        if (source == null || !declaration.origin.fromSource || declaration.origin.generated) {
+            appendFact(output, unknownDescriptor(context, source, provisionalSymbolIdentity, "DECLARATION", "GENERATED_OR_NO_SOURCE"))
+            return
+        }
+        val hasCompilerContainingCallable = context.containingElements.any { containing ->
+            containing !== declaration && containing is FirCallableDeclaration
+        }
+        if (hasCompilerContainingCallable) {
+            appendFact(output, unknownDescriptor(context, source, provisionalSymbolIdentity, "DECLARATION", "LOCAL_DECLARATION_UNSUPPORTED"))
+            return
+        }
         if (callableId == null) {
             appendFact(
                 output,
@@ -420,17 +440,6 @@ private class FirFactsPropertyDescriptorChecker(
             return
         }
         val symbolIdentity = "property:$callableId"
-        if (source == null || !declaration.origin.fromSource || declaration.origin.generated) {
-            appendFact(output, unknownDescriptor(context, source, symbolIdentity, "DECLARATION", "GENERATED_OR_NO_SOURCE"))
-            return
-        }
-        val hasCompilerContainingCallable = context.containingElements.any { containing ->
-            containing !== declaration && containing is FirCallableDeclaration
-        }
-        if (hasCompilerContainingCallable) {
-            appendFact(output, unknownDescriptor(context, source, symbolIdentity, "DECLARATION", "LOCAL_DECLARATION_UNSUPPORTED"))
-            return
-        }
         val declaredType = resolvedDescriptorType(declaration.returnTypeRef)
         val typeParameters = typeParameterDescriptors(declaration.typeParameters)
         val status = runCatching { symbol.resolvedStatus }.getOrNull()
@@ -1144,7 +1153,14 @@ private class FirFactsExpressionChecker(
                     } else {
                         ResolvedArgumentMapping23(emptyList(), null)
                     }
-                    if (argumentMapping.unknownCode != null) {
+                    val relation = relationBase(context, source, relationKind, owner, target).toMutableMap()
+                    relation["resultType"] = JsonPrimitive(value.resolvedType.toString())
+                    receiver?.let { relation["receiverType"] = JsonPrimitive(it.resolvedType.toString()) }
+                    if (argumentMapping.unknownCode == null) {
+                        relation["argumentToParameter"] = kotlinx.serialization.json.JsonArray(
+                            argumentMapping.rows.orEmpty()
+                        )
+                    } else {
                         appendFact(
                             output,
                             unknownRelation(
@@ -1155,14 +1171,7 @@ private class FirFactsExpressionChecker(
                                 argumentMapping.unknownCode,
                             ),
                         )
-                        return
                     }
-                    val relation = relationBase(context, source, relationKind, owner, target).toMutableMap()
-                    relation["resultType"] = JsonPrimitive(value.resolvedType.toString())
-                    receiver?.let { relation["receiverType"] = JsonPrimitive(it.resolvedType.toString()) }
-                    relation["argumentToParameter"] = kotlinx.serialization.json.JsonArray(
-                        argumentMapping.rows.orEmpty()
-                    )
                     relation["orderKey"] = JsonPrimitive(source.startOffset)
                     appendFact(output, kotlinx.serialization.json.JsonObject(relation))
                 }

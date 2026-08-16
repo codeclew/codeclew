@@ -1,0 +1,99 @@
+{
+  "schema": "codeclew.kotlin-real-repository-corpus-eligibility/0.1",
+  "seriesId": "KOTLIN_REAL_REPOSITORY_K1_12_2026_08_13",
+  "inspectionContour": {
+    "allowed": ["REMOTE_IDENTITY", "COMMIT", "GIT_TREE", "PATH_NAMES", "BUILD_AND_CONFIGURATION_METADATA"],
+    "holdoutForbiddenBeforeCandidateFreeze": ["KOTLIN_SOURCE_SEMANTICS", "TEST_SEMANTICS", "ISSUES", "PULL_REQUESTS", "ADAPTER_RUN", "BUILD_RUN", "PROJECT_SPECIFIC_SEMANTIC_RECIPE"],
+    "holdoutForbiddenActionsObserved": 0
+  },
+  "members": [
+    {
+      "id": "K1-Q01",
+      "metadata": [{"path": "pom.xml", "sha256": "sha256:6077a271635da380ed53bc1630744723806a2ab2dd3930507976e757aaabc99b"}]
+    },
+    {
+      "id": "K1-Q02",
+      "metadata": [
+        {"path": "build.gradle.kts", "sha256": "sha256:069b571f76edb8732e4f140f01d95e31dea477a0c4cdf359314a8a509ed66c1e"},
+        {"path": "settings.gradle.kts", "sha256": "sha256:838d54504a30ab5c9c587a7bcaefa9cdb667382c6b1cb57e4be1702b0ece6004"}
+      ]
+    },
+    {
+      "id": "K1-Q03",
+      "metadata": [
+        {"path": "build.gradle", "sha256": "sha256:1579c8cbab9a196816cee06d689f623ff23b86bcd36a5c0b174d0638e4df3359"},
+        {"path": "settings.gradle", "sha256": "sha256:5f4f7756c7f06709d2946d38d25fa8420f03482bf6161abf5e3e431d8eb2c593"}
+      ]
+    },
+    {
+      "id": "K1-Q04",
+      "metadata": [
+        {"path": "gradle/libs.versions.toml", "sha256": "sha256:af99e2c6d175bd4267209f38a5bf329654c7f57db39e422c9a4a36cf226c1118"},
+        {"path": "settings.gradle", "sha256": "sha256:e01bc1a83e104c3a3cdd1b65ba76fce1654d13afdecf9a7c86bc6298dc648012"}
+      ]
+    },
+    {
+      "id": "K1-Q05",
+      "metadata": [
+        {"path": "gradle/libs.versions.toml", "sha256": "sha256:f77a340cd49a7e54f626cb406e6772c2d66270cc616222abce5c07c954fdd9b2"},
+        {"path": "settings.gradle.kts", "sha256": "sha256:8729f5147109bfed02886e4b6520eff109eb17f76a2db3fc4112d10d51cd3f4b"}
+      ]
+    },
+    {
+      "id": "K1-Q06",
+      "metadata": [
+        {"path": "gradle.properties", "sha256": "sha256:82d7cac5f67465b0391fd558e1b89f07169a69665eea6253a1cf5e508a0409b1"},
+        {"path": "settings.gradle.kts", "sha256": "sha256:04ee361281811b15cb6495c3e59f7fa9e6ab60af9c0d3c05cb4e1bb7e6268f6a"}
+      ]
+    },
+    {
+      "id": "K1-H01",
+      "metadata": [{"path": "pom.xml", "sha256": "sha256:a066c3ae145fc2683b989c275dc35364d7f96bf2bf7369e9281d8743ffc65251"}]
+    },
+    {
+      "id": "K1-H02",
+      "metadata": [{"path": "pom.xml", "sha256": "sha256:8d592d8c1a28ce9d155c3bc4da7f5c51012e0032b55d6138b9fcfdac8122557e"}]
+    },
+    {
+      "id": "K1-H03",
+      "metadata": [
+        {"path": "build.gradle", "sha256": "sha256:77451be1df09aaea925bfa0a93db096ae77ebee9fa5a682a6837f745fcf6a5a9"},
+        {"path": "settings.gradle", "sha256": "sha256:525bbc1b8488e1ddde04445921081b7cc5cf23e1ef3e2354c753f922ec19bb97"}
+      ]
+    },
+    {
+      "id": "K1-H04",
+      "metadata": [
+        {"path": "build.gradle.kts", "sha256": "sha256:610aa17651b14550495f8c2d0fbef81c6ac03c9e7a8f3709a7cf552320d61d9b"},
+        {"path": "settings.gradle.kts", "sha256": "sha256:a53625a3a1b7002b0d916d7af69df261129314d9c7fc9055d1c81ba56a9eb11e"}
+      ]
+    },
+    {
+      "id": "K1-H05",
+      "metadata": [
+        {"path": "build.gradle.kts", "sha256": "sha256:202c932fd55d37e37ba0b245d95edb9fc603b4b5fd028d45143af4e1d4ffc765"},
+        {"path": "settings.gradle", "sha256": "sha256:db9cf19a88daaf44557ccc5f76dc19de58cac0996c4b8baa6785c8d56abb6423"}
+      ]
+    },
+    {
+      "id": "K1-H06",
+      "metadata": [
+        {"path": "gradle/libs.versions.toml", "sha256": "sha256:182ae58a819cec5309da9d8f796ba96fdec24e49d0f9a1b600db2be8f303bd48"},
+        {"path": "settings.gradle.kts", "sha256": "sha256:89c34909710d2e9af620942f0833d8b0b9690a89d926c620c410b49be4856ce4"}
+      ]
+    }
+  ],
+  "aggregate": {
+    "members": 12,
+    "qualification": 6,
+    "blindHoldout": 6,
+    "organizations": 10,
+    "maximumRepositoriesPerOrganization": 2,
+    "gradleKotlinDsl": 6,
+    "gradleGroovyDsl": 3,
+    "maven": 3,
+    "kotlinMinorLines": ["2.1", "2.3", "2.4"],
+    "multiModuleMinimumSatisfied": true,
+    "generatedOrCompilerPluginMinimumSatisfied": true
+  }
+}

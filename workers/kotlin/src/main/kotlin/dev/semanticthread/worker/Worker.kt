@@ -1,12 +1,23 @@
 package dev.semanticthread.worker
 
+import dev.semanticthread.worker.IncrementalK2Runtime
+import dev.semanticthread.worker.syntaxOnlyIndexSourceFiles
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.PrintStream
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+import kotlin.io.path.*
 import kotlinx.serialization.json.*
+import org.jetbrains.kotlin.cli.jvm.K2JVMCompiler
 import org.jetbrains.kotlin.cli.jvm.compiler.EnvironmentConfigFiles
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
-import org.jetbrains.kotlin.cli.jvm.K2JVMCompiler
-import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.openapi.application.ApplicationManager
 import org.jetbrains.kotlin.com.intellij.openapi.extensions.ExtensionPoint
+import org.jetbrains.kotlin.com.intellij.openapi.util.Disposer
 import org.jetbrains.kotlin.com.intellij.psi.PsiElement
 import org.jetbrains.kotlin.com.intellij.psi.PsiErrorElement
 import org.jetbrains.kotlin.com.intellij.psi.impl.source.tree.TreeCopyHandler
@@ -14,24 +25,724 @@ import org.jetbrains.kotlin.com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.psi.*
-import java.io.File
-import java.io.ByteArrayOutputStream
-import java.io.PrintStream
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
-import kotlin.io.path.*
 
 internal const val FIR_FACTS_EXTRACTOR_SCHEMA = "fir-facts-extractor/0.6"
 internal const val SEMANTIC_K2_CACHE_SCHEMA = "semantic-k2-cache/0.4"
 internal const val SEMANTIC_K2_DISK_CACHE_AUTHORITY = "NON_AUTHORITATIVE"
 
+internal val SUPPORTED_DESCRIPTOR_KINDS = setOf(
+    "FUNCTION", "CONSTRUCTOR", "PROPERTY", "MUTABLE_PROPERTY", "CLASS",
+)
+internal val SUPPORTED_VISIBILITIES = setOf("public", "internal", "private", "protected")
+internal val SUPPORTED_EFFECTIVE_VISIBILITIES = setOf(
+    "public", "internal", "private-in-class", "private-in-file", "protected",
+)
+internal val SUPPORTED_MODALITIES = setOf("FINAL", "OPEN", "ABSTRACT", "SEALED")
+internal val SUPPORTED_RELATION_KINDS = setOf(
+    "OVERRIDES", "CALLS", "REFERENCES", "CONSTRUCTS", "READS", "WRITES",
+    "INITIALIZES", "NULL_COALESCES", "RETURNS_VALUE_FROM",
+)
+
+private val COMPILER_PLUGIN_SERVICE_FILES = setOf(
+    "META-INF/services/org.jetbrains.kotlin.compiler.plugin.CompilerPluginRegistrar",
+    "META-INF/services/org.jetbrains.kotlin.compiler.plugin.ComponentRegistrar",
+)
+
+internal data class EffectiveCompilerPluginPlan(
+    val plugins: List<Path>,
+    val boundaries: List<String>,
+)
+
+private fun isCompilerPluginJar(path: Path): Boolean =
+    path.isRegularFile() && runCatching {
+        ZipFile(path.toFile()).use { archive ->
+            COMPILER_PLUGIN_SERVICE_FILES.any { archive.getEntry(it) != null }
+        }
+    }.getOrDefault(false)
+
+/**
+ * Run project compiler plugins only when their ABI is compatible with this
+ * exact analyzer. Gradle exposes a whole plugin classpath (including support
+ * libraries), while K2's -Xplugin expects registrar jars. Kotlin-owned
+ * serialization is replaced by the analyzer-patch artifact bundled with the
+ * worker; scripting is omitted for ordinary .kt compilations, which this
+ * worker supports. Unknown registrars fail closed across patch versions.
+ */
+internal fun effectiveCompilerPluginPlan(
+    requested: List<Path>,
+    declaredCompilerVersion: String,
+    analyzerClasspath: List<Path> = System.getProperty("java.class.path")
+        .split(File.pathSeparator)
+        .filter(String::isNotBlank)
+        .map(Path::of),
+): EffectiveCompilerPluginPlan {
+    val requestedRegistrars = requested
+        .map(Path::toAbsolutePath)
+        .map(Path::normalize)
+        .filter(::isCompilerPluginJar)
+        .distinct()
+    val effective = mutableListOf<Path>()
+    val boundaries = mutableSetOf<String>()
+    requestedRegistrars.forEach { plugin ->
+        val name = plugin.fileName.toString()
+        when {
+            name.startsWith("kotlin-scripting-compiler-embeddable-") -> {
+                boundaries += "KOTLIN_SCRIPTING_PLUGIN_OMITTED_FOR_KT_ANALYSIS"
+            }
+            name.startsWith("kotlin-serialization-compiler-plugin-embeddable-") -> {
+                val expectedName = "kotlin-serialization-compiler-plugin-embeddable-$WORKER_COMPILER_VERSION.jar"
+                if (name == expectedName) {
+                    effective.add(plugin)
+                } else {
+                    val compatible = analyzerClasspath
+                        .map(Path::toAbsolutePath)
+                        .map(Path::normalize)
+                        .filter(Path::isRegularFile)
+                        .singleOrNull { it.fileName.toString() == expectedName }
+                        ?: throw WorkerFailure(
+                            "UNSUPPORTED_COMPILER_PLUGIN_ABI",
+                            "analyzer-compatible Kotlin serialization compiler plugin is unavailable",
+                        )
+                    effective.add(compatible)
+                    boundaries += "KOTLIN_SERIALIZATION_PLUGIN_REBOUND_TO_ANALYZER_PATCH"
+                }
+            }
+            declaredCompilerVersion != WORKER_COMPILER_VERSION -> throw WorkerFailure(
+                "UNSUPPORTED_COMPILER_PLUGIN_ABI",
+                "compiler plugin ${plugin.fileName} targets Kotlin $declaredCompilerVersion but analyzer is $WORKER_COMPILER_VERSION",
+            )
+            else -> effective.add(plugin)
+        }
+    }
+    return EffectiveCompilerPluginPlan(
+        effective.distinct().sortedBy { it.toString() },
+        boundaries.sorted(),
+    )
+}
+
+private fun JsonElement?.safeString(): String? =
+    (this as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.contentOrNull
+
+private fun JsonElement?.safeInt(): Int? = (this as? JsonPrimitive)?.intOrNull
+
+internal fun compilerRangeToUtf8Bytes(source: String, start: Int, end: Int): IntRange? {
+    if (start < 0 || end < start || end > source.length) return null
+    if (start > 0 && start < source.length && Character.isLowSurrogate(source[start]) && Character.isHighSurrogate(source[start - 1])) return null
+    if (end > 0 && end < source.length && Character.isLowSurrogate(source[end]) && Character.isHighSurrogate(source[end - 1])) return null
+    val byteStart = source.substring(0, start).toByteArray(Charsets.UTF_8).size
+    val byteEnd = byteStart + source.substring(start, end).toByteArray(Charsets.UTF_8).size
+    return byteStart until byteEnd
+}
+
+internal fun stableBoundaryDigest(value: JsonElement): String = sha(canonicalJson(value).toByteArray())
+
+internal fun repositoryRelativeCompilerPath(repo: Path, raw: String): String? {
+    if (raw.isBlank()) return null
+    val parsed = runCatching { Path.of(raw) }.getOrNull() ?: return null
+    val candidate = (if (parsed.isAbsolute) parsed else repo.resolve(parsed)).normalize()
+    val canonicalRepo = repo.toAbsolutePath().normalize()
+    if (!candidate.startsWith(canonicalRepo)) return null
+    return runCatching { canonicalRepo.relativize(candidate).invariantSeparatorsPathString }
+        .getOrNull()
+        ?.takeIf(String::isNotEmpty)
+        ?.takeUnless { it == ".." || it.startsWith("../") || it.startsWith('/') }
+}
+
+internal fun repositorySourceFile(repo: Path, raw: String): Path {
+    val canonicalRepo = repo.toRealPath()
+    val parsed = runCatching { Path.of(raw) }.getOrElse {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Kotlin source path is invalid")
+    }
+    val candidate = (if (parsed.isAbsolute) parsed else canonicalRepo.resolve(parsed))
+        .toAbsolutePath()
+        .normalize()
+    if (!candidate.startsWith(canonicalRepo) || candidate == canonicalRepo) {
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "Kotlin source path is outside the repository",
+        )
+    }
+    var current = canonicalRepo
+    val components = canonicalRepo.relativize(candidate).toList()
+    components.forEachIndexed { index, component ->
+        current = current.resolve(component)
+        if (!Files.exists(current, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(current)) {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "Kotlin source path is absent or symbolic",
+            )
+        }
+        val final = index == components.lastIndex
+        if (final && !Files.isRegularFile(current, java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+            !final && !Files.isDirectory(current, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        ) {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "Kotlin source path contains a non-regular component",
+            )
+        }
+    }
+    val canonical = current.toRealPath()
+    if (canonical != candidate || !canonical.startsWith(canonicalRepo)) {
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "Kotlin source path does not have a contained canonical identity",
+        )
+    }
+    return canonical
+}
+
+internal fun validateProjectModelSourceFiles(repo: Path, model: JsonObject): JsonObject = buildJsonObject {
+    model.forEach { (key, value) ->
+        if (key !in setOf("sourceFiles", "analysisSourceFiles")) {
+            put(key, value)
+            return@forEach
+        }
+        val sources = value as? JsonArray ?: throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "Kotlin build model $key is not an array",
+        )
+        putJsonArray(key) {
+            sources.forEach { source ->
+                val raw = source.safeString() ?: throw WorkerFailure(
+                    "UNSUPPORTED_PROJECT_CONFIGURATION",
+                    "Kotlin build model source path is not a string",
+                )
+                add(JsonPrimitive(repositorySourceFile(repo, raw).toString()))
+            }
+        }
+    }
+    if ("sourceFiles" !in model) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Kotlin build model has no sourceFiles")
+    }
+}
+
+internal fun descriptorUnsupportedReason(raw: JsonObject, file: String?, source: String?): String? {
+    val identity = raw["symbolIdentity"].safeString().orEmpty()
+    val owner = raw["ownerIdentity"].safeString().orEmpty()
+    val kind = raw["declarationKind"].safeString().orEmpty()
+    val start = raw["start"].safeInt() ?: -1
+    val end = raw["end"].safeInt() ?: -1
+    return when {
+        file.isNullOrEmpty() -> "INVALID_DESCRIPTOR_SOURCE_PATH"
+        identity.isEmpty() || owner.isEmpty() -> "INVALID_DESCRIPTOR_IDENTITY"
+        kind !in SUPPORTED_DESCRIPTOR_KINDS -> "UNKNOWN_DECLARATION_KIND"
+        source == null -> "DESCRIPTOR_SOURCE_NOT_IN_COMPILATION"
+        compilerRangeToUtf8Bytes(source, start, end) == null -> "INVALID_DESCRIPTOR_SOURCE_RANGE"
+        raw["visibility"].safeString() !in SUPPORTED_VISIBILITIES -> "UNKNOWN_VISIBILITY"
+        raw["effectiveVisibility"].safeString() !in SUPPORTED_EFFECTIVE_VISIBILITIES -> "UNKNOWN_EFFECTIVE_VISIBILITY"
+        raw["modality"].safeString() !in SUPPORTED_MODALITIES -> "UNKNOWN_MODALITY"
+        rawContainsUnresolvedCompilerType(raw) -> "UNRESOLVED_DESCRIPTOR_TYPE"
+        else -> null
+    }
+}
+
+private fun rawContainsUnresolvedCompilerType(raw: JsonObject): Boolean {
+    fun unresolved(value: JsonElement, typeContext: Boolean = false): Boolean = when (value) {
+        is JsonObject -> {
+            val hasNestedType = value.keys.any { key ->
+                key.contains("type", ignoreCase = true) || key == "bounds"
+            }
+            typeContext && value.isNotEmpty() && !hasNestedType || value.any { (key, child) ->
+                unresolved(child, key.contains("type", ignoreCase = true) || key == "bounds")
+            }
+        }
+        is JsonArray -> value.any { unresolved(it, typeContext) }
+        is JsonPrimitive -> typeContext && (!value.isString || value.content.let { rendered ->
+            rendered.isBlank() || rendered.contains("<unresolved>", ignoreCase = true) ||
+                rendered.contains("<ERROR", ignoreCase = true) || rendered.contains("<unknown>", ignoreCase = true) ||
+                rendered.contains("..") || rendered.contains('!')
+        })
+        else -> false
+    }
+    return unresolved(raw)
+}
+
+internal fun parseCompilerFactLines(lines: List<String>): List<JsonObject> = lines
+    .filter(String::isNotBlank)
+    .flatMap { line ->
+        runCatching {
+            Json.parseToJsonElement(line).jsonObject.also { parsed ->
+                require(parsed["recordType"].safeString() != null) { "compiler fact has no string recordType" }
+            }
+        }.fold(
+            onSuccess = ::listOf,
+            onFailure = {
+                val digest = sha(line.toByteArray())
+                listOf(
+                    buildJsonObject {
+                        put("recordType", "DECLARATION_DESCRIPTOR_BOUNDARY")
+                        put("schema", "declaration-descriptor-boundary/0.1")
+                        put("stage", "NORMALIZE")
+                        put("code", "MALFORMED_COMPILER_FACT_ROW")
+                        put("resolution", "UNKNOWN")
+                        put("provider", "COMPILER_DESCRIPTOR_NORMALIZER")
+                        put("rawRowHash", digest)
+                    },
+                    buildJsonObject {
+                        put("recordType", "DECLARATION_RELATION_BOUNDARY")
+                        put("schema", "declaration-relation-boundary/0.1")
+                        put("stage", "NORMALIZE")
+                        put("code", "MALFORMED_COMPILER_FACT_ROW")
+                        put("resolution", "UNKNOWN")
+                        put("provider", "COMPILER_RELATION_NORMALIZER")
+                        put("rawRowHash", digest)
+                    },
+                )
+            },
+        )
+    }
+
+internal const val K1_BUILD_STATE_ROOT_ENV = "CODECLEW_K1_BUILD_STATE_ROOT"
+internal const val K1_BUILD_STATE_SEED_FILE = "CODECLEW_K1_BUILD_STATE_SEED"
+internal const val K1_BUILD_STATE_MANIFEST_FILE = "CODECLEW_K1_BUILD_STATE_MANIFEST.json"
+internal const val K1_BUILD_STATE_MANIFEST_SCHEMA = "codeclew.kotlin-k1-build-state-manifest/0.1"
+
+internal data class BuildStateLayout(
+    val mode: String,
+    val gradleUserHome: Path,
+    val mavenLocalRepository: Path,
+    val authorityRoot: Path?,
+    val sealedFiles: List<JsonObject>,
+    val seedDigest: String?,
+    val manifestDigest: String?,
+    val markerBytesDigest: String?,
+    val namespaceDigest: String,
+) {
+    fun semanticIdentity(): JsonObject = buildJsonObject {
+        put("mode", mode)
+        put("runtimeIsolation", if (mode == "EXTERNAL") "PRIVATE_DISPOSABLE_COPY" else "REPOSITORY_OWNED_LEGACY")
+        seedDigest?.let { put("seedDigest", it) }
+        manifestDigest?.let { put("manifestDigest", it) }
+        markerBytesDigest?.let { put("markerBytesDigest", it) }
+        put("namespaceDigest", namespaceDigest)
+        put("gradleUserHome", "gradle-user-home")
+        put("mavenLocalRepository", "maven-repository")
+        put("homeCredentials", if (mode == "EXTERNAL") "ISOLATED" else "INHERITED_LEGACY")
+    }
+}
+
+private fun validStateComponent(component: String) =
+    component.isNotBlank() && component != "." && component != ".." && '/' !in component && '\\' !in component
+
+private fun realStateSubdirectory(root: Path, vararg components: String): Path {
+    var current = root.toRealPath()
+    for (component in components) {
+        require(validStateComponent(component)) { "invalid build-state component" }
+        val next = current.resolve(component)
+        if (Files.exists(next, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.isSymbolicLink(next) || !Files.isDirectory(next, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "build-state path is not a real directory")
+            }
+        } else {
+            Files.createDirectory(next)
+        }
+        current = next.toRealPath()
+    }
+    return current
+}
+
+private fun existingRealStateSubdirectory(root: Path, component: String): Path {
+    require(validStateComponent(component)) { "invalid build-state component" }
+    val child = root.resolve(component)
+    if (!Files.exists(child, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(child) ||
+        !Files.isDirectory(child, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    ) {
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "external K1 build-state PREPARE is incomplete: $component is absent or not a real directory",
+        )
+    }
+    val canonical = child.toRealPath()
+    if (canonical != child || !canonical.startsWith(root)) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state directory escapes its root")
+    }
+    return canonical
+}
+
+private fun isSha256(value: String?): Boolean =
+    value?.matches(Regex("sha256:[0-9a-f]{64}")) == true
+
+private fun verifiedBuildStateFiles(rootName: String, root: Path): List<JsonObject> =
+    Files.walk(root).use { paths ->
+        paths.map { path ->
+            if (Files.isSymbolicLink(path)) {
+                throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state tree contains a symbolic link")
+            }
+            if (path == root || Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return@map null
+            if (!Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state tree contains a special file")
+            }
+            val relative = root.relativize(path).invariantSeparatorsPathString
+            buildJsonObject {
+                put("root", rootName)
+                put("path", relative)
+                put("size", Files.size(path))
+                put("sha256", sha(path.readBytes()))
+            }
+        }.filter { it != null }.map { it!! }
+            .sorted(compareBy({ it["root"]!!.jsonPrimitive.content }, { it["path"]!!.jsonPrimitive.content }))
+            .toList()
+    }
+
+private fun buildStateTreeDigest(files: List<JsonObject>, rootName: String): String = sha(buildString {
+    files.filter { it["root"]?.jsonPrimitive?.content == rootName }.forEach { row ->
+        append(row["path"]!!.jsonPrimitive.content).append('\u0000')
+        append(row["size"]!!.jsonPrimitive.long).append('\u0000')
+        append(row["sha256"]!!.jsonPrimitive.content).append('\u0000')
+    }
+}.toByteArray())
+
+private data class VerifiedBuildStateManifest(
+    val seedDigest: String,
+    val manifestDigest: String,
+    val markerBytesDigest: String,
+    val sealedFiles: List<JsonObject>,
+)
+
+private fun verifiedManifestFile(root: Path, relative: String): Path {
+    var current = root
+    relative.split('/').forEach { component ->
+        if (!validStateComponent(component)) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state manifest path is invalid")
+        }
+        current = current.resolve(component)
+        if (!Files.exists(current, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(current)) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state manifest member is absent or symbolic")
+        }
+    }
+    if (!Files.isRegularFile(current, java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+        !current.toRealPath().startsWith(root)
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state manifest member is not a real file")
+    }
+    return current
+}
+
+private fun verifyExternalBuildStateManifest(
+    root: Path,
+    gradleUserHome: Path,
+    mavenLocalRepository: Path,
+): VerifiedBuildStateManifest {
+    val manifestPath = root.resolve(K1_BUILD_STATE_MANIFEST_FILE)
+    val markerPath = root.resolve(K1_BUILD_STATE_SEED_FILE)
+    for ((path, label) in listOf(manifestPath to "manifest", markerPath to "seed marker")) {
+        if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(path) ||
+            !Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        ) {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "external K1 build-state $label is absent or not a real file",
+            )
+        }
+    }
+    if (Files.size(manifestPath) !in 1..64L * 1024 * 1024 || Files.size(markerPath) != 72L) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state authority file size is invalid")
+    }
+    val manifestBytes = manifestPath.readBytes()
+    val manifest = runCatching { Json.parseToJsonElement(manifestBytes.decodeToString()).jsonObject }
+        .getOrElse {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state manifest is invalid JSON")
+        }
+    val expectedKeys = setOf(
+        "schema", "seriesId", "cohort", "toolchain", "repositories",
+        "gradleUserHomeTreeDigest", "mavenLocalRepositoryTreeDigest", "files", "seedDigest",
+    )
+    if (manifest.keys != expectedKeys || manifest["schema"]?.jsonPrimitive?.contentOrNull != K1_BUILD_STATE_MANIFEST_SCHEMA ||
+        manifest["seriesId"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
+        manifest["cohort"]?.jsonPrimitive?.contentOrNull !in setOf("QUALIFICATION", "BLIND_HOLDOUT", "FIXTURE")
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state manifest envelope is invalid")
+    }
+    val canonicalManifestBytes = (canonicalJson(manifest) + "\n").toByteArray()
+    if (!manifestBytes.contentEquals(canonicalManifestBytes)) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state manifest is not canonical JSON plus newline")
+    }
+    val manifestDigest = sha(manifestBytes)
+    val markerBytes = markerPath.readBytes()
+    if (!markerBytes.contentEquals("$manifestDigest\n".toByteArray())) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state marker does not seal the exact manifest")
+    }
+    val markerBytesDigest = sha(markerBytes)
+    val seedDigest = manifest["seedDigest"]?.jsonPrimitive?.contentOrNull
+    val seedBody = buildJsonObject {
+        manifest.forEach { (key, value) -> put(key, if (key == "seedDigest") JsonPrimitive("") else value) }
+    }
+    if (!isSha256(seedDigest) || seedDigest != sha((canonicalJson(seedBody) + "\n").toByteArray())) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state seed digest is invalid")
+    }
+    val toolchain = manifest["toolchain"] as? JsonObject
+    if (toolchain.isNullOrEmpty() || toolchain.values.any { !isSha256(it.jsonPrimitive.contentOrNull) }) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state toolchain identity is invalid")
+    }
+    val repositories = manifest["repositories"] as? JsonArray
+    if (repositories.isNullOrEmpty() || repositories.any { item ->
+            val row = item as? JsonObject ?: return@any true
+            row.keys != setOf(
+                "entry", "commit", "gitTree", "selectedCompilation", "buildDsl", "prepareArgvSha256", "exitCode",
+            ) || row["entry"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
+                row["selectedCompilation"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
+                row["buildDsl"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
+                row["commit"]?.jsonPrimitive?.contentOrNull?.matches(Regex("[0-9a-f]{40}")) != true ||
+                row["gitTree"]?.jsonPrimitive?.contentOrNull?.matches(Regex("[0-9a-f]{40}")) != true ||
+                !isSha256(row["prepareArgvSha256"]?.jsonPrimitive?.contentOrNull) ||
+                row["exitCode"]?.jsonPrimitive?.intOrNull != 0
+        }
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state repository authority is invalid")
+    }
+    val declaredFiles = manifest["files"] as? JsonArray
+    if (declaredFiles == null || declaredFiles.any { item ->
+            val row = item as? JsonObject ?: return@any true
+            row.keys != setOf("root", "path", "size", "sha256") ||
+                row["root"]?.jsonPrimitive?.contentOrNull !in setOf("gradle-user-home", "maven-repository") ||
+                row["path"]?.jsonPrimitive?.contentOrNull.let { path ->
+                    path.isNullOrEmpty() || path.startsWith('/') || path.split('/').any { it.isEmpty() || it == "." || it == ".." }
+                } || row["size"]?.jsonPrimitive?.longOrNull?.let { it < 0 } != false ||
+                !isSha256(row["sha256"]?.jsonPrimitive?.contentOrNull)
+        }
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state file manifest is invalid")
+    }
+    val fileRows = declaredFiles.map(JsonElement::jsonObject)
+    val sortedRows = fileRows.sortedWith(compareBy(
+        { it["root"]!!.jsonPrimitive.content },
+        { it["path"]!!.jsonPrimitive.content },
+    ))
+    if (fileRows != sortedRows || fileRows.map { it["root"]!!.jsonPrimitive.content to it["path"]!!.jsonPrimitive.content }.toSet().size != fileRows.size) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state file manifest is not uniquely ordered")
+    }
+    val actualFiles = verifiedBuildStateFiles("gradle-user-home", gradleUserHome) +
+        verifiedBuildStateFiles("maven-repository", mavenLocalRepository)
+    if (fileRows != actualFiles) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state live seed tree differs from its manifest")
+    }
+    fileRows.forEach { row ->
+        val stateRoot = when (row["root"]!!.jsonPrimitive.content) {
+            "gradle-user-home" -> gradleUserHome
+            "maven-repository" -> mavenLocalRepository
+            else -> error("validated build-state root")
+        }
+        val path = verifiedManifestFile(stateRoot, row["path"]!!.jsonPrimitive.content)
+        if (Files.size(path) != row["size"]!!.jsonPrimitive.long || sha(path.readBytes()) != row["sha256"]!!.jsonPrimitive.content) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state seeded file differs from its manifest")
+        }
+    }
+    val gradleTreeDigest = buildStateTreeDigest(fileRows, "gradle-user-home")
+    val mavenTreeDigest = buildStateTreeDigest(fileRows, "maven-repository")
+    if (manifest["gradleUserHomeTreeDigest"]?.jsonPrimitive?.contentOrNull != gradleTreeDigest ||
+        manifest["mavenLocalRepositoryTreeDigest"]?.jsonPrimitive?.contentOrNull != mavenTreeDigest
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state tree digest is invalid")
+    }
+    return VerifiedBuildStateManifest(seedDigest, manifestDigest, markerBytesDigest, fileRows)
+}
+
+internal fun prepareFixtureBuildState(root: Path) {
+    val canonicalRoot = root.toRealPath()
+    realStateSubdirectory(canonicalRoot, "gradle-user-home")
+    realStateSubdirectory(canonicalRoot, "maven-repository")
+    val emptyTreeDigest = buildStateTreeDigest(emptyList(), "gradle-user-home")
+    val body = buildJsonObject {
+        put("schema", K1_BUILD_STATE_MANIFEST_SCHEMA)
+        put("seriesId", "K1_WORKER_FIXTURE")
+        put("cohort", "FIXTURE")
+        putJsonObject("toolchain") { put("fixture", sha("fixture-toolchain".toByteArray())) }
+        putJsonArray("repositories") {
+            add(buildJsonObject {
+                put("entry", "fixture")
+                put("commit", "a".repeat(40))
+                put("gitTree", "b".repeat(40))
+                put("selectedCompilation", ":/main")
+                put("buildDsl", "FIXTURE")
+                put("prepareArgvSha256", sha("fixture-prepare".toByteArray()))
+                put("exitCode", 0)
+            })
+        }
+        put("gradleUserHomeTreeDigest", emptyTreeDigest)
+        put("mavenLocalRepositoryTreeDigest", emptyTreeDigest)
+        putJsonArray("files") {}
+        put("seedDigest", "")
+    }
+    val seedDigest = sha((canonicalJson(body) + "\n").toByteArray())
+    val manifest = buildJsonObject {
+        body.forEach { (key, value) -> put(key, if (key == "seedDigest") JsonPrimitive(seedDigest) else value) }
+    }
+    val bytes = (canonicalJson(manifest) + "\n").toByteArray()
+    canonicalRoot.resolve(K1_BUILD_STATE_MANIFEST_FILE).writeBytes(bytes)
+    canonicalRoot.resolve(K1_BUILD_STATE_SEED_FILE).writeText("${sha(bytes)}\n")
+}
+
+private fun buildStateNamespaceDigest(repo: Path, seedDigest: String?): String {
+    val canonicalRepo = repo.toRealPath()
+    val inputs = Files.walk(canonicalRepo).use { paths ->
+        paths.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
+            .map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString to file }
+            .filter { (relative, _) ->
+                val components = relative.split('/')
+                if (components.any { it in setOf(".git", ".gradle", ".kotlin", ".semantic-thread", "build", "target") }) {
+                    false
+                } else {
+                    val name = relative.substringAfterLast('/')
+                    name in setOf(
+                        "settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts",
+                        "gradle.properties", "libs.versions.toml", "gradle-wrapper.properties", "gradle-wrapper.jar",
+                        "gradlew", "gradlew.bat", "pom.xml", "mvnw", "mvnw.cmd",
+                    ) || relative.startsWith(".mvn/") || relative.startsWith("buildSrc/") ||
+                        relative.startsWith("build-logic/") || relative.startsWith("gradle/")
+                }
+            }
+            .sorted(compareBy { it.first })
+            .map { (relative, file) -> "$relative:${sha(file.readBytes())}" }
+            .toList()
+    }
+    return sha(buildString {
+        append("k1-build-state-namespace/0.1\u0000")
+        append(seedDigest ?: "LEGACY_REPOSITORY_OWNED").append('\u0000')
+        inputs.forEach { append(it).append('\u0000') }
+    }.toByteArray())
+}
+
+internal fun externalBuildStateLayout(repo: Path, configuredRoot: Path): BuildStateLayout {
+    val canonicalRepo = repo.toRealPath()
+    if (!configuredRoot.isAbsolute || configuredRoot.normalize() != configuredRoot) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state root must be absolute and normalized")
+    }
+    if (!Files.exists(configuredRoot, java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+        Files.isSymbolicLink(configuredRoot) ||
+        !Files.isDirectory(configuredRoot, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state root must be an existing real directory")
+    }
+    val root = configuredRoot.toRealPath()
+    if (root != configuredRoot || root.startsWith(canonicalRepo) || canonicalRepo.startsWith(root)) {
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "external K1 build-state root must be non-symlinked and outside/not containing the repository",
+        )
+    }
+    val gradleUserHome = existingRealStateSubdirectory(root, "gradle-user-home")
+    val mavenLocalRepository = existingRealStateSubdirectory(root, "maven-repository")
+    val verifiedManifest = verifyExternalBuildStateManifest(root, gradleUserHome, mavenLocalRepository)
+    val namespaceDigest = buildStateNamespaceDigest(canonicalRepo, verifiedManifest.seedDigest)
+    return BuildStateLayout(
+        mode = "EXTERNAL",
+        gradleUserHome = gradleUserHome,
+        mavenLocalRepository = mavenLocalRepository,
+        authorityRoot = root,
+        sealedFiles = verifiedManifest.sealedFiles,
+        seedDigest = verifiedManifest.seedDigest,
+        manifestDigest = verifiedManifest.manifestDigest,
+        markerBytesDigest = verifiedManifest.markerBytesDigest,
+        namespaceDigest = namespaceDigest,
+    )
+}
+
+internal fun buildStateLayout(repo: Path): BuildStateLayout {
+    val configured = System.getenv(K1_BUILD_STATE_ROOT_ENV)?.takeIf(String::isNotBlank)
+    if (configured != null) return externalBuildStateLayout(repo, Path.of(configured))
+    val namespaceDigest = buildStateNamespaceDigest(repo, null)
+    return BuildStateLayout(
+        mode = "LEGACY_REPOSITORY_OWNED",
+        gradleUserHome = repoOwnedStateDirectory(repo, ".gradle"),
+        mavenLocalRepository = repoOwnedStateDirectory(repo, ".semantic-thread", "maven-repository"),
+        authorityRoot = null,
+        sealedFiles = emptyList(),
+        seedDigest = null,
+        manifestDigest = null,
+        markerBytesDigest = null,
+        namespaceDigest = namespaceDigest,
+    )
+}
+
+private fun recheckExternalBuildStateSeal(state: BuildStateLayout) {
+    if (state.mode != "EXTERNAL") return
+    val root = state.authorityRoot
+        ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state has no authority root")
+    val manifest = root.resolve(K1_BUILD_STATE_MANIFEST_FILE)
+    val marker = root.resolve(K1_BUILD_STATE_SEED_FILE)
+    if (Files.isSymbolicLink(manifest) || Files.isSymbolicLink(marker) ||
+        !manifest.isRegularFile() || !marker.isRegularFile() ||
+        sha(manifest.readBytes()) != state.manifestDigest || sha(marker.readBytes()) != state.markerBytesDigest
+    ) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state authority changed during worker lifetime")
+    }
+}
+
+private fun materializeBuildStateRuntime(authority: BuildStateLayout): BuildStateLayout {
+    require(authority.mode == "EXTERNAL" && authority.authorityRoot != null) {
+        "only a verified external build state can be materialized"
+    }
+    val runtimeRoot = Files.createTempDirectory("semantic-thread-k1-build-state-runtime").toRealPath()
+    try {
+        val gradleRuntime = runtimeRoot.resolve("gradle-user-home").also { Files.createDirectory(it) }
+        val mavenRuntime = runtimeRoot.resolve("maven-repository").also { Files.createDirectory(it) }
+        authority.sealedFiles.forEach { row ->
+            val rootName = row["root"]!!.jsonPrimitive.content
+            val sourceRoot = when (rootName) {
+                "gradle-user-home" -> authority.authorityRoot.resolve(rootName)
+                "maven-repository" -> authority.authorityRoot.resolve(rootName)
+                else -> error("verified build-state root")
+            }
+            val destinationRoot = if (rootName == "gradle-user-home") gradleRuntime else mavenRuntime
+            val relative = row["path"]!!.jsonPrimitive.content
+            val source = verifiedManifestFile(sourceRoot, relative)
+            val bytes = source.readBytes()
+            if (bytes.size.toLong() != row["size"]!!.jsonPrimitive.long ||
+                sha(bytes) != row["sha256"]!!.jsonPrimitive.content
+            ) {
+                throw WorkerFailure(
+                    "UNSUPPORTED_PROJECT_CONFIGURATION",
+                    "external K1 build-state seed changed while creating its runtime copy",
+                )
+            }
+            var destinationDirectory = destinationRoot
+            relative.substringBeforeLast('/', "").split('/').filter(String::isNotEmpty).forEach { component ->
+                val next = destinationDirectory.resolve(component)
+                if (Files.exists(next, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    if (Files.isSymbolicLink(next) || !Files.isDirectory(next, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                        throw WorkerFailure(
+                            "UNSUPPORTED_PROJECT_CONFIGURATION",
+                            "external K1 build-state runtime parent is not a real directory",
+                        )
+                    }
+                } else {
+                    Files.createDirectory(next)
+                }
+                destinationDirectory = next
+            }
+            val destination = destinationRoot.resolve(relative)
+            if (Files.exists(destination, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw WorkerFailure(
+                    "UNSUPPORTED_PROJECT_CONFIGURATION",
+                    "external K1 build-state runtime file is duplicated",
+                )
+            }
+            Files.createFile(destination).writeBytes(bytes)
+        }
+        val copiedFiles = verifiedBuildStateFiles("gradle-user-home", gradleRuntime) +
+            verifiedBuildStateFiles("maven-repository", mavenRuntime)
+        if (copiedFiles != authority.sealedFiles) {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "external K1 build-state runtime copy differs from its sealed seed",
+            )
+        }
+        return authority.copy(
+            gradleUserHome = gradleRuntime,
+            mavenLocalRepository = mavenRuntime,
+        )
+    } catch (failure: Throwable) {
+        runtimeRoot.toFile().deleteRecursively()
+        throw failure
+    }
+}
+
 internal fun repoOwnedStateDirectory(repo: Path, vararg components: String): Path {
     val canonicalRepo = repo.toRealPath()
     var current = canonicalRepo
     for (component in components) {
-        require(component.isNotBlank() && component != "." && component != ".." && '/' !in component && '\\' !in component) {
+        require(validStateComponent(component)) {
             "invalid repository-owned state component"
         }
         val next = current.resolve(component)
@@ -55,6 +766,7 @@ internal fun gradleModelCommand(
     wrapper: Path,
     repo: Path,
     gradleUserHome: Path,
+    projectCacheDirectory: Path,
     initScript: Path,
     compileTask: String,
     modelTask: String,
@@ -63,22 +775,70 @@ internal fun gradleModelCommand(
     "-p", repo.toString(),
     "--offline",
     "--gradle-user-home", gradleUserHome.toString(),
+    "--project-cache-dir", projectCacheDirectory.toString(),
     "--no-daemon",
     "--quiet",
+    "-Duser.home=$gradleUserHome",
+    "-Pkotlin.project.persistent.dir=${projectCacheDirectory.resolve("kotlin")}",
     "-I", initScript.toString(),
     "-Dsemantic.thread.compileTask=$compileTask",
     modelTask,
 )
 
-internal fun sanitizedProjectModelProcess(command: List<String>, repo: Path): ProcessBuilder =
+internal enum class ProjectModelBuildTool {
+    GRADLE,
+    MAVEN,
+}
+
+internal fun sanitizedProjectModelProcess(
+    command: List<String>,
+    repo: Path,
+    isolatedHome: Path? = null,
+    buildTool: ProjectModelBuildTool? = null,
+    seededEnvironment: Map<String, String>? = null,
+): ProcessBuilder =
     ProcessBuilder(command).also { builder ->
-        for (key in listOf("GRADLE_OPTS", "GRADLE_USER_HOME", "MAVEN_OPTS", "MAVEN_ARGS", "MAVEN_CONFIG")) {
+        if (seededEnvironment != null) {
+            builder.environment().clear()
+            builder.environment().putAll(seededEnvironment)
+        }
+        require((isolatedHome == null) == (buildTool == null)) {
+            "isolated project-model home and build tool must be supplied together"
+        }
+        for (key in listOf(
+            "CODECLEW_K1_BUILD_STATE_ROOT",
+            "CODECLEW_K2_INDEX_ROOT",
+            "GRADLE_OPTS",
+            "GRADLE_USER_HOME",
+            "MAVEN_OPTS",
+            "MAVEN_ARGS",
+            "MAVEN_CONFIG",
+            "MAVEN_USER_HOME",
+            "JAVA_OPTS",
+            "JAVA_TOOL_OPTIONS",
+            "JDK_JAVA_OPTIONS",
+            "_JAVA_OPTIONS",
+        )) {
             builder.environment().remove(key)
+        }
+        if (isolatedHome != null) {
+            builder.environment()["HOME"] = isolatedHome.toString()
+            builder.environment()["USERPROFILE"] = isolatedHome.toString()
+            when (buildTool) {
+                ProjectModelBuildTool.GRADLE ->
+                    builder.environment()["GRADLE_USER_HOME"] = isolatedHome.toString()
+                ProjectModelBuildTool.MAVEN ->
+                    builder.environment()["MAVEN_USER_HOME"] = isolatedHome.toString()
+                null -> error("unreachable project-model build tool")
+            }
         }
         builder.directory(repo.toFile()).redirectErrorStream(true)
     }
 
-internal class Worker : AutoCloseable {
+internal class Worker(
+    private val configuredBuildStateRoot: Path? =
+        System.getenv(K1_BUILD_STATE_ROOT_ENV)?.takeIf(String::isNotBlank)?.let(Path::of),
+) : AutoCloseable {
     private val disposable = Disposer.newDisposable("semantic-thread-worker")
     private val environment = KotlinCoreEnvironment.createForProduction(
         disposable, CompilerConfiguration(), EnvironmentConfigFiles.JVM_CONFIG_FILES
@@ -93,13 +853,26 @@ internal class Worker : AutoCloseable {
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
     private val analysisCache = mutableMapOf<String, K2Analysis>()
     private val projectModelCache = mutableMapOf<String, JsonObject>()
+    private val externalBuildStateCache = mutableMapOf<Path, BuildStateLayout>()
+    private val externalBuildStateRuntimeRoots = mutableSetOf<Path>()
     private var requestCacheRequests = 0L
     private var requestCacheHits = 0L
     private var requestPsiParseMicros = 0L
     private var requestK2AnalysisMicros = 0L
     private var requestFirExtractionMicros = 0L
 
+    private fun stateFor(repo: Path): BuildStateLayout {
+        val canonicalRepo = repo.toRealPath()
+        val configured = configuredBuildStateRoot ?: return buildStateLayout(canonicalRepo)
+        return externalBuildStateCache.getOrPut(canonicalRepo) {
+            materializeBuildStateRuntime(externalBuildStateLayout(canonicalRepo, configured)).also { state ->
+                state.gradleUserHome.parent?.let(externalBuildStateRuntimeRoots::add)
+            }
+        }.also(::recheckExternalBuildStateSeal)
+    }
+
     fun handle(kind: Int, payload: ByteArray): String {
+        IncrementalK2Runtime.reset()
         requestCacheRequests = 0
         requestCacheHits = 0
         requestPsiParseMicros = 0
@@ -118,7 +891,7 @@ internal class Worker : AutoCloseable {
             else -> error("unsupported request kind $kind")
         }
         val processingMicros = (System.nanoTime() - processingStarted) / 1_000
-        return buildJsonObject {
+        val response = buildJsonObject {
             result.forEach { (key, value) -> put(key, value) }
             putJsonObject("profiling") {
                 put("workerProcessingMicros", processingMicros)
@@ -128,7 +901,9 @@ internal class Worker : AutoCloseable {
                 put("k2AnalysisMicros", requestK2AnalysisMicros)
                 put("firExtractionMicros", requestFirExtractionMicros)
             }
-        }.toString()
+        }
+        val incremental = IncrementalK2Runtime.takeProfiling()
+        return IncrementalK2Runtime.mergeProfiling(response, incremental).toString()
     }
 
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
@@ -143,10 +918,16 @@ internal class Worker : AutoCloseable {
             normalized.startsWith(repo.resolve("build/generated").normalize()) ||
                 normalized.startsWith(repo.resolve("target/generated-sources").normalize())
         }.map { repo.relativize(it.parent).invariantSeparatorsPathString }.distinct().sorted()
-        val classpath = buildModel["classpath"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
-        val plugins = buildModel["compilerPlugins"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty().sorted()
-        val compilerVersion = buildModel["compilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
-        val compilerLine = compilerVersion.split('.').take(2).joinToString(".")
+        val classpath = buildModel["classpath"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }.orEmpty()
+        val requestedPlugins = buildModel["requestedCompilerPlugins"]?.jsonArray
+            ?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }
+            .orEmpty()
+        val plugins = buildModel["compilerPlugins"]?.jsonArray
+            ?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }
+            .orEmpty()
+        val declaredCompilerVersion = buildModel["compilerVersion"]?.jsonPrimitive?.contentOrNull
+            ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "declared Kotlin compiler version is unavailable")
+        val compilerLine = declaredCompilerVersion.split('.').take(2).joinToString(".")
         val module = buildModel["projectPath"]?.jsonPrimitive?.contentOrNull ?: ":"
         val sourceSet = compilation?.substringAfterLast('/') ?: "main"
         val canonicalCompilation = "$module/$sourceSet"
@@ -159,32 +940,104 @@ internal class Worker : AutoCloseable {
         val normalized = buildJsonObject {
             put("buildSystem", buildModel["buildSystem"] ?: JsonPrimitive("GRADLE"))
             put("buildLauncher", buildModel["buildLauncher"] ?: JsonPrimitive("./gradlew"))
+            put("buildRoot", ".")
+            put("projectDirectory", buildModel["projectDir"]?.jsonPrimitive?.contentOrNull?.let { raw ->
+                runCatching { repo.relativize(Path.of(raw).toAbsolutePath().normalize()).invariantSeparatorsPathString }.getOrNull()
+                    ?.takeUnless { it == ".." || it.startsWith("../") }
+            } ?: ".")
+            put("platform", buildModel["platform"] ?: JsonPrimitive("JVM"))
             put("module", module); put("sourceSet", sourceSet); put("compilation", canonicalCompilation)
             putJsonArray("sourceRoots") { sourceRoots.forEach(::add) }; putJsonArray("generatedSourceRoots") { generatedRoots.forEach(::add) }
-            putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { buildModel["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.sorted()?.forEach(::add) }
-            put("compilerVersion", compilerVersion)
+            putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { buildModel["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.forEach(::add) }
+            put("compilerVersion", WORKER_COMPILER_VERSION)
+            put("declaredCompilerVersion", declaredCompilerVersion)
             put("languageVersion", buildModel["languageVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("apiVersion", buildModel["apiVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("jvmTarget", buildModel["jvmTarget"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
-            putJsonArray("freeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
-            putJsonArray("optIns") { buildModel["optIns"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }; putJsonArray("compilerPlugins") { plugins.forEach(::add) }
-            putJsonArray("compilerPluginOptions") { buildModel["compilerPluginOptions"]?.jsonArray?.sortedBy { it.toString() }?.forEach(::add) }
+            putJsonArray("freeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.forEach(::add) }
+            putJsonArray("optIns") { buildModel["optIns"]?.jsonArray?.forEach(::add) }
+            putJsonArray("requestedCompilerPlugins") { requestedPlugins.forEach(::add) }
+            putJsonArray("compilerPlugins") { plugins.forEach(::add) }
+            putJsonArray("compilerPluginOptions") { buildModel["compilerPluginOptions"]?.jsonArray?.forEach(::add) }
             put("compileTask", buildModel["compileTask"] ?: JsonPrimitive(":compileKotlin")); putJsonArray("testTasks") { buildModel["tasks"]?.jsonArray?.map { it.jsonPrimitive.content }?.filter { it == "test" || it.endsWith("Test") }?.sorted()?.forEach(::add) }
+            put("fieldBoundaries", buildModel["fieldBoundaries"] ?: buildJsonObject {
+                listOf("libraries", "friendPaths", "compilerPlugins", "freeCompilerArguments", "optIns", "languageVersion", "apiVersion", "jvmTarget", "compilerVersion").forEach { field -> put(field, "UNAVAILABLE_PROVIDER") }
+            })
+            put("buildModelBoundaries", buildModel["buildModelBoundaries"] ?: JsonArray(emptyList()))
+            put("dependencyCoordinates", buildModel["dependencyCoordinates"] ?: JsonArray(emptyList()))
+            put("repositories", buildModel["repositories"] ?: JsonArray(emptyList()))
+            put("reactorPoms", buildModel["reactorPoms"] ?: JsonArray(emptyList()))
+            put("buildPlugins", buildModel["buildPlugins"] ?: JsonArray(emptyList()))
+            put("classpathAuthority", buildModel["classpathAuthority"] ?: buildJsonObject {
+                put("chosen", "UNAVAILABLE_PROVIDER")
+            })
+            put("buildState", stateFor(repo).semanticIdentity())
+            put("generatedSourceConfiguration", buildModel["generatedSourceConfiguration"] ?: buildJsonObject {
+                putJsonArray("roots") { generatedRoots.forEach(::add) }
+                putJsonArray("producers") {}
+                put("status", if (generatedRoots.isEmpty()) "NONE_DISCOVERED" else "ROOTS_ONLY")
+            })
             buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
-            put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown")); put("jdkHome", buildModel["jdkHome"] ?: JsonPrimitive(System.getProperty("java.home")))
+            put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown"))
+            put("jdkHomeFingerprint", jdkFingerprint(Path.of(buildModel["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home"))))
             putJsonArray("modelInputs") { modelFiles.map { buildJsonObject { put("path", repo.relativize(it).invariantSeparatorsPathString); put("hash", sha(it.readBytes())) } }.sortedBy { it.toString() }.forEach(::add) }
         }
         val modelHash = sha(normalized.toString().toByteArray())
+        val semanticInputManifest = buildJsonObject {
+            put("schema", "kotlin-semantic-input-manifest/0.1")
+            put("compilation", canonicalCompilation)
+            put("declaredCompilerVersion", declaredCompilerVersion)
+            put("analyzerCompilerVersion", WORKER_COMPILER_VERSION)
+            putJsonArray("orderedCompileClasspath") { classpath.forEach(::add) }
+            putJsonArray("orderedFriendPaths") {
+                buildModel["friendPaths"]?.jsonArray
+                    ?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }
+                    ?.forEach(::add)
+            }
+            putJsonArray("requestedCompilerPlugins") { requestedPlugins.forEach(::add) }
+            putJsonArray("orderedCompilerPlugins") { plugins.forEach(::add) }
+            putJsonArray("orderedFreeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.forEach(::add) }
+            putJsonArray("orderedOptIns") { buildModel["optIns"]?.jsonArray?.forEach(::add) }
+            putJsonArray("orderedCompilerPluginOptions") { buildModel["compilerPluginOptions"]?.jsonArray?.forEach(::add) }
+            put("target", normalized["jvmTarget"] ?: JsonNull)
+            put("languageVersion", normalized["languageVersion"] ?: JsonNull)
+            put("apiVersion", normalized["apiVersion"] ?: JsonNull)
+            put("jdkHomeFingerprint", normalized["jdkHomeFingerprint"] ?: JsonNull)
+            put("fieldBoundaries", normalized["fieldBoundaries"] ?: JsonNull)
+            put("buildRoot", normalized["buildRoot"] ?: JsonNull)
+            put("projectDirectory", normalized["projectDirectory"] ?: JsonNull)
+            put("module", normalized["module"] ?: JsonNull)
+            put("sourceSet", normalized["sourceSet"] ?: JsonNull)
+            put("platform", normalized["platform"] ?: JsonNull)
+            put("generatedSourceConfiguration", normalized["generatedSourceConfiguration"] ?: JsonNull)
+            put("buildModelBoundaries", normalized["buildModelBoundaries"] ?: JsonNull)
+            put("dependencyCoordinates", normalized["dependencyCoordinates"] ?: JsonNull)
+            put("repositories", normalized["repositories"] ?: JsonNull)
+            put("reactorPoms", normalized["reactorPoms"] ?: JsonNull)
+            put("buildPlugins", normalized["buildPlugins"] ?: JsonNull)
+            put("classpathAuthority", normalized["classpathAuthority"] ?: JsonNull)
+            put("buildState", normalized["buildState"] ?: JsonNull)
+            put("modelInputs", normalized["modelInputs"] ?: JsonArray(emptyList()))
+        }
         return buildJsonObject {
-            put("schema", "semantic-project/0.1"); put("projectPath", repo.toAbsolutePath().normalize().toString())
+            put("schema", "semantic-project/0.1"); put("projectPath", ".")
             normalized.forEach { (key, value) -> put(key, value) }
+            put("compilation", canonicalCompilation)
             put("workerCompilerVersion", WORKER_COMPILER_VERSION)
             put("jdk", 21)
             put("projectModelHash", modelHash)
+            put("semanticInputManifest", semanticInputManifest)
+            put("semanticInputManifestHash", sha(canonicalJson(semanticInputManifest).toByteArray()))
         }
     }
 
     private fun gradleModel(repo: Path, compilation: String?): JsonObject {
         val wrapper = repo.resolve("gradlew"); if (!wrapper.isRegularFile()) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper is required")
-        val gradleUserHome = repoOwnedStateDirectory(repo, ".gradle")
+        val state = stateFor(repo)
+        val gradleUserHome = state.gradleUserHome
+        val projectCacheDirectory = if (state.mode == "EXTERNAL") {
+            realStateSubdirectory(gradleUserHome, "project-cache")
+        } else {
+            gradleUserHome
+        }
         val script = Files.createTempFile("semantic-thread-model", ".init.gradle")
         try {
             val resource = Worker::class.java.getResourceAsStream("/semantic-thread-model.init.gradle") ?: error("project model init script missing")
@@ -195,8 +1048,18 @@ internal class Worker : AutoCloseable {
             val compileTask = if ('/' in selected) if (sourceSet == "main") "compileKotlin" else "compile${sourceSet.replaceFirstChar(Char::uppercase)}Kotlin" else selected.substringAfterLast(':').ifBlank { "compileKotlin" }
             val modelTask = if (projectPath == ":") ":semanticThreadModel" else "$projectPath:semanticThreadModel"
             val process = sanitizedProjectModelProcess(
-                gradleModelCommand(wrapper, repo, gradleUserHome, script, compileTask, modelTask),
+                gradleModelCommand(
+                    wrapper,
+                    repo,
+                    gradleUserHome,
+                    projectCacheDirectory,
+                    script,
+                    compileTask,
+                    modelTask,
+                ),
                 repo,
+                state.gradleUserHome.takeIf { state.mode == "EXTERNAL" },
+                ProjectModelBuildTool.GRADLE.takeIf { state.mode == "EXTERNAL" },
             ).start()
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle model extraction failed: ${output.takeLast(2000)}")
@@ -206,41 +1069,76 @@ internal class Worker : AutoCloseable {
         } finally { Files.deleteIfExists(script) }
     }
 
+    private fun applyCompilerPluginCompatibility(model: JsonObject): JsonObject {
+        val requested = model["compilerPlugins"]?.jsonArray
+            ?.map { Path.of(it.jsonPrimitive.content) }
+            .orEmpty()
+        val declared = model["compilerVersion"]?.jsonPrimitive?.contentOrNull
+            ?: throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "declared Kotlin compiler version is unavailable",
+            )
+        val plan = effectiveCompilerPluginPlan(requested, declared)
+        val existingBoundaries = model["buildModelBoundaries"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            .orEmpty()
+        return buildJsonObject {
+            model.forEach { (key, value) ->
+                if (key !in setOf("compilerPlugins", "requestedCompilerPlugins", "buildModelBoundaries")) {
+                    put(key, value)
+                }
+            }
+            putJsonArray("requestedCompilerPlugins") {
+                requested.map(Path::toAbsolutePath).map(Path::normalize).distinct().sortedBy(Path::toString).forEach {
+                    add(JsonPrimitive(it.toString()))
+                }
+            }
+            putJsonArray("compilerPlugins") {
+                plan.plugins.forEach { add(JsonPrimitive(it.toString())) }
+            }
+            putJsonArray("buildModelBoundaries") {
+                (existingBoundaries + plan.boundaries).distinct().sorted().forEach { add(JsonPrimitive(it)) }
+            }
+        }
+    }
+
     private fun projectModel(repo: Path, compilation: String?): JsonObject {
-        val hasGradle = repo.resolve("gradlew").isRegularFile()
-        val hasMaven = repo.resolve("pom.xml").isRegularFile()
+        val hasGradle = Files.isRegularFile(repo.resolve("gradlew"), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        val hasMaven = Files.isRegularFile(repo.resolve("pom.xml"), java.nio.file.LinkOption.NOFOLLOW_LINKS)
         if (hasGradle && hasMaven) {
             throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "mixed Gradle and Maven repositories are not supported")
         }
-        return when {
+        val model = when {
             hasGradle -> gradleModel(repo, compilation).let { model ->
                 buildJsonObject {
                     model.forEach(::put)
                     put("buildSystem", "GRADLE")
                 }
             }
-            hasMaven -> MavenProjectModelExtractor().extract(repo, compilation)
+            hasMaven -> MavenProjectModelExtractor(stateFor(repo)).extract(repo, compilation)
             else -> throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper or Maven pom.xml is required")
         }
+        return applyCompilerPluginCompatibility(model)
     }
 
     private fun cachedProjectModel(repo: Path, compilation: String?): JsonObject {
         requestCacheRequests++
         val canonicalRepo = repo.toRealPath()
         val inputHash = sha((listOf("projectModelSchema=6") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
-            Files.walk(canonicalRepo).use { paths -> paths.filter { it.isRegularFile() && it.extension == "kt" && !it.invariantSeparatorsPathString.contains("/build/") && !it.invariantSeparatorsPathString.contains("/target/") }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
+            Files.walk(canonicalRepo).use { paths -> paths.filter {
+                Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) && it.extension == "kt" &&
+                    !it.invariantSeparatorsPathString.contains("/build/") &&
+                    !it.invariantSeparatorsPathString.contains("/target/")
+            }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         projectModelCache[key]?.let { requestCacheHits++; return it }
-        val safeCompilation = (compilation ?: ":/main").replace(Regex("[^A-Za-z0-9]+"), "_")
-        val cache = canonicalRepo.resolve(".semantic-thread/cache/project/$safeCompilation-${inputHash.removePrefix("sha256:")}.json")
-        if (cache.isRegularFile()) {
-            runCatching { json.parseToJsonElement(cache.readText()).jsonObject }.getOrNull()?.let { cached ->
-                val belongsToRepo = cached["sourceFiles"]?.jsonArray?.all { Path.of(it.jsonPrimitive.content).normalize().startsWith(canonicalRepo) } != false
-                if (belongsToRepo) { requestCacheHits++; projectModelCache[key] = cached; return cached }
-            }
-        }
-        val model = projectModel(canonicalRepo, compilation)
-        writeCacheAtomically(cache, model.toString())
+        val model = validateProjectModelSourceFiles(
+            canonicalRepo,
+            projectModel(canonicalRepo, compilation),
+        )
+        // The model is already held in the live process cache. Writing a
+        // non-authoritative copy into the repository makes read-only analysis
+        // dirty the user's worktree without enabling trusted reuse.
         projectModelCache[key] = model
         return model
     }
@@ -258,14 +1156,37 @@ internal class Worker : AutoCloseable {
         else "artifact:${normalized.fileName}:${artifactFingerprint(normalized)}"
     }
 
-    private fun artifactFingerprint(path: Path): String = when {
-        path.isRegularFile() -> sha(path.readBytes())
-        path.isDirectory() -> sha(Files.walk(path).use { entries ->
-            entries.filter(Path::isRegularFile).sorted().map { entry ->
-                path.relativize(entry).invariantSeparatorsPathString + ":" + sha(entry.readBytes())
-            }.toList().joinToString("\n").toByteArray()
-        })
-        else -> "missing"
+    private fun artifactFingerprint(path: Path): String {
+        if (Files.isSymbolicLink(path)) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input artifact is a symbolic link")
+        }
+        return when {
+            path.isRegularFile() -> sha(path.readBytes())
+            path.isDirectory() -> sha(Files.walk(path).use { entries ->
+                entries.sorted().filter { entry ->
+                    if (Files.isSymbolicLink(entry)) {
+                        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input artifact tree contains a symbolic link")
+                    }
+                    entry.isRegularFile()
+                }.map { entry ->
+                    path.relativize(entry).invariantSeparatorsPathString + ":" + sha(entry.readBytes())
+                }.toList().joinToString("\n").toByteArray()
+            })
+            else -> throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input artifact is missing")
+        }
+    }
+
+    private fun jdkFingerprint(home: Path): String {
+        val canonical = home.toRealPath()
+        val release = canonical.resolve("release")
+        val java = canonical.resolve("bin/java")
+        if (!release.isRegularFile() || !java.isRegularFile()) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "JDK identity files are missing")
+        }
+        return sha(buildString {
+            append("release:").append(sha(release.readBytes())).append('\u0000')
+            append("java:").append(sha(java.readBytes())).append('\u0000')
+        }.toByteArray())
     }
 
     private fun extractorAuthority(): JsonObject {
@@ -282,26 +1203,23 @@ internal class Worker : AutoCloseable {
     }
 
     private fun projectModelFiles(repo: Path): List<Path> = Files.walk(repo).use { paths ->
-        paths.filter { it.isRegularFile() }.filter {
+        paths.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }.filter {
             val relative = repo.relativize(it).invariantSeparatorsPathString
-            if (relative.split('/').any { part -> part == "build" || part == ".gradle" || part == ".git" }) return@filter false
+            if (relative.split('/').any { part -> part in setOf("build", "target", ".gradle", ".kotlin", ".semantic-thread", ".git") }) return@filter false
             val n = it.fileName.toString()
-            n == "settings.gradle" || n == "settings.gradle.kts" || n == "build.gradle" || n == "build.gradle.kts" ||
-                n == "gradle.properties" || n == "libs.versions.toml" || n == "gradle-wrapper.properties" || n == "gradle-wrapper.jar" ||
+                n == "settings.gradle" || n == "settings.gradle.kts" || n == "build.gradle" || n == "build.gradle.kts" ||
+                n == "gradle.properties" || n == "libs.versions.toml" || n == "gradle-wrapper.properties" || n == "gradle-wrapper.jar" || n == "gradlew" || n == "gradlew.bat" ||
                 n == "pom.xml" || n == "mvnw" || n == "mvnw.cmd" || relative.startsWith(".mvn/") ||
                 relative.startsWith("buildSrc/") || relative.startsWith("build-logic/") || relative.startsWith("gradle/")
         }.sorted().toList()
     }
 
-    private fun sourceFiles(repo: Path): List<Path> = Files.walk(repo).use { paths ->
-        paths.filter { it.isRegularFile() && it.extension == "kt" && it.invariantSeparatorsPathString.contains("/src/main/kotlin/") && !it.invariantSeparatorsPathString.contains("/build/") }
-            .sorted().toList()
-    }
+    private fun sourceFiles(repo: Path): List<Path> = syntaxOnlyIndexSourceFiles(repo)
 
     private fun compilationSourceFiles(repo: Path, compilation: String): List<Path> =
         cachedProjectModel(repo, compilation)["sourceFiles"]?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
-            ?.filter(Path::isRegularFile)
+            ?.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
             ?.sorted()
             .orEmpty()
 
@@ -312,40 +1230,90 @@ internal class Worker : AutoCloseable {
         val sources = (model["analysisSourceFiles"] ?: model["sourceFiles"])
             ?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
-            ?.filter(Path::isRegularFile)
+            ?.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
             ?.sorted()
             .orEmpty()
         val pluginArtifact = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
             .toAbsolutePath()
             .normalize()
-        val extractorAuthority = extractorAuthority()
-        val semanticInput = buildString {
-            sources.forEach { source ->
-                val relative = analysisRepo.relativize(source.toRealPath()).invariantSeparatorsPathString
-                append(relative).append('\u0000').append(overrides[relative] ?: source.readText()).append('\u0000')
-            }
-            projectModelFiles(analysisRepo).forEach { input -> append(analysisRepo.relativize(input).invariantSeparatorsPathString).append(':').append(sha(input.readBytes())).append('\u0000') }
-            for (field in listOf("classpath", "friendPaths", "compilerPlugins")) {
-                append(field).append('\u0000')
-                model[field]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.sorted()?.forEach { artifact ->
-                    append(artifact.toAbsolutePath().normalize()).append(':').append(artifactFingerprint(artifact)).append('\u0000')
-                }
-            }
-            for (field in listOf("languageVersion", "apiVersion", "jvmTarget", "freeCompilerArguments", "optIns", "compilerPluginOptions")) {
-                append(field).append('=').append(model[field]).append('\u0000')
-            }
-        }
-        val cacheKey = semanticK2CacheKey(extractorAuthority, semanticInput)
+        val semanticConfigurationDigest = model["semanticInputManifestHash"]?.jsonPrimitive?.contentOrNull
+            ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input manifest hash is unavailable")
+        val cacheKey = semanticK2CacheKey(
+            extractorAuthority(),
+            buildString {
+                val version = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
+                append("declaredCompilerVersion=").append(version).append('\u0000')
+                append("semanticConfigurationDigest=").append(semanticConfigurationDigest).append('\u0000')
+                append("factsPlugin=").append(artifactFingerprint(pluginArtifact)).append('\u0000')
+                append("factsPluginPath=").append(pluginArtifact).append('\u0000')
+            },
+        )
         val memoryKey = "$analysisRepo|$compilation|$cacheKey"
         analysisCache[memoryKey]?.let { requestCacheHits++; return it }
-        val safeCompilation = compilation.replace(Regex("[^A-Za-z0-9]+"), "_")
-        val diskCache = analysisRepo.resolve(".semantic-thread/cache/k2/$safeCompilation-${cacheKey.removePrefix("sha256:")}.json")
-        // This file is under the repository owner's control. Metadata and an
-        // unkeyed integrity digest detect accidental corruption but cannot
-        // authenticate compiler issuance. A fresh worker therefore never
-        // returns semantic facts from disk: FIR is rerun before any PROVEN
-        // relation crosses the authority boundary. The in-process cache above
-        // and the separate project-model cache retain safe reuse.
+
+        val pluginPlan = runCatching {
+            IncrementalK2Runtime.backendOrNull()?.let { backend ->
+                val modelVersion = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull
+                val indexRoot = runCatching {
+                    System.getenv(K2_INDEX_ROOT_ENV)?.takeIf(String::isNotBlank)?.let(Path::of)?.toRealPath()
+                }.getOrNull()
+                val useBackend = overrides.isEmpty() &&
+                    backend != null &&
+                    indexRoot != null &&
+                    modelVersion == WORKER_COMPILER_VERSION &&
+                    modelVersion in setOf("2.1.21", WORKER_COMPILER_VERSION)
+                if (!useBackend) return@runCatching null
+
+                val request = IncrementalK2Request(
+                    indexRoot = indexRoot,
+                    repo = analysisRepo,
+                    compilation = compilation,
+                    semanticConfigurationDigest = semanticConfigurationDigest,
+                    expectedCompilerVersion = WORKER_COMPILER_VERSION,
+                    moduleName = model["projectPath"]?.jsonPrimitive?.contentOrNull?.substringAfterLast(':')
+                        ?.ifBlank { "main" } ?: "main",
+                    sources = sources,
+                    classpath = model["classpath"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.toList().orEmpty().sortedBy { it.toString() },
+                    friendPaths = model["friendPaths"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.toList().orEmpty().sortedBy { it.toString() },
+                    compilerPlugins = model["compilerPlugins"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.toList().orEmpty().sortedBy { it.toString() },
+                    compilerPluginOptions = model["compilerPluginOptions"]?.jsonArray?.map { it.jsonPrimitive.content }?.toList().orEmpty().sorted(),
+                    freeCompilerArguments = model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }?.toList().orEmpty().sorted(),
+                    optIns = model["optIns"]?.jsonArray?.map { it.jsonPrimitive.content }?.toList().orEmpty().sorted(),
+                    jdkHome = Path.of(model["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home")),
+                    jvmTarget = model["jvmTarget"]?.jsonPrimitive?.content ?: "21",
+                    languageVersion = model["languageVersion"]?.jsonPrimitive?.contentOrNull,
+                    apiVersion = model["apiVersion"]?.jsonPrimitive?.contentOrNull,
+                    factsPlugin = pluginArtifact,
+                )
+                val result = backend.analyze(request)
+                requestK2AnalysisMicros += result.totalMicros
+                requestFirExtractionMicros += result.firExtractionMicros
+                when (result.status) {
+                    IncrementalK2Status.UNCHANGED_HIT,
+                    IncrementalK2Status.COLD_FULL,
+                    IncrementalK2Status.INCREMENTAL,
+                    IncrementalK2Status.RECOVERED_FULL -> {
+                        val direct = K2Analysis(result.valid, result.facts, result.diagnostics)
+                        analysisCache[memoryKey] = direct
+                        IncrementalK2Runtime.record(result, fallbackUsed = false)
+                        return direct
+                    }
+                    IncrementalK2Status.BUSY,
+                    IncrementalK2Status.FAILED_RECOVERABLE -> {
+                        IncrementalK2Runtime.record(result, fallbackUsed = true)
+                        null
+                    }
+                }
+            }
+        }.getOrNull()
+
+        if (pluginPlan != null) {
+            return pluginPlan
+        }
+
+        // The live in-process cache is sufficient for repeated requests in one
+        // analysis. A repository-owned disk copy was never authoritative and
+        // made a read-only agent query dirty the user's worktree.
         val temp = Files.createTempDirectory("semantic-thread-k2")
         try {
             val sourceArgs = sources.map { original ->
@@ -378,23 +1346,11 @@ internal class Worker : AutoCloseable {
             val diagnostics = output.lineSequence().filter { it.isNotBlank() }.map { line ->
                 buildJsonObject { put("severity", when { "error:" in line.lowercase() || line.startsWith("e:") -> "ERROR"; "warning:" in line.lowercase() || line.startsWith("w:") -> "WARNING"; else -> "INFO" }); put("message", line) }
             }.toList()
-            val facts = if (factsFile.isRegularFile()) factsFile.readLines().filter(String::isNotBlank).map { json.parseToJsonElement(it).jsonObject } else emptyList()
+            val facts = if (factsFile.isRegularFile()) parseCompilerFactLines(factsFile.readLines()) else emptyList()
             requestFirExtractionMicros += facts
                 .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
                 .sumOf { it["firExtractionMicros"]?.jsonPrimitive?.longOrNull ?: 0 }
             val result = K2Analysis(status == 0, facts.sortedBy { it.toString() }, diagnostics)
-            val cachePayload = buildJsonObject {
-                put("valid", result.valid)
-                putJsonArray("facts") { result.facts.forEach(::add) }
-                putJsonArray("diagnostics") { result.diagnostics.forEach(::add) }
-            }
-            writeCacheAtomically(diskCache, buildJsonObject {
-                put("schema", SEMANTIC_K2_CACHE_SCHEMA)
-                put("authority", SEMANTIC_K2_DISK_CACHE_AUTHORITY)
-                extractorAuthority.forEach { (key, value) -> put(key, value) }
-                put("payloadIntegrity", semanticK2CachePayloadIntegrity(cachePayload))
-                cachePayload.forEach { (key, value) -> put(key, value) }
-            }.let(::canonicalJson))
             analysisCache[memoryKey] = result
             return result
         } finally { temp.toFile().deleteRecursively() }
@@ -410,9 +1366,10 @@ internal class Worker : AutoCloseable {
         } finally { Files.deleteIfExists(temporary) }
     }
 
-    private fun parse(path: Path): KtFile {
+    private fun parse(path: Path, capturedBytes: ByteArray? = null): KtFile {
         val started = System.nanoTime()
-        return factory.createFile(path.fileName.toString(), path.readText()).also {
+        val text = capturedBytes?.toString(Charsets.UTF_8) ?: path.readText()
+        return factory.createFile(path.fileName.toString(), text).also {
             requestPsiParseMicros += (System.nanoTime() - started) / 1_000
         }
     }
@@ -420,19 +1377,30 @@ internal class Worker : AutoCloseable {
     private fun index(requestedRepo: Path, compilation: String?, syntaxOnly: Boolean = false, requestedFiles: List<String> = emptyList()): JsonObject {
         val repo = requestedRepo.toRealPath()
         val selected = compilation ?: ":/main"
-        val model = cachedProjectModel(repo, selected)
-        val project = inspect(repo, selected)
-        val module = project["module"]?.jsonPrimitive?.content.orEmpty()
-        val sourceSet = project["sourceSet"]?.jsonPrimitive?.content ?: selected.substringAfterLast('/')
-        val allFiles = model["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.filter(Path::isRegularFile)?.sorted().orEmpty()
-        val requested = requestedFiles.toSet()
-        val selectedFiles = if (requested.isEmpty()) allFiles else allFiles.filter { repo.relativize(it).invariantSeparatorsPathString in requested }
-        if (requested.isNotEmpty() && selectedFiles.size != requested.size) throw WorkerFailure("INVALID_INPUT", "requested index file is outside selected compilation")
-        val analysis = if (syntaxOnly) K2Analysis(true, emptyList(), emptyList()) else analyzeWithK2(repo, compilation = selected)
-        val declarationRelations = declarationRelationGraph(repo, selected, syntaxOnly, analysis, project)
-        val declarationDescriptors = declarationDescriptorGraph(repo, selected, syntaxOnly, analysis, project, module, sourceSet)
+        val model = if (syntaxOnly) null else cachedProjectModel(repo, selected)
+                val project = if (syntaxOnly) null else inspect(repo, selected)
+                val module = project?.get("module")?.jsonPrimitive?.content ?: "."
+                val sourceSet = project?.get("sourceSet")?.jsonPrimitive?.content ?: selected.substringAfterLast('/')
+        val selectedFiles = if (syntaxOnly) {
+            syntaxOnlyIndexSourceFiles(repo, requestedFiles)
+        } else {
+            val allFiles = model?.get("sourceFiles")?.jsonArray
+                ?.map { Path.of(it.jsonPrimitive.content) }
+                ?.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
+                ?.sorted()
+                .orEmpty()
+            val requested = requestedFiles.toSet()
+            val selectedFromModel = if (requested.isEmpty()) allFiles else allFiles.filter { repo.relativize(it).invariantSeparatorsPathString in requested }
+            if (requested.isNotEmpty() && selectedFromModel.size != requested.size) throw WorkerFailure("INVALID_INPUT", "requested index file is outside selected compilation")
+            selectedFromModel
+        }
+        val attemptedAnalysis = if (syntaxOnly) K2Analysis(false, emptyList(), emptyList()) else analyzeWithK2(repo, compilation = selected)
+                val analysis = if (attemptedAnalysis.valid) attemptedAnalysis else K2Analysis(false, emptyList(), attemptedAnalysis.diagnostics)
+                val semanticAvailable = analysis.valid
+                val declarationRelations = if (semanticAvailable) declarationRelationGraph(repo, selected, false, analysis, project!!) else JsonArray(emptyList())
+                val declarationDescriptors = if (semanticAvailable) declarationDescriptorGraph(repo, selected, false, analysis, project!!, module, sourceSet) else JsonArray(emptyList())
         val files = selectedFiles.map { path ->
-            val bytes = path.readBytes(); val kt = parse(path); val pkg = kt.packageFqName.asString()
+            val bytes = path.readBytes(); val kt = parse(path, if (syntaxOnly) bytes else null); val pkg = kt.packageFqName.asString()
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
                 .sortedBy { it.textOffset }.map { declarationJson(repo, path, pkg, it, analysis, module, sourceSet) }
@@ -449,23 +1417,41 @@ internal class Worker : AutoCloseable {
                 putJsonArray("imports") { kt.importDirectives.map { it.importPath?.pathStr.orEmpty() }.sorted().forEach(::add) }
                 putJsonArray("declarations") { declarations.forEach(::add) }
                 putJsonArray("declarationIds") { declarations.map { it["declarationId"]!! }.sortedBy { it.toString() }.forEach(::add) }
-                putJsonArray("semanticFacts") { fileFacts(repo, path, analysis).forEach(::add) }
-                putJsonArray("inheritance") { inheritance.forEach(::add) }
-                putJsonArray("overrides") { overrides.forEach(::add) }
-                putJsonArray("functionSummaries") { declarations.filter { it["kind"]?.jsonPrimitive?.content?.contains("Function") == true }.map { buildJsonObject { put("symbolId", it["symbolId"]!!); put("semanticSummaryHash", it["semanticSummaryHash"]!!) } }.forEach(::add) }
+                putJsonArray("semanticFacts") { if (semanticAvailable) fileFacts(repo, path, analysis).forEach(::add) }
+                                putJsonArray("inheritance") { if (semanticAvailable) inheritance.forEach(::add) }
+                                putJsonArray("overrides") { if (semanticAvailable) overrides.forEach(::add) }
+                                putJsonArray("functionSummaries") { if (semanticAvailable) declarations.filter { it["kind"]?.jsonPrimitive?.content?.contains("Function") == true }.map { buildJsonObject { put("symbolId", it["symbolId"]!!); put("semanticSummaryHash", it["semanticSummaryHash"]!!) } }.forEach(::add) }
                 putJsonArray("diagnostics") { analysis.diagnostics.filter { diagnostic -> diagnostic["message"]?.jsonPrimitive?.content?.replace('\\', '/')?.contains(relative) == true }.forEach(::add) }
             }
         }
         val canonical = JsonArray(files)
         return buildJsonObject {
-            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requested.isNotEmpty()); put("analysisMode", if (syntaxOnly) "SYNTAX_DECLARATIONS" else "K2_SEMANTIC"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
+            put("schema", "semantic-index/0.1"); put("compilation", selected); put("partial", requestedFiles.isNotEmpty()); put("analysisMode", if (semanticAvailable) "K2_SEMANTIC" else "SYNTAX_DECLARATIONS"); put("files", canonical); put("indexHash", sha(canonical.toString().toByteArray()))
             put("declarationRelations", declarationRelations)
             put("declarationRelationHash", sha(canonicalJson(declarationRelations).toByteArray()))
             put("declarationDescriptors", declarationDescriptors)
             put("declarationDescriptorHash", sha(canonicalJson(declarationDescriptors).toByteArray()))
-            put("projectModelHash", project["projectModelHash"]!!); put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
-            put("compilerVersion", project["compilerVersion"]!!)
-            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
+            if (project == null) {
+                            val syntaxManifest = buildJsonObject {
+                                put("schema", "kotlin-syntax-input-manifest/0.1")
+                                put("compilation", selected)
+                            }
+                            val syntaxManifestHash = sha(canonicalJson(syntaxManifest).toByteArray())
+                            put("projectModelHash", syntaxManifestHash)
+                            put("classpathHash", sha("[]".toByteArray()))
+                            put("semanticInputManifest", syntaxManifest)
+                            put("semanticInputManifestHash", syntaxManifestHash)
+                            put("buildModelBoundaries", JsonArray(emptyList()))
+                            put("compilerVersion", WORKER_COMPILER_VERSION)
+                            put("compilerOptionsHash", sha("{}".toByteArray()))
+                        } else {
+                            put("projectModelHash", project["projectModelHash"]!!); put("classpathHash", sha(project["compileClasspath"]!!.toString().toByteArray()))
+                            put("semanticInputManifest", project["semanticInputManifest"]!!)
+                            put("semanticInputManifestHash", project["semanticInputManifestHash"]!!)
+                            put("buildModelBoundaries", project["buildModelBoundaries"]!!)
+                            put("compilerVersion", project["compilerVersion"]!!)
+                            put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
+                        }
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }
         }
     }
@@ -478,46 +1464,116 @@ internal class Worker : AutoCloseable {
         project: JsonObject,
     ): JsonObject {
         fun relativeFile(raw: String): String? {
-            val candidate = runCatching { Path.of(raw).toAbsolutePath().normalize() }.getOrNull() ?: return null
-            return runCatching { repo.relativize(candidate).invariantSeparatorsPathString }
-                .getOrNull()
-                ?.takeUnless { it.startsWith("../") || it == ".." }
+            return repositoryRelativeCompilerPath(repo, raw)
+        }
+        val sourceTextByFile = projectSourceTextByRelativePath(repo, compilation)
+        val quarantinedDescriptorKeys = analysis.facts
+            .filter { it["recordType"].safeString() == "DECLARATION_DESCRIPTOR" }
+            .filter { raw ->
+                val file = raw["file"].safeString()?.let(::relativeFile)
+                val reason = descriptorUnsupportedReason(raw, file, file?.let(sourceTextByFile::get))
+                reason != null && !isOptionalDescriptorAttributeBoundary(reason)
+            }
+            .flatMap { raw ->
+                listOf("symbolIdentity", "compilerCallableId", "compilerClassId")
+                    .mapNotNull { field -> raw[field].safeString() }
+            }
+            .filter(String::isNotEmpty)
+            .toSet()
+        fun boundary(
+            code: String,
+            raw: JsonObject,
+            stage: String = "NORMALIZE",
+            file: String? = null,
+            owner: String? = raw["owner"].safeString(),
+            target: String? = null,
+            relationKind: String? = null,
+            start: Int? = null,
+            end: Int? = null,
+            retainedRelationHash: String? = null,
+        ) = buildJsonObject {
+            put("schema", "declaration-relation-boundary/0.1")
+            file?.let { put("file", it) }
+            owner?.takeIf(String::isNotEmpty)?.let { put("owner", it) }
+            target?.takeIf(String::isNotEmpty)?.let { put("target", it) }
+            relationKind?.takeIf(String::isNotEmpty)?.let { put("relationKind", it) }
+            start?.let { put("start", it) }
+            end?.let { put("end", it) }
+            retainedRelationHash?.let { put("retainedRelationHash", it) }
+            put("stage", stage)
+            put("code", code)
+            put("resolution", "UNKNOWN")
+            put("provider", "COMPILER_RELATION_NORMALIZER")
+            put("rawRowHash", canonicalCompilerRowDigest(raw, file))
         }
         val cfgByOwner = analysis.facts
-            .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
+            .filter { it["recordType"].safeString() == "FIR_CFG" }
             .groupBy { fact ->
-                val file = fact["file"]?.jsonPrimitive?.content?.let(::relativeFile).orEmpty()
-                "$file\u0000${fact["symbol"]?.jsonPrimitive?.content.orEmpty()}"
+                val file = fact["file"].safeString()?.let(::relativeFile).orEmpty()
+                "$file\u0000${fact["symbol"].safeString().orEmpty()}"
             }
         val generatedBoundaries = mutableListOf<JsonObject>()
         val relations = analysis.facts
-            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_RELATION" }
+            .filter { it["recordType"].safeString() == "DECLARATION_RELATION" }
             .mapNotNull { raw ->
-                val file = raw["file"]?.jsonPrimitive?.content?.let(::relativeFile) ?: return@mapNotNull null
-                val owner = raw["owner"]?.jsonPrimitive?.content.orEmpty()
-                val target = raw["target"]?.jsonPrimitive?.content.orEmpty()
-                val kind = raw["kind"]?.jsonPrimitive?.content.orEmpty()
-                val start = raw["start"]?.jsonPrimitive?.intOrNull ?: -1
-                val end = raw["end"]?.jsonPrimitive?.intOrNull ?: -1
-                if (file.isEmpty() || owner.isEmpty() || target.isEmpty() || kind.isEmpty() || start < 0 || end < start) {
-                    generatedBoundaries += buildJsonObject {
-                        put("schema", "declaration-relation-boundary/0.1")
-                        put("file", file)
-                        put("stage", "NORMALIZE")
-                        put("code", "INCOMPLETE_COMPILER_RELATION")
-                        put("resolution", "UNKNOWN")
-                        put("provider", "COMPILER_RELATION_NORMALIZER")
-                    }
+                val rawFile = raw["file"].safeString()
+                val file = rawFile?.let(::relativeFile)
+                if (file == null) {
+                    generatedBoundaries += boundary("INVALID_RELATION_SOURCE_PATH", raw)
                     return@mapNotNull null
                 }
+                val owner = raw["owner"].safeString().orEmpty()
+                val target = raw["target"].safeString().orEmpty()
+                val kind = raw["kind"].safeString().orEmpty()
+                val start = raw["start"].safeInt() ?: -1
+                val end = raw["end"].safeInt() ?: -1
+                val source = sourceTextByFile[file]
+                val byteRange = source?.let { compilerRangeToUtf8Bytes(it, start, end) }
+                val unsupported = when {
+                    owner.isEmpty() || target.isEmpty() -> "INVALID_RELATION_IDENTITY"
+                    kind !in SUPPORTED_RELATION_KINDS -> "UNKNOWN_RELATION_KIND"
+                    owner in quarantinedDescriptorKeys || target in quarantinedDescriptorKeys -> "REFERENCE_TO_QUARANTINED_DESCRIPTOR"
+                    source == null -> "RELATION_SOURCE_NOT_IN_COMPILATION"
+                    byteRange == null -> "INVALID_RELATION_SOURCE_RANGE"
+                    else -> null
+                }
+                if (unsupported != null) {
+                    val exactCore = unsupported == "REFERENCE_TO_QUARANTINED_DESCRIPTOR" && byteRange != null
+                    generatedBoundaries += boundary(
+                        unsupported,
+                        raw,
+                        file = file,
+                        target = target.takeIf { exactCore },
+                        relationKind = kind.takeIf { exactCore },
+                        start = byteRange?.first?.takeIf { exactCore },
+                        end = byteRange?.let { it.last + 1 }?.takeIf { exactCore },
+                    )
+                    return@mapNotNull null
+                }
+                val unresolvedTypeEvidence = rawContainsUnresolvedCompilerType(raw)
+                val provenByteRange = byteRange!!
+                if (unresolvedTypeEvidence && !isRetainedCallTopologyKind(kind)) {
+                    generatedBoundaries += boundary(
+                        "UNRESOLVED_RELATION_TYPE",
+                        raw,
+                        file = file,
+                        target = target,
+                        relationKind = kind,
+                        start = provenByteRange.first,
+                        end = provenByteRange.last + 1,
+                    )
+                    return@mapNotNull null
+                }
+                val retainCallTopology = unresolvedTypeEvidence
                 val cfgNodes = cfgByOwner["$file\u0000$owner"].orEmpty()
-                    .flatMap { cfg -> cfg["nodes"]?.jsonArray.orEmpty() }
+                    .flatMap { cfg -> (cfg["nodes"] as? JsonArray).orEmpty() }
+                    .mapNotNull { it as? JsonObject }
                     .filter { node ->
-                        val nodeStart = node.jsonObject["start"]?.jsonPrimitive?.intOrNull ?: return@filter false
-                        val nodeEnd = node.jsonObject["end"]?.jsonPrimitive?.intOrNull ?: return@filter false
+                        val nodeStart = node["start"].safeInt() ?: return@filter false
+                        val nodeEnd = node["end"].safeInt() ?: return@filter false
                         nodeStart <= start && nodeEnd >= end || start <= nodeStart && end >= nodeEnd
                     }
-                    .mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.intOrNull }
+                    .mapNotNull { it["id"].safeInt() }
                     .distinct()
                     .sorted()
                 if (kind in setOf("CALLS", "CONSTRUCTS", "READS", "WRITES", "NULL_COALESCES", "RETURNS_VALUE_FROM") && cfgNodes.isEmpty()) {
@@ -527,32 +1583,77 @@ internal class Worker : AutoCloseable {
                         put("owner", owner)
                         put("stage", "ORDER_PROVENANCE")
                         put("code", "NO_CFG_NODE_FOR_RELATION")
-                        put("start", start)
-                        put("end", end)
+                        put("start", provenByteRange.first)
+                        put("end", provenByteRange.last + 1)
                         put("resolution", "UNKNOWN")
                         put("provider", "K2_FIR_CFG")
                     }
                 }
-                buildJsonObject {
-                    raw.entries.sortedBy { it.key }.forEach { (key, value) ->
-                        if (key !in setOf("recordType", "file")) put(key, value)
+                val sourceRowHash = canonicalCompilerRowDigest(raw, file)
+                val relationPayload = if (retainCallTopology) relationCorePayload(raw, sourceRowHash) else raw
+                val normalized = buildJsonObject {
+                    relationPayload.entries.sortedBy { it.key }.forEach { (key, value) ->
+                        if (key !in setOf("recordType", "file", "start", "end")) put(key, value)
                     }
                     put("file", file)
+                    put("start", provenByteRange.first)
+                    put("end", provenByteRange.last + 1)
                     putJsonArray("cfgNodeIds") { cfgNodes.forEach(::add) }
-                    put("sourceProvenance", "COMPILER_SOURCE_RANGE")
-                    put("orderProvenance", if (cfgNodes.isEmpty()) raw["orderProvenance"] ?: JsonPrimitive("UNKNOWN") else JsonPrimitive("K2_FIR_CFG"))
+                    put("sourceProvenance", "COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+                    put(
+                        "orderProvenance",
+                        if (cfgNodes.isEmpty()) {
+                            JsonPrimitive(raw["orderProvenance"].safeString().takeIf {
+                                it in setOf("K2_FIR_CFG", "FIR_SOURCE_RANGE", "UNKNOWN")
+                            } ?: "UNKNOWN")
+                        } else {
+                            JsonPrimitive("K2_FIR_CFG")
+                        },
+                    )
                 }
+                if (retainCallTopology) {
+                    generatedBoundaries += boundary(
+                        "UNRESOLVED_RELATION_TYPE",
+                        raw,
+                        file = file,
+                        target = target,
+                        relationKind = kind,
+                        start = provenByteRange.first,
+                        end = provenByteRange.last + 1,
+                        retainedRelationHash = stableBoundaryDigest(normalized),
+                    )
+                }
+                normalized
             }
             .distinctBy(::canonicalJson)
             .sortedBy(::canonicalJson)
         val compilerBoundaries = analysis.facts
-            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_RELATION_BOUNDARY" }
+            .filter { it["recordType"].safeString() == "DECLARATION_RELATION_BOUNDARY" }
             .map { raw ->
+                val rawFile = raw["file"].safeString()
+                val normalizedFile = rawFile?.let(::relativeFile)
+                if (rawFile != null && normalizedFile == null) {
+                    return@map boundary("INVALID_RELATION_SOURCE_PATH", raw)
+                }
+                val start = raw["start"].safeInt()
+                val end = raw["end"].safeInt()
+                val byteRange = if (start != null && end != null && normalizedFile != null) {
+                    sourceTextByFile[normalizedFile]?.let { compilerRangeToUtf8Bytes(it, start, end) }
+                } else null
+                if (start != null && end != null && byteRange == null) {
+                    return@map boundary("INVALID_RELATION_SOURCE_RANGE", raw, file = normalizedFile)
+                }
                 buildJsonObject {
                     raw.entries.sortedBy { it.key }.forEach { (key, value) ->
-                        if (key !in setOf("recordType", "file")) put(key, value)
+                        if (key !in setOf("recordType", "file", "start", "end")) put(key, value)
                     }
-                    raw["file"]?.jsonPrimitive?.content?.let(::relativeFile)?.let { put("file", it) }
+                    normalizedFile?.let { put("file", it) }
+                    byteRange?.let { range ->
+                        put("start", range.first)
+                        put("end", range.last + 1)
+                        put("sourceProvenance", "COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+                    }
+                    put("rawRowHash", canonicalCompilerRowDigest(raw, normalizedFile))
                 }
             }
         val boundaries = (compilerBoundaries + generatedBoundaries)
@@ -601,59 +1702,104 @@ internal class Worker : AutoCloseable {
         sourceSet: String,
     ): JsonObject {
         fun relativeFile(raw: String): String? {
-            val candidate = runCatching { Path.of(raw).toAbsolutePath().normalize() }.getOrNull() ?: return null
-            return runCatching { repo.relativize(candidate).invariantSeparatorsPathString }
-                .getOrNull()
-                ?.takeUnless { it.startsWith("../") || it == ".." || it.startsWith('/') }
+            return repositoryRelativeCompilerPath(repo, raw)
+        }
+        val sourceTextByFile = projectSourceTextByRelativePath(repo, compilation)
+        fun boundary(
+            code: String,
+            raw: JsonObject,
+            file: String? = null,
+            retainedDescriptorHash: String? = null,
+        ) = buildJsonObject {
+            put("schema", "declaration-descriptor-boundary/0.1")
+            file?.let { put("file", it) }
+            raw["symbolIdentity"].safeString()?.takeIf(String::isNotEmpty)?.let { put("symbolIdentity", it) }
+            retainedDescriptorHash?.let { put("retainedDescriptorHash", it) }
+            put("stage", "NORMALIZE")
+            put("code", code)
+            put("resolution", "UNKNOWN")
+            put("provider", "COMPILER_DESCRIPTOR_NORMALIZER")
+            put("module", module)
+            put("sourceSet", sourceSet)
+            put("compilerAuthority", FIR_FACTS_EXTRACTOR_SCHEMA)
+            put("rawRowHash", canonicalCompilerRowDigest(raw, file))
         }
         val generatedBoundaries = mutableListOf<JsonObject>()
         val descriptors = analysis.facts
-            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" }
+            .filter { it["recordType"].safeString() == "DECLARATION_DESCRIPTOR" }
             .mapNotNull { raw ->
-                val file = raw["file"]?.jsonPrimitive?.content?.let(::relativeFile)
-                val identity = raw["symbolIdentity"]?.jsonPrimitive?.content.orEmpty()
-                val kind = raw["declarationKind"]?.jsonPrimitive?.content.orEmpty()
-                val owner = raw["ownerIdentity"]?.jsonPrimitive?.content.orEmpty()
-                val start = raw["start"]?.jsonPrimitive?.intOrNull ?: -1
-                val end = raw["end"]?.jsonPrimitive?.intOrNull ?: -1
-                if (file.isNullOrEmpty() || identity.isEmpty() || kind.isEmpty() || owner.isEmpty()
-                    || start < 0 || end < start
-                ) {
-                    generatedBoundaries += buildJsonObject {
-                        put("schema", "declaration-descriptor-boundary/0.1")
-                        file?.let { put("file", it) }
-                        identity.takeIf(String::isNotEmpty)?.let { put("symbolIdentity", it) }
-                        put("stage", "NORMALIZE")
-                        put("code", "INCOMPLETE_COMPILER_DESCRIPTOR")
-                        put("resolution", "UNKNOWN")
-                        put("provider", "COMPILER_DESCRIPTOR_NORMALIZER")
-                    }
+                val file = raw["file"].safeString()?.let(::relativeFile)
+                val start = raw["start"].safeInt() ?: -1
+                val end = raw["end"].safeInt() ?: -1
+                val source = file?.let(sourceTextByFile::get)
+                val byteRange = source?.let { compilerRangeToUtf8Bytes(it, start, end) }
+                val unsupported = descriptorUnsupportedReason(raw, file, source)
+                val attributeBoundary = unsupported.takeIf(::isOptionalDescriptorAttributeBoundary)
+                if (unsupported != null && attributeBoundary == null) {
+                    generatedBoundaries += boundary(unsupported, raw, file)
                     return@mapNotNull null
                 }
-                buildJsonObject {
-                    raw.entries.sortedBy { it.key }.forEach { (key, value) ->
-                        if (key !in setOf("recordType", "file")) put(key, value)
+                val provenByteRange = byteRange!!
+                val sourceRowHash = canonicalCompilerRowDigest(raw, file)
+                val descriptorPayload = if (attributeBoundary != null) {
+                    descriptorCorePayload(raw, sourceRowHash)
+                } else {
+                    raw
+                }
+                val normalized = buildJsonObject {
+                    descriptorPayload.entries.sortedBy { it.key }.forEach { (key, value) ->
+                        if (key !in setOf("recordType", "file", "start", "end")) put(key, value)
                     }
                     put("file", file)
+                    put("start", provenByteRange.first)
+                    put("end", provenByteRange.last + 1)
                     put("module", module)
                     put("sourceSet", sourceSet)
-                    put("sourceProvenance", "COMPILER_SOURCE_RANGE")
+                    put("sourceProvenance", "COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
                     put("compilerAuthority", FIR_FACTS_EXTRACTOR_SCHEMA)
                 }
+                if (attributeBoundary != null) {
+                    generatedBoundaries += boundary(
+                        attributeBoundary,
+                        raw,
+                        file,
+                        retainedDescriptorHash = stableBoundaryDigest(normalized),
+                    )
+                }
+                normalized
             }
             .distinctBy(::canonicalJson)
             .sortedBy(::canonicalJson)
         val compilerBoundaries = analysis.facts
-            .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR_BOUNDARY" }
+            .filter { it["recordType"].safeString() == "DECLARATION_DESCRIPTOR_BOUNDARY" }
             .map { raw ->
+                val rawFile = raw["file"].safeString()
+                val normalizedFile = rawFile?.let(::relativeFile)
+                if (rawFile != null && normalizedFile == null) {
+                    return@map boundary("INVALID_DESCRIPTOR_SOURCE_PATH", raw)
+                }
+                val start = raw["start"].safeInt()
+                val end = raw["end"].safeInt()
+                val byteRange = if (start != null && end != null && normalizedFile != null) {
+                    sourceTextByFile[normalizedFile]?.let { compilerRangeToUtf8Bytes(it, start, end) }
+                } else null
+                if (start != null && end != null && byteRange == null) {
+                    return@map boundary("INVALID_DESCRIPTOR_SOURCE_RANGE", raw, normalizedFile)
+                }
                 buildJsonObject {
                     raw.entries.sortedBy { it.key }.forEach { (key, value) ->
-                        if (key !in setOf("recordType", "file")) put(key, value)
+                        if (key !in setOf("recordType", "file", "start", "end")) put(key, value)
                     }
-                    raw["file"]?.jsonPrimitive?.content?.let(::relativeFile)?.let { put("file", it) }
+                    normalizedFile?.let { put("file", it) }
+                    byteRange?.let { range ->
+                        put("start", range.first)
+                        put("end", range.last + 1)
+                        put("sourceProvenance", "COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+                    }
                     put("module", module)
                     put("sourceSet", sourceSet)
                     put("compilerAuthority", FIR_FACTS_EXTRACTOR_SCHEMA)
+                    put("rawRowHash", canonicalCompilerRowDigest(raw, normalizedFile))
                 }
             }
         val boundaries = (compilerBoundaries + generatedBoundaries)
@@ -694,6 +1840,18 @@ internal class Worker : AutoCloseable {
             }
         }).jsonObject
     }
+
+    private fun projectSourceTextByRelativePath(repo: Path, compilation: String): Map<String, String> =
+        (cachedProjectModel(repo, compilation)["sourceFiles"]?.jsonArray.orEmpty())
+            .mapNotNull { entry ->
+                val path = runCatching { Path.of(entry.jsonPrimitive.content).toRealPath() }.getOrNull()
+                    ?: return@mapNotNull null
+                val relative = runCatching { repo.relativize(path).invariantSeparatorsPathString }.getOrNull()
+                    ?.takeUnless { it == ".." || it.startsWith("../") }
+                    ?: return@mapNotNull null
+                relative to runCatching { path.readText() }.getOrNull().orEmpty()
+            }
+            .toMap()
 
     private fun declarationJson(repo: Path, path: Path, pkg: String, declaration: KtNamedDeclaration, analysis: K2Analysis? = null, module: String = "", sourceSet: String = "main"): JsonObject {
         val resolvedTypes = resolvedIdentityTypes(repo, path, declaration, analysis)
@@ -1962,7 +3120,10 @@ internal class Worker : AutoCloseable {
     }.sortedBy { it.toString() }
     private fun JsonObjectBuilder.putCandidateSource(repo: Path, source: String) {
         val bytes = source.toByteArray()
-        if (bytes.size <= 64 * 1024) { put("source", source); return }
+        if (bytes.size <= 64 * 1024 || stateFor(repo).mode == "EXTERNAL") {
+            put("source", source)
+            return
+        }
         val hash = sha(bytes); val relative = ".semantic-thread/blobs/sha256/${hash.removePrefix("sha256:")}"
         val path = repo.resolve(relative)
         if (!path.isRegularFile()) writeCacheAtomically(path, source)
@@ -2014,7 +3175,11 @@ internal class Worker : AutoCloseable {
         return result
     }
 
-    override fun close() = Disposer.dispose(disposable)
+    override fun close() {
+        Disposer.dispose(disposable)
+        externalBuildStateRuntimeRoots.forEach { it.toFile().deleteRecursively() }
+        externalBuildStateRuntimeRoots.clear()
+    }
 }
 
 internal class WorkerFailure(val code: String, override val message: String) : RuntimeException(message)

@@ -310,6 +310,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "evidence-adapters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clew",
+ "evidence-core",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
+name = "evidence-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

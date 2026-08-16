@@ -17,6 +17,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.10")
+    implementation("org.jetbrains.kotlin:kotlin-serialization-compiler-plugin-embeddable:2.4.10")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.10.0")
     testImplementation(kotlin("test"))
 }

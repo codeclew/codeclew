@@ -55,8 +55,9 @@ internal object Proto {
         return input.readNBytes(length).also { if (it.size != length) throw EOFException() }
     }
 
-    fun writeFrame(output: OutputStream, bytes: ByteArray) {
+    fun writeFrame(output: OutputStream, bytes: ByteArray, maximumFrameBytes: Int = 64 * 1024 * 1024) {
         val n = bytes.size
+        require(maximumFrameBytes >= 0 && n <= maximumFrameBytes) { "protobuf frame exceeds the bounded transport limit" }
         output.write(byteArrayOf((n ushr 24).toByte(), (n ushr 16).toByte(), (n ushr 8).toByte(), n.toByte()))
         output.write(bytes); output.flush()
     }

@@ -4,15 +4,15 @@ use crate::model::ThreadIr;
 use serde_json::{Map, Value, json};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use walkdir::WalkDir;
 
 const MAX_EDIT_SURFACES: usize = 4;
 const MAX_CONTRACTS: usize = 2;
 const MAX_TESTS: usize = 1;
 const MAX_EXECUTION_EDGES: usize = 4;
-const MAX_SOURCE_BYTES: usize = 4_200;
-const MAX_TEST_BYTES: usize = 4_200;
 
 #[derive(Clone, Debug)]
 struct SourceFile {
@@ -36,6 +36,7 @@ struct TaskRequirement {
     term: String,
     kind: String,
     candidate_ids: Vec<String>,
+    evidence_paths: Vec<String>,
     satisfied: bool,
 }
 
@@ -358,6 +359,10 @@ pub fn select(
     }
     let (requirements, required_candidate_ids, entrypoint_candidate_ids, explicit_candidate_ids) =
         derive_requirements(&files, &catalog, terms);
+    let requires_tests = intent_requests_tests(intent)
+        || requirements
+            .iter()
+            .any(|requirement| requirement.kind == "TEST_SURFACE");
     Ok(TaskContextSelection {
         files,
         catalog,
@@ -368,7 +373,7 @@ pub fn select(
         required_candidate_ids,
         entrypoint_candidate_ids,
         explicit_candidate_ids,
-        requires_tests: intent_requests_tests(intent),
+        requires_tests,
     })
 }
 
@@ -386,10 +391,20 @@ fn derive_requirements(
     let mut required = BTreeSet::new();
     let mut entrypoints = BTreeSet::new();
     let mut explicit = BTreeSet::new();
+    let test_paths = files
+        .iter()
+        .filter(|file| file.is_test)
+        .map(|file| file.path.as_str())
+        .collect::<BTreeSet<_>>();
     for term in terms {
         let exact = catalog
             .iter()
             .filter(|candidate| is_surface_declaration(candidate))
+            .filter(|candidate| {
+                candidate.declaration["file"]
+                    .as_str()
+                    .is_none_or(|path| !test_paths.contains(path))
+            })
             .filter(|candidate| {
                 candidate.declaration["name"]
                     .as_str()
@@ -407,19 +422,26 @@ fn derive_requirements(
                 term: term.clone(),
                 kind: "EXPLICIT_DECLARATION".into(),
                 candidate_ids: ids,
+                evidence_paths: Vec::new(),
                 satisfied: true,
             });
             continue;
         }
 
-        let matching_paths = files
+        // Test files are evidence for the separately anchored TEST_SURFACE.
+        // They are not production edit surfaces in the active compilation.
+        let matching_files = files
             .iter()
+            .filter(|file| !file.is_test)
             .filter(|file| {
                 Path::new(&file.path)
                     .file_stem()
                     .and_then(|stem| stem.to_str())
                     .is_some_and(|stem| stem.eq_ignore_ascii_case(term))
             })
+            .collect::<Vec<_>>();
+        let matching_paths = matching_files
+            .iter()
             .map(|file| file.path.as_str())
             .collect::<BTreeSet<_>>();
         if !matching_paths.is_empty() {
@@ -463,19 +485,37 @@ fn derive_requirements(
                 .into(),
                 satisfied: !ids.is_empty(),
                 candidate_ids: ids,
+                evidence_paths: Vec::new(),
             });
             continue;
         }
 
-        let lower = term.to_lowercase();
-        let satisfied = files.iter().any(|file| {
-            file.path.to_lowercase().contains(&lower) || file.source.to_lowercase().contains(&lower)
-        });
+        let matching_test_paths = files
+            .iter()
+            .filter(|file| exact_test_file_stem(file, term))
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        if !matching_test_paths.is_empty() {
+            requirements.push(TaskRequirement {
+                term: term.clone(),
+                kind: "TEST_SURFACE".into(),
+                candidate_ids: Vec::new(),
+                evidence_paths: matching_test_paths,
+                satisfied: true,
+            });
+            continue;
+        }
+
+        // Unanchored text is useful for discovery, but cannot prove that an
+        // exact requested surface is safe to edit.  Keep the requirement
+        // visible and fail closed until it has an immutable declaration/file
+        // target.
         requirements.push(TaskRequirement {
             term: term.clone(),
             kind: "EVIDENCE_TERM".into(),
             candidate_ids: Vec::new(),
-            satisfied,
+            evidence_paths: Vec::new(),
+            satisfied: false,
         });
     }
     (requirements, required, entrypoints, explicit)
@@ -488,9 +528,27 @@ fn candidate_id(candidate: &Candidate) -> Option<String> {
 }
 
 fn is_surface_declaration(candidate: &Candidate) -> bool {
-    candidate.declaration["kind"]
-        .as_str()
-        .is_some_and(|kind| kind.contains("Function") || kind.contains("Class"))
+    candidate.declaration["kind"].as_str().is_some_and(|kind| {
+        kind.contains("Function") || kind.contains("Class") || kind.contains("ObjectDeclaration")
+    })
+}
+
+fn exact_test_file_stem(file: &SourceFile, term: &str) -> bool {
+    file.is_test
+        && Path::new(&file.path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.eq_ignore_ascii_case(term))
+}
+
+fn requirement_is_satisfied(requirement: &TaskRequirement, tests: &[Value]) -> bool {
+    requirement.satisfied
+        && (requirement.kind != "TEST_SURFACE"
+            || requirement.evidence_paths.iter().any(|path| {
+                tests
+                    .iter()
+                    .any(|test| test["path"].as_str() == Some(path.as_str()))
+            }))
 }
 
 fn intent_requests_tests(intent: &str) -> bool {
@@ -622,7 +680,208 @@ pub struct TaskContextBuild<'a> {
     pub base_revision: &'a str,
     pub index_snapshot: &'a str,
     pub evidence_path: &'a Path,
+    pub model_input_surfaces: &'a [Value],
     pub max_bytes: usize,
+}
+
+/// Resolve explicitly requested build/model inputs into immutable task
+/// surfaces.  A model input is authority-bearing: unlike a source search hit,
+/// it is only exposed when Git, the live filesystem, and OpenProject's exact
+/// semantic input manifest all name the same bytes.
+pub fn resolve_model_input_surfaces(
+    repo: &Path,
+    project: &Value,
+    requested: &[String],
+) -> Result<Vec<Value>, ClewError> {
+    let manifest = verified_semantic_input_manifest(project)?;
+    let entries = manifest
+        .get("modelInputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "OpenProject semantic input manifest has no modelInputs array",
+            )
+        })?;
+    let manifest_hash = project["semanticInputManifestHash"]
+        .as_str()
+        .expect("verified manifest hash");
+    let mut seen = BTreeSet::new();
+    let mut surfaces = Vec::with_capacity(requested.len());
+    for raw in requested {
+        let path = canonical_model_input_path(raw)?;
+        if !seen.insert(path.to_owned()) {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                format!("model input was requested more than once: {path}"),
+            ));
+        }
+        require_tracked_regular_file(repo, path)?;
+        let bytes = std::fs::read(repo.join(path)).map_err(|error| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                format!("cannot read model input {path}: {error}"),
+            )
+        })?;
+        let source = std::str::from_utf8(&bytes).map_err(|_| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                format!("model input is not UTF-8: {path}"),
+            )
+        })?;
+        let exact_hash = canonical::hash_bytes(&bytes);
+        require_manifest_model_input(entries, path, &exact_hash)?;
+        let target = json!({
+            "anchorId":format!("model-input:{}", canonical::hash(&json!({"path":path,"hash":exact_hash})).map_err(|error| ClewError::new(ErrorCode::Internal,error.to_string()))?),
+            "fileId":path,
+            "exactTextHash":exact_hash,
+            "syntaxKind":"MODEL_INPUT_FILE",
+            "semanticInputManifestHash":manifest_hash,
+        });
+        surfaces.push(json!({
+            "targetId":format!("M{}", surfaces.len() + 1),
+            "path":path,
+            "exactHash":exact_hash,
+            "sourceText":source,
+            "status":"REQUIRED",
+            "required":true,
+            "surfaceRequired":true,
+            "modelInputTarget":target,
+        }));
+    }
+    Ok(surfaces)
+}
+
+fn verified_semantic_input_manifest(project: &Value) -> Result<&Value, ClewError> {
+    let manifest = project.get("semanticInputManifest").ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "OpenProject has no semantic input manifest",
+        )
+    })?;
+    let expected = project
+        .get("semanticInputManifestHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "OpenProject has no semantic input manifest hash",
+            )
+        })?;
+    let actual = canonical::hash(manifest)
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    if actual != expected {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "OpenProject semantic input manifest hash is invalid",
+        ));
+    }
+    Ok(manifest)
+}
+
+fn canonical_model_input_path(raw: &str) -> Result<&str, ClewError> {
+    let path = Path::new(raw);
+    let canonical = !raw.is_empty()
+        && !raw.contains('\\')
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        && path
+            .components()
+            .map(|component| component.as_os_str())
+            .collect::<PathBuf>()
+            .as_os_str()
+            == OsStr::new(raw);
+    if !canonical {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            format!("model input path is not canonical repository-relative UTF-8: {raw}"),
+        ));
+    }
+    Ok(raw)
+}
+
+fn require_tracked_regular_file(repo: &Path, relative: &str) -> Result<(), ClewError> {
+    let output = Command::new("git")
+        .args(["ls-files", "--stage", "-z", "--", relative])
+        .current_dir(repo)
+        .output()
+        .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?;
+    if !output.status.success() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            format!("cannot verify tracked model input: {relative}"),
+        ));
+    }
+    let records = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let exact_regular = records.len() == 1
+        && records[0]
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .is_some_and(|separator| {
+                let (stage, path_with_tab) = records[0].split_at(separator);
+                let path = &path_with_tab[1..];
+                let mut fields = stage.split(|byte| *byte == b' ');
+                matches!(fields.next(), Some(b"100644" | b"100755"))
+                    && fields.next().is_some()
+                    && fields.next() == Some(b"0")
+                    && fields.next().is_none()
+                    && path == relative.as_bytes()
+            });
+    if !exact_regular {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            format!("model input is not one exact tracked regular file: {relative}"),
+        ));
+    }
+
+    let mut current = repo.to_path_buf();
+    let components = Path::new(relative).components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&current).map_err(|error| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "model input path is unavailable at {}: {error}",
+                    current.display()
+                ),
+            )
+        })?;
+        if metadata.file_type().is_symlink()
+            || (index + 1 == components.len() && !metadata.is_file())
+            || (index + 1 < components.len() && !metadata.is_dir())
+        {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                format!("model input path is not a nonsymlink regular file: {relative}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_manifest_model_input(
+    entries: &[Value],
+    path: &str,
+    exact_hash: &str,
+) -> Result<(), ClewError> {
+    let matches = entries
+        .iter()
+        .filter(|entry| entry.get("path").and_then(Value::as_str) == Some(path))
+        .collect::<Vec<_>>();
+    if matches.len() != 1 || matches[0].get("hash").and_then(Value::as_str) != Some(exact_hash) {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            format!("model input {path} is absent or has a different digest in OpenProject"),
+        ));
+    }
+    Ok(())
 }
 
 pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
@@ -639,6 +898,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
         base_revision,
         index_snapshot,
         evidence_path,
+        model_input_surfaces,
         max_bytes,
     } = input;
     if max_bytes < 4_096 {
@@ -785,7 +1045,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
         .collect::<Vec<_>>();
     let execution_path = collect_execution_path(resolutions, index_facts, selection);
     let test_needles = task_needles(terms, intent, &root_candidates, &edit_candidates, selection);
-    let mut tests = collect_anchored_tests(selection, &test_needles);
+    let mut tests = collect_anchored_tests(selection, &test_needles, terms);
     if selection.requires_tests {
         for test in &mut tests {
             test["required"] = json!(true);
@@ -819,7 +1079,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
     for requirement in selection
         .requirements
         .iter()
-        .filter(|requirement| !requirement.satisfied)
+        .filter(|requirement| !requirement_is_satisfied(requirement, &tests))
     {
         boundaries.push(json!({"kind":"UNSATISFIED_REQUIREMENT","term":requirement.term,"requirementKind":requirement.kind}));
     }
@@ -833,7 +1093,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
         .requirements
         .iter()
         .map(|requirement| {
-            let matches = requirement
+            let mut matches = requirement
                 .candidate_ids
                 .iter()
                 .filter_map(|id| {
@@ -848,10 +1108,16 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
                     })
                 })
                 .collect::<Vec<_>>();
+            matches.extend(
+                requirement
+                    .evidence_paths
+                    .iter()
+                    .map(|path| json!({"file":path})),
+            );
             json!({
                 "term":requirement.term,
                 "kind":requirement.kind,
-                "status":if requirement.satisfied {"SATISFIED"} else {"UNSATISFIED"},
+                "status":if requirement_is_satisfied(requirement, &tests) {"SATISFIED"} else {"UNSATISFIED"},
                 "matches":matches
             })
         })
@@ -906,6 +1172,7 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
         "snapshot":{"baseRevision":base_revision,"projectModelHash":project["projectModelHash"],"indexSnapshot":index_snapshot,"compilerVersion":project["compilerVersion"],"compilation":compilation},
         "threadId":thread_id,
         "editSurfaces":edit_surfaces,
+        "modelInputSurfaces":model_input_surfaces,
         "executionPath":execution_path,
         "projectionFields":projection_fields,
         "contracts":contracts,
@@ -916,16 +1183,17 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
             "threadId":thread_id,
             "baseRevision":base_revision,
             "operationShape":{"kind":"REWRITE_DECLARATION","target":{"targetId":"<emitted targetId>"},"old":"...","new":"..."},
+            "modelInputOperationShape":{"kind":"REPLACE_MODEL_INPUT","target":{"targetId":"M1"},"newLines":["<complete file, one exact line per item>"]},
             "transientTransform":transient_transform,
-            "instruction":"Use transientTransform when available. Otherwise use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
+            "instruction":"Use transientTransform when available. Otherwise use kind and target.targetId. For REWRITE_DECLARATION use S/C/T aliases, never a B-suffixed body alias; B aliases are only for REPLACE_FUNCTION_BODY. Replace an emitted M alias only with REPLACE_MODEL_INPUT and a complete newLines array; paths are never accepted. Multiline: oldLines/newLines/kotlinLines arrays; occurrence selects one match, occurrences edits all; same-target rewrites merge. Plan every necessary role, including INTERMEDIARY type flow. A typed contract must not become Any/Any?: required fields stay static and existing payloads assignable. projectionFields nullability is authoritative. Add top-level types only with CREATE_FILE."
         },
         "evidence":evidence_display(repo,evidence_path),
         "completeness":{
-            "status":if boundaries.is_empty(){"LEGACY_HEURISTIC_READY"}else{"LEGACY_HEURISTIC_PARTIAL"},
+            "status":if boundaries.is_empty(){"COMPLETE_TASK"}else{"PARTIAL_TASK"},
             "boundaries":boundaries,
             "coverage":{"roots":root_candidates.len(),"resolvedCalls":execution_path.len(),"internalCalls":internal_calls,"contracts":contracts.len(),"tests":tests.len()},
             "stdoutLimitBytes":max_bytes,
-            "omitted":{"editSurfaces":0,"executionPath":0,"contracts":0,"tests":0,"sourceBytes":0}
+            "omitted":{"editSurfaces":0,"modelInputSurfaces":0,"executionPath":0,"contracts":0,"tests":0,"sourceBytes":0}
         }
     });
     let bounded = enforce_budget(compact_targets_for_stdout(full.clone()), max_bytes)?;
@@ -943,7 +1211,6 @@ pub fn build(input: TaskContextBuild<'_>) -> Result<(Value, Value), ClewError> {
 
 fn compact_surface(candidate: &Candidate, body_anchor: Option<&Value>) -> Value {
     let declaration = &candidate.declaration;
-    let (source_text, truncated, omitted) = truncate_utf8(&candidate.source_text, MAX_SOURCE_BYTES);
     let declaration_target = declaration_target(candidate);
     let mut value = Map::from_iter([
         ("name".into(), declaration["name"].clone()),
@@ -955,7 +1222,7 @@ fn compact_surface(candidate: &Candidate, body_anchor: Option<&Value>) -> Value 
         ),
         ("score".into(), json!(candidate.score)),
         ("reasons".into(), json!(candidate.reasons)),
-        ("sourceText".into(), json!(source_text)),
+        ("sourceText".into(), json!(candidate.source_text)),
         ("declarationTarget".into(), declaration_target),
     ]);
     if let Some(anchor) = body_anchor {
@@ -964,10 +1231,6 @@ fn compact_surface(candidate: &Candidate, body_anchor: Option<&Value>) -> Value 
             object.remove("sourceText");
         }
         value.insert("bodyTarget".into(), compact);
-    }
-    if truncated {
-        value.insert("sourceTruncated".into(), json!(true));
-        value.insert("sourceBytesOmitted".into(), json!(omitted));
     }
     Value::Object(value)
 }
@@ -1436,6 +1699,12 @@ fn task_needles(
     for term in terms
         .iter()
         .filter(|term| !selection.explicit_owners.contains(term.as_str()))
+        .filter(|term| {
+            !selection
+                .files
+                .iter()
+                .any(|file| exact_test_file_stem(file, term))
+        })
     {
         needles.insert(term.clone(), 10);
     }
@@ -1451,26 +1720,44 @@ fn task_needles(
     {
         needles.insert(name.to_owned(), 40);
     }
+    for term in terms.iter().filter(|term| {
+        selection
+            .files
+            .iter()
+            .any(|file| exact_test_file_stem(file, term))
+    }) {
+        // task_tokens also includes the unsplit identifier.  Exact test-file
+        // terms are path evidence, never arbitrary body/comment evidence.
+        needles.remove(term);
+        needles.remove(&term.to_lowercase());
+    }
     needles
 }
 
 fn collect_anchored_tests(
     selection: &TaskContextSelection,
     needles: &BTreeMap<String, usize>,
+    terms: &[String],
 ) -> Vec<Value> {
     let mut candidates = selection
         .files
         .iter()
         .filter(|file| file.is_test)
-        .filter_map(|file| test_snippet(file, needles))
+        .filter_map(|file| test_snippet(file, needles, terms))
         .collect::<Vec<_>>();
     candidates.sort_by_key(|candidate| Reverse(candidate["score"].as_u64().unwrap_or_default()));
     candidates.truncate(MAX_TESTS);
     candidates
 }
 
-fn test_snippet(file: &SourceFile, needles: &BTreeMap<String, usize>) -> Option<Value> {
+fn test_snippet(
+    file: &SourceFile,
+    needles: &BTreeMap<String, usize>,
+    terms: &[String],
+) -> Option<Value> {
     let lines = file.source.lines().collect::<Vec<_>>();
+    let exact_file_term = terms.iter().find(|term| exact_test_file_stem(file, term));
+    let exact_file_score = needles.values().copied().sum::<usize>().saturating_add(1);
     let (function_line, end, score, matched) = lines
         .iter()
         .enumerate()
@@ -1492,15 +1779,19 @@ fn test_snippet(file: &SourceFile, needles: &BTreeMap<String, usize>) -> Option<
                 }
             }
             let source = lines[function_line..=end.min(lines.len().saturating_sub(1))].join("\n");
-            let matched = needles
+            let mut matched = needles
                 .iter()
                 .filter(|(needle, _)| contains_name(&source, needle))
                 .map(|(needle, _)| needle.clone())
                 .collect::<Vec<_>>();
-            let score = matched
+            let mut score = matched
                 .iter()
                 .filter_map(|needle| needles.get(needle))
                 .sum::<usize>();
+            if let Some(term) = exact_file_term {
+                matched.push(term.clone());
+                score = score.saturating_add(exact_file_score);
+            }
             (!matched.is_empty()).then_some((function_line, end, score, matched))
         })
         .max_by_key(|(function_line, _, score, _)| (*score, Reverse(*function_line)))?;
@@ -1517,7 +1808,6 @@ fn test_snippet(file: &SourceFile, needles: &BTreeMap<String, usize>) -> Option<
     // PSI declaration.text starts at the first annotation/token, not at the
     // surrounding blank line or its file indentation.
     let declaration_source = source.trim();
-    let (source_text, truncated, omitted) = truncate_utf8(declaration_source, MAX_TEST_BYTES);
     let declaration_name = test_function_name(lines[function_line]).unwrap_or("test");
     let exact_text_hash = canonical::hash_bytes(declaration_source.as_bytes());
     let anchor_id = format!(
@@ -1531,9 +1821,7 @@ fn test_snippet(file: &SourceFile, needles: &BTreeMap<String, usize>) -> Option<
         "lines":[start+1,end+1],
         "matched":matched,
         "score":score,
-        "sourceText":source_text,
-        "sourceTruncated":truncated,
-        "sourceBytesOmitted":omitted,
+        "sourceText":declaration_source,
         "declarationTarget":{
             "anchorId":anchor_id,
             "declarationId":anchor_id,
@@ -1557,6 +1845,120 @@ fn test_function_name(line: &str) -> Option<&str> {
     (end > 0).then(|| &declaration[..end])
 }
 
+pub fn gradle_test_route(path: &str) -> Option<(String, String)> {
+    if path.is_empty() || path.contains('\\') || Path::new(path).is_absolute() {
+        return None;
+    }
+    let components = path.split('/').collect::<Vec<_>>();
+    if components
+        .iter()
+        .any(|component| !canonical_gradle_route_component(component))
+    {
+        return None;
+    }
+    let mut contours = components
+        .windows(3)
+        .enumerate()
+        .filter(|(_, window)| *window == ["src", "test", "kotlin"]);
+    let (contour, _) = contours.next()?;
+    if contours.next().is_some() {
+        return None;
+    }
+    let relative = components.get(contour + 3..)?;
+    let file = *relative.last()?;
+    let stem = file.strip_suffix(".kt")?;
+    if relative.is_empty()
+        || stem.is_empty()
+        || !stem.ends_with("Test")
+        || stem.len() == "Test".len()
+        || !valid_kotlin_test_identifier(stem)
+    {
+        return None;
+    }
+    let module = &components[..contour];
+    let task = if module.is_empty() {
+        ":test".to_owned()
+    } else {
+        format!(":{}:test", module.join(":"))
+    };
+    Some((task, stem.to_owned()))
+}
+
+fn canonical_gradle_route_component(component: &str) -> bool {
+    !component.is_empty()
+        && !matches!(component, "." | "..")
+        && component
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-' | '.'))
+}
+
+fn valid_kotlin_test_identifier(identifier: &str) -> bool {
+    let mut characters = identifier.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_alphabetic())
+        && characters.all(|character| character == '_' || character.is_alphanumeric())
+}
+
+fn authoritative_gradle_module_roots(project: &Value) -> BTreeSet<String> {
+    let mut roots = BTreeSet::new();
+    if let Some(project_directory) = project.get("projectDirectory").and_then(Value::as_str)
+        && let Some(root) = canonical_gradle_module_root(project_directory)
+    {
+        roots.insert(root);
+    }
+    for source_root in project
+        .get("sourceRoots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if let Some(root) = gradle_module_root_from_main_source(source_root) {
+            roots.insert(root);
+        }
+    }
+    roots
+}
+
+fn canonical_gradle_module_root(value: &str) -> Option<String> {
+    if value.is_empty() || value == "." {
+        return Some(String::new());
+    }
+    if value.contains('\\') || Path::new(value).is_absolute() {
+        return None;
+    }
+    value
+        .split('/')
+        .all(canonical_gradle_route_component)
+        .then(|| value.to_owned())
+}
+
+fn gradle_module_root_from_main_source(source_root: &str) -> Option<String> {
+    if source_root == "src/main/kotlin" {
+        return Some(String::new());
+    }
+    let module = source_root.strip_suffix("/src/main/kotlin")?;
+    canonical_gradle_module_root(module).filter(|root| !root.is_empty())
+}
+
+fn authorized_gradle_test_route(
+    allowed_roots: &BTreeSet<String>,
+    path: &str,
+) -> Option<(String, String)> {
+    let route = gradle_test_route(path)?;
+    let module = if route.0 == ":test" {
+        String::new()
+    } else {
+        route
+            .0
+            .strip_prefix(':')?
+            .strip_suffix(":test")?
+            .replace(':', "/")
+    };
+    allowed_roots.contains(&module).then_some(route)
+}
+
 fn validation_plan(project: &Value, tests: &[Value]) -> Value {
     let build_system = project["buildSystem"].as_str().unwrap_or("GRADLE");
     let launcher = project["buildLauncher"]
@@ -1565,31 +1967,47 @@ fn validation_plan(project: &Value, tests: &[Value]) -> Value {
             "MAVEN" => "mvn",
             _ => "./gradlew",
         });
-    let stems = tests
-        .iter()
-        .filter_map(|test| test["path"].as_str())
-        .filter_map(|path| Path::new(path).file_stem()?.to_str())
-        .collect::<BTreeSet<_>>();
     let targeted_args = match build_system {
-        "MAVEN" if !stems.is_empty() => vec![
-            format!("-Dtest={}", stems.into_iter().collect::<Vec<_>>().join(",")),
-            "test".into(),
-        ],
-        "GRADLE" if !stems.is_empty() => {
-            let mut args = vec!["cleanTest".into(), "test".into()];
-            for stem in stems {
-                args.push("--tests".into());
-                args.push(format!("*{stem}"));
+        "MAVEN" => {
+            let stems = tests
+                .iter()
+                .filter_map(|test| test["path"].as_str())
+                .filter_map(|path| Path::new(path).file_stem()?.to_str())
+                .collect::<BTreeSet<_>>();
+            if stems.is_empty() {
+                project_test_tasks(project)
+            } else {
+                vec![
+                    format!("-Dtest={}", stems.into_iter().collect::<Vec<_>>().join(",")),
+                    "test".into(),
+                ]
             }
-            args
         }
-        _ => project["testTasks"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect(),
+        "GRADLE" => {
+            let allowed_roots = authoritative_gradle_module_roots(project);
+            let mut routes = BTreeMap::<String, BTreeSet<String>>::new();
+            for (task, stem) in tests
+                .iter()
+                .filter_map(|test| test["path"].as_str())
+                .filter_map(|path| authorized_gradle_test_route(&allowed_roots, path))
+            {
+                routes.entry(task).or_default().insert(stem);
+            }
+            if routes.is_empty() {
+                project_test_tasks(project)
+            } else {
+                let mut args = vec!["cleanTest".into()];
+                for (task, stems) in routes {
+                    args.push(task);
+                    for stem in stems {
+                        args.push("--tests".into());
+                        args.push(format!("*{stem}"));
+                    }
+                }
+                args
+            }
+        }
+        _ => project_test_tasks(project),
     };
     json!({
         "buildSystem":build_system,
@@ -1598,6 +2016,16 @@ fn validation_plan(project: &Value, tests: &[Value]) -> Value {
         "targetedArgs":targeted_args,
         "cleanDetachedWorktree":true
     })
+}
+
+fn project_test_tasks(project: &Value) -> Vec<String> {
+    project["testTasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn task_tokens(intent: &str, terms: &[String]) -> BTreeSet<String> {
@@ -1772,6 +2200,18 @@ fn compact_targets_for_stdout(mut context: Value) -> Value {
             }
         }
     }
+    for (index, item) in context
+        .get_mut("modelInputSurfaces")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        item["targetId"] = json!(format!("M{}", index + 1));
+        item.as_object_mut()
+            .expect("model input surface")
+            .remove("modelInputTarget");
+    }
     for test in context
         .get_mut("tests")
         .and_then(Value::as_array_mut)
@@ -1865,10 +2305,16 @@ fn scan_kotlin_sources(repo: &Path) -> Result<Vec<SourceFile>, ClewError> {
 }
 
 fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, ClewError> {
-    let original = ["editSurfaces", "executionPath", "contracts", "tests"]
-        .into_iter()
-        .map(|key| (key.to_owned(), array_len(&pack, key)))
-        .collect::<BTreeMap<_, _>>();
+    let original = [
+        "editSurfaces",
+        "modelInputSurfaces",
+        "executionPath",
+        "contracts",
+        "tests",
+    ]
+    .into_iter()
+    .map(|key| (key.to_owned(), array_len(&pack, key)))
+    .collect::<BTreeMap<_, _>>();
     let mut source_bytes = 0usize;
     let mut required_source_bytes = 0usize;
     let mut required_edit_surfaces_omitted = 0usize;
@@ -1926,7 +2372,7 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, ClewError>
             .iter()
             .any(|(key, count)| key != "editSurfaces" && *count > 0);
     if partial {
-        pack["completeness"]["status"] = json!("LEGACY_HEURISTIC_PARTIAL_BUDGET");
+        pack["completeness"]["status"] = json!("PARTIAL_TASK");
         pack["completeness"]["boundaries"]
             .as_array_mut()
             .expect("boundaries array")
@@ -1934,6 +2380,7 @@ fn enforce_budget(mut pack: Value, max_bytes: usize) -> Result<Value, ClewError>
     }
     pack["completeness"]["omitted"] = json!({
         "editSurfaces":omitted.get("editSurfaces").copied().unwrap_or_default(),
+        "modelInputSurfaces":omitted.get("modelInputSurfaces").copied().unwrap_or_default(),
         "executionPath":omitted.get("executionPath").copied().unwrap_or_default(),
         "contracts":omitted.get("contracts").copied().unwrap_or_default(),
         "tests":omitted.get("tests").copied().unwrap_or_default(),
@@ -2081,6 +2528,209 @@ fn evidence_display(repo: &Path, evidence_path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn initialize_git_repo() -> tempfile::TempDir {
+        let temporary = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet", "--initial-branch=main"])
+                .current_dir(temporary.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        temporary
+    }
+
+    fn project_with_model_inputs(entries: Vec<Value>) -> Value {
+        let manifest = json!({
+            "schema":"kotlin-semantic-input-manifest/0.1",
+            "orderedCompileClasspath":[],
+            "modelInputs":entries,
+        });
+        json!({
+            "projectModelHash":"sha256:project",
+            "semanticInputManifestHash":canonical::hash(&manifest).unwrap(),
+            "semanticInputManifest":manifest,
+        })
+    }
+
+    fn track(repo: &Path, path: &str, bytes: &[u8]) {
+        let absolute = repo.join(path);
+        std::fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+        std::fs::write(&absolute, bytes).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "--", path])
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[test]
+    fn model_input_surface_is_exact_required_and_untruncated() {
+        let temporary = initialize_git_repo();
+        let source = format!(
+            "plugins {{\n    kotlin(\"jvm\")\n}}\n{}",
+            "// full\n".repeat(900)
+        );
+        track(
+            temporary.path(),
+            "workers/kotlin21/build.gradle.kts",
+            source.as_bytes(),
+        );
+        let exact_hash = canonical::hash_bytes(source.as_bytes());
+        let project = project_with_model_inputs(vec![json!({
+            "path":"workers/kotlin21/build.gradle.kts",
+            "hash":exact_hash,
+        })]);
+
+        let surfaces = resolve_model_input_surfaces(
+            temporary.path(),
+            &project,
+            &["workers/kotlin21/build.gradle.kts".into()],
+        )
+        .unwrap();
+
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(surfaces[0]["targetId"], "M1");
+        assert_eq!(surfaces[0]["status"], "REQUIRED");
+        assert_eq!(surfaces[0]["required"], true);
+        assert_eq!(surfaces[0]["exactHash"], exact_hash);
+        assert_eq!(surfaces[0]["sourceText"], source);
+        assert!(surfaces[0].get("sourceTruncated").is_none());
+        assert_eq!(
+            surfaces[0]["modelInputTarget"]["semanticInputManifestHash"],
+            project["semanticInputManifestHash"]
+        );
+
+        let compact = compact_targets_for_stdout(json!({
+            "task":{},
+            "modelInputSurfaces":surfaces,
+            "editSurfaces":[],
+            "contracts":[],
+            "tests":[],
+            "executionPath":[],
+        }));
+        assert_eq!(compact["modelInputSurfaces"][0]["targetId"], "M1");
+        assert_eq!(compact["modelInputSurfaces"][0]["sourceText"], source);
+        assert!(
+            compact["modelInputSurfaces"][0]
+                .get("modelInputTarget")
+                .is_none()
+        );
+
+        let bounded = enforce_budget(
+            json!({
+                "task":{},
+                "modelInputSurfaces":compact["modelInputSurfaces"],
+                "editSurfaces":[],
+                "contracts":[],
+                "tests":[],
+                "executionPath":[],
+                "completeness":{"status":"COMPLETE_TASK","boundaries":[],"omitted":{}},
+            }),
+            16_384,
+        )
+        .unwrap();
+        assert_eq!(bounded["completeness"]["status"], "COMPLETE_TASK");
+        assert_eq!(bounded["modelInputSurfaces"][0]["sourceText"], source);
+        assert_eq!(bounded["completeness"]["omitted"]["modelInputSurfaces"], 0);
+
+        let too_small = enforce_budget(
+            json!({
+                "task":{},
+                "modelInputSurfaces":bounded["modelInputSurfaces"],
+                "editSurfaces":[],
+                "contracts":[],
+                "tests":[],
+                "executionPath":[],
+                "completeness":{"status":"COMPLETE_TASK","boundaries":[],"omitted":{}},
+            }),
+            4_096,
+        );
+        assert!(too_small.is_err());
+    }
+
+    #[test]
+    fn model_input_surface_rejects_untracked_noncanonical_and_wrong_digest_paths() {
+        let temporary = initialize_git_repo();
+        std::fs::write(
+            temporary.path().join("untracked.gradle.kts"),
+            "plugins {}\n",
+        )
+        .unwrap();
+        track(
+            temporary.path(),
+            "settings.gradle.kts",
+            b"rootProject.name = \"demo\"\n",
+        );
+        let settings_hash = canonical::hash_bytes(b"rootProject.name = \"demo\"\n");
+        let project = project_with_model_inputs(vec![
+            json!({"path":"untracked.gradle.kts","hash":canonical::hash_bytes(b"plugins {}\n")}),
+            json!({"path":"settings.gradle.kts","hash":"sha256:wrong"}),
+        ]);
+
+        for requested in [
+            "untracked.gradle.kts",
+            "./settings.gradle.kts",
+            "settings.gradle.kts",
+        ] {
+            assert!(
+                resolve_model_input_surfaces(temporary.path(), &project, &[requested.into()])
+                    .is_err(),
+                "{requested} must be refused"
+            );
+        }
+        let valid_project = project_with_model_inputs(vec![
+            json!({"path":"settings.gradle.kts","hash":settings_hash}),
+        ]);
+        assert!(
+            resolve_model_input_surfaces(
+                temporary.path(),
+                &valid_project,
+                &["settings.gradle.kts".into(), "settings.gradle.kts".into()],
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_input_surface_rejects_a_tracked_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = initialize_git_repo();
+        std::fs::write(temporary.path().join("actual.gradle.kts"), "plugins {}\n").unwrap();
+        symlink(
+            "actual.gradle.kts",
+            temporary.path().join("linked.gradle.kts"),
+        )
+        .unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "--", "linked.gradle.kts"])
+                .current_dir(temporary.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let project = project_with_model_inputs(vec![json!({
+            "path":"linked.gradle.kts",
+            "hash":canonical::hash_bytes(b"plugins {}\n"),
+        })]);
+
+        assert!(
+            resolve_model_input_surfaces(
+                temporary.path(),
+                &project,
+                &["linked.gradle.kts".into()],
+            )
+            .is_err()
+        );
+    }
+
     fn function_candidate(name: &str) -> Candidate {
         Candidate {
             declaration: json!({
@@ -2143,6 +2793,192 @@ mod tests {
     }
 
     #[test]
+    fn named_test_file_is_a_test_surface_without_a_main_edit_surface() {
+        let files = vec![SourceFile {
+            path: "src/test/kotlin/com/acme/ProjectModelCommandTest.kt".into(),
+            source: "class ProjectModelCommandTest".into(),
+            is_test: true,
+        }];
+
+        let (requirements, required, entrypoints, explicit) =
+            derive_requirements(&files, &[], &["ProjectModelCommandTest".into()]);
+
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(requirements[0].kind, "TEST_SURFACE");
+        assert!(requirements[0].satisfied);
+        assert_eq!(
+            requirements[0].evidence_paths,
+            vec!["src/test/kotlin/com/acme/ProjectModelCommandTest.kt"]
+        );
+        assert!(required.is_empty());
+        assert!(entrypoints.is_empty());
+        assert!(explicit.is_empty());
+    }
+
+    #[test]
+    fn compact_surface_preserves_full_required_source_before_budgeting() {
+        let mut candidate = function_candidate("largeTarget");
+        candidate.source_text = "x".repeat(30_000);
+
+        let surface = compact_surface(&candidate, None);
+
+        assert_eq!(surface["sourceText"].as_str().unwrap().len(), 30_000);
+        assert!(surface.get("sourceTruncated").is_none());
+        assert!(surface.get("sourceBytesOmitted").is_none());
+    }
+
+    #[test]
+    fn exact_test_declaration_is_not_a_production_edit_surface() {
+        let files = vec![SourceFile {
+            path: "src/test/kotlin/com/acme/ProjectModelCommandTest.kt".into(),
+            source: "class ProjectModelCommandTest".into(),
+            is_test: true,
+        }];
+        let mut test_candidate = function_candidate("ProjectModelCommandTest");
+        test_candidate.declaration["file"] =
+            json!("src/test/kotlin/com/acme/ProjectModelCommandTest.kt");
+
+        let (requirements, required, _, _) = derive_requirements(
+            &files,
+            &[test_candidate],
+            &["ProjectModelCommandTest".into()],
+        );
+
+        assert_eq!(requirements[0].kind, "TEST_SURFACE");
+        assert!(requirements[0].satisfied);
+        assert!(required.is_empty());
+    }
+
+    #[test]
+    fn exact_object_declaration_emits_a_required_immutable_target() {
+        let path =
+            "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/BtaIncrementalBackend21.kt";
+        let source = "private object RealBtaCompilation21 : BtaCompilation21";
+        let files = vec![SourceFile {
+            path: path.into(),
+            source: source.into(),
+            is_test: false,
+        }];
+        let mut object = function_candidate("RealBtaCompilation21");
+        object.declaration["kind"] = json!("KtObjectDeclaration");
+        object.declaration["file"] = json!(path);
+        object.declaration["symbolId"] = json!("dev.semanticthread.worker.RealBtaCompilation21");
+        object.declaration["rangeStart"] = json!(0);
+        object.declaration["rangeEnd"] = json!(source.len());
+        object.source_text = source.into();
+
+        let (requirements, required, _, explicit) =
+            derive_requirements(&files, &[object.clone()], &["RealBtaCompilation21".into()]);
+        let surface = compact_surface(&object, None);
+
+        assert_eq!(requirements[0].kind, "EXPLICIT_DECLARATION");
+        assert!(requirements[0].satisfied);
+        assert_eq!(
+            required,
+            BTreeSet::from(["declaration:RealBtaCompilation21".into()])
+        );
+        assert_eq!(required, explicit);
+        assert_eq!(surface["declarationTarget"]["fileId"], path);
+        assert_eq!(
+            surface["declarationTarget"]["syntaxKind"],
+            "KtObjectDeclaration"
+        );
+        assert_eq!(
+            surface["declarationTarget"]["exactTextHash"],
+            canonical::hash_bytes(source.as_bytes())
+        );
+
+        let mut property = object;
+        property.declaration["kind"] = json!("KtProperty");
+        assert!(!is_surface_declaration(&property));
+    }
+
+    #[test]
+    fn unanchored_evidence_term_in_a_comment_remains_unsatisfied() {
+        let files = vec![SourceFile {
+            path: "src/main/kotlin/com/acme/Service.kt".into(),
+            source: "// MissingSurface is not an immutable target".into(),
+            is_test: false,
+        }];
+
+        let (requirements, required, _, _) =
+            derive_requirements(&files, &[], &["MissingSurface".into()]);
+
+        assert_eq!(requirements[0].kind, "EVIDENCE_TERM");
+        assert!(!requirements[0].satisfied);
+        assert!(requirements[0].candidate_ids.is_empty());
+        assert!(requirements[0].evidence_paths.is_empty());
+        assert!(required.is_empty());
+    }
+
+    #[test]
+    fn same_named_main_and_test_files_select_the_main_surface() {
+        let files = vec![
+            SourceFile {
+                path: "src/main/kotlin/com/acme/Runner.kt".into(),
+                source: "fun main() = Unit".into(),
+                is_test: false,
+            },
+            SourceFile {
+                path: "src/test/kotlin/com/acme/Runner.kt".into(),
+                source: "class Runner".into(),
+                is_test: true,
+            },
+        ];
+        let mut main = function_candidate("main");
+        main.declaration["file"] = json!("src/main/kotlin/com/acme/Runner.kt");
+
+        let (requirements, required, _, _) =
+            derive_requirements(&files, &[main], &["Runner".into()]);
+
+        assert_eq!(requirements[0].kind, "ENTRYPOINT_FILE");
+        assert!(requirements[0].satisfied);
+        assert_eq!(required, BTreeSet::from(["declaration:main".into()]));
+    }
+
+    #[test]
+    fn required_source_that_fits_global_budget_remains_complete() {
+        let source = "r".repeat(30_000);
+        let pack = json!({
+            "task":{},
+            "editSurfaces":[{"name":"main","required":true,"surfaceRequired":true,"sourceText":source}],
+            "executionPath":[],
+            "contracts":[],
+            "tests":[],
+            "completeness":{"status":"COMPLETE_TASK","boundaries":[],"omitted":{}}
+        });
+
+        let bounded = enforce_budget(pack, 65_536).unwrap();
+
+        assert_eq!(bounded["completeness"]["status"], "COMPLETE_TASK");
+        assert_eq!(
+            bounded["editSurfaces"][0]["sourceText"]
+                .as_str()
+                .unwrap()
+                .len(),
+            30_000
+        );
+        assert_eq!(bounded["completeness"]["omitted"]["sourceBytes"], 0);
+    }
+
+    #[test]
+    fn required_test_source_is_complete_before_global_budgeting() {
+        let body = "x".repeat(8_000);
+        let files = SourceFile {
+            path: "src/test/kotlin/com/acme/LargeTest.kt".into(),
+            source: format!("@Test\nfun verifiesTarget() {{\n// target\n{body}\n}}"),
+            is_test: true,
+        };
+        let needles = BTreeMap::from([("target".into(), 1)]);
+
+        let test = test_snippet(&files, &needles, &[]).unwrap();
+
+        assert!(test["sourceText"].as_str().unwrap().len() > 8_000);
+        assert!(test.get("sourceTruncated").is_none());
+        assert!(test.get("sourceBytesOmitted").is_none());
+    }
+
+    #[test]
     fn named_file_entrypoint_and_disconnected_declarations_are_all_required() {
         let mut boot = function_candidate("main");
         boot.declaration["declarationId"] = json!("declaration:boot");
@@ -2196,14 +3032,224 @@ mod tests {
             &json!({
                 "buildSystem":"GRADLE",
                 "buildLauncher":"./gradlew",
-                "compileTask":":compileKotlin"
+                "compileTask":":compileKotlin",
+                "projectDirectory":"",
+                "sourceRoots":["src/main/kotlin"]
             }),
             &[json!({"path":"src/test/kotlin/com/acme/RunnerTest.kt"})],
         );
 
         assert_eq!(
             plan["targetedArgs"],
-            json!(["cleanTest", "test", "--tests", "*RunnerTest"])
+            json!(["cleanTest", ":test", "--tests", "*RunnerTest"])
+        );
+    }
+
+    #[test]
+    fn gradle_targeted_validation_routes_k21_test_surface_to_owning_module() {
+        let plan = validation_plan(
+            &json!({
+                "buildSystem":"GRADLE",
+                "buildLauncher":"./gradlew",
+                "projectPath":":workers:kotlin21",
+                "compileTask":":workers:kotlin21:compileKotlin",
+                "projectDirectory":"workers/kotlin21",
+                "sourceRoots":[
+                    "workers/kotlin/src/main/kotlin",
+                    "workers/kotlin21/src/main/kotlin"
+                ]
+            }),
+            &[json!({
+                "path":"workers/kotlin21/src/test/kotlin/dev/semanticthread/worker/K2FactGenerationStore21Test.kt"
+            })],
+        );
+
+        assert_eq!(
+            plan["targetedArgs"],
+            json!([
+                "cleanTest",
+                ":workers:kotlin21:test",
+                "--tests",
+                "*K2FactGenerationStore21Test"
+            ])
+        );
+        assert!(
+            !plan["targetedArgs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|argument| argument == "test")
+        );
+    }
+
+    #[test]
+    fn exact_test_stem_outranks_unrelated_generic_evidence_and_routes_its_module() {
+        let term = "BtaIncrementalBackend21Test".to_owned();
+        let root = function_candidate("RealBtaCompilation21");
+        let mut selection = selection(Vec::new());
+        selection.files = vec![
+            SourceFile {
+                path: "workers/kotlin/src/test/kotlin/dev/semanticthread/worker/ProjectModelCommandTest.kt".into(),
+                source: "@Test\nfun genericModelTest() {\n    // BtaIncrementalBackend21Test is only a comment\n    RealBtaCompilation21\n}".into(),
+                is_test: true,
+            },
+            SourceFile {
+                path: "workers/kotlin21/src/test/kotlin/dev/semanticthread/worker/BtaIncrementalBackend21Test.kt".into(),
+                source: "@Test\nfun compilesThroughBta() = Unit".into(),
+                is_test: true,
+            },
+        ];
+        let terms = vec![term.clone()];
+        let needles = task_needles(
+            &terms,
+            "add focused regression tests",
+            &[&root],
+            &[&root],
+            &selection,
+        );
+
+        assert!(!needles.contains_key(&term));
+        assert!(!needles.contains_key(&term.to_lowercase()));
+        let tests = collect_anchored_tests(&selection, &needles, &terms);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(
+            tests[0]["path"],
+            "workers/kotlin21/src/test/kotlin/dev/semanticthread/worker/BtaIncrementalBackend21Test.kt"
+        );
+        assert!(
+            tests[0]["matched"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|matched| matched == &term)
+        );
+        let (requirements, _, _, _) = derive_requirements(&selection.files, &[], &terms);
+        assert!(requirement_is_satisfied(&requirements[0], &tests));
+        assert!(!requirement_is_satisfied(
+            &requirements[0],
+            &[json!({
+                "path":"workers/kotlin/src/test/kotlin/dev/semanticthread/worker/ProjectModelCommandTest.kt"
+            })],
+        ));
+
+        let plan = validation_plan(
+            &json!({
+                "buildSystem":"GRADLE",
+                "buildLauncher":"./gradlew",
+                "compileTask":":workers:kotlin21:compileKotlin",
+                "projectDirectory":"workers/kotlin21",
+                "sourceRoots":["workers/kotlin21/src/main/kotlin"]
+            }),
+            &tests,
+        );
+        assert_eq!(
+            plan["targetedArgs"],
+            json!([
+                "cleanTest",
+                ":workers:kotlin21:test",
+                "--tests",
+                "*BtaIncrementalBackend21Test"
+            ])
+        );
+    }
+
+    #[test]
+    fn gradle_targeted_validation_keeps_each_module_filter_with_its_owner() {
+        let plan = validation_plan(
+            &json!({
+                "buildSystem":"GRADLE",
+                "buildLauncher":"./gradlew",
+                "compileTask":":workers:kotlin21:compileKotlin",
+                "projectDirectory":"workers/kotlin21",
+                "sourceRoots":["workers/kotlin/src/main/kotlin"]
+            }),
+            &[
+                json!({
+                    "path":"workers/kotlin/src/test/kotlin/dev/semanticthread/worker/CommonContractTest.kt"
+                }),
+                json!({
+                    "path":"workers/kotlin21/src/test/kotlin/dev/semanticthread/worker/K2FactGenerationStore21Test.kt"
+                }),
+            ],
+        );
+
+        assert_eq!(
+            plan["targetedArgs"],
+            json!([
+                "cleanTest",
+                ":workers:kotlin21:test",
+                "--tests",
+                "*K2FactGenerationStore21Test",
+                ":workers:kotlin:test",
+                "--tests",
+                "*CommonContractTest"
+            ])
+        );
+    }
+
+    #[test]
+    fn k21_validation_excludes_standalone_fixture_test_surface() {
+        let plan = validation_plan(
+            &json!({
+                "buildSystem":"GRADLE",
+                "buildLauncher":"./gradlew",
+                "compileTask":":workers:kotlin21:compileKotlin",
+                "testTasks":["cleanTest","test"],
+                "projectDirectory":"workers/kotlin21",
+                "sourceRoots":[
+                    "workers/kotlin/src/main/kotlin",
+                    "workers/kotlin21/src/main/kotlin"
+                ]
+            }),
+            &[json!({
+                "path":"fixtures/kotlin-2-1/src/test/kotlin/example/RunnerTest.kt"
+            })],
+        );
+
+        assert_eq!(plan["targetedArgs"], json!(["cleanTest", "test"]));
+    }
+
+    #[test]
+    fn gradle_targeted_validation_rejects_paths_outside_or_tricking_model_roots() {
+        let project = json!({
+            "buildSystem":"GRADLE",
+            "buildLauncher":"./gradlew",
+            "compileTask":":workers:kotlin21:compileKotlin",
+            "testTasks":["test"],
+            "projectDirectory":"workers/kotlin21",
+            "sourceRoots":["workers/kotlin/src/main/kotlin"]
+        });
+        for path in [
+            "fixtures/kotlin-2-1/src/test/kotlin/example/RunnerTest.kt",
+            "workers/kotlin21/../kotlin/src/test/kotlin/example/RunnerTest.kt",
+            "/workers/kotlin21/src/test/kotlin/example/RunnerTest.kt",
+            "workers\\kotlin21\\src\\test\\kotlin\\example\\RunnerTest.kt",
+        ] {
+            let plan = validation_plan(&project, &[json!({"path":path})]);
+            assert_eq!(plan["targetedArgs"], json!(["test"]), "path={path}");
+        }
+    }
+
+    #[test]
+    fn authoritative_gradle_roots_are_only_project_directory_and_main_source_owners() {
+        let roots = authoritative_gradle_module_roots(&json!({
+            "projectDirectory":"workers/kotlin21",
+            "sourceRoots":[
+                "workers/kotlin/src/main/kotlin",
+                "src/main/kotlin",
+                "fixtures/kotlin-2-1/src/test/kotlin",
+                "workers/kotlin21/../kotlin/src/main/kotlin",
+                "/absolute/src/main/kotlin"
+            ]
+        }));
+
+        assert_eq!(
+            roots,
+            BTreeSet::from([
+                String::new(),
+                "workers/kotlin".to_owned(),
+                "workers/kotlin21".to_owned(),
+            ])
         );
     }
 
@@ -2221,7 +3267,7 @@ mod tests {
             "contracts":[],
             "tests":[],
             "completeness":{
-                "status":"LEGACY_HEURISTIC_READY",
+                "status":"COMPLETE_TASK",
                 "boundaries":[],
                 "omitted":{}
             }
@@ -2229,7 +3275,7 @@ mod tests {
 
         let bounded = enforce_budget(pack, 4_096).unwrap();
 
-        assert_eq!(bounded["completeness"]["status"], "LEGACY_HEURISTIC_READY");
+        assert_eq!(bounded["completeness"]["status"], "COMPLETE_TASK");
         assert_eq!(bounded["editSurfaces"].as_array().unwrap().len(), 2);
         assert_eq!(bounded["editSurfaces"][0]["name"], "main");
         assert_eq!(
@@ -2253,15 +3299,12 @@ mod tests {
             "executionPath":[],
             "contracts":[],
             "tests":[],
-            "completeness":{"status":"LEGACY_HEURISTIC_READY","boundaries":[],"omitted":{}}
+            "completeness":{"status":"COMPLETE_TASK","boundaries":[],"omitted":{}}
         });
 
         let bounded = enforce_budget(pack, 4_096).unwrap();
 
-        assert_eq!(
-            bounded["completeness"]["status"],
-            "LEGACY_HEURISTIC_PARTIAL_BUDGET"
-        );
+        assert_eq!(bounded["completeness"]["status"], "PARTIAL_TASK");
         assert!(
             bounded["completeness"]["omitted"]["sourceBytes"]
                 .as_u64()

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codeclew.kotlin-real-repository-attempt/0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "outcomeKind",
+    "failureStage",
+    "reasonCode",
+    "detailDigest",
+    "selectedInputs",
+    "snapshot",
+    "provenance",
+    "boundaries",
+    "adapterOutputDigest",
+    "evidenceCore",
+    "cache",
+    "cost",
+    "terminalSemanticDigest",
+    "attemptDigest"
+  ],
+  "properties": {
+    "schema": { "const": "codeclew.kotlin-real-repository-attempt/0.1" },
+    "status": { "enum": ["SUCCEEDED", "PARTIAL", "REFUSED", "FAILED"] },
+    "outcomeKind": { "enum": ["ADAPTER_OUTPUT", "TYPED_TERMINAL"] },
+    "failureStage": { "type": ["string", "null"] },
+    "reasonCode": { "type": ["string", "null"] },
+    "detailDigest": { "$ref": "#/$defs/nullableDigest" },
+    "selectedInputs": { "type": "object" },
+    "snapshot": { "type": "object" },
+    "provenance": { "type": "object" },
+    "boundaries": { "type": "array", "items": { "type": "object" } },
+    "adapterOutputDigest": { "$ref": "#/$defs/nullableDigest" },
+    "evidenceCore": { "type": ["object", "null"] },
+    "cache": { "type": "object" },
+    "cost": { "$ref": "#/$defs/cost" },
+    "terminalSemanticDigest": { "$ref": "#/$defs/digest" },
+    "attemptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "SUCCEEDED" } } },
+      "then": {
+        "properties": {
+          "outcomeKind": { "const": "ADAPTER_OUTPUT" },
+          "failureStage": { "const": null },
+          "reasonCode": { "const": null },
+          "detailDigest": { "const": null },
+          "adapterOutputDigest": { "$ref": "#/$defs/digest" },
+          "evidenceCore": { "type": "object" }
+        }
+      },
+      "else": {
+        "properties": {
+          "outcomeKind": { "const": "TYPED_TERMINAL" },
+          "failureStage": { "type": "string", "minLength": 1 },
+          "reasonCode": { "type": "string", "minLength": 1 },
+          "detailDigest": { "$ref": "#/$defs/digest" },
+          "adapterOutputDigest": { "const": null },
+          "evidenceCore": { "const": null }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "nonnegativeOrExplicitUnknown": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "externalWallMicros",
+        "maximumResidentBytes",
+        "sourceHashingMicros",
+        "buildDiscoveryMicros",
+        "dependencyPreparationMicros",
+        "dependencyVerificationMicros",
+        "adapterStartupMicros",
+        "coldIndexMicros",
+        "warmIndexMicros",
+        "providerProcessingMicros",
+        "serializationMicros",
+        "storeWriteMicros",
+        "storeReadMicros",
+        "queryProjectionMicros",
+        "sourceBytesRead",
+        "cacheBytesRead",
+        "cacheBytesWritten",
+        "emittedBytes",
+        "storedFactBytes",
+        "factCount",
+        "boundaryCount",
+        "cacheRequests",
+        "cacheHits",
+        "modelCalls"
+      ],
+      "properties": {
+        "externalWallMicros": { "type": "integer", "minimum": 0 },
+        "maximumResidentBytes": { "$ref": "#/$defs/nonnegativeOrExplicitUnknown" },
+        "sourceHashingMicros": { "type": "integer", "minimum": 0 },
+        "buildDiscoveryMicros": { "type": "integer", "minimum": 0 },
+        "dependencyPreparationMicros": { "$ref": "#/$defs/nonnegativeOrExplicitUnknown" },
+        "dependencyVerificationMicros": { "$ref": "#/$defs/nonnegativeOrExplicitUnknown" },
+        "adapterStartupMicros": { "type": "integer", "minimum": 0 },
+        "coldIndexMicros": { "type": "integer", "minimum": 0 },
+        "warmIndexMicros": { "type": "integer", "minimum": 0 },
+        "providerProcessingMicros": { "type": "integer", "minimum": 0 },
+        "serializationMicros": { "type": "integer", "minimum": 0 },
+        "storeWriteMicros": { "type": "integer", "minimum": 0 },
+        "storeReadMicros": { "type": "integer", "minimum": 0 },
+        "queryProjectionMicros": { "type": "integer", "minimum": 0 },
+        "sourceBytesRead": { "type": "integer", "minimum": 0 },
+        "cacheBytesRead": { "type": "integer", "minimum": 0 },
+        "cacheBytesWritten": { "type": "integer", "minimum": 0 },
+        "emittedBytes": { "type": "integer", "minimum": 0 },
+        "storedFactBytes": { "type": "integer", "minimum": 0 },
+        "factCount": { "type": "integer", "minimum": 0 },
+        "boundaryCount": { "type": "integer", "minimum": 0 },
+        "cacheRequests": { "type": "integer", "minimum": 0 },
+        "cacheHits": { "type": "integer", "minimum": 0 },
+        "modelCalls": { "const": 0 }
+      }
+    }
+  }
+}

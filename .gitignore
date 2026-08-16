@@ -7,4 +7,5 @@
 thread.json
 edit.json
 preview.json
-
+.DS_Store
+**/.DS_Store

@@ -1,10 +1,11 @@
 package dev.semanticthread.worker
 
-import kotlinx.serialization.json.*
-import org.jetbrains.kotlin.config.KotlinCompilerVersion
+import dev.semanticthread.worker.typedResponsePayload
 import java.nio.file.Path
 import java.security.MessageDigest
 import kotlin.io.path.readBytes
+import kotlinx.serialization.json.*
+import org.jetbrains.kotlin.config.KotlinCompilerVersion
 
 internal const val PROTOCOL_MAJOR = 1L
 internal const val PROTOCOL_MINOR = 0L
@@ -88,9 +89,57 @@ private fun response(requestId: Long, payload: String? = null, capabilities: Boo
     return Proto.message(*fields.toTypedArray())
 }
 
-private fun typedResponsePayload(responseField: Int, payload: String): ByteArray {
+internal fun typedResponsePayload(
+    responseField: Int,
+    payload: String,
+    transportRoot: java.nio.file.Path? = System.getenv("CODECLEW_WORKER_TRANSPORT_ROOT")?.takeIf(String::isNotBlank)?.let(java.nio.file.Path::of),
+    inlineLimitBytes: Int = 32 * 1024 * 1024,
+    maximumBlobBytes: Int = 256 * 1024 * 1024,
+): ByteArray {
+    require(inlineLimitBytes in 1 until 64 * 1024 * 1024)
+    require(maximumBlobBytes >= inlineLimitBytes)
     val value = Json.parseToJsonElement(payload).jsonObject
-    val fields = mutableListOf(Proto.bytes(1, schemaVersion()), Proto.bytes(2, payload.toByteArray()))
+    val payloadBytes = payload.toByteArray()
+    val fields = mutableListOf(Proto.bytes(1, schemaVersion()))
+    if (responseField == 12 && payloadBytes.size > inlineLimitBytes) {
+        if (payloadBytes.size > maximumBlobBytes) throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "IndexFiles response exceeds the bounded transport body limit")
+        val requestedRoot = transportRoot?.toAbsolutePath()?.normalize()
+            ?: throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "large IndexFiles response has no private transport root")
+        if (!requestedRoot.isAbsolute || java.nio.file.Files.isSymbolicLink(requestedRoot) || !java.nio.file.Files.isDirectory(requestedRoot, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport root is not a real directory")
+        }
+        val canonicalRoot = requestedRoot.toRealPath()
+        if (canonicalRoot != requestedRoot) throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport root identity changed")
+        val digestHex = MessageDigest.getInstance("SHA-256").digest(payloadBytes).joinToString("") { "%02x".format(it) }
+        val contentHash = "sha256:$digestHex"
+        val directory = canonicalRoot.resolve("sha256")
+        if (!java.nio.file.Files.exists(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS)) java.nio.file.Files.createDirectory(directory)
+        if (java.nio.file.Files.isSymbolicLink(directory) || !java.nio.file.Files.isDirectory(directory, java.nio.file.LinkOption.NOFOLLOW_LINKS) || directory.toRealPath().parent != canonicalRoot) {
+            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport CAS directory is unsafe")
+        }
+        val relative = "sha256/$digestHex"
+        val target = canonicalRoot.resolve(relative)
+        if (!java.nio.file.Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            val temporary = java.nio.file.Files.createTempFile(directory, ".response-", ".tmp")
+            try {
+                java.nio.file.Files.write(temporary, payloadBytes)
+                try {
+                    java.nio.file.Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                    try { java.nio.file.Files.move(temporary, target) } catch (_: java.nio.file.FileAlreadyExistsException) { }
+                } catch (_: java.nio.file.FileAlreadyExistsException) { }
+            } finally {
+                java.nio.file.Files.deleteIfExists(temporary)
+            }
+        }
+        if (java.nio.file.Files.isSymbolicLink(target) || !java.nio.file.Files.isRegularFile(target, java.nio.file.LinkOption.NOFOLLOW_LINKS) || java.nio.file.Files.size(target) != payloadBytes.size.toLong() || !java.nio.file.Files.readAllBytes(target).contentEquals(payloadBytes)) {
+            throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", "worker transport CAS object differs from its content authority")
+        }
+        fields += Proto.bytes(2, byteArrayOf())
+        fields += Proto.bytes(3, Proto.message(Proto.string(1, contentHash), Proto.string(2, relative), Proto.uint(3, payloadBytes.size.toLong())))
+    } else {
+        fields += Proto.bytes(2, payloadBytes)
+    }
     fun string(number: Int, pointer: String) { value[pointer]?.jsonPrimitive?.contentOrNull?.let { fields += Proto.string(number, it) } }
     value["sourceBlob"]?.jsonObject?.let { blob ->
         fields += Proto.bytes(3, Proto.message(
