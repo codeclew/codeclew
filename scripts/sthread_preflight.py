@@ -805,24 +805,28 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     if not args.skip_smoke:
         kotlin21 = next(row for row in runtime_probes if row["kind"] == "KOTLIN_2_1_COMPILER_SEMANTIC")
         if kotlin21["compilerIndex"]["status"] != "UNCHANGED_HIT":
-            probes.append(
-                probe(
-                    kind="KOTLIN_2_1_COMPILER_INDEX_WARM",
-                    argv=[
-                        str(clew),
-                        "--compiler-index-root",
-                        str(compiler_index_root),
-                        "index",
-                        "--repo",
-                        str(fixture21),
-                        "--compilation",
-                        ":/main",
-                    ],
-                    cwd=workspace,
-                    deadline=deadline,
-                    expected_compiler_index_status="UNCHANGED_HIT",
-                )
+            warm_probe = probe(
+                kind="KOTLIN_2_1_COMPILER_INDEX_WARM",
+                argv=[
+                    str(clew),
+                    "--compiler-index-root",
+                    str(compiler_index_root),
+                    "index",
+                    "--repo",
+                    str(fixture21),
+                    "--compilation",
+                    ":/main",
+                ],
+                cwd=workspace,
+                deadline=deadline,
+                expected_compiler_index_status="UNCHANGED_HIT",
             )
+            if warm_probe["compilerIndex"]["graphDigest"] != kotlin21["compilerIndex"]["graphDigest"]:
+                raise PreflightFailure(
+                    "KOTLIN_2_1_COMPILER_INDEX",
+                    "cold and unchanged compiler-index generations have different graph digests",
+                )
+            probes.append(warm_probe)
 
     elapsed = monotonic_millis(started)
     return {
