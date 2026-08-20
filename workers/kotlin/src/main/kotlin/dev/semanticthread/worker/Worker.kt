@@ -1185,8 +1185,8 @@ internal class Worker(
         // The optional persistent copy lives only under the explicit private index root.
         // Publication failure never changes the already verified semantic result.
         val publishStarted = System.nanoTime()
-        val publication = PersistentProjectModelCache.publishWithOutcome(persistentRoot, canonicalRepo, key, model)
-        val published = publication == PersistentProjectModelCache.PublishOutcome.PUBLISHED
+        val publication = PersistentProjectModelCache.publishWithResult(persistentRoot, canonicalRepo, key, model)
+        val published = publication.outcome == PersistentProjectModelCache.PublishOutcome.PUBLISHED
         val publishMicros = elapsedMicros(publishStarted)
         projectModelCache[key] = model
         IncrementalK2Runtime.recordProjectModel(
@@ -1198,7 +1198,8 @@ internal class Worker(
             publishMicros = publishMicros,
             persistentConfigured = persistentConfigured,
             published = published,
-            publishOutcome = publication.name,
+            publishOutcome = publication.outcome.name,
+            publishInvalidReason = publication.invalidReason?.name ?: "NOT_APPLICABLE",
         )
         return model
     }

@@ -1,5 +1,7 @@
 package dev.semanticthread.worker
 
+import dev.semanticthread.worker.ProjectModelInvalidReason
+import dev.semanticthread.worker.ProjectModelPublishResult
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
@@ -67,11 +69,38 @@ enum class PublishOutcome {
     fun publish(configuredRoot: String?, repo: Path, key: String, model: JsonObject): Boolean =
         publishWithOutcome(configuredRoot, repo, key, model) == PublishOutcome.PUBLISHED
 
-    fun publishWithOutcome(configuredRoot: String?, repo: Path, key: String, model: JsonObject): PublishOutcome {
+    fun publishWithOutcome(configuredRoot: String?, repo: Path, key: String, model: JsonObject): PublishOutcome =
+        publishWithResult(configuredRoot, repo, key, model).outcome
+
+    fun publishWithResult(configuredRoot: String?, repo: Path, key: String, model: JsonObject): ProjectModelPublishResult {
         return try {
             val canonicalRepo = repo.toRealPath()
-            if (!validateModel(canonicalRepo, model)) return PublishOutcome.INVALID_MODEL
-            val directory = cacheDirectory(configuredRoot, key) ?: return PublishOutcome.ROOT_UNAVAILABLE
+            if (!validateModel(canonicalRepo, model)) {
+                val manifestHash = model.string("semanticInputManifestHash")
+                    ?: return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.MISSING_SEMANTIC_INPUT_MANIFEST_HASH)
+                if (!digestText.matches(manifestHash)) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.INVALID_SEMANTIC_INPUT_MANIFEST_HASH)
+                if (withSemanticInputManifestHash(model).string("semanticInputManifestHash") != manifestHash) {
+                    return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.SEMANTIC_INPUT_MANIFEST_HASH_MISMATCH)
+                }
+                val manifest = model["semanticInputManifest"] as? JsonObject
+                    ?: return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.MISSING_SEMANTIC_INPUT_MANIFEST)
+                if (manifest["modelInputs"] != model["modelInputs"]) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.MODEL_INPUTS_MANIFEST_MISMATCH)
+                if (manifest["jdkHomeFingerprint"] != model["jdkHomeFingerprint"]) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_FINGERPRINT_MANIFEST_MISMATCH)
+                if (!validateModelInputs(canonicalRepo, model)) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.MODEL_INPUTS_INVALID)
+                if (!validateResourceIdentities(canonicalRepo, model)) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.RESOURCE_IDENTITIES_INVALID)
+                val modelJdk = model.string("jdkHome")
+                if (modelJdk != null) {
+                    val configured = attempt { Path.of(modelJdk).toRealPath() }
+                        ?: return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_HOME_INVALID)
+                    if (configured != Path.of(System.getProperty("java.home")).toRealPath()) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_HOME_MISMATCH)
+                }
+                val jdkFingerprint = model.string("jdkHomeFingerprint")
+                    ?: return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_FINGERPRINT_MISSING)
+                if (!digestText.matches(jdkFingerprint)) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_FINGERPRINT_INVALID)
+                error("project model validation failed without a typed reason")
+            }
+            val directory = cacheDirectory(configuredRoot, key)
+                ?: return ProjectModelPublishResult(PublishOutcome.ROOT_UNAVAILABLE)
             withLock(directory) {
                 val payload = cachePayload(key, model)
                 val envelope = buildJsonObject {
@@ -80,12 +109,12 @@ enum class PublishOutcome {
                 }
                 atomicWrite(directory, directory.resolve("model.json"), (canonical(envelope) + "\n").toByteArray())
             }
-            PublishOutcome.PUBLISHED
+            ProjectModelPublishResult(PublishOutcome.PUBLISHED)
         } catch (error: InterruptedException) {
             Thread.currentThread().interrupt()
             throw error
         } catch (_: Exception) {
-            PublishOutcome.WRITE_FAILED
+            ProjectModelPublishResult(PublishOutcome.WRITE_FAILED)
         }
     }
 

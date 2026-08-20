@@ -1,6 +1,7 @@
 package dev.semanticthread.worker
 
 import dev.semanticthread.worker.PersistentProjectModelCache
+import dev.semanticthread.worker.ProjectModelInvalidReason
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermission
@@ -43,9 +44,19 @@ fun verifiedRoundTripInvalidatesChangedModelAndArtifactInputs() {
             build.writeText("plugins { id(\"changed\") }\n")
             assertNull(PersistentProjectModelCache.load(root.toString(), repo, "key-a"))
 
+            val missingHash = buildJsonObject {
+                model.forEach { (key, value) -> if (key != "semanticInputManifestHash") put(key, value) }
+            }
+            val missingHashResult = PersistentProjectModelCache.publishWithResult(root.toString(), repo, "missing-hash", missingHash)
+            assertEquals(PersistentProjectModelCache.PublishOutcome.INVALID_MODEL, missingHashResult.outcome)
+            assertEquals(ProjectModelInvalidReason.MISSING_SEMANTIC_INPUT_MANIFEST_HASH, missingHashResult.invalidReason)
+
             val tampered = buildJsonObject { model.forEach(::put); put("semanticInputManifestHash", "sha256:${"0".repeat(64)}") }
             assertFalse(PersistentProjectModelCache.publish(root.toString(), repo, "tampered", tampered))
             assertEquals(PersistentProjectModelCache.PublishOutcome.INVALID_MODEL, PersistentProjectModelCache.publishWithOutcome(root.toString(), repo, "tampered-outcome", tampered))
+            val tamperedResult = PersistentProjectModelCache.publishWithResult(root.toString(), repo, "tampered-result", tampered)
+            assertEquals(PersistentProjectModelCache.PublishOutcome.INVALID_MODEL, tamperedResult.outcome)
+            assertEquals(ProjectModelInvalidReason.SEMANTIC_INPUT_MANIFEST_HASH_MISMATCH, tamperedResult.invalidReason)
         } finally {
             root.toFile().deleteRecursively()
             repo.toFile().deleteRecursively()
