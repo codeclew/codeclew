@@ -359,7 +359,19 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "STHREAD_SNAPSHOT_PREPARATION",
             "trusted clew executable is missing, non-regular, symlinked, or non-executable",
         )
-    expected_head = git_stdout(workspace, "rev-parse", "HEAD", stage="GIT_STATE")
+    source_workspace_head = git_stdout(workspace, "rev-parse", "HEAD", stage="GIT_STATE")
+    requested_revision = getattr(args, "snapshot_revision", None)
+    expected_head = (
+        git_stdout(
+            workspace,
+            "rev-parse",
+            "--verify",
+            f"{requested_revision}^{{commit}}",
+            stage="GIT_STATE",
+        )
+        if requested_revision
+        else source_workspace_head
+    )
     parent = require_real_directory(args.snapshot_parent, "STHREAD_SNAPSHOT_PREPARATION")
     if parent == workspace or parent.is_relative_to(workspace) or workspace.is_relative_to(parent):
         raise PreflightFailure(
@@ -385,7 +397,7 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
                 detail=failure_summary(clone),
             )
         switched, _switch_millis = run_capture(
-            ["git", "switch", "--quiet", "-c", branch],
+            ["git", "switch", "--quiet", "-c", branch, expected_head],
             cwd=repository,
             timeout_seconds=deadline - time.monotonic(),
             stage="STHREAD_SNAPSHOT_PREPARATION",
@@ -474,6 +486,7 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "status": "READY",
             "stage": "STHREAD_SNAPSHOT_READY",
             "workspaceRevision": expected_head,
+            "sourceWorkspaceRevision": source_workspace_head,
             "trackedClean": True,
             "runDirectory": str(run_directory),
             "repository": str(repository),
@@ -959,6 +972,10 @@ def parse_args() -> argparse.Namespace:
         help="external parent directory for --prepare-sthread-snapshot",
     )
     parser.add_argument(
+        "--snapshot-revision",
+        help="prepare a clean recovery snapshot at this exact reachable commit instead of HEAD",
+    )
+    parser.add_argument(
         "--print-compiler-index-root",
         action="store_true",
         help="prepare and print the exact canonical private compiler-index root, then exit",
@@ -1322,6 +1339,30 @@ def self_test() -> None:
             cwd=snapshot_seed,
             check=True,
         )
+        historical_revision = git_stdout(
+            snapshot_seed, "rev-parse", "HEAD", stage="SELF_TEST"
+        )
+        (snapshot_seed / "later.txt").write_text("newer source head\n", encoding="utf-8")
+        subprocess.run(["git", "add", "later.txt"], cwd=snapshot_seed, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Codeclew Preflight",
+                "-c",
+                "user.email=preflight@invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "newer source head",
+            ],
+            cwd=snapshot_seed,
+            check=True,
+        )
+        source_revision = git_stdout(
+            snapshot_seed, "rev-parse", "HEAD", stage="SELF_TEST"
+        )
+        assert source_revision != historical_revision
         gradle_seed = root / "gradle-seed"
         gradle_seed.mkdir()
         (gradle_seed / "marker").write_text("cache", encoding="utf-8")
@@ -1345,11 +1386,14 @@ def self_test() -> None:
                 budget_seconds=5.0,
                 clew=fake_clew,
                 compilation=":/main",
+                snapshot_revision=historical_revision,
             )
         )
         assert snapshot["status"] == "READY"
         assert snapshot["stage"] == "STHREAD_SNAPSHOT_READY"
         prepared_repository = Path(snapshot["repository"])
+        assert snapshot["workspaceRevision"] == historical_revision
+        assert snapshot["sourceWorkspaceRevision"] == source_revision
         assert git_stdout(prepared_repository, "rev-parse", "HEAD", stage="SELF_TEST") == snapshot["workspaceRevision"]
         assert git_stdout(prepared_repository, "symbolic-ref", "--short", "HEAD", stage="SELF_TEST") == snapshot["targetRef"]
         assert git_stdout(prepared_repository, "status", "--porcelain=v1", stage="SELF_TEST") == ""
