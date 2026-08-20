@@ -264,6 +264,126 @@ def require_clean_tracked_worktree(workspace: Path, allow_dirty: bool) -> bool:
     return clean
 
 
+def git_stdout(workspace: Path, *arguments: str, stage: str) -> str:
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=workspace,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise PreflightFailure(stage, f"git {' '.join(arguments)} failed", detail=failure_summary(completed))
+    return completed.stdout.decode("utf-8", errors="strict").strip()
+
+
+def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
+    started = time.monotonic()
+    requested_budget = 60.0 if args.budget_seconds is None else args.budget_seconds
+    if requested_budget <= 0:
+        raise PreflightFailure("ARGUMENTS", "budget-seconds must be positive")
+    preparation_budget = min(60.0, requested_budget)
+    deadline = started + preparation_budget
+    workspace = require_real_directory(args.workspace, "WORKSPACE")
+    require_clean_tracked_worktree(workspace, False)
+    expected_head = git_stdout(workspace, "rev-parse", "HEAD", stage="GIT_STATE")
+    parent = require_real_directory(args.snapshot_parent, "STHREAD_SNAPSHOT_PREPARATION")
+    if parent == workspace or parent.is_relative_to(workspace) or workspace.is_relative_to(parent):
+        raise PreflightFailure(
+            "STHREAD_SNAPSHOT_PREPARATION",
+            "snapshot parent must be external to the source workspace",
+        )
+    run_directory = Path(
+        tempfile.mkdtemp(prefix="codeclew-sthread-snapshot-", dir=parent)
+    ).resolve(strict=True)
+    repository = run_directory / "source"
+    branch = "codex/sthread-preflight-" + hashlib.sha256(str(run_directory).encode()).hexdigest()[:16]
+    try:
+        clone, _clone_millis = run_capture(
+            ["git", "clone", "--quiet", "--no-hardlinks", str(workspace), str(repository)],
+            cwd=run_directory,
+            timeout_seconds=deadline - time.monotonic(),
+            stage="STHREAD_SNAPSHOT_PREPARATION",
+        )
+        if clone.returncode != 0:
+            raise PreflightFailure(
+                "STHREAD_SNAPSHOT_PREPARATION",
+                "isolated Git clone failed",
+                detail=failure_summary(clone),
+            )
+        switched, _switch_millis = run_capture(
+            ["git", "switch", "--quiet", "-c", branch],
+            cwd=repository,
+            timeout_seconds=deadline - time.monotonic(),
+            stage="STHREAD_SNAPSHOT_PREPARATION",
+        )
+        if switched.returncode != 0:
+            raise PreflightFailure(
+                "STHREAD_SNAPSHOT_PREPARATION",
+                "isolated target branch creation failed",
+                detail=failure_summary(switched),
+            )
+        gradle_seed = require_real_directory(args.gradle_cache_seed, "CACHE_HYDRATION")
+        gradle_millis = clone_tree_contents(
+            gradle_seed,
+            repository / ".gradle",
+            deadline - time.monotonic(),
+        )
+        worker_millis, worker_hit = hydrate_trusted_workers(
+            args.trusted_worker_seed,
+            repository,
+            deadline,
+        )
+        actual_head = git_stdout(repository, "rev-parse", "HEAD", stage="GIT_STATE")
+        active_branch = git_stdout(
+            repository, "symbolic-ref", "--short", "HEAD", stage="GIT_STATE"
+        )
+        status = git_stdout(
+            repository, "status", "--porcelain=v1", stage="GIT_STATE"
+        )
+        if actual_head != expected_head or active_branch != branch or status:
+            raise PreflightFailure(
+                "STHREAD_SNAPSHOT_PREPARATION",
+                "prepared snapshot is not the exact clean active target branch",
+                detail={
+                    "expectedHead": expected_head,
+                    "actualHead": actual_head,
+                    "expectedBranch": branch,
+                    "actualBranch": active_branch,
+                    "statusSha256": sha256_bytes(status.encode()),
+                },
+            )
+        elapsed = monotonic_millis(started)
+        if elapsed > round(preparation_budget * 1000):
+            raise PreflightFailure(
+                "STHREAD_SNAPSHOT_PREPARATION",
+                "snapshot preparation exceeded its one-minute budget",
+                detail={"elapsedMillis": elapsed, "budgetMillis": round(preparation_budget * 1000)},
+            )
+        return {
+            "schema": SCHEMA,
+            "status": "READY",
+            "stage": "STHREAD_SNAPSHOT_READY",
+            "workspaceRevision": expected_head,
+            "trackedClean": True,
+            "runDirectory": str(run_directory),
+            "repository": str(repository),
+            "targetRef": branch,
+            "gradleUserHome": str(repository / ".gradle"),
+            "elapsedMillis": elapsed,
+            "budgetMillis": round(preparation_budget * 1000),
+            "cache": {
+                "gradleHydrationMillis": gradle_millis,
+                "trustedWorkerHydrationMillis": worker_millis,
+                "trustedWorkerHit": worker_hit,
+            },
+        }
+    except PreflightFailure as error:
+        error.detail.setdefault("runDirectory", str(run_directory))
+        error.detail.setdefault("repository", str(repository))
+        raise
+
+
 def clone_tree_contents(source: Path, target: Path, remaining_seconds: float) -> int:
     target.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
@@ -607,6 +727,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-smoke", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
+        "--prepare-sthread-snapshot",
+        action="store_true",
+        help="create a clean active-branch snapshot with a CoW Gradle cache in at most one minute",
+    )
+    parser.add_argument(
+        "--snapshot-parent",
+        type=Path,
+        default=Path(tempfile.gettempdir()),
+        help="external parent directory for --prepare-sthread-snapshot",
+    )
+    parser.add_argument(
         "--print-compiler-index-root",
         action="store_true",
         help="prepare and print the exact canonical private compiler-index root, then exit",
@@ -869,6 +1000,54 @@ def self_test() -> None:
         )
         assert copied_fixture.name == "kotlin-2-1" and changed_source.name == "A.kt"
         assert os.access(copied_fixture.parent / "kotlin-basic/gradlew", os.X_OK)
+        snapshot_seed = root / "snapshot-seed"
+        snapshot_seed.mkdir()
+        (snapshot_seed / ".gitignore").write_text(".gradle/\nworkers/**/build/\n", encoding="utf-8")
+        for manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
+            manifest = snapshot_seed / manifest_name
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(manifest_name, encoding="utf-8")
+            distribution = snapshot_seed / distribution_name
+            distribution.mkdir(parents=True)
+            (distribution / "worker").write_text(distribution_name, encoding="utf-8")
+        subprocess.run(["git", "init", "--quiet"], cwd=snapshot_seed, check=True)
+        subprocess.run(["git", "add", "."], cwd=snapshot_seed, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Codeclew Preflight",
+                "-c",
+                "user.email=preflight@invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "snapshot seed",
+            ],
+            cwd=snapshot_seed,
+            check=True,
+        )
+        gradle_seed = root / "gradle-seed"
+        gradle_seed.mkdir()
+        (gradle_seed / "marker").write_text("cache", encoding="utf-8")
+        snapshot_parent = root / "snapshot-parent"
+        snapshot_parent.mkdir()
+        snapshot = prepare_sthread_snapshot(
+            argparse.Namespace(
+                workspace=snapshot_seed,
+                gradle_cache_seed=gradle_seed,
+                trusted_worker_seed=snapshot_seed,
+                snapshot_parent=snapshot_parent,
+                budget_seconds=5.0,
+            )
+        )
+        assert snapshot["status"] == "READY"
+        assert snapshot["stage"] == "STHREAD_SNAPSHOT_READY"
+        prepared_repository = Path(snapshot["repository"])
+        assert git_stdout(prepared_repository, "rev-parse", "HEAD", stage="SELF_TEST") == snapshot["workspaceRevision"]
+        assert git_stdout(prepared_repository, "symbolic-ref", "--short", "HEAD", stage="SELF_TEST") == snapshot["targetRef"]
+        assert git_stdout(prepared_repository, "status", "--porcelain=v1", stage="SELF_TEST") == ""
+        assert (Path(snapshot["gradleUserHome"]) / "marker").read_text(encoding="utf-8") == "cache"
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
@@ -1168,6 +1347,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
+    selected_modes = sum(
+        bool(value)
+        for value in (args.self_test, args.print_compiler_index_root, args.prepare_sthread_snapshot)
+    )
+    if selected_modes > 1:
+        print("preflight modes are mutually exclusive", file=sys.stderr)
+        return 2
     if args.self_test:
         self_test()
         return 0
@@ -1188,7 +1374,7 @@ def main() -> int:
         return 0
     started = time.monotonic()
     try:
-        receipt = execute(args)
+        receipt = prepare_sthread_snapshot(args) if args.prepare_sthread_snapshot else execute(args)
     except PreflightFailure as error:
         receipt = {
             "schema": SCHEMA,
