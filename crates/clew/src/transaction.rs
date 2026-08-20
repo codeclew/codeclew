@@ -1880,6 +1880,7 @@ fn validate_worktree_with_options(
         error
             .evidence
             .push(format!("buildTestDurationMs={test_duration_ms}"));
+        append_test_failure_evidence(&mut error, worktree, build_system, tests);
         return Err(error);
     }
     let compile_started = std::time::Instant::now();
@@ -1947,8 +1948,164 @@ fn validate_worktree_with_options(
         error
             .evidence
             .push(format!("buildTestDurationMs={test_duration_ms}"));
+        append_test_failure_evidence(&mut error, worktree, build_system, tests);
         Err(error)
     }
+}
+
+fn append_test_failure_evidence(
+    error: &mut ClewError,
+    worktree: &Path,
+    build_system: BuildSystem,
+    tests: &[String],
+) {
+    for failure in bounded_test_failure_evidence(worktree, build_system, tests) {
+        error.evidence.push(failure);
+    }
+}
+
+fn bounded_test_failure_evidence(
+    worktree: &Path,
+    build_system: BuildSystem,
+    tests: &[String],
+) -> Vec<String> {
+    let mut roots = BTreeSet::new();
+    match build_system {
+        BuildSystem::Gradle => {
+            for argument in tests {
+                if argument.starts_with('-') {
+                    continue;
+                }
+                let components = argument
+                    .trim_start_matches(':')
+                    .split(':')
+                    .filter(|component| !component.is_empty())
+                    .collect::<Vec<_>>();
+                let Some(task) = components.last() else {
+                    continue;
+                };
+                if !task.to_ascii_lowercase().contains("test")
+                    || task.eq_ignore_ascii_case("cleanTest")
+                {
+                    continue;
+                }
+                let mut root = worktree.to_path_buf();
+                for component in &components[..components.len().saturating_sub(1)] {
+                    root.push(component);
+                }
+                roots.insert(root.join("build/test-results").join(task));
+            }
+        }
+        BuildSystem::Maven => {
+            roots.insert(worktree.join("target/surefire-reports"));
+            roots.insert(worktree.join("target/failsafe-reports"));
+        }
+    }
+    let canonical_worktree = match worktree.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
+    let mut failures = Vec::new();
+    for root in roots {
+        let Ok(metadata) = std::fs::symlink_metadata(&root) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let Ok(canonical_root) = root.canonicalize() else {
+            continue;
+        };
+        if !canonical_root.starts_with(&canonical_worktree) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&canonical_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if failures.len() >= 4 {
+                break;
+            }
+            let path = entry.path();
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || metadata.len() > 2 * 1024 * 1024
+                || path.extension().and_then(|value| value.to_str()) != Some("xml")
+            {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            failures.extend(junit_failure_evidence(&text, &canonical_worktree));
+            failures.truncate(4);
+        }
+    }
+    failures
+}
+
+fn junit_failure_evidence(text: &str, worktree: &Path) -> Vec<String> {
+    let mut evidence = Vec::new();
+    let mut cursor = 0usize;
+    while evidence.len() < 4 {
+        let Some(relative_start) = text[cursor..].find("<testcase") else {
+            break;
+        };
+        let start = cursor + relative_start;
+        let Some(relative_tag_end) = text[start..].find('>') else {
+            break;
+        };
+        let tag_end = start + relative_tag_end + 1;
+        let tag = &text[start..tag_end];
+        let Some(relative_close) = text[tag_end..].find("</testcase>") else {
+            cursor = tag_end;
+            continue;
+        };
+        let close = tag_end + relative_close;
+        let body = &text[tag_end..close];
+        let failure_start = body.find("<failure").or_else(|| body.find("<error"));
+        if let Some(failure_start) = failure_start {
+            let failure = &body[failure_start..];
+            if let Some(relative_failure_end) = failure.find('>') {
+                let failure_tag = &failure[..=relative_failure_end];
+                let class_name = xml_attribute_value(tag, "classname").unwrap_or("unknown");
+                let test_name = xml_attribute_value(tag, "name").unwrap_or("unknown");
+                let failure_type = xml_attribute_value(failure_tag, "type").unwrap_or("unknown");
+                let message = xml_attribute_value(failure_tag, "message").unwrap_or("no message");
+                let summary = format!(
+                    "testFailure={}#{}:{}:{}",
+                    class_name, test_name, failure_type, message
+                );
+                evidence.push(sanitize_test_failure_summary(&summary, worktree));
+            }
+        }
+        cursor = close + "</testcase>".len();
+    }
+    evidence
+}
+
+fn xml_attribute_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let end = tag[start..].find('"')? + start;
+    Some(&tag[start..end])
+}
+
+fn sanitize_test_failure_summary(summary: &str, worktree: &Path) -> String {
+    let worktree = worktree.to_string_lossy();
+    let compact = summary
+        .replace(worktree.as_ref(), "<worktree>")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    compact.chars().take(768).collect()
 }
 
 fn checked_out_target_is_clean(repo: &Path, target_ref: &str, current: &str) -> bool {
@@ -2485,9 +2642,9 @@ fn internal(e: anyhow::Error) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::{
-        BuildSystem, apply_edit_target_transport, canonicalize_owner_symbol_query, git_output,
-        prepare_candidate_repository_state, preview, preview_replace_model_input,
-        project_model_transition_evidence, validate_worktree,
+        BuildSystem, apply_edit_target_transport, bounded_test_failure_evidence,
+        canonicalize_owner_symbol_query, git_output, prepare_candidate_repository_state, preview,
+        preview_replace_model_input, project_model_transition_evidence, validate_worktree,
     };
     use crate::canonical;
     use crate::error::ErrorCode;
@@ -2822,6 +2979,38 @@ mod tests {
         );
 
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn selected_gradle_test_failure_is_retained_as_bounded_path_free_evidence() {
+        let temporary = tempfile::tempdir().unwrap();
+        let worktree = temporary.path().join("repo");
+        let reports = worktree.join("workers/kotlin/build/test-results/test");
+        std::fs::create_dir_all(&reports).unwrap();
+        std::fs::write(
+            reports.join("TEST-example.CacheTest.xml"),
+            format!(
+                r#"<testsuite><testcase name="publishes()" classname="example.CacheTest"><failure message="expected PUBLISHED below {} but was WRITE_FAILED" type="org.opentest4j.AssertionFailedError">stack</failure></testcase></testsuite>"#,
+                worktree.display()
+            ),
+        )
+        .unwrap();
+
+        let evidence = bounded_test_failure_evidence(
+            &worktree,
+            BuildSystem::Gradle,
+            &[
+                ":workers:kotlin:test".into(),
+                "--tests".into(),
+                "*CacheTest".into(),
+            ],
+        );
+
+        assert_eq!(evidence.len(), 1);
+        assert!(evidence[0].contains("example.CacheTest#publishes()"));
+        assert!(evidence[0].contains("expected PUBLISHED"));
+        assert!(evidence[0].contains("<worktree>"));
+        assert!(!evidence[0].contains(temporary.path().to_string_lossy().as_ref()));
     }
 
     #[test]
