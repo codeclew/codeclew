@@ -1644,6 +1644,23 @@ impl WorkerClient {
             .and_then(Value::as_str)
             .unwrap_or(":/main")
             .to_owned();
+        let project = self.request(
+            RequestKind::OpenProject,
+            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
+        )?;
+        if project.get("compilation").and_then(Value::as_str)
+            != Some(requested_compilation.as_str())
+            || project.get("compilerVersion").and_then(Value::as_str)
+                != Some(self.capabilities.compiler_version.as_str())
+        {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "OpenProject identity differs from verified index request",
+            ));
+        }
+        // OpenProject may discover and switch to the project's Kotlin worker
+        // variant. Bind the semantic receipt to that selected distribution,
+        // never to the bootstrap variant that happened to start the session.
         let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
             ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
@@ -1660,20 +1677,6 @@ impl WorkerClient {
         verify_trusted_distribution(trusted)?;
         let trusted_tree_hash = trusted.tree_hash.clone();
         let trusted_build_input_digest = trusted.build_input_digest.clone();
-        let project = self.request(
-            RequestKind::OpenProject,
-            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
-        )?;
-        if project.get("compilation").and_then(Value::as_str)
-            != Some(requested_compilation.as_str())
-            || project.get("compilerVersion").and_then(Value::as_str)
-                != Some(self.capabilities.compiler_version.as_str())
-        {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "OpenProject identity differs from verified index request",
-            ));
-        }
         let project_model_hash = required_payload_string(&project, "projectModelHash")?.to_owned();
         let semantic_input_manifest_hash =
             required_payload_string(&project, "semanticInputManifestHash")?.to_owned();
@@ -3716,6 +3719,34 @@ mod tests {
                 .code,
             ErrorCode::ProjectModelChanged
         );
+    }
+
+    #[test]
+    fn verified_index_binds_distribution_after_project_variant_selection() {
+        let workspace = workspace_root();
+        let repo = workspace
+            .join("fixtures/kotlin-2-1")
+            .canonicalize()
+            .unwrap();
+        let mut worker = WorkerClient::start(&workspace).unwrap();
+        assert_eq!(worker.capabilities.compiler_version, "2.4.10");
+
+        let verified = worker
+            .index_files_verified(&json!({
+                "repo":repo,
+                "compilation":":/main",
+                "syntaxOnly":false,
+            }))
+            .unwrap();
+        assert_eq!(worker.capabilities.compiler_version, "2.1.21");
+        let selected = worker.trusted_distribution.as_ref().unwrap();
+        assert_eq!(
+            verified.distribution_fingerprint,
+            selected.plugin_fingerprint
+        );
+        assert_eq!(verified.distribution_tree_hash, selected.tree_hash);
+        worker.inspect_verified_index(&verified).unwrap();
+        worker.shutdown().unwrap();
     }
 
     #[test]
