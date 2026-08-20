@@ -31,6 +31,11 @@ DEFAULT_SMOKES = (
     ("KOTLIN_2_1_COMPILER_SEMANTIC", "fixtures/kotlin-2-1", ":/main", "GRADLE"),
     ("KOTLIN_2_3_COMPILER_SEMANTIC", "fixtures/kotlin-maven", ":/main", "MAVEN"),
 )
+TRUSTED_WORKER_DISTRIBUTIONS = (
+    ("workers/manifests/kotlin21.json", "workers/kotlin21/build/install/kotlin21"),
+    ("workers/manifests/kotlin23.json", "workers/kotlin23/build/install/kotlin23"),
+    ("workers/manifests/kotlin24.json", "workers/kotlin/build/install/kotlin"),
+)
 
 
 class PreflightFailure(RuntimeError):
@@ -325,6 +330,37 @@ def hydrate_cargo_target(source: Path, target: Path, deadline: float, fingerprin
     return elapsed, False
 
 
+def hydrate_trusted_workers(seed: Path, workspace: Path, deadline: float) -> tuple[int, bool]:
+    seed = require_real_directory(seed, "TRUSTED_WORKER_HYDRATION")
+    if seed == workspace:
+        for _manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
+            require_real_directory(workspace / distribution_name, "TRUSTED_WORKER_HYDRATION")
+        return 0, True
+    for manifest_name, _distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
+        source_manifest = seed / manifest_name
+        target_manifest = workspace / manifest_name
+        if (
+            source_manifest.is_symlink()
+            or target_manifest.is_symlink()
+            or not source_manifest.is_file()
+            or not target_manifest.is_file()
+            or source_manifest.read_bytes() != target_manifest.read_bytes()
+        ):
+            raise PreflightFailure(
+                "TRUSTED_WORKER_HYDRATION",
+                f"trusted worker manifest differs from seed: {manifest_name}",
+            )
+    targets = [workspace / distribution_name for _manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS]
+    if all(target.is_dir() and not target.is_symlink() for target in targets):
+        return 0, True
+    elapsed = 0
+    for _manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
+        source_distribution = require_real_directory(seed / distribution_name, "TRUSTED_WORKER_HYDRATION")
+        target_distribution = workspace / distribution_name
+        elapsed += clone_tree_contents(source_distribution, target_distribution, deadline - time.monotonic())
+    return elapsed, False
+
+
 def missing_stdout_markers(stdout: bytes, required: Sequence[bytes]) -> list[str]:
     return [marker.decode("utf-8", errors="replace") for marker in required if marker not in stdout]
 
@@ -399,6 +435,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradle-cache-seed", type=Path, default=Path.home() / ".gradle")
     parser.add_argument("--maven-repository-seed", type=Path, default=Path.home() / ".m2" / "repository")
     parser.add_argument("--cargo-target-seed", type=Path, default=ROOT / "target")
+    parser.add_argument("--trusted-worker-seed", type=Path, default=ROOT)
     parser.add_argument("--clew", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--budget-seconds", type=float, default=60.0)
@@ -456,6 +493,20 @@ def self_test() -> None:
         assert not (cargo_target / "debug").exists()
         elapsed, hit = hydrate_cargo_target(cargo_seed, cargo_target, time.monotonic() + 5, "sha256:" + "c" * 64)
         assert elapsed == 0 and hit
+        worker_seed = root / "worker-seed"
+        worker_target = root / "worker-target"
+        for manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
+            (worker_seed / manifest_name).parent.mkdir(parents=True, exist_ok=True)
+            (worker_target / manifest_name).parent.mkdir(parents=True, exist_ok=True)
+            (worker_seed / manifest_name).write_bytes(manifest_name.encode())
+            (worker_target / manifest_name).write_bytes(manifest_name.encode())
+            (worker_seed / distribution_name).mkdir(parents=True)
+            (worker_seed / distribution_name / "worker").write_bytes(distribution_name.encode())
+        elapsed, hit = hydrate_trusted_workers(worker_seed, worker_target, time.monotonic() + 5)
+        assert elapsed >= 0 and not hit
+        assert all((worker_target / distribution_name / "worker").is_file() for _, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS)
+        elapsed, hit = hydrate_trusted_workers(worker_seed, worker_target, time.monotonic() + 5)
+        assert elapsed == 0 and hit
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
@@ -485,6 +536,11 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         workspace / "target",
         deadline,
         fingerprint,
+    )
+    worker_millis, worker_cache_hit = hydrate_trusted_workers(
+        args.trusted_worker_seed,
+        workspace,
+        deadline,
     )
     gradle_seed = require_real_directory(args.gradle_cache_seed, "CACHE_HYDRATION")
     copied, gradle_millis, workspace_cache_hit = hydrate_gradle_cache(
@@ -601,6 +657,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "cache": {
             "cargoHydrationMillis": cargo_millis,
             "cargoHit": cargo_cache_hit,
+            "trustedWorkerHydrationMillis": worker_millis,
+            "trustedWorkerHit": worker_cache_hit,
             "gradleMembers": copied,
             "gradleHydrationMillis": gradle_millis,
             "mavenHydrationMillis": maven_millis,

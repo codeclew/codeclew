@@ -15,6 +15,8 @@ receipt. `READY` proves all of the following against the current clean `HEAD`:
 - an isolated checkout has a copy-on-write Cargo `target/release` seed (never
   the much larger `target/debug`), which Cargo still validates against the
   selected source and toolchain before reuse;
+- all three trusted Kotlin worker installDist directories are materialized only
+  from a seed whose pinned manifests match the checkout byte-for-byte;
 - the release `clew` binary builds offline from the current source;
 - the complete Codeclew Gradle root configures offline against the hydrated
   cache, including the shared Kotlin 2.4.10 and Kotlin 2.1.21 projects;
@@ -56,7 +58,7 @@ Useful development switches:
   `trackedClean: false`; it is not an acceptable production receipt.
 - `--skip-smoke` is for focused script development only.
 - `--budget-seconds N` changes the hard wall-time budget.
-- `--cargo-target-seed`, `--gradle-cache-seed`, and
+- `--cargo-target-seed`, `--trusted-worker-seed`, `--gradle-cache-seed`, and
   `--maven-repository-seed` select explicit local build/dependency seeds.
 
 The cache hydration uses APFS clone copies on macOS and `--reflink=auto` on
