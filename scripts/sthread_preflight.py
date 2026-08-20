@@ -344,6 +344,32 @@ def git_stdout(workspace: Path, *arguments: str, stage: str) -> str:
     return completed.stdout.decode("utf-8", errors="strict").strip()
 
 
+def require_trusted_worker_seed_revision(seed: Path, expected_revision: str) -> Path:
+    seed = require_real_directory(seed, "TRUSTED_WORKER_HYDRATION")
+    root = git_stdout(
+        seed, "rev-parse", "--show-toplevel", stage="TRUSTED_WORKER_HYDRATION"
+    )
+    if Path(root).resolve() != seed:
+        raise PreflightFailure(
+            "TRUSTED_WORKER_HYDRATION",
+            "trusted worker seed must be the exact Git root that produced the distribution",
+        )
+    revision = git_stdout(
+        seed, "rev-parse", "HEAD", stage="TRUSTED_WORKER_HYDRATION"
+    )
+    if revision != expected_revision:
+        raise PreflightFailure(
+            "TRUSTED_WORKER_HYDRATION",
+            "trusted worker seed revision differs from the requested snapshot revision",
+            detail={
+                "expectedRevision": expected_revision,
+                "actualRevision": revision,
+            },
+        )
+    require_clean_tracked_worktree(seed, False)
+    return seed
+
+
 def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     started = time.monotonic()
     requested_budget = 60.0 if args.budget_seconds is None else args.budget_seconds
@@ -371,6 +397,9 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         )
         if requested_revision
         else source_workspace_head
+    )
+    trusted_worker_seed = require_trusted_worker_seed_revision(
+        args.trusted_worker_seed, expected_head
     )
     parent = require_real_directory(args.snapshot_parent, "STHREAD_SNAPSHOT_PREPARATION")
     if parent == workspace or parent.is_relative_to(workspace) or workspace.is_relative_to(parent):
@@ -415,7 +444,7 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             deadline - time.monotonic(),
         )
         worker_millis, worker_hit = hydrate_trusted_workers(
-            args.trusted_worker_seed,
+            trusted_worker_seed,
             repository,
             deadline,
         )
@@ -1363,6 +1392,41 @@ def self_test() -> None:
             snapshot_seed, "rev-parse", "HEAD", stage="SELF_TEST"
         )
         assert source_revision != historical_revision
+        try:
+            require_trusted_worker_seed_revision(
+                snapshot_seed, historical_revision
+            )
+            raise AssertionError("mismatched trusted-worker seed revision accepted")
+        except PreflightFailure as error:
+            assert error.stage == "TRUSTED_WORKER_HYDRATION"
+        historical_worker_seed = root / "historical-worker-seed"
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--no-hardlinks",
+                str(snapshot_seed),
+                str(historical_worker_seed),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "switch", "--quiet", "--detach", historical_revision],
+            cwd=historical_worker_seed,
+            check=True,
+        )
+        for _manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
+            shutil.copytree(
+                snapshot_seed / distribution_name,
+                historical_worker_seed / distribution_name,
+            )
+        assert (
+            require_trusted_worker_seed_revision(
+                historical_worker_seed, historical_revision
+            )
+            == historical_worker_seed.resolve()
+        )
         gradle_seed = root / "gradle-seed"
         gradle_seed.mkdir()
         (gradle_seed / "marker").write_text("cache", encoding="utf-8")
@@ -1381,7 +1445,7 @@ def self_test() -> None:
             argparse.Namespace(
                 workspace=snapshot_seed,
                 gradle_cache_seed=gradle_seed,
-                trusted_worker_seed=snapshot_seed,
+                trusted_worker_seed=historical_worker_seed,
                 snapshot_parent=snapshot_parent,
                 budget_seconds=5.0,
                 clew=fake_clew,
