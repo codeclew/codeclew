@@ -14,7 +14,7 @@ import sys
 import time
 
 
-SCHEMA = "codeclew.real-kotlin-preflight/0.3"
+SCHEMA = "codeclew.real-kotlin-preflight/0.4"
 ROOT = Path(__file__).resolve().parents[1]
 GRADLE_CACHE_MARKER_SCHEMA = "codeclew.real-kotlin-gradle-cache/0.1"
 GRADLE_CACHE_MARKER = ".codeclew-real-kotlin-preflight-cache.json"
@@ -144,6 +144,10 @@ def isolated_gradle_environment(gradle_user_home: Path) -> dict[str, str]:
     return environment
 
 
+def gradle_daemon_stop_argv(wrapper: Path, gradle_user_home: Path) -> list[str]:
+    return [str(wrapper), "--gradle-user-home", str(gradle_user_home), "--stop"]
+
+
 def exact_executable(candidate: str | None, stage: str) -> Path:
     if not candidate:
         raise PreflightFailure(stage, f"required executable is unavailable on PATH: {stage.lower()}")
@@ -231,6 +235,14 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         )
         task = gradle_configuration_task(args.compilation)
         gradle_environment = isolated_gradle_environment(repo / ".gradle")
+        daemon_stop, daemon_stop_millis = run(
+            gradle_daemon_stop_argv(wrapper, repo / ".gradle"),
+            repo,
+            deadline,
+            environment=gradle_environment,
+        )
+        require_success(daemon_stop, "GRADLE_DAEMON_RESET")
+        probes.append({"kind": "GRADLE_DAEMON_RESET", "durationMillis": daemon_stop_millis})
         model_probe, model_millis = run(
             [str(wrapper), "--offline", "--no-daemon", "--quiet", task],
             repo,

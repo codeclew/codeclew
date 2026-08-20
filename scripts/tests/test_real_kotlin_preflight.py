@@ -101,6 +101,12 @@ class RunContractTest(unittest.TestCase):
         self.assertNotIn("CODECLEW_K2_INDEX_ROOT", environment)
         self.assertEqual(environment["CODECLEW_TEST_UNRELATED"], "preserved")
 
+    def test_gradle_daemon_reset_is_bound_to_repo_local_cache(self) -> None:
+        self.assertEqual(
+            PREFLIGHT.gradle_daemon_stop_argv(Path("/repo/gradlew"), Path("/repo/.gradle")),
+            ["/repo/gradlew", "--gradle-user-home", "/repo/.gradle", "--stop"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
