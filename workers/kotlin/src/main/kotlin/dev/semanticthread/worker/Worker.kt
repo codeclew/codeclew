@@ -1247,7 +1247,6 @@ internal class Worker(
                 append("declaredCompilerVersion=").append(version).append('\u0000')
                 append("semanticConfigurationDigest=").append(semanticConfigurationDigest).append('\u0000')
                 append("factsPlugin=").append(artifactFingerprint(pluginArtifact)).append('\u0000')
-                append("factsPluginPath=").append(pluginArtifact).append('\u0000')
             },
         )
         val memoryKey = "$analysisRepo|$compilation|$cacheKey"
