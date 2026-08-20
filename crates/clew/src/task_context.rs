@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
-const MAX_EDIT_SURFACES: usize = 4;
+// A bounded cross-file adapter hook commonly needs one workflow plus its
+// request, result, runtime, and return-contract declarations. Keep enough
+// authority-bearing surfaces for that closure while retaining a small hard
+// cap independent of the stdout byte budget.
+const MAX_EDIT_SURFACES: usize = 8;
 const MAX_CONTRACTS: usize = 2;
 const MAX_TESTS: usize = 1;
 const MAX_EXECUTION_EDGES: usize = 4;
@@ -2527,6 +2531,12 @@ fn evidence_display(repo: &Path, evidence_path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_context_keeps_a_five_declaration_hook_closure() {
+        assert!(MAX_EDIT_SURFACES >= 5);
+        assert_eq!(MAX_EDIT_SURFACES, 8);
+    }
 
     fn initialize_git_repo() -> tempfile::TempDir {
         let temporary = tempfile::tempdir().unwrap();
