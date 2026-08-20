@@ -530,6 +530,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=workspace, stdout=subprocess.PIPE, check=True
     ).stdout.decode().strip()
+    format_probe = probe(
+        kind="RUST_FORMAT",
+        argv=["cargo", "fmt", "--all", "--", "--check"],
+        cwd=workspace,
+        deadline=deadline,
+    )
 
     gradle_seed = require_real_directory(args.gradle_cache_seed, "CACHE_HYDRATION")
     fixture21 = workspace / "fixtures" / "kotlin-2-1"
@@ -610,6 +616,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     gradle_environment["GRADLE_USER_HOME"] = str(workspace / ".gradle")
     configuration_task = gradle_configuration_task(args.compilation)
     probes = [
+        format_probe,
         probe(
             kind="STHREAD_PROTOCOL_CAPABILITY",
             argv=[str(clew), "agent-context", "--help"],

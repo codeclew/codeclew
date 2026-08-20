@@ -18,6 +18,7 @@ receipt. `READY` proves all of the following against the current clean `HEAD`:
 - all three trusted Kotlin worker installDist directories are materialized only
   from a seed whose pinned manifests match the checkout byte-for-byte;
 - the release `clew` binary builds offline from the current source;
+- tracked Rust source passes `cargo fmt --all -- --check` before that build;
 - the complete Codeclew Gradle root configures offline against the hydrated
   cache, including the shared Kotlin 2.4.10 and Kotlin 2.1.21 projects;
 - the trusted worker executes its exact `OpenProject` path on the small
