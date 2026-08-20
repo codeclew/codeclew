@@ -1202,15 +1202,19 @@ impl RunContext {
     }
 }
 
-fn retain_compiler_index_profile(context: &mut RunContext, profile: &RequestProfile) {
-    let Some(compiler_index) = profile.compiler_index.as_ref() else {
-        return;
-    };
+fn retain_operational_profiles(context: &mut RunContext, profile: &RequestProfile) {
     let Some(cache) = context.cache.as_object_mut() else {
         return;
     };
-    if let Ok(value) = serde_json::to_value(compiler_index) {
+    if let Some(compiler_index) = profile.compiler_index.as_ref()
+        && let Ok(value) = serde_json::to_value(compiler_index)
+    {
         cache.insert("compilerIndex".to_owned(), value);
+    }
+    if let Some(project_model_cache) = profile.project_model_cache.as_ref()
+        && let Ok(value) = serde_json::to_value(project_model_cache)
+    {
+        cache.insert("projectModelCache".to_owned(), value);
     }
 }
 
@@ -3068,7 +3072,7 @@ fn run(args: Args, context: &mut RunContext) -> Result<RunSuccess> {
         &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
     );
     let profile = worker.last_profile.clone();
-    retain_compiler_index_profile(context, &profile);
+    retain_operational_profiles(context, &profile);
     let verified = match index_result {
         Ok(verified) => verified,
         Err(error)
@@ -5911,7 +5915,7 @@ mod adapter_local_tests {
     }
 
     #[test]
-    fn compiler_index_profile_is_attempt_only_and_semantic_digest_is_unchanged() {
+    fn operational_profiles_are_attempt_only_and_semantic_digest_is_unchanged() {
         let output = semantic_digest_fixture();
         let output_before = serde_json::to_value(&output).unwrap();
         let digest_before = kotlin_k1::semantic_output_digest(&output).unwrap();
@@ -5932,10 +5936,20 @@ mod adapter_local_tests {
                 fallback_used: false,
                 graph_digest: Some("a".repeat(64)),
             }),
+            project_model_cache: Some(clew::worker::ProjectModelCacheProfile {
+                status: clew::worker::ProjectModelCacheStatus::PersistentHit,
+                total_micros: 110,
+                key_micros: 20,
+                load_micros: 80,
+                extraction_micros: 0,
+                publish_micros: 0,
+                persistent_configured: true,
+                published: false,
+            }),
             ..RequestProfile::default()
         };
 
-        retain_compiler_index_profile(&mut context, &profile);
+        retain_operational_profiles(&mut context, &profile);
 
         assert_eq!(serde_json::to_value(&output).unwrap(), output_before);
         assert_eq!(
@@ -5946,9 +5960,18 @@ mod adapter_local_tests {
         assert_eq!(context.cache["compilerIndex"]["backend"], "BTA_PERSISTENT");
         assert_eq!(context.cache["compilerIndex"]["status"], "INCREMENTAL");
         assert_eq!(context.cache["compilerIndex"]["valid"], true);
+        assert_eq!(
+            context.cache["projectModelCache"]["status"],
+            "PERSISTENT_HIT"
+        );
+        assert_eq!(context.cache["projectModelCache"]["totalMicros"], 110);
+        assert_eq!(
+            context.cache["projectModelCache"]["persistentConfigured"],
+            true
+        );
 
         let cache_before = context.cache.clone();
-        retain_compiler_index_profile(&mut context, &RequestProfile::default());
+        retain_operational_profiles(&mut context, &RequestProfile::default());
         assert_eq!(context.cache, cache_before);
     }
 

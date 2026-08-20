@@ -469,6 +469,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let facts = w.inspect_verified_index(&verified_facts)?;
             let inspect_receipt_micros = inspect_started.elapsed().as_micros() as u64;
             let compiler_index = w.last_profile.compiler_index.clone();
+            let project_model_cache = w.last_profile.project_model_cache.clone();
             let worker_profile = w.last_profile.clone();
             let publication_started = std::time::Instant::now();
             let syntax_storage = args
@@ -517,6 +518,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 "invalidations":invalidations,
                 "freshness":freshness,
                 "compilerIndex":compiler_index,
+                "projectModelCache":project_model_cache,
                 "workerProfile":{
                     "serializationMicros":worker_profile.serialization_micros,
                     "ipcMicros":worker_profile.ipc_micros,

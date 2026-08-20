@@ -52,6 +52,28 @@ pub struct CompilerIndexProfile {
     pub graph_digest: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProjectModelCacheStatus {
+    MemoryHit,
+    PersistentHit,
+    ExtractedPublished,
+    ExtractedNotPublished,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectModelCacheProfile {
+    pub status: ProjectModelCacheStatus,
+    pub total_micros: u64,
+    pub key_micros: u64,
+    pub load_micros: u64,
+    pub extraction_micros: u64,
+    pub publish_micros: u64,
+    pub persistent_configured: bool,
+    pub published: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RequestProfile {
     pub serialization_micros: u64,
@@ -63,6 +85,7 @@ pub struct RequestProfile {
     pub k2_analysis_micros: u64,
     pub fir_extraction_micros: u64,
     pub compiler_index: Option<CompilerIndexProfile>,
+    pub project_model_cache: Option<ProjectModelCacheProfile>,
 }
 
 pub struct WorkerClient {
@@ -1459,6 +1482,9 @@ impl WorkerClient {
                 && payload.get("syntaxOnly").and_then(Value::as_bool) != Some(true))
             .then(|| profiling.as_ref().and_then(parse_compiler_index_profile))
             .flatten(),
+            project_model_cache: profiling
+                .as_ref()
+                .and_then(parse_project_model_cache_profile),
         };
         Ok(value)
     }
@@ -1648,6 +1674,7 @@ impl WorkerClient {
             RequestKind::OpenProject,
             &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
         )?;
+        let open_project_model_cache = self.last_profile.project_model_cache.clone();
         if project.get("compilation").and_then(Value::as_str)
             != Some(requested_compilation.as_str())
             || project.get("compilerVersion").and_then(Value::as_str)
@@ -1695,8 +1722,12 @@ impl WorkerClient {
         let mut exact_payload = payload.clone();
         exact_payload["repo"] = Value::String(repo.to_string_lossy().into_owned());
         exact_payload["compilation"] = Value::String(requested_compilation.clone());
-        let mut facts = self
-            .request(RequestKind::IndexFiles, &exact_payload)
+        let index_result = self.request(RequestKind::IndexFiles, &exact_payload);
+        retain_verified_index_project_model_profile(
+            &mut self.last_profile,
+            open_project_model_cache,
+        );
+        let mut facts = index_result
             .map_err(|error| attach_verified_index_failure(error, "RAW_SCHEMA_HASH", None))?;
         if facts.get("compilation").and_then(Value::as_str) != Some(requested_compilation.as_str())
             || facts.get("projectModelHash").and_then(Value::as_str)
@@ -2867,6 +2898,60 @@ fn parse_compiler_index_profile(profiling: &Value) -> Option<CompilerIndexProfil
     })
 }
 
+fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCacheProfile> {
+    let object = profiling.as_object()?;
+    let status = match object.get("projectModelCacheStatus")?.as_str()? {
+        "MEMORY_HIT" => ProjectModelCacheStatus::MemoryHit,
+        "PERSISTENT_HIT" => ProjectModelCacheStatus::PersistentHit,
+        "EXTRACTED_PUBLISHED" => ProjectModelCacheStatus::ExtractedPublished,
+        "EXTRACTED_NOT_PUBLISHED" => ProjectModelCacheStatus::ExtractedNotPublished,
+        _ => return None,
+    };
+    let total_micros = object.get("projectModelTotalMicros")?.as_u64()?;
+    let key_micros = object.get("projectModelKeyMicros")?.as_u64()?;
+    let load_micros = object.get("projectModelLoadMicros")?.as_u64()?;
+    let extraction_micros = object.get("projectModelExtractionMicros")?.as_u64()?;
+    let publish_micros = object.get("projectModelPublishMicros")?.as_u64()?;
+    let persistent_configured = object.get("projectModelPersistentConfigured")?.as_bool()?;
+    let published = object.get("projectModelPublished")?.as_bool()?;
+    let measured = key_micros
+        .checked_add(load_micros)?
+        .checked_add(extraction_micros)?
+        .checked_add(publish_micros)?;
+    if measured > total_micros {
+        return None;
+    }
+    let consistent = match status {
+        ProjectModelCacheStatus::MemoryHit => {
+            load_micros == 0 && extraction_micros == 0 && publish_micros == 0 && !published
+        }
+        ProjectModelCacheStatus::PersistentHit => {
+            persistent_configured && extraction_micros == 0 && publish_micros == 0 && !published
+        }
+        ProjectModelCacheStatus::ExtractedPublished => persistent_configured && published,
+        ProjectModelCacheStatus::ExtractedNotPublished => !published,
+    };
+    consistent.then_some(ProjectModelCacheProfile {
+        status,
+        total_micros,
+        key_micros,
+        load_micros,
+        extraction_micros,
+        publish_micros,
+        persistent_configured,
+        published,
+    })
+}
+
+fn retain_verified_index_project_model_profile(
+    profile: &mut RequestProfile,
+    open_project: Option<ProjectModelCacheProfile>,
+) {
+    if open_project.is_some() {
+        profile.project_model_cache = open_project;
+    }
+}
+
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -2973,6 +3058,103 @@ mod tests {
             "cacheRequests":1,
             "privatePath":"/must/not/escape",
         })
+    }
+
+    fn valid_project_model_cache_profiling() -> Value {
+        json!({
+            "projectModelCacheStatus":"PERSISTENT_HIT",
+            "projectModelTotalMicros":120,
+            "projectModelKeyMicros":20,
+            "projectModelLoadMicros":90,
+            "projectModelExtractionMicros":0,
+            "projectModelPublishMicros":0,
+            "projectModelPersistentConfigured":true,
+            "projectModelPublished":false,
+            "privatePath":"/must/not/escape",
+        })
+    }
+
+    #[test]
+    fn project_model_cache_profile_is_typed_and_operational_only() {
+        let profile = parse_project_model_cache_profile(&valid_project_model_cache_profiling())
+            .expect("valid persistent hit");
+        assert_eq!(profile.status, ProjectModelCacheStatus::PersistentHit);
+        assert_eq!(profile.total_micros, 120);
+        assert_eq!(profile.key_micros, 20);
+        assert_eq!(profile.load_micros, 90);
+        let transported = serde_json::to_value(profile).unwrap();
+        assert_eq!(transported["status"], "PERSISTENT_HIT");
+        assert!(transported.get("privatePath").is_none());
+    }
+
+    #[test]
+    fn project_model_cache_profile_rejects_unknown_partial_and_inconsistent_rows() {
+        let mut unknown = valid_project_model_cache_profiling();
+        unknown["projectModelCacheStatus"] = Value::String("NEW_STATUS".to_owned());
+        assert!(parse_project_model_cache_profile(&unknown).is_none());
+
+        let mut partial = valid_project_model_cache_profiling();
+        partial
+            .as_object_mut()
+            .unwrap()
+            .remove("projectModelLoadMicros");
+        assert!(parse_project_model_cache_profile(&partial).is_none());
+
+        let mut impossible = valid_project_model_cache_profiling();
+        impossible["projectModelExtractionMicros"] = Value::from(1);
+        assert!(parse_project_model_cache_profile(&impossible).is_none());
+
+        let mut over_total = valid_project_model_cache_profiling();
+        over_total["projectModelKeyMicros"] = Value::from(121);
+        assert!(parse_project_model_cache_profile(&over_total).is_none());
+
+        let mut published_hit = valid_project_model_cache_profiling();
+        published_hit["projectModelPublished"] = Value::Bool(true);
+        assert!(parse_project_model_cache_profile(&published_hit).is_none());
+    }
+
+    #[test]
+    fn project_model_cache_profile_accepts_each_consistent_status() {
+        for (status, persistent, published, load, extraction, publish) in [
+            ("MEMORY_HIT", false, false, 0, 0, 0),
+            ("PERSISTENT_HIT", true, false, 10, 0, 0),
+            ("EXTRACTED_PUBLISHED", true, true, 10, 30, 20),
+            ("EXTRACTED_NOT_PUBLISHED", true, false, 10, 30, 20),
+        ] {
+            let mut value = valid_project_model_cache_profiling();
+            value["projectModelCacheStatus"] = Value::String(status.to_owned());
+            value["projectModelPersistentConfigured"] = Value::Bool(persistent);
+            value["projectModelPublished"] = Value::Bool(published);
+            value["projectModelLoadMicros"] = Value::from(load);
+            value["projectModelExtractionMicros"] = Value::from(extraction);
+            value["projectModelPublishMicros"] = Value::from(publish);
+            assert!(
+                parse_project_model_cache_profile(&value).is_some(),
+                "valid {status} profile was rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_index_retains_open_project_cache_observation_over_memory_hit() {
+        let persistent = parse_project_model_cache_profile(&valid_project_model_cache_profiling())
+            .expect("persistent profile");
+        let mut memory_value = valid_project_model_cache_profiling();
+        memory_value["projectModelCacheStatus"] = Value::String("MEMORY_HIT".to_owned());
+        memory_value["projectModelLoadMicros"] = Value::from(0);
+        memory_value["projectModelPersistentConfigured"] = Value::Bool(false);
+        let memory = parse_project_model_cache_profile(&memory_value).expect("memory profile");
+        let mut request = RequestProfile {
+            project_model_cache: Some(memory.clone()),
+            ..RequestProfile::default()
+        };
+
+        retain_verified_index_project_model_profile(&mut request, Some(persistent.clone()));
+        assert_eq!(request.project_model_cache, Some(persistent));
+
+        request.project_model_cache = Some(memory.clone());
+        retain_verified_index_project_model_profile(&mut request, None);
+        assert_eq!(request.project_model_cache, Some(memory));
     }
 
     #[test]

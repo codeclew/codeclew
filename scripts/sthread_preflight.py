@@ -45,6 +45,12 @@ COMPILER_INDEX_SUCCESS_STATUSES = (
     "RECOVERED_FULL",
     "UNCHANGED_HIT",
 )
+PROJECT_MODEL_CACHE_STATUSES = (
+    "MEMORY_HIT",
+    "PERSISTENT_HIT",
+    "EXTRACTED_PUBLISHED",
+    "EXTRACTED_NOT_PUBLISHED",
+)
 
 
 class PreflightFailure(RuntimeError):
@@ -578,6 +584,73 @@ def compiler_index_profile(stdout: bytes) -> dict[str, Any]:
     return profile
 
 
+def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
+    result = next(
+        (
+            value
+            for value in reversed(json_values(stdout))
+            if isinstance(value, dict) and value.get("schema") == "semantic-index-result/0.1"
+        ),
+        None,
+    )
+    profile = result.get("projectModelCache") if isinstance(result, dict) else None
+    if not isinstance(profile, dict):
+        shape = "missing-result"
+        if isinstance(result, dict):
+            shape = "missing-key" if "projectModelCache" not in result else type(profile).__name__
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE",
+            "Kotlin 2.1 index result lacks typed project-model cache telemetry",
+            detail={"semanticIndexResult": isinstance(result, dict), "projectModelCacheShape": shape},
+        )
+    required = {
+        "status": str,
+        "totalMicros": int,
+        "keyMicros": int,
+        "loadMicros": int,
+        "extractionMicros": int,
+        "publishMicros": int,
+        "persistentConfigured": bool,
+        "published": bool,
+    }
+    if any(type(profile.get(key)) is not expected for key, expected in required.items()):
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE",
+            "project-model cache telemetry is incomplete or malformed",
+        )
+    if profile["status"] not in PROJECT_MODEL_CACHE_STATUSES:
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model cache status is unknown"
+        )
+    timings = tuple(
+        profile[key]
+        for key in ("totalMicros", "keyMicros", "loadMicros", "extractionMicros", "publishMicros")
+    )
+    if min(timings) < 0 or sum(timings[1:]) > timings[0]:
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model cache timings are inconsistent"
+        )
+    status = profile["status"]
+    consistent = {
+        "MEMORY_HIT": profile["loadMicros"] == 0
+        and profile["extractionMicros"] == 0
+        and profile["publishMicros"] == 0
+        and not profile["published"],
+        "PERSISTENT_HIT": profile["persistentConfigured"]
+        and profile["extractionMicros"] == 0
+        and profile["publishMicros"] == 0
+        and not profile["published"],
+        "EXTRACTED_PUBLISHED": profile["persistentConfigured"] and profile["published"],
+        "EXTRACTED_NOT_PUBLISHED": not profile["published"],
+    }[status]
+    if not consistent:
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE",
+            "project-model cache status disagrees with its timing/publication fields",
+        )
+    return profile
+
+
 def semantic_index_signature(result: dict[str, Any]) -> dict[str, Any]:
     required = ("declarationRelationHash", "declarationDescriptorHash")
     if any(not isinstance(result.get(key), str) or not result[key] for key in required):
@@ -611,6 +684,8 @@ def probe(
     required_stdout_markers: Sequence[bytes] = (),
     expected_compiler_index_status: str | None = None,
     require_compiler_index: bool = False,
+    expected_project_model_cache_status: str | None = None,
+    require_project_model_cache: bool = False,
 ) -> dict[str, Any]:
     completed, elapsed = run_capture(
         argv,
@@ -674,6 +749,18 @@ def probe(
             )
         row["indexTiming"]["openProjectIncludedInIndexFiles"] = True
         row["workerProfile"] = worker_profile
+    if require_project_model_cache or expected_project_model_cache_status is not None:
+        project_model_profile = project_model_cache_profile(completed.stdout)
+        if (
+            expected_project_model_cache_status is not None
+            and project_model_profile["status"] != expected_project_model_cache_status
+        ):
+            raise PreflightFailure(
+                "KOTLIN_2_1_PROJECT_MODEL_CACHE",
+                f"expected {expected_project_model_cache_status}, got {project_model_profile['status']}",
+                detail={**row, "projectModelCache": project_model_profile},
+            )
+        row["projectModelCache"] = project_model_profile
     return row
 
 
@@ -692,6 +779,12 @@ def probe_group(specifications: Sequence[dict[str, Any]], deadline: float) -> li
                 required_stdout_markers=tuple(specification.get("required_stdout_markers", ())),
                 expected_compiler_index_status=specification.get("expected_compiler_index_status"),
                 require_compiler_index=bool(specification.get("require_compiler_index", False)),
+                expected_project_model_cache_status=specification.get(
+                    "expected_project_model_cache_status"
+                ),
+                require_project_model_cache=bool(
+                    specification.get("require_project_model_cache", False)
+                ),
             ): str(specification["kind"])
             for specification in specifications
         }
@@ -926,6 +1019,41 @@ def self_test() -> None:
         raise AssertionError("different incremental and full semantic graphs accepted")
     except PreflightFailure:
         pass
+    project_model_row = {
+        "status": "PERSISTENT_HIT",
+        "totalMicros": 120,
+        "keyMicros": 20,
+        "loadMicros": 90,
+        "extractionMicros": 0,
+        "publishMicros": 0,
+        "persistentConfigured": True,
+        "published": False,
+    }
+    project_model_stdout = canonical(
+        {
+            "schema": "semantic-index-result/0.1",
+            "projectModelCache": project_model_row,
+        }
+    )
+    assert project_model_cache_profile(project_model_stdout) == project_model_row
+    for invalid in (
+        {**project_model_row, "status": "NEW_STATUS"},
+        {**project_model_row, "extractionMicros": 1},
+        {**project_model_row, "keyMicros": 121},
+        {**project_model_row, "published": True},
+    ):
+        try:
+            project_model_cache_profile(
+                canonical(
+                    {
+                        "schema": "semantic-index-result/0.1",
+                        "projectModelCache": invalid,
+                    }
+                )
+            )
+            raise AssertionError("invalid project-model cache profile accepted")
+        except PreflightFailure:
+            pass
     capability_output = b"Usage: clew --compiler-index-root <DIR> agent-context --model-input <MODEL_INPUT>"
     assert missing_stdout_markers(capability_output, (b"--model-input", b"--compiler-index-root")) == []
     assert missing_stdout_markers(capability_output, (b"--proof-context",)) == ["--proof-context"]
@@ -1226,6 +1354,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     ],
                     "cwd": workspace,
                     "require_compiler_index": kind == "KOTLIN_2_1_COMPILER_SEMANTIC",
+                    "require_project_model_cache": kind == "KOTLIN_2_1_COMPILER_SEMANTIC",
                 }
             )
     runtime_probes = probe_group(runtime_specifications, deadline)
@@ -1247,6 +1376,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             cwd=workspace,
             deadline=deadline,
             expected_compiler_index_status="UNCHANGED_HIT",
+            expected_project_model_cache_status="PERSISTENT_HIT",
         )
         require_same_compiler_index_graph(kotlin21, warm_probe)
         probes.append(warm_probe)
@@ -1276,6 +1406,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=workspace,
                 deadline=deadline,
                 expected_compiler_index_status="COLD_FULL",
+                expected_project_model_cache_status="EXTRACTED_PUBLISHED",
             )
             with changed_source.open("ab") as stream:
                 stream.write(b"\n// codeclew incremental preflight\n")
@@ -1296,6 +1427,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=workspace,
                 deadline=deadline,
                 expected_compiler_index_status="INCREMENTAL",
+                expected_project_model_cache_status="PERSISTENT_HIT",
             )
             fresh_full_probe = probe(
                 kind="KOTLIN_2_1_INCREMENTAL_FRESH_FULL",
@@ -1312,6 +1444,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=workspace,
                 deadline=deadline,
                 expected_compiler_index_status="COLD_FULL",
+                expected_project_model_cache_status="EXTRACTED_PUBLISHED",
             )
             require_incremental_equivalent_to_full(incremental_probe, fresh_full_probe)
             probes.extend((base_probe, incremental_probe, fresh_full_probe))
