@@ -81,6 +81,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--offline", action="store_true")
     parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="verify current install distributions against committed manifests without Gradle or writes",
+    )
+    parser.add_argument(
         "--gradle-user-home",
         type=Path,
         help="use an existing Gradle cache instead of a fresh temporary one",
@@ -88,11 +93,45 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def verify_distribution_manifest(
+    variant: str, task: str, relative_distribution: str
+) -> None:
+    distribution = ROOT / relative_distribution
+    manifest_path = MANIFEST_ROOT / f"{variant}.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows = distribution_files(distribution)
+    expected = {
+        "schema": "trusted-worker-distribution/0.1",
+        "variant": variant,
+        "installTask": task,
+        "files": rows,
+        "treeHash": tree_hash(rows),
+    }
+    if manifest != expected:
+        raise RuntimeError(
+            f"trusted worker distribution differs from manifest: {variant}"
+        )
+    canonical = json.dumps(
+        expected, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ) + "\n"
+    if manifest_path.read_text(encoding="utf-8") != canonical:
+        raise RuntimeError(f"trusted worker manifest is not canonical: {variant}")
+
+
 def main() -> None:
     args = parse_args()
     selected = tuple(
         row for row in VARIANTS if not args.variant or row[0] in set(args.variant)
     )
+    if args.verify_only:
+        expected = {f"{variant}.json" for variant, _, _ in VARIANTS}
+        if not MANIFEST_ROOT.is_dir() or {
+            path.name for path in MANIFEST_ROOT.iterdir()
+        } != expected:
+            raise RuntimeError("trusted-worker manifest set is incomplete")
+        for row in selected:
+            verify_distribution_manifest(*row)
+        return
     MANIFEST_ROOT.parent.mkdir(parents=True, exist_ok=True)
     gradle_home_context = (
         nullcontext(args.gradle_user_home.resolve())
