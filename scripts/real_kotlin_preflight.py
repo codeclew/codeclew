@@ -248,10 +248,7 @@ def java_launch_authority() -> tuple[Path, Path]:
         raise PreflightFailure("JAVA", "JAVA_HOME must be a real JDK directory")
     home = home.resolve(strict=True)
     configured_java = exact_executable(str(home / "bin" / "java"), "JAVA")
-    selected_java = exact_executable(shutil.which("java"), "JAVA")
-    if configured_java != selected_java:
-        raise PreflightFailure("JAVA", "PATH java differs from JAVA_HOME/bin/java")
-    return home, selected_java
+    return home, configured_java
 
 
 def validate_run_contract(

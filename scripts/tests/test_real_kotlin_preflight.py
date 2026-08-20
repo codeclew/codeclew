@@ -174,7 +174,7 @@ class RunContractTest(unittest.TestCase):
             ["/repo/gradlew", "--gradle-user-home", "/repo/.gradle", "--stop"],
         )
 
-    def test_java_launch_authority_requires_path_and_java_home_to_match(self) -> None:
+    def test_java_launch_authority_is_bound_directly_to_java_home(self) -> None:
         with tempfile.TemporaryDirectory(prefix="real-kotlin-java-authority-") as raw:
             root = Path(raw).resolve()
             home = root / "jdk"
@@ -182,17 +182,10 @@ class RunContractTest(unittest.TestCase):
             java.parent.mkdir(parents=True)
             java.write_text("#!/bin/sh\n", encoding="utf-8")
             java.chmod(0o700)
-            with mock.patch.dict(PREFLIGHT.os.environ, {"JAVA_HOME": str(home)}, clear=True), mock.patch.object(
-                PREFLIGHT.shutil, "which", return_value=str(java)
-            ):
+            with mock.patch.dict(PREFLIGHT.os.environ, {"JAVA_HOME": str(home)}, clear=True):
                 self.assertEqual(PREFLIGHT.java_launch_authority(), (home, java))
-            other = root / "other-java"
-            other.write_text("#!/bin/sh\n", encoding="utf-8")
-            other.chmod(0o700)
-            with mock.patch.dict(PREFLIGHT.os.environ, {"JAVA_HOME": str(home)}, clear=True), mock.patch.object(
-                PREFLIGHT.shutil, "which", return_value=str(other)
-            ):
-                with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "differs"):
+            with mock.patch.dict(PREFLIGHT.os.environ, {}, clear=True):
+                with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "must be explicit"):
                     PREFLIGHT.java_launch_authority()
 
 
