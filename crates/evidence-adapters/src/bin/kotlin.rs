@@ -5939,6 +5939,7 @@ mod adapter_local_tests {
             project_model_cache: Some(clew::worker::ProjectModelCacheProfile {
                 status: clew::worker::ProjectModelCacheStatus::PersistentHit,
                 publish_outcome: clew::worker::ProjectModelPublishOutcome::NotAttempted,
+                publish_invalid_reason: clew::worker::ProjectModelInvalidReason::NotApplicable,
                 total_micros: 110,
                 key_micros: 20,
                 load_micros: 80,
@@ -5969,6 +5970,10 @@ mod adapter_local_tests {
         assert_eq!(
             context.cache["projectModelCache"]["persistentConfigured"],
             true
+        );
+        assert_eq!(
+            context.cache["projectModelCache"]["publishInvalidReason"],
+            "NOT_APPLICABLE"
         );
 
         let cache_before = context.cache.clone();

@@ -58,6 +58,21 @@ PROJECT_MODEL_PUBLISH_OUTCOMES = (
     "ROOT_UNAVAILABLE",
     "WRITE_FAILED",
 )
+PROJECT_MODEL_INVALID_REASONS = (
+    "NOT_APPLICABLE",
+    "MISSING_SEMANTIC_INPUT_MANIFEST_HASH",
+    "INVALID_SEMANTIC_INPUT_MANIFEST_HASH",
+    "SEMANTIC_INPUT_MANIFEST_HASH_MISMATCH",
+    "MISSING_SEMANTIC_INPUT_MANIFEST",
+    "MODEL_INPUTS_MANIFEST_MISMATCH",
+    "JDK_FINGERPRINT_MANIFEST_MISMATCH",
+    "MODEL_INPUTS_INVALID",
+    "RESOURCE_IDENTITIES_INVALID",
+    "JDK_HOME_INVALID",
+    "JDK_HOME_MISMATCH",
+    "JDK_FINGERPRINT_MISSING",
+    "JDK_FINGERPRINT_INVALID",
+)
 TRUSTED_WORKER_ENVIRONMENT_REMOVALS = (
     "GRADLE_USER_HOME",
     "JAVA_HOME",
@@ -697,6 +712,7 @@ def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
     required = {
         "status": str,
         "publishOutcome": str,
+        "publishInvalidReason": str,
         "totalMicros": int,
         "keyMicros": int,
         "loadMicros": int,
@@ -718,6 +734,10 @@ def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
         raise PreflightFailure(
             "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model publish outcome is unknown"
         )
+    if profile["publishInvalidReason"] not in PROJECT_MODEL_INVALID_REASONS:
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model invalid reason is unknown"
+        )
     timings = tuple(
         profile[key]
         for key in ("totalMicros", "keyMicros", "loadMicros", "extractionMicros", "publishMicros")
@@ -728,22 +748,27 @@ def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
         )
     status = profile["status"]
     outcome = profile["publishOutcome"]
+    invalid_reason = profile["publishInvalidReason"]
     consistent = {
         "MEMORY_HIT": outcome == "NOT_ATTEMPTED"
+        and invalid_reason == "NOT_APPLICABLE"
         and profile["loadMicros"] == 0
         and profile["extractionMicros"] == 0
         and profile["publishMicros"] == 0
         and not profile["published"],
         "PERSISTENT_HIT": outcome == "NOT_ATTEMPTED"
+        and invalid_reason == "NOT_APPLICABLE"
         and profile["persistentConfigured"]
         and profile["extractionMicros"] == 0
         and profile["publishMicros"] == 0
         and not profile["published"],
         "EXTRACTED_PUBLISHED": outcome == "PUBLISHED"
+        and invalid_reason == "NOT_APPLICABLE"
         and profile["persistentConfigured"]
         and profile["published"],
         "EXTRACTED_NOT_PUBLISHED": outcome
         in {"INVALID_MODEL", "ROOT_UNAVAILABLE", "WRITE_FAILED"}
+        and ((outcome == "INVALID_MODEL") == (invalid_reason != "NOT_APPLICABLE"))
         and not profile["published"],
     }[status]
     if not consistent:
@@ -1125,6 +1150,7 @@ def self_test() -> None:
     project_model_row = {
         "status": "PERSISTENT_HIT",
         "publishOutcome": "NOT_ATTEMPTED",
+        "publishInvalidReason": "NOT_APPLICABLE",
         "totalMicros": 120,
         "keyMicros": 20,
         "loadMicros": 90,
@@ -1140,13 +1166,39 @@ def self_test() -> None:
         }
     )
     assert project_model_cache_profile(project_model_stdout) == project_model_row
+    invalid_model_row = {
+        **project_model_row,
+        "status": "EXTRACTED_NOT_PUBLISHED",
+        "publishOutcome": "INVALID_MODEL",
+        "publishInvalidReason": "SEMANTIC_INPUT_MANIFEST_HASH_MISMATCH",
+        "loadMicros": 10,
+        "extractionMicros": 30,
+        "publishMicros": 20,
+    }
+    assert project_model_cache_profile(
+        canonical(
+            {
+                "schema": "semantic-index-result/0.1",
+                "projectModelCache": invalid_model_row,
+            }
+        )
+    ) == invalid_model_row
     for invalid in (
         {**project_model_row, "status": "NEW_STATUS"},
         {**project_model_row, "publishOutcome": "NEW_OUTCOME"},
+        {**project_model_row, "publishInvalidReason": "NEW_REASON"},
         {**project_model_row, "extractionMicros": 1},
         {**project_model_row, "keyMicros": 121},
         {**project_model_row, "published": True},
         {**project_model_row, "publishOutcome": "WRITE_FAILED"},
+        {
+            **project_model_row,
+            "status": "EXTRACTED_NOT_PUBLISHED",
+            "publishOutcome": "INVALID_MODEL",
+            "publishInvalidReason": "NOT_APPLICABLE",
+            "extractionMicros": 30,
+            "publishMicros": 20,
+        },
     ):
         try:
             project_model_cache_profile(

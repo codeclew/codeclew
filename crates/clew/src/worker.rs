@@ -71,11 +71,30 @@ pub enum ProjectModelPublishOutcome {
     WriteFailed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProjectModelInvalidReason {
+    NotApplicable,
+    MissingSemanticInputManifestHash,
+    InvalidSemanticInputManifestHash,
+    SemanticInputManifestHashMismatch,
+    MissingSemanticInputManifest,
+    ModelInputsManifestMismatch,
+    JdkFingerprintManifestMismatch,
+    ModelInputsInvalid,
+    ResourceIdentitiesInvalid,
+    JdkHomeInvalid,
+    JdkHomeMismatch,
+    JdkFingerprintMissing,
+    JdkFingerprintInvalid,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectModelCacheProfile {
     pub status: ProjectModelCacheStatus,
     pub publish_outcome: ProjectModelPublishOutcome,
+    pub publish_invalid_reason: ProjectModelInvalidReason,
     pub total_micros: u64,
     pub key_micros: u64,
     pub load_micros: u64,
@@ -2926,6 +2945,32 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
         "WRITE_FAILED" => ProjectModelPublishOutcome::WriteFailed,
         _ => return None,
     };
+    let publish_invalid_reason = match object.get("projectModelPublishInvalidReason")?.as_str()? {
+        "NOT_APPLICABLE" => ProjectModelInvalidReason::NotApplicable,
+        "MISSING_SEMANTIC_INPUT_MANIFEST_HASH" => {
+            ProjectModelInvalidReason::MissingSemanticInputManifestHash
+        }
+        "INVALID_SEMANTIC_INPUT_MANIFEST_HASH" => {
+            ProjectModelInvalidReason::InvalidSemanticInputManifestHash
+        }
+        "SEMANTIC_INPUT_MANIFEST_HASH_MISMATCH" => {
+            ProjectModelInvalidReason::SemanticInputManifestHashMismatch
+        }
+        "MISSING_SEMANTIC_INPUT_MANIFEST" => {
+            ProjectModelInvalidReason::MissingSemanticInputManifest
+        }
+        "MODEL_INPUTS_MANIFEST_MISMATCH" => ProjectModelInvalidReason::ModelInputsManifestMismatch,
+        "JDK_FINGERPRINT_MANIFEST_MISMATCH" => {
+            ProjectModelInvalidReason::JdkFingerprintManifestMismatch
+        }
+        "MODEL_INPUTS_INVALID" => ProjectModelInvalidReason::ModelInputsInvalid,
+        "RESOURCE_IDENTITIES_INVALID" => ProjectModelInvalidReason::ResourceIdentitiesInvalid,
+        "JDK_HOME_INVALID" => ProjectModelInvalidReason::JdkHomeInvalid,
+        "JDK_HOME_MISMATCH" => ProjectModelInvalidReason::JdkHomeMismatch,
+        "JDK_FINGERPRINT_MISSING" => ProjectModelInvalidReason::JdkFingerprintMissing,
+        "JDK_FINGERPRINT_INVALID" => ProjectModelInvalidReason::JdkFingerprintInvalid,
+        _ => return None,
+    };
     let total_micros = object.get("projectModelTotalMicros")?.as_u64()?;
     let key_micros = object.get("projectModelKeyMicros")?.as_u64()?;
     let load_micros = object.get("projectModelLoadMicros")?.as_u64()?;
@@ -2943,6 +2988,7 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
     let consistent = match status {
         ProjectModelCacheStatus::MemoryHit => {
             publish_outcome == ProjectModelPublishOutcome::NotAttempted
+                && publish_invalid_reason == ProjectModelInvalidReason::NotApplicable
                 && load_micros == 0
                 && extraction_micros == 0
                 && publish_micros == 0
@@ -2950,6 +2996,7 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
         }
         ProjectModelCacheStatus::PersistentHit => {
             publish_outcome == ProjectModelPublishOutcome::NotAttempted
+                && publish_invalid_reason == ProjectModelInvalidReason::NotApplicable
                 && persistent_configured
                 && extraction_micros == 0
                 && publish_micros == 0
@@ -2957,6 +3004,7 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
         }
         ProjectModelCacheStatus::ExtractedPublished => {
             publish_outcome == ProjectModelPublishOutcome::Published
+                && publish_invalid_reason == ProjectModelInvalidReason::NotApplicable
                 && persistent_configured
                 && published
         }
@@ -2966,12 +3014,17 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
                 ProjectModelPublishOutcome::InvalidModel
                     | ProjectModelPublishOutcome::RootUnavailable
                     | ProjectModelPublishOutcome::WriteFailed
-            ) && !published
+            ) && (publish_outcome == ProjectModelPublishOutcome::InvalidModel
+                || publish_invalid_reason == ProjectModelInvalidReason::NotApplicable)
+                && (publish_outcome != ProjectModelPublishOutcome::InvalidModel
+                    || publish_invalid_reason != ProjectModelInvalidReason::NotApplicable)
+                && !published
         }
     };
     consistent.then_some(ProjectModelCacheProfile {
         status,
         publish_outcome,
+        publish_invalid_reason,
         total_micros,
         key_micros,
         load_micros,
@@ -3103,6 +3156,7 @@ mod tests {
         json!({
             "projectModelCacheStatus":"PERSISTENT_HIT",
             "projectModelPublishOutcome":"NOT_ATTEMPTED",
+            "projectModelPublishInvalidReason":"NOT_APPLICABLE",
             "projectModelTotalMicros":120,
             "projectModelKeyMicros":20,
             "projectModelLoadMicros":90,
@@ -3123,11 +3177,16 @@ mod tests {
             profile.publish_outcome,
             ProjectModelPublishOutcome::NotAttempted
         );
+        assert_eq!(
+            profile.publish_invalid_reason,
+            ProjectModelInvalidReason::NotApplicable
+        );
         assert_eq!(profile.total_micros, 120);
         assert_eq!(profile.key_micros, 20);
         assert_eq!(profile.load_micros, 90);
         let transported = serde_json::to_value(profile).unwrap();
         assert_eq!(transported["status"], "PERSISTENT_HIT");
+        assert_eq!(transported["publishInvalidReason"], "NOT_APPLICABLE");
         assert!(transported.get("privatePath").is_none());
     }
 
@@ -3159,6 +3218,10 @@ mod tests {
         let mut inconsistent_outcome = valid_project_model_cache_profiling();
         inconsistent_outcome["projectModelPublishOutcome"] = Value::String("WRITE_FAILED".into());
         assert!(parse_project_model_cache_profile(&inconsistent_outcome).is_none());
+
+        let mut unknown_reason = valid_project_model_cache_profiling();
+        unknown_reason["projectModelPublishInvalidReason"] = Value::String("NEW_REASON".into());
+        assert!(parse_project_model_cache_profile(&unknown_reason).is_none());
     }
 
     #[test]
@@ -3198,6 +3261,14 @@ mod tests {
             let mut value = valid_project_model_cache_profiling();
             value["projectModelCacheStatus"] = Value::String(status.to_owned());
             value["projectModelPublishOutcome"] = Value::String(outcome.to_owned());
+            value["projectModelPublishInvalidReason"] = Value::String(
+                if outcome == "INVALID_MODEL" {
+                    "SEMANTIC_INPUT_MANIFEST_HASH_MISMATCH"
+                } else {
+                    "NOT_APPLICABLE"
+                }
+                .to_owned(),
+            );
             value["projectModelPersistentConfigured"] = Value::Bool(persistent);
             value["projectModelPublished"] = Value::Bool(published);
             value["projectModelLoadMicros"] = Value::from(load);
