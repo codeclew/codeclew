@@ -16,6 +16,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -457,6 +458,21 @@ def compiler_index_profile(stdout: bytes) -> dict[str, Any]:
     return profile
 
 
+def semantic_index_signature(result: dict[str, Any]) -> dict[str, Any]:
+    required = ("declarationRelationHash", "declarationDescriptorHash")
+    if any(not isinstance(result.get(key), str) or not result[key] for key in required):
+        raise PreflightFailure(
+            "KOTLIN_2_1_COMPILER_INDEX",
+            "semantic index result lacks normalized graph identities",
+        )
+    if not isinstance(result.get("files"), int) or result["files"] < 0:
+        raise PreflightFailure(
+            "KOTLIN_2_1_COMPILER_INDEX",
+            "semantic index result has an invalid file count",
+        )
+    return {key: result[key] for key in (*required, "files")}
+
+
 def receipt_argv(argv: Sequence[str]) -> list[str]:
     rendered = list(argv)
     for index, token in enumerate(rendered[:-1]):
@@ -516,6 +532,7 @@ def probe(
         )
         timing = result.get("timing")
         worker_profile = result.get("workerProfile")
+        row["semanticIndex"] = semantic_index_signature(result)
         timing_keys = (
             "openProjectMicros",
             "indexFilesMicros",
@@ -609,6 +626,90 @@ def require_same_compiler_index_graph(first: dict[str, Any], warm: dict[str, Any
         )
 
 
+def require_incremental_equivalent_to_full(
+    incremental: dict[str, Any], fresh_full: dict[str, Any]
+) -> None:
+    profile = incremental["compilerIndex"]
+    if profile["status"] != "INCREMENTAL":
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "edited same-root probe did not use incremental compilation",
+        )
+    if not (0 < profile["compiledFiles"] < profile["totalFiles"]):
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "incremental compilation did not reuse a strict subset of indexed files",
+        )
+    if profile["compiledFiles"] + profile["reusedFiles"] != profile["totalFiles"]:
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "incremental compiler-index file counts are inconsistent",
+        )
+    if fresh_full["compilerIndex"]["status"] != "COLD_FULL":
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "fresh-root comparison did not perform a full compilation",
+        )
+    if incremental["semanticIndex"] != fresh_full["semanticIndex"]:
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "incremental and fresh-full normalized semantic graphs differ",
+            detail={
+                "incremental": incremental["semanticIndex"],
+                "freshFull": fresh_full["semanticIndex"],
+            },
+        )
+
+
+def initialize_incremental_fixture(source: Path, target: Path, deadline: float) -> Path:
+    clone_tree_contents(source, target, deadline - time.monotonic())
+    for relative in (".semantic-thread", ".git", "build", ".kotlin"):
+        candidate = target / relative
+        if candidate.exists():
+            if candidate.is_symlink():
+                raise PreflightFailure(
+                    "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+                    f"temporary fixture contains a symlinked runtime path: {relative}",
+                )
+            shutil.rmtree(candidate)
+    commands = (
+        ["git", "init", "--quiet"],
+        ["git", "add", "-A"],
+        [
+            "git",
+            "-c",
+            "user.name=Codeclew Preflight",
+            "-c",
+            "user.email=preflight@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "preflight fixture",
+        ],
+    )
+    for argv in commands:
+        completed, _elapsed = run_capture(
+            argv,
+            cwd=target,
+            timeout_seconds=deadline - time.monotonic(),
+            stage="KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+        )
+        if completed.returncode != 0:
+            raise PreflightFailure(
+                "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+                "temporary incremental fixture initialization failed",
+                detail=failure_summary(completed),
+            )
+    candidates = sorted((target / "src/main/kotlin").rglob("*.kt"))
+    candidates = [path for path in candidates if path.is_file() and not path.is_symlink()]
+    if len(candidates) < 2:
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "incremental fixture needs at least two regular Kotlin sources",
+        )
+    return candidates[0]
+
+
 def self_test() -> None:
     event = b'{"event":"request_completed","success":false}\n{\n  "error":{"code":"X","message":"boom"}\n}\n'
     completed = subprocess.CompletedProcess(["clew"], 7, event, b"")
@@ -637,6 +738,42 @@ def self_test() -> None:
             raise AssertionError("invalid independent warm compiler-index proof accepted")
         except PreflightFailure:
             pass
+    signature = {
+        "declarationRelationHash": "sha256:" + "c" * 64,
+        "declarationDescriptorHash": "sha256:" + "d" * 64,
+        "files": 4,
+    }
+    require_incremental_equivalent_to_full(
+        {
+            "compilerIndex": {
+                "status": "INCREMENTAL",
+                "totalFiles": 4,
+                "compiledFiles": 1,
+                "reusedFiles": 3,
+            },
+            "semanticIndex": signature,
+        },
+        {"compilerIndex": {"status": "COLD_FULL"}, "semanticIndex": signature},
+    )
+    try:
+        require_incremental_equivalent_to_full(
+            {
+                "compilerIndex": {
+                    "status": "INCREMENTAL",
+                    "totalFiles": 4,
+                    "compiledFiles": 1,
+                    "reusedFiles": 3,
+                },
+                "semanticIndex": signature,
+            },
+            {
+                "compilerIndex": {"status": "COLD_FULL"},
+                "semanticIndex": {**signature, "files": 3},
+            },
+        )
+        raise AssertionError("different incremental and full semantic graphs accepted")
+    except PreflightFailure:
+        pass
     capability_output = b"Usage: clew --compiler-index-root <DIR> agent-context --model-input <MODEL_INPUT>"
     assert missing_stdout_markers(capability_output, (b"--model-input", b"--compiler-index-root")) == []
     assert missing_stdout_markers(capability_output, (b"--proof-context",)) == ["--proof-context"]
@@ -885,6 +1022,72 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         )
         require_same_compiler_index_graph(kotlin21, warm_probe)
         probes.append(warm_probe)
+        with tempfile.TemporaryDirectory(prefix="codeclew-sthread-incremental-") as raw:
+            incremental_root = Path(raw).resolve()
+            incremental_fixture = incremental_root / "fixture"
+            changed_source = initialize_incremental_fixture(
+                fixture21, incremental_fixture, deadline
+            )
+            shared_index_root = prepare_compiler_index_root(
+                incremental_root / "same-index", workspace
+            )
+            fresh_index_root = prepare_compiler_index_root(
+                incremental_root / "fresh-index", workspace
+            )
+            base_probe = probe(
+                kind="KOTLIN_2_1_INCREMENTAL_BASE",
+                argv=[
+                    str(clew),
+                    "--compiler-index-root",
+                    str(shared_index_root),
+                    "index",
+                    "--repo",
+                    str(incremental_fixture),
+                    "--compilation",
+                    ":/main",
+                ],
+                cwd=workspace,
+                deadline=deadline,
+                expected_compiler_index_status="COLD_FULL",
+            )
+            with changed_source.open("ab") as stream:
+                stream.write(b"\n// codeclew incremental preflight\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            incremental_probe = probe(
+                kind="KOTLIN_2_1_INCREMENTAL_EDITED",
+                argv=[
+                    str(clew),
+                    "--compiler-index-root",
+                    str(shared_index_root),
+                    "index",
+                    "--repo",
+                    str(incremental_fixture),
+                    "--compilation",
+                    ":/main",
+                ],
+                cwd=workspace,
+                deadline=deadline,
+                expected_compiler_index_status="INCREMENTAL",
+            )
+            fresh_full_probe = probe(
+                kind="KOTLIN_2_1_INCREMENTAL_FRESH_FULL",
+                argv=[
+                    str(clew),
+                    "--compiler-index-root",
+                    str(fresh_index_root),
+                    "index",
+                    "--repo",
+                    str(incremental_fixture),
+                    "--compilation",
+                    ":/main",
+                ],
+                cwd=workspace,
+                deadline=deadline,
+                expected_compiler_index_status="COLD_FULL",
+            )
+            require_incremental_equivalent_to_full(incremental_probe, fresh_full_probe)
+            probes.extend((base_probe, incremental_probe, fresh_full_probe))
 
     elapsed = monotonic_millis(started)
     return {
