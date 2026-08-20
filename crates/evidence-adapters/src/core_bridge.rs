@@ -682,12 +682,6 @@ fn impact_evidence(
         .get("closureSpecification")
         .and_then(Value::as_str)
         .unwrap_or("codeclew.impact/unknown");
-    let boundary_assessment_digest = output
-        .impact
-        .get("boundaryAssessment")
-        .map(canonical_json_bytes)
-        .transpose()?
-        .map(sha256_digest);
     let mut obligations = output
         .impact
         .get("mandatoryObligations")
@@ -713,21 +707,7 @@ fn impact_evidence(
                 })
                 .transpose()?
                 .unwrap_or_default();
-            let has_bound_closure_attestation = obligation_kind
-                == "codeclew.obligation/impact-closure-completeness/1"
-                && impact_boundaries.is_empty()
-                && raw
-                    .pointer("/providerPayload/boundaryAssessmentDigest")
-                    .and_then(Value::as_str)
-                    == boundary_assessment_digest.as_deref();
-            let status = if provider_status == "SATISFIED"
-                && evidence_ids.is_empty()
-                && !has_bound_closure_attestation
-            {
-                ObligationStatus::Unknown
-            } else {
-                obligation_status(provider_status)?
-            };
+            let status = translated_obligation_status(provider_status, &evidence_ids)?;
             let mut obligation = Obligation {
                 obligation_id: text(raw, "id")?.to_owned(),
                 origin_intent_digest: intent_digest.clone(),
@@ -1259,6 +1239,38 @@ fn obligation_status(value: &str) -> Result<ObligationStatus> {
         "UNSUPPORTED" => ObligationStatus::Unsupported,
         other => bail!("unknown obligation status {other}"),
     })
+}
+
+fn translated_obligation_status(
+    provider_status: &str,
+    evidence_fact_ids: &[String],
+) -> Result<ObligationStatus> {
+    if provider_status == "SATISFIED" && evidence_fact_ids.is_empty() {
+        Ok(ObligationStatus::Unknown)
+    } else {
+        obligation_status(provider_status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_provider_satisfaction_is_fail_closed_for_frozen_core() {
+        assert_eq!(
+            translated_obligation_status("SATISFIED", &[]).unwrap(),
+            ObligationStatus::Unknown
+        );
+        assert_eq!(
+            translated_obligation_status("SATISFIED", &["sha256:fact".to_owned()]).unwrap(),
+            ObligationStatus::Satisfied
+        );
+        assert_eq!(
+            translated_obligation_status("UNKNOWN", &[]).unwrap(),
+            ObligationStatus::Unknown
+        );
+    }
 }
 
 fn impact_class(value: &str) -> Result<ImpactClass> {
