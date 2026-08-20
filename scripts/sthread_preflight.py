@@ -507,6 +507,28 @@ def probe(
                 detail={**row, "compilerIndex": profile},
             )
         row["compilerIndex"] = profile
+        result = next(
+            value
+            for value in reversed(json_values(completed.stdout))
+            if isinstance(value, dict) and value.get("schema") == "semantic-index-result/0.1"
+        )
+        timing = result.get("timing")
+        worker_profile = result.get("workerProfile")
+        timing_keys = (
+            "openProjectMicros",
+            "indexFilesMicros",
+            "inspectReceiptMicros",
+            "repositoryPublicationMicros",
+            "totalMicros",
+        )
+        if not isinstance(timing, dict) or any(
+            not isinstance(timing.get(key), int) or timing[key] < 0 for key in timing_keys
+        ):
+            raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "index phase telemetry is malformed")
+        if not isinstance(worker_profile, dict):
+            raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "worker phase telemetry is missing")
+        row["indexTiming"] = {key: timing[key] for key in timing_keys}
+        row["workerProfile"] = worker_profile
     return row
 
 

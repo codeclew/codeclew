@@ -458,16 +458,25 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             )
         }),
         Command::Index(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+            let total_started = std::time::Instant::now();
             let repo = absolute(&args.repo)?;
+            let project_started = std::time::Instant::now();
             let project = w.request(
                 RequestKind::OpenProject,
                 &json!({"repo":repo,"compilation":args.compilation}),
             )?;
+            let open_project_micros = project_started.elapsed().as_micros() as u64;
+            let index_started = std::time::Instant::now();
             let verified_facts = w.index_files_verified(
                 &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":args.syntax_only,"files":args.files}),
             )?;
+            let index_files_micros = index_started.elapsed().as_micros() as u64;
+            let inspect_started = std::time::Instant::now();
             let facts = w.inspect_verified_index(&verified_facts)?;
+            let inspect_receipt_micros = inspect_started.elapsed().as_micros() as u64;
             let compiler_index = w.last_profile.compiler_index.clone();
+            let worker_profile = w.last_profile.clone();
+            let publication_started = std::time::Instant::now();
             let syntax_storage = args
                 .syntax_only
                 .then(|| format!("{}#syntax", args.compilation.as_deref().unwrap_or(":/main")));
@@ -490,6 +499,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             })?;
             let invalidations = index.invalidations()?;
             let freshness = index.freshness_status(REPOSITORY_INDEX_FACT)?;
+            let repository_publication_micros = publication_started.elapsed().as_micros() as u64;
             Ok(json!({
                 "schema":"semantic-index-result/0.1",
                 "projectModelHash":project["projectModelHash"],
@@ -513,6 +523,23 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 "invalidations":invalidations,
                 "freshness":freshness,
                 "compilerIndex":compiler_index,
+                "workerProfile":{
+                    "serializationMicros":worker_profile.serialization_micros,
+                    "ipcMicros":worker_profile.ipc_micros,
+                    "workerProcessingMicros":worker_profile.worker_processing_micros,
+                    "cacheRequests":worker_profile.cache_requests,
+                    "cacheHits":worker_profile.cache_hits,
+                    "psiParseMicros":worker_profile.psi_parse_micros,
+                    "k2AnalysisMicros":worker_profile.k2_analysis_micros,
+                    "firExtractionMicros":worker_profile.fir_extraction_micros,
+                },
+                "timing":{
+                    "openProjectMicros":open_project_micros,
+                    "indexFilesMicros":index_files_micros,
+                    "inspectReceiptMicros":inspect_receipt_micros,
+                    "repositoryPublicationMicros":repository_publication_micros,
+                    "totalMicros":total_started.elapsed().as_micros() as u64,
+                },
             }))
         }),
         Command::Resolve {
