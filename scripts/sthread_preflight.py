@@ -51,6 +51,13 @@ PROJECT_MODEL_CACHE_STATUSES = (
     "EXTRACTED_PUBLISHED",
     "EXTRACTED_NOT_PUBLISHED",
 )
+PROJECT_MODEL_PUBLISH_OUTCOMES = (
+    "NOT_ATTEMPTED",
+    "PUBLISHED",
+    "INVALID_MODEL",
+    "ROOT_UNAVAILABLE",
+    "WRITE_FAILED",
+)
 TRUSTED_WORKER_ENVIRONMENT_REMOVALS = (
     "GRADLE_USER_HOME",
     "JAVA_HOME",
@@ -654,6 +661,7 @@ def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
         )
     required = {
         "status": str,
+        "publishOutcome": str,
         "totalMicros": int,
         "keyMicros": int,
         "loadMicros": int,
@@ -671,6 +679,10 @@ def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
         raise PreflightFailure(
             "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model cache status is unknown"
         )
+    if profile["publishOutcome"] not in PROJECT_MODEL_PUBLISH_OUTCOMES:
+        raise PreflightFailure(
+            "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model publish outcome is unknown"
+        )
     timings = tuple(
         profile[key]
         for key in ("totalMicros", "keyMicros", "loadMicros", "extractionMicros", "publishMicros")
@@ -680,17 +692,24 @@ def project_model_cache_profile(stdout: bytes) -> dict[str, Any]:
             "KOTLIN_2_1_PROJECT_MODEL_CACHE", "project-model cache timings are inconsistent"
         )
     status = profile["status"]
+    outcome = profile["publishOutcome"]
     consistent = {
-        "MEMORY_HIT": profile["loadMicros"] == 0
+        "MEMORY_HIT": outcome == "NOT_ATTEMPTED"
+        and profile["loadMicros"] == 0
         and profile["extractionMicros"] == 0
         and profile["publishMicros"] == 0
         and not profile["published"],
-        "PERSISTENT_HIT": profile["persistentConfigured"]
+        "PERSISTENT_HIT": outcome == "NOT_ATTEMPTED"
+        and profile["persistentConfigured"]
         and profile["extractionMicros"] == 0
         and profile["publishMicros"] == 0
         and not profile["published"],
-        "EXTRACTED_PUBLISHED": profile["persistentConfigured"] and profile["published"],
-        "EXTRACTED_NOT_PUBLISHED": not profile["published"],
+        "EXTRACTED_PUBLISHED": outcome == "PUBLISHED"
+        and profile["persistentConfigured"]
+        and profile["published"],
+        "EXTRACTED_NOT_PUBLISHED": outcome
+        in {"INVALID_MODEL", "ROOT_UNAVAILABLE", "WRITE_FAILED"}
+        and not profile["published"],
     }[status]
     if not consistent:
         raise PreflightFailure(
@@ -1070,6 +1089,7 @@ def self_test() -> None:
         pass
     project_model_row = {
         "status": "PERSISTENT_HIT",
+        "publishOutcome": "NOT_ATTEMPTED",
         "totalMicros": 120,
         "keyMicros": 20,
         "loadMicros": 90,
@@ -1087,9 +1107,11 @@ def self_test() -> None:
     assert project_model_cache_profile(project_model_stdout) == project_model_row
     for invalid in (
         {**project_model_row, "status": "NEW_STATUS"},
+        {**project_model_row, "publishOutcome": "NEW_OUTCOME"},
         {**project_model_row, "extractionMicros": 1},
         {**project_model_row, "keyMicros": 121},
         {**project_model_row, "published": True},
+        {**project_model_row, "publishOutcome": "WRITE_FAILED"},
     ):
         try:
             project_model_cache_profile(

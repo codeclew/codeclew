@@ -5938,6 +5938,7 @@ mod adapter_local_tests {
             }),
             project_model_cache: Some(clew::worker::ProjectModelCacheProfile {
                 status: clew::worker::ProjectModelCacheStatus::PersistentHit,
+                publish_outcome: clew::worker::ProjectModelPublishOutcome::NotAttempted,
                 total_micros: 110,
                 key_micros: 20,
                 load_micros: 80,

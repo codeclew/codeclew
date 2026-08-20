@@ -61,10 +61,21 @@ pub enum ProjectModelCacheStatus {
     ExtractedNotPublished,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProjectModelPublishOutcome {
+    NotAttempted,
+    Published,
+    InvalidModel,
+    RootUnavailable,
+    WriteFailed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectModelCacheProfile {
     pub status: ProjectModelCacheStatus,
+    pub publish_outcome: ProjectModelPublishOutcome,
     pub total_micros: u64,
     pub key_micros: u64,
     pub load_micros: u64,
@@ -2907,6 +2918,14 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
         "EXTRACTED_NOT_PUBLISHED" => ProjectModelCacheStatus::ExtractedNotPublished,
         _ => return None,
     };
+    let publish_outcome = match object.get("projectModelPublishOutcome")?.as_str()? {
+        "NOT_ATTEMPTED" => ProjectModelPublishOutcome::NotAttempted,
+        "PUBLISHED" => ProjectModelPublishOutcome::Published,
+        "INVALID_MODEL" => ProjectModelPublishOutcome::InvalidModel,
+        "ROOT_UNAVAILABLE" => ProjectModelPublishOutcome::RootUnavailable,
+        "WRITE_FAILED" => ProjectModelPublishOutcome::WriteFailed,
+        _ => return None,
+    };
     let total_micros = object.get("projectModelTotalMicros")?.as_u64()?;
     let key_micros = object.get("projectModelKeyMicros")?.as_u64()?;
     let load_micros = object.get("projectModelLoadMicros")?.as_u64()?;
@@ -2923,16 +2942,36 @@ fn parse_project_model_cache_profile(profiling: &Value) -> Option<ProjectModelCa
     }
     let consistent = match status {
         ProjectModelCacheStatus::MemoryHit => {
-            load_micros == 0 && extraction_micros == 0 && publish_micros == 0 && !published
+            publish_outcome == ProjectModelPublishOutcome::NotAttempted
+                && load_micros == 0
+                && extraction_micros == 0
+                && publish_micros == 0
+                && !published
         }
         ProjectModelCacheStatus::PersistentHit => {
-            persistent_configured && extraction_micros == 0 && publish_micros == 0 && !published
+            publish_outcome == ProjectModelPublishOutcome::NotAttempted
+                && persistent_configured
+                && extraction_micros == 0
+                && publish_micros == 0
+                && !published
         }
-        ProjectModelCacheStatus::ExtractedPublished => persistent_configured && published,
-        ProjectModelCacheStatus::ExtractedNotPublished => !published,
+        ProjectModelCacheStatus::ExtractedPublished => {
+            publish_outcome == ProjectModelPublishOutcome::Published
+                && persistent_configured
+                && published
+        }
+        ProjectModelCacheStatus::ExtractedNotPublished => {
+            matches!(
+                publish_outcome,
+                ProjectModelPublishOutcome::InvalidModel
+                    | ProjectModelPublishOutcome::RootUnavailable
+                    | ProjectModelPublishOutcome::WriteFailed
+            ) && !published
+        }
     };
     consistent.then_some(ProjectModelCacheProfile {
         status,
+        publish_outcome,
         total_micros,
         key_micros,
         load_micros,
@@ -3063,6 +3102,7 @@ mod tests {
     fn valid_project_model_cache_profiling() -> Value {
         json!({
             "projectModelCacheStatus":"PERSISTENT_HIT",
+            "projectModelPublishOutcome":"NOT_ATTEMPTED",
             "projectModelTotalMicros":120,
             "projectModelKeyMicros":20,
             "projectModelLoadMicros":90,
@@ -3079,6 +3119,10 @@ mod tests {
         let profile = parse_project_model_cache_profile(&valid_project_model_cache_profiling())
             .expect("valid persistent hit");
         assert_eq!(profile.status, ProjectModelCacheStatus::PersistentHit);
+        assert_eq!(
+            profile.publish_outcome,
+            ProjectModelPublishOutcome::NotAttempted
+        );
         assert_eq!(profile.total_micros, 120);
         assert_eq!(profile.key_micros, 20);
         assert_eq!(profile.load_micros, 90);
@@ -3111,18 +3155,49 @@ mod tests {
         let mut published_hit = valid_project_model_cache_profiling();
         published_hit["projectModelPublished"] = Value::Bool(true);
         assert!(parse_project_model_cache_profile(&published_hit).is_none());
+
+        let mut inconsistent_outcome = valid_project_model_cache_profiling();
+        inconsistent_outcome["projectModelPublishOutcome"] = Value::String("WRITE_FAILED".into());
+        assert!(parse_project_model_cache_profile(&inconsistent_outcome).is_none());
     }
 
     #[test]
     fn project_model_cache_profile_accepts_each_consistent_status() {
-        for (status, persistent, published, load, extraction, publish) in [
-            ("MEMORY_HIT", false, false, 0, 0, 0),
-            ("PERSISTENT_HIT", true, false, 10, 0, 0),
-            ("EXTRACTED_PUBLISHED", true, true, 10, 30, 20),
-            ("EXTRACTED_NOT_PUBLISHED", true, false, 10, 30, 20),
+        for (status, outcome, persistent, published, load, extraction, publish) in [
+            ("MEMORY_HIT", "NOT_ATTEMPTED", false, false, 0, 0, 0),
+            ("PERSISTENT_HIT", "NOT_ATTEMPTED", true, false, 10, 0, 0),
+            ("EXTRACTED_PUBLISHED", "PUBLISHED", true, true, 10, 30, 20),
+            (
+                "EXTRACTED_NOT_PUBLISHED",
+                "INVALID_MODEL",
+                true,
+                false,
+                10,
+                30,
+                20,
+            ),
+            (
+                "EXTRACTED_NOT_PUBLISHED",
+                "ROOT_UNAVAILABLE",
+                false,
+                false,
+                10,
+                30,
+                20,
+            ),
+            (
+                "EXTRACTED_NOT_PUBLISHED",
+                "WRITE_FAILED",
+                true,
+                false,
+                10,
+                30,
+                20,
+            ),
         ] {
             let mut value = valid_project_model_cache_profiling();
             value["projectModelCacheStatus"] = Value::String(status.to_owned());
+            value["projectModelPublishOutcome"] = Value::String(outcome.to_owned());
             value["projectModelPersistentConfigured"] = Value::Bool(persistent);
             value["projectModelPublished"] = Value::Bool(published);
             value["projectModelLoadMicros"] = Value::from(load);
