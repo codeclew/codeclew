@@ -55,6 +55,20 @@ class RunContractTest(unittest.TestCase):
             },
         )
 
+    def test_last_json_object_is_linear_over_large_pretty_payload(self) -> None:
+        event = PREFLIGHT.canonical({"event": "request_completed"})
+        payload = {
+            "schema": "semantic-index-result/0.1",
+            "declarationDescriptors": {
+                "descriptors": [
+                    {"symbolIdentity": f"callable:example/Foo.call{index}"}
+                    for index in range(5_000)
+                ]
+            },
+        }
+        raw = event + json.dumps(payload, indent=2).encode()
+        self.assertEqual(PREFLIGHT.last_json_object(raw), payload)
+
     def test_persistent_profile_rejects_fallback_and_nonpublished_model(self) -> None:
         failed = {
             "compilerIndexStatus": "FAILED_RECOVERABLE",

@@ -44,16 +44,28 @@ def canonical(value: object) -> bytes:
 
 def last_json_object(raw: bytes) -> dict[str, object]:
     text = raw.decode("utf-8", "strict")
-    lines = text.splitlines()
-    for index in range(len(lines) - 1, -1, -1):
-        if not lines[index].lstrip().startswith("{"):
-            continue
+    decoder = json.JSONDecoder()
+    cursor = 0
+    last: dict[str, object] | None = None
+    while cursor < len(text):
+        if cursor == 0 and text.startswith("{"):
+            candidate = 0
+        else:
+            newline = text.find("\n{", cursor)
+            if newline < 0:
+                break
+            candidate = newline + 1
         try:
-            value = json.loads("\n".join(lines[index:]))
+            value, end = decoder.raw_decode(text, candidate)
         except json.JSONDecodeError:
+            next_line = text.find("\n", candidate)
+            cursor = len(text) if next_line < 0 else next_line + 1
             continue
         if isinstance(value, dict):
-            return value
+            last = value
+        cursor = max(end, candidate + 1)
+    if last is not None:
+        return last
     raise PreflightFailure("SEMANTIC_INDEX", "clew index returned no complete JSON object")
 
 
