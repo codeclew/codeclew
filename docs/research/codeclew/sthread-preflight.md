@@ -33,9 +33,10 @@ Maven, and trusted-worker hydration runs concurrently under the same deadline.
 An unchanged toolchain skips the copy step on later runs; the probes still
 execute and therefore cannot be forged by a stale marker.
 
-The three independent worker probes run concurrently after the shared offline
-cache/build checks. This keeps a cold preflight inside the same wall-time budget
-without dropping any Kotlin version or turning a failure into a warning.
+The Gradle configuration check and three independent worker probes run
+concurrently after the shared offline cache/build checks. This keeps a cold
+preflight inside the same wall-time budget without dropping any Kotlin version
+or turning a failure into a warning.
 
 Before those probes, `STHREAD_PROTOCOL_CAPABILITY` rejects a legacy CLI that
 can only produce `LEGACY_HEURISTIC_*` task contexts. The current proof-capable

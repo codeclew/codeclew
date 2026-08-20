@@ -616,23 +616,24 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             cwd=workspace,
             deadline=deadline,
             required_stdout_markers=(b"--model-input",),
-        ),
-        probe(
-            kind="GRADLE_CONFIGURATION",
-            argv=[
+        )
+    ]
+    runtime_specifications: list[dict[str, Any]] = [
+        {
+            "kind": "GRADLE_CONFIGURATION",
+            "argv": [
                 str(workspace / "gradlew"),
                 "--offline",
                 "--no-daemon",
                 "--quiet",
                 configuration_task,
             ],
-            cwd=workspace,
-            deadline=deadline,
-            environment=gradle_environment,
-        )
+            "cwd": workspace,
+            "environment": gradle_environment,
+        }
     ]
     if not args.skip_smoke:
-        smoke_specifications: list[dict[str, Any]] = [
+        runtime_specifications.append(
             {
                 "kind": "OPEN_PROJECT_KOTLIN_2_4",
                 "argv": [
@@ -646,9 +647,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 ],
                 "cwd": workspace,
             }
-        ]
+        )
         for kind, relative_repo, compilation, _build_system in DEFAULT_SMOKES:
-            smoke_specifications.append(
+            runtime_specifications.append(
                 {
                     "kind": kind,
                     "argv": [
@@ -662,7 +663,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     "cwd": workspace,
                 }
             )
-        probes.extend(probe_group(smoke_specifications, deadline))
+    probes.extend(probe_group(runtime_specifications, deadline))
 
     elapsed = monotonic_millis(started)
     return {
