@@ -496,7 +496,7 @@ fn derive_requirements(
 
         let matching_test_paths = files
             .iter()
-            .filter(|file| exact_test_file_stem(file, term))
+            .filter(|file| exact_test_file_stem(file, term) || exact_test_declaration(file, term))
             .map(|file| file.path.clone())
             .collect::<Vec<_>>();
         if !matching_test_paths.is_empty() {
@@ -543,6 +543,14 @@ fn exact_test_file_stem(file: &SourceFile, term: &str) -> bool {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.eq_ignore_ascii_case(term))
+}
+
+fn exact_test_declaration(file: &SourceFile, term: &str) -> bool {
+    file.is_test
+        && file
+            .source
+            .lines()
+            .any(|line| test_function_name(line) == Some(term))
 }
 
 fn requirement_is_satisfied(requirement: &TaskRequirement, tests: &[Value]) -> bool {
@@ -2857,6 +2865,36 @@ mod tests {
         assert_eq!(requirements[0].kind, "TEST_SURFACE");
         assert!(requirements[0].satisfied);
         assert!(required.is_empty());
+    }
+
+    #[test]
+    fn exact_test_function_is_a_test_surface_without_a_production_edit_surface() {
+        let path = "src/test/kotlin/com/acme/ProjectModelCommandTest.kt";
+        let files = vec![SourceFile {
+            path: path.into(),
+            source: "class ProjectModelCommandTest {\n    @Test\n    fun gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome() = Unit\n}".into(),
+            is_test: true,
+        }];
+
+        let (requirements, required, _, explicit) = derive_requirements(
+            &files,
+            &[],
+            &["gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome".into()],
+        );
+
+        assert_eq!(requirements[0].kind, "TEST_SURFACE");
+        assert!(requirements[0].satisfied);
+        assert_eq!(requirements[0].evidence_paths, vec![path]);
+        assert!(required.is_empty());
+        assert!(explicit.is_empty());
+        assert!(requirement_is_satisfied(
+            &requirements[0],
+            &[json!({"path":path})]
+        ));
+        assert!(!requirement_is_satisfied(
+            &requirements[0],
+            &[json!({"path":"src/test/kotlin/com/acme/OtherTest.kt"})]
+        ));
     }
 
     #[test]
