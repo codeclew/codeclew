@@ -14,7 +14,7 @@ import sys
 import time
 
 
-SCHEMA = "codeclew.real-kotlin-preflight/0.1"
+SCHEMA = "codeclew.real-kotlin-preflight/0.2"
 
 
 class PreflightFailure(Exception):
@@ -82,11 +82,26 @@ def exact_executable(candidate: str | None, stage: str) -> Path:
     return executable.resolve(strict=True)
 
 
-def verify_private_state_root(value: Path | None, repo: Path) -> str | None:
+def validate_run_contract(
+    run_phase: str, seed_entity: str | None, state_root: Path | None
+) -> None:
+    if seed_entity is not None and not seed_entity.strip():
+        raise PreflightFailure("RUN_PHASE", "seed entity must be nonblank when provided")
+    if run_phase == "warm" and seed_entity is None:
+        raise PreflightFailure("RUN_PHASE", "warm projection requires --seed-entity")
+    if run_phase == "warm" and state_root is None:
+        raise PreflightFailure("RUN_PHASE", "warm projection requires --state-root")
+
+
+def verify_private_state_root(
+    value: Path | None, repo: Path, *, require_existing: bool
+) -> str | None:
     if value is None:
         return None
     if not value.is_absolute() or value.is_symlink():
         raise PreflightFailure("STATE_ROOT", "state root must be absolute and nonsymlinked")
+    if require_existing and not value.exists():
+        raise PreflightFailure("STATE_ROOT", "warm state root must already exist")
     value.mkdir(mode=0o700, parents=True, exist_ok=True)
     canonical_root = value.resolve(strict=True)
     mode = stat.S_IMODE(canonical_root.stat().st_mode)
@@ -101,6 +116,7 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     if budget <= 0:
         raise PreflightFailure("ARGUMENTS", "budget must be positive")
     deadline = started + budget
+    validate_run_contract(args.run_phase, args.seed_entity, args.state_root)
     repo = args.repo.resolve(strict=True)
     if repo.is_symlink() or not repo.is_dir():
         raise PreflightFailure("REPOSITORY", "repository must be a real directory")
@@ -134,7 +150,9 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         require_success(model_probe, "GRADLE")
         build = {"system": "GRADLE", "launcher": "./gradlew", "compilation": args.compilation, "configurationTask": task}
         probes.append({"kind": "GRADLE_OFFLINE_ROUTE", "durationMillis": model_millis})
-    state_root = verify_private_state_root(args.state_root, repo)
+    state_root = verify_private_state_root(
+        args.state_root, repo, require_existing=args.run_phase == "warm"
+    )
     elapsed = round((time.monotonic() - started) * 1000)
     if elapsed > round(budget * 1000):
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")
@@ -145,6 +163,11 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         "revision": revision,
         "trackedClean": True,
         "stateRoot": state_root,
+        "run": {
+            "phase": args.run_phase.upper(),
+            "seedEntity": args.seed_entity,
+            "requiresVerifiedCacheHit": args.run_phase == "warm",
+        },
         "build": build,
         "probes": probes,
         "elapsedMillis": elapsed,
@@ -157,6 +180,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--compilation", default=":/main")
     parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--run-phase", choices=("cold", "warm"), default="cold")
+    parser.add_argument("--seed-entity")
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--budget-seconds", type=float, default=60.0)
     return parser.parse_args()
