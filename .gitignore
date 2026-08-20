@@ -3,7 +3,12 @@
 /.gradle/
 **/build/
 **/.gradle/
+# Generated repository evidence can contain machine-local paths and private corpus metadata.
 benchmarks/reports/
+benchmarks/kotlin-real-repository/k1/corpus.json
+docs/experiments/evidence/
+docs/research/codeclew/source-manifest.json
+evidence/graphs/
 *.tmp
 thread.json
 edit.json
