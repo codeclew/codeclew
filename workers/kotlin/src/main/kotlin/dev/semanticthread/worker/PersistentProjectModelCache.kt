@@ -28,6 +28,7 @@ internal object PersistentProjectModelCache {
     private const val SCHEMA = "persistent-project-model-cache/0.1"
     private const val MAX_RECORD_BYTES = 64L * 1024L * 1024L
     private val resourceIdentity = Regex("^repo:([^:]+):sha256:([0-9a-f]{64})$")
+    private val artifactIdentity = Regex("^artifact:([^/:\\\\]+):sha256:([0-9a-f]{64})$")
     private val digestText = Regex("^sha256:[0-9a-f]{64}$")
     private val runtimeAuthority: String by lazy(::computeRuntimeAuthority)
 private val extractorAuthority: String by lazy(::computeExtractorAuthority)
@@ -160,8 +161,9 @@ enum class PublishOutcome {
         return true
     }
 
-    private fun validateResourceIdentities(repo: Path, model: JsonObject): Boolean {
-        val identities = linkedMapOf<String, String>()
+    internal fun validateResourceIdentities(repo: Path, model: JsonObject): Boolean {
+        val repositoryIdentities = linkedMapOf<String, String>()
+        val artifactIdentities = linkedMapOf<String, String>()
         var unsupported = false
         fun visit(value: JsonElement) {
             when (value) {
@@ -169,24 +171,47 @@ enum class PublishOutcome {
                 is JsonArray -> value.forEach(::visit)
                 is JsonPrimitive -> if (value.isString) {
                     val text = value.contentOrNull ?: return
-                    val match = resourceIdentity.matchEntire(text)
-                    if (match != null) {
-                        val relative = match.groupValues[1]
-                        val expected = "sha256:${match.groupValues[2]}"
-                        if (!canonicalRelative(relative)) { unsupported = true; return }
-                        val previous = identities.putIfAbsent(relative, expected)
-                        if (previous != null && previous != expected) unsupported = true
-                    } else if (":sha256:" in text) {
-                        unsupported = true
+                    val repositoryMatch = resourceIdentity.matchEntire(text)
+                    val artifactMatch = artifactIdentity.matchEntire(text)
+                    when {
+                        repositoryMatch != null -> {
+                            val relative = repositoryMatch.groupValues[1]
+                            val expected = "sha256:${repositoryMatch.groupValues[2]}"
+                            if (!canonicalRelative(relative)) { unsupported = true; return }
+                            val previous = repositoryIdentities.putIfAbsent(relative, expected)
+                            if (previous != null && previous != expected) unsupported = true
+                        }
+                        artifactMatch != null -> {
+                            val name = artifactMatch.groupValues[1]
+                            val expected = "sha256:${artifactMatch.groupValues[2]}"
+                            val previous = artifactIdentities.putIfAbsent(name, expected)
+                            if (previous != null && previous != expected) unsupported = true
+                        }
+                        ":sha256:" in text -> unsupported = true
                     }
                 }
             }
         }
         visit(model)
         if (unsupported) return false
-        for ((relative, expected) in identities) {
+        for ((relative, expected) in repositoryIdentities) {
             val file = attempt { repositorySourceFile(repo, relative) } ?: return false
             if (sha(Files.readAllBytes(file)) != expected) return false
+        }
+        if (artifactIdentities.isEmpty()) return true
+        val classpathArtifacts = linkedMapOf<String, MutableSet<String>>()
+        for (entry in System.getProperty("java.class.path").split(java.io.File.pathSeparatorChar)) {
+            val path = attempt { Path.of(entry).toAbsolutePath().normalize() } ?: return false
+            val name = path.fileName?.toString() ?: continue
+            if (name !in artifactIdentities) continue
+            if (Files.isSymbolicLink(path) || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) return false
+            val canonical = attempt { path.toRealPath() } ?: return false
+            if (canonical != path) return false
+            val digest = attempt { sha(Files.readAllBytes(path)) } ?: return false
+            classpathArtifacts.getOrPut(name) { linkedSetOf() }.add(digest)
+        }
+        for ((name, expected) in artifactIdentities) {
+            if (classpathArtifacts[name] != setOf(expected)) return false
         }
         return true
     }
