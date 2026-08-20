@@ -1828,13 +1828,16 @@ fn test_snippet(
             format!("{}:{declaration_name}:{exact_text_hash}", file.path).as_bytes()
         )
     );
-    Some(json!({
+    let owner_occurrences = identifier_occurrences(&file.source, declaration_name);
+    let mut snippet = json!({
         "path":file.path,
         "lines":[start+1,end+1],
         "matched":matched,
         "score":score,
-        "sourceText":declaration_source,
-        "declarationTarget":{
+        "sourceText":declaration_source
+    });
+    if owner_occurrences == 1 {
+        snippet["declarationTarget"] = json!({
             "anchorId":anchor_id,
             "declarationId":anchor_id,
             "fileId":file.path,
@@ -1842,8 +1845,31 @@ fn test_snippet(
             "syntaxKind":"KtNamedFunction",
             "exactTextHash":exact_text_hash,
             "rangeHint":[start+1,end+1]
-        }
-    }))
+        });
+    } else {
+        snippet["editabilityBoundary"] = json!("AMBIGUOUS_TEST_DECLARATION_OWNER");
+        snippet["ownerIdentifierOccurrences"] = json!(owner_occurrences);
+    }
+    Some(snippet)
+}
+
+/// Test sources are not part of the compiler-semantic main index, so their
+/// lightweight target currently carries only a PSI declaration name.  Do not
+/// advertise that name as an editable owner when the same identifier occurs
+/// elsewhere in the file: ApplyEdit would have to guess which declaration it
+/// owns. Counting every code/text occurrence is intentionally conservative;
+/// false negatives remain usable as read-only test evidence or via CREATE_FILE.
+fn identifier_occurrences(source: &str, identifier: &str) -> usize {
+    source
+        .match_indices(identifier)
+        .filter(|(start, _)| {
+            let before = source[..*start].chars().next_back();
+            let end = start + identifier.len();
+            let after = source[end..].chars().next();
+            before.is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
+                && after.is_none_or(|character| !(character.is_alphanumeric() || character == '_'))
+        })
+        .count()
 }
 
 fn test_function_name(line: &str) -> Option<&str> {
@@ -3024,6 +3050,43 @@ mod tests {
         assert!(test["sourceText"].as_str().unwrap().len() > 8_000);
         assert!(test.get("sourceTruncated").is_none());
         assert!(test.get("sourceBytesOmitted").is_none());
+    }
+
+    #[test]
+    fn ambiguous_test_owner_is_read_only_before_task_apply() {
+        let files = SourceFile {
+            path: "src/test/kotlin/com/acme/CacheTest.kt".into(),
+            source: "class CacheTest {\n    private fun model() = Unit\n    @Test fun verifies() { val model = 1; check(model == 1) }\n}".into(),
+            is_test: true,
+        };
+        let needles = BTreeMap::from([("model".into(), 1)]);
+
+        let test = test_snippet(&files, &needles, &[]).unwrap();
+
+        assert!(test.get("declarationTarget").is_none());
+        assert_eq!(
+            test["editabilityBoundary"],
+            "AMBIGUOUS_TEST_DECLARATION_OWNER"
+        );
+        assert_eq!(test["ownerIdentifierOccurrences"], 3);
+    }
+
+    #[test]
+    fn unique_test_owner_retains_exact_edit_target() {
+        let files = SourceFile {
+            path: "src/test/kotlin/com/acme/CacheTest.kt".into(),
+            source: "class CacheTest {\n    @Test fun publishesManifest() = Unit\n}".into(),
+            is_test: true,
+        };
+        let needles = BTreeMap::from([("publishesManifest".into(), 1)]);
+
+        let test = test_snippet(&files, &needles, &[]).unwrap();
+
+        assert_eq!(
+            test["declarationTarget"]["ownerSymbolId"],
+            "publishesManifest"
+        );
+        assert!(test.get("editabilityBoundary").is_none());
     }
 
     #[test]
