@@ -531,21 +531,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         ["git", "rev-parse", "HEAD"], cwd=workspace, stdout=subprocess.PIPE, check=True
     ).stdout.decode().strip()
 
-    cargo_millis, cargo_cache_hit = hydrate_cargo_target(
-        args.cargo_target_seed,
-        workspace / "target",
-        deadline,
-        fingerprint,
-    )
-    worker_millis, worker_cache_hit = hydrate_trusted_workers(
-        args.trusted_worker_seed,
-        workspace,
-        deadline,
-    )
     gradle_seed = require_real_directory(args.gradle_cache_seed, "CACHE_HYDRATION")
-    copied, gradle_millis, workspace_cache_hit = hydrate_gradle_cache(
-        gradle_seed, workspace / ".gradle", deadline, fingerprint
-    )
     fixture21 = workspace / "fixtures" / "kotlin-2-1"
     fixture24 = workspace / "fixtures" / "kotlin-basic"
     fixture_maven = workspace / "fixtures" / "kotlin-maven"
@@ -553,24 +539,58 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         require_real_directory(fixture21, "SMOKE_FIXTURE")
         require_real_directory(fixture24, "SMOKE_FIXTURE")
         require_real_directory(fixture_maven, "SMOKE_FIXTURE")
-        _, fixture21_gradle_millis, fixture21_cache_hit = hydrate_gradle_cache(
-            gradle_seed, fixture21 / ".gradle", deadline, fingerprint
-        )
-        _, fixture24_gradle_millis, fixture24_cache_hit = hydrate_gradle_cache(
-            gradle_seed, fixture24 / ".gradle", deadline, fingerprint
-        )
-        gradle_millis += fixture21_gradle_millis + fixture24_gradle_millis
-        maven_millis, maven_cache_hit = hydrate_maven_repository(
-            args.maven_repository_seed,
-            fixture_maven / ".semantic-thread" / "maven-repository",
+    hydration_workers = 6 if not args.skip_smoke else 3
+    with ThreadPoolExecutor(max_workers=hydration_workers, thread_name_prefix="sthread-hydration") as executor:
+        cargo_future = executor.submit(
+            hydrate_cargo_target,
+            args.cargo_target_seed,
+            workspace / "target",
             deadline,
             fingerprint,
         )
-    else:
-        maven_millis = 0
-        fixture21_cache_hit = False
-        fixture24_cache_hit = False
-        maven_cache_hit = False
+        worker_future = executor.submit(hydrate_trusted_workers, args.trusted_worker_seed, workspace, deadline)
+        workspace_gradle_future = executor.submit(
+            hydrate_gradle_cache,
+            gradle_seed,
+            workspace / ".gradle",
+            deadline,
+            fingerprint,
+        )
+        if not args.skip_smoke:
+            fixture21_future = executor.submit(
+                hydrate_gradle_cache,
+                gradle_seed,
+                fixture21 / ".gradle",
+                deadline,
+                fingerprint,
+            )
+            fixture24_future = executor.submit(
+                hydrate_gradle_cache,
+                gradle_seed,
+                fixture24 / ".gradle",
+                deadline,
+                fingerprint,
+            )
+            maven_future = executor.submit(
+                hydrate_maven_repository,
+                args.maven_repository_seed,
+                fixture_maven / ".semantic-thread" / "maven-repository",
+                deadline,
+                fingerprint,
+            )
+        cargo_millis, cargo_cache_hit = cargo_future.result()
+        worker_millis, worker_cache_hit = worker_future.result()
+        copied, gradle_millis, workspace_cache_hit = workspace_gradle_future.result()
+        if not args.skip_smoke:
+            _, fixture21_gradle_millis, fixture21_cache_hit = fixture21_future.result()
+            _, fixture24_gradle_millis, fixture24_cache_hit = fixture24_future.result()
+            gradle_millis += fixture21_gradle_millis + fixture24_gradle_millis
+            maven_millis, maven_cache_hit = maven_future.result()
+        else:
+            maven_millis = 0
+            fixture21_cache_hit = False
+            fixture24_cache_hit = False
+            maven_cache_hit = False
 
     clew = (args.clew or workspace / "target" / "release" / "clew").resolve()
     build_millis = 0

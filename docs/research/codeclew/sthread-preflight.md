@@ -28,9 +28,10 @@ The script captures subprocess output internally and exposes only digests plus
 a bounded error message, so cache size and project-model JSON do not consume
 agent context. The normal run must not start after `FAILED`.
 
-Each hydrated cache receives a fingerprint marker. An unchanged toolchain skips
-the copy step on later runs; the probes still execute and therefore cannot be
-forged by a stale marker.
+Each hydrated cache receives a fingerprint marker. Independent Cargo, Gradle,
+Maven, and trusted-worker hydration runs concurrently under the same deadline.
+An unchanged toolchain skips the copy step on later runs; the probes still
+execute and therefore cannot be forged by a stale marker.
 
 The three independent worker probes run concurrently after the shared offline
 cache/build checks. This keeps a cold preflight inside the same wall-time budget
