@@ -36,6 +36,14 @@ needles belong in `--intent`, not in the mandatory term set. After the call,
 accept only `COMPLETE_TASK` with every requirement `SATISFIED`; any partial or
 unsatisfied result ends the attempt before plan construction.
 
+Before `task-apply`, preflight CREATE_FILE dependencies as a closed set. A new
+file may call a repository symbol only when bounded context exposes that symbol
+as its own declaration with non-private visibility. Seeing an unqualified call
+inside another declaration's `sourceText` does not prove cross-file access.
+Otherwise keep the new declaration self-contained on explicitly imported
+public APIs. This check is in addition to generic plan validation and prevents
+candidate-only Kotlin visibility failures.
+
 Each hydrated cache receives a fingerprint marker. Independent Cargo, Gradle,
 Maven, and trusted-worker hydration runs concurrently under the same deadline.
 An unchanged toolchain skips the copy step on later runs; the probes still
