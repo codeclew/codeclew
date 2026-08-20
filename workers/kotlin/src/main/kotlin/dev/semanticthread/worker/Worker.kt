@@ -1292,6 +1292,7 @@ internal class Worker(
         requestCacheRequests++
         val analysisRepo = repo.toRealPath()
         val model = cachedProjectModel(analysisRepo, compilation)
+        val semanticModel = inspect(analysisRepo, compilation)
         val sources = (model["analysisSourceFiles"] ?: model["sourceFiles"])
             ?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
@@ -1301,7 +1302,7 @@ internal class Worker(
         val pluginArtifact = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
             .toAbsolutePath()
             .normalize()
-        val semanticInputManifestDigest = model["semanticInputManifestHash"]?.jsonPrimitive?.contentOrNull
+        val semanticInputManifestDigest = semanticModel["semanticInputManifestHash"]?.jsonPrimitive?.contentOrNull
             ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input manifest hash is unavailable")
         val factsPluginDigest = artifactFingerprint(pluginArtifact)
         val extractor = extractorAuthority()
