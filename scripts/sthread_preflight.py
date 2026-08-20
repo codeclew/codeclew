@@ -458,14 +458,14 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         for name in TRUSTED_WORKER_ENVIRONMENT_REMOVALS:
             route_environment.pop(name, None)
         route_environment["GRADLE_USER_HOME"] = str(repository / ".gradle")
-        configuration_task = gradle_configuration_task(args.compilation)
+        configuration_arguments = gradle_configuration_arguments(args.compilation)
         route_probe, route_millis = run_capture(
             [
                 str(gradle_wrapper),
                 "--offline",
                 "--no-daemon",
                 "--quiet",
-                configuration_task,
+                *configuration_arguments,
             ],
             cwd=repository,
             timeout_seconds=deadline - time.monotonic(),
@@ -479,7 +479,7 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
                 detail={
                     **failure_summary(route_probe),
                     "compilation": args.compilation,
-                    "configurationTask": configuration_task,
+                    "configurationArguments": configuration_arguments,
                 },
             )
         trusted_launcher = run_directory / "trusted-clew"
@@ -591,6 +591,18 @@ def gradle_configuration_task(compilation: str) -> str:
     if not project_path or "//" in project_path or project_path.endswith(":"):
         raise PreflightFailure("ARGUMENTS", "Codeclew Gradle compilation is malformed")
     return f"{project_path}:properties"
+
+
+def gradle_configuration_arguments(compilation: str) -> list[str]:
+    task = gradle_configuration_task(compilation)
+    if compilation == ":/main":
+        return [task]
+    project_path = compilation[: -len("/main")].removeprefix(":").replace(":", "/")
+    if not project_path or project_path.startswith("/") or any(
+        component in ("", ".", "..") for component in project_path.split("/")
+    ):
+        raise PreflightFailure("ARGUMENTS", "Codeclew Gradle project directory is malformed")
+    return ["-p", project_path, "properties"]
 
 
 def hydrate_gradle_cache(
@@ -1138,6 +1150,12 @@ def self_test() -> None:
     assert json_values(event)[1]["error"]["code"] == "X"
     assert gradle_configuration_task(":/main") == "properties"
     assert gradle_configuration_task(":workers:kotlin21/main") == ":workers:kotlin21:properties"
+    assert gradle_configuration_arguments(":/main") == ["properties"]
+    assert gradle_configuration_arguments(":workers:kotlin21/main") == [
+        "-p",
+        "workers/kotlin21",
+        "properties",
+    ]
     assert receipt_exit_code({"status": "READY"}) == 0
     assert receipt_exit_code({"status": "FAILED"}) == 1
     assert receipt_exit_code({}) == 1
@@ -1590,7 +1608,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
     gradle_environment = dict(os.environ)
     gradle_environment["GRADLE_USER_HOME"] = str(workspace / ".gradle")
-    configuration_task = gradle_configuration_task(args.compilation)
+    configuration_arguments = gradle_configuration_arguments(args.compilation)
     probes = [
         format_probe,
         probe(
@@ -1609,7 +1627,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 "--offline",
                 "--no-daemon",
                 "--quiet",
-                configuration_task,
+                *configuration_arguments,
             ],
             "cwd": workspace,
             "environment": gradle_environment,
