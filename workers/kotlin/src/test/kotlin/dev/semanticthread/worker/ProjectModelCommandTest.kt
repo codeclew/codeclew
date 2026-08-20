@@ -1,5 +1,6 @@
 package dev.semanticthread.worker
 
+import dev.semanticthread.worker.gradleModelCommand
 import dev.semanticthread.worker.sanitizedProjectModelProcess
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -93,6 +94,19 @@ fun gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome() {
                 "compileKotlin",
                 ":semanticThreadModel",
             )
+            assertEquals(1, command.count { it == "--no-daemon" })
+            val warmCommand = gradleModelCommand(
+                wrapper,
+                repo,
+                home,
+                home,
+                init,
+                "compileKotlin",
+                ":semanticThreadModel",
+                reuseDaemon = true,
+            )
+            assertFalse(warmCommand.contains("--no-daemon"))
+            assertEquals(command.filterNot { it == "--no-daemon" }, warmCommand)
             assertEquals(1, command.count { it == "--offline" })
             assertEquals(1, command.count { it == "--gradle-user-home" })
             assertEquals(1, command.count { it == "--project-cache-dir" })
