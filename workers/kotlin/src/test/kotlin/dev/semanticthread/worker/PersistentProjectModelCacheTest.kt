@@ -1,5 +1,6 @@
 package dev.semanticthread.worker
 
+import dev.semanticthread.worker.PersistentProjectModelCache
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermission
@@ -20,7 +21,7 @@ import kotlinx.serialization.json.putJsonObject
 
 class PersistentProjectModelCacheTest {
     @Test
-    fun verifiedRoundTripInvalidatesChangedModelAndArtifactInputs() {
+fun verifiedRoundTripInvalidatesChangedModelAndArtifactInputs() {
         val root = privateDirectory("project-model-cache-root")
         val repo = privateDirectory("project-model-cache-repo")
         try {
@@ -29,6 +30,9 @@ class PersistentProjectModelCacheTest {
             val artifact = repo.resolve(".gradle/cache/library.jar").also { it.parent.createDirectories(); it.writeText("artifact-v1") }
             val model = model(repo, source, build, artifact)
             assertTrue(PersistentProjectModelCache.publish(root.toString(), repo, "key-a", model))
+            assertEquals(PersistentProjectModelCache.PublishOutcome.PUBLISHED, PersistentProjectModelCache.publishWithOutcome(root.toString(), repo, "key-typed", model))
+            assertEquals(PersistentProjectModelCache.PublishOutcome.ROOT_UNAVAILABLE, PersistentProjectModelCache.publishWithOutcome(null, repo, "no-root", model))
+            assertEquals(PersistentProjectModelCache.PublishOutcome.WRITE_FAILED, PersistentProjectModelCache.publishWithOutcome(root.toString(), repo.resolve("missing-repo"), "write-failed", model))
             assertEquals(model, PersistentProjectModelCache.load(root.toString(), repo, "key-a"))
             assertNull(PersistentProjectModelCache.load(root.toString(), repo, "key-b"))
 
@@ -41,6 +45,7 @@ class PersistentProjectModelCacheTest {
 
             val tampered = buildJsonObject { model.forEach(::put); put("semanticInputManifestHash", "sha256:${"0".repeat(64)}") }
             assertFalse(PersistentProjectModelCache.publish(root.toString(), repo, "tampered", tampered))
+            assertEquals(PersistentProjectModelCache.PublishOutcome.INVALID_MODEL, PersistentProjectModelCache.publishWithOutcome(root.toString(), repo, "tampered-outcome", tampered))
         } finally {
             root.toFile().deleteRecursively()
             repo.toFile().deleteRecursively()

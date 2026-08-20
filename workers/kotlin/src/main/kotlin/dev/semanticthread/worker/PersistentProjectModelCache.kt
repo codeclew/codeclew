@@ -28,7 +28,14 @@ internal object PersistentProjectModelCache {
     private val resourceIdentity = Regex("^repo:([^:]+):sha256:([0-9a-f]{64})$")
     private val digestText = Regex("^sha256:[0-9a-f]{64}$")
     private val runtimeAuthority: String by lazy(::computeRuntimeAuthority)
-    private val extractorAuthority: String by lazy(::computeExtractorAuthority)
+private val extractorAuthority: String by lazy(::computeExtractorAuthority)
+
+enum class PublishOutcome {
+    PUBLISHED,
+    INVALID_MODEL,
+    ROOT_UNAVAILABLE,
+    WRITE_FAILED,
+}
 
     fun load(configuredRoot: String?, repo: Path, key: String): JsonObject? {
         return try {
@@ -57,25 +64,28 @@ internal object PersistentProjectModelCache {
         }
     }
 
-    fun publish(configuredRoot: String?, repo: Path, key: String, model: JsonObject): Boolean {
+    fun publish(configuredRoot: String?, repo: Path, key: String, model: JsonObject): Boolean =
+        publishWithOutcome(configuredRoot, repo, key, model) == PublishOutcome.PUBLISHED
+
+    fun publishWithOutcome(configuredRoot: String?, repo: Path, key: String, model: JsonObject): PublishOutcome {
         return try {
-        val canonicalRepo = repo.toRealPath()
-        if (!validateModel(canonicalRepo, model)) return false
-        val directory = cacheDirectory(configuredRoot, key) ?: return false
-        withLock(directory) {
-            val payload = cachePayload(key, model)
-            val envelope = buildJsonObject {
-                payload.forEach(::put)
-                put("payloadHash", sha(canonical(payload).toByteArray()))
+            val canonicalRepo = repo.toRealPath()
+            if (!validateModel(canonicalRepo, model)) return PublishOutcome.INVALID_MODEL
+            val directory = cacheDirectory(configuredRoot, key) ?: return PublishOutcome.ROOT_UNAVAILABLE
+            withLock(directory) {
+                val payload = cachePayload(key, model)
+                val envelope = buildJsonObject {
+                    payload.forEach(::put)
+                    put("payloadHash", sha(canonical(payload).toByteArray()))
+                }
+                atomicWrite(directory, directory.resolve("model.json"), (canonical(envelope) + "\n").toByteArray())
             }
-            atomicWrite(directory, directory.resolve("model.json"), (canonical(envelope) + "\n").toByteArray())
-        }
-        true
+            PublishOutcome.PUBLISHED
         } catch (error: InterruptedException) {
             Thread.currentThread().interrupt()
             throw error
         } catch (_: Exception) {
-            false
+            PublishOutcome.WRITE_FAILED
         }
     }
 

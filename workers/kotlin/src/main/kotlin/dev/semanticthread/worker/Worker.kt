@@ -1151,6 +1151,7 @@ internal class Worker(
                 publishMicros = 0L,
                 persistentConfigured = persistentConfigured,
                 published = false,
+                publishOutcome = "NOT_ATTEMPTED",
             )
             return model
         }
@@ -1169,6 +1170,7 @@ internal class Worker(
                 publishMicros = 0L,
                 persistentConfigured = persistentConfigured,
                 published = false,
+                publishOutcome = "NOT_ATTEMPTED",
             )
             return persistentModel
         }
@@ -1183,7 +1185,8 @@ internal class Worker(
         // The optional persistent copy lives only under the explicit private index root.
         // Publication failure never changes the already verified semantic result.
         val publishStarted = System.nanoTime()
-        val published = PersistentProjectModelCache.publish(persistentRoot, canonicalRepo, key, model)
+        val publication = PersistentProjectModelCache.publishWithOutcome(persistentRoot, canonicalRepo, key, model)
+        val published = publication == PersistentProjectModelCache.PublishOutcome.PUBLISHED
         val publishMicros = elapsedMicros(publishStarted)
         projectModelCache[key] = model
         IncrementalK2Runtime.recordProjectModel(
@@ -1195,6 +1198,7 @@ internal class Worker(
             publishMicros = publishMicros,
             persistentConfigured = persistentConfigured,
             published = published,
+            publishOutcome = publication.name,
         )
         return model
     }

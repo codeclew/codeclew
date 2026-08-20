@@ -106,6 +106,7 @@ internal object IncrementalK2Runtime {
         publishMicros: Long,
         persistentConfigured: Boolean,
         published: Boolean,
+        publishOutcome: String = "NOT_ATTEMPTED",
     ) {
         if (profiling.get()?.containsKey("projectModelCacheStatus") == true) return
         recordFields(buildJsonObject {
@@ -116,7 +117,8 @@ internal object IncrementalK2Runtime {
             put("projectModelExtractionMicros", extractionMicros)
             put("projectModelPublishMicros", publishMicros)
             put("projectModelPersistentConfigured", persistentConfigured)
-            put("projectModelPublished", published)
+put("projectModelPublished", published)
+put("projectModelPublishOutcome", publishOutcome)
         })
     }
     fun mergeProfiling(response: JsonObject, incremental: JsonObject?): JsonObject {
