@@ -1,6 +1,7 @@
 package dev.semanticthread.worker
 
 import dev.semanticthread.worker.IncrementalK2Runtime
+import dev.semanticthread.worker.PersistentProjectModelCache
 import dev.semanticthread.worker.syntaxOnlyIndexSourceFiles
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -1134,15 +1135,21 @@ internal class Worker(
             }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         projectModelCache[key]?.let { requestCacheHits++; return it }
+        val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
+        PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)?.let { model ->
+            requestCacheHits++
+            projectModelCache[key] = model
+            return model
+        }
         val model = withSemanticInputManifestHash(
             validateProjectModelSourceFiles(
                 canonicalRepo,
                 projectModel(canonicalRepo, compilation),
             ),
         )
-        // The model is already held in the live process cache. Writing a
-        // non-authoritative copy into the repository makes read-only analysis
-        // dirty the user's worktree without enabling trusted reuse.
+        // The optional persistent copy lives only under the explicit private index root.
+        // Publication failure never changes the already verified semantic result.
+        PersistentProjectModelCache.publish(persistentRoot, canonicalRepo, key, model)
         projectModelCache[key] = model
         return model
     }

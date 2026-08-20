@@ -30,7 +30,8 @@ internal object PersistentProjectModelCache {
     private val runtimeAuthority: String by lazy(::computeRuntimeAuthority)
     private val extractorAuthority: String by lazy(::computeExtractorAuthority)
 
-    fun load(configuredRoot: String?, repo: Path, key: String): JsonObject? = runCatching {
+    fun load(configuredRoot: String?, repo: Path, key: String): JsonObject? {
+        return try {
         val canonicalRepo = repo.toRealPath()
         val directory = cacheDirectory(configuredRoot, key) ?: return null
         withLock(directory) {
@@ -48,9 +49,16 @@ internal object PersistentProjectModelCache {
             if (!validateModel(canonicalRepo, model)) return@withLock null
             model
         }
-    }.getOrNull()
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
+        } catch (_: Exception) {
+            null
+        }
+    }
 
-    fun publish(configuredRoot: String?, repo: Path, key: String, model: JsonObject): Boolean = runCatching {
+    fun publish(configuredRoot: String?, repo: Path, key: String, model: JsonObject): Boolean {
+        return try {
         val canonicalRepo = repo.toRealPath()
         if (!validateModel(canonicalRepo, model)) return false
         val directory = cacheDirectory(configuredRoot, key) ?: return false
@@ -63,7 +71,13 @@ internal object PersistentProjectModelCache {
             atomicWrite(directory, directory.resolve("model.json"), (canonical(envelope) + "\n").toByteArray())
         }
         true
-    }.getOrDefault(false)
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     private fun cachePayload(key: String, model: JsonObject): JsonObject = buildJsonObject {
         put("schema", SCHEMA)
@@ -84,7 +98,7 @@ internal object PersistentProjectModelCache {
         if (!validateResourceIdentities(repo, model)) return false
         val modelJdk = model.string("jdkHome")
         if (modelJdk != null) {
-            val configured = runCatching { Path.of(modelJdk).toRealPath() }.getOrNull() ?: return false
+            val configured = attempt { Path.of(modelJdk).toRealPath() } ?: return false
             if (configured != Path.of(System.getProperty("java.home")).toRealPath()) return false
         }
         val jdkFingerprint = model.string("jdkHomeFingerprint") ?: return false
@@ -101,7 +115,7 @@ internal object PersistentProjectModelCache {
             val relative = row.string("path") ?: return false
             val expected = row.string("hash") ?: return false
             if (!canonicalRelative(relative) || !digestText.matches(expected) || !paths.add(relative)) return false
-            val file = runCatching { repositorySourceFile(repo, relative) }.getOrNull() ?: return false
+            val file = attempt { repositorySourceFile(repo, relative) } ?: return false
             if (sha(Files.readAllBytes(file)) != expected) return false
         }
         return true
@@ -132,7 +146,7 @@ internal object PersistentProjectModelCache {
         visit(model)
         if (unsupported) return false
         for ((relative, expected) in identities) {
-            val file = runCatching { repositorySourceFile(repo, relative) }.getOrNull() ?: return false
+            val file = attempt { repositorySourceFile(repo, relative) } ?: return false
             if (sha(Files.readAllBytes(file)) != expected) return false
         }
         return true
@@ -140,7 +154,7 @@ internal object PersistentProjectModelCache {
 
     private fun canonicalRelative(value: String): Boolean {
         if (value.isBlank() || '\\' in value) return false
-        val parsed = runCatching { Path.of(value) }.getOrNull() ?: return false
+        val parsed = attempt { Path.of(value) } ?: return false
         return !parsed.isAbsolute && parsed.normalize() == parsed && parsed.none { it.toString() == ".." }
     }
 
@@ -153,12 +167,12 @@ internal object PersistentProjectModelCache {
 
     private fun privateRoot(raw: String?): Path? {
         if (raw.isNullOrBlank()) return null
-        val parsed = runCatching { Path.of(raw) }.getOrNull() ?: return null
+        val parsed = attempt { Path.of(raw) } ?: return null
         if (!parsed.isAbsolute || parsed.normalize() != parsed || Files.isSymbolicLink(parsed)) return null
         if (!Files.isDirectory(parsed, LinkOption.NOFOLLOW_LINKS)) return null
-        val canonical = runCatching { parsed.toRealPath() }.getOrNull() ?: return null
+        val canonical = attempt { parsed.toRealPath() } ?: return null
         if (canonical != parsed) return null
-        val permissions = runCatching { Files.getPosixFilePermissions(canonical) }.getOrNull() ?: return null
+        val permissions = attempt { Files.getPosixFilePermissions(canonical) } ?: return null
         if (permissions.any { it in nonOwnerPermissions }) return null
         return canonical
     }
@@ -166,10 +180,10 @@ internal object PersistentProjectModelCache {
     private fun secureDirectory(parent: Path, name: String): Path? {
         val path = parent.resolve(name)
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-            runCatching { Files.createDirectory(path, PosixFilePermissions.asFileAttribute(ownerDirectoryPermissions)) }.getOrElse { return null }
+            attempt { Files.createDirectory(path, PosixFilePermissions.asFileAttribute(ownerDirectoryPermissions)) } ?: return null
         }
         if (Files.isSymbolicLink(path) || !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) return null
-        return path.takeIf { runCatching { it.toRealPath() == it }.getOrDefault(false) }
+        return path.takeIf { attempt { it.toRealPath() == it } == true }
     }
 
     private fun <T> withLock(directory: Path, block: () -> T): T {
@@ -237,6 +251,15 @@ internal object PersistentProjectModelCache {
         .digest(bytes).joinToString("", "sha256:") { "%02x".format(it) }
 
     private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+    private inline fun <T> attempt(block: () -> T): T? = try {
+        block()
+    } catch (error: InterruptedException) {
+        Thread.currentThread().interrupt()
+        throw error
+    } catch (_: Exception) {
+        null
+    }
 
     private val ownerDirectoryPermissions = setOf(
         PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE,
