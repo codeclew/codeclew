@@ -27,6 +27,10 @@ Each hydrated cache receives a fingerprint marker. An unchanged toolchain skips
 the copy step on later runs; the probes still execute and therefore cannot be
 forged by a stale marker.
 
+The three independent worker probes run concurrently after the shared offline
+cache/build checks. This keeps a cold preflight inside the same wall-time budget
+without dropping any Kotlin version or turning a failure into a warning.
+
 When a later SThread run discovers a preparation failure that this receipt did
 not catch, stop that run immediately. Add a generic reproducer/probe or
 authority check to this preflight, cover it in `--self-test`, and only then

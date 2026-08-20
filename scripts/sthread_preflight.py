@@ -10,6 +10,7 @@ model and that the Kotlin 2.1 and 2.3 compiler-semantic smoke fixtures pass.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -338,6 +339,32 @@ def probe(
     return row
 
 
+def probe_group(specifications: Sequence[dict[str, Any]], deadline: float) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    failures: list[PreflightFailure] = []
+    with ThreadPoolExecutor(max_workers=len(specifications), thread_name_prefix="sthread-preflight") as executor:
+        futures = {
+            executor.submit(
+                probe,
+                kind=str(specification["kind"]),
+                argv=list(specification["argv"]),
+                cwd=Path(specification["cwd"]),
+                deadline=deadline,
+                environment=specification.get("environment"),
+            ): str(specification["kind"])
+            for specification in specifications
+        }
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except PreflightFailure as error:
+                failures.append(error)
+    if failures:
+        failures.sort(key=lambda error: error.stage)
+        raise failures[0]
+    return sorted(results, key=lambda row: str(row["kind"]))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=ROOT)
@@ -354,6 +381,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def receipt_exit_code(receipt: dict[str, Any]) -> int:
+    return 0 if receipt.get("status") == "READY" else 1
+
+
 def self_test() -> None:
     event = b'{"event":"request_completed","success":false}\n{\n  "error":{"code":"X","message":"boom"}\n}\n'
     completed = subprocess.CompletedProcess(["clew"], 7, event, b"")
@@ -363,6 +394,9 @@ def self_test() -> None:
     assert json_values(event)[1]["error"]["code"] == "X"
     assert gradle_configuration_task(":/main") == "properties"
     assert gradle_configuration_task(":workers:kotlin21/main") == ":workers:kotlin21:properties"
+    assert receipt_exit_code({"status": "READY"}) == 0
+    assert receipt_exit_code({"status": "FAILED"}) == 1
+    assert receipt_exit_code({}) == 1
     try:
         gradle_configuration_task(":workers:kotlin21/test")
         raise AssertionError("non-main compilation accepted")
@@ -466,23 +500,37 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         )
     ]
     if not args.skip_smoke:
-        probes.append(
-            probe(
-                kind="OPEN_PROJECT_KOTLIN_2_4",
-                argv=[str(clew), "project", "inspect", "--repo", str(fixture24), "--compilation", ":/main"],
-                cwd=workspace,
-                deadline=deadline,
-            )
-        )
+        smoke_specifications: list[dict[str, Any]] = [
+            {
+                "kind": "OPEN_PROJECT_KOTLIN_2_4",
+                "argv": [
+                    str(clew),
+                    "project",
+                    "inspect",
+                    "--repo",
+                    str(fixture24),
+                    "--compilation",
+                    ":/main",
+                ],
+                "cwd": workspace,
+            }
+        ]
         for kind, relative_repo, compilation, _build_system in DEFAULT_SMOKES:
-            probes.append(
-                probe(
-                    kind=kind,
-                    argv=[str(clew), "index", "--repo", str(workspace / relative_repo), "--compilation", compilation],
-                    cwd=workspace,
-                    deadline=deadline,
-                )
+            smoke_specifications.append(
+                {
+                    "kind": kind,
+                    "argv": [
+                        str(clew),
+                        "index",
+                        "--repo",
+                        str(workspace / relative_repo),
+                        "--compilation",
+                        compilation,
+                    ],
+                    "cwd": workspace,
+                }
             )
+        probes.extend(probe_group(smoke_specifications, deadline))
 
     elapsed = monotonic_millis(started)
     return {
@@ -524,7 +572,6 @@ def main() -> int:
             "elapsedMillis": monotonic_millis(started),
             "failure": {"message": str(error), **error.detail},
         }
-        exit_code = 1
     except Exception as error:  # Preserve an unexpected preflight defect as a typed stop.
         receipt = {
             "schema": SCHEMA,
@@ -536,11 +583,10 @@ def main() -> int:
                 "messageSha256": sha256_bytes(f"{type(error).__name__}: {error}".encode()),
             },
         }
-        exit_code = 1
     if args.receipt is not None:
         atomic_json(args.receipt, receipt)
     print(canonical(receipt).decode(), end="")
-    return exit_code
+    return receipt_exit_code(receipt)
 
 
 if __name__ == "__main__":
