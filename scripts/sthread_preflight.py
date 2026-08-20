@@ -311,6 +311,10 @@ def hydrate_maven_repository(source: Path, target: Path, deadline: float, finger
     return elapsed, False
 
 
+def missing_stdout_markers(stdout: bytes, required: Sequence[bytes]) -> list[str]:
+    return [marker.decode("utf-8", errors="replace") for marker in required if marker not in stdout]
+
+
 def probe(
     *,
     kind: str,
@@ -318,6 +322,7 @@ def probe(
     cwd: Path,
     deadline: float,
     environment: dict[str, str] | None = None,
+    required_stdout_markers: Sequence[bytes] = (),
 ) -> dict[str, Any]:
     completed, elapsed = run_capture(
         argv,
@@ -336,6 +341,13 @@ def probe(
     }
     if completed.returncode != 0:
         raise PreflightFailure(kind, f"{kind} probe failed", detail={**row, **failure_summary(completed)})
+    missing_markers = missing_stdout_markers(completed.stdout, required_stdout_markers)
+    if missing_markers:
+        raise PreflightFailure(
+            kind,
+            f"{kind} probe lacks required capability markers",
+            detail={**row, "missingMarkers": missing_markers},
+        )
     return row
 
 
@@ -351,6 +363,7 @@ def probe_group(specifications: Sequence[dict[str, Any]], deadline: float) -> li
                 cwd=Path(specification["cwd"]),
                 deadline=deadline,
                 environment=specification.get("environment"),
+                required_stdout_markers=tuple(specification.get("required_stdout_markers", ())),
             ): str(specification["kind"])
             for specification in specifications
         }
@@ -397,6 +410,9 @@ def self_test() -> None:
     assert receipt_exit_code({"status": "READY"}) == 0
     assert receipt_exit_code({"status": "FAILED"}) == 1
     assert receipt_exit_code({}) == 1
+    capability_output = b"Usage: clew agent-context --model-input <MODEL_INPUT>"
+    assert missing_stdout_markers(capability_output, (b"--model-input",)) == []
+    assert missing_stdout_markers(capability_output, (b"--proof-context",)) == ["--proof-context"]
     try:
         gradle_configuration_task(":workers:kotlin21/test")
         raise AssertionError("non-main compilation accepted")
@@ -485,6 +501,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     gradle_environment["GRADLE_USER_HOME"] = str(workspace / ".gradle")
     configuration_task = gradle_configuration_task(args.compilation)
     probes = [
+        probe(
+            kind="STHREAD_PROTOCOL_CAPABILITY",
+            argv=[str(clew), "agent-context", "--help"],
+            cwd=workspace,
+            deadline=deadline,
+            required_stdout_markers=(b"--model-input",),
+        ),
         probe(
             kind="GRADLE_CONFIGURATION",
             argv=[

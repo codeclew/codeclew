@@ -31,6 +31,11 @@ The three independent worker probes run concurrently after the shared offline
 cache/build checks. This keeps a cold preflight inside the same wall-time budget
 without dropping any Kotlin version or turning a failure into a warning.
 
+Before those probes, `STHREAD_PROTOCOL_CAPABILITY` rejects a legacy CLI that
+can only produce `LEGACY_HEURISTIC_*` task contexts. The current proof-capable
+CLI must advertise the exact model-input context surface; a successful compiler
+smoke alone is not sufficient authority for an edit transaction.
+
 When a later SThread run discovers a preparation failure that this receipt did
 not catch, stop that run immediately. Add a generic reproducer/probe or
 authority check to this preflight, cover it in `--self-test`, and only then
