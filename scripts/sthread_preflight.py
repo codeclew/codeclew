@@ -1000,7 +1000,16 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             ],
             "cwd": workspace,
             "environment": gradle_environment,
-        }
+        },
+        {
+            "kind": "TRUSTED_WORKER_BOOTSTRAP",
+            "argv": [str(clew), "doctor"],
+            "cwd": workspace,
+            "required_stdout_markers": (
+                b'"semantic-doctor/0.1"',
+                b'"compilerVersion"',
+            ),
+        },
     ]
     if not args.skip_smoke:
         runtime_specifications.append(
