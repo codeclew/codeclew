@@ -1179,7 +1179,9 @@ internal class Worker(
         }
         val extractionStarted = System.nanoTime()
         val model = if (extract == null) {
-            validateProjectModelSourceFiles(canonicalRepo, projectModel(canonicalRepo, compilation))
+            withSemanticInputManifestHash(
+                validateProjectModelSourceFiles(canonicalRepo, projectModel(canonicalRepo, compilation)),
+            )
         } else {
             withSemanticInputManifestHash(extract())
         }

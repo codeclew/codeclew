@@ -2,6 +2,7 @@ package dev.semanticthread.worker
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -25,12 +26,13 @@ class ProjectModelCacheCanonicalPublicationTest {
     }
 
     @Test
-    fun missingManifestIsNotSynthesizedFromAnUnnormalizedBuildModel() {
+    fun missingManifestRetainsOnlyTheRawModelDigest() {
         val raw = buildJsonObject { put("transientExtractionField", "raw") }
 
         val hashed = withSemanticInputManifestHash(raw)
 
         assertNull(hashed["semanticInputManifest"])
+        assertNotNull(hashed["semanticInputManifestHash"])
     }
 
     private fun modelWith(manifest: JsonObject, transient: String) = buildJsonObject {
