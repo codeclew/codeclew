@@ -5935,6 +5935,10 @@ mod adapter_local_tests {
                 recovered: false,
                 fallback_used: false,
                 graph_digest: Some("a".repeat(64)),
+                semantic_input_manifest_digest: format!("sha256:{}", "b".repeat(64)),
+                facts_plugin_digest: format!("sha256:{}", "c".repeat(64)),
+                extractor_authority_digest: format!("sha256:{}", "d".repeat(64)),
+                semantic_configuration_digest: format!("sha256:{}", "e".repeat(64)),
             }),
             project_model_cache: Some(clew::worker::ProjectModelCacheProfile {
                 status: clew::worker::ProjectModelCacheStatus::PersistentHit,
@@ -5962,6 +5966,10 @@ mod adapter_local_tests {
         assert_eq!(context.cache["compilerIndex"]["backend"], "BTA_PERSISTENT");
         assert_eq!(context.cache["compilerIndex"]["status"], "INCREMENTAL");
         assert_eq!(context.cache["compilerIndex"]["valid"], true);
+        assert_eq!(
+            context.cache["compilerIndex"]["semanticConfigurationDigest"],
+            format!("sha256:{}", "e".repeat(64))
+        );
         assert_eq!(
             context.cache["projectModelCache"]["status"],
             "PERSISTENT_HIT"

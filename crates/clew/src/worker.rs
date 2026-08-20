@@ -50,6 +50,10 @@ pub struct CompilerIndexProfile {
     pub fallback_used: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_digest: Option<String>,
+    pub semantic_input_manifest_digest: String,
+    pub facts_plugin_digest: String,
+    pub extractor_authority_digest: String,
+    pub semantic_configuration_digest: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2880,6 +2884,27 @@ fn parse_compiler_index_profile(profiling: &Value) -> Option<CompilerIndexProfil
         Some(Value::String(digest)) if is_lowercase_sha256(digest) => Some(digest.clone()),
         Some(_) => return None,
     };
+    let semantic_input_manifest_digest = object
+        .get("semanticInputManifestDigest")?
+        .as_str()?
+        .to_owned();
+    let facts_plugin_digest = object.get("factsPluginDigest")?.as_str()?.to_owned();
+    let extractor_authority_digest = object.get("extractorAuthorityDigest")?.as_str()?.to_owned();
+    let semantic_configuration_digest = object
+        .get("semanticConfigurationDigest")?
+        .as_str()?
+        .to_owned();
+    if ![
+        &semantic_input_manifest_digest,
+        &facts_plugin_digest,
+        &extractor_authority_digest,
+        &semantic_configuration_digest,
+    ]
+    .into_iter()
+    .all(|digest| is_prefixed_lowercase_sha256(digest))
+    {
+        return None;
+    }
 
     let covered_files = compiled_files.checked_add(reused_files)?;
     let no_compiled_graph = compiled_files == 0 && reused_files == 0 && graph_digest.is_none();
@@ -2925,6 +2950,10 @@ fn parse_compiler_index_profile(profiling: &Value) -> Option<CompilerIndexProfil
         recovered,
         fallback_used,
         graph_digest,
+        semantic_input_manifest_digest,
+        facts_plugin_digest,
+        extractor_authority_digest,
+        semantic_configuration_digest,
     })
 }
 
@@ -3051,6 +3080,12 @@ fn is_lowercase_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_prefixed_lowercase_sha256(value: &str) -> bool {
+    value
+        .strip_prefix("sha256:")
+        .is_some_and(is_lowercase_sha256)
+}
+
 fn internal(error: impl std::fmt::Display) -> ClewError {
     ClewError::new(ErrorCode::Internal, error.to_string())
 }
@@ -3146,6 +3181,10 @@ mod tests {
             "recovered":false,
             "fallbackUsed":false,
             "graphDigest":"a".repeat(64),
+            "semanticInputManifestDigest":format!("sha256:{}", "b".repeat(64)),
+            "factsPluginDigest":format!("sha256:{}", "c".repeat(64)),
+            "extractorAuthorityDigest":format!("sha256:{}", "d".repeat(64)),
+            "semanticConfigurationDigest":format!("sha256:{}", "e".repeat(64)),
             "workerProcessingMicros":140,
             "cacheRequests":1,
             "privatePath":"/must/not/escape",
@@ -3328,6 +3367,10 @@ mod tests {
         assert_eq!(transported["backend"], "BTA_PERSISTENT");
         assert_eq!(transported["status"], "INCREMENTAL");
         assert_eq!(transported["valid"], true);
+        assert_eq!(
+            transported["semanticConfigurationDigest"],
+            format!("sha256:{}", "e".repeat(64))
+        );
         assert!(transported.get("privatePath").is_none());
     }
 
@@ -3377,6 +3420,27 @@ mod tests {
         let mut wrong_digest_type = valid_compiler_index_profiling();
         wrong_digest_type["graphDigest"] = Value::from(7);
         assert!(parse_compiler_index_profile(&wrong_digest_type).is_none());
+
+        for key in [
+            "semanticInputManifestDigest",
+            "factsPluginDigest",
+            "extractorAuthorityDigest",
+            "semanticConfigurationDigest",
+        ] {
+            let mut missing = valid_compiler_index_profiling();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(
+                parse_compiler_index_profile(&missing).is_none(),
+                "missing {key} was accepted"
+            );
+
+            let mut malformed = valid_compiler_index_profiling();
+            malformed[key] = Value::String(format!("sha256:{}", "A".repeat(64)));
+            assert!(
+                parse_compiler_index_profile(&malformed).is_none(),
+                "malformed {key} was accepted"
+            );
+        }
     }
 
     #[test]
