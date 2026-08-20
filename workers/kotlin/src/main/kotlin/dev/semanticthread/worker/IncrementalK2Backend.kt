@@ -97,6 +97,27 @@ internal object IncrementalK2Runtime {
         })
     }
 
+    fun recordConfigurationEvidence(
+        semanticInputManifestDigest: String,
+        factsPluginDigest: String,
+        extractorAuthorityDigest: String,
+        semanticConfigurationDigest: String,
+    ) {
+        val values = listOf(
+            semanticInputManifestDigest,
+            factsPluginDigest,
+            extractorAuthorityDigest,
+            semanticConfigurationDigest,
+        )
+        require(values.all { Regex("^sha256:[0-9a-f]{64}$").matches(it) })
+        recordFields(buildJsonObject {
+            put("semanticInputManifestDigest", semanticInputManifestDigest)
+            put("factsPluginDigest", factsPluginDigest)
+            put("extractorAuthorityDigest", extractorAuthorityDigest)
+            put("semanticConfigurationDigest", semanticConfigurationDigest)
+        })
+    }
+
     fun recordProjectModel(
         status: String,
         totalMicros: Long,

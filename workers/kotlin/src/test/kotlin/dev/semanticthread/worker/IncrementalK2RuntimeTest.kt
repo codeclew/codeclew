@@ -135,6 +135,12 @@ fun `merge preserves semantic fields and combines profiling purely`() {
             })
         }
         IncrementalK2Runtime.reset()
+        IncrementalK2Runtime.recordConfigurationEvidence(
+            semanticInputManifestDigest = "sha256:" + "1".repeat(64),
+            factsPluginDigest = "sha256:" + "2".repeat(64),
+            extractorAuthorityDigest = "sha256:" + "3".repeat(64),
+            semanticConfigurationDigest = "sha256:" + "4".repeat(64),
+        )
         IncrementalK2Runtime.recordProjectModel(
             status = "PERSISTENT_HIT",
             totalMicros = 17,
@@ -176,6 +182,10 @@ fun `merge preserves semantic fields and combines profiling purely`() {
         assertEquals(JsonPrimitive(11), mergedProfiling["projectModelLoadMicros"])
         assertEquals(JsonPrimitive(true), mergedProfiling["projectModelPersistentConfigured"])
         assertEquals(JsonPrimitive(false), mergedProfiling["projectModelPublished"])
+        assertEquals(JsonPrimitive("sha256:" + "1".repeat(64)), mergedProfiling["semanticInputManifestDigest"])
+        assertEquals(JsonPrimitive("sha256:" + "2".repeat(64)), mergedProfiling["factsPluginDigest"])
+        assertEquals(JsonPrimitive("sha256:" + "3".repeat(64)), mergedProfiling["extractorAuthorityDigest"])
+        assertEquals(JsonPrimitive("sha256:" + "4".repeat(64)), mergedProfiling["semanticConfigurationDigest"])
         assertEquals(JsonPrimitive("LEGACY"), (response["profiling"] as JsonObject)["status"])
         assertEquals(response, IncrementalK2Runtime.mergeProfiling(response, null))
     }

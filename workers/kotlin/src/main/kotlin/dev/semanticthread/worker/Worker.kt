@@ -1301,15 +1301,18 @@ internal class Worker(
         val pluginArtifact = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
             .toAbsolutePath()
             .normalize()
-        val semanticConfigurationDigest = model["semanticInputManifestHash"]?.jsonPrimitive?.contentOrNull
+        val semanticInputManifestDigest = model["semanticInputManifestHash"]?.jsonPrimitive?.contentOrNull
             ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "semantic input manifest hash is unavailable")
+        val factsPluginDigest = artifactFingerprint(pluginArtifact)
+        val extractor = extractorAuthority()
+        val extractorAuthorityDigest = sha(canonicalJson(extractor).toByteArray())
         val cacheKey = semanticK2CacheKey(
-            extractorAuthority(),
+            extractor,
             buildString {
                 val version = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
                 append("declaredCompilerVersion=").append(version).append('\u0000')
-                append("semanticConfigurationDigest=").append(semanticConfigurationDigest).append('\u0000')
-                append("factsPlugin=").append(artifactFingerprint(pluginArtifact)).append('\u0000')
+                append("semanticConfigurationDigest=").append(semanticInputManifestDigest).append('\u0000')
+                append("factsPlugin=").append(factsPluginDigest).append('\u0000')
             },
         )
         val memoryKey = "$analysisRepo|$compilation|$cacheKey"
@@ -1328,6 +1331,12 @@ internal class Worker(
                     modelVersion == WORKER_COMPILER_VERSION &&
                     modelVersion in setOf("2.1.21", WORKER_COMPILER_VERSION)
                 if (!useBackend) return@runCatching null
+                IncrementalK2Runtime.recordConfigurationEvidence(
+                    semanticInputManifestDigest = semanticInputManifestDigest,
+                    factsPluginDigest = factsPluginDigest,
+                    extractorAuthorityDigest = extractorAuthorityDigest,
+                    semanticConfigurationDigest = cacheKey,
+                )
 
                 val request = IncrementalK2Request(
                     indexRoot = indexRoot,
