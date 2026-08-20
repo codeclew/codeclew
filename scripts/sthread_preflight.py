@@ -51,6 +51,15 @@ PROJECT_MODEL_CACHE_STATUSES = (
     "EXTRACTED_PUBLISHED",
     "EXTRACTED_NOT_PUBLISHED",
 )
+TRUSTED_WORKER_ENVIRONMENT_REMOVALS = (
+    "GRADLE_USER_HOME",
+    "JAVA_HOME",
+    "JAVA_TOOL_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "_JAVA_OPTIONS",
+    "CODECLEW_K1_BUILD_STATE_ROOT",
+    "CODECLEW_K2_INDEX_ROOT",
+)
 
 
 class PreflightFailure(RuntimeError):
@@ -86,6 +95,36 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     encoded = canonical(value)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def atomic_trusted_clew_launcher(path: Path, clew: Path) -> None:
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import sys\n"
+        f"for name in {TRUSTED_WORKER_ENVIRONMENT_REMOVALS!r}:\n"
+        "    os.environ.pop(name, None)\n"
+        f"clew = {str(clew)!r}\n"
+        "os.execv(clew, [clew, *sys.argv[1:]])\n"
+    ).encode()
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o700)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(encoded)
             stream.flush()
@@ -292,6 +331,12 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     deadline = started + preparation_budget
     workspace = require_real_directory(args.workspace, "WORKSPACE")
     require_clean_tracked_worktree(workspace, False)
+    clew = (getattr(args, "clew", None) or workspace / "target" / "release" / "clew").resolve()
+    if clew.is_symlink() or not clew.is_file() or not os.access(clew, os.X_OK):
+        raise PreflightFailure(
+            "STHREAD_SNAPSHOT_PREPARATION",
+            "trusted clew executable is missing, non-regular, symlinked, or non-executable",
+        )
     expected_head = git_stdout(workspace, "rev-parse", "HEAD", stage="GIT_STATE")
     parent = require_real_directory(args.snapshot_parent, "STHREAD_SNAPSHOT_PREPARATION")
     if parent == workspace or parent.is_relative_to(workspace) or workspace.is_relative_to(parent):
@@ -340,6 +385,8 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             repository,
             deadline,
         )
+        trusted_launcher = run_directory / "trusted-clew"
+        atomic_trusted_clew_launcher(trusted_launcher, clew)
         actual_head = git_stdout(repository, "rev-parse", "HEAD", stage="GIT_STATE")
         active_branch = git_stdout(
             repository, "symbolic-ref", "--short", "HEAD", stage="GIT_STATE"
@@ -376,6 +423,8 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "repository": str(repository),
             "targetRef": branch,
             "gradleUserHome": str(repository / ".gradle"),
+            "trustedClewLauncher": str(trusted_launcher),
+            "agentContextEnvironmentRemovals": list(TRUSTED_WORKER_ENVIRONMENT_REMOVALS),
             "elapsedMillis": elapsed,
             "budgetMillis": round(preparation_budget * 1000),
             "cache": {
@@ -1158,6 +1207,15 @@ def self_test() -> None:
         gradle_seed = root / "gradle-seed"
         gradle_seed.mkdir()
         (gradle_seed / "marker").write_text("cache", encoding="utf-8")
+        fake_clew = root / "fake-clew"
+        fake_clew.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os\n"
+            "names = " + repr(TRUSTED_WORKER_ENVIRONMENT_REMOVALS) + "\n"
+            "print(json.dumps({name: os.environ.get(name) for name in names}, sort_keys=True))\n",
+            encoding="utf-8",
+        )
+        fake_clew.chmod(0o700)
         snapshot_parent = root / "snapshot-parent"
         snapshot_parent.mkdir()
         snapshot = prepare_sthread_snapshot(
@@ -1167,6 +1225,7 @@ def self_test() -> None:
                 trusted_worker_seed=snapshot_seed,
                 snapshot_parent=snapshot_parent,
                 budget_seconds=5.0,
+                clew=fake_clew,
             )
         )
         assert snapshot["status"] == "READY"
@@ -1176,6 +1235,25 @@ def self_test() -> None:
         assert git_stdout(prepared_repository, "symbolic-ref", "--short", "HEAD", stage="SELF_TEST") == snapshot["targetRef"]
         assert git_stdout(prepared_repository, "status", "--porcelain=v1", stage="SELF_TEST") == ""
         assert (Path(snapshot["gradleUserHome"]) / "marker").read_text(encoding="utf-8") == "cache"
+        trusted_launcher = Path(snapshot["trustedClewLauncher"])
+        assert trusted_launcher.is_file() and os.access(trusted_launcher, os.X_OK)
+        poisoned = os.environ.copy()
+        for name in TRUSTED_WORKER_ENVIRONMENT_REMOVALS:
+            poisoned[name] = "forged"
+        sanitized = subprocess.run(
+            [str(trusted_launcher)],
+            cwd=prepared_repository,
+            env=poisoned,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        assert json.loads(sanitized.stdout) == {
+            name: None for name in TRUSTED_WORKER_ENVIRONMENT_REMOVALS
+        }
+        assert snapshot["agentContextEnvironmentRemovals"] == list(
+            TRUSTED_WORKER_ENVIRONMENT_REMOVALS
+        )
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
