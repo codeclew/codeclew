@@ -530,6 +530,12 @@ def probe(
         if not isinstance(worker_profile, dict):
             raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "worker phase telemetry is missing")
         row["indexTiming"] = {key: timing[key] for key in timing_keys}
+        if timing.get("openProjectIncludedInIndexFiles") is not True or timing["openProjectMicros"] != 0:
+            raise PreflightFailure(
+                "KOTLIN_2_1_COMPILER_INDEX",
+                "verified IndexFiles must own the sole authoritative OpenProject phase",
+            )
+        row["indexTiming"]["openProjectIncludedInIndexFiles"] = True
         row["workerProfile"] = worker_profile
     return row
 

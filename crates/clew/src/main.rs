@@ -460,12 +460,6 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Index(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             let total_started = std::time::Instant::now();
             let repo = absolute(&args.repo)?;
-            let project_started = std::time::Instant::now();
-            let project = w.request(
-                RequestKind::OpenProject,
-                &json!({"repo":repo,"compilation":args.compilation}),
-            )?;
-            let open_project_micros = project_started.elapsed().as_micros() as u64;
             let index_started = std::time::Instant::now();
             let verified_facts = w.index_files_verified(
                 &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":args.syntax_only,"files":args.files}),
@@ -502,7 +496,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let repository_publication_micros = publication_started.elapsed().as_micros() as u64;
             Ok(json!({
                 "schema":"semantic-index-result/0.1",
-                "projectModelHash":project["projectModelHash"],
+                "projectModelHash":facts["projectModelHash"],
                 "workerIndexHash":facts["indexHash"],
                 "persistentIndexHash":persistent_hash,
                 "declarationRelations":relation_snapshot.graph,
@@ -512,7 +506,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 "declarationDescriptorHash":descriptor_snapshot.hash,
                 "descriptorProvenance":descriptor_snapshot.provenance,
                 "snapshotProvenance":{
-                    "projectModelHash":project["projectModelHash"],
+                    "projectModelHash":facts["projectModelHash"],
                     "persistentIndexHash":persistent_hash,
                     "declarationRelationHash":relation_snapshot.hash,
                     "relationProvenance":relation_snapshot.provenance,
@@ -534,7 +528,8 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     "firExtractionMicros":worker_profile.fir_extraction_micros,
                 },
                 "timing":{
-                    "openProjectMicros":open_project_micros,
+                    "openProjectMicros":0,
+                    "openProjectIncludedInIndexFiles":true,
                     "indexFilesMicros":index_files_micros,
                     "inspectReceiptMicros":inspect_receipt_micros,
                     "repositoryPublicationMicros":repository_publication_micros,
