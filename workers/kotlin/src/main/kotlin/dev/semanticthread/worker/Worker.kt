@@ -1132,9 +1132,11 @@ internal class Worker(
             }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         projectModelCache[key]?.let { requestCacheHits++; return it }
-        val model = validateProjectModelSourceFiles(
-            canonicalRepo,
-            projectModel(canonicalRepo, compilation),
+        val model = withSemanticInputManifestHash(
+            validateProjectModelSourceFiles(
+                canonicalRepo,
+                projectModel(canonicalRepo, compilation),
+            ),
         )
         // The model is already held in the live process cache. Writing a
         // non-authoritative copy into the repository makes read-only analysis
