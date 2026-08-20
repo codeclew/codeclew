@@ -38,6 +38,13 @@ struct Cli {
         help = "Emit stable machine-readable JSON (JSON is also the default)"
     )]
     json: bool,
+    #[arg(
+        long,
+        global = true,
+        value_name = "DIR",
+        help = "Use a private external persistent Kotlin compiler-index directory"
+    )]
+    compiler_index_root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -431,9 +438,10 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     let workspace = workspace_root();
+    let compiler_index_root = cli.compiler_index_root;
     match cli.command {
         Command::Doctor => {
-            let worker = WorkerClient::start(&workspace)?;
+            let worker = start_cli_worker(&workspace, compiler_index_root.as_deref())?;
             let result = json!({"schema":"semantic-doctor/0.1","status":"OK","rustCore":env!("CARGO_PKG_VERSION"),"worker":{"language":worker.capabilities.language,"version":worker.capabilities.worker_version,"compilerVersion":worker.capabilities.compiler_version,"operations":worker.capabilities.supported_operations}});
             worker.shutdown()?;
             Ok(result)
@@ -443,13 +451,13 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         } => serde_json::to_value(typed_goal_language_schema()).map_err(parse_error),
         Command::Project {
             command: ProjectCommand::Inspect(args),
-        } => with_worker(&workspace, |w| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             w.request(
                 RequestKind::OpenProject,
                 &json!({"repo":absolute(&args.repo)?,"compilation":args.compilation}),
             )
         }),
-        Command::Index(args) => with_worker(&workspace, |w| {
+        Command::Index(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             let repo = absolute(&args.repo)?;
             let project = w.request(
                 RequestKind::OpenProject,
@@ -459,6 +467,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":args.syntax_only,"files":args.files}),
             )?;
             let facts = w.inspect_verified_index(&verified_facts)?;
+            let compiler_index = w.last_profile.compiler_index.clone();
             let syntax_storage = args
                 .syntax_only
                 .then(|| format!("{}#syntax", args.compilation.as_deref().unwrap_or(":/main")));
@@ -502,12 +511,13 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 },
                 "files":facts["files"].as_array().map_or(0,Vec::len),
                 "invalidations":invalidations,
-                "freshness":freshness
+                "freshness":freshness,
+                "compilerIndex":compiler_index,
             }))
         }),
         Command::Resolve {
             command: ResolveCommand::Symbol(args),
-        } => with_worker(&workspace, |w| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             w.request(
                 RequestKind::ResolveSymbol,
                 &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol,"compilation":args.compilation}),
@@ -515,13 +525,13 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }),
         Command::Resolve {
             command: ResolveCommand::Expression(args),
-        } => with_worker(&workspace, |w| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             w.request(
                 RequestKind::ResolveExpression,
                 &json!({"repo":absolute(&args.repo)?,"file":args.file,"offset":args.offset}),
             )
         }),
-        Command::Cfg(args) => with_worker(&workspace, |w| {
+        Command::Cfg(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             let raw = w.request(
                 RequestKind::BuildLocalGraph,
                 &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol,"compilation":args.compilation}),
@@ -529,13 +539,17 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let graph: LocalGraph = serde_json::from_value(raw).map_err(parse_error)?;
             serde_json::to_value(graph::enrich(graph)).map_err(parse_error)
         }),
-        Command::Slice(args) => with_worker(&workspace, |w| slice_command(w, args)),
+        Command::Slice(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+            slice_command(w, args)
+        }),
         Command::Projection(args) => {
-            with_worker(&workspace, |worker| projection_command(worker, args))
+            with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
+                projection_command(worker, args)
+            })
         }
         Command::Prove {
             command: ProveCommand::TypedGoal(args),
-        } => with_worker(&workspace, |worker| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
             let request = read_typed_goal_request(&args)?;
             if request.schema != TYPED_GOAL_BINDING_REQUEST_SCHEMA {
                 return typed_goal_refusal_json(TypedGoalRefusalReason::InvalidGoal);
@@ -613,7 +627,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }),
         Command::Prove {
             command: ProveCommand::MapEdgeWithContext(args),
-        } => with_worker(&workspace, |worker| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
             let repo = absolute(&args.repo)?;
             let revision = git_head(&repo)?;
             let thread = build_thread(
@@ -662,7 +676,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }),
         Command::Apply {
             command: ApplyCommand::MapEdgeWithContext(args),
-        } => with_worker(&workspace, |worker| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
             let repo = absolute(&args.proof.repo)?;
             let revision = git_head(&repo)?;
             let thread = build_thread(
@@ -717,259 +731,276 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 }
             }
         }),
-        Command::AgentContext(args) => with_worker(&workspace, |worker| {
-            let repo = absolute(&args.repo)?;
-            let project = worker.request(
-                RequestKind::OpenProject,
-                &json!({"repo":repo,"compilation":args.compilation}),
-            )?;
-            let model_input_surfaces =
-                task_context::resolve_model_input_surfaces(&repo, &project, &args.model_inputs)?;
-            let verified_index_facts = worker.index_files_verified(
-                &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
-            )?;
-            let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
-            // A task context is the immutable base of the following transaction,
-            // so its snapshot must be published in the same compilation namespace
-            // that task-apply and commit validate.
-            let mut repository_index =
-                RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
-            let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
-            repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
-            let selection = task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
-            let mut resolutions = selection
-                .root_symbols(1)
-                .into_iter()
-                .map(|symbol| {
-                    worker.request(
-                        RequestKind::ResolveSymbol,
-                        &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            while resolutions.len() < args.max_roots {
-                let followups = selection.followup_symbols(
-                    &resolutions,
-                    args.max_roots.saturating_sub(resolutions.len()),
-                );
-                if followups.is_empty() {
-                    break;
+        Command::AgentContext(args) => {
+            with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
+                let repo = absolute(&args.repo)?;
+                let project = worker.request(
+                    RequestKind::OpenProject,
+                    &json!({"repo":repo,"compilation":args.compilation}),
+                )?;
+                let model_input_surfaces = task_context::resolve_model_input_surfaces(
+                    &repo,
+                    &project,
+                    &args.model_inputs,
+                )?;
+                let verified_index_facts = worker.index_files_verified(
+                    &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
+                )?;
+                let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
+                // A task context is the immutable base of the following transaction,
+                // so its snapshot must be published in the same compilation namespace
+                // that task-apply and commit validate.
+                let mut repository_index =
+                    RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
+                let index_snapshot =
+                    repository_index.update_verified(&verified_index_facts, worker)?;
+                repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
+                let selection =
+                    task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
+                let mut resolutions = selection
+                    .root_symbols(1)
+                    .into_iter()
+                    .map(|symbol| {
+                        worker.request(
+                            RequestKind::ResolveSymbol,
+                            &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                while resolutions.len() < args.max_roots {
+                    let followups = selection.followup_symbols(
+                        &resolutions,
+                        args.max_roots.saturating_sub(resolutions.len()),
+                    );
+                    if followups.is_empty() {
+                        break;
+                    }
+                    for symbol in followups {
+                        resolutions.push(worker.request(
+                            RequestKind::ResolveSymbol,
+                            &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
+                        )?);
+                    }
                 }
-                for symbol in followups {
-                    resolutions.push(worker.request(
-                        RequestKind::ResolveSymbol,
-                        &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
-                    )?);
-                }
-            }
-            let threads = resolutions
-                .iter()
-                .map(|resolution| {
-                    build_task_thread(
-                        worker,
-                        &repo,
-                        &args.compilation,
-                        &project,
-                        &index_snapshot,
-                        resolution,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let evidence_path = if args.evidence.is_absolute() {
-                args.evidence
-            } else {
-                repo.join(args.evidence)
-            };
-            let base_revision = git_head(&repo)?;
-            let (context, evidence) = task_context::build(task_context::TaskContextBuild {
-                repo: &repo,
-                terms: &args.terms,
-                intent: &args.intent,
-                compilation: &args.compilation,
-                project: &project,
-                index_facts: &index_facts,
-                selection: &selection,
-                resolutions: &resolutions,
-                threads: &threads,
-                base_revision: &base_revision,
-                index_snapshot: &index_snapshot,
-                evidence_path: &evidence_path,
-                model_input_surfaces: &model_input_surfaces,
-                max_bytes: args.max_bytes,
-            })?;
-            write_artifact(&evidence_path, &evidence)?;
-            if let Some(output) = args.output {
-                let output_path = if output.is_absolute() {
-                    output
-                } else {
-                    repo.join(output)
-                };
-                write_artifact(&output_path, &context)?;
-            }
-            Ok(context)
-        }),
-        Command::TaskApply(args) => with_worker(&workspace, |worker| {
-            let repo = absolute(&args.repo)?;
-            let evidence: Value = read_json(&args.context)?;
-            if evidence["schema"] != "semantic-task-context-evidence/0.2" {
-                return Err(ClewError::new(
-                    ErrorCode::InvalidInput,
-                    "task-apply needs semantic-task-context-evidence/0.2",
-                ));
-            }
-            let context = &evidence["context"];
-            let context_status = context
-                .pointer("/completeness/status")
-                .and_then(Value::as_str);
-            let stdout_status = evidence
-                .pointer("/stdoutCompleteness/status")
-                .and_then(Value::as_str);
-            let complete =
-                context_status == Some("COMPLETE_TASK") && stdout_status == Some("COMPLETE_TASK");
-            let explicitly_allowed_legacy = args.allow_legacy_heuristic
-                && context_status == Some("LEGACY_HEURISTIC_READY")
-                && stdout_status == Some("LEGACY_HEURISTIC_READY");
-            if !complete && !explicitly_allowed_legacy {
-                return Err(ClewError::new(
-                    ErrorCode::IncompleteSemanticAnalysis,
-                    "task context and its bounded stdout projection must both be COMPLETE_TASK",
-                ));
-            }
-            let required_threads: Vec<ThreadIr> = serde_json::from_value(
-                evidence["threads"]
-                    .as_array()
-                    .cloned()
-                    .map(Value::Array)
-                    .ok_or_else(|| {
-                        ClewError::new(ErrorCode::InvalidInput, "task context has no threads array")
-                    })?,
-            )
-            .map_err(parse_error)?;
-            let thread = required_threads.first().cloned().ok_or_else(|| {
-                ClewError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
-            })?;
-            let mut plan: Value = read_json(&args.edit_plan)?;
-            clew::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
-            normalize_task_plan(&mut plan)?;
-            expand_task_targets(&mut plan, context)?;
-            inject_created_type_imports(&mut plan)?;
-            inject_explicit_target_imports(&mut plan, context)?;
-            inject_created_contract_overrides(&mut plan)?;
-            let operations: Vec<EditOperation> = serde_json::from_value(
-                plan["operations"]
-                    .as_array()
-                    .cloned()
-                    .map(Value::Array)
-                    .ok_or_else(|| {
-                        ClewError::new(ErrorCode::InvalidInput, "edit plan has no operations array")
-                    })?,
-            )
-            .map_err(parse_error)?;
-            let expected_write_set: Vec<ExpectedWriteFact> = plan
-                .get("expectedWriteSet")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(parse_error)?
-                .unwrap_or_default();
-            let base_revision = context
-                .pointer("/snapshot/baseRevision")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            if base_revision != thread.snapshot.base_revision {
-                return Err(ClewError::new(
-                    ErrorCode::PreconditionFailed,
-                    "task context snapshot does not match its Thread IR",
-                ));
-            }
-            if required_threads.iter().any(|required| {
-                required.snapshot.base_revision != base_revision
-                    || required.snapshot.project_model_hash != thread.snapshot.project_model_hash
-                    || required.snapshot.compilation != thread.snapshot.compilation
-            }) {
-                return Err(ClewError::new(
-                    ErrorCode::PreconditionFailed,
-                    "task context threads do not share one revision, project model, and compilation",
-                ));
-            }
-            let edit = EditIr {
-                schema: "semantic-edit/0.1".into(),
-                thread_id: thread.thread_id.clone(),
-                base_revision: base_revision.clone(),
-                operations,
-                expected_write_set,
-            };
-            let mut test_tasks = context
-                .pointer("/validationPlan/targetedArgs")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            include_created_tests(
-                &mut test_tasks,
-                &plan,
-                context
-                    .pointer("/validationPlan/buildSystem")
-                    .and_then(Value::as_str)
-                    .unwrap_or("GRADLE"),
-            )?;
-            let mut transaction = Transaction {
-                schema: "semantic-transaction/0.1".into(),
-                tx_id: format!("tx:{}", uuid::Uuid::new_v4()),
-                actor_id: args.actor,
-                intent: context
-                    .pointer("/task/intent")
-                    .and_then(Value::as_str)
-                    .unwrap_or("task edit")
-                    .to_owned(),
-                base_revision: base_revision.clone(),
-                project_model_hash: thread.snapshot.project_model_hash.clone(),
-                base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
-                status: "CREATED".into(),
-                thread,
-                required_threads,
-                edit,
-                preview: None,
-                expected_write_set_hash: None,
-                actual_write_set_hash: None,
-                validation_evidence: vec![json!({
-                    "kind":"TASK_CONTEXT",
-                    "contextHash":canonical::hash(context).map_err(parse_error)?,
-                    "evidence":args.context
-                })],
-                test_tasks,
-                candidate_commit: None,
-                final_commit: None,
-                target_ref: None,
-            };
-            let result = transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?;
-            if let Some(output) = args.output.as_deref() {
-                write_artifact(output, &transaction)?;
-                let build = transaction
-                    .validation_evidence
+                let threads = resolutions
                     .iter()
-                    .find(|evidence| evidence["kind"] == "BUILD")
+                    .map(|resolution| {
+                        build_task_thread(
+                            worker,
+                            &repo,
+                            &args.compilation,
+                            &project,
+                            &index_snapshot,
+                            resolution,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let evidence_path = if args.evidence.is_absolute() {
+                    args.evidence
+                } else {
+                    repo.join(args.evidence)
+                };
+                let base_revision = git_head(&repo)?;
+                let (context, evidence) = task_context::build(task_context::TaskContextBuild {
+                    repo: &repo,
+                    terms: &args.terms,
+                    intent: &args.intent,
+                    compilation: &args.compilation,
+                    project: &project,
+                    index_facts: &index_facts,
+                    selection: &selection,
+                    resolutions: &resolutions,
+                    threads: &threads,
+                    base_revision: &base_revision,
+                    index_snapshot: &index_snapshot,
+                    evidence_path: &evidence_path,
+                    model_input_surfaces: &model_input_surfaces,
+                    max_bytes: args.max_bytes,
+                })?;
+                write_artifact(&evidence_path, &evidence)?;
+                if let Some(output) = args.output {
+                    let output_path = if output.is_absolute() {
+                        output
+                    } else {
+                        repo.join(output)
+                    };
+                    write_artifact(&output_path, &context)?;
+                }
+                Ok(context)
+            })
+        }
+        Command::TaskApply(args) => {
+            with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
+                let repo = absolute(&args.repo)?;
+                let evidence: Value = read_json(&args.context)?;
+                if evidence["schema"] != "semantic-task-context-evidence/0.2" {
+                    return Err(ClewError::new(
+                        ErrorCode::InvalidInput,
+                        "task-apply needs semantic-task-context-evidence/0.2",
+                    ));
+                }
+                let context = &evidence["context"];
+                let context_status = context
+                    .pointer("/completeness/status")
+                    .and_then(Value::as_str);
+                let stdout_status = evidence
+                    .pointer("/stdoutCompleteness/status")
+                    .and_then(Value::as_str);
+                let complete = context_status == Some("COMPLETE_TASK")
+                    && stdout_status == Some("COMPLETE_TASK");
+                let explicitly_allowed_legacy = args.allow_legacy_heuristic
+                    && context_status == Some("LEGACY_HEURISTIC_READY")
+                    && stdout_status == Some("LEGACY_HEURISTIC_READY");
+                if !complete && !explicitly_allowed_legacy {
+                    return Err(ClewError::new(
+                        ErrorCode::IncompleteSemanticAnalysis,
+                        "task context and its bounded stdout projection must both be COMPLETE_TASK",
+                    ));
+                }
+                let required_threads: Vec<ThreadIr> = serde_json::from_value(
+                    evidence["threads"]
+                        .as_array()
+                        .cloned()
+                        .map(Value::Array)
+                        .ok_or_else(|| {
+                            ClewError::new(
+                                ErrorCode::InvalidInput,
+                                "task context has no threads array",
+                            )
+                        })?,
+                )
+                .map_err(parse_error)?;
+                let thread = required_threads.first().cloned().ok_or_else(|| {
+                    ClewError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
+                })?;
+                let mut plan: Value = read_json(&args.edit_plan)?;
+                clew::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
+                normalize_task_plan(&mut plan)?;
+                expand_task_targets(&mut plan, context)?;
+                inject_created_type_imports(&mut plan)?;
+                inject_explicit_target_imports(&mut plan, context)?;
+                inject_created_contract_overrides(&mut plan)?;
+                let operations: Vec<EditOperation> = serde_json::from_value(
+                    plan["operations"]
+                        .as_array()
+                        .cloned()
+                        .map(Value::Array)
+                        .ok_or_else(|| {
+                            ClewError::new(
+                                ErrorCode::InvalidInput,
+                                "edit plan has no operations array",
+                            )
+                        })?,
+                )
+                .map_err(parse_error)?;
+                let expected_write_set: Vec<ExpectedWriteFact> = plan
+                    .get("expectedWriteSet")
                     .cloned()
-                    .unwrap_or(Value::Null);
-                return Ok(json!({
-                    "schema":"semantic-task-apply-receipt/0.1",
-                    "status":transaction.status,
-                    "finalCommit":transaction.final_commit,
-                    "changedFiles":transaction.preview.as_ref().map(|preview| &preview.changed_files),
-                    "build":build,
-                    "transactionArtifact":output
-                }));
-            }
-            Ok(
-                json!({"schema":"semantic-task-apply/0.1","result":result,"transaction":transaction}),
-            )
-        }),
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(parse_error)?
+                    .unwrap_or_default();
+                let base_revision = context
+                    .pointer("/snapshot/baseRevision")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if base_revision != thread.snapshot.base_revision {
+                    return Err(ClewError::new(
+                        ErrorCode::PreconditionFailed,
+                        "task context snapshot does not match its Thread IR",
+                    ));
+                }
+                if required_threads.iter().any(|required| {
+                    required.snapshot.base_revision != base_revision
+                        || required.snapshot.project_model_hash
+                            != thread.snapshot.project_model_hash
+                        || required.snapshot.compilation != thread.snapshot.compilation
+                }) {
+                    return Err(ClewError::new(
+                        ErrorCode::PreconditionFailed,
+                        "task context threads do not share one revision, project model, and compilation",
+                    ));
+                }
+                let edit = EditIr {
+                    schema: "semantic-edit/0.1".into(),
+                    thread_id: thread.thread_id.clone(),
+                    base_revision: base_revision.clone(),
+                    operations,
+                    expected_write_set,
+                };
+                let mut test_tasks = context
+                    .pointer("/validationPlan/targetedArgs")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                include_created_tests(
+                    &mut test_tasks,
+                    &plan,
+                    context
+                        .pointer("/validationPlan/buildSystem")
+                        .and_then(Value::as_str)
+                        .unwrap_or("GRADLE"),
+                )?;
+                let mut transaction = Transaction {
+                    schema: "semantic-transaction/0.1".into(),
+                    tx_id: format!("tx:{}", uuid::Uuid::new_v4()),
+                    actor_id: args.actor,
+                    intent: context
+                        .pointer("/task/intent")
+                        .and_then(Value::as_str)
+                        .unwrap_or("task edit")
+                        .to_owned(),
+                    base_revision: base_revision.clone(),
+                    project_model_hash: thread.snapshot.project_model_hash.clone(),
+                    base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
+                    status: "CREATED".into(),
+                    thread,
+                    required_threads,
+                    edit,
+                    preview: None,
+                    expected_write_set_hash: None,
+                    actual_write_set_hash: None,
+                    validation_evidence: vec![json!({
+                        "kind":"TASK_CONTEXT",
+                        "contextHash":canonical::hash(context).map_err(parse_error)?,
+                        "evidence":args.context
+                    })],
+                    test_tasks,
+                    candidate_commit: None,
+                    final_commit: None,
+                    target_ref: None,
+                };
+                let result =
+                    transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?;
+                if let Some(output) = args.output.as_deref() {
+                    write_artifact(output, &transaction)?;
+                    let build = transaction
+                        .validation_evidence
+                        .iter()
+                        .find(|evidence| evidence["kind"] == "BUILD")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    return Ok(json!({
+                        "schema":"semantic-task-apply-receipt/0.1",
+                        "status":transaction.status,
+                        "finalCommit":transaction.final_commit,
+                        "changedFiles":transaction.preview.as_ref().map(|preview| &preview.changed_files),
+                        "build":build,
+                        "transactionArtifact":output
+                    }));
+                }
+                Ok(
+                    json!({"schema":"semantic-task-apply/0.1","result":result,"transaction":transaction}),
+                )
+            })
+        }
         Command::Edit {
             command: EditCommand::Preview(args),
-        } => with_worker(&workspace, |w| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             let repo = absolute(&args.repo)?;
             let thread: ThreadIr = read_json(&args.thread)?;
             let edit: EditIr = read_json(&args.edit)?;
@@ -979,7 +1010,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }),
         Command::Tx {
             command: TxCommand::Validate(args),
-        } => with_worker(&workspace, |w| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
             transaction::validate_required_threads(&tx)?;
@@ -1019,7 +1050,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }),
         Command::Tx {
             command: TxCommand::Commit(args),
-        } => with_worker(&workspace, |w| {
+        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
             let transaction_id = tx.tx_id.clone();
@@ -1371,11 +1402,29 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
     Ok(thread)
 }
 
-fn with_worker<F>(workspace: &Path, action: F) -> Result<Value, ClewError>
+fn start_cli_worker(
+    workspace: &Path,
+    compiler_index_root: Option<&Path>,
+) -> Result<WorkerClient, ClewError> {
+    match compiler_index_root {
+        Some(root) => {
+            let inherited_build_state =
+                std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT").map(PathBuf::from);
+            WorkerClient::start_with_states(workspace, inherited_build_state.as_deref(), Some(root))
+        }
+        None => WorkerClient::start(workspace),
+    }
+}
+
+fn with_worker<F>(
+    workspace: &Path,
+    compiler_index_root: Option<&Path>,
+    action: F,
+) -> Result<Value, ClewError>
 where
     F: FnOnce(&mut WorkerClient) -> Result<Value, ClewError>,
 {
-    let mut worker = WorkerClient::start(workspace)?;
+    let mut worker = start_cli_worker(workspace, compiler_index_root)?;
     let result = action(&mut worker);
     let shutdown = worker.shutdown();
     match (result, shutdown) {
@@ -2490,6 +2539,35 @@ fn exit_code(code: &ErrorCode) -> u8 {
 #[cfg(test)]
 mod task_plan_tests {
     use super::*;
+
+    #[test]
+    fn compiler_index_root_is_an_explicit_global_cli_authority() {
+        for arguments in [
+            vec![
+                "clew",
+                "--compiler-index-root",
+                "/private/tmp/codeclew-index",
+                "index",
+                "--repo",
+                "/repo",
+            ],
+            vec![
+                "clew",
+                "index",
+                "--repo",
+                "/repo",
+                "--compiler-index-root",
+                "/private/tmp/codeclew-index",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            assert_eq!(
+                cli.compiler_index_root,
+                Some(PathBuf::from("/private/tmp/codeclew-index"))
+            );
+            assert!(matches!(cli.command, Command::Index(_)));
+        }
+    }
 
     #[test]
     fn normalizes_compact_rewrites_and_imports_created_cross_package_types() {

@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,12 @@ TRUSTED_WORKER_DISTRIBUTIONS = (
     ("workers/manifests/kotlin21.json", "workers/kotlin21/build/install/kotlin21"),
     ("workers/manifests/kotlin23.json", "workers/kotlin23/build/install/kotlin23"),
     ("workers/manifests/kotlin24.json", "workers/kotlin/build/install/kotlin"),
+)
+COMPILER_INDEX_SUCCESS_STATUSES = (
+    "COLD_FULL",
+    "INCREMENTAL",
+    "RECOVERED_FULL",
+    "UNCHANGED_HIT",
 )
 
 
@@ -168,6 +175,34 @@ def require_real_directory(path: Path, stage: str) -> Path:
     if path.is_symlink() or not path.is_dir():
         raise PreflightFailure(stage, f"required directory is absent or a symlink: {path}")
     return path.resolve()
+
+
+def prepare_compiler_index_root(path: Path | None, workspace: Path) -> Path:
+    if path is None:
+        temporary_root = Path(tempfile.gettempdir()).resolve()
+        workspace_identity = hashlib.sha256(str(workspace).encode()).hexdigest()
+        path = temporary_root / "codeclew-sthread-compiler-index" / workspace_identity
+    if not path.is_absolute():
+        raise PreflightFailure("COMPILER_INDEX_ROOT", "compiler index root must be absolute")
+    lexical = Path(os.path.abspath(path))
+    existed = lexical.exists()
+    if lexical.is_symlink():
+        raise PreflightFailure("COMPILER_INDEX_ROOT", "compiler index root must not be a symlink")
+    lexical.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not existed:
+        lexical.chmod(0o700)
+    canonical = lexical.resolve(strict=True)
+    if canonical != lexical:
+        raise PreflightFailure(
+            "COMPILER_INDEX_ROOT",
+            "compiler index root must be canonical and have no symlinked ancestor",
+        )
+    metadata = canonical.stat()
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise PreflightFailure("COMPILER_INDEX_ROOT", "compiler index root must be a private directory")
+    if canonical == workspace or canonical.is_relative_to(workspace) or workspace.is_relative_to(canonical):
+        raise PreflightFailure("COMPILER_INDEX_ROOT", "compiler index root must be external to workspace")
+    return canonical
 
 
 def tracked_files(workspace: Path) -> list[Path]:
@@ -365,6 +400,69 @@ def missing_stdout_markers(stdout: bytes, required: Sequence[bytes]) -> list[str
     return [marker.decode("utf-8", errors="replace") for marker in required if marker not in stdout]
 
 
+def compiler_index_profile(stdout: bytes) -> dict[str, Any]:
+    result = next(
+        (
+            value
+            for value in reversed(json_values(stdout))
+            if isinstance(value, dict) and value.get("schema") == "semantic-index-result/0.1"
+        ),
+        None,
+    )
+    profile = result.get("compilerIndex") if isinstance(result, dict) else None
+    if not isinstance(profile, dict):
+        shape = "missing-result"
+        if isinstance(result, dict):
+            shape = "missing-key" if "compilerIndex" not in result else type(profile).__name__
+        raise PreflightFailure(
+            "KOTLIN_2_1_COMPILER_INDEX",
+            "Kotlin 2.1 index result lacks typed compiler-index telemetry",
+            detail={"semanticIndexResult": isinstance(result, dict), "compilerIndexShape": shape},
+        )
+    required = {
+        "backend": str,
+        "status": str,
+        "valid": bool,
+        "totalMicros": int,
+        "compilerMicros": int,
+        "firExtractionMicros": int,
+        "totalFiles": int,
+        "compiledFiles": int,
+        "reusedFiles": int,
+        "recovered": bool,
+        "fallbackUsed": bool,
+    }
+    if any(not isinstance(profile.get(key), expected) for key, expected in required.items()):
+        raise PreflightFailure(
+            "KOTLIN_2_1_COMPILER_INDEX",
+            "Kotlin 2.1 compiler-index telemetry is incomplete or malformed",
+        )
+    if profile["backend"] != "BTA_PERSISTENT":
+        raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "unexpected compiler-index backend")
+    if profile["status"] not in COMPILER_INDEX_SUCCESS_STATUSES:
+        raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "compiler-index did not complete persistently")
+    if not profile["valid"] or profile["fallbackUsed"]:
+        raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "compiler-index fell back or returned invalid facts")
+    digest = profile.get("graphDigest")
+    if not isinstance(digest, str) or len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "compiler-index graph digest is malformed")
+    if min(profile[key] for key in ("totalMicros", "compilerMicros", "firExtractionMicros", "totalFiles", "compiledFiles", "reusedFiles")) < 0:
+        raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "compiler-index telemetry contains a negative value")
+    if profile["status"] == "UNCHANGED_HIT" and (
+        profile["compiledFiles"] != 0 or profile["reusedFiles"] != profile["totalFiles"]
+    ):
+        raise PreflightFailure("KOTLIN_2_1_COMPILER_INDEX", "unchanged compiler-index hit has inconsistent counts")
+    return profile
+
+
+def receipt_argv(argv: Sequence[str]) -> list[str]:
+    rendered = list(argv)
+    for index, token in enumerate(rendered[:-1]):
+        if token == "--compiler-index-root":
+            rendered[index + 1] = "<private-compiler-index-root>"
+    return rendered
+
+
 def probe(
     *,
     kind: str,
@@ -373,6 +471,8 @@ def probe(
     deadline: float,
     environment: dict[str, str] | None = None,
     required_stdout_markers: Sequence[bytes] = (),
+    expected_compiler_index_status: str | None = None,
+    require_compiler_index: bool = False,
 ) -> dict[str, Any]:
     completed, elapsed = run_capture(
         argv,
@@ -383,7 +483,7 @@ def probe(
     )
     row = {
         "kind": kind,
-        "argv": list(argv),
+        "argv": receipt_argv(argv),
         "durationMillis": elapsed,
         "exitCode": completed.returncode,
         "stdoutSha256": sha256_bytes(completed.stdout),
@@ -398,6 +498,15 @@ def probe(
             f"{kind} probe lacks required capability markers",
             detail={**row, "missingMarkers": missing_markers},
         )
+    if require_compiler_index or expected_compiler_index_status is not None:
+        profile = compiler_index_profile(completed.stdout)
+        if expected_compiler_index_status is not None and profile["status"] != expected_compiler_index_status:
+            raise PreflightFailure(
+                "KOTLIN_2_1_COMPILER_INDEX",
+                f"expected {expected_compiler_index_status}, got {profile['status']}",
+                detail={**row, "compilerIndex": profile},
+            )
+        row["compilerIndex"] = profile
     return row
 
 
@@ -414,6 +523,8 @@ def probe_group(specifications: Sequence[dict[str, Any]], deadline: float) -> li
                 deadline=deadline,
                 environment=specification.get("environment"),
                 required_stdout_markers=tuple(specification.get("required_stdout_markers", ())),
+                expected_compiler_index_status=specification.get("expected_compiler_index_status"),
+                require_compiler_index=bool(specification.get("require_compiler_index", False)),
             ): str(specification["kind"])
             for specification in specifications
         }
@@ -436,6 +547,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--maven-repository-seed", type=Path, default=Path.home() / ".m2" / "repository")
     parser.add_argument("--cargo-target-seed", type=Path, default=ROOT / "target")
     parser.add_argument("--trusted-worker-seed", type=Path, default=ROOT)
+    parser.add_argument("--compiler-index-root", type=Path)
     parser.add_argument("--clew", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--budget-seconds", type=float, default=60.0)
@@ -462,16 +574,22 @@ def self_test() -> None:
     assert receipt_exit_code({"status": "READY"}) == 0
     assert receipt_exit_code({"status": "FAILED"}) == 1
     assert receipt_exit_code({}) == 1
-    capability_output = b"Usage: clew agent-context --model-input <MODEL_INPUT>"
-    assert missing_stdout_markers(capability_output, (b"--model-input",)) == []
+    capability_output = b"Usage: clew --compiler-index-root <DIR> agent-context --model-input <MODEL_INPUT>"
+    assert missing_stdout_markers(capability_output, (b"--model-input", b"--compiler-index-root")) == []
     assert missing_stdout_markers(capability_output, (b"--proof-context",)) == ["--proof-context"]
+    assert receipt_argv(["clew", "--compiler-index-root", "/secret", "index"]) == [
+        "clew",
+        "--compiler-index-root",
+        "<private-compiler-index-root>",
+        "index",
+    ]
     try:
         gradle_configuration_task(":workers:kotlin21/test")
         raise AssertionError("non-main compilation accepted")
     except PreflightFailure:
         pass
     with tempfile.TemporaryDirectory(prefix="sthread-preflight-self-test-") as raw:
-        root = Path(raw)
+        root = Path(raw).resolve()
         receipt = root / "receipt.json"
         atomic_json(receipt, {"schema": SCHEMA, "status": "READY"})
         assert receipt.read_bytes() == b'{"schema":"codeclew.sthread-preflight/0.1","status":"READY"}\n'
@@ -507,6 +625,10 @@ def self_test() -> None:
         assert all((worker_target / distribution_name / "worker").is_file() for _, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS)
         elapsed, hit = hydrate_trusted_workers(worker_seed, worker_target, time.monotonic() + 5)
         assert elapsed == 0 and hit
+        workspace = root / "workspace"
+        workspace.mkdir()
+        compiler_index = prepare_compiler_index_root(root / "compiler-index", workspace.resolve())
+        assert compiler_index.is_dir() and stat.S_IMODE(compiler_index.stat().st_mode) == 0o700
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
@@ -526,6 +648,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     if git_root.returncode != 0 or Path(git_root.stdout.decode().strip()).resolve() != workspace:
         raise PreflightFailure("WORKSPACE", "workspace must be the exact Git root")
     tracked_clean = require_clean_tracked_worktree(workspace, args.allow_dirty)
+    compiler_index_root = prepare_compiler_index_root(args.compiler_index_root, workspace)
     fingerprint = toolchain_fingerprint(workspace)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=workspace, stdout=subprocess.PIPE, check=True
@@ -622,7 +745,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             argv=[str(clew), "agent-context", "--help"],
             cwd=workspace,
             deadline=deadline,
-            required_stdout_markers=(b"--model-input",),
+            required_stdout_markers=(b"--model-input", b"--compiler-index-root"),
         )
     ]
     runtime_specifications: list[dict[str, Any]] = [
@@ -656,11 +779,17 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
         for kind, relative_repo, compilation, _build_system in DEFAULT_SMOKES:
+            compiler_index_arguments = (
+                ["--compiler-index-root", str(compiler_index_root)]
+                if kind == "KOTLIN_2_1_COMPILER_SEMANTIC"
+                else []
+            )
             runtime_specifications.append(
                 {
                     "kind": kind,
                     "argv": [
                         str(clew),
+                        *compiler_index_arguments,
                         "index",
                         "--repo",
                         str(workspace / relative_repo),
@@ -668,9 +797,32 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                         compilation,
                     ],
                     "cwd": workspace,
+                    "require_compiler_index": kind == "KOTLIN_2_1_COMPILER_SEMANTIC",
                 }
             )
-    probes.extend(probe_group(runtime_specifications, deadline))
+    runtime_probes = probe_group(runtime_specifications, deadline)
+    probes.extend(runtime_probes)
+    if not args.skip_smoke:
+        kotlin21 = next(row for row in runtime_probes if row["kind"] == "KOTLIN_2_1_COMPILER_SEMANTIC")
+        if kotlin21["compilerIndex"]["status"] != "UNCHANGED_HIT":
+            probes.append(
+                probe(
+                    kind="KOTLIN_2_1_COMPILER_INDEX_WARM",
+                    argv=[
+                        str(clew),
+                        "--compiler-index-root",
+                        str(compiler_index_root),
+                        "index",
+                        "--repo",
+                        str(fixture21),
+                        "--compilation",
+                        ":/main",
+                    ],
+                    cwd=workspace,
+                    deadline=deadline,
+                    expected_compiler_index_status="UNCHANGED_HIT",
+                )
+            )
 
     elapsed = monotonic_millis(started)
     return {
@@ -680,6 +832,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "workspaceRevision": head,
         "trackedClean": tracked_clean,
         "toolchainFingerprint": fingerprint,
+        "compilerIndexRootIdentity": sha256_bytes(str(compiler_index_root).encode()),
         "budgetMillis": round(args.budget_seconds * 1000),
         "elapsedMillis": elapsed,
         "cache": {
