@@ -162,6 +162,17 @@ class RunContractTest(unittest.TestCase):
                 with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "nonblank"):
                     PREFLIGHT.validate_run_contract(phase, "  ", Path("/private/tmp/state"))
 
+    def test_cold_is_unbounded_by_default_and_explicit_budget_is_honored(self) -> None:
+        self.assertIsNone(PREFLIGHT.effective_budget("cold", None))
+        self.assertEqual(PREFLIGHT.effective_budget("cold", 180.0), 180.0)
+
+    def test_warm_is_always_capped_at_one_minute(self) -> None:
+        self.assertEqual(PREFLIGHT.effective_budget("warm", None), 60.0)
+        self.assertEqual(PREFLIGHT.effective_budget("warm", 180.0), 60.0)
+        self.assertEqual(PREFLIGHT.effective_budget("warm", 12.0), 12.0)
+        with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "positive"):
+            PREFLIGHT.effective_budget("cold", 0.0)
+
     def test_warm_never_creates_an_absent_state_root(self) -> None:
         with tempfile.TemporaryDirectory(prefix="real-kotlin-preflight-test-") as raw:
             base = Path(raw).resolve()

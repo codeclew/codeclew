@@ -163,10 +163,14 @@ def atomic_bytes(path: Path, body: bytes) -> None:
 
 
 def run(
-    argv: list[str], repo: Path, deadline: float, *, environment: dict[str, str] | None = None
+    argv: list[str],
+    repo: Path,
+    deadline: float | None,
+    *,
+    environment: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[bytes], int]:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
+    remaining = None if deadline is None else deadline - time.monotonic()
+    if remaining is not None and remaining <= 0:
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")
     started = time.monotonic()
     try:
@@ -303,6 +307,14 @@ def validate_run_contract(
         raise PreflightFailure("RUN_PHASE", "warm projection requires --state-root")
 
 
+def effective_budget(run_phase: str, requested: float | None) -> float | None:
+    if requested is not None and requested <= 0:
+        raise PreflightFailure("ARGUMENTS", "budget must be positive")
+    if run_phase == "warm":
+        return 60.0 if requested is None else min(60.0, requested)
+    return requested
+
+
 def verify_private_state_root(
     value: Path | None, repo: Path, *, require_existing: bool
 ) -> str | None:
@@ -322,10 +334,8 @@ def verify_private_state_root(
 
 def execute(args: argparse.Namespace) -> dict[str, object]:
     started = time.monotonic()
-    budget = min(60.0, args.budget_seconds)
-    if budget <= 0:
-        raise PreflightFailure("ARGUMENTS", "budget must be positive")
-    deadline = started + budget
+    budget = effective_budget(args.run_phase, args.budget_seconds)
+    deadline = None if budget is None else started + budget
     validate_run_contract(args.run_phase, args.seed_entity, args.state_root)
     repo = args.repo.resolve(strict=True)
     if repo.is_symlink() or not repo.is_dir():
@@ -417,7 +427,7 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         require_persistent_reuse(index_summary, args.run_phase)
     probes.append({"kind": "CLEW_SEMANTIC_INDEX", "durationMillis": index_millis, **index_summary})
     elapsed = round((time.monotonic() - started) * 1000)
-    if elapsed > round(budget * 1000):
+    if budget is not None and elapsed > round(budget * 1000):
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")
     return {
         "schema": SCHEMA,
@@ -435,7 +445,7 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         "build": build,
         "probes": probes,
         "elapsedMillis": elapsed,
-        "budgetMillis": round(budget * 1000),
+        "budgetMillis": None if budget is None else round(budget * 1000),
     }
 
 
@@ -449,7 +459,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clew", type=Path, default=ROOT / "target/release/clew")
     parser.add_argument("--gradle-cache-seed", type=Path, default=Path.home() / ".gradle")
     parser.add_argument("--receipt", type=Path)
-    parser.add_argument("--budget-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        help="optional cold timeout; warm runs are always capped at 60 seconds",
+    )
     return parser.parse_args()
 
 
