@@ -14,7 +14,11 @@ import sys
 import time
 
 
-SCHEMA = "codeclew.real-kotlin-preflight/0.2"
+SCHEMA = "codeclew.real-kotlin-preflight/0.3"
+ROOT = Path(__file__).resolve().parents[1]
+GRADLE_CACHE_MARKER_SCHEMA = "codeclew.real-kotlin-gradle-cache/0.1"
+GRADLE_CACHE_MARKER = ".codeclew-real-kotlin-preflight-cache.json"
+GRADLE_CACHE_MEMBERS = ("caches", "wrapper", "jdks")
 
 
 class PreflightFailure(Exception):
@@ -27,7 +31,19 @@ def canonical(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode()
 
 
-def run(argv: list[str], repo: Path, deadline: float) -> tuple[subprocess.CompletedProcess[bytes], int]:
+def atomic_bytes(path: Path, body: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(body)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def run(
+    argv: list[str], repo: Path, deadline: float, *, environment: dict[str, str] | None = None
+) -> tuple[subprocess.CompletedProcess[bytes], int]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")
@@ -40,6 +56,7 @@ def run(argv: list[str], repo: Path, deadline: float) -> tuple[subprocess.Comple
             stderr=subprocess.PIPE,
             timeout=remaining,
             check=False,
+            env=environment,
         )
     except subprocess.TimeoutExpired as error:
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget") from error
@@ -48,7 +65,7 @@ def run(argv: list[str], repo: Path, deadline: float) -> tuple[subprocess.Comple
 
 def require_success(completed: subprocess.CompletedProcess[bytes], stage: str) -> None:
     if completed.returncode != 0:
-        detail = completed.stderr.decode("utf-8", "replace")[-1024:].strip()
+        detail = (completed.stderr + b"\n" + completed.stdout).decode("utf-8", "replace")[-4096:].strip()
         raise PreflightFailure(stage, detail or f"command exited {completed.returncode}")
 
 
@@ -69,6 +86,62 @@ def gradle_configuration_task(compilation: str) -> str:
         raise PreflightFailure("COMPILATION", "Gradle compilation must be canonical :<project>/main")
     project = compilation[:-5]
     return f"{project}:properties" if project != ":" else ":properties"
+
+
+def gradle_cache_marker_matches(target: Path, source: Path, members: list[str]) -> bool:
+    marker = target / GRADLE_CACHE_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return value == {
+        "schema": GRADLE_CACHE_MARKER_SCHEMA,
+        "source": str(source),
+        "members": members,
+    } and all((target / member).is_dir() and not (target / member).is_symlink() for member in members)
+
+
+def hydrate_gradle_cache(source: Path, target: Path, repo: Path, deadline: float) -> tuple[int, bool]:
+    source = source.resolve(strict=True)
+    if source.is_symlink() or not source.is_dir() or source == repo or source.is_relative_to(repo):
+        raise PreflightFailure("GRADLE_CACHE", "Gradle cache seed must be a real external directory")
+    members = [member for member in GRADLE_CACHE_MEMBERS if (source / member).is_dir()]
+    if "caches" not in members or "wrapper" not in members:
+        raise PreflightFailure("GRADLE_CACHE", "Gradle cache seed must contain caches and wrapper")
+    if gradle_cache_marker_matches(target, source, members):
+        return 0, True
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise PreflightFailure("GRADLE_CACHE", "repo-local Gradle cache must be a real directory")
+    target.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    for member in members:
+        destination = target / member
+        destination.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "darwin":
+            argv = ["cp", "-cR", f"{source / member}/.", str(destination)]
+        else:
+            argv = ["cp", "-a", "--reflink=auto", f"{source / member}/.", str(destination)]
+        copied, _ = run(argv, repo, deadline)
+        require_success(copied, "GRADLE_CACHE")
+    atomic_bytes(
+        target / GRADLE_CACHE_MARKER,
+        canonical({"schema": GRADLE_CACHE_MARKER_SCHEMA, "source": str(source), "members": members}),
+    )
+    return round((time.monotonic() - started) * 1000), False
+
+
+def isolated_gradle_environment(gradle_user_home: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    for key in (
+        "GRADLE_USER_HOME",
+        "CODECLEW_K1_BUILD_STATE_ROOT",
+        "CODECLEW_K2_INDEX_ROOT",
+    ):
+        environment.pop(key, None)
+    environment["GRADLE_USER_HOME"] = str(gradle_user_home)
+    return environment
 
 
 def exact_executable(candidate: str | None, stage: str) -> Path:
@@ -133,6 +206,9 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     if 'version "21.' not in java_version:
         raise PreflightFailure("JAVA", "JDK 21 is required")
     probes: list[dict[str, object]] = [{"kind": "JAVA_21", "durationMillis": java_millis}]
+    state_root = verify_private_state_root(
+        args.state_root, repo, require_existing=args.run_phase == "warm"
+    )
     if (repo / "pom.xml").is_file():
         maven = exact_executable(shutil.which("mvn"), "MAVEN")
         model_probe, model_millis = run([str(maven), "--offline", "--version"], repo, deadline)
@@ -143,16 +219,39 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         wrapper = repo / "gradlew"
         if wrapper.is_symlink() or not wrapper.is_file() or not os.access(wrapper, os.X_OK):
             raise PreflightFailure("GRADLE", "trusted executable Gradle wrapper is unavailable")
+        hydration_millis, hydration_hit = hydrate_gradle_cache(
+            args.gradle_cache_seed, repo / ".gradle", repo, deadline
+        )
+        probes.append(
+            {
+                "kind": "GRADLE_CACHE_HYDRATION",
+                "durationMillis": hydration_millis,
+                "hit": hydration_hit,
+            }
+        )
         task = gradle_configuration_task(args.compilation)
+        gradle_environment = isolated_gradle_environment(repo / ".gradle")
         model_probe, model_millis = run(
-            [str(wrapper), "--offline", "--no-daemon", "--quiet", task], repo, deadline
+            [str(wrapper), "--offline", "--no-daemon", "--quiet", task],
+            repo,
+            deadline,
+            environment=gradle_environment,
         )
         require_success(model_probe, "GRADLE")
         build = {"system": "GRADLE", "launcher": "./gradlew", "compilation": args.compilation, "configurationTask": task}
         probes.append({"kind": "GRADLE_OFFLINE_ROUTE", "durationMillis": model_millis})
-    state_root = verify_private_state_root(
-        args.state_root, repo, require_existing=args.run_phase == "warm"
+    clew = exact_executable(str(args.clew), "CLEW")
+    inspect_argv = [str(clew)]
+    if state_root is not None:
+        compiler_index = Path(state_root) / "compiler-index"
+        compiler_index.mkdir(mode=0o700, parents=True, exist_ok=True)
+        inspect_argv.extend(["--compiler-index-root", str(compiler_index)])
+    inspect_argv.extend(
+        ["project", "inspect", "--repo", str(repo), "--compilation", args.compilation]
     )
+    inspect_probe, inspect_millis = run(inspect_argv, repo, deadline)
+    require_success(inspect_probe, "SEMANTIC_BUILD_DISCOVERY")
+    probes.append({"kind": "CLEW_PROJECT_INSPECT", "durationMillis": inspect_millis})
     elapsed = round((time.monotonic() - started) * 1000)
     if elapsed > round(budget * 1000):
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")
@@ -182,6 +281,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-root", type=Path)
     parser.add_argument("--run-phase", choices=("cold", "warm"), default="cold")
     parser.add_argument("--seed-entity")
+    parser.add_argument("--clew", type=Path, default=ROOT / "target/release/clew")
+    parser.add_argument("--gradle-cache-seed", type=Path, default=Path.home() / ".gradle")
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--budget-seconds", type=float, default=60.0)
     return parser.parse_args()
