@@ -429,7 +429,11 @@ private fun normalizeFacts21(
             }
         }.toString()
     }
-    return NormalizedFacts21(normalized, receipts.size, firMicros)
+    return NormalizedFacts21(
+        deduplicateCanonicalK2FactLines21(normalized),
+        receipts.size,
+        firMicros,
+    )
 }
 
 internal fun btaConfigurationDigest21(request: IncrementalK2Request): String {
