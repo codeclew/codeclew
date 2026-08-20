@@ -19,6 +19,17 @@ ROOT = Path(__file__).resolve().parents[1]
 GRADLE_CACHE_MARKER_SCHEMA = "codeclew.real-kotlin-gradle-cache/0.1"
 GRADLE_CACHE_MARKER = ".codeclew-real-kotlin-preflight-cache.json"
 GRADLE_CACHE_MEMBERS = ("caches", "wrapper", "jdks")
+PERSISTENT_COMPILER_INDEX_STATUSES = {
+    "COLD_FULL",
+    "INCREMENTAL",
+    "RECOVERED_FULL",
+    "UNCHANGED_HIT",
+}
+USABLE_PROJECT_MODEL_CACHE_STATUSES = {
+    "EXTRACTED_PUBLISHED",
+    "PERSISTENT_HIT",
+    "MEMORY_HIT",
+}
 
 
 class PreflightFailure(Exception):
@@ -67,7 +78,37 @@ def semantic_index_summary(raw: bytes) -> dict[str, object]:
     fallback_used = compiler_index.get("fallbackUsed")
     if not isinstance(status, str) or not isinstance(valid, bool) or not isinstance(fallback_used, bool):
         raise PreflightFailure("SEMANTIC_INDEX", "clew index compiler profile is malformed")
-    return {"compilerIndexStatus": status, "compilerIndexValid": valid, "fallbackUsed": fallback_used}
+    project_model_cache = value.get("projectModelCache")
+    if not isinstance(project_model_cache, dict) or not isinstance(
+        project_model_cache.get("status"), str
+    ):
+        raise PreflightFailure("SEMANTIC_INDEX", "clew index project-model cache profile is missing")
+    return {
+        "compilerIndexStatus": status,
+        "compilerIndexValid": valid,
+        "fallbackUsed": fallback_used,
+        "projectModelCacheStatus": project_model_cache["status"],
+    }
+
+
+def require_persistent_reuse(summary: dict[str, object], run_phase: str) -> None:
+    status = summary["compilerIndexStatus"]
+    if (
+        status not in PERSISTENT_COMPILER_INDEX_STATUSES
+        or summary["compilerIndexValid"] is not True
+        or summary["fallbackUsed"] is not False
+    ):
+        raise PreflightFailure(
+            "COMPILER_INDEX",
+            "persistent compiler index is invalid, unavailable, or used the legacy fallback",
+        )
+    if run_phase == "warm" and status != "UNCHANGED_HIT":
+        raise PreflightFailure("COMPILER_INDEX", "warm run did not reuse an unchanged compiler generation")
+    project_status = summary["projectModelCacheStatus"]
+    if project_status not in USABLE_PROJECT_MODEL_CACHE_STATUSES:
+        raise PreflightFailure("PROJECT_MODEL_CACHE", "project model was not published for persistent reuse")
+    if run_phase == "warm" and project_status != "PERSISTENT_HIT":
+        raise PreflightFailure("PROJECT_MODEL_CACHE", "warm run did not load the persistent project model")
 
 
 def atomic_bytes(path: Path, body: bytes) -> None:
@@ -198,6 +239,21 @@ def exact_executable(candidate: str | None, stage: str) -> Path:
     return executable.resolve(strict=True)
 
 
+def java_launch_authority() -> tuple[Path, Path]:
+    raw_home = os.environ.get("JAVA_HOME")
+    if not raw_home or not raw_home.strip():
+        raise PreflightFailure("JAVA", "JAVA_HOME must be explicit for preflight and launch parity")
+    home = Path(raw_home)
+    if home.is_symlink() or not home.is_dir():
+        raise PreflightFailure("JAVA", "JAVA_HOME must be a real JDK directory")
+    home = home.resolve(strict=True)
+    configured_java = exact_executable(str(home / "bin" / "java"), "JAVA")
+    selected_java = exact_executable(shutil.which("java"), "JAVA")
+    if configured_java != selected_java:
+        raise PreflightFailure("JAVA", "PATH java differs from JAVA_HOME/bin/java")
+    return home, selected_java
+
+
 def validate_run_contract(
     run_phase: str, seed_entity: str | None, state_root: Path | None
 ) -> None:
@@ -242,13 +298,21 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     if tracked:
         raise PreflightFailure("GIT", "tracked worktree is dirty")
     revision = git_stdout(repo, "rev-parse", "HEAD")
-    java = exact_executable(shutil.which("java"), "JAVA")
+    java_home, java = java_launch_authority()
     java_probe, java_millis = run([str(java), "-version"], repo, deadline)
     require_success(java_probe, "JAVA")
     java_version = (java_probe.stderr + java_probe.stdout).decode("utf-8", "replace")
     if 'version "21.' not in java_version:
         raise PreflightFailure("JAVA", "JDK 21 is required")
-    probes: list[dict[str, object]] = [{"kind": "JAVA_21", "durationMillis": java_millis}]
+    probes: list[dict[str, object]] = [
+        {
+            "kind": "JAVA_21",
+            "durationMillis": java_millis,
+            "javaHome": str(java_home),
+            "executable": str(java),
+            "version": next((line.strip() for line in java_version.splitlines() if "version" in line), ""),
+        }
+    ]
     state_root = verify_private_state_root(
         args.state_root, repo, require_existing=args.run_phase == "warm"
     )
@@ -310,6 +374,8 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     index_probe, index_millis = run(index_argv, repo, deadline)
     require_success(index_probe, "SEMANTIC_INDEX")
     index_summary = semantic_index_summary(index_probe.stdout)
+    if state_root is not None:
+        require_persistent_reuse(index_summary, args.run_phase)
     probes.append({"kind": "CLEW_SEMANTIC_INDEX", "durationMillis": index_millis, **index_summary})
     elapsed = round((time.monotonic() - started) * 1000)
     if elapsed > round(budget * 1000):

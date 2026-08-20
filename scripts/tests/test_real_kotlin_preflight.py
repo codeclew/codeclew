@@ -31,6 +31,7 @@ class RunContractTest(unittest.TestCase):
                 "valid": False,
                 "fallbackUsed": True,
             },
+            "projectModelCache": {"status": "EXTRACTED_NOT_PUBLISHED"},
         }
         raw = PREFLIGHT.canonical({"event": "request_completed"}) + json.dumps(
             result, indent=2
@@ -41,8 +42,44 @@ class RunContractTest(unittest.TestCase):
                 "compilerIndexStatus": "FAILED_RECOVERABLE",
                 "compilerIndexValid": False,
                 "fallbackUsed": True,
+                "projectModelCacheStatus": "EXTRACTED_NOT_PUBLISHED",
             },
         )
+
+    def test_persistent_profile_rejects_fallback_and_nonpublished_model(self) -> None:
+        failed = {
+            "compilerIndexStatus": "FAILED_RECOVERABLE",
+            "compilerIndexValid": False,
+            "fallbackUsed": True,
+            "projectModelCacheStatus": "EXTRACTED_NOT_PUBLISHED",
+        }
+        with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "legacy fallback"):
+            PREFLIGHT.require_persistent_reuse(failed, "cold")
+        unpublished = {
+            "compilerIndexStatus": "COLD_FULL",
+            "compilerIndexValid": True,
+            "fallbackUsed": False,
+            "projectModelCacheStatus": "EXTRACTED_NOT_PUBLISHED",
+        }
+        with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "not published"):
+            PREFLIGHT.require_persistent_reuse(unpublished, "cold")
+
+    def test_warm_profile_requires_both_persistent_hits(self) -> None:
+        valid = {
+            "compilerIndexStatus": "UNCHANGED_HIT",
+            "compilerIndexValid": True,
+            "fallbackUsed": False,
+            "projectModelCacheStatus": "PERSISTENT_HIT",
+        }
+        PREFLIGHT.require_persistent_reuse(valid, "warm")
+        for field, replacement in (
+            ("compilerIndexStatus", "COLD_FULL"),
+            ("projectModelCacheStatus", "EXTRACTED_PUBLISHED"),
+        ):
+            with self.subTest(field=field):
+                changed = {**valid, field: replacement}
+                with self.assertRaises(PREFLIGHT.PreflightFailure):
+                    PREFLIGHT.require_persistent_reuse(changed, "warm")
 
     def test_semantic_index_summary_rejects_unsealed_result(self) -> None:
         with self.assertRaises(PREFLIGHT.PreflightFailure):
@@ -136,6 +173,27 @@ class RunContractTest(unittest.TestCase):
             PREFLIGHT.gradle_daemon_stop_argv(Path("/repo/gradlew"), Path("/repo/.gradle")),
             ["/repo/gradlew", "--gradle-user-home", "/repo/.gradle", "--stop"],
         )
+
+    def test_java_launch_authority_requires_path_and_java_home_to_match(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="real-kotlin-java-authority-") as raw:
+            root = Path(raw).resolve()
+            home = root / "jdk"
+            java = home / "bin" / "java"
+            java.parent.mkdir(parents=True)
+            java.write_text("#!/bin/sh\n", encoding="utf-8")
+            java.chmod(0o700)
+            with mock.patch.dict(PREFLIGHT.os.environ, {"JAVA_HOME": str(home)}, clear=True), mock.patch.object(
+                PREFLIGHT.shutil, "which", return_value=str(java)
+            ):
+                self.assertEqual(PREFLIGHT.java_launch_authority(), (home, java))
+            other = root / "other-java"
+            other.write_text("#!/bin/sh\n", encoding="utf-8")
+            other.chmod(0o700)
+            with mock.patch.dict(PREFLIGHT.os.environ, {"JAVA_HOME": str(home)}, clear=True), mock.patch.object(
+                PREFLIGHT.shutil, "which", return_value=str(other)
+            ):
+                with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "differs"):
+                    PREFLIGHT.java_launch_authority()
 
 
 if __name__ == "__main__":
