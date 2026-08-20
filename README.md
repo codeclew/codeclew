@@ -15,6 +15,7 @@ Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.
 ## Quick start
 
 ```bash
+python3 scripts/sthread_preflight.py --receipt /private/tmp/codeclew-sthread-preflight.json
 ./scripts/verify.sh
 cargo run --bin clew -- doctor
 cargo run --bin clew -- project inspect --repo fixtures/kotlin-basic
@@ -30,6 +31,12 @@ cargo run --bin clew -- prove map-edge-with-context \
   --test-symbol 'applies the mapping context to one value'
 printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
 ```
+
+Run the SThread preflight before `agent-context` or `task-apply`. It hydrates
+only dependency-cache directories into ignored repository-local state, rebuilds
+the release CLI offline, verifies the exact project-model path, and runs small
+Kotlin 2.1/2.3 compiler-semantic smoke fixtures. A non-`READY` receipt is a hard
+stop: fix or extend the preflight before retrying the semantic task.
 
 For slicing, preview and commit the target must be a Git repository with a committed `HEAD`. The reproducible demonstration creates an isolated copy:
 
