@@ -311,6 +311,20 @@ def hydrate_maven_repository(source: Path, target: Path, deadline: float, finger
     return elapsed, False
 
 
+def hydrate_cargo_target(source: Path, target: Path, deadline: float, fingerprint: str) -> tuple[int, bool]:
+    source = require_real_directory(source, "CACHE_HYDRATION")
+    if target.exists() and require_real_directory(target, "CACHE_HYDRATION") == source:
+        return 0, True
+    required = ("release",)
+    if not (source / "release").is_dir() or (source / "release").is_symlink():
+        raise PreflightFailure("CACHE_HYDRATION", "Cargo target seed must contain a regular release/ directory")
+    if cache_marker_matches(target, fingerprint, required):
+        return 0, True
+    elapsed = clone_tree_contents(source, target, deadline - time.monotonic())
+    write_cache_marker(target, fingerprint, required)
+    return elapsed, False
+
+
 def missing_stdout_markers(stdout: bytes, required: Sequence[bytes]) -> list[str]:
     return [marker.decode("utf-8", errors="replace") for marker in required if marker not in stdout]
 
@@ -384,6 +398,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compilation", default=":workers:kotlin21/main")
     parser.add_argument("--gradle-cache-seed", type=Path, default=Path.home() / ".gradle")
     parser.add_argument("--maven-repository-seed", type=Path, default=Path.home() / ".m2" / "repository")
+    parser.add_argument("--cargo-target-seed", type=Path, default=ROOT / "target")
     parser.add_argument("--clew", type=Path)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--budget-seconds", type=float, default=60.0)
@@ -429,6 +444,15 @@ def self_test() -> None:
         write_cache_marker(cache, "sha256:" + "a" * 64, ("caches", "wrapper"))
         assert cache_marker_matches(cache, "sha256:" + "a" * 64, ("caches", "wrapper"))
         assert not cache_marker_matches(cache, "sha256:" + "b" * 64, ("caches", "wrapper"))
+        cargo_seed = root / "cargo-seed"
+        (cargo_seed / "release").mkdir(parents=True)
+        (cargo_seed / "release" / "seed-artifact").write_bytes(b"artifact")
+        cargo_target = root / "cargo-target"
+        elapsed, hit = hydrate_cargo_target(cargo_seed, cargo_target, time.monotonic() + 5, "sha256:" + "c" * 64)
+        assert elapsed >= 0 and not hit
+        assert (cargo_target / "release" / "seed-artifact").read_bytes() == b"artifact"
+        elapsed, hit = hydrate_cargo_target(cargo_seed, cargo_target, time.monotonic() + 5, "sha256:" + "c" * 64)
+        assert elapsed == 0 and hit
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
@@ -453,6 +477,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         ["git", "rev-parse", "HEAD"], cwd=workspace, stdout=subprocess.PIPE, check=True
     ).stdout.decode().strip()
 
+    cargo_millis, cargo_cache_hit = hydrate_cargo_target(
+        args.cargo_target_seed,
+        workspace / "target",
+        deadline,
+        fingerprint,
+    )
     gradle_seed = require_real_directory(args.gradle_cache_seed, "CACHE_HYDRATION")
     copied, gradle_millis, workspace_cache_hit = hydrate_gradle_cache(
         gradle_seed, workspace / ".gradle", deadline, fingerprint
@@ -566,6 +596,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "budgetMillis": round(args.budget_seconds * 1000),
         "elapsedMillis": elapsed,
         "cache": {
+            "cargoHydrationMillis": cargo_millis,
+            "cargoHit": cargo_cache_hit,
             "gradleMembers": copied,
             "gradleHydrationMillis": gradle_millis,
             "mavenHydrationMillis": maven_millis,
