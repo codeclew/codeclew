@@ -107,6 +107,7 @@ internal object IncrementalK2Runtime {
         persistentConfigured: Boolean,
         published: Boolean,
     ) {
+        if (profiling.get()?.containsKey("projectModelCacheStatus") == true) return
         recordFields(buildJsonObject {
             put("projectModelCacheStatus", status)
             put("projectModelTotalMicros", totalMicros)

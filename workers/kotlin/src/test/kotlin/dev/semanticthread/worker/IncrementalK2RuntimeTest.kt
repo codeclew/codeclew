@@ -145,6 +145,16 @@ fun `merge preserves semantic fields and combines profiling purely`() {
             persistentConfigured = true,
             published = false,
         )
+        IncrementalK2Runtime.recordProjectModel(
+            status = "MEMORY_HIT",
+            totalMicros = 1,
+            keyMicros = 1,
+            loadMicros = 0,
+            extractionMicros = 0,
+            publishMicros = 0,
+            persistentConfigured = true,
+            published = false,
+        )
         val projectModel = assertNotNull(IncrementalK2Runtime.takeProfiling())
         val withProjectModel = IncrementalK2Runtime.mergeProfiling(response, projectModel)
         val incremental = buildJsonObject {
