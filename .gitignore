@@ -3,6 +3,7 @@
 /.gradle/
 **/build/
 **/.gradle/
+benchmarks/reports/
 *.tmp
 thread.json
 edit.json
