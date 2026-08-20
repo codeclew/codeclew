@@ -3,6 +3,7 @@ package dev.semanticthread.worker
 import dev.semanticthread.worker.IncrementalK2Runtime
 import dev.semanticthread.worker.PersistentProjectModelCache
 import dev.semanticthread.worker.syntaxOnlyIndexSourceFiles
+import dev.semanticthread.worker.withSemanticInputManifestHash
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
@@ -911,8 +912,9 @@ internal class Worker(
     private fun inspect(requestedRepo: Path, compilation: String?): JsonObject {
         require(requestedRepo.isDirectory()) { "repository does not exist: $requestedRepo" }
         val repo = requestedRepo.toRealPath()
-        val buildModel = cachedProjectModel(repo, compilation)
-        val modelFiles = projectModelFiles(repo)
+        return cachedProjectModel(repo, compilation) {
+            val buildModel = validateProjectModelSourceFiles(repo, projectModel(repo, compilation))
+            val modelFiles = projectModelFiles(repo)
         val sourceFiles = buildModel["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
         val sourceRoots = sourceFiles.mapNotNull { sourceRoot(repo, it) }.distinct().sorted()
         val generatedRoots = sourceFiles.filter {
@@ -1019,15 +1021,16 @@ internal class Worker(
             put("buildState", normalized["buildState"] ?: JsonNull)
             put("modelInputs", normalized["modelInputs"] ?: JsonArray(emptyList()))
         }
-        return buildJsonObject {
+        buildJsonObject {
             put("schema", "semantic-project/0.1"); put("projectPath", ".")
             normalized.forEach { (key, value) -> put(key, value) }
             put("compilation", canonicalCompilation)
             put("workerCompilerVersion", WORKER_COMPILER_VERSION)
             put("jdk", 21)
             put("projectModelHash", modelHash)
-            put("semanticInputManifest", semanticInputManifest)
-            put("semanticInputManifestHash", sha(canonicalJson(semanticInputManifest).toByteArray()))
+                put("semanticInputManifest", semanticInputManifest)
+                put("semanticInputManifestHash", sha(canonicalJson(semanticInputManifest).toByteArray()))
+            }
         }
     }
 
@@ -1124,13 +1127,13 @@ internal class Worker(
         return applyCompilerPluginCompatibility(model)
     }
 
-    private fun cachedProjectModel(repo: Path, compilation: String?): JsonObject {
+    private fun cachedProjectModel(repo: Path, compilation: String?, extract: (() -> JsonObject)? = null): JsonObject {
         val projectModelStarted = System.nanoTime()
         fun elapsedMicros(started: Long): Long = (System.nanoTime() - started).coerceAtLeast(0L) / 1_000L
         requestCacheRequests++
         val keyStarted = System.nanoTime()
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha((listOf("projectModelSchema=6") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
+        val inputHash = sha((listOf("projectModelSchema=7", "projectModelView=${if (extract == null) "RAW" else "CANONICAL"}") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
             Files.walk(canonicalRepo).use { paths -> paths.filter {
                 Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) && it.extension == "kt" &&
                     !it.invariantSeparatorsPathString.contains("/build/") &&
@@ -1139,7 +1142,7 @@ internal class Worker(
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         val keyMicros = elapsedMicros(keyStarted)
         val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
-        val persistentConfigured = !persistentRoot.isNullOrBlank()
+        val persistentConfigured = extract != null && !persistentRoot.isNullOrBlank()
         projectModelCache[key]?.let { model ->
             requestCacheHits++
             IncrementalK2Runtime.recordProjectModel(
@@ -1156,7 +1159,7 @@ internal class Worker(
             return model
         }
         val loadStarted = System.nanoTime()
-        val persistentModel = PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)
+        val persistentModel = if (extract == null) null else PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)
         val loadMicros = elapsedMicros(loadStarted)
         if (persistentModel != null) {
             requestCacheHits++
@@ -1175,17 +1178,16 @@ internal class Worker(
             return persistentModel
         }
         val extractionStarted = System.nanoTime()
-        val model = withSemanticInputManifestHash(
-            validateProjectModelSourceFiles(
-                canonicalRepo,
-                projectModel(canonicalRepo, compilation),
-            ),
-        )
+        val model = if (extract == null) {
+            validateProjectModelSourceFiles(canonicalRepo, projectModel(canonicalRepo, compilation))
+        } else {
+            withSemanticInputManifestHash(extract())
+        }
         val extractionMicros = elapsedMicros(extractionStarted)
         // The optional persistent copy lives only under the explicit private index root.
         // Publication failure never changes the already verified semantic result.
         val publishStarted = System.nanoTime()
-        val publication = PersistentProjectModelCache.publishWithResult(persistentRoot, canonicalRepo, key, model)
+        val publication = if (extract == null) ProjectModelPublishResult(PersistentProjectModelCache.PublishOutcome.ROOT_UNAVAILABLE) else PersistentProjectModelCache.publishWithResult(persistentRoot, canonicalRepo, key, model)
         val published = publication.outcome == PersistentProjectModelCache.PublishOutcome.PUBLISHED
         val publishMicros = elapsedMicros(publishStarted)
         projectModelCache[key] = model
