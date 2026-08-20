@@ -29,6 +29,13 @@ The script captures subprocess output internally and exposes only digests plus
 a bounded error message, so cache size and project-model JSON do not consume
 agent context. The normal run must not start after `FAILED`.
 
+Before `agent-context`, preflight the request itself: every required `--term`
+must be an exact declaration name already established by bounded evidence or
+repository metadata. JSON keys, field names, error strings, and broader search
+needles belong in `--intent`, not in the mandatory term set. After the call,
+accept only `COMPLETE_TASK` with every requirement `SATISFIED`; any partial or
+unsatisfied result ends the attempt before plan construction.
+
 Each hydrated cache receives a fingerprint marker. Independent Cargo, Gradle,
 Maven, and trusted-worker hydration runs concurrently under the same deadline.
 An unchanged toolchain skips the copy step on later runs; the probes still
