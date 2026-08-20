@@ -30,6 +30,7 @@ USABLE_PROJECT_MODEL_CACHE_STATUSES = {
     "PERSISTENT_HIT",
     "MEMORY_HIT",
 }
+PERSISTENT_COMPILER_INDEX_VERSIONS = {"2.1.21"}
 
 
 class PreflightFailure(Exception):
@@ -83,12 +84,17 @@ def semantic_index_summary(raw: bytes) -> dict[str, object]:
         if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:"):
             raise PreflightFailure("SEMANTIC_INDEX", f"clew index result has invalid {field}")
     compiler_index = value.get("compilerIndex")
-    if not isinstance(compiler_index, dict):
-        raise PreflightFailure("SEMANTIC_INDEX", "clew index compiler profile is missing")
-    status = compiler_index.get("status")
-    valid = compiler_index.get("valid")
-    fallback_used = compiler_index.get("fallbackUsed")
-    if not isinstance(status, str) or not isinstance(valid, bool) or not isinstance(fallback_used, bool):
+    if compiler_index is None:
+        status = "UNAVAILABLE_FOR_TOOLCHAIN"
+        valid = None
+        fallback_used = None
+    elif isinstance(compiler_index, dict):
+        status = compiler_index.get("status")
+        valid = compiler_index.get("valid")
+        fallback_used = compiler_index.get("fallbackUsed")
+        if not isinstance(status, str) or not isinstance(valid, bool) or not isinstance(fallback_used, bool):
+            raise PreflightFailure("SEMANTIC_INDEX", "clew index compiler profile is malformed")
+    else:
         raise PreflightFailure("SEMANTIC_INDEX", "clew index compiler profile is malformed")
     project_model_cache = value.get("projectModelCache")
     if not isinstance(project_model_cache, dict) or not isinstance(
@@ -101,6 +107,29 @@ def semantic_index_summary(raw: bytes) -> dict[str, object]:
         "fallbackUsed": fallback_used,
         "projectModelCacheStatus": project_model_cache["status"],
     }
+
+
+def project_compiler_version(raw: bytes) -> str:
+    value = last_json_object(raw)
+    version = value.get("compilerVersion")
+    if value.get("schema") != "semantic-project/0.1" or not isinstance(version, str) or not version:
+        raise PreflightFailure("SEMANTIC_BUILD_DISCOVERY", "project compiler version is unavailable")
+    return version
+
+
+def supports_persistent_compiler_index(compiler_version: str) -> bool:
+    return compiler_version in PERSISTENT_COMPILER_INDEX_VERSIONS
+
+
+def canonical_cached_seed(requested: str | None) -> str | None:
+    if requested is None:
+        return None
+    if requested.startswith("callable:") and "#jvm:" not in requested:
+        raise PreflightFailure(
+            "SEED_ENTITY",
+            "warm toolchain without a persistent compiler backend requires the canonical seed from the cold receipt",
+        )
+    return requested
 
 
 def canonical_seed_entity(raw: bytes, requested: str | None) -> str | None:
@@ -426,18 +455,39 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     )
     inspect_probe, inspect_millis = run(inspect_argv, repo, deadline)
     require_success(inspect_probe, "SEMANTIC_BUILD_DISCOVERY")
-    probes.append({"kind": "CLEW_PROJECT_INSPECT", "durationMillis": inspect_millis})
+    compiler_version = project_compiler_version(inspect_probe.stdout)
+    persistent_compiler_index = supports_persistent_compiler_index(compiler_version)
+    probes.append({
+        "kind": "CLEW_PROJECT_INSPECT",
+        "durationMillis": inspect_millis,
+        "compilerVersion": compiler_version,
+        "persistentCompilerIndexSupported": persistent_compiler_index,
+    })
     index_argv = [str(clew)]
     if state_root is not None:
         index_argv.extend(["--compiler-index-root", str(Path(state_root) / "compiler-index")])
     index_argv.extend(["index", "--repo", str(repo), "--compilation", args.compilation])
-    index_probe, index_millis = run(index_argv, repo, deadline)
-    require_success(index_probe, "SEMANTIC_INDEX")
-    index_summary = semantic_index_summary(index_probe.stdout)
-    canonical_seed = canonical_seed_entity(index_probe.stdout, args.seed_entity)
-    if state_root is not None:
-        require_persistent_reuse(index_summary, args.run_phase)
-    probes.append({"kind": "CLEW_SEMANTIC_INDEX", "durationMillis": index_millis, **index_summary})
+    if args.run_phase == "warm" and not persistent_compiler_index:
+        canonical_seed = canonical_cached_seed(args.seed_entity)
+        probes.append({
+            "kind": "CLEW_SEMANTIC_INDEX",
+            "durationMillis": 0,
+            "status": "SKIPPED_WARM_NO_PERSISTENT_BACKEND",
+            "persistentCompilerIndexSupported": False,
+        })
+    else:
+        index_probe, index_millis = run(index_argv, repo, deadline)
+        require_success(index_probe, "SEMANTIC_INDEX")
+        index_summary = semantic_index_summary(index_probe.stdout)
+        canonical_seed = canonical_seed_entity(index_probe.stdout, args.seed_entity)
+        if state_root is not None and persistent_compiler_index:
+            require_persistent_reuse(index_summary, args.run_phase)
+        probes.append({
+            "kind": "CLEW_SEMANTIC_INDEX",
+            "durationMillis": index_millis,
+            "persistentCompilerIndexSupported": persistent_compiler_index,
+            **index_summary,
+        })
     elapsed = round((time.monotonic() - started) * 1000)
     if budget is not None and elapsed > round(budget * 1000):
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")
@@ -452,6 +502,8 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
             "phase": args.run_phase.upper(),
             "requestedSeedEntity": args.seed_entity,
             "canonicalSeedEntity": canonical_seed,
+            "compilerVersion": compiler_version,
+            "persistentCompilerIndexSupported": persistent_compiler_index,
             "requiresVerifiedCacheHit": args.run_phase == "warm",
         },
         "build": build,

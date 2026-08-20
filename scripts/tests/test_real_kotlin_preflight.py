@@ -55,6 +55,47 @@ class RunContractTest(unittest.TestCase):
             },
         )
 
+    def test_semantic_index_summary_accepts_explicitly_unavailable_profile(self) -> None:
+        result = {
+            "schema": "semantic-index-result/0.1",
+            "declarationDescriptorHash": "sha256:" + "a" * 64,
+            "declarationRelationHash": "sha256:" + "b" * 64,
+            "persistentIndexHash": "sha256:" + "c" * 64,
+            "workerIndexHash": "sha256:" + "d" * 64,
+            "projectModelCache": {"status": "PERSISTENT_HIT"},
+        }
+        self.assertEqual(
+            PREFLIGHT.semantic_index_summary(PREFLIGHT.canonical(result)),
+            {
+                "compilerIndexStatus": "UNAVAILABLE_FOR_TOOLCHAIN",
+                "compilerIndexValid": None,
+                "fallbackUsed": None,
+                "projectModelCacheStatus": "PERSISTENT_HIT",
+            },
+        )
+
+    def test_persistent_backend_capability_is_version_explicit(self) -> None:
+        self.assertTrue(PREFLIGHT.supports_persistent_compiler_index("2.1.21"))
+        self.assertFalse(PREFLIGHT.supports_persistent_compiler_index("2.3.0"))
+        self.assertEqual(
+            PREFLIGHT.project_compiler_version(
+                PREFLIGHT.canonical(
+                    {"schema": "semantic-project/0.1", "compilerVersion": "2.3.0"}
+                )
+            ),
+            "2.3.0",
+        )
+
+    def test_cached_warm_seed_requires_exact_callable_identity(self) -> None:
+        canonical = "callable:example/Foo.call#jvm:call()V"
+        self.assertEqual(PREFLIGHT.canonical_cached_seed(canonical), canonical)
+        self.assertEqual(
+            PREFLIGHT.canonical_cached_seed("property:example/Foo.value"),
+            "property:example/Foo.value",
+        )
+        with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "cold receipt"):
+            PREFLIGHT.canonical_cached_seed("callable:example/Foo.call")
+
     def test_last_json_object_is_linear_over_large_pretty_payload(self) -> None:
         event = PREFLIGHT.canonical({"event": "request_completed"})
         payload = {
