@@ -14,7 +14,7 @@ import sys
 import time
 
 
-SCHEMA = "codeclew.real-kotlin-preflight/0.4"
+SCHEMA = "codeclew.real-kotlin-preflight/0.5"
 ROOT = Path(__file__).resolve().parents[1]
 GRADLE_CACHE_MARKER_SCHEMA = "codeclew.real-kotlin-gradle-cache/0.1"
 GRADLE_CACHE_MARKER = ".codeclew-real-kotlin-preflight-cache.json"
@@ -29,6 +29,45 @@ class PreflightFailure(Exception):
 
 def canonical(value: object) -> bytes:
     return (json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode()
+
+
+def last_json_object(raw: bytes) -> dict[str, object]:
+    text = raw.decode("utf-8", "strict")
+    lines = text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if not lines[index].lstrip().startswith("{"):
+            continue
+        try:
+            value = json.loads("\n".join(lines[index:]))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise PreflightFailure("SEMANTIC_INDEX", "clew index returned no complete JSON object")
+
+
+def semantic_index_summary(raw: bytes) -> dict[str, object]:
+    value = last_json_object(raw)
+    if value.get("schema") != "semantic-index-result/0.1":
+        raise PreflightFailure("SEMANTIC_INDEX", "clew index result schema is invalid")
+    for field in (
+        "declarationDescriptorHash",
+        "declarationRelationHash",
+        "persistentIndexHash",
+        "workerIndexHash",
+    ):
+        digest = value.get(field)
+        if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:"):
+            raise PreflightFailure("SEMANTIC_INDEX", f"clew index result has invalid {field}")
+    compiler_index = value.get("compilerIndex")
+    if not isinstance(compiler_index, dict):
+        raise PreflightFailure("SEMANTIC_INDEX", "clew index compiler profile is missing")
+    status = compiler_index.get("status")
+    valid = compiler_index.get("valid")
+    fallback_used = compiler_index.get("fallbackUsed")
+    if not isinstance(status, str) or not isinstance(valid, bool) or not isinstance(fallback_used, bool):
+        raise PreflightFailure("SEMANTIC_INDEX", "clew index compiler profile is malformed")
+    return {"compilerIndexStatus": status, "compilerIndexValid": valid, "fallbackUsed": fallback_used}
 
 
 def atomic_bytes(path: Path, body: bytes) -> None:
@@ -264,6 +303,14 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     inspect_probe, inspect_millis = run(inspect_argv, repo, deadline)
     require_success(inspect_probe, "SEMANTIC_BUILD_DISCOVERY")
     probes.append({"kind": "CLEW_PROJECT_INSPECT", "durationMillis": inspect_millis})
+    index_argv = [str(clew)]
+    if state_root is not None:
+        index_argv.extend(["--compiler-index-root", str(Path(state_root) / "compiler-index")])
+    index_argv.extend(["index", "--repo", str(repo), "--compilation", args.compilation])
+    index_probe, index_millis = run(index_argv, repo, deadline)
+    require_success(index_probe, "SEMANTIC_INDEX")
+    index_summary = semantic_index_summary(index_probe.stdout)
+    probes.append({"kind": "CLEW_SEMANTIC_INDEX", "durationMillis": index_millis, **index_summary})
     elapsed = round((time.monotonic() - started) * 1000)
     if elapsed > round(budget * 1000):
         raise PreflightFailure("BUDGET", "real-project preparation exceeded its budget")

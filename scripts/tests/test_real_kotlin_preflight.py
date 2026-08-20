@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +19,35 @@ SPEC.loader.exec_module(PREFLIGHT)
 
 
 class RunContractTest(unittest.TestCase):
+    def test_semantic_index_summary_uses_last_complete_json_document(self) -> None:
+        result = {
+            "schema": "semantic-index-result/0.1",
+            "declarationDescriptorHash": "sha256:" + "a" * 64,
+            "declarationRelationHash": "sha256:" + "b" * 64,
+            "persistentIndexHash": "sha256:" + "c" * 64,
+            "workerIndexHash": "sha256:" + "d" * 64,
+            "compilerIndex": {
+                "status": "FAILED_RECOVERABLE",
+                "valid": False,
+                "fallbackUsed": True,
+            },
+        }
+        raw = PREFLIGHT.canonical({"event": "request_completed"}) + json.dumps(
+            result, indent=2
+        ).encode()
+        self.assertEqual(
+            PREFLIGHT.semantic_index_summary(raw),
+            {
+                "compilerIndexStatus": "FAILED_RECOVERABLE",
+                "compilerIndexValid": False,
+                "fallbackUsed": True,
+            },
+        )
+
+    def test_semantic_index_summary_rejects_unsealed_result(self) -> None:
+        with self.assertRaises(PREFLIGHT.PreflightFailure):
+            PREFLIGHT.semantic_index_summary(b'{"schema":"semantic-index-result/0.1"}\n')
+
     def test_command_failure_retains_bounded_stdout_and_stderr(self) -> None:
         completed = subprocess.CompletedProcess(
             ["probe"], 1, stdout=b'{"error":"semantic detail"}\n', stderr=b"progress\n"
