@@ -606,6 +606,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-smoke", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--print-compiler-index-root",
+        action="store_true",
+        help="prepare and print the exact canonical private compiler-index root, then exit",
+    )
     return parser.parse_args()
 
 
@@ -1156,6 +1161,21 @@ def main() -> int:
     args = parse_args()
     if args.self_test:
         self_test()
+        return 0
+    if args.print_compiler_index_root:
+        workspace = require_real_directory(args.workspace, "WORKSPACE")
+        root = prepare_compiler_index_root(args.compiler_index_root, workspace)
+        print(
+            json.dumps(
+                {
+                    "schema": SCHEMA,
+                    "status": "COMPILER_INDEX_ROOT_READY",
+                    "path": str(root),
+                    "identity": sha256_bytes(str(root).encode()),
+                },
+                separators=(",", ":"),
+            )
+        )
         return 0
     started = time.monotonic()
     try:
