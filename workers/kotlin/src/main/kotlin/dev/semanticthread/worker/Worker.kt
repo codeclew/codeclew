@@ -1125,7 +1125,10 @@ internal class Worker(
     }
 
     private fun cachedProjectModel(repo: Path, compilation: String?): JsonObject {
+        val projectModelStarted = System.nanoTime()
+        fun elapsedMicros(started: Long): Long = (System.nanoTime() - started).coerceAtLeast(0L) / 1_000L
         requestCacheRequests++
+        val keyStarted = System.nanoTime()
         val canonicalRepo = repo.toRealPath()
         val inputHash = sha((listOf("projectModelSchema=6") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
             Files.walk(canonicalRepo).use { paths -> paths.filter {
@@ -1134,23 +1137,65 @@ internal class Worker(
                     !it.invariantSeparatorsPathString.contains("/target/")
             }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
-        projectModelCache[key]?.let { requestCacheHits++; return it }
+        val keyMicros = elapsedMicros(keyStarted)
         val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
-        PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)?.let { model ->
+        val persistentConfigured = !persistentRoot.isNullOrBlank()
+        projectModelCache[key]?.let { model ->
             requestCacheHits++
-            projectModelCache[key] = model
+            IncrementalK2Runtime.recordProjectModel(
+                status = "MEMORY_HIT",
+                totalMicros = elapsedMicros(projectModelStarted),
+                keyMicros = keyMicros,
+                loadMicros = 0L,
+                extractionMicros = 0L,
+                publishMicros = 0L,
+                persistentConfigured = persistentConfigured,
+                published = false,
+            )
             return model
         }
+        val loadStarted = System.nanoTime()
+        val persistentModel = PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)
+        val loadMicros = elapsedMicros(loadStarted)
+        if (persistentModel != null) {
+            requestCacheHits++
+            projectModelCache[key] = persistentModel
+            IncrementalK2Runtime.recordProjectModel(
+                status = "PERSISTENT_HIT",
+                totalMicros = elapsedMicros(projectModelStarted),
+                keyMicros = keyMicros,
+                loadMicros = loadMicros,
+                extractionMicros = 0L,
+                publishMicros = 0L,
+                persistentConfigured = persistentConfigured,
+                published = false,
+            )
+            return persistentModel
+        }
+        val extractionStarted = System.nanoTime()
         val model = withSemanticInputManifestHash(
             validateProjectModelSourceFiles(
                 canonicalRepo,
                 projectModel(canonicalRepo, compilation),
             ),
         )
+        val extractionMicros = elapsedMicros(extractionStarted)
         // The optional persistent copy lives only under the explicit private index root.
         // Publication failure never changes the already verified semantic result.
-        PersistentProjectModelCache.publish(persistentRoot, canonicalRepo, key, model)
+        val publishStarted = System.nanoTime()
+        val published = PersistentProjectModelCache.publish(persistentRoot, canonicalRepo, key, model)
+        val publishMicros = elapsedMicros(publishStarted)
         projectModelCache[key] = model
+        IncrementalK2Runtime.recordProjectModel(
+            status = if (published) "EXTRACTED_PUBLISHED" else "EXTRACTED_NOT_PUBLISHED",
+            totalMicros = elapsedMicros(projectModelStarted),
+            keyMicros = keyMicros,
+            loadMicros = loadMicros,
+            extractionMicros = extractionMicros,
+            publishMicros = publishMicros,
+            persistentConfigured = persistentConfigured,
+            published = published,
+        )
         return model
     }
 

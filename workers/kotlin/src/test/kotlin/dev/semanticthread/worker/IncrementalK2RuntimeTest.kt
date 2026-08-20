@@ -1,13 +1,14 @@
 package dev.semanticthread.worker
 
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
+import dev.semanticthread.worker.IncrementalK2Runtime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class IncrementalK2RuntimeTest {
     private data class ProfileCase(
@@ -124,7 +125,7 @@ class IncrementalK2RuntimeTest {
     }
 
     @Test
-    fun `merge preserves semantic fields and combines profiling purely`() {
+fun `merge preserves semantic fields and combines profiling purely`() {
         val response = buildJsonObject {
             put("semanticFactsDigest", "facts")
             put("pathFactSetDigest", "paths")
@@ -133,12 +134,25 @@ class IncrementalK2RuntimeTest {
                 put("status", "LEGACY")
             })
         }
+        IncrementalK2Runtime.reset()
+        IncrementalK2Runtime.recordProjectModel(
+            status = "PERSISTENT_HIT",
+            totalMicros = 17,
+            keyMicros = 4,
+            loadMicros = 11,
+            extractionMicros = 0,
+            publishMicros = 0,
+            persistentConfigured = true,
+            published = false,
+        )
+        val projectModel = assertNotNull(IncrementalK2Runtime.takeProfiling())
+        val withProjectModel = IncrementalK2Runtime.mergeProfiling(response, projectModel)
         val incremental = buildJsonObject {
             put("status", "INCREMENTAL")
             put("valid", true)
         }
 
-        val merged = IncrementalK2Runtime.mergeProfiling(response, incremental)
+        val merged = IncrementalK2Runtime.mergeProfiling(withProjectModel, incremental)
         val mergedProfiling = assertNotNull(merged["profiling"] as? JsonObject)
 
         assertEquals(response["semanticFactsDigest"], merged["semanticFactsDigest"])
@@ -146,6 +160,12 @@ class IncrementalK2RuntimeTest {
         assertEquals(JsonPrimitive(7), mergedProfiling["elapsedMicros"])
         assertEquals(JsonPrimitive("INCREMENTAL"), mergedProfiling["status"])
         assertEquals(JsonPrimitive(true), mergedProfiling["valid"])
+        assertEquals(JsonPrimitive("PERSISTENT_HIT"), mergedProfiling["projectModelCacheStatus"])
+        assertEquals(JsonPrimitive(17), mergedProfiling["projectModelTotalMicros"])
+        assertEquals(JsonPrimitive(4), mergedProfiling["projectModelKeyMicros"])
+        assertEquals(JsonPrimitive(11), mergedProfiling["projectModelLoadMicros"])
+        assertEquals(JsonPrimitive(true), mergedProfiling["projectModelPersistentConfigured"])
+        assertEquals(JsonPrimitive(false), mergedProfiling["projectModelPublished"])
         assertEquals(JsonPrimitive("LEGACY"), (response["profiling"] as JsonObject)["status"])
         assertEquals(response, IncrementalK2Runtime.mergeProfiling(response, null))
     }

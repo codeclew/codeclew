@@ -1,6 +1,7 @@
 package dev.semanticthread.worker
 
 import dev.semanticthread.worker.IncrementalK2Result
+import dev.semanticthread.worker.IncrementalK2Runtime
 import java.nio.file.Path
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -71,22 +72,52 @@ internal object IncrementalK2Runtime {
 
     fun backendOrNull(): IncrementalK2Backend? = backend
     fun reset() = profiling.remove()
+    private fun recordFields(values: JsonObject) {
+        val previous = profiling.get()
+        profiling.set(buildJsonObject {
+            previous?.forEach { (key, value) -> put(key, value) }
+            values.forEach { (key, value) -> put(key, value) }
+        })
+    }
+
     fun record(value: IncrementalK2Result, fallbackUsed: Boolean) {
-            profiling.set(buildJsonObject {
-                put("backend", "BTA_PERSISTENT")
-                put("status", value.status.name)
-                put("valid", value.valid)
-                put("totalMicros", value.totalMicros)
-                put("compilerMicros", value.compilerMicros)
-                put("firExtractionMicros", value.firExtractionMicros)
-                put("totalFiles", value.totalFiles)
-                put("compiledFiles", value.compiledFiles)
-                put("reusedFiles", value.reusedFiles)
-                put("recovered", value.recovered)
-                put("fallbackUsed", fallbackUsed)
-                value.graphDigest?.let { put("graphDigest", it) }
-            })
-        }
+        recordFields(buildJsonObject {
+            put("backend", "BTA_PERSISTENT")
+            put("status", value.status.name)
+            put("valid", value.valid)
+            put("totalMicros", value.totalMicros)
+            put("compilerMicros", value.compilerMicros)
+            put("firExtractionMicros", value.firExtractionMicros)
+            put("totalFiles", value.totalFiles)
+            put("compiledFiles", value.compiledFiles)
+            put("reusedFiles", value.reusedFiles)
+            put("recovered", value.recovered)
+            put("fallbackUsed", fallbackUsed)
+            value.graphDigest?.let { put("graphDigest", it) }
+        })
+    }
+
+    fun recordProjectModel(
+        status: String,
+        totalMicros: Long,
+        keyMicros: Long,
+        loadMicros: Long,
+        extractionMicros: Long,
+        publishMicros: Long,
+        persistentConfigured: Boolean,
+        published: Boolean,
+    ) {
+        recordFields(buildJsonObject {
+            put("projectModelCacheStatus", status)
+            put("projectModelTotalMicros", totalMicros)
+            put("projectModelKeyMicros", keyMicros)
+            put("projectModelLoadMicros", loadMicros)
+            put("projectModelExtractionMicros", extractionMicros)
+            put("projectModelPublishMicros", publishMicros)
+            put("projectModelPersistentConfigured", persistentConfigured)
+            put("projectModelPublished", published)
+        })
+    }
     fun mergeProfiling(response: JsonObject, incremental: JsonObject?): JsonObject {
         if (incremental == null) return response
         return buildJsonObject {
