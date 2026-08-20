@@ -1256,6 +1256,7 @@ internal class Worker(
         val pluginPlan = runCatching {
             IncrementalK2Runtime.backendOrNull()?.let { backend ->
                 val modelVersion = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull
+                    ?: WORKER_COMPILER_VERSION
                 val indexRoot = runCatching {
                     System.getenv(K2_INDEX_ROOT_ENV)?.takeIf(String::isNotBlank)?.let(Path::of)?.toRealPath()
                 }.getOrNull()
@@ -1270,7 +1271,7 @@ internal class Worker(
                     indexRoot = indexRoot,
                     repo = analysisRepo,
                     compilation = compilation,
-                    semanticConfigurationDigest = semanticConfigurationDigest,
+                    semanticConfigurationDigest = cacheKey,
                     expectedCompilerVersion = WORKER_COMPILER_VERSION,
                     moduleName = model["projectPath"]?.jsonPrimitive?.contentOrNull?.substringAfterLast(':')
                         ?.ifBlank { "main" } ?: "main",
