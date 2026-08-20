@@ -91,6 +91,47 @@ def semantic_index_summary(raw: bytes) -> dict[str, object]:
     }
 
 
+def canonical_seed_entity(raw: bytes, requested: str | None) -> str | None:
+    if requested is None:
+        return None
+    value = last_json_object(raw)
+    descriptor_graph = value.get("declarationDescriptors")
+    descriptors = (
+        descriptor_graph.get("descriptors")
+        if isinstance(descriptor_graph, dict)
+        else None
+    )
+    if not isinstance(descriptors, list):
+        raise PreflightFailure(
+            "SEED_ENTITY", "semantic index has no declaration descriptor set"
+        )
+    matches: set[str] = set()
+    callable_key = requested.removeprefix("callable:")
+    for descriptor in descriptors:
+        if not isinstance(descriptor, dict) or descriptor.get("resolution") != "PROVEN":
+            continue
+        symbol = descriptor.get("symbolIdentity")
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        compiler_callable = descriptor.get("compilerCallableId")
+        if (
+            symbol == requested
+            or symbol.partition("#jvm:")[0] == requested
+            or compiler_callable == requested
+            or (
+                requested.startswith("callable:")
+                and compiler_callable == callable_key
+            )
+        ):
+            matches.add(symbol)
+    if len(matches) != 1:
+        raise PreflightFailure(
+            "SEED_ENTITY",
+            "requested seed does not resolve to exactly one proven canonical entity",
+        )
+    return next(iter(matches))
+
+
 def require_persistent_reuse(summary: dict[str, object], run_phase: str) -> None:
     status = summary["compilerIndexStatus"]
     if (
@@ -371,6 +412,7 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
     index_probe, index_millis = run(index_argv, repo, deadline)
     require_success(index_probe, "SEMANTIC_INDEX")
     index_summary = semantic_index_summary(index_probe.stdout)
+    canonical_seed = canonical_seed_entity(index_probe.stdout, args.seed_entity)
     if state_root is not None:
         require_persistent_reuse(index_summary, args.run_phase)
     probes.append({"kind": "CLEW_SEMANTIC_INDEX", "durationMillis": index_millis, **index_summary})
@@ -386,7 +428,8 @@ def execute(args: argparse.Namespace) -> dict[str, object]:
         "stateRoot": state_root,
         "run": {
             "phase": args.run_phase.upper(),
-            "seedEntity": args.seed_entity,
+            "requestedSeedEntity": args.seed_entity,
+            "canonicalSeedEntity": canonical_seed,
             "requiresVerifiedCacheHit": args.run_phase == "warm",
         },
         "build": build,

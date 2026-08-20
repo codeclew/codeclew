@@ -19,6 +19,15 @@ SPEC.loader.exec_module(PREFLIGHT)
 
 
 class RunContractTest(unittest.TestCase):
+    @staticmethod
+    def semantic_index_with_descriptors(*descriptors: dict[str, object]) -> bytes:
+        return PREFLIGHT.canonical(
+            {
+                "schema": "semantic-index-result/0.1",
+                "declarationDescriptors": {"descriptors": list(descriptors)},
+            }
+        )
+
     def test_semantic_index_summary_uses_last_complete_json_document(self) -> None:
         result = {
             "schema": "semantic-index-result/0.1",
@@ -84,6 +93,48 @@ class RunContractTest(unittest.TestCase):
     def test_semantic_index_summary_rejects_unsealed_result(self) -> None:
         with self.assertRaises(PREFLIGHT.PreflightFailure):
             PREFLIGHT.semantic_index_summary(b'{"schema":"semantic-index-result/0.1"}\n')
+
+    def test_seed_is_resolved_to_one_proven_canonical_entity(self) -> None:
+        canonical = (
+            "callable:example/Foo.decode#jvm:decode(Ljava/lang/String;)Ljava/lang/Object;"
+        )
+        raw = self.semantic_index_with_descriptors(
+            {
+                "resolution": "PROVEN",
+                "symbolIdentity": canonical,
+                "compilerCallableId": "example/Foo.decode",
+            },
+            {
+                "resolution": "UNKNOWN",
+                "symbolIdentity": "callable:example/Foo.decode",
+                "compilerCallableId": "example/Foo.decode",
+            },
+        )
+        self.assertEqual(
+            PREFLIGHT.canonical_seed_entity(raw, "callable:example/Foo.decode"),
+            canonical,
+        )
+        self.assertEqual(PREFLIGHT.canonical_seed_entity(raw, canonical), canonical)
+        self.assertIsNone(PREFLIGHT.canonical_seed_entity(raw, None))
+
+    def test_missing_or_ambiguous_seed_fails_before_agent_launch(self) -> None:
+        missing = self.semantic_index_with_descriptors()
+        with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "exactly one"):
+            PREFLIGHT.canonical_seed_entity(missing, "callable:example/Missing.call")
+        ambiguous = self.semantic_index_with_descriptors(
+            {
+                "resolution": "PROVEN",
+                "symbolIdentity": "callable:example/Foo.call#jvm:call(I)V",
+                "compilerCallableId": "example/Foo.call",
+            },
+            {
+                "resolution": "PROVEN",
+                "symbolIdentity": "callable:example/Foo.call#jvm:call(Ljava/lang/String;)V",
+                "compilerCallableId": "example/Foo.call",
+            },
+        )
+        with self.assertRaisesRegex(PREFLIGHT.PreflightFailure, "exactly one"):
+            PREFLIGHT.canonical_seed_entity(ambiguous, "callable:example/Foo.call")
 
     def test_command_failure_retains_bounded_stdout_and_stderr(self) -> None:
         completed = subprocess.CompletedProcess(
