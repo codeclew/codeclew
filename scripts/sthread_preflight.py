@@ -661,17 +661,33 @@ def require_incremental_equivalent_to_full(
         )
 
 
-def initialize_incremental_fixture(source: Path, target: Path, deadline: float) -> Path:
+def initialize_incremental_fixture(
+    source: Path, wrapper_source: Path, fixture_root: Path, deadline: float
+) -> tuple[Path, Path]:
+    target = fixture_root / source.name
+    wrapper_target = fixture_root / wrapper_source.name
     clone_tree_contents(source, target, deadline - time.monotonic())
-    for relative in (".semantic-thread", ".git", "build", ".kotlin"):
-        candidate = target / relative
-        if candidate.exists():
-            if candidate.is_symlink():
-                raise PreflightFailure(
-                    "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
-                    f"temporary fixture contains a symlinked runtime path: {relative}",
-                )
-            shutil.rmtree(candidate)
+    clone_tree_contents(wrapper_source, wrapper_target, deadline - time.monotonic())
+    for repository in (target, wrapper_target):
+        for relative in (".semantic-thread", ".git", "build", ".kotlin"):
+            candidate = repository / relative
+            if candidate.exists():
+                if candidate.is_symlink():
+                    raise PreflightFailure(
+                        "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+                        f"temporary fixture contains a symlinked runtime path: {repository.name}/{relative}",
+                    )
+                shutil.rmtree(candidate)
+    delegated_wrapper = wrapper_target / "gradlew"
+    if (
+        delegated_wrapper.is_symlink()
+        or not delegated_wrapper.is_file()
+        or not os.access(delegated_wrapper, os.X_OK)
+    ):
+        raise PreflightFailure(
+            "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
+            "temporary fixture lacks its executable sibling Gradle wrapper",
+        )
     commands = (
         ["git", "init", "--quiet"],
         ["git", "add", "-A"],
@@ -707,7 +723,7 @@ def initialize_incremental_fixture(source: Path, target: Path, deadline: float) 
             "KOTLIN_2_1_INCREMENTAL_EQUIVALENCE",
             "incremental fixture needs at least two regular Kotlin sources",
         )
-    return candidates[0]
+    return target, candidates[0]
 
 
 def self_test() -> None:
@@ -829,6 +845,25 @@ def self_test() -> None:
         workspace.mkdir()
         compiler_index = prepare_compiler_index_root(root / "compiler-index", workspace.resolve())
         assert compiler_index.is_dir() and stat.S_IMODE(compiler_index.stat().st_mode) == 0o700
+        fixture_seed = root / "fixture-seed"
+        kotlin21_seed = fixture_seed / "kotlin-2-1"
+        kotlin24_seed = fixture_seed / "kotlin-basic"
+        (kotlin21_seed / "src/main/kotlin").mkdir(parents=True)
+        (kotlin21_seed / "src/main/kotlin/A.kt").write_bytes(b"class A\n")
+        (kotlin21_seed / "src/main/kotlin/B.kt").write_bytes(b"class B\n")
+        (kotlin21_seed / "gradlew").write_bytes(b"#!/bin/sh\nexit 0\n")
+        (kotlin21_seed / "gradlew").chmod(0o755)
+        kotlin24_seed.mkdir(parents=True)
+        (kotlin24_seed / "gradlew").write_bytes(b"#!/bin/sh\nexit 0\n")
+        (kotlin24_seed / "gradlew").chmod(0o755)
+        copied_fixture, changed_source = initialize_incremental_fixture(
+            kotlin21_seed,
+            kotlin24_seed,
+            root / "fixture-copy",
+            time.monotonic() + 5,
+        )
+        assert copied_fixture.name == "kotlin-2-1" and changed_source.name == "A.kt"
+        assert os.access(copied_fixture.parent / "kotlin-basic/gradlew", os.X_OK)
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
@@ -1024,9 +1059,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         probes.append(warm_probe)
         with tempfile.TemporaryDirectory(prefix="codeclew-sthread-incremental-") as raw:
             incremental_root = Path(raw).resolve()
-            incremental_fixture = incremental_root / "fixture"
-            changed_source = initialize_incremental_fixture(
-                fixture21, incremental_fixture, deadline
+            incremental_fixture, changed_source = initialize_incremental_fixture(
+                fixture21, fixture24, incremental_root / "fixtures", deadline
             )
             shared_index_root = prepare_compiler_index_root(
                 incremental_root / "same-index", workspace
