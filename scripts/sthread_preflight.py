@@ -392,6 +392,40 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             repository,
             deadline,
         )
+        gradle_wrapper = repository / "gradlew"
+        if gradle_wrapper.is_symlink() or not gradle_wrapper.is_file() or not os.access(gradle_wrapper, os.X_OK):
+            raise PreflightFailure(
+                "STHREAD_SNAPSHOT_GRADLE_ROUTE",
+                "prepared snapshot has no trusted executable Gradle wrapper",
+            )
+        route_environment = dict(os.environ)
+        for name in TRUSTED_WORKER_ENVIRONMENT_REMOVALS:
+            route_environment.pop(name, None)
+        route_environment["GRADLE_USER_HOME"] = str(repository / ".gradle")
+        configuration_task = gradle_configuration_task(args.compilation)
+        route_probe, route_millis = run_capture(
+            [
+                str(gradle_wrapper),
+                "--offline",
+                "--no-daemon",
+                "--quiet",
+                configuration_task,
+            ],
+            cwd=repository,
+            timeout_seconds=deadline - time.monotonic(),
+            stage="STHREAD_SNAPSHOT_GRADLE_ROUTE",
+            environment=route_environment,
+        )
+        if route_probe.returncode != 0:
+            raise PreflightFailure(
+                "STHREAD_SNAPSHOT_GRADLE_ROUTE",
+                "prepared snapshot cannot resolve the requested Gradle compilation",
+                detail={
+                    **failure_summary(route_probe),
+                    "compilation": args.compilation,
+                    "configurationTask": configuration_task,
+                },
+            )
         trusted_launcher = run_directory / "trusted-clew"
         atomic_trusted_clew_launcher(trusted_launcher, clew)
         actual_head = git_stdout(repository, "rev-parse", "HEAD", stage="GIT_STATE")
@@ -436,6 +470,7 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "budgetMillis": round(preparation_budget * 1000),
             "cache": {
                 "gradleHydrationMillis": gradle_millis,
+                "gradleRouteProbeMillis": route_millis,
                 "trustedWorkerHydrationMillis": worker_millis,
                 "trustedWorkerHit": worker_hit,
             },
@@ -1202,6 +1237,15 @@ def self_test() -> None:
         snapshot_seed = root / "snapshot-seed"
         snapshot_seed.mkdir()
         (snapshot_seed / ".gitignore").write_text(".gradle/\nworkers/**/build/\n", encoding="utf-8")
+        (snapshot_seed / "gradlew").write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "expected = ['--offline', '--no-daemon', '--quiet', 'properties']\n"
+            "if sys.argv[1:] != expected or os.environ.get('GRADLE_USER_HOME') != os.path.join(os.getcwd(), '.gradle'):\n"
+            "    raise SystemExit(9)\n",
+            encoding="utf-8",
+        )
+        (snapshot_seed / "gradlew").chmod(0o755)
         for manifest_name, distribution_name in TRUSTED_WORKER_DISTRIBUTIONS:
             manifest = snapshot_seed / manifest_name
             manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -1248,6 +1292,7 @@ def self_test() -> None:
                 snapshot_parent=snapshot_parent,
                 budget_seconds=5.0,
                 clew=fake_clew,
+                compilation=":/main",
             )
         )
         assert snapshot["status"] == "READY"
@@ -1276,6 +1321,7 @@ def self_test() -> None:
         assert snapshot["agentContextEnvironmentRemovals"] == list(
             TRUSTED_WORKER_ENVIRONMENT_REMOVALS
         )
+        assert snapshot["cache"]["gradleRouteProbeMillis"] >= 0
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))
 
 
