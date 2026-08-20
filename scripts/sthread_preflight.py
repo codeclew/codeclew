@@ -320,7 +320,7 @@ def hydrate_cargo_target(source: Path, target: Path, deadline: float, fingerprin
         raise PreflightFailure("CACHE_HYDRATION", "Cargo target seed must contain a regular release/ directory")
     if cache_marker_matches(target, fingerprint, required):
         return 0, True
-    elapsed = clone_tree_contents(source, target, deadline - time.monotonic())
+    elapsed = clone_tree_contents(source / "release", target / "release", deadline - time.monotonic())
     write_cache_marker(target, fingerprint, required)
     return elapsed, False
 
@@ -447,10 +447,13 @@ def self_test() -> None:
         cargo_seed = root / "cargo-seed"
         (cargo_seed / "release").mkdir(parents=True)
         (cargo_seed / "release" / "seed-artifact").write_bytes(b"artifact")
+        (cargo_seed / "debug").mkdir()
+        (cargo_seed / "debug" / "must-not-copy").write_bytes(b"debug")
         cargo_target = root / "cargo-target"
         elapsed, hit = hydrate_cargo_target(cargo_seed, cargo_target, time.monotonic() + 5, "sha256:" + "c" * 64)
         assert elapsed >= 0 and not hit
         assert (cargo_target / "release" / "seed-artifact").read_bytes() == b"artifact"
+        assert not (cargo_target / "debug").exists()
         elapsed, hit = hydrate_cargo_target(cargo_seed, cargo_target, time.monotonic() + 5, "sha256:" + "c" * 64)
         assert elapsed == 0 and hit
     print(json.dumps({"schema": SCHEMA, "status": "SELF_TEST_PASSED"}, separators=(",", ":")))

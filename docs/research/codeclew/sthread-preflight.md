@@ -12,8 +12,9 @@ receipt. `READY` proves all of the following against the current clean `HEAD`:
 
 - the repository-local Gradle cache has been hydrated copy-on-write from the
   local dependency seed without copying `gradle.properties` or daemon state;
-- an isolated checkout has a copy-on-write Cargo `target` seed, which Cargo
-  still validates against the selected source and toolchain before reuse;
+- an isolated checkout has a copy-on-write Cargo `target/release` seed (never
+  the much larger `target/debug`), which Cargo still validates against the
+  selected source and toolchain before reuse;
 - the release `clew` binary builds offline from the current source;
 - the complete Codeclew Gradle root configures offline against the hydrated
   cache, including the shared Kotlin 2.4.10 and Kotlin 2.1.21 projects;
