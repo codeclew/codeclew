@@ -13,6 +13,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -103,6 +104,7 @@ def run_capture(
 ) -> tuple[subprocess.CompletedProcess[bytes], int]:
     if timeout_seconds <= 0:
         raise PreflightFailure(stage, "preflight wall-time budget was exhausted")
+    timeout = None if math.isinf(timeout_seconds) else timeout_seconds
     started = time.monotonic()
     try:
         completed = subprocess.run(
@@ -111,7 +113,7 @@ def run_capture(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
+            timeout=timeout,
             env=environment,
             check=False,
         )
@@ -572,7 +574,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compiler-index-root", type=Path)
     parser.add_argument("--clew", type=Path)
     parser.add_argument("--receipt", type=Path)
-    parser.add_argument("--budget-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--budget-seconds",
+        type=float,
+        help="optional operational timeout; cold preparation is unlimited by default",
+    )
     parser.add_argument("--allow-dirty", action="store_true", help="development-only; READY will record trackedClean=false")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-smoke", action="store_true")
@@ -582,6 +588,19 @@ def parse_args() -> argparse.Namespace:
 
 def receipt_exit_code(receipt: dict[str, Any]) -> int:
     return 0 if receipt.get("status") == "READY" else 1
+
+
+def require_same_compiler_index_graph(first: dict[str, Any], warm: dict[str, Any]) -> None:
+    if warm["compilerIndex"]["status"] != "UNCHANGED_HIT":
+        raise PreflightFailure(
+            "KOTLIN_2_1_COMPILER_INDEX",
+            "independent warm compiler-index probe did not reuse the existing generation",
+        )
+    if warm["compilerIndex"]["graphDigest"] != first["compilerIndex"]["graphDigest"]:
+        raise PreflightFailure(
+            "KOTLIN_2_1_COMPILER_INDEX",
+            "first and unchanged compiler-index generations have different graph digests",
+        )
 
 
 def self_test() -> None:
@@ -596,6 +615,22 @@ def self_test() -> None:
     assert receipt_exit_code({"status": "READY"}) == 0
     assert receipt_exit_code({"status": "FAILED"}) == 1
     assert receipt_exit_code({}) == 1
+    graph = "a" * 64
+    require_same_compiler_index_graph(
+        {"compilerIndex": {"status": "COLD_FULL", "graphDigest": graph}},
+        {"compilerIndex": {"status": "UNCHANGED_HIT", "graphDigest": graph}},
+    )
+    for warm in (
+        {"compilerIndex": {"status": "COLD_FULL", "graphDigest": graph}},
+        {"compilerIndex": {"status": "UNCHANGED_HIT", "graphDigest": "b" * 64}},
+    ):
+        try:
+            require_same_compiler_index_graph(
+                {"compilerIndex": {"status": "COLD_FULL", "graphDigest": graph}}, warm
+            )
+            raise AssertionError("invalid independent warm compiler-index proof accepted")
+        except PreflightFailure:
+            pass
     capability_output = b"Usage: clew --compiler-index-root <DIR> agent-context --model-input <MODEL_INPUT>"
     assert missing_stdout_markers(capability_output, (b"--model-input", b"--compiler-index-root")) == []
     assert missing_stdout_markers(capability_output, (b"--proof-context",)) == ["--proof-context"]
@@ -656,9 +691,9 @@ def self_test() -> None:
 
 def execute(args: argparse.Namespace) -> dict[str, Any]:
     started = time.monotonic()
-    if args.budget_seconds <= 0:
+    if args.budget_seconds is not None and args.budget_seconds <= 0:
         raise PreflightFailure("ARGUMENTS", "budget-seconds must be positive")
-    deadline = started + args.budget_seconds
+    deadline = math.inf if args.budget_seconds is None else started + args.budget_seconds
     workspace = require_real_directory(args.workspace, "WORKSPACE")
     git_root = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -826,29 +861,24 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     probes.extend(runtime_probes)
     if not args.skip_smoke:
         kotlin21 = next(row for row in runtime_probes if row["kind"] == "KOTLIN_2_1_COMPILER_SEMANTIC")
-        if kotlin21["compilerIndex"]["status"] != "UNCHANGED_HIT":
-            warm_probe = probe(
-                kind="KOTLIN_2_1_COMPILER_INDEX_WARM",
-                argv=[
-                    str(clew),
-                    "--compiler-index-root",
-                    str(compiler_index_root),
-                    "index",
-                    "--repo",
-                    str(fixture21),
-                    "--compilation",
-                    ":/main",
-                ],
-                cwd=workspace,
-                deadline=deadline,
-                expected_compiler_index_status="UNCHANGED_HIT",
-            )
-            if warm_probe["compilerIndex"]["graphDigest"] != kotlin21["compilerIndex"]["graphDigest"]:
-                raise PreflightFailure(
-                    "KOTLIN_2_1_COMPILER_INDEX",
-                    "cold and unchanged compiler-index generations have different graph digests",
-                )
-            probes.append(warm_probe)
+        warm_probe = probe(
+            kind="KOTLIN_2_1_COMPILER_INDEX_WARM",
+            argv=[
+                str(clew),
+                "--compiler-index-root",
+                str(compiler_index_root),
+                "index",
+                "--repo",
+                str(fixture21),
+                "--compilation",
+                ":/main",
+            ],
+            cwd=workspace,
+            deadline=deadline,
+            expected_compiler_index_status="UNCHANGED_HIT",
+        )
+        require_same_compiler_index_graph(kotlin21, warm_probe)
+        probes.append(warm_probe)
 
     elapsed = monotonic_millis(started)
     return {
@@ -859,7 +889,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         "trackedClean": tracked_clean,
         "toolchainFingerprint": fingerprint,
         "compilerIndexRootIdentity": sha256_bytes(str(compiler_index_root).encode()),
-        "budgetMillis": round(args.budget_seconds * 1000),
+        "budgetMillis": None if args.budget_seconds is None else round(args.budget_seconds * 1000),
         "elapsedMillis": elapsed,
         "cache": {
             "cargoHydrationMillis": cargo_millis,

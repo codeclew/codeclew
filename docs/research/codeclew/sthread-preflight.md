@@ -7,8 +7,9 @@ python3 scripts/sthread_preflight.py \
   --receipt /private/tmp/codeclew-sthread-preflight.json
 ```
 
-The command has a 60-second default budget and emits one compact canonical JSON
-receipt. `READY` proves all of the following against the current clean `HEAD`:
+Cold preparation has no default wall-time budget and emits one compact canonical
+JSON receipt. `--budget-seconds` is an optional operational stop, not a performance
+acceptance threshold. `READY` proves all of the following against the current clean `HEAD`:
 
 - the repository-local Gradle cache has been hydrated copy-on-write from the
   local dependency seed without copying `gradle.properties` or daemon state;
@@ -24,6 +25,8 @@ receipt. `READY` proves all of the following against the current clean `HEAD`:
 - the trusted worker executes its exact `OpenProject` path on the small
   repository-owned Kotlin 2.4 fixture;
 - Kotlin 2.1 Gradle and Kotlin 2.3 Maven compiler-semantic smoke indexes pass.
+- an additional independent Kotlin 2.1 process reports `UNCHANGED_HIT` against
+  the same persistent compiler index and returns the same compiler graph digest.
 
 The script captures subprocess output internally and exposes only digests plus
 a bounded error message, so cache size and project-model JSON do not consume
@@ -50,9 +53,9 @@ An unchanged toolchain skips the copy step on later runs; the probes still
 execute and therefore cannot be forged by a stale marker.
 
 The Gradle configuration check and three independent worker probes run
-concurrently after the shared offline cache/build checks. This keeps a cold
-preflight inside the same wall-time budget without dropping any Kotlin version
-or turning a failure into a warning.
+concurrently after the shared offline cache/build checks. The separate warm
+Kotlin 2.1 probe runs afterwards so cold preparation cannot masquerade as a
+warm-index result.
 
 Before those probes, `STHREAD_PROTOCOL_CAPABILITY` rejects a legacy CLI that
 can only produce `LEGACY_HEURISTIC_*` task contexts. The current proof-capable
@@ -75,7 +78,7 @@ Useful development switches:
 - `--allow-dirty` permits testing an uncommitted preflight change but records
   `trackedClean: false`; it is not an acceptable production receipt.
 - `--skip-smoke` is for focused script development only.
-- `--budget-seconds N` changes the hard wall-time budget.
+- `--budget-seconds N` adds an explicit hard operational timeout; it is absent by default.
 - `--cargo-target-seed`, `--trusted-worker-seed`, `--gradle-cache-seed`, and
   `--maven-repository-seed` select explicit local build/dependency seeds.
 
