@@ -58,7 +58,8 @@ pub fn create(
         .iter()
         .flat_map(|fact| paths_in_payload(&fact["payload"]))
         .collect::<BTreeSet<_>>();
-    let sources = load_source_snippets(&store, &snapshot, &paths, terms)?;
+    let source_hints = source_offset_hints(&evidence_facts, terms);
+    let sources = load_source_snippets(&store, &snapshot, &paths, terms, &source_hints)?;
     let verified = ready.certainty == "VERIFIED"
         && !query_context.truncated
         && query_context.unmatched_terms.is_empty()
@@ -206,6 +207,7 @@ fn load_source_snippets(
     snapshot: &RepositoryInputSnapshot,
     paths: &BTreeSet<String>,
     terms: &[String],
+    source_hints: &BTreeMap<String, usize>,
 ) -> Result<Vec<Value>, ClewError> {
     let worktree = snapshot
         .worktree
@@ -238,7 +240,7 @@ fn load_source_snippets(
         let Ok(source) = std::str::from_utf8(lease.bytes()) else {
             continue;
         };
-        let (start_line, end_line, text) = snippet(source, terms);
+        let (start_line, end_line, text) = snippet(source, terms, source_hints.get(path).copied());
         snippets.push(json!({
             "fileId":path,
             "contentRef":content,
@@ -251,7 +253,67 @@ fn load_source_snippets(
     Ok(snippets)
 }
 
-fn snippet(source: &str, terms: &[String]) -> (usize, usize, String) {
+fn source_offset_hints(facts: &[Value], terms: &[String]) -> BTreeMap<String, usize> {
+    let lowered_terms = terms
+        .iter()
+        .map(|term| term.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut hints = BTreeMap::new();
+    for fact in facts {
+        collect_source_offset_hints(&fact["payload"], &lowered_terms, &mut hints, 0);
+    }
+    hints
+}
+
+fn collect_source_offset_hints(
+    value: &Value,
+    terms: &BTreeSet<String>,
+    output: &mut BTreeMap<String, usize>,
+    depth: usize,
+) {
+    if depth > 32 {
+        return;
+    }
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_source_offset_hints(value, terms, output, depth + 1);
+            }
+        }
+        Value::Object(values) => {
+            let exact_name_match = values
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| terms.contains(&name.to_lowercase()));
+            if exact_name_match {
+                let file = values
+                    .get("sourceOrigin")
+                    .and_then(Value::as_object)
+                    .and_then(|origin| origin.get("file"))
+                    .and_then(Value::as_str)
+                    .or_else(|| values.get("file").and_then(Value::as_str));
+                let offset = values
+                    .get("sourceOrigin")
+                    .and_then(Value::as_object)
+                    .and_then(|origin| origin.get("rangeStart"))
+                    .and_then(Value::as_u64)
+                    .or_else(|| values.get("rangeStart").and_then(Value::as_u64));
+                if let (Some(file), Some(offset)) = (file, offset)
+                    && safe_path(file)
+                    && let Ok(offset) = usize::try_from(offset)
+                {
+                    output.entry(file.to_owned()).or_insert(offset);
+                }
+            }
+            for value in values.values() {
+                collect_source_offset_hints(value, terms, output, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usize, usize, String) {
     if source.len() <= MAX_SNIPPET_BYTES {
         return (1, source.lines().count().max(1), source.to_owned());
     }
@@ -260,11 +322,20 @@ fn snippet(source: &str, terms: &[String]) -> (usize, usize, String) {
         .map(|term| term.to_lowercase())
         .collect::<Vec<_>>();
     let lines = source.lines().collect::<Vec<_>>();
-    let hit = lines
-        .iter()
-        .position(|line| {
-            let line = line.to_lowercase();
-            lowered_terms.iter().any(|term| line.contains(term))
+    let hit = source_offset
+        .map(|offset| {
+            let offset = offset.min(source.len());
+            source
+                .char_indices()
+                .take_while(|(index, _)| *index < offset)
+                .filter(|(_, character)| *character == '\n')
+                .count()
+        })
+        .or_else(|| {
+            lines.iter().position(|line| {
+                let line = line.to_lowercase();
+                lowered_terms.iter().any(|term| line.contains(term))
+            })
         })
         .unwrap_or(0);
     let start = hit.saturating_sub(20);
@@ -410,4 +481,36 @@ fn parse_error(error: impl std::fmt::Display) -> ClewError {
 
 fn internal(error: impl std::fmt::Display) -> ClewError {
     ClewError::new(ErrorCode::Internal, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{snippet, source_offset_hints};
+    use serde_json::json;
+
+    #[test]
+    fn declaration_range_beats_an_earlier_import_match() {
+        let mut source = "import sample.Target\n".to_owned();
+        source.push_str(&"padding\n".repeat(2_100));
+        let declaration_offset = source.len();
+        source.push_str("class Target {\n    fun changed() = true\n}\n");
+        let facts = vec![json!({
+            "payload": {
+                "declarations": [{
+                    "name": "Target",
+                    "file": "src/Target.kt",
+                    "rangeStart": declaration_offset,
+                    "rangeEnd": source.len(),
+                }]
+            }
+        })];
+        let hints = source_offset_hints(&facts, &["Target".into()]);
+        let (_, _, text) = snippet(
+            &source,
+            &["Target".into()],
+            hints.get("src/Target.kt").copied(),
+        );
+        assert!(text.contains("class Target"));
+        assert!(!text.contains("import sample.Target"));
+    }
 }
