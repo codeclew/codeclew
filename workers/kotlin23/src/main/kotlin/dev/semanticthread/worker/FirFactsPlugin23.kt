@@ -619,6 +619,7 @@ private class FirFactsOverrideChecker(
         val source = declaration.source ?: return
         val containingClass = declaration.symbol.dispatchReceiverType
             ?.classId
+            ?.takeUnless { it.isLocal }
             ?.let(context.session::getRegularClassSymbolByClassId)
         val scope = containingClass?.unsubstitutedScope(
             context.session,
