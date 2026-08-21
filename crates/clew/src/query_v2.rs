@@ -426,7 +426,7 @@ fn verify_shard(
 }
 
 fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, ClewError> {
-    let mut values = vec![fact.fact_key.clone(), fact.domain_uri.as_str().to_owned()];
+    let mut values = BTreeSet::from([fact.fact_key.clone(), fact.domain_uri.as_str().to_owned()]);
     let limit = usize::try_from(fact.payload.size)
         .map_err(|_| ClewError::new(ErrorCode::ResourceLimit, "fact payload exceeds host size"))?;
     let lease = store.read(&fact.payload, limit)?;
@@ -438,7 +438,7 @@ fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, Cl
 
 fn collect_json_strings(
     value: &Value,
-    output: &mut Vec<String>,
+    output: &mut BTreeSet<String>,
     depth: usize,
 ) -> Result<(), ClewError> {
     if depth > 64 || output.len() > 65_536 {
@@ -448,7 +448,9 @@ fn collect_json_strings(
         ));
     }
     match value {
-        Value::String(value) => output.push(value.clone()),
+        Value::String(value) => {
+            output.insert(value.clone());
+        }
         Value::Array(values) => {
             for value in values {
                 collect_json_strings(value, output, depth + 1)?;
@@ -456,7 +458,7 @@ fn collect_json_strings(
         }
         Value::Object(values) => {
             for (key, value) in values {
-                output.push(key.clone());
+                output.insert(key.clone());
                 collect_json_strings(value, output, depth + 1)?;
             }
         }
@@ -621,6 +623,26 @@ mod tests {
                 .unwrap_err()
                 .code,
             ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn repeated_payload_metadata_is_deduplicated_before_the_bound() {
+        let repeated = Value::Array(
+            (0..70_000)
+                .map(|_| serde_json::json!({"kind":"declaration","name":"Target"}))
+                .collect(),
+        );
+        let mut strings = BTreeSet::new();
+        collect_json_strings(&repeated, &mut strings, 0).unwrap();
+        assert_eq!(
+            strings,
+            BTreeSet::from([
+                "Target".to_owned(),
+                "declaration".to_owned(),
+                "kind".to_owned(),
+                "name".to_owned(),
+            ])
         );
     }
 }
