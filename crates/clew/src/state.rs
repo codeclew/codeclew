@@ -112,6 +112,10 @@ impl StateAuthority {
         self.root.join("quarantine")
     }
 
+    pub fn attempts_root(&self) -> PathBuf {
+        self.root.join("attempts")
+    }
+
     pub fn repository(&self, repo: &Path) -> Result<RepositoryState, ClewError> {
         let canonical = repo.canonicalize().map_err(io_error)?;
         let key = repository_key(&canonical)?;
