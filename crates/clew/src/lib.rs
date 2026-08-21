@@ -1,3 +1,4 @@
+pub mod adapter_v2;
 pub mod agent_context;
 pub mod canonical;
 pub mod cas;
