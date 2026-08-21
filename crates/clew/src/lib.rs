@@ -11,6 +11,7 @@ pub mod identity;
 pub mod index;
 pub mod model;
 pub mod projection;
+pub mod repository_snapshot;
 pub mod runtime;
 pub mod semantic_goal;
 pub mod semantic_kernel;
