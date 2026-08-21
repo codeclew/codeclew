@@ -214,6 +214,7 @@ def state_root() -> Path:
     for child in [
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
         "objects", "objects/sha256", "generations", "attempts", "gc",
+        "build-cache", "build-cache/cargo",
     ]:
         path = root / child
         path.mkdir(mode=0o700, exist_ok=True)
@@ -368,9 +369,13 @@ def stage_inputs(source: Path, destination: Path, rows: list[dict[str, object]])
     verify_source_manifest(destination, rows)
 
 
-def build_environment(stage: Path) -> dict[str, str]:
+def build_environment(stage: Path, root: Path) -> dict[str, str]:
     environment = {name: value for name, value in os.environ.items() if name not in INJECTION_ENV and not name.startswith("CODECLEW_")}
-    environment["CARGO_TARGET_DIR"] = str(stage / ".codeclew-build/cargo")
+    cargo_cache = root / "build-cache/cargo"
+    cargo_cache.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(cargo_cache, 0o700)
+    environment["CARGO_TARGET_DIR"] = str(cargo_cache)
+    environment["CARGO_INCREMENTAL"] = "1"
     environment["GIT_TERMINAL_PROMPT"] = "0"
     gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
     for relative in ["init.gradle", "init.gradle.kts", "init.d"]:
@@ -505,6 +510,7 @@ def build_toolchains(stage: Path, environment: dict[str, str]) -> dict[str, obje
         ":workers:kotlin:installDist",
         "--no-daemon",
         "--parallel",
+        "--build-cache",
         f"--max-workers={plan['gradleWorkers']}",
         "--quiet",
     ]
@@ -582,8 +588,12 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
     capsule = temporary / "capsule"
     try:
         stage_inputs(source, stage, inputs)
-        environment = build_environment(stage)
-        build_toolchains(stage, environment)
+        environment = build_environment(stage, root)
+        build_cache_lock = root / "locks/build-cache.lock"
+        with build_cache_lock.open("a+b") as lock:
+            os.chmod(build_cache_lock, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            build_toolchains(stage, environment)
         verify_source_manifest(stage, inputs)
         (capsule / "bin").mkdir(mode=0o700, parents=True)
         cargo_target = Path(environment["CARGO_TARGET_DIR"]) / "release"
