@@ -8,13 +8,19 @@ use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::derived_manifest::DerivedAnalysisInputManifest;
 use crate::error::{ClewError, ErrorCode};
-use crate::repository_snapshot::{RepositoryInputSnapshot, materialize};
+use crate::generation_v2::GenerationManifest;
+use crate::incremental_v2::CompilerStoreKey;
+use crate::repository_snapshot::{RepositoryInputSnapshot, capture, materialize};
 use crate::state::{StateAuthority, create_private_directory};
 use crate::worker::{WorkerClient, workspace_root};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::fs;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(unix)]
+use std::os::unix::fs::{PermissionsExt, symlink};
 
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
@@ -208,15 +214,22 @@ pub struct LegacyKotlinWorkerDriver {
     state: StateAuthority,
     store: CasStore,
     line: KotlinCompilerLine,
+    adapter_digest: String,
     exclusive: Mutex<()>,
 }
 
 impl LegacyKotlinWorkerDriver {
-    pub fn new(state: StateAuthority, store: CasStore, line: KotlinCompilerLine) -> Self {
+    pub fn new(
+        state: StateAuthority,
+        store: CasStore,
+        line: KotlinCompilerLine,
+        adapter_digest: String,
+    ) -> Self {
         Self {
             state,
             store,
             line,
+            adapter_digest,
             exclusive: Mutex::new(()),
         }
     }
@@ -262,6 +275,7 @@ impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
             .map_err(io_error)?;
         let repo = attempt_root.path().join("repo");
         materialize(&snapshot, &self.store, &repo)?;
+        mount_project_derived_state(attempt_root.path(), &repo)?;
         let options_limit =
             usize::try_from(request.compilation.canonical_options.size).map_err(|_| {
                 ClewError::new(ErrorCode::ResourceLimit, "Kotlin options exceed host size")
@@ -275,17 +289,28 @@ impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
             .get("nativeCompilation")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("Kotlin canonical options have no nativeCompilation"))?;
-        let digest = request
-            .compilation
-            .toolchain
-            .digest
-            .strip_prefix("sha256:")
-            .ok_or_else(|| invalid("Kotlin toolchain digest is invalid"))?;
+        if let Some(parent) = &request.parent_generation {
+            let limit = usize::try_from(parent.size).map_err(|_| {
+                ClewError::new(
+                    ErrorCode::ResourceLimit,
+                    "parent generation exceeds host size",
+                )
+            })?;
+            let lease = self.store.read(parent, limit)?;
+            let parent: GenerationManifest = serde_json::from_slice(lease.bytes())
+                .map_err(|_| invalid("parent generation is invalid"))?;
+            parent.verify(&self.store)?;
+        }
+        let compiler_store_key = CompilerStoreKey::create(
+            self.line.adapter_id(),
+            self.adapter_digest.clone(),
+            &request.compilation,
+        )?;
         let compiler_store = self
             .state
             .root()
             .join("generations/compiler-store")
-            .join(digest);
+            .join(compiler_store_key.path_component()?);
         create_private_directory(&compiler_store)?;
         let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
         let mut worker =
@@ -305,8 +330,65 @@ impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
             ));
         }
         worker.shutdown()?;
+        unmount_project_derived_state(&repo)?;
+        let (observed_snapshot, _) = capture(&repo, &self.store)?;
+        let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
+            && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
+            && observed_snapshot.untracked_view_digest == snapshot.untracked_view_digest
+            && observed_snapshot.index == snapshot.index
+            && observed_snapshot.worktree.len() == snapshot.worktree.len()
+            && observed_snapshot
+                .worktree
+                .iter()
+                .zip(&snapshot.worktree)
+                .all(|(observed, expected)| {
+                    observed.path == expected.path
+                        && observed.kind == expected.kind
+                        && observed.content == expected.content
+                });
+        if !unchanged_inputs {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "project-native model extraction modified sealed repository inputs",
+            ));
+        }
         Ok(index)
     }
+}
+
+fn unmount_project_derived_state(repo: &std::path::Path) -> Result<(), ClewError> {
+    for name in [".gradle", "build"] {
+        let path = repo.join(name);
+        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+        if !metadata.file_type().is_symlink() {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "project-native derived mount authority changed",
+            ));
+        }
+        fs::remove_file(path).map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn mount_project_derived_state(
+    attempt_root: &std::path::Path,
+    repo: &std::path::Path,
+) -> Result<(), ClewError> {
+    let gradle = attempt_root.join("derived/gradle-project-cache");
+    let build = attempt_root.join("derived/build-output");
+    create_private_directory(&gradle)?;
+    create_private_directory(&build)?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(repo, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+        for (name, target) in [(".gradle", &gradle), ("build", &build)] {
+            if let Err(error) = symlink(target, repo.join(name)) {
+                return Err(io_error(error));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord>, ClewError> {
@@ -638,10 +720,16 @@ mod tests {
         };
         let (_manifest, manifest_object) =
             DerivedAnalysisInputManifest::create(&store, snapshot_object, vec![provider]).unwrap();
-        let driver = LegacyKotlinWorkerDriver::new(state, store.clone(), KotlinCompilerLine::K24);
+        let adapter_digest = format!("sha256:{}", "a".repeat(64));
+        let driver = LegacyKotlinWorkerDriver::new(
+            state,
+            store.clone(),
+            KotlinCompilerLine::K24,
+            adapter_digest.clone(),
+        );
         let adapter = KotlinAdapterV2::new(
             KotlinCompilerLine::K24,
-            format!("sha256:{}", "a".repeat(64)),
+            adapter_digest,
             toolchain.digest.clone(),
             store.clone(),
             driver,

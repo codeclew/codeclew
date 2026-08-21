@@ -10,6 +10,7 @@ pub mod freshness;
 pub mod generation_v2;
 pub mod graph;
 pub mod identity;
+pub mod incremental_v2;
 pub mod index;
 pub mod kotlin_adapter_v2;
 pub mod model;

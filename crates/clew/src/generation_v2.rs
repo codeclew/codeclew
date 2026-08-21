@@ -33,9 +33,18 @@ pub struct GenerationManifest {
     pub schema: String,
     pub generation_id: String,
     pub derived_input_manifest: CasObject,
+    pub parent_generation: Option<CasObject>,
+    pub generation_kind: GenerationKind,
     pub attempts: Vec<AttemptAuthority>,
     pub shards: Vec<CasObject>,
     pub fact_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GenerationKind {
+    Full,
+    Delta,
 }
 
 impl GenerationManifest {
@@ -47,6 +56,26 @@ impl GenerationManifest {
             || self.generation_id != canonical::hash(&unsigned).map_err(internal)?
         {
             return Err(corrupt("generation manifest identity is invalid"));
+        }
+        if let Some(parent) = &self.parent_generation {
+            if self.generation_kind != GenerationKind::Delta
+                || parent.object_schema != GENERATION_SCHEMA
+            {
+                return Err(corrupt("generation parent authority is invalid"));
+            }
+            store
+                .read(
+                    parent,
+                    usize::try_from(parent.size).map_err(|_| {
+                        ClewError::new(
+                            ErrorCode::ResourceLimit,
+                            "parent generation exceeds host size",
+                        )
+                    })?,
+                )
+                .map_err(|_| corrupt("parent generation is unavailable"))?;
+        } else if self.generation_kind != GenerationKind::Full {
+            return Err(corrupt("delta generation has no parent"));
         }
         verify_attempts(store, &self.attempts)?;
         let derived_limit = usize::try_from(self.derived_input_manifest.size).map_err(|_| {
@@ -216,11 +245,22 @@ pub fn finalize_generation(
     attempts: Vec<AttemptAuthority>,
     runs: Vec<FactRun>,
 ) -> Result<(GenerationManifest, CasObject), ClewError> {
+    finalize_generation_with_parent(store, derived_input_manifest, attempts, runs, None)
+}
+
+pub fn finalize_generation_with_parent(
+    store: &CasStore,
+    derived_input_manifest: CasObject,
+    attempts: Vec<AttemptAuthority>,
+    runs: Vec<FactRun>,
+    parent_generation: Option<CasObject>,
+) -> Result<(GenerationManifest, CasObject), ClewError> {
     finalize_with_limit(
         store,
         derived_input_manifest,
         attempts,
         runs,
+        parent_generation,
         MAX_SHARD_BYTES,
     )
 }
@@ -230,10 +270,25 @@ fn finalize_with_limit(
     derived_input_manifest: CasObject,
     mut attempts: Vec<AttemptAuthority>,
     runs: Vec<FactRun>,
+    parent_generation: Option<CasObject>,
     shard_limit: usize,
 ) -> Result<(GenerationManifest, CasObject), ClewError> {
     if derived_input_manifest.object_schema != DERIVED_MANIFEST_SCHEMA {
         return Err(invalid("generation requires a derived input manifest v2"));
+    }
+    if let Some(parent) = &parent_generation {
+        if parent.object_schema != GENERATION_SCHEMA {
+            return Err(invalid("generation parent has the wrong schema"));
+        }
+        store.read(
+            parent,
+            usize::try_from(parent.size).map_err(|_| {
+                ClewError::new(
+                    ErrorCode::ResourceLimit,
+                    "parent generation exceeds host size",
+                )
+            })?,
+        )?;
     }
     if runs.is_empty() || shard_limit == 0 || shard_limit > MAX_SHARD_BYTES {
         return Err(invalid("generation run set or shard limit is invalid"));
@@ -344,6 +399,12 @@ fn finalize_with_limit(
         schema: GENERATION_SCHEMA.into(),
         generation_id: String::new(),
         derived_input_manifest,
+        generation_kind: if parent_generation.is_some() {
+            GenerationKind::Delta
+        } else {
+            GenerationKind::Full
+        },
+        parent_generation,
         attempts,
         shards,
         fact_count,
@@ -585,6 +646,7 @@ mod tests {
             derived.clone(),
             vec![attempt.clone()],
             first_runs,
+            None,
             600,
         )
         .unwrap();
@@ -599,7 +661,7 @@ mod tests {
             ),
         ];
         let (second, second_object) =
-            finalize_with_limit(&store, derived, vec![attempt], second_runs, 600).unwrap();
+            finalize_with_limit(&store, derived, vec![attempt], second_runs, None, 600).unwrap();
         assert_eq!(first, second);
         assert_eq!(first_object, second_object);
         assert!(first.shards.len() > 1);
@@ -618,10 +680,34 @@ mod tests {
             run(&state, &[same]),
         ];
         assert_eq!(
-            finalize_with_limit(&store, derived, vec![attempt], runs, 600)
+            finalize_with_limit(&store, derived, vec![attempt], runs, None, 600)
                 .unwrap_err()
                 .code,
             ErrorCode::WorkerProtocolMismatch
         );
+    }
+
+    #[test]
+    fn delta_generation_is_immutably_bound_to_available_parent() {
+        let (_root, state, store, derived, attempt) = fixture();
+        let parent_facts = ["a", "b", "c", "d", "e", "f"].map(|key| fact(&store, key));
+        let (_parent, parent_object) = finalize_generation(
+            &store,
+            derived.clone(),
+            vec![attempt.clone()],
+            vec![run(&state, &parent_facts)],
+        )
+        .unwrap();
+        let (delta, _) = finalize_generation_with_parent(
+            &store,
+            derived,
+            vec![attempt],
+            vec![run(&state, &parent_facts)],
+            Some(parent_object.clone()),
+        )
+        .unwrap();
+        assert_eq!(delta.generation_kind, GenerationKind::Delta);
+        assert_eq!(delta.parent_generation, Some(parent_object));
+        delta.verify(&store).unwrap();
     }
 }
