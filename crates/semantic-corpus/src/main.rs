@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use semantic_corpus::{
     BuildSystem, GenerateOptions, TaskFamily, e04, e04_hidden_verification, generate,
-    product_coverage, verify_hidden_package,
+    verify_hidden_package,
 };
 
 #[derive(Parser)]
@@ -21,11 +21,6 @@ struct Cli {
 // memory.
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Compute the pinned controller-free E04 product coverage ceiling.
-    E04ProductCoverage {
-        #[arg(long)]
-        typed_goal_catalog: PathBuf,
-    },
     /// Print the exact pinned R1 materializer identity as canonical JSON.
     E04MaterializerIdentity,
     /// Generate an agent-visible project and a separate controller oracle.
@@ -108,10 +103,6 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::E04ProductCoverage { typed_goal_catalog } => {
-            let report = product_coverage::product_coverage_report(&typed_goal_catalog)?;
-            print!("{}", e04::canonical_json(&report)?);
-        }
         Command::E04MaterializerIdentity => {
             print!(
                 "{}",
@@ -327,32 +318,5 @@ mod tests {
             ])
             .is_ok()
         );
-    }
-
-    #[test]
-    fn product_coverage_cli_accepts_only_the_catalog_input() {
-        assert!(matches!(
-            Cli::try_parse_from([
-                "semantic-corpus",
-                "e04-product-coverage",
-                "--typed-goal-catalog",
-                "/tmp/typed-goal.json"
-            ])
-            .unwrap()
-            .command,
-            Command::E04ProductCoverage { .. }
-        ));
-        assert!(
-            Cli::try_parse_from([
-                "semantic-corpus",
-                "e04-product-coverage",
-                "--typed-goal-catalog",
-                "/tmp/typed-goal.json",
-                "--contract",
-                "/tmp/alternate.json"
-            ])
-            .is_err()
-        );
-        assert!(Cli::try_parse_from(["semantic-corpus", "e04-product-coverage"]).is_err());
     }
 }

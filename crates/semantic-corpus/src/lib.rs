@@ -12,7 +12,6 @@ pub mod e04;
 pub mod e04_authorization;
 pub mod e04_hidden_verification;
 pub mod population;
-pub mod product_coverage;
 
 pub const GENERATOR_VERSION: &str = "semantic-corpus/0.2";
 

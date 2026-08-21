@@ -939,7 +939,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "clew",
  "ed25519-dalek",
  "hex",
  "serde",

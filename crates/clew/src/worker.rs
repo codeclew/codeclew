@@ -758,10 +758,6 @@ impl VerifiedIndexFacts {
     pub(crate) fn compilation(&self) -> &str {
         &self.compilation
     }
-
-    pub(crate) fn project_model_hash(&self) -> &str {
-        &self.project_model_hash
-    }
 }
 
 impl VerifiedSourceSyntax {
@@ -1967,22 +1963,6 @@ impl WorkerClient {
         Ok(&facts.payload)
     }
 
-    pub(crate) fn safe_verified_index_diagnostic(&self, facts: &VerifiedIndexFacts) -> Value {
-        serde_json::json!({
-            "authoritySessionHash": crate::canonical::hash(&facts.authority_session).unwrap_or_else(|_| "unavailable".into()),
-            "currentSessionHash": crate::canonical::hash(&self.authority_session).unwrap_or_else(|_| "unavailable".into()),
-            "distributionFingerprintHash": crate::canonical::hash(&facts.distribution_fingerprint).unwrap_or_else(|_| "unavailable".into()),
-            "distributionTreeHash": crate::canonical::hash(&facts.distribution_tree_hash).unwrap_or_else(|_| "unavailable".into()),
-            "buildInputDigestHash": crate::canonical::hash(&facts.build_input_digest).unwrap_or_else(|_| "unavailable".into()),
-            "pluginFingerprintHash": crate::canonical::hash(&facts.distribution_fingerprint).unwrap_or_else(|_| "unavailable".into()),
-            "projectModelHashHash": crate::canonical::hash(&facts.project_model_hash).unwrap_or_else(|_| "unavailable".into()),
-            "sourceSnapshotHash": crate::canonical::hash(&facts.base_revision).unwrap_or_else(|_| "unavailable".into()),
-            "payloadHashHash": crate::canonical::hash(&facts.payload_hash).unwrap_or_else(|_| "unavailable".into()),
-            "receiptIssued": self.issued_index_facts.contains_key(&facts.receipt_id),
-            "sessionMatches": facts.authority_session == self.authority_session,
-        })
-    }
-
     pub(crate) fn authorize_index_facts<'a>(
         &self,
         facts: &'a VerifiedIndexFacts,
@@ -2823,87 +2803,6 @@ fn required_payload_string<'a>(payload: &'a Value, field: &str) -> Result<&'a st
         })
 }
 
-/// Return the mount-independent identity of one exact OpenProject response.
-///
-/// Gradle exposes provider digests that include absolute cache paths.  When it
-/// also proves that both providers selected the exact ordered classpath, that
-/// ordered, content-addressed classpath is the semantic authority; a detached
-/// worktree or private CoW cache must not look like a model change.  A real
-/// provider disagreement remains part of the identity and therefore remains
-/// fail-closed.
-pub(crate) fn stable_project_model_identity(project: &Value) -> Result<String, ClewError> {
-    let raw_manifest = project.get("semanticInputManifest").ok_or_else(|| {
-        ClewError::new(
-            ErrorCode::WorkerProtocolMismatch,
-            "OpenProject response has no semantic input manifest",
-        )
-    })?;
-    let raw_manifest_hash = required_payload_string(project, "semanticInputManifestHash")?;
-    if crate::canonical::hash(raw_manifest).map_err(internal)? != raw_manifest_hash {
-        return Err(ClewError::new(
-            ErrorCode::ProjectModelChanged,
-            "OpenProject semantic input manifest hash is invalid",
-        ));
-    }
-
-    let mut stable_manifest = raw_manifest.clone();
-    let ordered_classpath = stable_manifest
-        .get("orderedCompileClasspath")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "semantic input manifest has no ordered compile classpath",
-            )
-        })?;
-    let mut ordered_bytes = Vec::new();
-    for entry in ordered_classpath {
-        let entry = entry.as_str().ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "semantic input classpath contains a non-string entry",
-            )
-        })?;
-        ordered_bytes.extend_from_slice(entry.as_bytes());
-        ordered_bytes.push(0);
-    }
-    let ordered_digest = Value::String(crate::canonical::hash_bytes(&ordered_bytes));
-    if let Some(authority) = stable_manifest
-        .get_mut("classpathAuthority")
-        .and_then(Value::as_object_mut)
-    {
-        if authority.contains_key("orderedDigest") {
-            authority.insert("orderedDigest".to_owned(), ordered_digest.clone());
-        }
-        if authority.get("orderedEquivalent").and_then(Value::as_bool) == Some(true) {
-            for field in ["taskLibrariesDigest", "configurationDigest"] {
-                if authority.get(field).is_some_and(|value| !value.is_null()) {
-                    authority.insert(field.to_owned(), ordered_digest.clone());
-                }
-            }
-        }
-    }
-    let stable_manifest_hash = crate::canonical::hash(&stable_manifest).map_err(internal)?;
-
-    let mut stable_project = project.clone();
-    let object = stable_project.as_object_mut().ok_or_else(|| {
-        ClewError::new(
-            ErrorCode::WorkerProtocolMismatch,
-            "OpenProject response is not an object",
-        )
-    })?;
-    object.remove("projectModelHash");
-    object.insert("semanticInputManifest".to_owned(), stable_manifest.clone());
-    object.insert(
-        "semanticInputManifestHash".to_owned(),
-        Value::String(stable_manifest_hash),
-    );
-    if let Some(authority) = stable_manifest.get("classpathAuthority") {
-        object.insert("classpathAuthority".to_owned(), authority.clone());
-    }
-    crate::canonical::hash(&stable_project).map_err(internal)
-}
-
 fn bind_open_project_compilation(
     canonical: &mut Value,
     typed_compilation: &str,
@@ -3327,53 +3226,6 @@ pub fn workspace_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("workspace root")
-}
-
-#[cfg(test)]
-pub(crate) fn seed_test_build_caches(repo: &Path) {
-    fn merge_tree(source: &Path, destination: &Path) {
-        if !source.is_dir() {
-            return;
-        }
-        for entry in walkdir::WalkDir::new(source)
-            .follow_links(false)
-            .into_iter()
-            .map(Result::unwrap)
-        {
-            let relative = entry.path().strip_prefix(source).unwrap();
-            if relative.components().any(|component| {
-                matches!(
-                    component.as_os_str().to_str(),
-                    Some("daemon" | ".tmp" | "notifications")
-                )
-            }) {
-                continue;
-            }
-            let target = destination.join(relative);
-            if entry.file_type().is_dir() {
-                std::fs::create_dir_all(&target).unwrap();
-            } else if entry.file_type().is_file() && !target.exists() {
-                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-                if std::fs::hard_link(entry.path(), &target).is_err() {
-                    std::fs::copy(entry.path(), &target).unwrap();
-                }
-            }
-        }
-    }
-
-    let workspace = workspace_root();
-    if repo.join("gradlew").is_file() {
-        merge_tree(
-            &workspace.join("fixtures/kotlin-basic/.gradle"),
-            &repo.join(".gradle"),
-        );
-    }
-    if repo.join("mvnw").is_file() {
-        merge_tree(
-            &workspace.join("fixtures/kotlin-maven/.semantic-thread/maven-repository"),
-            &repo.join(".semantic-thread/maven-repository"),
-        );
-    }
 }
 
 #[cfg(test)]
@@ -4161,82 +4013,6 @@ mod tests {
         );
     }
 
-    fn project_model_fixture(
-        classpath: &[&str],
-        task_digest: &str,
-        configuration_digest: &str,
-        ordered_equivalent: bool,
-    ) -> Value {
-        let manifest = json!({
-            "orderedCompileClasspath":classpath,
-            "classpathAuthority":{
-                "orderedDigest":"sha256:raw-ordered",
-                "taskLibrariesDigest":task_digest,
-                "configurationDigest":configuration_digest,
-                "orderedEquivalent":ordered_equivalent,
-            },
-            "declaredCompilerVersion":"2.4.10",
-        });
-        json!({
-            "schema":"semantic-project/0.1",
-            "compilation":":/main",
-            "projectModelHash":"sha256:raw-project",
-            "semanticInputManifestHash":crate::canonical::hash(&manifest).unwrap(),
-            "semanticInputManifest":manifest.clone(),
-            "classpathAuthority":manifest["classpathAuthority"].clone(),
-        })
-    }
-
-    #[test]
-    fn stable_project_model_identity_ignores_equivalent_cache_mounts() {
-        let first = project_model_fixture(
-            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
-            "sha256:/first/task",
-            "sha256:/first/configuration",
-            true,
-        );
-        let second = project_model_fixture(
-            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
-            "sha256:/second/task",
-            "sha256:/second/configuration",
-            true,
-        );
-        assert_eq!(
-            stable_project_model_identity(&first).unwrap(),
-            stable_project_model_identity(&second).unwrap()
-        );
-    }
-
-    #[test]
-    fn stable_project_model_identity_preserves_semantic_disagreement() {
-        let baseline = project_model_fixture(
-            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
-            "sha256:task",
-            "sha256:configuration",
-            true,
-        );
-        let reordered = project_model_fixture(
-            &["repo:.gradle/b.jar:sha256:b", "repo:.gradle/a.jar:sha256:a"],
-            "sha256:task",
-            "sha256:configuration",
-            true,
-        );
-        let provider_disagreement = project_model_fixture(
-            &["repo:.gradle/a.jar:sha256:a", "repo:.gradle/b.jar:sha256:b"],
-            "sha256:other-task",
-            "sha256:other-configuration",
-            false,
-        );
-        assert_ne!(
-            stable_project_model_identity(&baseline).unwrap(),
-            stable_project_model_identity(&reordered).unwrap()
-        );
-        assert_ne!(
-            stable_project_model_identity(&baseline).unwrap(),
-            stable_project_model_identity(&provider_disagreement).unwrap()
-        );
-    }
-
     #[test]
     fn compiler_plugin_abi_failure_is_not_collapsed_into_generic_k2_failure() {
         assert_eq!(
@@ -4365,39 +4141,6 @@ mod tests {
                 .code,
             ErrorCode::ProjectModelChanged
         );
-    }
-
-    #[test]
-    fn verified_index_binds_distribution_after_project_variant_selection() {
-        let workspace = workspace_root();
-        let repo = workspace
-            .join("fixtures/kotlin-2-1")
-            .canonicalize()
-            .unwrap();
-        seed_test_build_caches(&repo);
-        let mut worker = WorkerClient::start(&workspace).unwrap();
-        assert_eq!(worker.capabilities.compiler_version, "2.4.10");
-
-        let (project, verified) = worker
-            .open_project_and_index_verified(&json!({
-                "repo":repo,
-                "compilation":":/main",
-                "syntaxOnly":false,
-            }))
-            .unwrap();
-        assert_eq!(worker.capabilities.compiler_version, "2.1.21");
-        let selected = worker.trusted_distribution.as_ref().unwrap();
-        assert_eq!(
-            verified.distribution_fingerprint,
-            selected.plugin_fingerprint
-        );
-        assert_eq!(verified.distribution_tree_hash, selected.tree_hash);
-        assert_eq!(
-            project["projectModelHash"].as_str(),
-            Some(verified.project_model_hash())
-        );
-        worker.inspect_verified_index(&verified).unwrap();
-        worker.shutdown().unwrap();
     }
 
     #[test]
@@ -4940,8 +4683,6 @@ ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
             "package p\nfun serviceValue() = 1\n",
         )
         .unwrap();
-        seed_test_build_caches(temporary.path());
-
         let mut worker = WorkerClient::start(&workspace).unwrap();
         let root = worker
             .request(
