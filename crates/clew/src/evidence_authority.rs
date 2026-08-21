@@ -6820,7 +6820,10 @@ fn discover_nullable_construction_candidates(
         )
     })?;
     let verified = worker
-        .index_files_verified(&json!({"repo":repo,"compilation":&compilation,"syntaxOnly":false}))
+        .index_files_verified_after_project(
+            &json!({"repo":repo,"compilation":&compilation,"syntaxOnly":false}),
+            &project,
+        )
         .map_err(|error| {
             let base = nullable_early_diagnostic(
                 DeclarationProviderStage::VerifiedIndexReceipt,
@@ -7555,8 +7558,9 @@ fn discover_declaration_value_flow_candidates(
         &json!({"repo":repo,"compilation":&compilation}),
     )?;
     require_exact_project_compilation(&project, &compilation)?;
-    let verified = worker.index_files_verified(
+    let verified = worker.index_files_verified_after_project(
         &json!({"repo":repo,"compilation":&compilation,"syntaxOnly":false}),
+        &project,
     )?;
     let inspected = worker.inspect_verified_index(&verified)?;
     if inspected.get("k2Validated").and_then(Value::as_bool) != Some(true)
@@ -9755,8 +9759,9 @@ fn discover_value_flows(
         &json!({"repo":repo,"compilation":&compilation}),
     )?;
     require_exact_project_compilation(&project, &compilation)?;
-    let verified_index = worker.index_files_verified(
+    let verified_index = worker.index_files_verified_after_project(
         &json!({"repo":repo,"compilation":&compilation,"syntaxOnly":false}),
+        &project,
     )?;
     let index = worker.inspect_verified_index(&verified_index)?;
     if index.get("k2Validated").and_then(Value::as_bool) != Some(true)

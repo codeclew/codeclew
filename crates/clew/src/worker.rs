@@ -9,6 +9,7 @@ use prost::Message;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -961,6 +962,17 @@ fn configure_worker_state_environment(
     }
 }
 
+fn build_state_root_from_environment_value(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+/// Select the optional sealed build-state authority from the caller environment.
+/// An explicitly empty variable is equivalent to it being unset so CI wrappers
+/// can enable the project-native default without manufacturing an invalid path.
+pub fn inherited_build_state_root() -> Option<PathBuf> {
+    build_state_root_from_environment_value(std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT"))
+}
+
 impl WorkerClient {
     pub fn pid(&self) -> u32 {
         self.child.id()
@@ -977,8 +989,7 @@ impl WorkerClient {
     }
 
     pub fn start(workspace: &Path) -> Result<Self, ClewError> {
-        let inherited_build_state =
-            std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT").map(PathBuf::from);
+        let inherited_build_state = inherited_build_state_root();
         Self::start_variant(
             workspace,
             WorkerVariant::Kotlin24,
@@ -1688,6 +1699,46 @@ impl WorkerClient {
         &mut self,
         payload: &Value,
     ) -> Result<VerifiedIndexFacts, ClewError> {
+        self.open_project_and_index_verified(payload)
+            .map(|(_, facts)| facts)
+    }
+
+    /// Execute one live OpenProject followed by IndexFiles and return both the
+    /// exact project authority and its sealed semantic facts. Callers that need
+    /// the project model must use this combined contour instead of issuing a
+    /// second independent OpenProject, which is intentionally refreshed in
+    /// project-native mode.
+    pub fn open_project_and_index_verified(
+        &mut self,
+        payload: &Value,
+    ) -> Result<(Value, VerifiedIndexFacts), ClewError> {
+        let repo = payload
+            .get("repo")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "verified index needs repo"))?;
+        let repo = Path::new(repo).canonicalize().map_err(internal)?;
+        let requested_compilation = payload
+            .get("compilation")
+            .and_then(Value::as_str)
+            .unwrap_or(":/main")
+            .to_owned();
+        let project = self.request(
+            RequestKind::OpenProject,
+            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
+        )?;
+        let facts = self.index_files_verified_after_project(payload, &project)?;
+        Ok((project, facts))
+    }
+
+    /// Index against the exact live OpenProject currently held by this worker.
+    /// This supports cache lookup between build discovery and semantic indexing
+    /// without a second native Maven/Gradle model extraction. The supplied model
+    /// must still match the worker's live snapshot and the IndexFiles response.
+    pub fn index_files_verified_after_project(
+        &mut self,
+        payload: &Value,
+        project: &Value,
+    ) -> Result<VerifiedIndexFacts, ClewError> {
         if payload.get("syntaxOnly").and_then(Value::as_bool) == Some(true) {
             return Err(ClewError::new(
                 ErrorCode::InvalidInput,
@@ -1704,10 +1755,6 @@ impl WorkerClient {
             .and_then(Value::as_str)
             .unwrap_or(":/main")
             .to_owned();
-        let project = self.request(
-            RequestKind::OpenProject,
-            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
-        )?;
         let open_project_model_cache = self.last_profile.project_model_cache.clone();
         if project.get("compilation").and_then(Value::as_str)
             != Some(requested_compilation.as_str())
@@ -1717,6 +1764,18 @@ impl WorkerClient {
             return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
                 "OpenProject identity differs from verified index request",
+            ));
+        }
+        let provided_project_model_hash = required_payload_string(project, "projectModelHash")?;
+        if self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.project_model_hash.as_str())
+            != Some(provided_project_model_hash)
+        {
+            return Err(ClewError::new(
+                ErrorCode::ProjectModelChanged,
+                "provided OpenProject is not the worker's live project authority",
             ));
         }
         // OpenProject may discover and switch to the project's Kotlin worker
@@ -1738,7 +1797,7 @@ impl WorkerClient {
         verify_trusted_distribution(trusted)?;
         let trusted_tree_hash = trusted.tree_hash.clone();
         let trusted_build_input_digest = trusted.build_input_digest.clone();
-        let project_model_hash = required_payload_string(&project, "projectModelHash")?.to_owned();
+        let project_model_hash = provided_project_model_hash.to_owned();
         let semantic_input_manifest_hash =
             required_payload_string(&project, "semanticInputManifestHash")?.to_owned();
         let manifest = project.get("semanticInputManifest").ok_or_else(|| {
@@ -2375,9 +2434,16 @@ fn prepare_trusted_worker_distribution(
         return Ok(None);
     }
     let pinned = variant.pinned_inputs();
-    reject_build_injection_environment(&canonical)?;
     verify_pinned_build_inputs(&canonical, &pinned)?;
+    reject_unpinned_workspace_build_initialization(&canonical)?;
     let source_distribution = canonical.join(variant.distribution_relative());
+    if bootstrap_trusted_worker_distribution_if_missing(&canonical, variant, &source_distribution)?
+    {
+        // The build is not trusted merely because Gradle exited successfully.
+        // Recheck the exact source closure before comparing its output with the
+        // committed distribution manifest.
+        verify_pinned_build_inputs(&canonical, &pinned)?;
+    }
     verify_pinned_distribution(&source_distribution, &pinned)?;
     let private_root = tempfile::Builder::new()
         .prefix("codeclew-worker-authority-")
@@ -2414,6 +2480,102 @@ fn prepare_trusted_worker_distribution(
     }))
 }
 
+fn bootstrap_trusted_worker_distribution_if_missing(
+    workspace: &Path,
+    variant: WorkerVariant,
+    distribution: &Path,
+) -> Result<bool, ClewError> {
+    bootstrap_trusted_worker_distribution_if_missing_with_environment(
+        workspace,
+        variant,
+        distribution,
+        std::env::vars_os(),
+    )
+}
+
+fn bootstrap_trusted_worker_distribution_if_missing_with_environment(
+    workspace: &Path,
+    variant: WorkerVariant,
+    distribution: &Path,
+    build_environment: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Result<bool, ClewError> {
+    match std::fs::symlink_metadata(distribution) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(internal(error)),
+    }
+
+    require_safe_missing_distribution_path(workspace, distribution)?;
+    let wrapper = workspace.join("gradlew");
+    let metadata = std::fs::symlink_metadata(&wrapper).map_err(internal)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(preparation_required(
+            "trusted worker Gradle wrapper is not a regular pinned file",
+        ));
+    }
+
+    let mut command = Command::new(&wrapper);
+    command
+        .args([variant.install_task(), "--no-daemon", "--quiet"])
+        .current_dir(workspace)
+        // A cold start must resolve the worker with the same Gradle/JVM setup
+        // as the repository wrapper: caller caches, mirrors and JVM options are
+        // part of build availability. They are not trusted as authority. The
+        // pinned source closure is checked before and after this command and
+        // the resulting installDist must match the embedded output manifest.
+        .env_clear()
+        .envs(build_environment);
+    let output = command.output().map_err(|error| {
+        ClewError::new(
+            ErrorCode::WorkerCrashed,
+            format!("cannot build trusted Kotlin worker: {error}"),
+        )
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let diagnostic = stderr.chars().take(2_048).collect::<String>();
+        return Err(ClewError::new(
+            ErrorCode::WorkerCrashed,
+            format!(
+                "trusted Kotlin worker build failed with {}{}{}",
+                output.status,
+                if diagnostic.trim().is_empty() {
+                    ""
+                } else {
+                    ": "
+                },
+                diagnostic.trim()
+            ),
+        ));
+    }
+    Ok(true)
+}
+
+fn require_safe_missing_distribution_path(
+    workspace: &Path,
+    distribution: &Path,
+) -> Result<(), ClewError> {
+    let relative = distribution.strip_prefix(workspace).map_err(|_| {
+        preparation_required("trusted worker distribution path escapes its workspace")
+    })?;
+    let mut current = workspace.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(preparation_required(
+                        "trusted worker distribution path has a non-directory or symlinked ancestor",
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(internal(error)),
+        }
+    }
+    Ok(())
+}
+
 fn verify_pinned_build_inputs(workspace: &Path, pinned: &PinnedInputs) -> Result<(), ClewError> {
     let actual = collect_regular_inputs(workspace, pinned.roots, pinned.files)?;
     let expected = pinned
@@ -2429,24 +2591,8 @@ fn verify_pinned_build_inputs(workspace: &Path, pinned: &PinnedInputs) -> Result
     Ok(())
 }
 
-fn reject_build_injection_environment(workspace: &Path) -> Result<(), ClewError> {
-    for key in [
-        "GRADLE_OPTS",
-        "GRADLE_USER_HOME",
-        "JAVA_TOOL_OPTIONS",
-        "JDK_JAVA_OPTIONS",
-        "_JAVA_OPTIONS",
-    ] {
-        if std::env::var_os(key).is_some_and(|value| !value.is_empty()) {
-            return Err(preparation_required(
-                "trusted worker start refuses Gradle/JVM injection environment",
-            ));
-        }
-    }
-    if std::env::vars_os().any(|(key, _)| key.to_string_lossy().starts_with("ORG_GRADLE_PROJECT_"))
-        || workspace.join("init.gradle").exists()
-        || workspace.join("init.gradle.kts").exists()
-    {
+fn reject_unpinned_workspace_build_initialization(workspace: &Path) -> Result<(), ClewError> {
+    if workspace.join("init.gradle").exists() || workspace.join("init.gradle.kts").exists() {
         return Err(preparation_required(
             "trusted worker start refuses caller Gradle initialization",
         ));
@@ -2455,6 +2601,20 @@ fn reject_build_injection_environment(workspace: &Path) -> Result<(), ClewError>
 }
 
 fn verify_pinned_distribution(root: &Path, pinned: &PinnedInputs) -> Result<(), ClewError> {
+    let metadata = std::fs::symlink_metadata(root).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            preparation_required(
+                "worker installDist is absent after the trusted distribution build",
+            )
+        } else {
+            internal(error)
+        }
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(preparation_required(
+            "worker installDist differs from embedded expected output manifest",
+        ));
+    }
     let actual = regular_tree_manifest(root)?;
     let expected = pinned
         .outputs
@@ -3212,6 +3372,19 @@ mod tests {
             RequestKind::ApplyEdit,
             &json!({"syntaxOnly":true}),
         ));
+    }
+
+    #[test]
+    fn optional_build_state_environment_treats_empty_as_native() {
+        assert_eq!(build_state_root_from_environment_value(None), None);
+        assert_eq!(
+            build_state_root_from_environment_value(Some(OsString::new())),
+            None
+        );
+        assert_eq!(
+            build_state_root_from_environment_value(Some(OsString::from("/sealed/state"))),
+            Some(PathBuf::from("/sealed/state"))
+        );
     }
 
     fn valid_compiler_index_profiling() -> Value {
@@ -4171,8 +4344,8 @@ mod tests {
         let mut worker = WorkerClient::start(&workspace).unwrap();
         assert_eq!(worker.capabilities.compiler_version, "2.4.10");
 
-        let verified = worker
-            .index_files_verified(&json!({
+        let (project, verified) = worker
+            .open_project_and_index_verified(&json!({
                 "repo":repo,
                 "compilation":":/main",
                 "syntaxOnly":false,
@@ -4185,6 +4358,10 @@ mod tests {
             selected.plugin_fingerprint
         );
         assert_eq!(verified.distribution_tree_hash, selected.tree_hash);
+        assert_eq!(
+            project["projectModelHash"].as_str(),
+            Some(verified.project_model_hash())
+        );
         worker.inspect_verified_index(&verified).unwrap();
         worker.shutdown().unwrap();
     }
@@ -4378,6 +4555,172 @@ mod tests {
         assert!(identity.build_input_digest.starts_with("sha256:"));
         assert!(identity.plugin_fingerprint.starts_with("sha256:"));
         worker.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_trusted_distribution_runs_the_exact_wrapper_task_once() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().canonicalize().unwrap();
+        let wrapper = workspace.join("gradlew");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > bootstrap-args\nmkdir -p workers/kotlin/build/install/kotlin\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+
+        assert!(
+            bootstrap_trusted_worker_distribution_if_missing(
+                &workspace,
+                WorkerVariant::Kotlin24,
+                &distribution,
+            )
+            .unwrap()
+        );
+        assert!(distribution.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("bootstrap-args")).unwrap(),
+            ":workers:kotlin:installDist\n--no-daemon\n--quiet\n"
+        );
+
+        assert!(
+            !bootstrap_trusted_worker_distribution_if_missing(
+                &workspace,
+                WorkerVariant::Kotlin24,
+                &distribution,
+            )
+            .unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_trusted_distribution_uses_the_caller_build_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().canonicalize().unwrap();
+        let wrapper = workspace.join("gradlew");
+        std::fs::write(
+            &wrapper,
+            r#"#!/bin/sh
+{
+  printf 'GRADLE_USER_HOME=%s\n' "$GRADLE_USER_HOME"
+  printf 'GRADLE_OPTS=%s\n' "$GRADLE_OPTS"
+  printf 'JAVA_OPTS=%s\n' "$JAVA_OPTS"
+  printf 'JAVA_TOOL_OPTIONS=%s\n' "$JAVA_TOOL_OPTIONS"
+  printf 'JDK_JAVA_OPTIONS=%s\n' "$JDK_JAVA_OPTIONS"
+  printf '_JAVA_OPTIONS=%s\n' "$_JAVA_OPTIONS"
+  printf 'ORG_GRADLE_PROJECT_codeclewBootstrapMarker=%s\n' "$ORG_GRADLE_PROJECT_codeclewBootstrapMarker"
+} > bootstrap-environment
+/bin/mkdir -p workers/kotlin/build/install/kotlin
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+        let gradle_home = workspace.join("caller-gradle-home");
+
+        // Inject an isolated snapshot instead of mutating the process environment:
+        // Rust tests execute concurrently, so global set_var/remove_var would race.
+        let build_environment = vec![
+            (
+                OsString::from("GRADLE_USER_HOME"),
+                gradle_home.clone().into_os_string(),
+            ),
+            (
+                OsString::from("GRADLE_OPTS"),
+                OsString::from("-Dcodeclew.gradle.marker=caller"),
+            ),
+            (
+                OsString::from("JAVA_OPTS"),
+                OsString::from("-Dcodeclew.java.marker=java-opts"),
+            ),
+            (
+                OsString::from("JAVA_TOOL_OPTIONS"),
+                OsString::from("-Dcodeclew.java.marker=tool-options"),
+            ),
+            (
+                OsString::from("JDK_JAVA_OPTIONS"),
+                OsString::from("-Dcodeclew.java.marker=jdk-options"),
+            ),
+            (
+                OsString::from("_JAVA_OPTIONS"),
+                OsString::from("-Dcodeclew.java.marker=legacy-options"),
+            ),
+            (
+                OsString::from("ORG_GRADLE_PROJECT_codeclewBootstrapMarker"),
+                OsString::from("caller-project-property"),
+            ),
+        ];
+
+        assert!(
+            bootstrap_trusted_worker_distribution_if_missing_with_environment(
+                &workspace,
+                WorkerVariant::Kotlin24,
+                &distribution,
+                build_environment,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("bootstrap-environment")).unwrap(),
+            format!(
+                "GRADLE_USER_HOME={}\n\
+GRADLE_OPTS=-Dcodeclew.gradle.marker=caller\n\
+JAVA_OPTS=-Dcodeclew.java.marker=java-opts\n\
+JAVA_TOOL_OPTIONS=-Dcodeclew.java.marker=tool-options\n\
+JDK_JAVA_OPTIONS=-Dcodeclew.java.marker=jdk-options\n\
+_JAVA_OPTIONS=-Dcodeclew.java.marker=legacy-options\n\
+ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
+                gradle_home.display()
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_or_symlinked_distribution_state_is_never_rebuilt() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().canonicalize().unwrap();
+        let wrapper = workspace.join("gradlew");
+        std::fs::write(&wrapper, "#!/bin/sh\ntouch wrapper-invoked\nexit 99\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+        std::fs::create_dir_all(&distribution).unwrap();
+        std::fs::write(distribution.join("drifted"), b"not trusted").unwrap();
+
+        assert!(
+            !bootstrap_trusted_worker_distribution_if_missing(
+                &workspace,
+                WorkerVariant::Kotlin24,
+                &distribution,
+            )
+            .unwrap()
+        );
+        assert!(!workspace.join("wrapper-invoked").exists());
+
+        std::fs::remove_dir_all(workspace.join("workers/kotlin/build")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.join("workers/kotlin")).unwrap();
+        symlink(outside.path(), workspace.join("workers/kotlin/build")).unwrap();
+        assert_eq!(
+            bootstrap_trusted_worker_distribution_if_missing(
+                &workspace,
+                WorkerVariant::Kotlin24,
+                &distribution,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::WorkerPreparationRequired
+        );
+        assert!(!workspace.join("wrapper-invoked").exists());
     }
 
     #[test]

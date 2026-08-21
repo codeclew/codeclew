@@ -54,8 +54,8 @@ struct Args {
     #[arg(long)]
     state_root: Option<PathBuf>,
     /// Existing external root for isolated Gradle/Maven/HOME state. When it
-    /// is omitted, direct development mode uses repository-local offline
-    /// state and reports that weaker authority as an explicit boundary.
+    /// is omitted, direct development mode inherits the project's native
+    /// build environment and reports that mutable authority as a boundary.
     #[arg(long)]
     build_state_root: Option<PathBuf>,
     /// Create-only canonical K1 attempt packet. It must live outside the
@@ -97,8 +97,9 @@ impl RunPhase {
     }
 }
 
-fn permits_relaxed_agent_graph_lookup(args: &Args) -> bool {
-    matches!(args.run_phase, RunPhase::Cold)
+fn permits_relaxed_agent_graph_lookup(args: &Args, sealed_build_state: bool) -> bool {
+    sealed_build_state
+        && matches!(args.run_phase, RunPhase::Cold)
         && args.agent_output
         && args.attempt_output.is_none()
         && args.seed_entity.is_some()
@@ -2644,8 +2645,8 @@ fn run(args: Args, context: &mut RunContext) -> Result<RunSuccess> {
         .map(PreparedBuildStateIdentity::semantic_identity)
         .unwrap_or_else(|| {
             json!({
-                "mode":"REPOSITORY_LOCAL_OFFLINE",
-                "authority":"UNSEALED_DEVELOPMENT_CACHE",
+                "mode":"PROJECT_NATIVE",
+                "authority":"INHERITED_BUILD_ENVIRONMENT",
             })
         });
     context.provenance["buildStateIdentity"] = build_state_identity.clone();
@@ -2727,7 +2728,7 @@ fn run(args: Args, context: &mut RunContext) -> Result<RunSuccess> {
     };
 
     let adapter_start = Instant::now();
-    if permits_relaxed_agent_graph_lookup(&args)
+    if permits_relaxed_agent_graph_lookup(&args, build_state.is_some())
         && let Some(requested_seed) = args.seed_entity.as_deref()
         && let Some(cache) = &semantic_cache
     {
@@ -2887,7 +2888,7 @@ fn run(args: Args, context: &mut RunContext) -> Result<RunSuccess> {
         Some(identity) => {
             validate_worker_build_state_identity(raw_semantic_input_manifest, identity)?
         }
-        None => validate_repository_local_build_state_identity(raw_semantic_input_manifest)?,
+        None => validate_project_native_build_state_identity(raw_semantic_input_manifest)?,
     }
     let raw_semantic_input_manifest_hash = required_string(&project, "/semanticInputManifestHash")?;
     if canonical_hash(raw_semantic_input_manifest)? != raw_semantic_input_manifest_hash {
@@ -2915,14 +2916,14 @@ fn run(args: Args, context: &mut RunContext) -> Result<RunSuccess> {
     let mut build_model_boundaries = project_boundaries(&project)?;
     if build_state.is_none() {
         build_model_boundaries.push(json!({
-            "boundaryId":canonical_hash(&json!({"kind":"repository-local-build-state","compilation":args.compilation}))?,
-            "kindUri":"codeclew.boundary/kotlin/repository-local-build-state/1",
+            "boundaryId":canonical_hash(&json!({"kind":"project-native-build-state","compilation":args.compilation}))?,
+            "kindUri":"codeclew.boundary/kotlin/project-native-build-state/1",
             "consequence":"ENUMERATION_INCOMPLETE",
             "origin":Value::Null,
             "provider":"KOTLIN_PROJECT_MODEL",
             "applicability":global_boundary_applicability(BOUNDARY_EFFECT_BUILD_FIDELITY),
             "details":{
-                "mode":"LEGACY_REPOSITORY_OWNED",
+                "mode":"PROJECT_NATIVE",
                 "cacheReuse":"ALLOWED_ONLY_WHILE_SOURCE_AND_BUILD_NAMESPACE_MATCH",
             },
         }));
@@ -3074,8 +3075,9 @@ fn run(args: Args, context: &mut RunContext) -> Result<RunSuccess> {
 
     context.enter("K2_INDEX", "PARTIAL", "K2_INDEX_FAILED");
     let index_start = Instant::now();
-    let index_result = worker.index_files_verified(
+    let index_result = worker.index_files_verified_after_project(
         &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
+        &project,
     );
     let profile = worker.last_profile.clone();
     retain_operational_profiles(context, &profile);
@@ -4530,12 +4532,12 @@ fn validate_worker_build_state_identity(
     Ok(())
 }
 
-fn validate_repository_local_build_state_identity(semantic_input_manifest: &Value) -> Result<()> {
+fn validate_project_native_build_state_identity(semantic_input_manifest: &Value) -> Result<()> {
     let identity = semantic_input_manifest
         .get("buildState")
         .and_then(Value::as_object)
         .context("worker semantic manifest has no buildState identity")?;
-    if identity.get("mode").and_then(Value::as_str) != Some("LEGACY_REPOSITORY_OWNED")
+    if identity.get("mode").and_then(Value::as_str) != Some("PROJECT_NATIVE")
         || identity
             .get("seedDigest")
             .is_some_and(|value| !value.is_null())
@@ -4543,19 +4545,19 @@ fn validate_repository_local_build_state_identity(semantic_input_manifest: &Valu
             .get("manifestDigest")
             .is_some_and(|value| !value.is_null())
         || identity.get("runtimeIsolation").and_then(Value::as_str)
-            != Some("REPOSITORY_OWNED_LEGACY")
-        || identity.get("gradleUserHome").and_then(Value::as_str) != Some("gradle-user-home")
-        || identity.get("mavenLocalRepository").and_then(Value::as_str) != Some("maven-repository")
-        || identity.get("homeCredentials").and_then(Value::as_str) != Some("INHERITED_LEGACY")
+            != Some("PROJECT_NATIVE_ENVIRONMENT")
+        || identity.get("gradleUserHome").and_then(Value::as_str) != Some("INHERITED")
+        || identity.get("mavenLocalRepository").and_then(Value::as_str) != Some("INHERITED")
+        || identity.get("homeCredentials").and_then(Value::as_str) != Some("INHERITED")
     {
-        anyhow::bail!("worker did not retain explicit repository-local build-state identity");
+        anyhow::bail!("worker did not retain explicit project-native build-state identity");
     }
     let namespace = identity
         .get("namespaceDigest")
         .and_then(Value::as_str)
-        .context("repository-local build state has no namespaceDigest")?;
+        .context("project-native build state has no namespaceDigest")?;
     if namespace.len() != 71 || !namespace.starts_with("sha256:") {
-        anyhow::bail!("repository-local build-state namespaceDigest is malformed");
+        anyhow::bail!("project-native build-state namespaceDigest is malformed");
     }
     Ok(())
 }
@@ -6356,7 +6358,7 @@ mod adapter_local_tests {
     }
 
     #[test]
-    fn relaxed_agent_graph_lookup_never_intercepts_strict_warm() {
+    fn relaxed_agent_graph_lookup_requires_cold_sealed_build_state() {
         let parse = |phase: &str| {
             Args::try_parse_from([
                 "codeclew-kotlin-evidence",
@@ -6370,8 +6372,9 @@ mod adapter_local_tests {
             ])
             .unwrap()
         };
-        assert!(permits_relaxed_agent_graph_lookup(&parse("cold")));
-        assert!(!permits_relaxed_agent_graph_lookup(&parse("warm")));
+        assert!(permits_relaxed_agent_graph_lookup(&parse("cold"), true));
+        assert!(!permits_relaxed_agent_graph_lookup(&parse("cold"), false));
+        assert!(!permits_relaxed_agent_graph_lookup(&parse("warm"), true));
     }
 
     #[test]
@@ -6530,21 +6533,21 @@ mod adapter_local_tests {
     }
 
     #[test]
-    fn repository_local_build_state_is_explicitly_partial_and_unsealed() {
+    fn project_native_build_state_is_explicitly_partial_and_unsealed() {
         let manifest = json!({
             "buildState":{
-                "mode":"LEGACY_REPOSITORY_OWNED",
-                "runtimeIsolation":"REPOSITORY_OWNED_LEGACY",
+                "mode":"PROJECT_NATIVE",
+                "runtimeIsolation":"PROJECT_NATIVE_ENVIRONMENT",
                 "namespaceDigest":hash_bytes(b"namespace"),
-                "gradleUserHome":"gradle-user-home",
-                "mavenLocalRepository":"maven-repository",
-                "homeCredentials":"INHERITED_LEGACY",
+                "gradleUserHome":"INHERITED",
+                "mavenLocalRepository":"INHERITED",
+                "homeCredentials":"INHERITED",
             }
         });
-        validate_repository_local_build_state_identity(&manifest).unwrap();
+        validate_project_native_build_state_identity(&manifest).unwrap();
         let mut forged = manifest;
         forged["buildState"]["seedDigest"] = Value::String(hash_bytes(b"forged-seal"));
-        assert!(validate_repository_local_build_state_identity(&forged).is_err());
+        assert!(validate_project_native_build_state_identity(&forged).is_err());
     }
 
     #[test]

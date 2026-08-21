@@ -299,6 +299,8 @@ internal const val K1_BUILD_STATE_ROOT_ENV = "CODECLEW_K1_BUILD_STATE_ROOT"
 internal const val K1_BUILD_STATE_SEED_FILE = "CODECLEW_K1_BUILD_STATE_SEED"
 internal const val K1_BUILD_STATE_MANIFEST_FILE = "CODECLEW_K1_BUILD_STATE_MANIFEST.json"
 internal const val K1_BUILD_STATE_MANIFEST_SCHEMA = "codeclew.kotlin-k1-build-state-manifest/0.1"
+internal const val PROJECT_NATIVE_BUILD_STATE_MODE = "PROJECT_NATIVE"
+internal const val EXTERNAL_BUILD_STATE_MODE = "EXTERNAL"
 
 internal data class BuildStateLayout(
     val mode: String,
@@ -313,14 +315,17 @@ internal data class BuildStateLayout(
 ) {
     fun semanticIdentity(): JsonObject = buildJsonObject {
         put("mode", mode)
-        put("runtimeIsolation", if (mode == "EXTERNAL") "PRIVATE_DISPOSABLE_COPY" else "REPOSITORY_OWNED_LEGACY")
+        put(
+            "runtimeIsolation",
+            if (mode == EXTERNAL_BUILD_STATE_MODE) "PRIVATE_DISPOSABLE_COPY" else "PROJECT_NATIVE_ENVIRONMENT",
+        )
         seedDigest?.let { put("seedDigest", it) }
         manifestDigest?.let { put("manifestDigest", it) }
         markerBytesDigest?.let { put("markerBytesDigest", it) }
         put("namespaceDigest", namespaceDigest)
-        put("gradleUserHome", "gradle-user-home")
-        put("mavenLocalRepository", "maven-repository")
-        put("homeCredentials", if (mode == "EXTERNAL") "ISOLATED" else "INHERITED_LEGACY")
+        put("gradleUserHome", if (mode == EXTERNAL_BUILD_STATE_MODE) "gradle-user-home" else "INHERITED")
+        put("mavenLocalRepository", if (mode == EXTERNAL_BUILD_STATE_MODE) "maven-repository" else "INHERITED")
+        put("homeCredentials", if (mode == EXTERNAL_BUILD_STATE_MODE) "ISOLATED" else "INHERITED")
     }
 }
 
@@ -600,7 +605,7 @@ private fun buildStateNamespaceDigest(repo: Path, seedDigest: String?): String {
     }
     return sha(buildString {
         append("k1-build-state-namespace/0.1\u0000")
-        append(seedDigest ?: "LEGACY_REPOSITORY_OWNED").append('\u0000')
+        append(seedDigest ?: PROJECT_NATIVE_BUILD_STATE_MODE).append('\u0000')
         inputs.forEach { append(it).append('\u0000') }
     }.toByteArray())
 }
@@ -628,7 +633,7 @@ internal fun externalBuildStateLayout(repo: Path, configuredRoot: Path): BuildSt
     val verifiedManifest = verifyExternalBuildStateManifest(root, gradleUserHome, mavenLocalRepository)
     val namespaceDigest = buildStateNamespaceDigest(canonicalRepo, verifiedManifest.seedDigest)
     return BuildStateLayout(
-        mode = "EXTERNAL",
+        mode = EXTERNAL_BUILD_STATE_MODE,
         gradleUserHome = gradleUserHome,
         mavenLocalRepository = mavenLocalRepository,
         authorityRoot = root,
@@ -643,11 +648,15 @@ internal fun externalBuildStateLayout(repo: Path, configuredRoot: Path): BuildSt
 internal fun buildStateLayout(repo: Path): BuildStateLayout {
     val configured = System.getenv(K1_BUILD_STATE_ROOT_ENV)?.takeIf(String::isNotBlank)
     if (configured != null) return externalBuildStateLayout(repo, Path.of(configured))
+    val userHome = Path.of(System.getProperty("user.home")).toAbsolutePath().normalize()
     val namespaceDigest = buildStateNamespaceDigest(repo, null)
     return BuildStateLayout(
-        mode = "LEGACY_REPOSITORY_OWNED",
-        gradleUserHome = repoOwnedStateDirectory(repo, ".gradle"),
-        mavenLocalRepository = repoOwnedStateDirectory(repo, ".semantic-thread", "maven-repository"),
+        mode = PROJECT_NATIVE_BUILD_STATE_MODE,
+        // These paths are descriptive fallbacks only in project-native mode.
+        // Model commands inherit the project's process environment and do not
+        // pin either dependency store to these values.
+        gradleUserHome = userHome.resolve(".gradle"),
+        mavenLocalRepository = userHome.resolve(".m2/repository"),
         authorityRoot = null,
         sealedFiles = emptyList(),
         seedDigest = null,
@@ -658,7 +667,7 @@ internal fun buildStateLayout(repo: Path): BuildStateLayout {
 }
 
 private fun recheckExternalBuildStateSeal(state: BuildStateLayout) {
-    if (state.mode != "EXTERNAL") return
+    if (state.mode != EXTERNAL_BUILD_STATE_MODE) return
     val root = state.authorityRoot
         ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "external K1 build-state has no authority root")
     val manifest = root.resolve(K1_BUILD_STATE_MANIFEST_FILE)
@@ -672,7 +681,7 @@ private fun recheckExternalBuildStateSeal(state: BuildStateLayout) {
 }
 
 private fun materializeBuildStateRuntime(authority: BuildStateLayout): BuildStateLayout {
-    require(authority.mode == "EXTERNAL" && authority.authorityRoot != null) {
+    require(authority.mode == EXTERNAL_BUILD_STATE_MODE && authority.authorityRoot != null) {
         "only a verified external build state can be materialized"
     }
     val runtimeRoot = Files.createTempDirectory("semantic-thread-k1-build-state-runtime").toRealPath()
@@ -772,21 +781,28 @@ internal fun gradleModelCommand(
     initScript: Path,
     compileTask: String,
     modelTask: String,
+    preparedState: BuildStateLayout? = null,
     reuseDaemon: Boolean = false,
-): List<String> = listOf(
-    wrapper.toString(),
-    "-p", repo.toString(),
-    "--offline",
-    "--gradle-user-home", gradleUserHome.toString(),
-    "--project-cache-dir", projectCacheDirectory.toString(),
-    *(if (reuseDaemon) emptyArray() else arrayOf("--no-daemon")),
-    "--quiet",
-    "-Duser.home=$gradleUserHome",
-    "-Pkotlin.project.persistent.dir=${projectCacheDirectory.resolve("kotlin")}",
-    "-I", initScript.toString(),
-    "-Dsemantic.thread.compileTask=$compileTask",
-    modelTask,
-)
+): List<String> = buildList {
+    add(wrapper.toString())
+    addAll(listOf("-p", repo.toString()))
+    if (preparedState?.mode == EXTERNAL_BUILD_STATE_MODE) {
+        addAll(
+            listOf(
+                "--offline",
+                "--gradle-user-home", gradleUserHome.toString(),
+                "--project-cache-dir", projectCacheDirectory.toString(),
+                "-Duser.home=$gradleUserHome",
+                "-Pkotlin.project.persistent.dir=${projectCacheDirectory.resolve("kotlin")}",
+            ),
+        )
+    }
+    if (!reuseDaemon) add("--no-daemon")
+    add("--quiet")
+    addAll(listOf("-I", initScript.toString()))
+    add("-Dsemantic.thread.compileTask=$compileTask")
+    add(modelTask)
+}
 
 internal enum class ProjectModelBuildTool {
     GRADLE,
@@ -808,23 +824,24 @@ internal fun sanitizedProjectModelProcess(
         require((isolatedHome == null) == (buildTool == null)) {
             "isolated project-model home and build tool must be supplied together"
         }
-        for (key in listOf(
-            "CODECLEW_K1_BUILD_STATE_ROOT",
-            "CODECLEW_K2_INDEX_ROOT",
-            "GRADLE_OPTS",
-            "GRADLE_USER_HOME",
-            "MAVEN_OPTS",
-            "MAVEN_ARGS",
-            "MAVEN_CONFIG",
-            "MAVEN_USER_HOME",
-            "JAVA_OPTS",
-            "JAVA_TOOL_OPTIONS",
-            "JDK_JAVA_OPTIONS",
-            "_JAVA_OPTIONS",
-        )) {
+        for (key in listOf("CODECLEW_K1_BUILD_STATE_ROOT", "CODECLEW_K2_INDEX_ROOT")) {
             builder.environment().remove(key)
         }
         if (isolatedHome != null) {
+            for (key in listOf(
+                "GRADLE_OPTS",
+                "GRADLE_USER_HOME",
+                "MAVEN_OPTS",
+                "MAVEN_ARGS",
+                "MAVEN_CONFIG",
+                "MAVEN_USER_HOME",
+                "JAVA_OPTS",
+                "JAVA_TOOL_OPTIONS",
+                "JDK_JAVA_OPTIONS",
+                "_JAVA_OPTIONS",
+            )) {
+                builder.environment().remove(key)
+            }
             builder.environment()["HOME"] = isolatedHome.toString()
             builder.environment()["USERPROFILE"] = isolatedHome.toString()
             when (buildTool) {
@@ -858,6 +875,7 @@ internal class Worker(
     private val projectModelCache = mutableMapOf<String, JsonObject>()
     private val externalBuildStateCache = mutableMapOf<Path, BuildStateLayout>()
     private val externalBuildStateRuntimeRoots = mutableSetOf<Path>()
+    private val projectModelCacheIsWorkerScoped = configuredBuildStateRoot != null
     private var requestCacheRequests = 0L
     private var requestCacheHits = 0L
     private var requestPsiParseMicros = 0L
@@ -876,6 +894,11 @@ internal class Worker(
 
     fun handle(kind: Int, payload: ByteArray): String {
         IncrementalK2Runtime.reset()
+        // Project-native model extraction inherits mutable build-tool state
+        // that is intentionally outside the repository input hash. Keep its
+        // in-memory cache scoped to the latest OpenProject so reopening observes
+        // the current environment. Sealed external state remains worker-scoped.
+        if (!projectModelCacheIsWorkerScoped && kind == 2) projectModelCache.clear()
         requestCacheRequests = 0
         requestCacheHits = 0
         requestPsiParseMicros = 0
@@ -1038,7 +1061,7 @@ internal class Worker(
         val wrapper = repo.resolve("gradlew"); if (!wrapper.isRegularFile()) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper is required")
         val state = stateFor(repo)
         val gradleUserHome = state.gradleUserHome
-        val projectCacheDirectory = if (state.mode == "EXTERNAL") {
+        val projectCacheDirectory = if (state.mode == EXTERNAL_BUILD_STATE_MODE) {
             realStateSubdirectory(gradleUserHome, "project-cache")
         } else {
             gradleUserHome
@@ -1061,11 +1084,12 @@ internal class Worker(
                     script,
                     compileTask,
                     modelTask,
+                    preparedState = state,
                     reuseDaemon = !System.getenv("CODECLEW_K2_INDEX_ROOT").isNullOrBlank(),
                 ),
                 repo,
-                state.gradleUserHome.takeIf { state.mode == "EXTERNAL" },
-                ProjectModelBuildTool.GRADLE.takeIf { state.mode == "EXTERNAL" },
+                state.gradleUserHome.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
+                ProjectModelBuildTool.GRADLE.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
             ).start()
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
             if (status != 0) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle model extraction failed: ${output.takeLast(2000)}")
@@ -1142,7 +1166,8 @@ internal class Worker(
         val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
         val keyMicros = elapsedMicros(keyStarted)
         val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
-        val persistentConfigured = extract != null && !persistentRoot.isNullOrBlank()
+        val persistentCacheAuthorized = projectModelCacheIsWorkerScoped && extract != null
+        val persistentConfigured = persistentCacheAuthorized && !persistentRoot.isNullOrBlank()
         projectModelCache[key]?.let { model ->
             requestCacheHits++
             IncrementalK2Runtime.recordProjectModel(
@@ -1159,7 +1184,11 @@ internal class Worker(
             return model
         }
         val loadStarted = System.nanoTime()
-        val persistentModel = if (extract == null) null else PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)
+        val persistentModel = if (!persistentCacheAuthorized) {
+            null
+        } else {
+            PersistentProjectModelCache.load(persistentRoot, canonicalRepo, key)
+        }
         val loadMicros = elapsedMicros(loadStarted)
         if (persistentModel != null) {
             requestCacheHits++
@@ -1189,7 +1218,11 @@ internal class Worker(
         // The optional persistent copy lives only under the explicit private index root.
         // Publication failure never changes the already verified semantic result.
         val publishStarted = System.nanoTime()
-        val publication = if (extract == null) ProjectModelPublishResult(PersistentProjectModelCache.PublishOutcome.ROOT_UNAVAILABLE) else PersistentProjectModelCache.publishWithResult(persistentRoot, canonicalRepo, key, model)
+        val publication = if (!persistentCacheAuthorized) {
+            ProjectModelPublishResult(PersistentProjectModelCache.PublishOutcome.ROOT_UNAVAILABLE)
+        } else {
+            PersistentProjectModelCache.publishWithResult(persistentRoot, canonicalRepo, key, model)
+        }
         val published = publication.outcome == PersistentProjectModelCache.PublishOutcome.PUBLISHED
         val publishMicros = elapsedMicros(publishStarted)
         projectModelCache[key] = model
@@ -1288,6 +1321,30 @@ internal class Worker(
             ?.sorted()
             .orEmpty()
 
+    internal fun analysisSourceStateDigest(
+        repo: Path,
+        sources: List<Path>,
+        overrides: Map<String, String>,
+    ): String {
+        val captured = mutableSetOf<String>()
+        val identity = buildString {
+            sources.forEach { source ->
+                val canonical = source.toRealPath()
+                val relative = repo.relativize(canonical).invariantSeparatorsPathString
+                captured += relative
+                val bytes = overrides[relative]?.toByteArray() ?: canonical.readBytes()
+                append(relative).append('\u0000').append(sha(bytes)).append('\u0000')
+            }
+            overrides.toSortedMap().forEach { (relative, content) ->
+                if (relative !in captured) {
+                    append("override:").append(relative).append('\u0000')
+                        .append(sha(content.toByteArray())).append('\u0000')
+                }
+            }
+        }
+        return sha(identity.toByteArray())
+    }
+
     private fun analyzeWithK2(repo: Path, overrides: Map<String, String> = emptyMap(), compilation: String = ":/main"): K2Analysis {
         requestCacheRequests++
         val analysisRepo = repo.toRealPath()
@@ -1316,7 +1373,8 @@ internal class Worker(
                 append("factsPlugin=").append(factsPluginDigest).append('\u0000')
             },
         )
-        val memoryKey = "$analysisRepo|$compilation|$cacheKey"
+        val sourceStateDigest = analysisSourceStateDigest(analysisRepo, sources, overrides)
+        val memoryKey = "$analysisRepo|$compilation|$cacheKey|$sourceStateDigest"
         analysisCache[memoryKey]?.let { requestCacheHits++; return it }
 
         val pluginPlan = runCatching {
@@ -3195,7 +3253,7 @@ internal class Worker(
     }.sortedBy { it.toString() }
     private fun JsonObjectBuilder.putCandidateSource(repo: Path, source: String) {
         val bytes = source.toByteArray()
-        if (bytes.size <= 64 * 1024 || stateFor(repo).mode == "EXTERNAL") {
+        if (bytes.size <= 64 * 1024 || stateFor(repo).mode == EXTERNAL_BUILD_STATE_MODE) {
             put("source", source)
             return
         }

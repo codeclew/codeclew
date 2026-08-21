@@ -20,6 +20,7 @@ import kotlin.io.path.isExecutable
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.invariantSeparatorsPathString
 import kotlin.io.path.readBytes
+import kotlin.io.path.readText
 
 internal fun mavenModelCommand(
     launcher: List<String>,
@@ -28,16 +29,47 @@ internal fun mavenModelCommand(
     preparedState: BuildStateLayout? = null,
 ): List<String> {
     val state = preparedState ?: buildStateLayout(repo)
-    val localRepository = state.mavenLocalRepository
-    return launcher + listOf(
-        "-o",
-        "-Dmaven.repo.local=$localRepository",
-        "-Duser.home=$localRepository",
-    ) + arguments
+    val stateArguments = if (state.mode == EXTERNAL_BUILD_STATE_MODE) {
+        val localRepository = state.mavenLocalRepository
+        listOf(
+            "-o",
+            "-Dmaven.repo.local=$localRepository",
+            "-Duser.home=$localRepository",
+        )
+    } else {
+        emptyList()
+    }
+    return launcher + stateArguments + arguments
 }
 
 private fun mavenSha(bytes: ByteArray): String = "sha256:" +
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+internal fun mavenArtifactCoordinate(
+    group: String,
+    artifact: String,
+    version: String,
+    classifier: String?,
+): String = listOfNotNull(group, artifact, version, "jar", classifier).joinToString(":")
+
+internal fun mavenDependencyGetArguments(coordinate: String): List<String> = listOf(
+    "-q",
+    "dependency:get",
+    "-Dartifact=$coordinate",
+    "-Dtransitive=false",
+)
+
+internal fun parseMavenDebugLocalRepository(output: String): Path? = output.lineSequence()
+    .map { it.replace(Regex("\\u001B\\[[;\\d]*m"), "").trim() }
+    .mapNotNull { line ->
+        val marker = "Using local repository at "
+        line.substringAfter(marker, missingDelimiterValue = "")
+            .trim()
+            .takeIf(String::isNotBlank)
+    }
+    .mapNotNull { value -> runCatching { Path.of(value) }.getOrNull() }
+    .lastOrNull(Path::isAbsolute)
+    ?.normalize()
 
 internal class MavenProjectModelExtractor(
     private val preparedState: BuildStateLayout? = null,
@@ -61,9 +93,9 @@ internal class MavenProjectModelExtractor(
             val scope = if (sourceSet == "test") "test" else "compile"
             // A reactor-wide `-pl/-am` invocation executes both goals for every
             // selected/upstream project and lets them race on the same output
-            // files. Point Maven at the exact selected POM instead; the PREPARE
-            // phase must have installed reactor dependencies into the pinned
-            // repository before this offline discovery command runs.
+            // files. Point Maven at the exact selected POM instead. Native mode
+            // resolves it with the project's normal Maven environment; sealed
+            // external mode requires its reactor dependencies in the seed.
             val reactorArguments = listOf("-f", reactor.projectDir.resolve("pom.xml").toString())
             val command = mavenModelCommand(launcher, repo, reactorArguments + listOf(
                 "-q",
@@ -282,7 +314,7 @@ internal class MavenProjectModelExtractor(
         repo: Path,
         launcher: List<String>,
     ): List<Path> {
-        val localRepository = localRepository(repo)
+        val localRepository = localRepository(repo, launcher)
         return kotlinPlugin.directChild("dependencies")
             ?.directChildren("dependency")
             .orEmpty()
@@ -321,9 +353,9 @@ internal class MavenProjectModelExtractor(
         version: String,
         classifier: String?,
     ) {
-        val coordinate = listOfNotNull(group, artifact, "jar", classifier, version).joinToString(":")
+        val coordinate = mavenArtifactCoordinate(group, artifact, version, classifier)
         val process = start(
-            launcher + listOf("-q", "dependency:get", "-Dartifact=$coordinate"),
+            launcher + mavenDependencyGetArguments(coordinate),
             repo,
             "Maven compiler plugin resolution",
         )
@@ -336,8 +368,73 @@ internal class MavenProjectModelExtractor(
         }
     }
 
-    private fun localRepository(repo: Path): Path =
-        state(repo).mavenLocalRepository
+    private fun localRepository(repo: Path, launcher: List<String>): Path {
+        val state = state(repo)
+        if (state.mode == EXTERNAL_BUILD_STATE_MODE) return state.mavenLocalRepository
+
+        debugLocalRepository(repo, launcher)?.let { return it }
+        evaluatedLocalRepository(repo, launcher)?.let { return it }
+        val configured = sequenceOf(
+            System.getenv("MAVEN_ARGS"),
+            System.getenv("MAVEN_OPTS"),
+            repo.resolve(".mvn/maven.config").takeIf { it.isRegularFile() }?.readText(),
+        )
+            .filterNotNull()
+            .flatMap { it.split(Regex("\\s+")).asSequence() }
+            .lastOrNull { it.startsWith("-Dmaven.repo.local=") }
+            ?.substringAfter('=')
+            ?.takeIf(String::isNotBlank)
+        return configured
+            ?.let(Path::of)
+            ?.let { if (it.isAbsolute) it.normalize() else repo.resolve(it).normalize() }
+            ?: Path.of(System.getProperty("user.home"), ".m2", "repository")
+    }
+
+    internal fun localRepositoryForTest(repo: Path, launcher: List<String>): Path =
+        localRepository(repo, launcher)
+
+    private fun evaluatedLocalRepository(repo: Path, launcher: List<String>): Path? = try {
+        val process = start(
+            launcher + listOf(
+                "-q",
+                "help:evaluate",
+                "-Dexpression=settings.localRepository",
+                "-DforceStdout",
+            ),
+            repo,
+            "Maven local repository discovery",
+        )
+        val output = process.inputStream.bufferedReader().readText()
+        if (process.waitFor() != 0) {
+            null
+        } else {
+            output.lineSequence()
+                .map { it.replace(Regex("\\u001B\\[[;\\d]*m"), "").trim() }
+                .filter(String::isNotBlank)
+                .mapNotNull { value -> runCatching { Path.of(value) }.getOrNull() }
+                .lastOrNull(Path::isAbsolute)
+                ?.normalize()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun debugLocalRepository(repo: Path, launcher: List<String>): Path? = try {
+        // Maven reports the effective local repository during core startup, before
+        // it resolves or executes any plugin. A no-goal debug invocation therefore
+        // works with the same wrapper, settings and native cache as a successful
+        // project build even when maven-help-plugin is not cached.
+        val process = start(
+            launcher + listOf("-X", "-q"),
+            repo,
+            "Maven local repository discovery",
+        )
+        val output = process.inputStream.bufferedReader().readText()
+        process.waitFor()
+        parseMavenDebugLocalRepository(output)
+    } catch (_: Exception) {
+        null
+    }
 
     private fun compilerPluginOptions(configuration: Element?): List<String> {
         val enabled = configuration
@@ -376,8 +473,8 @@ internal class MavenProjectModelExtractor(
             val process = sanitizedProjectModelProcess(
                 launcher + "-version",
                 repo,
-                state.mavenLocalRepository.takeIf { state.mode == "EXTERNAL" },
-                ProjectModelBuildTool.MAVEN.takeIf { state.mode == "EXTERNAL" },
+                state.mavenLocalRepository.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
+                ProjectModelBuildTool.MAVEN.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
             ).start()
             val firstLine = process.inputStream.bufferedReader().readLine().orEmpty()
             if (process.waitFor() == 0) firstLine.removePrefix("Apache Maven ").trim().ifBlank { "unknown" } else "unknown"
@@ -391,8 +488,8 @@ internal class MavenProjectModelExtractor(
             sanitizedProjectModelProcess(
                 command,
                 repo,
-                state.mavenLocalRepository.takeIf { state.mode == "EXTERNAL" },
-                ProjectModelBuildTool.MAVEN.takeIf { state.mode == "EXTERNAL" },
+                state.mavenLocalRepository.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
+                ProjectModelBuildTool.MAVEN.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
             ).start()
         }
     } catch (error: IOException) {

@@ -19,7 +19,7 @@ use clew::semantic_goal::{
 use clew::task_context;
 use clew::thread_projection;
 use clew::transaction;
-use clew::worker::{WorkerClient, workspace_root};
+use clew::worker::{WorkerClient, inherited_build_state_root, workspace_root};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -767,17 +767,13 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::AgentContext(args) => {
             with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
                 let repo = absolute(&args.repo)?;
-                let project = worker.request(
-                    RequestKind::OpenProject,
-                    &json!({"repo":repo,"compilation":args.compilation}),
+                let (project, verified_index_facts) = worker.open_project_and_index_verified(
+                    &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
                 )?;
                 let model_input_surfaces = task_context::resolve_model_input_surfaces(
                     &repo,
                     &project,
                     &args.model_inputs,
-                )?;
-                let verified_index_facts = worker.index_files_verified(
-                    &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
                 )?;
                 let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
                 // A task context is the immutable base of the following transaction,
@@ -1294,12 +1290,8 @@ fn build_task_thread(
 
 fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, ClewError> {
     let repo = absolute(&args.repo)?;
-    let project = worker.request(
-        RequestKind::OpenProject,
-        &json!({"repo":repo,"compilation":args.compilation}),
-    )?;
-    let verified_index_facts =
-        worker.index_files_verified(&json!({"repo":repo,"compilation":args.compilation}))?;
+    let (project, verified_index_facts) = worker
+        .open_project_and_index_verified(&json!({"repo":repo,"compilation":args.compilation}))?;
     let mut repository_index = RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
     let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
     repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
@@ -1440,8 +1432,7 @@ fn start_cli_worker(
 ) -> Result<WorkerClient, ClewError> {
     match compiler_index_root {
         Some(root) => {
-            let inherited_build_state =
-                std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT").map(PathBuf::from);
+            let inherited_build_state = inherited_build_state_root();
             WorkerClient::start_with_states(workspace, inherited_build_state.as_deref(), Some(root))
         }
         None => WorkerClient::start(workspace),

@@ -16,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -39,6 +40,55 @@ class ProjectModelCommandTest {
             archive.write(registrar.toByteArray())
             archive.closeEntry()
         }
+    }
+
+    private fun gradleFixtureModel(
+        repo: java.nio.file.Path,
+        source: java.nio.file.Path,
+        jvmTarget: String,
+        classpath: List<String> = emptyList(),
+    ): JsonObject = buildJsonObject {
+        put("projectPath", ":")
+        put("projectDir", repo.toString())
+        put("platform", "JVM")
+        put("compileTask", ":compileKotlin")
+        putJsonArray("sourceFiles") { add(JsonPrimitive(source.toString())) }
+        putJsonArray("analysisSourceFiles") { add(JsonPrimitive(source.toString())) }
+        putJsonArray("classpath") { classpath.forEach { add(JsonPrimitive(it)) } }
+        putJsonObject("classpathAuthority") {
+            put("chosen", "KOTLIN_TASK_LIBRARIES")
+            put("orderedDigest", fixtureSha(classpath.joinToString("\u0000", postfix = "\u0000").toByteArray()))
+        }
+        putJsonArray("friendPaths") {}
+        putJsonArray("compilerPlugins") {}
+        putJsonArray("compilerPluginOptions") {}
+        putJsonArray("dependencyCoordinates") {}
+        putJsonArray("repositories") {}
+        putJsonArray("reactorPoms") {}
+        putJsonArray("buildPlugins") {}
+        putJsonObject("generatedSourceConfiguration") {
+            putJsonArray("roots") {}
+            putJsonArray("producers") {}
+            put("status", "NONE_DISCOVERED")
+        }
+        put("compilerVersion", WORKER_COMPILER_VERSION)
+        put("languageVersion", "2.4")
+        put("apiVersion", "2.4")
+        put("jvmTarget", jvmTarget)
+        putJsonArray("freeCompilerArguments") {}
+        putJsonArray("optIns") {}
+        putJsonArray("tasks") { add(JsonPrimitive("test")) }
+        putJsonArray("buildModelBoundaries") {}
+        putJsonObject("fieldBoundaries") {
+            put("libraries", "AVAILABLE_ORDERED")
+            put("friendPaths", "AVAILABLE_ORDERED")
+            put("compilerPlugins", "AVAILABLE_ORDERED")
+            put("freeCompilerArguments", "AVAILABLE_ORDERED")
+            put("optIns", "AVAILABLE_ORDERED")
+            put("jdkHome", "AVAILABLE_BUILD_JVM")
+        }
+        put("gradleVersion", "fixture")
+        put("jdkHome", System.getProperty("java.home"))
     }
 
     @Test
@@ -79,12 +129,13 @@ class ProjectModelCommandTest {
     }
 
     @Test
-fun gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome() {
+    fun gradlePlanUsesProjectNativeEnvironmentByDefaultAndKeepsExternalModeOffline() {
         val repo = Files.createTempDirectory("worker-gradle-plan").toRealPath()
+        val externalRoot = Files.createTempDirectory("worker-gradle-external-plan").toRealPath()
         try {
             val wrapper = repo.resolve("gradlew").createFile()
             val init = repo.resolve("model.init.gradle").createFile()
-            val home = repoOwnedStateDirectory(repo, ".gradle")
+            val home = repo.resolve(".gradle")
             val command = gradleModelCommand(
                 wrapper,
                 repo,
@@ -107,31 +158,172 @@ fun gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome() {
             )
             assertFalse(warmCommand.contains("--no-daemon"))
             assertEquals(command.filterNot { it == "--no-daemon" }, warmCommand)
-            assertEquals(1, command.count { it == "--offline" })
-            assertEquals(1, command.count { it == "--gradle-user-home" })
-            assertEquals(1, command.count { it == "--project-cache-dir" })
-            assertEquals(home.toString(), command[command.indexOf("--gradle-user-home") + 1])
-            assertEquals(home.toString(), command[command.indexOf("--project-cache-dir") + 1])
-            assertTrue(home.startsWith(repo))
-            assertEquals(".gradle", repo.relativize(home).toString())
-            val sanitizedKeys = listOf(
-                "CODECLEW_K1_BUILD_STATE_ROOT", "CODECLEW_K2_INDEX_ROOT",
+            assertFalse(command.contains("--offline"))
+            assertFalse(command.contains("--gradle-user-home"))
+            assertFalse(command.contains("--project-cache-dir"))
+            assertFalse(command.any { it.startsWith("-Duser.home=") })
+            assertFalse(Files.exists(home))
+            assertFalse(Files.exists(repo.resolve(".semantic-thread")))
+            val internalKeys = listOf("CODECLEW_K1_BUILD_STATE_ROOT", "CODECLEW_K2_INDEX_ROOT")
+            val buildKeys = listOf(
                 "GRADLE_OPTS", "GRADLE_USER_HOME", "MAVEN_OPTS", "MAVEN_ARGS", "MAVEN_CONFIG",
                 "MAVEN_USER_HOME", "JAVA_OPTS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS",
                 "_JAVA_OPTIONS",
             )
             val seededEnvironment =
-                sanitizedKeys.associateWithTo(linkedMapOf<String, String>()) { "/forged/$it" }
+                (internalKeys + buildKeys).associateWithTo(linkedMapOf<String, String>()) { "/configured/$it" }
             seededEnvironment["CODECLEW_TEST_UNRELATED"] = "preserved"
             val process = sanitizedProjectModelProcess(
                 command,
                 repo,
                 seededEnvironment = seededEnvironment,
             )
-            for (key in sanitizedKeys) {
+            for (key in internalKeys) {
                 assertFalse(process.environment().containsKey(key))
             }
+            for (key in buildKeys) {
+                assertEquals("/configured/$key", process.environment()[key])
+            }
             assertEquals("preserved", process.environment()["CODECLEW_TEST_UNRELATED"])
+
+            prepareFixtureBuildState(externalRoot)
+            val external = externalBuildStateLayout(repo, externalRoot)
+            val externalCommand = gradleModelCommand(
+                wrapper,
+                repo,
+                external.gradleUserHome,
+                external.gradleUserHome.resolve("project-cache"),
+                init,
+                "compileKotlin",
+                ":semanticThreadModel",
+                preparedState = external,
+            )
+            assertEquals(1, externalCommand.count { it == "--offline" })
+            assertEquals(1, externalCommand.count { it == "--gradle-user-home" })
+            assertEquals(1, externalCommand.count { it == "--project-cache-dir" })
+            assertTrue(externalCommand.any { it.startsWith("-Duser.home=") })
+        } finally {
+            repo.toFile().deleteRecursively()
+            externalRoot.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun projectNativeOpenProjectRefreshesModelFromMutableAmbientBuildState() {
+        val repo = Files.createTempDirectory("worker-native-model-cache-repo").toRealPath()
+        val ambientModel = Files.createTempFile("worker-native-model-cache-ambient", ".json").toRealPath()
+        try {
+            val source = repo.resolve("src/main/kotlin/p/Answer.kt")
+            source.parent.createDirectories()
+            source.writeText("package p\nfun answer() = 42\n")
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"native-model-cache\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            require('\'' !in ambientModel.toString()) { "fixture path cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText(
+                """#!/bin/sh
+                |printf '%s' '__SEMANTIC_THREAD_MODEL__'
+                |cat '${ambientModel}'
+                |printf '\n'
+                |""".trimMargin(),
+            )
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            Worker(null).use { worker ->
+                ambientModel.writeText(gradleFixtureModel(repo, source, "17").toString())
+                val first = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                assertEquals("17", first["jvmTarget"]?.jsonPrimitive?.content)
+                assertEquals(
+                    "EXTRACTED_NOT_PUBLISHED",
+                    first["profiling"]?.jsonObject?.get("projectModelCacheStatus")?.jsonPrimitive?.content,
+                )
+
+                ambientModel.writeText(gradleFixtureModel(repo, source, "21").toString())
+                val second = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                assertEquals("21", second["jvmTarget"]?.jsonPrimitive?.content)
+                assertEquals(
+                    "EXTRACTED_NOT_PUBLISHED",
+                    second["profiling"]?.jsonObject?.get("projectModelCacheStatus")?.jsonPrimitive?.content,
+                )
+                assertEquals(0, second["profiling"]?.jsonObject?.get("cacheHits")?.jsonPrimitive?.content?.toInt())
+            }
+        } finally {
+            repo.toFile().deleteRecursively()
+            Files.deleteIfExists(ambientModel)
+        }
+    }
+
+    @Test
+    fun k2MemoryIdentityIncludesLiveAndOverriddenSourceBytes() {
+        val repo = Files.createTempDirectory("worker-k2-source-state").toRealPath()
+        try {
+            val source = repo.resolve("src/main/kotlin/p/Answer.kt")
+            source.parent.createDirectories()
+            source.writeText("package p\nfun answer() = 42\n")
+            Worker(null).use { worker ->
+                val baseline = worker.analysisSourceStateDigest(repo, listOf(source), emptyMap())
+                val override = worker.analysisSourceStateDigest(
+                    repo,
+                    listOf(source),
+                    mapOf("src/main/kotlin/p/Answer.kt" to "package p\nfun answer() = missing\n"),
+                )
+                assertNotEquals(baseline, override)
+
+                source.writeText("package p\nfun answer() = 43\n")
+                val mutated = worker.analysisSourceStateDigest(repo, listOf(source), emptyMap())
+                assertNotEquals(baseline, mutated)
+                assertNotEquals(override, mutated)
+            }
+        } finally {
+            repo.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun invalidCandidateOverrideCannotReuseBaselineK2Analysis() {
+        val repo = Files.createTempDirectory("worker-k2-override-cache").toRealPath()
+        try {
+            val source = repo.resolve("src/main/kotlin/p/Answer.kt")
+            source.parent.createDirectories()
+            val baseline = "package p\nfun answer() = 42\n"
+            source.writeText(baseline)
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"k2-override-cache\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            val classpath = System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)
+                .map(java.nio.file.Path::of)
+                .filter { path ->
+                    path.fileName.toString().let { name ->
+                        name.startsWith("kotlin-stdlib-") || name.startsWith("annotations-")
+                    }
+                }
+                .map { it.toAbsolutePath().normalize().toString() }
+                .distinct()
+            assertTrue(classpath.any { it.contains("kotlin-stdlib-") })
+            val model = gradleFixtureModel(repo, source, "21", classpath)
+            val modelLine = "__SEMANTIC_THREAD_MODEL__$model"
+            require('\'' !in modelLine) { "fixture model cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText("#!/bin/sh\nprintf '%s\\n' '$modelLine'\n")
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("file", "src/main/kotlin/p/Answer.kt")
+                put("source", baseline)
+                put("compilation", ":/main")
+                put("kind", "REPLACE_FUNCTION_BODY")
+                put("replacement", "{ missingSymbol() }")
+                put("ownerSymbolId", "p.answer")
+                put("exactTextHash", fixtureSha("42".toByteArray()))
+            }.toString().toByteArray()
+
+            Worker(null).use { worker ->
+                val failure = assertFailsWith<WorkerFailure> { worker.handle(7, request) }
+                assertEquals("NEW_DIAGNOSTICS", failure.code)
+            }
         } finally {
             repo.toFile().deleteRecursively()
         }
@@ -184,34 +376,96 @@ fun gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome() {
     }
 
     @Test
-    fun mavenPlanIsOfflineAndUsesOnlyRepoOwnedRepository() {
+    fun mavenPlanUsesProjectNativeEnvironmentByDefaultAndKeepsExternalModeOffline() {
         val repo = Files.createTempDirectory("worker-maven-plan").toRealPath()
+        val externalRoot = Files.createTempDirectory("worker-maven-external-plan").toRealPath()
         try {
             val command = mavenModelCommand(listOf(repo.resolve("mvnw").toString()), repo, listOf("help:effective-pom"))
-            assertEquals(1, command.count { it == "-o" })
-            assertEquals(1, command.count { it.startsWith("-Dmaven.repo.local=") })
-            val configured = command.single { it.startsWith("-Dmaven.repo.local=") }
-                .substringAfter('=')
-            val localRepository = java.nio.file.Path.of(configured).toRealPath()
-            assertTrue(localRepository.startsWith(repo))
-            assertEquals(
-                ".semantic-thread/maven-repository",
-                repo.relativize(localRepository).toString(),
-            )
-            val process = sanitizedProjectModelProcess(command, repo)
-            for (key in listOf(
-                "GRADLE_OPTS", "GRADLE_USER_HOME", "MAVEN_OPTS", "MAVEN_ARGS", "MAVEN_CONFIG",
-                "JAVA_OPTS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
-            )) {
-                assertFalse(process.environment().containsKey(key))
-            }
+            assertFalse(command.contains("-o"))
+            assertFalse(command.any { it.startsWith("-Dmaven.repo.local=") })
+            assertFalse(command.any { it.startsWith("-Duser.home=") })
+            assertFalse(Files.exists(repo.resolve(".semantic-thread")))
 
             val selectedPom = repo.resolve("module/pom.xml")
             val orderedArguments = listOf("-f", selectedPom.toString(), "-q", "help:effective-pom", "dependency:build-classpath")
             val selectedCommand = mavenModelCommand(listOf(repo.resolve("mvnw").toString()), repo, orderedArguments)
             assertEquals(orderedArguments, selectedCommand.takeLast(orderedArguments.size))
+
+            prepareFixtureBuildState(externalRoot)
+            val external = externalBuildStateLayout(repo, externalRoot)
+            val externalCommand = mavenModelCommand(
+                listOf(repo.resolve("mvnw").toString()),
+                repo,
+                listOf("help:effective-pom"),
+                external,
+            )
+            assertEquals(1, externalCommand.count { it == "-o" })
+            assertEquals(1, externalCommand.count { it.startsWith("-Dmaven.repo.local=") })
+            assertEquals(1, externalCommand.count { it.startsWith("-Duser.home=") })
         } finally {
             repo.toFile().deleteRecursively()
+            externalRoot.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun mavenArtifactCoordinatesUseDependencyGetOrder() {
+        val coordinate = mavenArtifactCoordinate(
+            "org.jetbrains.kotlin",
+            "kotlin-maven-allopen",
+            "2.3.0",
+            null,
+        )
+        assertEquals(
+            "org.jetbrains.kotlin:kotlin-maven-allopen:2.3.0:jar",
+            coordinate,
+        )
+        assertEquals(
+            "example:compiler-plugin:1.2.3:jar:jdk21",
+            mavenArtifactCoordinate("example", "compiler-plugin", "1.2.3", "jdk21"),
+        )
+        assertEquals(
+            listOf(
+                "-q",
+                "dependency:get",
+                "-Dartifact=$coordinate",
+                "-Dtransitive=false",
+            ),
+            mavenDependencyGetArguments(coordinate),
+        )
+    }
+
+    @Test
+    fun nativeMavenLocalRepositoryFallsBackToPluginFreeCoreDebugOutput() {
+        val repo = Files.createTempDirectory("worker-maven-local-repo").toRealPath()
+        val localRepository = Files.createTempDirectory("worker-maven-custom-local-repo").toRealPath()
+        try {
+            require('\'' !in localRepository.toString()) { "fixture path cannot be shell-quoted safely" }
+            val invocation = repo.resolve("maven-invocation.txt")
+            require('\'' !in invocation.toString()) { "fixture path cannot be shell-quoted safely" }
+            val launcher = repo.resolve("mvnw")
+            launcher.writeText(
+                """#!/bin/sh
+                |printf '%s\n' "${'$'}@" > '$invocation'
+                |for argument in "${'$'}@"; do
+                |  if [ "${'$'}argument" = 'help:evaluate' ]; then
+                |    exit 1
+                |  fi
+                |done
+                |printf '%s\n' '[DEBUG] Using local repository at $localRepository'
+                |exit 1
+                |""".trimMargin(),
+            )
+            assertTrue(launcher.toFile().setExecutable(true))
+
+            assertEquals(
+                localRepository,
+                MavenProjectModelExtractor().localRepositoryForTest(repo, listOf(launcher.toString())),
+            )
+            assertEquals("-X\n-q\n", invocation.toFile().readText())
+        } finally {
+            repo.toFile().deleteRecursively()
+            localRepository.toFile().deleteRecursively()
         }
     }
 
@@ -455,6 +709,11 @@ fun gradlePlanIsOfflineAndUsesOnlyRepoOwnedHome() {
             var runtimeProjectCache = root
             Worker(root).use { worker ->
                 worker.handle(2, request)
+                val reopened = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                assertEquals(
+                    "MEMORY_HIT",
+                    reopened["profiling"]?.jsonObject?.get("projectModelCacheStatus")?.jsonPrimitive?.content,
+                )
                 runtimeProjectCache = java.nio.file.Path.of(runtimeEvidence.toFile().readText())
                 assertTrue(runtimeProjectCache.resolve("model-runtime.lock").isRegularFile())
                 assertFalse(runtimeProjectCache.startsWith(repo))

@@ -1229,23 +1229,16 @@ fn commit_with_authorization(
                 "live project model differs from transaction authority",
             ));
         }
-        let candidate_model = worker.request(
-            RequestKind::OpenProject,
-            &json!({
-                "repo":worktree_path,
-                "compilation":transaction.thread.snapshot.compilation,
-            }),
-        )?;
+        let (candidate_model, index_facts) = worker.open_project_and_index_verified(&json!({
+            "repo":worktree_path,
+            "compilation":transaction.thread.snapshot.compilation,
+            "syntaxOnly":false
+        }))?;
         let mut project_model_transition = project_model_transition_evidence(
             &authority_model,
             &candidate_model,
             &report.actual_write_set,
         )?;
-        let index_facts = worker.index_files_verified(&json!({
-            "repo":worktree_path,
-            "compilation":transaction.thread.snapshot.compilation,
-            "syntaxOnly":false
-        }))?;
         if candidate_model
             .get("projectModelHash")
             .and_then(Value::as_str)
@@ -2136,6 +2129,23 @@ fn build_command(
     build_system: BuildSystem,
     build_launcher: &str,
 ) -> Result<Command, ClewError> {
+    let external_state =
+        std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT").is_some_and(|root| !root.is_empty());
+    build_command_with_mode(worktree, build_system, build_launcher, external_state)
+}
+
+fn build_command_with_mode(
+    worktree: &Path,
+    build_system: BuildSystem,
+    build_launcher: &str,
+    external_state: bool,
+) -> Result<Command, ClewError> {
+    if external_state {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedProjectConfiguration,
+            "direct compile/test validation with external sealed build state is unsupported; unset CODECLEW_K1_BUILD_STATE_ROOT to use the project-native task-apply contour",
+        ));
+    }
     let launcher = match (build_system, build_launcher) {
         (BuildSystem::Gradle, "./gradlew") => worktree.join("gradlew"),
         (BuildSystem::Maven, "./mvnw") => worktree.join("mvnw"),
@@ -2163,121 +2173,17 @@ fn build_start_error(build_launcher: &str, error: std::io::Error) -> ClewError {
     )
 }
 
-/// Materialize the ignored repository-owned dependency state alongside a
-/// detached candidate worktree. A linked worktree intentionally contains only
-/// tracked files, while the Kotlin worker's legacy development contour reads
-/// Gradle/Maven state below the repository root. Sharing it by symlink or
-/// hardlink would let candidate validation mutate the caller's state, so we
-/// require an isolated copy-on-write clone instead.
+/// Project-native validation deliberately inherits the same user-level build
+/// environment as the checked-out project. Repository-local Gradle project
+/// caches and Codeclew's former Maven dependency repository are derived state
+/// and are not copied into detached candidates. Explicit sealed build state is
+/// materialized into a private copy for every direct build command.
 fn prepare_candidate_repository_state(
-    repo: &Path,
-    worktree: &Path,
-    build_system: BuildSystem,
+    _repo: &Path,
+    _worktree: &Path,
+    _build_system: BuildSystem,
 ) -> Result<(), ClewError> {
-    let relative = match build_system {
-        BuildSystem::Gradle => Path::new(".gradle"),
-        BuildSystem::Maven => Path::new(".semantic-thread/maven-repository"),
-    };
-    let source = repo.join(relative);
-    if !source.exists() {
-        return Ok(());
-    }
-    let metadata = std::fs::symlink_metadata(&source).map_err(io_error)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            format!(
-                "repository-owned build state is not a real directory: {}",
-                relative.display()
-            ),
-        ));
-    }
-    let ignored = Command::new("git")
-        .args(["check-ignore", "--quiet", "--"])
-        .arg(relative)
-        .current_dir(repo)
-        .status()
-        .map_err(io_error)?
-        .success();
-    if !ignored {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            format!(
-                "repository-owned build state must be ignored before candidate validation: {}",
-                relative.display()
-            ),
-        ));
-    }
-    let destination = worktree.join(relative);
-    if destination.exists() {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            format!(
-                "candidate build-state destination already exists: {}",
-                relative.display()
-            ),
-        ));
-    }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent).map_err(io_error)?;
-    }
-    clone_directory_copy_on_write(&source, &destination)?;
-    let copied = std::fs::symlink_metadata(&destination).map_err(io_error)?;
-    if copied.file_type().is_symlink() || !copied.is_dir() {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            "candidate build-state snapshot is not an isolated directory",
-        ));
-    }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn clone_directory_copy_on_write(source: &Path, destination: &Path) -> Result<(), ClewError> {
-    let output = Command::new("/bin/cp")
-        .arg("-cR")
-        .arg(source)
-        .arg(destination)
-        .output()
-        .map_err(io_error)?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(ClewError::new(
-        ErrorCode::UnsupportedProjectConfiguration,
-        format!(
-            "candidate build-state copy-on-write snapshot failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
-    ))
-}
-
-#[cfg(target_os = "linux")]
-fn clone_directory_copy_on_write(source: &Path, destination: &Path) -> Result<(), ClewError> {
-    let output = Command::new("cp")
-        .args(["--archive", "--reflink=always"])
-        .arg(source)
-        .arg(destination)
-        .output()
-        .map_err(io_error)?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(ClewError::new(
-        ErrorCode::UnsupportedProjectConfiguration,
-        format!(
-            "candidate build-state reflink snapshot failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
-    ))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn clone_directory_copy_on_write(_source: &Path, _destination: &Path) -> Result<(), ClewError> {
-    Err(ClewError::new(
-        ErrorCode::UnsupportedProjectConfiguration,
-        "candidate build-state isolation requires copy-on-write filesystem support",
-    ))
 }
 
 pub struct Ledger {
@@ -2657,8 +2563,9 @@ fn internal(e: anyhow::Error) -> ClewError {
 mod tests {
     use super::{
         BuildSystem, apply_edit_target_transport, bounded_test_failure_evidence,
-        canonicalize_owner_symbol_query, git_output, prepare_candidate_repository_state, preview,
-        preview_replace_model_input, project_model_transition_evidence, validate_worktree,
+        build_command_with_mode, canonicalize_owner_symbol_query, git_output,
+        prepare_candidate_repository_state, preview, preview_replace_model_input,
+        project_model_transition_evidence, validate_worktree,
     };
     use crate::canonical;
     use crate::error::ErrorCode;
@@ -2925,57 +2832,65 @@ mod tests {
     }
 
     #[test]
-    fn candidate_gets_an_isolated_copy_on_write_build_state() {
+    fn candidate_does_not_copy_project_native_gradle_state() {
         let temporary = tempfile::tempdir().unwrap();
         let repo = temporary.path().join("repo");
         let candidate = temporary.path().join("candidate");
         std::fs::create_dir_all(repo.join(".gradle/caches")).unwrap();
         std::fs::create_dir(&candidate).unwrap();
-        std::fs::write(repo.join(".gitignore"), ".gradle/\n").unwrap();
         std::fs::write(repo.join(".gradle/caches/marker"), "source").unwrap();
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet", "--initial-branch=main"])
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success()
-        );
 
         prepare_candidate_repository_state(&repo, &candidate, BuildSystem::Gradle).unwrap();
-        std::fs::write(candidate.join(".gradle/caches/marker"), "candidate").unwrap();
 
         assert_eq!(
             std::fs::read_to_string(repo.join(".gradle/caches/marker")).unwrap(),
             "source"
         );
-        assert_eq!(
-            std::fs::read_to_string(candidate.join(".gradle/caches/marker")).unwrap(),
-            "candidate"
-        );
+        assert!(!candidate.join(".gradle").exists());
     }
 
     #[test]
-    fn candidate_refuses_to_snapshot_unignored_build_state() {
+    fn candidate_does_not_copy_former_codeclew_maven_repository() {
         let temporary = tempfile::tempdir().unwrap();
         let repo = temporary.path().join("repo");
         let candidate = temporary.path().join("candidate");
-        std::fs::create_dir_all(repo.join(".gradle")).unwrap();
+        std::fs::create_dir_all(repo.join(".semantic-thread/maven-repository")).unwrap();
         std::fs::create_dir(&candidate).unwrap();
-        assert!(
-            Command::new("git")
-                .args(["init", "--quiet", "--initial-branch=main"])
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success()
-        );
+
+        prepare_candidate_repository_state(&repo, &candidate, BuildSystem::Maven).unwrap();
+
+        assert!(!candidate.join(".semantic-thread/maven-repository").exists());
+    }
+
+    #[test]
+    fn project_native_build_command_has_no_offline_or_cache_override() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().canonicalize().unwrap();
+        std::fs::write(repo.join("gradlew"), "wrapper").unwrap();
+
+        let command =
+            build_command_with_mode(&repo, BuildSystem::Gradle, "./gradlew", false).unwrap();
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(!arguments.contains(&"--offline".to_owned()));
+        assert!(!arguments.contains(&"--gradle-user-home".to_owned()));
+        assert!(!arguments.contains(&"--project-cache-dir".to_owned()));
+    }
+
+    #[test]
+    fn external_build_state_is_not_mixed_with_direct_candidate_validation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().canonicalize().unwrap();
+        std::fs::write(repo.join("gradlew"), "wrapper").unwrap();
 
         let error =
-            prepare_candidate_repository_state(&repo, &candidate, BuildSystem::Gradle).unwrap_err();
+            build_command_with_mode(&repo, BuildSystem::Gradle, "./gradlew", true).unwrap_err();
 
         assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
-        assert!(!candidate.join(".gradle").exists());
+        assert!(error.message.contains("project-native task-apply"));
     }
 
     #[test]

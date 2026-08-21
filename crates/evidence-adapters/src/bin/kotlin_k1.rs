@@ -703,7 +703,7 @@ impl AgentCacheSelector {
                     inputs
                         .pointer("/semanticInputManifest/buildState/mode")
                         .and_then(Value::as_str)
-                        == Some("LEGACY_REPOSITORY_OWNED")
+                        == Some("PROJECT_NATIVE")
                 }
             }
     }
@@ -2001,7 +2001,7 @@ fn selector_from_semantic_object(object: &SemanticCacheObject) -> Result<AgentCa
         && inputs
             .pointer("/semanticInputManifest/buildState/mode")
             .and_then(Value::as_str)
-            != Some("LEGACY_REPOSITORY_OWNED")
+            != Some("PROJECT_NATIVE")
     {
         bail!("semantic cache inputs have no supported build-state selector");
     }
