@@ -159,7 +159,13 @@ def state_root() -> Path:
     if metadata.st_uid != os.geteuid():
         raise BootstrapError("Codeclew state root has a different owner")
     os.chmod(root, 0o700)
-    for child in ["runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine"]:
+    root = root / "v2"
+    root.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    for child in [
+        "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
+        "objects", "objects/sha256", "generations", "attempts", "gc",
+    ]:
         path = root / child
         path.mkdir(mode=0o700, exist_ok=True)
         child_metadata = path.lstat()
@@ -508,7 +514,7 @@ def main() -> int:
     fcntl.flock(lease, fcntl.LOCK_SH)
     os.set_inheritable(lease.fileno(), True)
     environment = {name: value for name, value in os.environ.items() if not name.startswith("CODECLEW_")}
-    environment["CODECLEW_HOME"] = str(root)
+    environment["CODECLEW_HOME"] = str(root.parent)
     environment["CODECLEW_RUNTIME_ROOT"] = str(capsule)
     environment["CODECLEW_RUNTIME_LEASE_FD"] = str(lease.fileno())
     os.execve(capsule / "bin/clew", [str(capsule / "bin/clew"), *command], environment)

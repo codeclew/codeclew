@@ -35,6 +35,10 @@ pub enum ErrorCode {
     RefCompareAndSwapFailed,
     TransactionRecoveryRequired,
     WorktreeRecoveryRequired,
+    ResourceLimit,
+    StateCorrupt,
+    InputMutated,
+    UnsupportedLanguage,
     InvalidInput,
     Internal,
 }

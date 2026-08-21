@@ -9,7 +9,7 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-pub const STATE_SCHEMA: &str = "codeclew-state-authority/1.0";
+pub const STATE_SCHEMA: &str = "codeclew-state-authority/2.0";
 
 #[derive(Debug, Clone)]
 pub struct StateAuthority {
@@ -50,7 +50,7 @@ impl StateAuthority {
             }
             home.join(".cache/codeclew")
         };
-        Self::open(root)
+        Self::open(root.join("v2"))
     }
 
     pub fn open(root: PathBuf) -> Result<Self, ClewError> {
@@ -85,6 +85,11 @@ impl StateAuthority {
             "locks",
             "tmp",
             "quarantine",
+            "objects",
+            "objects/sha256",
+            "generations",
+            "attempts",
+            "gc",
         ] {
             create_private_directory(&root.join(child))?;
         }
@@ -93,6 +98,18 @@ impl StateAuthority {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn objects_root(&self) -> PathBuf {
+        self.root.join("objects/sha256")
+    }
+
+    pub fn locks_root(&self) -> PathBuf {
+        self.root.join("locks")
+    }
+
+    pub fn quarantine_root(&self) -> PathBuf {
+        self.root.join("quarantine")
     }
 
     pub fn repository(&self, repo: &Path) -> Result<RepositoryState, ClewError> {
