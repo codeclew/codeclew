@@ -269,13 +269,6 @@ impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
     fn analyze(&self, request: &AnalyzeGenerationRequest) -> Result<Value, ClewError> {
         let _exclusive = self.exclusive.lock().map_err(poisoned)?;
         let snapshot = self.load_snapshot(request)?;
-        let attempt_root = tempfile::Builder::new()
-            .prefix("kotlin-generation-")
-            .tempdir_in(self.state.attempts_root())
-            .map_err(io_error)?;
-        let repo = attempt_root.path().join("repo");
-        materialize(&snapshot, &self.store, &repo)?;
-        mount_project_derived_state(attempt_root.path(), &repo)?;
         let options_limit =
             usize::try_from(request.compilation.canonical_options.size).map_err(|_| {
                 ClewError::new(ErrorCode::ResourceLimit, "Kotlin options exceed host size")
@@ -306,21 +299,13 @@ impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
             self.adapter_digest.clone(),
             &request.compilation,
         )?;
-        let compiler_store = self
-            .state
-            .root()
-            .join("generations/compiler-store")
-            .join(compiler_store_key.path_component()?);
-        create_private_directory(&compiler_store)?;
-        let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
-        let mut worker =
-            WorkerClient::start_with_states(&workspace_root(), None, Some(&compiler_store))?;
-        let verified = worker.index_files_verified(&json!({
-            "repo":repo,
-            "compilation":native_compilation,
-            "syntaxOnly":false,
-        }))?;
-        let index = worker.inspect_verified_index(&verified)?.clone();
+        let index = analyze_project_native_index(
+            &self.state,
+            &self.store,
+            &snapshot,
+            native_compilation,
+            compiler_store_key.path_component()?,
+        )?;
         if index.get("compilerVersion").and_then(Value::as_str)
             != Some(self.line.compiler_version())
         {
@@ -329,31 +314,69 @@ impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
                 "worker selected another Kotlin compiler line",
             ));
         }
-        worker.shutdown()?;
-        unmount_project_derived_state(&repo)?;
-        let (observed_snapshot, _) = capture(&repo, &self.store)?;
-        let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
-            && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
-            && observed_snapshot.untracked_view_digest == snapshot.untracked_view_digest
-            && observed_snapshot.index == snapshot.index
-            && observed_snapshot.worktree.len() == snapshot.worktree.len()
-            && observed_snapshot
-                .worktree
-                .iter()
-                .zip(&snapshot.worktree)
-                .all(|(observed, expected)| {
-                    observed.path == expected.path
-                        && observed.kind == expected.kind
-                        && observed.content == expected.content
-                });
-        if !unchanged_inputs {
-            return Err(ClewError::new(
-                ErrorCode::InputMutated,
-                "project-native model extraction modified sealed repository inputs",
-            ));
-        }
         Ok(index)
     }
+}
+
+pub(crate) fn analyze_project_native_index(
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    native_compilation: &str,
+    compiler_store_component: &str,
+) -> Result<Value, ClewError> {
+    if compiler_store_component.len() != 64
+        || !compiler_store_component
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(invalid("compiler store component is invalid"));
+    }
+    let attempt_root = tempfile::Builder::new()
+        .prefix("kotlin-generation-")
+        .tempdir_in(state.attempts_root())
+        .map_err(io_error)?;
+    let repo = attempt_root.path().join("repo");
+    materialize(snapshot, store, &repo)?;
+    mount_project_derived_state(attempt_root.path(), &repo)?;
+    let compiler_store = state
+        .root()
+        .join("generations/compiler-store")
+        .join(compiler_store_component);
+    create_private_directory(&compiler_store)?;
+    let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
+    let mut worker =
+        WorkerClient::start_with_states(&workspace_root(), None, Some(&compiler_store))?;
+    let verified = worker.index_files_verified(&json!({
+        "repo":repo,
+        "compilation":native_compilation,
+        "syntaxOnly":false,
+    }))?;
+    let index = worker.inspect_verified_index(&verified)?.clone();
+    worker.shutdown()?;
+    unmount_project_derived_state(&repo)?;
+    let (observed_snapshot, _) = capture(&repo, store)?;
+    let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
+        && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
+        && observed_snapshot.untracked_view_digest == snapshot.untracked_view_digest
+        && observed_snapshot.index == snapshot.index
+        && observed_snapshot.worktree.len() == snapshot.worktree.len()
+        && observed_snapshot
+            .worktree
+            .iter()
+            .zip(&snapshot.worktree)
+            .all(|(observed, expected)| {
+                observed.path == expected.path
+                    && observed.kind == expected.kind
+                    && observed.content == expected.content
+            });
+    if !unchanged_inputs {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            "project-native model extraction modified sealed repository inputs",
+        ));
+    }
+    Ok(index)
 }
 
 fn unmount_project_derived_state(repo: &std::path::Path) -> Result<(), ClewError> {
@@ -391,7 +414,10 @@ fn mount_project_derived_state(
     Ok(())
 }
 
-fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord>, ClewError> {
+pub(crate) fn translate_facts(
+    store: &CasStore,
+    index: &Value,
+) -> Result<Vec<FactRecord>, ClewError> {
     let capability = CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?;
     let mut facts = Vec::new();
     let metadata = json!({
@@ -454,7 +480,7 @@ fn push_fact(
     Ok(())
 }
 
-fn semantic_scope_digest(index: &Value) -> Result<String, ClewError> {
+pub(crate) fn semantic_scope_digest(index: &Value) -> Result<String, ClewError> {
     canonical::hash(&json!({
         "compilation":index.get("compilation"),
         "compilerVersion":index.get("compilerVersion"),
@@ -466,7 +492,7 @@ fn semantic_scope_digest(index: &Value) -> Result<String, ClewError> {
     .map_err(internal)
 }
 
-fn completeness_receipt(
+pub(crate) fn completeness_receipt(
     store: &CasStore,
     index: &Value,
     scope_digest: &str,

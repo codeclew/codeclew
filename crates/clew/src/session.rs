@@ -42,7 +42,7 @@ pub struct SessionAuthority {
     pub created_unix_ms: u128,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ModelCachePolicy {
     NonCacheable,

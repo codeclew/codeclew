@@ -226,11 +226,38 @@ pub fn expand(
     if parent.schema != QUERY_CONTEXT_SCHEMA || parent.index_id != index.index_id {
         return Err(invalid("parent context is not bound to the query index"));
     }
-    let mut terms = parent.requested_terms.clone();
-    terms.extend_from_slice(additional_terms);
-    terms.sort();
-    terms.dedup();
-    query(store, index, &terms, max_facts)
+    let additional = normalize_terms(additional_terms.iter().map(String::as_str))
+        .into_iter()
+        .filter(|term| !parent.requested_terms.contains(term))
+        .collect::<Vec<_>>();
+    if additional.is_empty() {
+        return Ok(parent.clone());
+    }
+    let delta = query(store, index, &additional, max_facts)?;
+    let mut requested_terms = parent.requested_terms.clone();
+    requested_terms.extend(delta.requested_terms);
+    requested_terms.sort();
+    requested_terms.dedup();
+    let mut unmatched_terms = parent.unmatched_terms.clone();
+    unmatched_terms.extend(delta.unmatched_terms);
+    unmatched_terms.sort();
+    unmatched_terms.dedup();
+    let mut facts = parent.facts.clone();
+    facts.extend(delta.facts);
+    facts.sort();
+    facts.dedup();
+    let limit = max_facts.min(MAX_CONTEXT_FACTS);
+    let truncated = parent.truncated || delta.truncated || facts.len() > limit;
+    facts.truncate(limit);
+    Ok(QueryContext {
+        schema: QUERY_CONTEXT_SCHEMA.into(),
+        index_id: index.index_id.clone(),
+        requested_terms,
+        unmatched_terms,
+        facts,
+        query_shards_read: delta.query_shards_read,
+        truncated,
+    })
 }
 
 pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), ClewError> {
@@ -265,7 +292,10 @@ pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), 
     Ok(())
 }
 
-fn verify_index_manifest(store: &CasStore, index: &QueryIndexManifest) -> Result<(), ClewError> {
+pub fn verify_index_manifest(
+    store: &CasStore,
+    index: &QueryIndexManifest,
+) -> Result<(), ClewError> {
     let mut unsigned = index.clone();
     unsigned.index_id.clear();
     if index.schema != QUERY_INDEX_SCHEMA

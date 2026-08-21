@@ -38,6 +38,12 @@ pub struct RepositoryInputSnapshot {
     pub worktree: Vec<WorktreeEntry>,
 }
 
+impl RepositoryInputSnapshot {
+    pub fn verify(&self) -> Result<(), ClewError> {
+        verify_snapshot(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IndexEntry {

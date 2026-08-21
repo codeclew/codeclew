@@ -48,7 +48,7 @@ pub enum GenerationKind {
 }
 
 impl GenerationManifest {
-    pub fn verify(&self, store: &CasStore) -> Result<(), ClewError> {
+    pub fn verify_manifest(&self, store: &CasStore) -> Result<(), ClewError> {
         let mut unsigned = self.clone();
         unsigned.generation_id.clear();
         if self.schema != GENERATION_SCHEMA
@@ -87,15 +87,24 @@ impl GenerationManifest {
         store
             .read(&self.derived_input_manifest, derived_limit)
             .map_err(|_| corrupt("generation derived manifest is unavailable"))?;
+        if self.shards.is_empty()
+            || self.fact_count == 0
+            || self.shards.iter().any(|reference| {
+                reference.object_schema != FACT_SHARD_SCHEMA
+                    || reference.size > MAX_SHARD_BYTES as u64
+            })
+        {
+            return Err(corrupt("generation shard references are invalid"));
+        }
+        Ok(())
+    }
+
+    pub fn verify(&self, store: &CasStore) -> Result<(), ClewError> {
+        self.verify_manifest(store)?;
         let mut expected_sequence = 0u32;
         let mut observed_count = 0u64;
         let mut last_key = None::<String>;
         for reference in &self.shards {
-            if reference.object_schema != FACT_SHARD_SCHEMA
-                || reference.size > MAX_SHARD_BYTES as u64
-            {
-                return Err(corrupt("generation shard reference is invalid"));
-            }
             let lease = store.read(reference, MAX_SHARD_BYTES)?;
             let shard: CanonicalFactShard = serde_json::from_slice(lease.bytes())
                 .map_err(|_| corrupt("generation shard is not a closed canonical object"))?;
@@ -123,7 +132,7 @@ impl GenerationManifest {
                 .checked_add(1)
                 .ok_or_else(|| corrupt("generation shard sequence overflow"))?;
         }
-        if self.shards.is_empty() || observed_count != self.fact_count {
+        if observed_count != self.fact_count {
             return Err(corrupt("generation fact count is incomplete"));
         }
         Ok(())

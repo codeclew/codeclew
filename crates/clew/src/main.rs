@@ -374,10 +374,6 @@ struct ContextCreateArgs {
     intent: String,
     #[arg(long = "term", required = true)]
     terms: Vec<String>,
-    #[arg(long = "model-input")]
-    model_inputs: Vec<String>,
-    #[arg(long = "conditional-decision")]
-    conditional_decision: Option<PathBuf>,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
 }
@@ -896,14 +892,12 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ContextCommand::Create(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
-            let (projection, evidence) = create_managed_context_evidence(
-                &workspace,
+            let (projection, evidence) = clew::context_v2::create(
                 &session,
                 &args.intent,
                 &args.terms,
-                &args.model_inputs,
-                args.conditional_decision.as_deref(),
                 args.max_roots,
+                None,
             )?;
             let context =
                 session.store_context(None, args.intent, args.terms, projection, evidence)?;
@@ -914,19 +908,18 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
             let parent = session.load_context(&args.context)?;
+            let additional_terms = args.terms;
             let mut terms = parent.terms.clone();
-            terms.extend(args.terms);
+            terms.extend(additional_terms.iter().cloned());
             terms.sort();
             terms.dedup();
-            let intent = args.intent.unwrap_or(parent.intent);
-            let (projection, evidence) = create_managed_context_evidence(
-                &workspace,
+            let intent = args.intent.unwrap_or_else(|| parent.intent.clone());
+            let (projection, evidence) = clew::context_v2::create(
                 &session,
                 &intent,
-                &terms,
-                &[],
-                None,
+                &additional_terms,
                 args.max_roots,
+                Some(&parent),
             )?;
             let context =
                 session.store_context(Some(args.context), intent, terms, projection, evidence)?;
@@ -1063,103 +1056,6 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: TxCommand::Inspect(args),
         } => transaction::ledger(&absolute(&args.repo)?)?.inspect(&args.transaction_id),
     }
-}
-
-fn create_managed_context_evidence(
-    workspace: &Path,
-    session: &SessionAuthority,
-    intent: &str,
-    terms: &[String],
-    model_inputs: &[String],
-    conditional_decision: Option<&Path>,
-    max_roots: usize,
-) -> Result<(Value, Value), ClewError> {
-    let repo = session.repository_path()?;
-    if git_head(&repo)? != session.base_revision {
-        return Err(ClewError::new(
-            ErrorCode::StaleRequiresReslice,
-            "repository HEAD moved after session open",
-        ));
-    }
-    let state = clew::state::StateAuthority::process_default()?.repository(&repo)?;
-    with_worker(workspace, Some(&state.compiler_index), |worker| {
-        let (project, verified_index_facts) = worker.open_project_and_index_verified(
-            &json!({"repo":repo,"compilation":session.compilation,"syntaxOnly":false}),
-        )?;
-        let model_input_surfaces =
-            task_context::resolve_model_input_surfaces(&repo, &project, model_inputs)?;
-        let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
-        let mut repository_index =
-            RepositoryIndex::open_compilation(&repo, Some(&session.compilation))?;
-        let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
-        repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
-        let selection = task_context::select(&repo, index_facts, terms, intent)?;
-        let mut resolutions = selection
-            .root_symbols(1)
-            .into_iter()
-            .map(|symbol| {
-                worker.request(
-                    RequestKind::ResolveSymbol,
-                    &json!({"repo":repo,"compilation":session.compilation,"symbol":symbol}),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        while resolutions.len() < max_roots {
-            let followups = selection
-                .followup_symbols(&resolutions, max_roots.saturating_sub(resolutions.len()));
-            if followups.is_empty() {
-                break;
-            }
-            for symbol in followups {
-                resolutions.push(worker.request(
-                    RequestKind::ResolveSymbol,
-                    &json!({"repo":repo,"compilation":session.compilation,"symbol":symbol}),
-                )?);
-            }
-        }
-        let threads = resolutions
-            .iter()
-            .map(|resolution| {
-                build_task_thread(
-                    worker,
-                    &repo,
-                    &session.compilation,
-                    &project,
-                    &index_snapshot,
-                    resolution,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let (mut context, mut evidence) = task_context::build(task_context::TaskContextBuild {
-            repo: &repo,
-            terms,
-            intent,
-            compilation: &session.compilation,
-            project: &project,
-            index_facts,
-            selection: &selection,
-            resolutions: &resolutions,
-            threads: &threads,
-            base_revision: &session.base_revision,
-            index_snapshot: &index_snapshot,
-            evidence_path: Path::new("codeclew-managed-context"),
-            model_input_surfaces: &model_input_surfaces,
-            max_bytes: 60 * 1024,
-        })?;
-        if let Some(decision_path) = conditional_decision {
-            let decision: Value = read_json(decision_path)?;
-            let obligations = validate_conditional_decision(&decision, &session.base_revision)?;
-            context["verificationObligations"] = Value::Array(obligations.clone());
-            context["publicationPolicy"] = json!({
-                "mode":"STRICT",
-                "status":"BLOCKED_UNTIL_DISCHARGED",
-                "automaticPublication":false,
-            });
-            evidence["context"] = context.clone();
-            evidence["conditionalDecision"] = decision;
-        }
-        Ok((context, evidence))
-    })
 }
 
 fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<Value, ClewError> {
