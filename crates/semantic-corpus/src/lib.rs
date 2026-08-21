@@ -433,7 +433,7 @@ fn repository_files(
         BuildSystem::Maven => match layout {
             RepositoryLayout::Flat => files.push(GeneratedFile {
                 relative_path: "pom.xml".to_owned(),
-                content: maven_module_pom(vocabulary, &vocabulary.project_name),
+                content: maven_module_pom(&vocabulary.project_name),
             }),
             RepositoryLayout::Module => {
                 files.push(GeneratedFile {
@@ -442,7 +442,7 @@ fn repository_files(
                 });
                 files.push(GeneratedFile {
                     relative_path: format!("{}/pom.xml", vocabulary.module_name),
-                    content: maven_module_pom(vocabulary, &vocabulary.module_name),
+                    content: maven_module_pom(&vocabulary.module_name),
                 });
             }
         },
@@ -549,7 +549,7 @@ fn maven_root_pom(vocabulary: &Vocabulary) -> String {
     )
 }
 
-fn maven_module_pom(vocabulary: &Vocabulary, artifact_id: &str) -> String {
+fn maven_module_pom(artifact_id: &str) -> String {
     format!(
         "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>generated.sample</groupId>\n  <artifactId>{}</artifactId>\n  <version>1.0.0</version>\n  <properties>\n    <kotlin.version>2.1.21</kotlin.version>\n    <maven.compiler.release>21</maven.compiler.release>\n    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-stdlib</artifactId>\n      <version>${{kotlin.version}}</version>\n    </dependency>\n    <dependency>\n      <groupId>org.jetbrains.kotlin</groupId>\n      <artifactId>kotlin-test-junit5</artifactId>\n      <version>${{kotlin.version}}</version>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n  <build>\n    <sourceDirectory>${{project.basedir}}/src/main/kotlin</sourceDirectory>\n    <testSourceDirectory>${{project.basedir}}/src/test/kotlin</testSourceDirectory>\n    <plugins>\n      <plugin>\n        <groupId>org.jetbrains.kotlin</groupId>\n        <artifactId>kotlin-maven-plugin</artifactId>\n        <version>${{kotlin.version}}</version>\n        <executions>\n          <execution><id>compile</id><goals><goal>compile</goal></goals></execution>\n          <execution><id>test-compile</id><goals><goal>test-compile</goal></goals></execution>\n        </executions>\n      </plugin>\n      <plugin>\n        <groupId>org.apache.maven.plugins</groupId>\n        <artifactId>maven-surefire-plugin</artifactId>\n        <version>3.5.2</version>\n      </plugin>\n    </plugins>\n  </build>\n</project>\n",
         artifact_id

@@ -1,3 +1,5 @@
+mod support;
+
 use clew::graph;
 use clew::model::LocalGraph;
 use clew::proto::RequestKind;
@@ -8,6 +10,7 @@ use serde_json::json;
 fn worker_vertical_resolves_and_builds_total_graph() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-basic");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
     let batch = worker
         .validate_candidates_batch(&[

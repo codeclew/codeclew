@@ -641,6 +641,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                         "proof": receipt.summary(),
                     }))
                 }
+                TypedGoalBindingDecision::Conditional(conditional) => {
+                    serde_json::to_value(conditional).map_err(parse_error)
+                }
                 TypedGoalBindingDecision::Ambiguous(ambiguity) => {
                     serde_json::to_value(ambiguity).map_err(parse_error)
                 }
@@ -689,6 +692,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                         "status": "BOUND",
                         "proof": receipt.summary(),
                     }))
+                }
+                MapEdgeWithContextDecision::Conditional(conditional) => {
+                    serde_json::to_value(conditional).map_err(parse_error)
                 }
                 MapEdgeWithContextDecision::Ambiguous(ambiguity) => {
                     serde_json::to_value(ambiguity).map_err(parse_error)
@@ -747,6 +753,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                         "transactionArtifact":args.output,
                     }))
                 }
+                MapEdgeWithContextDecision::Conditional(conditional) => {
+                    serde_json::to_value(conditional).map_err(parse_error)
+                }
                 MapEdgeWithContextDecision::Ambiguous(ambiguity) => {
                     serde_json::to_value(ambiguity).map_err(parse_error)
                 }
@@ -780,7 +789,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     repository_index.update_verified(&verified_index_facts, worker)?;
                 repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
                 let selection =
-                    task_context::select(&repo, &index_facts, &args.terms, &args.intent)?;
+                    task_context::select(&repo, index_facts, &args.terms, &args.intent)?;
                 let mut resolutions = selection
                     .root_symbols(1)
                     .into_iter()
@@ -831,7 +840,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     intent: &args.intent,
                     compilation: &args.compilation,
                     project: &project,
-                    index_facts: &index_facts,
+                    index_facts,
                     selection: &selection,
                     resolutions: &resolutions,
                     threads: &threads,
@@ -1291,7 +1300,6 @@ fn build_thread(worker: &mut WorkerClient, args: SliceArgs) -> Result<ThreadIr, 
     )?;
     let verified_index_facts =
         worker.index_files_verified(&json!({"repo":repo,"compilation":args.compilation}))?;
-    let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
     let mut repository_index = RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
     let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
     repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;

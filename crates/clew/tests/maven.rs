@@ -1,3 +1,5 @@
+mod support;
+
 use clew::canonical;
 use clew::evidence_authority::EvidenceAuthority;
 use clew::graph;
@@ -32,6 +34,7 @@ fn copy_maven_fixture(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), &target).unwrap();
         }
     }
+    support::seed_build_caches(to);
 }
 
 fn copy_worker_distribution(source: &Path, target: &Path) {
@@ -139,6 +142,7 @@ fn live_thread(repo: &Path, symbol: &str) -> clew::model::ThreadIr {
 fn indexes_constructor_and_null_coalescing_facts_on_kotlin_23_maven() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let diagnostic_workspace = tempfile::tempdir().unwrap();
     copy_worker_distribution(
         &root.join("workers/kotlin/build/install/kotlin"),
@@ -342,6 +346,7 @@ fn indexes_constructor_and_null_coalescing_facts_on_kotlin_23_maven() {
 fn indexes_direct_return_value_relations_on_kotlin_23_maven() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let diagnostic_workspace = tempfile::tempdir().unwrap();
     copy_worker_distribution(
         &root.join("workers/kotlin/build/install/kotlin"),
@@ -617,6 +622,7 @@ fn maven_authority_rejects_runtime_skipped_compiler_linked_test() {
 fn opens_maven_kotlin_23_project_with_exact_worker_and_build_plan() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
 
     let project = worker
@@ -684,6 +690,7 @@ fn invalidates_maven_project_snapshot_when_pom_changes() {
 fn indexes_and_resolves_maven_sources_with_k2() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
 
     let index = worker
@@ -749,6 +756,7 @@ fn indexes_and_resolves_maven_sources_with_k2() {
 fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
     let project = worker
         .request(
@@ -799,7 +807,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
         repeated["declarationDescriptorHash"]
     );
     assert_eq!(graph, &repeated["declarationDescriptors"]);
-    let rows = declaration_descriptor_rows(&index);
+    let rows = declaration_descriptor_rows(index);
     assert!(!rows.is_empty());
     let canonical_rows = rows.iter().map(Value::to_string).collect::<Vec<_>>();
     assert!(canonical_rows.windows(2).all(|pair| pair[0] <= pair[1]));
@@ -906,7 +914,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
             .iter()
             .all(|descriptor| descriptor["isOverride"] == false)
     );
-    let override_relation = declaration_relation_rows(&index, "OVERRIDES")
+    let override_relation = declaration_relation_rows(index, "OVERRIDES")
         .into_iter()
         .find(|relation| {
             relation["owner"]
@@ -954,6 +962,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
 fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
     let project = worker
         .request(
@@ -1015,7 +1024,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
             })
     );
 
-    let overrides = declaration_relation_rows(&index, "OVERRIDES");
+    let overrides = declaration_relation_rows(index, "OVERRIDES");
     assert!(overrides.iter().any(|relation| {
         relation["owner"]
             .as_str()
@@ -1043,12 +1052,12 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
         "INITIALIZES",
     ] {
         assert!(
-            !declaration_relation_rows(&index, kind).is_empty(),
+            !declaration_relation_rows(index, kind).is_empty(),
             "missing {kind}"
         );
     }
     assert!(
-        declaration_relation_rows(&index, "CALLS")
+        declaration_relation_rows(index, "CALLS")
             .iter()
             .any(|relation| {
                 relation["owner"]
@@ -1064,7 +1073,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
                         .is_some_and(|arguments| !arguments.is_empty())
             })
     );
-    let reordered = declaration_relation_rows(&index, "CALLS")
+    let reordered = declaration_relation_rows(index, "CALLS")
         .into_iter()
         .find(|relation| {
             relation["owner"]
@@ -1085,7 +1094,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
         vec![1, 0],
     );
     assert!(
-        declaration_relation_rows(&index, "CONSTRUCTS")
+        declaration_relation_rows(index, "CONSTRUCTS")
             .iter()
             .any(|relation| {
                 relation["target"]
@@ -1095,7 +1104,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
             })
     );
     assert!(
-        declaration_relation_rows(&index, "WRITES")
+        declaration_relation_rows(index, "WRITES")
             .iter()
             .any(|relation| {
                 relation["target"]
@@ -1106,7 +1115,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
             })
     );
     assert!(
-        declaration_relation_rows(&index, "INITIALIZES")
+        declaration_relation_rows(index, "INITIALIZES")
             .iter()
             .any(|relation| {
                 relation["target"]
@@ -1126,7 +1135,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
     assert!(boundary_codes.contains(&"DYNAMIC_REFLECTION_BOUNDARY"));
     assert!(boundary_codes.contains(&"EXTERNAL_OR_LOCAL_ARGUMENT_TARGET"));
     assert!(
-        declaration_relation_rows(&index, "CALLS")
+        declaration_relation_rows(index, "CALLS")
             .iter()
             .all(|relation| {
                 let target = relation["target"].as_str().unwrap_or_default();
@@ -1169,6 +1178,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
 fn agent_context_renders_maven_targeted_test_command() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-maven");
+    support::seed_build_caches(&fixture);
     let temporary = tempfile::tempdir().unwrap();
     let evidence = temporary.path().join("maven-evidence.json");
 

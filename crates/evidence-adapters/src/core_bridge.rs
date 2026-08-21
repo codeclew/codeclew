@@ -1252,6 +1252,14 @@ fn translated_obligation_status(
     }
 }
 
+fn impact_class(value: &str) -> Result<ImpactClass> {
+    Ok(match value {
+        "DEFINITE" => ImpactClass::Definite,
+        "POSSIBLE" => ImpactClass::Possible,
+        other => bail!("unknown impact class {other}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1271,12 +1279,4 @@ mod tests {
             ObligationStatus::Unknown
         );
     }
-}
-
-fn impact_class(value: &str) -> Result<ImpactClass> {
-    Ok(match value {
-        "DEFINITE" => ImpactClass::Definite,
-        "POSSIBLE" => ImpactClass::Possible,
-        other => bail!("unknown impact class {other}"),
-    })
 }

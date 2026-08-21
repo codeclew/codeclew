@@ -16,6 +16,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// This command is parsed once and immediately consumed; boxing individual CLI
+// fields would complicate clap's generated interface without reducing retained
+// memory.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Compute the pinned controller-free E04 product coverage ceiling.
     E04ProductCoverage {

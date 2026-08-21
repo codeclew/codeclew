@@ -2568,7 +2568,7 @@ mod tests {
 
     #[test]
     fn bounded_context_keeps_a_five_declaration_hook_closure() {
-        assert!(MAX_EDIT_SURFACES >= 5);
+        const { assert!(MAX_EDIT_SURFACES >= 5) };
         assert_eq!(MAX_EDIT_SURFACES, 8);
     }
 

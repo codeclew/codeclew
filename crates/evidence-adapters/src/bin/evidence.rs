@@ -442,8 +442,8 @@ fn validate_impact(output: &AdapterOutput) -> Result<()> {
         .get("status")
         .and_then(Value::as_str)
         .context("impact result misses status")?;
-    if status == "COMPLETE_IN_SCOPE" {
-        if output.boundaries.iter().any(|boundary| {
+    if status == "COMPLETE_IN_SCOPE"
+        && (output.boundaries.iter().any(|boundary| {
             matches!(
                 boundary.get("consequence").and_then(Value::as_str),
                 Some("ENUMERATION_INCOMPLETE" | "PROOF_INVALID")
@@ -453,9 +453,9 @@ fn validate_impact(output: &AdapterOutput) -> Result<()> {
                 .get("guaranteedEnumeration")
                 .and_then(Value::as_str)
                 != Some("COMPLETE_IN_SCOPE")
-        }) {
-            bail!("impact falsely claims completeness across a mandatory boundary");
-        }
+        }))
+    {
+        bail!("impact falsely claims completeness across a mandatory boundary");
     }
     let boundary_count = output
         .impact
@@ -485,6 +485,9 @@ fn semantic_output_digest(output: &AdapterOutput) -> Result<String> {
     canonical_hash(&value)
 }
 
+// The projection deliberately binds every measured artifact explicitly; a
+// parameter object would merely move this one-shot call's contract elsewhere.
+#[allow(clippy::too_many_arguments)]
 fn build_projection(
     output: &AdapterOutput,
     adapter_path: &Path,

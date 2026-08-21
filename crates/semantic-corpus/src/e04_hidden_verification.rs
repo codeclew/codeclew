@@ -790,6 +790,7 @@ mod tests {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_chain(
         store: &Path,
         store_id: &str,

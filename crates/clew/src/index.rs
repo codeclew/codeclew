@@ -235,6 +235,13 @@ impl RepositoryIndex {
             ".index-stage-test-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
+        if published_path.exists() {
+            let live = Connection::open(&published_path).map_err(db_error)?;
+            live.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .map_err(db_error)?;
+            drop(live);
+            std::fs::copy(&published_path, &staging_path).map_err(io_error)?;
+        }
         let mut staged = Self::open_database(repo, staging_path.clone(), blobs)?;
         let hash = staged.update_from_root_impl(facts, source_root)?;
         staged.mark_published_revision(revision)?;
@@ -4635,20 +4642,76 @@ mod tests {
         assert!(index.hash().unwrap().is_none());
     }
 
-    fn freshness_facts(source: &str, partial: bool, compiler_version: &str) -> Value {
+    fn authoritative_index_facts(
+        source: &str,
+        partial: bool,
+        compiler_version: &str,
+        declarations: Vec<Value>,
+    ) -> Value {
+        let coverage = if partial {
+            "PARTIAL"
+        } else {
+            "COMPLETE_SUPPORTED_SUBSET"
+        };
+        let provenance = |plugin: char| {
+            json!({
+                "provider":"COMPILER_SEMANTIC_FACTS",
+                "extractorSchema":"fir-facts-extractor/0.6",
+                "pluginArtifactFingerprint":format!("sha256:{}", plugin.to_string().repeat(64)),
+                "workerCompilerVersion":compiler_version,
+                "workerVersion":"0.1.0",
+                "workerProtocolVersion":"1.0",
+                "compilerVersion":compiler_version,
+                "projectModelHash":"model",
+                "classpathHash":"classpath",
+                "compilerOptionsHash":"options"
+            })
+        };
+        let relation_graph = json!({
+            "schema":"declaration-relation-graph/0.1",
+            "compilation":":/main",
+            "coverage":coverage,
+            "relations":[],
+            "boundaries":[],
+            "provenance":provenance('a')
+        });
+        let descriptor_graph = json!({
+            "schema":"declaration-descriptor-graph/0.1",
+            "compilation":":/main",
+            "coverage":coverage,
+            "descriptors":[],
+            "boundaries":[],
+            "provenance":provenance('b')
+        });
         json!({
+            "compilation":":/main",
             "partial":partial,
             "projectModelHash":"model",
             "classpathHash":"classpath",
             "compilerVersion":compiler_version,
             "compilerOptionsHash":"options",
+            "declarationRelationHash":canonical::hash(&relation_graph).unwrap(),
+            "declarationRelations":relation_graph,
+            "declarationDescriptorHash":canonical::hash(&descriptor_graph).unwrap(),
+            "declarationDescriptors":descriptor_graph,
             "files":[{
                 "path":"A.kt",
+                "module":":",
+                "sourceSet":"main",
                 "contentHash":canonical::hash_bytes(source.as_bytes()),
-                "declarations":[{"symbolId":"a"}],
+                "declarations":declarations,
                 "semanticFacts":[]
             }]
         })
+    }
+
+    fn freshness_facts(source: &str, partial: bool, compiler_version: &str) -> Value {
+        authoritative_index_facts(
+            source,
+            partial,
+            compiler_version,
+            vec![json!({"symbolId":"a"})],
+        )
     }
 
     #[test]
@@ -4656,12 +4719,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source_path = temp.path().join("A.kt");
         let facts = |source: &str| {
-            json!({"files":[{
-                "path":"A.kt",
-                "contentHash":canonical::hash_bytes(source.as_bytes()),
-                "declarations":[{"symbolId":"a"}],
-                "semanticFacts":[]
-            }]})
+            authoritative_index_facts(
+                source,
+                false,
+                "2.4.10",
+                vec![json!({
+                    "symbolId":"a",
+                    "bodyHash":canonical::hash_bytes(source.as_bytes())
+                })],
+            )
         };
         std::fs::write(&source_path, "fun a() = 1\n").unwrap();
         let mut live = RepositoryIndex::open(temp.path()).unwrap();
@@ -4739,12 +4805,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("A.kt"), "fun a() = 1\n").unwrap();
         let facts = |source: &str| {
-            json!({"files":[{
-                "path":"A.kt",
-                "contentHash":canonical::hash_bytes(source.as_bytes()),
-                "declarations":[{"symbolId":"a"}],
-                "semanticFacts":[]
-            }]})
+            authoritative_index_facts(source, false, "2.4.10", vec![json!({"symbolId":"a"})])
         };
         let mut live = RepositoryIndex::open(temp.path()).unwrap();
         let old_hash = live.update(&facts("fun a() = 1\n")).unwrap();
@@ -4769,10 +4830,33 @@ mod tests {
     }
 
     #[test]
-    fn staged_publication_refuses_a_partial_repository_view() {
+    fn staged_publication_refuses_partial_recovery_of_a_gapped_view() {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
+        let mut live = RepositoryIndex::open(temp.path()).unwrap();
+        let published_hash = live
+            .update(&freshness_facts(source, false, "2.1.21"))
+            .unwrap();
+        let checkpoint = live.freshness_checkpoint().unwrap();
+        let repository = checkpoint
+            .projection
+            .facts
+            .iter()
+            .find(|fact| fact.fact.id == REPOSITORY_INDEX_FACT)
+            .unwrap();
+        live.ingest_freshness_event(FreshnessEvent {
+            schema: FRESHNESS_EVENT_SCHEMA.to_owned(),
+            event_id: "future-event".to_owned(),
+            sequence: checkpoint.projection.last_sequence + 2,
+            provenance: repository.fact.provenance.clone(),
+            event: FreshnessEventKind::Invalidated {
+                fact_id: REPOSITORY_INDEX_FACT.to_owned(),
+                reason: "future-input".to_owned(),
+            },
+        })
+        .unwrap_err();
+        drop(live);
         let error = RepositoryIndex::stage_update_unchecked_for_test(
             temp.path(),
             None,
@@ -4782,22 +4866,26 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::ProjectModelChanged);
-        assert!(!temp.path().join(".semantic-thread/index.sqlite3").exists());
+        assert_eq!(
+            RepositoryIndex::open(temp.path())
+                .unwrap()
+                .hash()
+                .unwrap()
+                .as_deref(),
+            Some(published_hash.as_str())
+        );
     }
 
     #[test]
     fn unchanged_files_are_not_rewritten() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("A.kt"), "fun a() = 1\n").unwrap();
-        let file = |source: &str| {
-            json!({
-                "path":"A.kt","contentHash":canonical::hash_bytes(source.as_bytes()),
-                "declarations":[{"symbolId":"a"}],"semanticFacts":[]
-            })
+        let facts = |source: &str, declarations: Vec<Value>| {
+            authoritative_index_facts(source, false, "2.4.10", declarations)
         };
         let mut index = RepositoryIndex::open(temp.path()).unwrap();
-        let facts = json!({"files":[file("fun a() = 1\n")]});
-        index.update(&facts).unwrap();
+        let first = facts("fun a() = 1\n", vec![json!({"symbolId":"a"})]);
+        index.update(&first).unwrap();
         assert_eq!(
             index
                 .connection
@@ -4809,7 +4897,7 @@ mod tests {
                 .unwrap(),
             "1"
         );
-        index.update(&facts).unwrap();
+        index.update(&first).unwrap();
         assert_eq!(
             index
                 .connection
@@ -4823,7 +4911,7 @@ mod tests {
         );
         std::fs::write(temp.path().join("A.kt"), "fun a() = 2\n").unwrap();
         index
-            .update(&json!({"files":[file("fun a() = 2\n")]}))
+            .update(&facts("fun a() = 2\n", vec![json!({"symbolId":"a"})]))
             .unwrap();
         assert_eq!(
             index
@@ -4837,15 +4925,13 @@ mod tests {
             "1"
         );
 
-        let duplicate_symbols = json!({"files":[{
-            "path":"A.kt",
-            "contentHash":canonical::hash_bytes("fun a() = 2\n".as_bytes()),
-            "declarations":[
-                {"symbolId":"a.local","rangeStart":4},
-                {"symbolId":"a.local","rangeStart":8}
+        let duplicate_symbols = facts(
+            "fun a() = 2\n",
+            vec![
+                json!({"symbolId":"a.local","rangeStart":4}),
+                json!({"symbolId":"a.local","rangeStart":8}),
             ],
-            "semanticFacts":[]
-        }]});
+        );
         index.update(&duplicate_symbols).unwrap();
         assert_eq!(
             index
@@ -4912,17 +4998,7 @@ mod tests {
             })
         };
         let facts = |source: &str, declarations: Vec<Value>| {
-            json!({
-                "projectModelHash":"model",
-                "classpathHash":"classpath",
-                "compilerOptionsHash":"options",
-                "files":[{
-                    "path":"A.kt",
-                    "contentHash":canonical::hash_bytes(source.as_bytes()),
-                    "declarations":declarations,
-                    "semanticFacts":[]
-                }]
-            })
+            authoritative_index_facts(source, false, "2.4.10", declarations)
         };
         let mut index = RepositoryIndex::open(temp.path()).unwrap();
         std::fs::write(&source_path, "fun old() = value\n").unwrap();

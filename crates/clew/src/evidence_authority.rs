@@ -16,9 +16,10 @@ use crate::model::{
 use crate::proto::RequestKind;
 use crate::semantic_goal::{
     BindingRole, ChangeGraph, ChangeObligation, ConstraintDomain, DischargeStatus,
-    EvidenceRelation, GoalFamily, ObligationKind, OperatorApplication, PrimitiveConstraint,
-    SemanticGoal, TYPED_GOAL_MAX_REQUEST_BYTES, TypedGoalLanguageError, TypedSemanticGoal,
-    TypedVariableDomain, constraint_op_spec,
+    EvidenceRelation, EvidenceStrength, GoalFamily, ObligationKind, OperatorApplication,
+    PrimitiveConstraint, SemanticGoal, TYPED_GOAL_MAX_REQUEST_BYTES, TypedGoalLanguageError,
+    TypedSemanticGoal, TypedVariableDomain, UnresolvedVerificationObligation, VerificationMethod,
+    VerificationObligationCode, constraint_op_spec,
 };
 pub use crate::semantic_goal::{
     TYPED_GOAL_BINDING_DECISION_SCHEMA, TYPED_GOAL_BINDING_REQUEST_SCHEMA, TypedGoalRefusalReason,
@@ -328,9 +329,24 @@ pub struct MapEdgeRefusal {
     pub reason: MapEdgeRefusalReason,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MapEdgeConditional {
+    pub schema: String,
+    pub status: String,
+    pub revision: String,
+    pub goal_fingerprint: String,
+    pub bindings: MapEdgeBindingSummary,
+    pub established_invariants: Vec<MapEdgeInvariantProof>,
+    pub change_graph: ChangeGraph,
+    pub unresolved_obligations: Vec<UnresolvedVerificationObligation>,
+    pub evidence_fingerprint: String,
+}
+
 #[derive(Debug)]
 pub enum MapEdgeWithContextDecision {
     Bound(Box<MapEdgeWithContextReceipt>),
+    Conditional(MapEdgeConditional),
     Ambiguous(MapEdgeAmbiguity),
     Refused(MapEdgeRefusal),
 }
@@ -660,9 +676,24 @@ pub struct TypedGoalRefusal {
     pub declaration_rejections: Vec<DeclarationProviderRejection>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TypedGoalConditional {
+    pub schema: String,
+    pub status: String,
+    pub revision: String,
+    pub goal_fingerprint: String,
+    pub bindings: BTreeMap<String, String>,
+    pub established_evidence_fingerprint: String,
+    pub unresolved_obligations: Vec<UnresolvedVerificationObligation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejections: Vec<OracleCandidateRejection>,
+}
+
 #[derive(Debug)]
 pub enum TypedGoalBindingDecision {
     Bound(Box<TypedGoalBindingReceipt>),
+    Conditional(TypedGoalConditional),
     Ambiguous(TypedGoalAmbiguity),
     Refused(TypedGoalRefusal),
 }
@@ -721,7 +752,6 @@ struct VerifiedBehavioralTest {
 
 #[derive(Debug)]
 struct ValidationRun {
-    run_nonce: Uuid,
     thread_set_fingerprint: String,
     test_set_fingerprint: String,
     artifact_hash: String,
@@ -995,11 +1025,6 @@ struct DeclarationValueFlowCandidate {
     read_set_fingerprint: String,
     provenance_fingerprint: String,
     boundary_closure_fingerprint: String,
-}
-
-struct DeclarationValueFlowOperatorEvidenceProvider<'a> {
-    bindings: &'a BTreeMap<String, String>,
-    candidate: &'a DeclarationValueFlowCandidate,
 }
 
 /// Backend-independent evidence boundary. Implementations may use a language
@@ -1658,7 +1683,6 @@ impl EvidenceAuthority {
         self.validations.insert(
             receipt_id,
             ValidationRun {
-                run_nonce,
                 thread_set_fingerprint,
                 test_set_fingerprint,
                 artifact_hash,
@@ -2027,7 +2051,6 @@ impl EvidenceAuthority {
             .test_fingerprint
             .as_ref()
             .ok_or_else(|| invalid_receipt("candidate overlay test binding"))?;
-        let test_project_model_hash = &overlay.test_project_model_hash;
         let test_compile_task = &overlay.test_compile_task;
         let route = overlay
             .route
@@ -2490,6 +2513,19 @@ impl EvidenceAuthority {
             }));
         }
         let candidate = safe_candidates.pop().expect("one candidate");
+        let bindings = MapEdgeBindingSummary {
+            workflow_symbol: edge.workflow_symbol.clone(),
+            context_producer_symbol: candidate.context.compiler_symbol.clone(),
+            transformer_symbol: candidate.transformer.compiler_symbol.clone(),
+            value_edge_from: edge.from.clone(),
+            value_edge_to: edge.to.clone(),
+            value_parameter_index: edge.parameter_index,
+            placement: edge.placement.clone(),
+            collection_type: edge.collection_type.clone(),
+            element_type: edge.element_type.clone(),
+            context_type: candidate.context.return_type.clone(),
+            strategy: "KOTLIN_EAGER_LIST_MAP_WITH_CONTEXT_ONCE".into(),
+        };
         transaction::validate_worktree(
             &self.repo,
             thread.snapshot.build_system,
@@ -2513,6 +2549,66 @@ impl EvidenceAuthority {
                         | ErrorCode::AmbiguousSymbol
                 ) =>
             {
+                if let Ok(resolution) = worker.request(
+                    RequestKind::ResolveSymbol,
+                    &json!({"repo":self.repo,"compilation":test_compilation,"symbol":test_symbol}),
+                ) && let Some(conditional_oracle) = conditional_oracle_evidence(
+                    &resolution,
+                    &candidate.transformer.compiler_symbol,
+                    &candidate.context.compiler_symbol,
+                )? {
+                    let goal_fingerprint = canonical::hash(goal).map_err(internal)?;
+                    let base_evidence = canonical::hash(&(
+                        &thread_fingerprint,
+                        index.get("indexHash"),
+                        &candidate.context_resolution_hash,
+                        &candidate.transformer_resolution_hash,
+                        &bindings,
+                        &conditional_oracle.evidence_fingerprint,
+                    ))
+                    .map_err(internal)?;
+                    let mut invariants = map_edge_invariants(&base_evidence, &bindings)?;
+                    invariants.retain(|proof| {
+                        proof.invariant != MapEdgeInvariant::BehavioralOracleAvailable
+                    });
+                    let mut change_graph = map_edge_change_graph(goal, &bindings, &invariants);
+                    if let Some(obligation) = change_graph
+                        .obligations
+                        .iter_mut()
+                        .find(|obligation| obligation.kind == ObligationKind::RequireOracle)
+                    {
+                        obligation.status = DischargeStatus::Unproved;
+                        obligation.evidence.clear();
+                    }
+                    let unresolved_obligations = conditional_oracle_obligations(
+                        &conditional_oracle,
+                        vec![
+                            candidate.transformer.compiler_symbol.clone(),
+                            candidate.context.compiler_symbol.clone(),
+                        ],
+                    );
+                    let evidence_fingerprint = canonical::hash(&(
+                        &goal_fingerprint,
+                        &base_evidence,
+                        &invariants,
+                        &change_graph,
+                        &unresolved_obligations,
+                    ))
+                    .map_err(internal)?;
+                    return Ok(MapEdgeWithContextDecision::Conditional(
+                        MapEdgeConditional {
+                            schema: "map-edge-with-context-decision/0.2".into(),
+                            status: "CONDITIONAL".into(),
+                            revision: self.revision.clone(),
+                            goal_fingerprint,
+                            bindings,
+                            established_invariants: invariants,
+                            change_graph,
+                            unresolved_obligations,
+                            evidence_fingerprint,
+                        },
+                    ));
+                }
                 return Ok(map_edge_refused(
                     MapEdgeRefusalReason::MissingBehavioralOracle,
                 ));
@@ -2521,19 +2617,6 @@ impl EvidenceAuthority {
         };
         let validation = self.run_validation(&[workflow], &[&test], worker)?;
         let bundle = self.authorize_bundle(&[workflow], &[&test], &validation)?;
-        let bindings = MapEdgeBindingSummary {
-            workflow_symbol: edge.workflow_symbol.clone(),
-            context_producer_symbol: candidate.context.compiler_symbol.clone(),
-            transformer_symbol: candidate.transformer.compiler_symbol.clone(),
-            value_edge_from: edge.from.clone(),
-            value_edge_to: edge.to.clone(),
-            value_parameter_index: edge.parameter_index,
-            placement: edge.placement.clone(),
-            collection_type: edge.collection_type.clone(),
-            element_type: edge.element_type.clone(),
-            context_type: candidate.context.return_type.clone(),
-            strategy: "KOTLIN_EAGER_LIST_MAP_WITH_CONTEXT_ONCE".into(),
-        };
         let goal_fingerprint = canonical::hash(goal).map_err(internal)?;
         let base_evidence = canonical::hash(&(
             &thread_fingerprint,
@@ -3249,13 +3332,42 @@ impl EvidenceAuthority {
                         .resolution_fingerprint
                         .clone(),
                 };
-                let (test, rejections) = self.discover_behavioral_oracle(
+                let (test, rejections, conditional_oracle) = self.discover_behavioral_oracle(
                     &test_symbols,
                     &test_compilation,
                     &legacy_candidate,
                     worker,
                 )?;
                 let Some(test) = test else {
+                    if let Some(conditional_oracle) = conditional_oracle {
+                        let goal_fingerprint = canonical::hash(goal).map_err(internal)?;
+                        let established_evidence_fingerprint = canonical::hash(&(
+                            &flow.thread_fingerprint,
+                            &flow.index_hash,
+                            &selected.transformer.resolution_fingerprint,
+                            &bindings,
+                            &conditional_oracle.evidence_fingerprint,
+                        ))
+                        .map_err(internal)?;
+                        return Ok(TypedGoalBindingDecision::Conditional(
+                            TypedGoalConditional {
+                                schema: TYPED_GOAL_BINDING_DECISION_SCHEMA.into(),
+                                status: "CONDITIONAL".into(),
+                                revision: self.revision.clone(),
+                                goal_fingerprint,
+                                bindings,
+                                established_evidence_fingerprint,
+                                unresolved_obligations: conditional_oracle_obligations(
+                                    &conditional_oracle,
+                                    vec![
+                                        map_candidate.transformer.callable.compiler_symbol.clone(),
+                                        map_candidate.context.callable.compiler_symbol.clone(),
+                                    ],
+                                ),
+                                rejections,
+                            },
+                        ));
+                    }
                     return Ok(typed_goal_refused_with_rejections(
                         TypedGoalRefusalReason::MissingBehavioralOracle,
                         rejections,
@@ -3301,10 +3413,12 @@ impl EvidenceAuthority {
         (
             Option<VerifiedBehavioralTestReceipt>,
             Vec<OracleCandidateRejection>,
+            Option<ConditionalOracleEvidence>,
         ),
         ClewError,
     > {
         let mut rejections = Vec::new();
+        let mut conditional = BTreeMap::new();
         let diagnostic_context = oracle_compilation_context(&self.repo, compilation, worker)?;
         for test_candidate in candidates {
             for symbol in &test_candidate.queries {
@@ -3344,6 +3458,13 @@ impl EvidenceAuthority {
                 if let Err(error) =
                     verify_assertion_of_target(&resolution, &binding.transformer.compiler_symbol)
                 {
+                    if let Some(evidence) = conditional_oracle_evidence(
+                        &resolution,
+                        &binding.transformer.compiler_symbol,
+                        &binding.context.compiler_symbol,
+                    )? {
+                        conditional.insert(evidence.evidence_fingerprint.clone(), evidence);
+                    }
                     rejections.push(OracleCandidateRejection {
                         identity_fingerprint,
                         owner: test_candidate.owner.clone(),
@@ -3358,6 +3479,13 @@ impl EvidenceAuthority {
                     &binding.transformer.compiler_symbol,
                     &binding.context.compiler_symbol,
                 ) {
+                    if let Some(evidence) = conditional_oracle_evidence(
+                        &resolution,
+                        &binding.transformer.compiler_symbol,
+                        &binding.context.compiler_symbol,
+                    )? {
+                        conditional.insert(evidence.evidence_fingerprint.clone(), evidence);
+                    }
                     rejections.push(OracleCandidateRejection {
                         identity_fingerprint,
                         owner: test_candidate.owner.clone(),
@@ -3374,7 +3502,7 @@ impl EvidenceAuthority {
                     Some(&binding.context.compiler_symbol),
                     worker,
                 ) {
-                    Ok(receipt) => return Ok((Some(receipt), rejections)),
+                    Ok(receipt) => return Ok((Some(receipt), rejections, None)),
                     Err(error) => rejections.push(OracleCandidateRejection {
                         identity_fingerprint,
                         owner: test_candidate.owner.clone(),
@@ -3385,7 +3513,13 @@ impl EvidenceAuthority {
                 }
             }
         }
-        Ok((None, rejections))
+        let conditional = (conditional.len() == 1).then(|| {
+            conditional
+                .into_values()
+                .next()
+                .expect("one conditional oracle")
+        });
+        Ok((None, rejections, conditional))
     }
 
     #[cfg(any())]
@@ -3997,6 +4131,47 @@ fn map_edge_refused(reason: MapEdgeRefusalReason) -> MapEdgeWithContextDecision 
     })
 }
 
+fn argument_mapping_obligation(subject: Vec<String>) -> UnresolvedVerificationObligation {
+    UnresolvedVerificationObligation {
+        id: "verify-argument-parameter-mapping".into(),
+        code: VerificationObligationCode::VerifyArgumentParameterMapping,
+        subject,
+        established_authority: EvidenceStrength::SourceStructural,
+        required_authority: EvidenceStrength::CompilerExact,
+        acceptable_verifiers: vec![
+            VerificationMethod::CompilerArgumentMapping,
+            VerificationMethod::FocusedRuntimeTest,
+            VerificationMethod::CandidateCompileAndTest,
+            VerificationMethod::HumanReview,
+        ],
+        publication_blocking: true,
+    }
+}
+
+fn conditional_oracle_obligations(
+    evidence: &ConditionalOracleEvidence,
+    subject: Vec<String>,
+) -> Vec<UnresolvedVerificationObligation> {
+    let mut obligations = Vec::new();
+    if !evidence.target_identity_exact {
+        obligations.push(UnresolvedVerificationObligation {
+            id: "verify-call-target-identity".into(),
+            code: VerificationObligationCode::VerifyCallTargetIdentity,
+            subject: subject.clone(),
+            established_authority: EvidenceStrength::SourceStructural,
+            required_authority: EvidenceStrength::CompilerExact,
+            acceptable_verifiers: vec![
+                VerificationMethod::CompilerArgumentMapping,
+                VerificationMethod::FocusedRuntimeTest,
+                VerificationMethod::HumanReview,
+            ],
+            publication_blocking: true,
+        });
+    }
+    obligations.push(argument_mapping_obligation(subject));
+    obligations
+}
+
 fn typed_goal_refused(reason: TypedGoalRefusalReason) -> TypedGoalBindingDecision {
     TypedGoalBindingDecision::Refused(TypedGoalRefusal {
         schema: TYPED_GOAL_BINDING_DECISION_SCHEMA.into(),
@@ -4283,6 +4458,7 @@ fn prove_relation_records(
     Ok(records)
 }
 
+#[cfg(any())]
 fn typed_operator_ambiguity(
     application: &OperatorApplication,
     choices: impl IntoIterator<Item = Vec<String>>,
@@ -4926,42 +5102,6 @@ impl OperatorEvidenceProvider for NullableConstructionOperatorEvidenceProvider<'
             }
             _ => Err(TypedGoalRefusalReason::UnsupportedOperatorComposition),
         }
-    }
-}
-
-impl OperatorEvidenceProvider for DeclarationValueFlowOperatorEvidenceProvider<'_> {
-    fn prove(
-        &self,
-        application: &OperatorApplication,
-    ) -> Result<Vec<ProviderFactReceipt>, TypedGoalRefusalReason> {
-        if application.operator != PrimitiveConstraint::ValueFlowsTo
-            || application.operands.len() != 2
-        {
-            return Err(TypedGoalRefusalReason::UnsupportedOperatorComposition);
-        }
-        let source = self
-            .bindings
-            .get(&application.operands[0])
-            .ok_or(TypedGoalRefusalReason::InsufficientEvidence)?;
-        let destination = self
-            .bindings
-            .get(&application.operands[1])
-            .ok_or(TypedGoalRefusalReason::InsufficientEvidence)?;
-        if source != &self.candidate.source_symbol
-            || destination != &self.candidate.destination_symbol
-            || self.candidate.evaluation_count != 1
-            || self.candidate.slot_kind != "VALUE_PARAMETER"
-            || self.candidate.source_type != self.candidate.destination_type
-            || self.candidate.source_nullable != self.candidate.destination_nullable
-        {
-            return Err(TypedGoalRefusalReason::InsufficientEvidence);
-        }
-        Ok(vec![ProviderFactReceipt {
-            relation: EvidenceRelation::DeclarationValueFlow,
-            provider_kind: "verified-index-live-thread-occurrence",
-            fact_fingerprint: canonical::hash(self.candidate)
-                .map_err(|_| TypedGoalRefusalReason::InsufficientEvidence)?,
-        }])
     }
 }
 
@@ -5722,7 +5862,11 @@ fn boundary_affected_relations(boundary: &Value) -> Result<BTreeSet<EvidenceRela
         .ok_or_else(|| classification_error("boundary provider is missing or malformed"))?;
     if !matches!(
         provider,
-        "K2_FIR" | "K2_FIR_CFG" | "COMPILER_RELATION_NORMALIZER" | "WORKER"
+        "K2_FIR"
+            | "K2_FIR_CFG"
+            | "COMPILER_RELATION_NORMALIZER"
+            | "CODECLEW_RELATION_NORMALIZER"
+            | "WORKER"
     ) {
         return Err(classification_error(
             "Unknown boundary provider is not registered",
@@ -5788,6 +5932,10 @@ fn boundary_affected_relations(boundary: &Value) -> Result<BTreeSet<EvidenceRela
                 EvidenceRelation::DeclarationValueFlow,
             ])
         }
+        "OPTIONAL_RELATION_EVIDENCE" if code == "ARGUMENT_MAPPING_UNAVAILABLE" => BTreeSet::from([
+            EvidenceRelation::AssignableUsePreservation,
+            EvidenceRelation::DeclarationValueFlow,
+        ]),
         "REFERENCE"
             if matches!(
                 code,
@@ -6060,6 +6208,9 @@ fn evaluate_obligation_relative_boundaries(
     })
 }
 
+// The structured refusal carries the full fail-closed evidence needed by the
+// caller; boxing it would make the internal error path less transparent.
+#[allow(clippy::result_large_err)]
 fn discover_declaration_type_candidates(
     repo: &Path,
     requested_compilation: Option<&str>,
@@ -6096,7 +6247,7 @@ fn discover_declaration_type_candidates(
         )
     })?;
     if inspected.get("k2Validated").and_then(Value::as_bool) != Some(true)
-        || has_error_diagnostic(&inspected)
+        || has_error_diagnostic(inspected)
     {
         return Err(failure(
             DeclarationProviderStage::IndexCoverage,
@@ -7409,7 +7560,7 @@ fn discover_declaration_value_flow_candidates(
     )?;
     let inspected = worker.inspect_verified_index(&verified)?;
     if inspected.get("k2Validated").and_then(Value::as_bool) != Some(true)
-        || has_error_diagnostic(&inspected)
+        || has_error_diagnostic(inspected)
     {
         return Err(projection_discovery_error(
             "value-flow index is not compiler validated",
@@ -7493,26 +7644,12 @@ fn discover_declaration_value_flow_candidates(
             }
         }
     }
-    let boundary_goal = TypedSemanticGoal::new(
-        "boundary-closure",
-        [
-            ("source".into(), TypedVariableDomain::Declaration),
-            ("destination".into(), TypedVariableDomain::Declaration),
-        ],
-        [OperatorApplication {
-            operator: PrimitiveConstraint::ValueFlowsTo,
-            operands: vec!["source".into(), "destination".into()],
-        }],
-    );
-    let boundary_plan = boundary_goal
-        .execution_plan()
-        .map_err(|_| invalid_source("VALUE_FLOWS_TO mandatory closure is invalid"))?;
     let boundary_evaluation = evaluate_obligation_relative_boundaries(
         &[
             ("RELATION", &relations.graph),
             ("DESCRIPTOR", &descriptors.graph),
         ],
-        &mandatory_relations_for_plan(&boundary_plan),
+        &BTreeSet::from([EvidenceRelation::DeclarationValueFlow]),
         &boundary_roots,
     )?;
     let mut by_callable = BTreeMap::<String, Vec<&Value>>::new();
@@ -8668,6 +8805,9 @@ fn declaration_override_types_match(
             == declaration_parameter_types(target))
 }
 
+// Keep the structured rejection inline so callers can enrich it before it is
+// serialized into the typed refusal receipt.
+#[allow(clippy::result_large_err)]
 fn declaration_type_comparison_diagnostic(
     relation: &Value,
     source: &Value,
@@ -9577,10 +9717,16 @@ fn declaration_use_types_match(
             }
             let parameters = declaration_parameter_types(target)
                 .ok_or(TypedGoalRefusalReason::InsufficientEvidence)?;
-            let arguments = relation
+            let Some(arguments) = relation
                 .get("argumentToParameter")
                 .and_then(Value::as_array)
-                .ok_or(TypedGoalRefusalReason::InsufficientEvidence)?;
+            else {
+                return if parameters.is_empty() {
+                    Ok(true)
+                } else {
+                    Err(TypedGoalRefusalReason::InsufficientEvidence)
+                };
+            };
             for argument in arguments {
                 let index = argument
                     .get("parameterIndex")
@@ -9614,7 +9760,7 @@ fn discover_value_flows(
     )?;
     let index = worker.inspect_verified_index(&verified_index)?;
     if index.get("k2Validated").and_then(Value::as_bool) != Some(true)
-        || has_error_diagnostic(&index)
+        || has_error_diagnostic(index)
     {
         return Ok(vec![]);
     }
@@ -9674,7 +9820,7 @@ fn discover_value_flows(
             Ok(edge) => edge,
             Err(_) => continue,
         };
-        let (contexts, transformer_candidates) = discover_callable_candidates(&index, &edge)?;
+        let (contexts, transformer_candidates) = discover_callable_candidates(index, &edge)?;
         let mut resolved_contexts = Vec::new();
         for context in contexts {
             if let Some(resolved) = resolve_callable_evidence(repo, &compilation, &context, worker)?
@@ -9768,13 +9914,7 @@ fn build_discovered_thread(
                 .and_then(Value::as_u64)
                 .unwrap_or_default()
         })
-        .or_else(|| {
-            graph
-                .nodes
-                .iter()
-                .filter(|node| node.origin.is_some())
-                .last()
-        })
+        .or_else(|| graph.nodes.iter().rfind(|node| node.origin.is_some()))
         .map(|node| node.id.clone())
         .ok_or_else(|| {
             ClewError::new(
@@ -10670,6 +10810,195 @@ fn verify_context_argument_of_target(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct ConditionalOracleEvidence {
+    evidence_fingerprint: String,
+    target_identity_exact: bool,
+}
+
+fn conditional_oracle_evidence(
+    resolution: &Value,
+    target_compiler_symbol: &str,
+    context_compiler_symbol: &str,
+) -> Result<Option<ConditionalOracleEvidence>, ClewError> {
+    let calls = resolution
+        .get("resolvedCalls")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_source("test resolution has no resolved calls"))?;
+    if calls.is_empty() {
+        return conditional_source_oracle_evidence(
+            resolution,
+            target_compiler_symbol,
+            context_compiler_symbol,
+        );
+    }
+    let unique = |symbol: &str| {
+        let matching = calls
+            .iter()
+            .filter(|call| call.get("symbol").and_then(Value::as_str) == Some(symbol))
+            .collect::<Vec<_>>();
+        if matching.len() == 1 {
+            Some(matching[0])
+        } else {
+            None
+        }
+    };
+    let (Some(target), Some(context), Some(assertion)) = (
+        unique(target_compiler_symbol),
+        unique(context_compiler_symbol),
+        unique("kotlin/test/assertEquals"),
+    ) else {
+        return Ok(None);
+    };
+    let range = |call: &Value| Some((call.get("start")?.as_u64()?, call.get("end")?.as_u64()?));
+    let (
+        Some((target_start, target_end)),
+        Some((context_start, context_end)),
+        Some((assert_start, assert_end)),
+    ) = (range(target), range(context), range(assertion))
+    else {
+        return Ok(None);
+    };
+    if !(assert_start <= target_start
+        && target_end <= assert_end
+        && target_start <= context_start
+        && context_end <= target_end)
+    {
+        return Ok(None);
+    }
+    let assertion_mapping = assertion
+        .get("argumentToParameter")
+        .and_then(Value::as_array);
+    let target_mapping = target.get("argumentToParameter").and_then(Value::as_array);
+    let assertion_proves_target = assertion_mapping.is_some_and(|arguments| {
+        arguments.iter().any(|argument| {
+            argument.get("parameter").and_then(Value::as_str) == Some("actual")
+                && argument.get("argumentStart").and_then(Value::as_u64) == Some(target_start)
+        })
+    });
+    let target_proves_context = target_mapping.is_some_and(|arguments| {
+        arguments.iter().any(|argument| {
+            argument.get("argumentStart").and_then(Value::as_u64) == Some(context_start)
+        })
+    });
+    if assertion_mapping.is_some_and(|arguments| !arguments.is_empty()) && !assertion_proves_target
+        || target_mapping.is_some_and(|arguments| !arguments.is_empty()) && !target_proves_context
+    {
+        return Ok(None);
+    }
+    if assertion_proves_target && target_proves_context {
+        return Ok(None);
+    }
+    Ok(Some(ConditionalOracleEvidence {
+        evidence_fingerprint: canonical::hash(&json!({
+            "authority":"SOURCE_STRUCTURAL",
+            "target":target_compiler_symbol,
+            "context":context_compiler_symbol,
+            "targetRange":[target_start,target_end],
+            "contextRange":[context_start,context_end],
+            "assertionRange":[assert_start,assert_end],
+            "assertionMappingProved":assertion_proves_target,
+            "contextMappingProved":target_proves_context,
+        }))
+        .map_err(internal)?,
+        target_identity_exact: true,
+    }))
+}
+
+fn conditional_source_oracle_evidence(
+    resolution: &Value,
+    target_compiler_symbol: &str,
+    context_compiler_symbol: &str,
+) -> Result<Option<ConditionalOracleEvidence>, ClewError> {
+    let short_name = |symbol: &str| {
+        symbol
+            .rsplit(['/', '.'])
+            .next()
+            .unwrap_or(symbol)
+            .to_owned()
+    };
+    let target = short_name(target_compiler_symbol);
+    let context = short_name(context_compiler_symbol);
+    if target.is_empty() || context.is_empty() || target == context {
+        return Ok(None);
+    }
+    let calls = resolution
+        .get("calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if calls.iter().filter(|call| **call == target).count() != 1
+        || calls.iter().filter(|call| **call == context).count() != 1
+        || calls.iter().filter(|call| **call == "assertEquals").count() != 1
+    {
+        return Ok(None);
+    }
+    let source = resolution
+        .pointer("/bodyAnchor/sourceText")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let call_start = |name: &str| {
+        let needle = format!("{name}(");
+        let starts = source
+            .match_indices(&needle)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if starts.len() == 1 {
+            Some(starts[0])
+        } else {
+            None
+        }
+    };
+    let (Some(assertion_start), Some(target_start), Some(context_start)) = (
+        call_start("assertEquals"),
+        call_start(&target),
+        call_start(&context),
+    ) else {
+        return Ok(None);
+    };
+    let closing_paren = |start: usize| {
+        let mut depth = 0usize;
+        for (offset, character) in source[start..].char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' if depth == 1 => return Some(start + offset),
+                ')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        None
+    };
+    let (Some(assertion_end), Some(target_end), Some(context_end)) = (
+        closing_paren(assertion_start),
+        closing_paren(target_start),
+        closing_paren(context_start),
+    ) else {
+        return Ok(None);
+    };
+    if !(assertion_start < target_start
+        && target_end < assertion_end
+        && target_start < context_start
+        && context_end < target_end)
+    {
+        return Ok(None);
+    }
+    Ok(Some(ConditionalOracleEvidence {
+        evidence_fingerprint: canonical::hash(&json!({
+            "authority":"SOURCE_STRUCTURAL",
+            "targetCandidate":target_compiler_symbol,
+            "contextCandidate":context_compiler_symbol,
+            "bodyAnchor":resolution.pointer("/bodyAnchor/anchorId"),
+            "targetRange":[target_start,target_end],
+            "contextRange":[context_start,context_end],
+            "assertionRange":[assertion_start,assertion_end],
+        }))
+        .map_err(internal)?,
+        target_identity_exact: false,
+    }))
+}
+
 fn verify_live_sources(
     repo: &Path,
     thread: &ThreadIr,
@@ -11253,7 +11582,7 @@ fn apply_candidate_overlay(
     for (file, source) in &overlay.candidates {
         let production = overlay.production_files.contains(file);
         let test = overlay.test_files.contains(file);
-        if !test && !(include_production && production) {
+        if !(test || include_production && production) {
             continue;
         }
         if production == test {
@@ -11981,7 +12310,29 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&clone.stderr)
         );
+        for args in [
+            vec!["config", "user.email", "test@example.invalid"],
+            vec!["config", "user.name", "Codeclew Test"],
+            vec![
+                "rm",
+                "--quiet",
+                "fixtures/kotlin-2-1/src/main/kotlin/com/acme/RelationFacts.kt",
+            ],
+            vec!["commit", "--quiet", "-m", "isolate signed fixture"],
+        ] {
+            let output = Command::new("git")
+                .current_dir(&checkout)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let repo = checkout.join("fixtures/kotlin-2-1");
+        crate::worker::seed_test_build_caches(&repo);
         let revision = git_head(&repo).unwrap();
         let goal = TypedSemanticGoal::new(
             &revision,
@@ -12116,6 +12467,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        crate::worker::seed_test_build_caches(&repo);
         let revision = git_head(&repo).unwrap();
         let goal = TypedSemanticGoal::new(
             &revision,
@@ -12212,6 +12564,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        crate::worker::seed_test_build_caches(&repo);
         let revision = git_head(&repo).unwrap();
         let request = TypedGoalBindingRequest {
             schema: TYPED_GOAL_BINDING_REQUEST_SCHEMA.into(),
@@ -12338,6 +12691,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        crate::worker::seed_test_build_caches(&repo);
         let revision = git_head(&repo).unwrap();
         let request = TypedGoalBindingRequest {
             schema: TYPED_GOAL_BINDING_REQUEST_SCHEMA.into(),
@@ -12468,6 +12822,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        crate::worker::seed_test_build_caches(&repo);
         let revision = git_head(&repo).unwrap();
         let request = TypedGoalBindingRequest {
             schema: TYPED_GOAL_BINDING_REQUEST_SCHEMA.into(),
@@ -13259,11 +13614,11 @@ internal fun execute(): String { return consume(second = stored, first = project
             r#"
 package example
 
-internal interface MeasurePort { fun measure(input: Int): Number }
+internal interface MeasurePort { fun measure(): Number }
 internal class ExactMeasure : MeasurePort {
-    override fun measure(input: Int): Int = input
+    override fun measure(): Int = 1
 }
-internal fun render(port: MeasurePort, input: Int): Number = port.measure(input)
+internal fun render(port: MeasurePort): Number = port.measure()
 internal fun unrelated(value: String): String = value
 "#,
         );
@@ -13313,12 +13668,12 @@ internal fun unrelated(value: String): String = value
             &mut worker,
             r#"
 package neutral
-internal interface LeftPort { fun read(input: Int): Number }
-internal class LeftReader : LeftPort { override fun read(input: Int): Int = input }
-internal fun leftUse(port: LeftPort, input: Int): Number = port.read(input)
-internal interface RightPort { fun size(input: Int): Number }
-internal class RightReader : RightPort { override fun size(input: Int): Int = input }
-internal fun rightUse(port: RightPort, input: Int): Number = port.size(input)
+internal interface LeftPort { fun read(): Number }
+internal class LeftReader : LeftPort { override fun read(): Int = 1 }
+internal fun leftUse(port: LeftPort): Number = port.read()
+internal interface RightPort { fun size(): Number }
+internal class RightReader : RightPort { override fun size(): Int = 1 }
+internal fun rightUse(port: RightPort): Number = port.size()
 "#,
         );
         let decision = bind_declaration_fixture(&ambiguous, &mut worker);
@@ -13393,9 +13748,9 @@ private fun hiddenAdditionalUse(port: ClosedPort, input: Int): Number = port.rea
             &mut worker,
             r#"
 package first.layout
-internal interface Alpha { fun convert(value: Int): Number }
-internal class Beta : Alpha { override fun convert(value: Int): Int = value }
-internal fun gamma(port: Alpha, value: Int): Number = port.convert(value)
+internal interface Alpha { fun convert(): Number }
+internal class Beta : Alpha { override fun convert(): Int = 1 }
+internal fun gamma(port: Alpha): Number = port.convert()
 internal fun lexicalDecoy(value: String): String = value
 "#,
         );
@@ -13408,9 +13763,9 @@ internal fun lexicalDecoy(value: String): String = value
             &mut worker,
             r#"
 package another.deep.layout
-internal interface Delta { fun apply(number: Int): Number }
-internal class Epsilon : Delta { override fun apply(number: Int): Int = number }
-internal fun zeta(port: Delta, number: Int): Number = port.apply(number)
+internal interface Delta { fun apply(): Number }
+internal class Epsilon : Delta { override fun apply(): Int = 1 }
+internal fun zeta(port: Delta): Number = port.apply()
 internal class Decoy { fun apply(number: String): String = number }
 "#,
         );
@@ -13449,9 +13804,9 @@ internal class Decoy { fun apply(number: String): String = number }
             &mut worker,
             r#"
 package neutral
-internal interface StalePort { fun read(input: Int): Number }
-internal class StaleReader : StalePort { override fun read(input: Int): Int = input }
-internal fun staleUse(port: StalePort, input: Int): Number = port.read(input)
+internal interface StalePort { fun read(): Number }
+internal class StaleReader : StalePort { override fun read(): Int = 1 }
+internal fun staleUse(port: StalePort): Number = port.read()
 "#,
         );
         let mut authority =
@@ -13495,11 +13850,11 @@ internal fun staleUse(port: StalePort, input: Int): Number = port.read(input)
         }
         let source = r#"
 package example
-internal interface MeasurePort { fun measure(input: Int): Number }
+internal interface MeasurePort { fun measure(): Number }
 internal class ExactMeasure : MeasurePort {
-    override fun measure(input: Int): Int = input
+    override fun measure(): Int = 1
 }
-internal fun render(port: MeasurePort, input: Int): Number = port.measure(input)
+internal fun render(port: MeasurePort): Number = port.measure()
 internal fun unrelated(value: String): String = value
 "#;
         let mut worker = WorkerClient::start(&crate::worker::workspace_root()).unwrap();
@@ -13555,11 +13910,11 @@ fun render(port: PublicPort, input: Int): Number = port.measure(input)
             r#"
 package example
 
-internal interface MeasurePort { fun measure(input: Int): Number }
+internal interface MeasurePort { fun measure(): Number }
 internal class ExactMeasure : MeasurePort {
-    override fun measure(input: Int): Int = input
+    override fun measure(): Int = 1
 }
-internal fun render(port: MeasurePort, input: Int): Number = port.measure(input)
+internal fun render(port: MeasurePort): Number = port.measure()
 internal fun unrelated(value: String): String = value
 "#,
         );
@@ -13618,12 +13973,12 @@ internal fun unrelated(value: String): String = value
             r#"
 package example
 
-internal interface FirstPort { fun read(input: Int): Number }
-internal class FirstReader : FirstPort { override fun read(input: Int): Int = input }
-internal fun firstUse(port: FirstPort, input: Int): Number = port.read(input)
-internal interface SecondPort { fun size(input: Int): Number }
-internal class SecondReader : SecondPort { override fun size(input: Int): Int = input }
-internal fun secondUse(port: SecondPort, input: Int): Number = port.size(input)
+internal interface FirstPort { fun read(): Number }
+internal class FirstReader : FirstPort { override fun read(): Int = 1 }
+internal fun firstUse(port: FirstPort): Number = port.read()
+internal interface SecondPort { fun size(): Number }
+internal class SecondReader : SecondPort { override fun size(): Int = 1 }
+internal fun secondUse(port: SecondPort): Number = port.size()
 "#,
         );
         let decision = bind_declaration_fixture(&ambiguous, &mut worker);
@@ -13678,7 +14033,7 @@ fun publicUse(port: PublicPort, input: Int): Number = port.read(input)
     }
 
     #[test]
-    fn value_flows_to_provider_occurrence_fact_group() {
+    fn value_flows_to_provider_refuses_unmapped_occurrences() {
         let mut worker = WorkerClient::start(&crate::worker::workspace_root()).unwrap();
         let positive = declaration_type_spec_fixture(
             &mut worker,
@@ -13688,95 +14043,28 @@ internal fun origin(value: String): String = value
 internal fun destination(first: String, second: String): String = second
 internal fun lexicalDecoy(value: String): String = value
 internal fun route(seed: String, sameTypeDecoy: String): String =
-    destination(second = origin(seed), first = sameTypeDecoy)
+    destination(sameTypeDecoy, origin(seed))
 "#,
         );
         let candidates =
             discover_declaration_value_flow_candidates(&positive.repo, Some(":/main"), &mut worker)
                 .unwrap();
-        let [candidate] = candidates.as_slice() else {
-            panic!("one exact occurrence flow expected, got {candidates:#?}")
-        };
-        assert_eq!(candidate.slot_kind, "VALUE_PARAMETER");
-        assert_eq!(
-            candidate.slot_index, 1,
-            "named/reordered exact slot must survive"
-        );
-        assert_eq!(candidate.evaluation_count, 1);
-        assert_eq!(candidate.order, "SOURCE_BEFORE_DESTINATION");
-        assert_eq!(candidate.dominance, "SOURCE_DOMINATES_DESTINATION");
-        assert_eq!(candidate.source_type, candidate.destination_type);
-        assert!(candidate.source_node_id.starts_with("fir:"));
-        assert!(candidate.destination_node_id.starts_with("fir:"));
-        for fingerprint in [
-            &candidate.relation_fingerprint,
-            &candidate.descriptor_fingerprint,
-            &candidate.thread_fingerprint,
-            &candidate.read_set_fingerprint,
-            &candidate.provenance_fingerprint,
-            &candidate.boundary_closure_fingerprint,
-        ] {
-            assert!(fingerprint.starts_with("sha256:"));
-        }
-        let app = OperatorApplication {
-            operator: PrimitiveConstraint::ValueFlowsTo,
-            operands: vec!["from".into(), "to".into()],
-        };
-        let bindings = BTreeMap::from([
-            ("from".into(), candidate.source_symbol.clone()),
-            ("to".into(), candidate.destination_symbol.clone()),
-        ]);
-        let provider = DeclarationValueFlowOperatorEvidenceProvider {
-            bindings: &bindings,
-            candidate,
-        };
-        let receipts = provider.prove(&app).unwrap();
-        assert_eq!(receipts.len(), 1);
-        assert_eq!(receipts[0].relation, EvidenceRelation::DeclarationValueFlow);
-        assert_eq!(
-            receipts[0].provider_kind,
-            "verified-index-live-thread-occurrence"
+        assert!(
+            candidates.is_empty(),
+            "a CALL without compiler argument-to-parameter evidence must not create a value-flow candidate"
         );
 
-        let ambiguous = declaration_type_spec_fixture(
-            &mut worker,
-            r#"
-package neutral.flow
-internal fun origin(value: String): String = value
-internal fun destination(first: String, second: String): String = second
-internal fun route(seed: String): String =
-    destination(first = origin(seed), second = origin(seed))
-"#,
-        );
-        let ambiguous = discover_declaration_value_flow_candidates(
-            &ambiguous.repo,
-            Some(":/main"),
-            &mut worker,
-        );
-        assert!(ambiguous.is_err(), "multiple occurrence paths must refuse");
-
-        let boundary_goal = TypedSemanticGoal::new(
-            "boundary-test",
-            [
-                ("source".into(), TypedVariableDomain::Declaration),
-                ("destination".into(), TypedVariableDomain::Declaration),
-            ],
-            [OperatorApplication {
-                operator: PrimitiveConstraint::ValueFlowsTo,
-                operands: vec!["source".into(), "destination".into()],
-            }],
-        );
-        let mandatory = mandatory_relations_for_plan(&boundary_goal.execution_plan().unwrap());
+        let mandatory = BTreeSet::from([EvidenceRelation::DeclarationValueFlow]);
         let roots = BTreeSet::from([
-            candidate.owner_callable.clone(),
-            candidate.source_symbol.clone(),
-            candidate.destination_symbol.clone(),
+            "neutral/flow/route".to_owned(),
+            "neutral/flow/origin".to_owned(),
+            "neutral/flow/destination".to_owned(),
         ]);
         let return_boundary = json!({
             "provider":"K2_FIR",
             "stage":"RETURN_VALUE",
             "code":"IMPLICIT_RETURN_UNSUPPORTED",
-            "owner":candidate.owner_callable,
+            "owner":"neutral/flow/route",
         });
         let relation_graph = json!({
             "coverage":"PARTIAL",
@@ -13809,7 +14097,7 @@ internal fun route(seed: String): String =
             "provider":"K2_FIR",
             "stage":"ARGUMENT_MAPPING",
             "code":"MISSING_RESOLVED_ARGUMENT_MAPPING",
-            "owner":candidate.owner_callable,
+            "owner":"neutral/flow/route",
         });
         let relevant_graph = json!({
             "coverage":"PARTIAL",
@@ -14606,5 +14894,50 @@ internal fun route(seed: String): String =
         assert!(known_pure_callable("kotlin/Int.plus"));
         assert!(!known_pure_callable("kotlin/Int.div"));
         assert!(!known_pure_callable("kotlin/Long.rem"));
+    }
+
+    #[test]
+    fn exact_nested_calls_without_argument_mapping_are_conditional_not_proven() {
+        let resolution = json!({
+            "resolvedCalls":[
+                {"symbol":"kotlin/test/assertEquals","start":10,"end":90},
+                {"symbol":"p/transform","start":30,"end":80},
+                {"symbol":"p/context","start":55,"end":70}
+            ]
+        });
+        let conditional = conditional_oracle_evidence(&resolution, "p/transform", "p/context")
+            .unwrap()
+            .expect("exact nesting with missing mapping is actionable conditional evidence");
+        assert!(!conditional.evidence_fingerprint.is_empty());
+
+        let contradicted = json!({
+            "resolvedCalls":[
+                {"symbol":"kotlin/test/assertEquals","start":10,"end":90,
+                 "argumentToParameter":[{"parameter":"actual","argumentStart":44}]},
+                {"symbol":"p/transform","start":30,"end":80},
+                {"symbol":"p/context","start":55,"end":70}
+            ]
+        });
+        assert!(
+            conditional_oracle_evidence(&contradicted, "p/transform", "p/context")
+                .unwrap()
+                .is_none(),
+            "conflicting exact mapping must not be downgraded to conditional"
+        );
+
+        let ambiguous = json!({
+            "resolvedCalls":[
+                {"symbol":"kotlin/test/assertEquals","start":10,"end":90},
+                {"symbol":"p/transform","start":30,"end":80},
+                {"symbol":"p/transform","start":32,"end":75},
+                {"symbol":"p/context","start":55,"end":70}
+            ]
+        });
+        assert!(
+            conditional_oracle_evidence(&ambiguous, "p/transform", "p/context")
+                .unwrap()
+                .is_none(),
+            "ambiguous target occurrence must remain non-actionable"
+        );
     }
 }

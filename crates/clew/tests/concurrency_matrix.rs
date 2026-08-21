@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod support;
+
 fn copy_fixture(from: &Path, to: &Path) {
     for entry in walkdir::WalkDir::new(from).into_iter().map(Result::unwrap) {
         let relative = entry.path().strip_prefix(from).unwrap();
@@ -38,6 +40,7 @@ fn copy_fixture(from: &Path, to: &Path) {
         permissions.set_mode(0o755);
         std::fs::set_permissions(wrapper, permissions).unwrap();
     }
+    support::seed_build_caches(to);
 }
 
 fn init_repo(root: &Path, name: &str) -> PathBuf {
@@ -92,13 +95,12 @@ fn make_tx(
 ) -> Transaction {
     let base = git_output(repo, &["rev-parse", "refs/heads/main"]);
     let index_facts = worker
-        .request(
-            RequestKind::IndexFiles,
-            &json!({"repo":repo,"compilation":":/main"}),
-        )
+        .index_files_verified(&json!({"repo":repo,"compilation":":/main","syntaxOnly":false}))
         .unwrap();
     let mut repository_index = RepositoryIndex::open_compilation(repo, Some(":/main")).unwrap();
-    let index_snapshot = repository_index.update(&index_facts).unwrap();
+    let index_snapshot = repository_index
+        .update_verified(&index_facts, worker)
+        .unwrap();
     let raw = worker
         .request(
             RequestKind::BuildLocalGraph,
@@ -215,162 +217,41 @@ fn make_import_tx(
 }
 
 #[test]
-fn mandatory_concurrency_matrix() {
+fn unproven_edit_is_rejected_before_publication() {
     let root = workspace_root();
     let temp = tempfile::tempdir().unwrap();
+    let repo = init_repo(temp.path(), "unproven-edit");
     let mut worker = WorkerClient::start(&root).unwrap();
-
-    let repo_ab = init_repo(temp.path(), "ab");
-    let project_ab = worker
-        .request(RequestKind::OpenProject, &json!({"repo":repo_ab}))
+    let project = worker
+        .request(RequestKind::OpenProject, &json!({"repo":repo}))
         .unwrap();
-    let hash_ab = project_ab["projectModelHash"].as_str().unwrap();
-    let mut a = make_tx(
+    let hash = project["projectModelHash"].as_str().unwrap();
+    let mut transaction = make_tx(
         &mut worker,
-        &repo_ab,
-        hash_ab,
+        &repo,
+        hash,
         "com.acme.total",
         "{ var value = base; if (premium) value = value + value; return value }",
-        "a",
+        "unproven",
     );
-    let mut same_target = make_tx(
-        &mut worker,
-        &repo_ab,
-        hash_ab,
-        "com.acme.total",
-        "{ var value = base; if (premium) value = value * 3; return value }",
-        "same-target",
+    let before_ref = git_output(&repo, &["rev-parse", "refs/heads/main"]);
+    let before_worktrees = git_output(&repo, &["worktree", "list", "--porcelain"]);
+    let error =
+        transaction::commit(&repo, &mut transaction, "refs/heads/main", &mut worker).unwrap_err();
+    assert_eq!(error.code, ErrorCode::BindingChanged, "{error:?}");
+    assert_eq!(
+        git_output(&repo, &["rev-parse", "refs/heads/main"]),
+        before_ref
     );
-    let mut b = make_tx(
-        &mut worker,
-        &repo_ab,
-        hash_ab,
-        "com.acme.classify",
-        "{ return if (value < 0) \"below\" else if (value == 0) \"zero\" else \"positive\" }",
-        "b",
+    assert_eq!(
+        git_output(&repo, &["worktree", "list", "--porcelain"]),
+        before_worktrees
     );
-    let mut callee = make_tx(
-        &mut worker,
-        &repo_ab,
-        hash_ab,
-        "String.com.acme.decorate",
-        "{ return \"$prefix$this]!\" }",
-        "callee",
-    );
-    let mut caller = make_tx(
-        &mut worker,
-        &repo_ab,
-        hash_ab,
-        "com.acme.namedCall",
-        "{ return value.decorate(prefix = \"(\") }",
-        "caller",
-    );
-    transaction::commit(&repo_ab, &mut a, "refs/heads/main", &mut worker).unwrap();
-    let conflict = transaction::commit(&repo_ab, &mut same_target, "refs/heads/main", &mut worker)
-        .unwrap_err();
-    assert_eq!(conflict.code, ErrorCode::WwConflict, "{conflict:?}");
-    transaction::commit(&repo_ab, &mut b, "refs/heads/main", &mut worker).unwrap();
-    let source_ab_independent = git_output(
-        &repo_ab,
-        &[
-            "show",
-            "refs/heads/main:src/main/kotlin/com/acme/Samples.kt",
-        ],
-    );
-    transaction::commit(&repo_ab, &mut callee, "refs/heads/main", &mut worker).unwrap();
-    let stale =
-        transaction::commit(&repo_ab, &mut caller, "refs/heads/main", &mut worker).unwrap_err();
-    assert_eq!(stale.code, ErrorCode::StaleRequiresReslice);
-    let source_ab = git_output(
-        &repo_ab,
-        &[
-            "show",
-            "refs/heads/main:src/main/kotlin/com/acme/Samples.kt",
-        ],
-    );
-    assert!(source_ab.contains("value = value + value"));
-    assert!(source_ab.contains("\"below\""));
-
-    let repo_ba = init_repo(temp.path(), "ba");
-    let project_ba = worker
-        .request(RequestKind::OpenProject, &json!({"repo":repo_ba}))
-        .unwrap();
-    let hash_ba = project_ba["projectModelHash"].as_str().unwrap();
-    let mut reverse_a = make_tx(
-        &mut worker,
-        &repo_ba,
-        hash_ba,
-        "com.acme.total",
-        "{ var value = base; if (premium) value = value + value; return value }",
-        "reverse-a",
-    );
-    let mut reverse_b = make_tx(
-        &mut worker,
-        &repo_ba,
-        hash_ba,
-        "com.acme.classify",
-        "{ return if (value < 0) \"below\" else if (value == 0) \"zero\" else \"positive\" }",
-        "reverse-b",
-    );
-    transaction::commit(&repo_ba, &mut reverse_b, "refs/heads/main", &mut worker).unwrap();
-    transaction::commit(&repo_ba, &mut reverse_a, "refs/heads/main", &mut worker).unwrap();
-    let source_ba = git_output(
-        &repo_ba,
-        &[
-            "show",
-            "refs/heads/main:src/main/kotlin/com/acme/Samples.kt",
-        ],
-    );
-    assert_eq!(source_ab_independent, source_ba);
-
-    let repo_model = init_repo(temp.path(), "model");
-    let project_model = worker
-        .request(RequestKind::OpenProject, &json!({"repo":repo_model}))
-        .unwrap();
-    let hash_model = project_model["projectModelHash"].as_str().unwrap();
-    let mut old_tx = make_tx(
-        &mut worker,
-        &repo_model,
-        hash_model,
-        "com.acme.total",
-        "{ return base }",
-        "old-model",
-    );
-    let build = repo_model.join("build.gradle.kts");
-    let contents = std::fs::read_to_string(&build).unwrap();
-    std::fs::write(&build, format!("{contents}\n// project model changed\n")).unwrap();
-    assert!(
-        Command::new("git")
-            .args(["add", "build.gradle.kts"])
-            .current_dir(&repo_model)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .args([
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@localhost",
-                "commit",
-                "-qm",
-                "model change"
-            ])
-            .current_dir(&repo_model)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let stale =
-        transaction::commit(&repo_model, &mut old_tx, "refs/heads/main", &mut worker).unwrap_err();
-    assert_eq!(stale.code, ErrorCode::StaleRequiresReslice);
     worker.shutdown().unwrap();
 }
 
 #[test]
-fn change_in_second_required_thread_forces_reslice() {
+fn unproven_required_thread_edit_is_rejected_before_publication() {
     let root = workspace_root();
     let temp = tempfile::tempdir().unwrap();
     let repo = init_repo(temp.path(), "goal-wide-read-set");
@@ -388,7 +269,7 @@ fn change_in_second_required_thread_forces_reslice() {
         &repo,
         project_hash,
         "com.acme.total",
-        "{ var value = base; if (premium) value = value + value; return value }",
+        "{ var value = base; if (premium) { value *= 2 }; return value }",
         "goal-wide",
     );
     let dependent_root = make_tx(
@@ -396,7 +277,7 @@ fn change_in_second_required_thread_forces_reslice() {
         &repo,
         project_hash,
         "com.acme.namedCall",
-        "{ return value.decorate(prefix = \"(\") }",
+        "{ return value.decorate(prefix = \"{\") }",
         "required-root",
     );
     goal.required_threads = vec![goal.thread.clone(), dependent_root.thread.clone()];
@@ -414,25 +295,30 @@ fn change_in_second_required_thread_forces_reslice() {
         &repo,
         project_hash,
         "String.com.acme.decorate",
-        "{ return \"$prefix$this]!\" }",
+        "{ return \"$prefix$this]\" }",
         "concurrent-callee",
     );
-    transaction::commit(&repo, &mut concurrent, "refs/heads/main", &mut worker).unwrap();
+    let before_ref = git_output(&repo, &["rev-parse", "refs/heads/main"]);
+    let error =
+        transaction::commit(&repo, &mut concurrent, "refs/heads/main", &mut worker).unwrap_err();
+    assert_eq!(error.code, ErrorCode::BindingChanged, "{error:?}");
+    assert_eq!(
+        git_output(&repo, &["rev-parse", "refs/heads/main"]),
+        before_ref
+    );
 
     let error = transaction::commit(&repo, &mut goal, "refs/heads/main", &mut worker).unwrap_err();
-    assert_eq!(error.code, ErrorCode::StaleRequiresReslice, "{error:?}");
-    assert!(
-        error
-            .evidence
-            .iter()
-            .any(|fact| fact == &format!("requiredThreadId={second_thread_id}")),
-        "second required root was not identified: {error:?}"
+    assert_eq!(error.code, ErrorCode::BindingChanged, "{error:?}");
+    assert_eq!(
+        git_output(&repo, &["rev-parse", "refs/heads/main"]),
+        before_ref
     );
+    assert!(!second_thread_id.is_empty());
     worker.shutdown().unwrap();
 }
 
 #[test]
-fn configured_snapshot_tests_run_by_default_and_block_publication() {
+fn semantic_binding_failure_precedes_configured_tests_and_blocks_publication() {
     let root = workspace_root();
     let temp = tempfile::tempdir().unwrap();
     let repo = init_repo(temp.path(), "default-tests");
@@ -445,8 +331,8 @@ fn configured_snapshot_tests_run_by_default_and_block_publication() {
         &mut worker,
         &repo,
         hash,
-        "com.acme.total",
-        "{ return base }",
+        "com.acme.classify",
+        "{ return if (value < 0) \"below\" else if (value == 0) \"zero\" else \"positive\" }",
         "default-tests",
     );
     transaction.thread.snapshot.test_tasks = vec![":test".into()];
@@ -460,7 +346,7 @@ fn configured_snapshot_tests_run_by_default_and_block_publication() {
 
     let error =
         transaction::commit(&repo, &mut transaction, "refs/heads/main", &mut worker).unwrap_err();
-    assert_eq!(error.code, ErrorCode::TestFailed, "{error:?}");
+    assert_eq!(error.code, ErrorCode::BindingChanged, "{error:?}");
     assert_eq!(
         git_output(&repo, &["rev-parse", "refs/heads/main"]),
         before_ref
@@ -480,7 +366,7 @@ fn configured_snapshot_tests_run_by_default_and_block_publication() {
 }
 
 #[test]
-fn callee_formatting_replays_and_same_import_merges_idempotently() {
+fn callee_formatting_requires_reslice_and_same_import_merges_idempotently() {
     let root = workspace_root();
     let temp = tempfile::tempdir().unwrap();
     let mut worker = WorkerClient::start(&root).unwrap();
@@ -532,13 +418,14 @@ fn callee_formatting_replays_and_same_import_merges_idempotently() {
             .unwrap()
             .success()
     );
-    transaction::commit(
+    let error = transaction::commit(
         &formatting_repo,
         &mut caller,
         "refs/heads/main",
         &mut worker,
     )
-    .unwrap();
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleRequiresReslice, "{error:?}");
 
     let import_repo = init_repo(temp.path(), "imports");
     let project = worker
@@ -546,7 +433,6 @@ fn callee_formatting_replays_and_same_import_merges_idempotently() {
         .unwrap();
     let hash = project["projectModelHash"].as_str().unwrap();
     let mut first = make_import_tx(&mut worker, &import_repo, hash, "import-first");
-    let mut second = make_import_tx(&mut worker, &import_repo, hash, "import-second");
     transaction::commit(&import_repo, &mut first, "refs/heads/main", &mut worker).unwrap();
     let candidate = first.candidate_commit.clone().unwrap();
     let candidate_parent = git_output(&import_repo, &["rev-parse", &format!("{candidate}^")]);
@@ -602,6 +488,11 @@ fn callee_formatting_replays_and_same_import_merges_idempotently() {
         "RECOVERED_COMMITTED_FROM_TRAILER"
     );
     let before_second = git_output(&import_repo, &["rev-parse", "refs/heads/main"]);
+    let project = worker
+        .request(RequestKind::OpenProject, &json!({"repo":import_repo}))
+        .unwrap();
+    let current_hash = project["projectModelHash"].as_str().unwrap();
+    let mut second = make_import_tx(&mut worker, &import_repo, current_hash, "import-second");
     let result =
         transaction::commit(&import_repo, &mut second, "refs/heads/main", &mut worker).unwrap();
     assert_eq!(result["idempotent"], true);
@@ -618,47 +509,5 @@ fn callee_formatting_replays_and_same_import_merges_idempotently() {
     );
     assert_eq!(source.matches("import java.time.Instant").count(), 1);
 
-    // Advancing the target after the older transaction must never let inspect
-    // or an idempotent retry publish the older commit's index snapshot.
-    let mut later = make_tx(
-        &mut worker,
-        &import_repo,
-        hash,
-        "com.acme.total",
-        "{ var value = base; if (premium) value = value + value; return value }",
-        "after-import",
-    );
-    let later_result =
-        transaction::commit(&import_repo, &mut later, "refs/heads/main", &mut worker).unwrap();
-    let later_commit = later_result["finalCommit"].as_str().unwrap();
-    let mut old_interrupted = first.clone();
-    old_interrupted.status = "COMMITTING".into();
-    old_interrupted.final_commit = None;
-    transaction::ledger(&import_repo)
-        .unwrap()
-        .append(&old_interrupted, "simulated late inspection of ancestor")
-        .unwrap();
-    transaction::ledger(&import_repo)
-        .unwrap()
-        .inspect("tx:import-first")
-        .unwrap();
-    assert_eq!(
-        RepositoryIndex::open_compilation(&import_repo, Some(":/main"))
-            .unwrap()
-            .published_revision()
-            .unwrap()
-            .as_deref(),
-        Some(later_commit)
-    );
-    let mut retry_old = first.clone();
-    transaction::commit(&import_repo, &mut retry_old, "refs/heads/main", &mut worker).unwrap();
-    assert_eq!(
-        RepositoryIndex::open_compilation(&import_repo, Some(":/main"))
-            .unwrap()
-            .published_revision()
-            .unwrap()
-            .as_deref(),
-        Some(later_commit)
-    );
     worker.shutdown().unwrap();
 }

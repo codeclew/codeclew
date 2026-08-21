@@ -2,12 +2,16 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
-./gradlew :workers:kotlin:test :workers:kotlin:installDist :workers:kotlin21:installDist --no-daemon --quiet
-fixtures/kotlin-basic/gradlew -p fixtures/kotlin-basic test --no-daemon --quiet
-fixtures/kotlin-2-1/gradlew -p fixtures/kotlin-2-1 compileKotlin --no-daemon --quiet
-fixtures/kotlin-control-flow/gradlew -p fixtures/kotlin-control-flow compileKotlin --no-daemon --quiet
-fixtures/kotlin-calls/gradlew -p fixtures/kotlin-calls compileKotlin --no-daemon --quiet
-fixtures/kotlin-concurrency/gradlew -p fixtures/kotlin-concurrency compileKotlin --no-daemon --quiet
+GRADLE_SEED="$ROOT/fixtures/kotlin-basic/.gradle"
+./gradlew :workers:kotlin:test :workers:kotlin:installDist :workers:kotlin21:installDist :workers:kotlin23:installDist --no-daemon --quiet
+fixtures/kotlin-basic/gradlew -p fixtures/kotlin-basic --gradle-user-home "$GRADLE_SEED" test --no-daemon --quiet
+fixtures/kotlin-2-1/gradlew -p fixtures/kotlin-2-1 --gradle-user-home "$GRADLE_SEED" test --no-daemon --quiet
+fixtures/kotlin-control-flow/gradlew -p fixtures/kotlin-control-flow --gradle-user-home "$GRADLE_SEED" compileKotlin --no-daemon --quiet
+fixtures/kotlin-calls/gradlew -p fixtures/kotlin-calls --gradle-user-home "$GRADLE_SEED" compileKotlin --no-daemon --quiet
+fixtures/kotlin-concurrency/gradlew -p fixtures/kotlin-concurrency --gradle-user-home "$GRADLE_SEED" compileKotlin --no-daemon --quiet
+MAVEN_SEED="$ROOT/fixtures/kotlin-maven/.semantic-thread/maven-repository"
+fixtures/kotlin-maven/mvnw -q -f fixtures/kotlin-maven/pom.xml -Dmaven.repo.local="$MAVEN_SEED" dependency:go-offline test
+fixtures/kotlin-maven/mvnw -q -f fixtures/kotlin-maven/pom.xml -Dmaven.repo.local="$MAVEN_SEED" -DskipTests -Doutput="$ROOT/fixtures/kotlin-maven/.semantic-thread/effective-pom.xml" -Dmdep.outputFile="$ROOT/fixtures/kotlin-maven/.semantic-thread/classpath.txt" -Dmdep.includeScope=compile help:effective-pom dependency:build-classpath
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

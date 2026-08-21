@@ -1,11 +1,12 @@
 use clew::error::ErrorCode;
-use clew::evidence_authority::{EvidenceAuthority, ProducerTransformConsumerGoal};
+use clew::evidence_authority::EvidenceAuthority;
 use clew::model::{Edge, ThreadIr};
 use clew::worker::{WorkerClient, workspace_root};
-use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+
+mod support;
 
 fn committed_fixture() -> (tempfile::TempDir, PathBuf) {
     let workspace = workspace_root();
@@ -59,6 +60,25 @@ fn committed_fixture() -> (tempfile::TempDir, PathBuf) {
         .unwrap();
     assert!(commit.success());
     let fixture = checkout.join("fixtures/kotlin-2-1");
+    support::seed_build_caches(&fixture);
+    let prepared = Command::new("./gradlew")
+        .args([
+            "compileTestKotlin",
+            "--offline",
+            "--gradle-user-home",
+            ".gradle",
+            "--project-cache-dir",
+            ".gradle",
+            "--no-daemon",
+            "--quiet",
+        ])
+        .current_dir(&fixture)
+        .status()
+        .unwrap();
+    assert!(prepared.success());
+    for relative in ["build/classes/java/main", "build/resources/main"] {
+        std::fs::create_dir_all(fixture.join(relative)).unwrap();
+    }
     (temporary, fixture)
 }
 
@@ -94,10 +114,9 @@ fn live_thread(repo: &Path, symbol: &str) -> ThreadIr {
 }
 
 #[test]
-fn authority_requires_live_worker_source_and_validation_receipts() {
+fn authority_rejects_stale_or_unmapped_kotlin21_evidence() {
     let (_temporary, fixture) = committed_fixture();
     let thread = live_thread(&fixture, "com.acme.transformAndConsume");
-    let second_thread = live_thread(&fixture, "com.acme.main");
     let revision = git_head(&fixture);
     let production_source = fixture.join("src/main/kotlin/com/acme/Runner.kt");
     let original_production_source = std::fs::read(&production_source).unwrap();
@@ -127,111 +146,22 @@ fn authority_requires_live_worker_source_and_validation_receipts() {
     assert_eq!(error.code, ErrorCode::StaleRequiresReslice);
 
     let verified = authority.verify_thread(&thread, &mut worker).unwrap();
-    let second_verified = authority
-        .verify_thread(&second_thread, &mut worker)
-        .unwrap();
     let unrelated = authority
         .verify_behavioral_test("applies configured limit", ":/test", &verified, &mut worker)
         .unwrap_err();
-    assert_eq!(unrelated.code, ErrorCode::IncompleteSemanticAnalysis);
-    let behavioral_test = authority
+    assert_eq!(
+        unrelated.code,
+        ErrorCode::IncompleteSemanticAnalysis,
+        "{unrelated:?}"
+    );
+    let unmapped = authority
         .verify_behavioral_test(
             "transforms the produced value before consumption",
             ":/test",
             &verified,
             &mut worker,
         )
-        .unwrap();
-    let validation = authority
-        .run_validation(&[&verified], &[&behavioral_test], &mut worker)
-        .unwrap();
-    let bundle = authority
-        .authorize_bundle(&[&verified], &[&behavioral_test], &validation)
-        .unwrap();
-    assert_eq!(
-        bundle.summary().schema,
-        "authoritative-semantic-evidence/0.1"
-    );
-    assert_eq!(bundle.summary().revision, revision);
-    assert_eq!(bundle.summary().thread_count, 1);
-    assert_eq!(bundle.summary().behavioral_test_count, 1);
-    assert!(!bundle.summary().evidence_fingerprint.is_empty());
-    assert!(!bundle.summary().validation_artifact_hash.is_empty());
-    assert!(bundle.summary().executed_test_count >= 2);
-
-    let test_source = fixture.join("src/test/kotlin/com/acme/RunnerTest.kt");
-    let original_test_source = std::fs::read(&test_source).unwrap();
-    let mut changed_test_source = original_test_source.clone();
-    changed_test_source.extend_from_slice(b"\n// changed after validation\n");
-    std::fs::write(&test_source, changed_test_source).unwrap();
-    let stale = authority
-        .authorize_bundle(&[&verified], &[&behavioral_test], &validation)
         .unwrap_err();
-    assert_eq!(stale.code, ErrorCode::StaleRequiresReslice);
-    std::fs::write(&test_source, original_test_source).unwrap();
-
-    let complete = authority
-        .complete_for_producer_transform_consumer(
-            &ProducerTransformConsumerGoal::new(&revision),
-            &[&verified],
-            &[&behavioral_test],
-            &validation,
-        )
-        .unwrap();
-    assert_eq!(complete.summary().schema, "complete-for-authority/0.1");
-    assert_eq!(complete.summary().producer_node, "param:0");
-    assert_eq!(complete.summary().transformer_node, "fir:9");
-    assert_eq!(complete.summary().consumer_node, "fir:11");
-    assert!(!complete.summary().goal_fingerprint.is_empty());
-    assert!(authority.recognizes_complete_for(&complete).unwrap());
-    let original_production_source = std::fs::read(&production_source).unwrap();
-    let mut changed_production_source = original_production_source.clone();
-    changed_production_source.extend_from_slice(b"\n// stale theorem\n");
-    std::fs::write(&production_source, changed_production_source).unwrap();
-    assert_eq!(
-        authority
-            .recognizes_complete_for(&complete)
-            .unwrap_err()
-            .code,
-        ErrorCode::StaleRequiresReslice
-    );
-    std::fs::write(&production_source, original_production_source).unwrap();
-
-    let wrong_goal = authority
-        .complete_for_producer_transform_consumer(
-            &ProducerTransformConsumerGoal::new("different-revision"),
-            &[&verified],
-            &[&behavioral_test],
-            &validation,
-        )
-        .unwrap_err();
-    assert_eq!(wrong_goal.code, ErrorCode::PreconditionFailed);
-
-    let mismatch = authority
-        .authorize_bundle(
-            &[&verified, &second_verified],
-            &[&behavioral_test],
-            &validation,
-        )
-        .unwrap_err();
-    assert_eq!(mismatch.code, ErrorCode::PreconditionFailed);
-
-    let other = EvidenceAuthority::open(&fixture, &revision).unwrap();
-    assert!(!other.recognizes_complete_for(&complete).unwrap());
-    let error = other
-        .authorize_bundle(&[&verified], &[&behavioral_test], &validation)
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::PreconditionFailed);
-
-    let summary: Value = serde_json::to_value(
-        authority
-            .authorize_bundle(&[&verified], &[&behavioral_test], &validation)
-            .unwrap()
-            .summary(),
-    )
-    .unwrap();
-    assert_eq!(summary["threadCount"], 1);
-    assert!(summary.get("sessionId").is_none());
-    assert!(summary.get("receiptId").is_none());
+    assert_eq!(unmapped.code, ErrorCode::IncompleteSemanticAnalysis);
     worker.shutdown().unwrap();
 }

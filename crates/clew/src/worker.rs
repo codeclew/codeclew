@@ -237,7 +237,7 @@ fn attach_verified_index_failure(
                         .unwrap_or_default();
                     let mut bounded = message.chars().take(1_024).collect::<String>();
                     if message.chars().count() > 1_024 {
-                        bounded.push_str("…");
+                        bounded.push('…');
                     }
                     serde_json::json!({
                         "severity":row.get("severity").and_then(Value::as_str).unwrap_or("INFO"),
@@ -690,7 +690,7 @@ fn normalize_optional_relation_evidence(facts: &mut Value) -> Result<(), ClewErr
 
         let argument_mapping = relation.get("argumentToParameter");
         let has_argument_mapping_evidence = argument_mapping
-            .is_some_and(|value| value.as_array().map_or(true, |rows| !rows.is_empty()));
+            .is_some_and(|value| value.as_array().is_none_or(|rows| !rows.is_empty()));
         if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS") && argument_mapping.is_some() {
             relation
                 .as_object_mut()
@@ -3136,6 +3136,53 @@ pub fn workspace_root() -> PathBuf {
 }
 
 #[cfg(test)]
+pub(crate) fn seed_test_build_caches(repo: &Path) {
+    fn merge_tree(source: &Path, destination: &Path) {
+        if !source.is_dir() {
+            return;
+        }
+        for entry in walkdir::WalkDir::new(source)
+            .follow_links(false)
+            .into_iter()
+            .map(Result::unwrap)
+        {
+            let relative = entry.path().strip_prefix(source).unwrap();
+            if relative.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some("daemon" | ".tmp" | "notifications")
+                )
+            }) {
+                continue;
+            }
+            let target = destination.join(relative);
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target).unwrap();
+            } else if entry.file_type().is_file() && !target.exists() {
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                if std::fs::hard_link(entry.path(), &target).is_err() {
+                    std::fs::copy(entry.path(), &target).unwrap();
+                }
+            }
+        }
+    }
+
+    let workspace = workspace_root();
+    if repo.join("gradlew").is_file() {
+        merge_tree(
+            &workspace.join("fixtures/kotlin-basic/.gradle"),
+            &repo.join(".gradle"),
+        );
+    }
+    if repo.join("mvnw").is_file() {
+        merge_tree(
+            &workspace.join("fixtures/kotlin-maven/.semantic-thread/maven-repository"),
+            &repo.join(".semantic-thread/maven-repository"),
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::index::RepositoryIndex;
@@ -4120,6 +4167,7 @@ mod tests {
             .join("fixtures/kotlin-2-1")
             .canonicalize()
             .unwrap();
+        seed_test_build_caches(&repo);
         let mut worker = WorkerClient::start(&workspace).unwrap();
         assert_eq!(worker.capabilities.compiler_version, "2.4.10");
 
@@ -4515,6 +4563,7 @@ mod tests {
             "package p\nfun serviceValue() = 1\n",
         )
         .unwrap();
+        seed_test_build_caches(temporary.path());
 
         let mut worker = WorkerClient::start(&workspace).unwrap();
         let root = worker

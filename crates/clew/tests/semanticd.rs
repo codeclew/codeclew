@@ -1,3 +1,5 @@
+mod support;
+
 use serde_json::Value;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -9,6 +11,7 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
         .join("fixtures/kotlin-basic")
         .canonicalize()
         .unwrap();
+    support::seed_build_caches(&fixture);
     let mut child = Command::new(env!("CARGO_BIN_EXE_semanticd"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

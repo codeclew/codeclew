@@ -1,3 +1,5 @@
+mod support;
+
 use clew::canonical;
 use clew::index::RepositoryIndex;
 use clew::proto::RequestKind;
@@ -40,6 +42,7 @@ fn copy_fixture(source: &Path, target: &Path) {
             std::fs::copy(entry.path(), destination).unwrap();
         }
     }
+    support::seed_build_caches(target);
 }
 
 fn copy_worker_distribution(source: &Path, target: &Path) {
@@ -66,6 +69,7 @@ fn copy_worker_distribution(source: &Path, target: &Path) {
 fn indexes_constructor_and_null_coalescing_facts_on_kotlin_24() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-basic");
+    support::seed_build_caches(&fixture);
     let diagnostic_workspace = tempfile::tempdir().unwrap();
     copy_worker_distribution(
         &root.join("workers/kotlin/build/install/kotlin"),
@@ -263,6 +267,7 @@ fn indexes_constructor_and_null_coalescing_facts_on_kotlin_24() {
 fn indexes_direct_return_value_relations_on_kotlin_24() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-basic");
+    support::seed_build_caches(&fixture);
     let diagnostic_workspace = tempfile::tempdir().unwrap();
     copy_worker_distribution(
         &root.join("workers/kotlin/build/install/kotlin"),
@@ -466,6 +471,7 @@ fn indexes_direct_return_value_relations_on_kotlin_24() {
 fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-basic");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
     let project = worker
         .request(
@@ -516,7 +522,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
         repeated["declarationDescriptorHash"]
     );
     assert_eq!(graph, &repeated["declarationDescriptors"]);
-    let rows = descriptor_rows(&index);
+    let rows = descriptor_rows(index);
     assert!(!rows.is_empty());
     let canonical_rows = rows.iter().map(Value::to_string).collect::<Vec<_>>();
     assert!(canonical_rows.windows(2).all(|pair| pair[0] <= pair[1]));
@@ -623,7 +629,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
             .iter()
             .all(|descriptor| descriptor["isOverride"] == false)
     );
-    let override_relation = relation_rows(&index, "OVERRIDES")
+    let override_relation = relation_rows(index, "OVERRIDES")
         .into_iter()
         .find(|relation| {
             relation["owner"]
@@ -671,6 +677,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
 fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-basic");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
     let project = worker
         .request(
@@ -741,7 +748,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
             })
     );
 
-    let overrides = relation_rows(&index, "OVERRIDES");
+    let overrides = relation_rows(index, "OVERRIDES");
     assert!(overrides.iter().any(|relation| {
         relation["owner"]
             .as_str()
@@ -768,9 +775,9 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
         "WRITES",
         "INITIALIZES",
     ] {
-        assert!(!relation_rows(&index, kind).is_empty(), "missing {kind}");
+        assert!(!relation_rows(index, kind).is_empty(), "missing {kind}");
     }
-    assert!(relation_rows(&index, "CALLS").iter().any(|relation| {
+    assert!(relation_rows(index, "CALLS").iter().any(|relation| {
         relation["owner"]
             .as_str()
             .unwrap_or_default()
@@ -783,7 +790,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
                 .as_array()
                 .is_some_and(|arguments| !arguments.is_empty())
     }));
-    let reordered = relation_rows(&index, "CALLS")
+    let reordered = relation_rows(index, "CALLS")
         .into_iter()
         .find(|relation| {
             relation["owner"]
@@ -803,20 +810,20 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
             .collect::<Vec<_>>(),
         vec![1, 0],
     );
-    assert!(relation_rows(&index, "CONSTRUCTS").iter().any(|relation| {
+    assert!(relation_rows(index, "CONSTRUCTS").iter().any(|relation| {
         relation["target"]
             .as_str()
             .unwrap_or_default()
             .contains("Envelope")
     }));
-    assert!(relation_rows(&index, "WRITES").iter().any(|relation| {
+    assert!(relation_rows(index, "WRITES").iter().any(|relation| {
         relation["target"]
             .as_str()
             .unwrap_or_default()
             .contains("RelationState.field")
             && relation["orderKey"].as_i64().is_some()
     }));
-    assert!(relation_rows(&index, "INITIALIZES").iter().any(|relation| {
+    assert!(relation_rows(index, "INITIALIZES").iter().any(|relation| {
         relation["target"]
             .as_str()
             .unwrap_or_default()
@@ -832,7 +839,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
     assert!(boundary_codes.contains(&"NON_FUNCTION_OVERRIDE_UNSUPPORTED"));
     assert!(boundary_codes.contains(&"DYNAMIC_REFLECTION_BOUNDARY"));
     assert!(boundary_codes.contains(&"EXTERNAL_OR_LOCAL_ARGUMENT_TARGET"));
-    assert!(relation_rows(&index, "CALLS").iter().all(|relation| {
+    assert!(relation_rows(index, "CALLS").iter().all(|relation| {
         let target = relation["target"].as_str().unwrap_or_default();
         !target.starts_with("kotlin/reflect/") && !target.starts_with("java/lang/reflect/")
     }));

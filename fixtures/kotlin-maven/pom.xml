@@ -44,6 +44,7 @@
                 <version>${kotlin.version}</version>
                 <extensions>true</extensions>
                 <configuration>
+                    <compilerExecutionStrategy>in-process</compilerExecutionStrategy>
                     <jvmTarget>${java.version}</jvmTarget>
                     <args>
                         <arg>-Xjsr305=strict</arg>

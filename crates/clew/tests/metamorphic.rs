@@ -1,3 +1,5 @@
+mod support;
+
 use clew::canonical;
 use clew::error::ErrorCode;
 use clew::graph;
@@ -37,6 +39,7 @@ fn copy_fixture(from: &Path, to: &Path) {
         permissions.set_mode(0o755);
         std::fs::set_permissions(wrapper, permissions).unwrap();
     }
+    support::seed_build_caches(to);
 }
 
 #[test]

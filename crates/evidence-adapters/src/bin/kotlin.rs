@@ -727,6 +727,8 @@ impl ExactCallTopologyOwnerIndex {
     }
 }
 
+// Keep the full boundary authority tuple explicit at this trust boundary.
+#[allow(clippy::too_many_arguments)]
 fn compiler_boundary_relation_proof(
     domain: &str,
     provider: &str,
@@ -833,9 +835,7 @@ fn compiler_boundary_relation_proof(
     // do not recover around it from a nearby source occurrence. Normalizer
     // topology gaps receive exact scope only under their complete core
     // identity contract; otherwise the old fail-closed GLOBAL behavior stays.
-    let direct_target = if !source_boundary_valid {
-        Some((BoundaryTargetScope::Global, None))
-    } else if topology_owner_failed {
+    let direct_target = if !source_boundary_valid || topology_owner_failed {
         Some((BoundaryTargetScope::Global, None))
     } else if let Some(witness) = exact_topology_owner {
         Some((
@@ -1107,6 +1107,9 @@ fn apply_partial_core_pairing(
     }
 }
 
+// These fields form the complete fail-closed classifier input and are kept
+// explicit so a caller cannot accidentally omit one from the decision.
+#[allow(clippy::too_many_arguments)]
 fn compiler_boundary_effect_with_partial_core(
     domain: &str,
     provider: &str,
@@ -2169,6 +2172,9 @@ fn main_kotlin_source_files(sources: &[SourceInput]) -> Vec<String> {
     files
 }
 
+// Snapshot revalidation deliberately receives every sealed expectation rather
+// than a partially populated options object.
+#[allow(clippy::too_many_arguments)]
 fn verify_source_syntax_snapshot_unchanged(
     repo: &Path,
     ignored_components: &BTreeSet<String>,
@@ -7019,9 +7025,15 @@ mod adapter_local_tests {
             "details":{"code":"GENERATED_OR_NO_SOURCE"},
         });
         let entities = vec![json!({"opaqueId":"target"})];
-        let impact =
-            normalized_reverse_impact(Some("target"), &entities, &[], &[boundary.clone()], 2, 128)
-                .unwrap();
+        let impact = normalized_reverse_impact(
+            Some("target"),
+            &entities,
+            &[],
+            std::slice::from_ref(&boundary),
+            2,
+            128,
+        )
+        .unwrap();
         assert_eq!(impact["status"], "COMPLETE_IN_SCOPE");
         assert!(impact["boundaries"].as_array().unwrap().is_empty());
         let compiler_receipt = json!({
@@ -7035,7 +7047,7 @@ mod adapter_local_tests {
             &[],
             &BTreeSet::from(["target".to_owned()]),
             &compiler_receipt,
-            &[boundary.clone()],
+            std::slice::from_ref(&boundary),
         )
         .unwrap();
         assert_eq!(scoped["mandatoryObligations"][0]["status"], "SATISFIED");

@@ -13,7 +13,7 @@ pub const GOAL_PROOF_SCHEMA: &str = "semantic-goal-proof/0.2";
 pub const TYPED_SEMANTIC_GOAL_SCHEMA: &str = "typed-semantic-goal/0.1";
 pub const TYPED_GOAL_LANGUAGE_SCHEMA: &str = "typed-goal-language-schema/0.1";
 pub const TYPED_GOAL_BINDING_REQUEST_SCHEMA: &str = "typed-goal-binding-request/0.1";
-pub const TYPED_GOAL_BINDING_DECISION_SCHEMA: &str = "typed-goal-binding-decision/0.1";
+pub const TYPED_GOAL_BINDING_DECISION_SCHEMA: &str = "typed-goal-binding-decision/0.2";
 pub const TYPED_GOAL_MAX_REQUEST_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1167,8 +1167,48 @@ pub struct KernelBindingEvidence {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProofStatus {
     Bound,
+    Conditional,
     Ambiguous,
     Refused,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvidenceStrength {
+    CompilerExact,
+    RuntimeWitnessed,
+    SourceStructural,
+    HumanAccepted,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VerificationObligationCode {
+    VerifyCallTargetIdentity,
+    VerifyArgumentParameterMapping,
+    VerifyBehavioralOracle,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VerificationMethod {
+    CompilerArgumentMapping,
+    FocusedRuntimeTest,
+    CandidateCompileAndTest,
+    HumanReview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UnresolvedVerificationObligation {
+    pub id: String,
+    pub code: VerificationObligationCode,
+    pub subject: Vec<String>,
+    pub established_authority: EvidenceStrength,
+    pub required_authority: EvidenceStrength,
+    pub acceptable_verifiers: Vec<VerificationMethod>,
+    pub publication_blocking: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1204,6 +1244,8 @@ pub struct GoalProof {
     pub change_graph: ChangeGraph,
     pub ambiguities: BTreeMap<String, Vec<String>>,
     pub boundaries: Vec<SemanticBoundary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_obligations: Vec<UnresolvedVerificationObligation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Refusal>,
 }
@@ -1227,6 +1269,7 @@ impl GoalProof {
             && self.change_graph.schema == CHANGE_GRAPH_SCHEMA
             && self.change_graph.goal_schema == goal.schema
             && self.status == ProofStatus::Bound
+            && self.unresolved_obligations.is_empty()
             && self.refusal.is_none()
             && self.boundaries.is_empty()
             && self.ambiguities.is_empty()
@@ -1472,9 +1515,6 @@ fn bind_facts(
     if !evidence.context_evaluated_once {
         return refused(Refusal::ContextEvaluationNotOnce, vec![]);
     }
-    if !evidence.behavioral_oracle_available {
-        return refused(Refusal::MissingBehavioralOracle, vec![]);
-    }
     if !preservations_hold(goal, evidence) {
         return refused(Refusal::PreservationNotProved, vec![]);
     }
@@ -1511,6 +1551,7 @@ fn bind_facts(
             },
             ambiguities,
             boundaries: vec![],
+            unresolved_obligations: vec![],
             refusal: None,
         };
     }
@@ -1522,8 +1563,41 @@ fn bind_facts(
     if bindings.values().collect::<BTreeSet<_>>().len() != bindings.len() {
         return refused(Refusal::InvalidKernelEvidence, vec![]);
     }
-    let change_graph = build_change_graph(goal, evidence, predicate_evidence);
+    let mut change_graph = build_change_graph(goal, evidence, predicate_evidence);
     debug_assert!(change_graph.validate_closure().is_ok());
+    if !evidence.behavioral_oracle_available {
+        if let Some(obligation) = change_graph
+            .obligations
+            .iter_mut()
+            .find(|obligation| obligation.kind == ObligationKind::RequireOracle)
+        {
+            obligation.status = DischargeStatus::Unproved;
+            obligation.evidence.clear();
+        }
+        return GoalProof {
+            schema: GOAL_PROOF_SCHEMA.into(),
+            goal_fingerprint: crate::canonical::hash(goal).unwrap_or_default(),
+            kernel_snapshot_fingerprint,
+            status: ProofStatus::Conditional,
+            bindings,
+            change_graph,
+            ambiguities: BTreeMap::new(),
+            boundaries: vec![],
+            unresolved_obligations: vec![UnresolvedVerificationObligation {
+                id: "verify-behavioral-oracle".into(),
+                code: VerificationObligationCode::VerifyBehavioralOracle,
+                subject: vec!["valueEdge".into(), "transformer".into()],
+                established_authority: EvidenceStrength::CompilerExact,
+                required_authority: EvidenceStrength::RuntimeWitnessed,
+                acceptable_verifiers: vec![
+                    VerificationMethod::FocusedRuntimeTest,
+                    VerificationMethod::CandidateCompileAndTest,
+                ],
+                publication_blocking: true,
+            }],
+            refusal: None,
+        };
+    }
     GoalProof {
         schema: GOAL_PROOF_SCHEMA.into(),
         goal_fingerprint: crate::canonical::hash(goal).unwrap_or_default(),
@@ -1533,6 +1607,7 @@ fn bind_facts(
         change_graph,
         ambiguities: BTreeMap::new(),
         boundaries: vec![],
+        unresolved_obligations: vec![],
         refusal: None,
     }
 }
@@ -1880,6 +1955,7 @@ fn refused(reason: Refusal, boundaries: Vec<SemanticBoundary>) -> GoalProof {
         },
         ambiguities: BTreeMap::new(),
         boundaries,
+        unresolved_obligations: vec![],
         refusal: Some(reason),
     }
 }
@@ -2092,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_boundary_and_missing_oracle_refuse() {
+    fn unsupported_boundary_refuses_but_missing_oracle_is_publication_blocking_conditional() {
         let goal = SemanticGoal::map_edge_with_context("base");
         let mut facts = evidence();
         facts
@@ -2105,10 +2181,27 @@ mod tests {
         );
         let mut facts = evidence();
         facts.facts.behavioral_oracle_available = false;
+        let conditional = prove(&goal, &facts);
+        assert_eq!(conditional.status, ProofStatus::Conditional);
+        assert!(conditional.refusal.is_none());
+        assert_eq!(conditional.unresolved_obligations.len(), 1);
         assert_eq!(
-            prove(&goal, &facts).refusal,
-            Some(Refusal::MissingBehavioralOracle)
+            conditional.unresolved_obligations[0].code,
+            VerificationObligationCode::VerifyBehavioralOracle
         );
+        assert!(conditional.unresolved_obligations[0].publication_blocking);
+        assert!(
+            conditional
+                .change_graph
+                .obligations
+                .iter()
+                .any(|obligation| {
+                    obligation.kind == ObligationKind::RequireOracle
+                        && obligation.status == DischargeStatus::Unproved
+                        && obligation.evidence.is_empty()
+                })
+        );
+        assert!(!conditional.is_complete_for_goal(&goal, &kernel_for(&facts)));
 
         let mut facts = evidence();
         facts.facts.no_unsupported_boundary = false;

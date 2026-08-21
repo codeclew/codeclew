@@ -331,9 +331,11 @@ fn materialize_slot(
         },
         expected_oracle_class: (slot.variant == TaskVariant::Positive)
             .then(|| "EXTERNAL_SPEC".into()),
-        ambiguous_choices: (slot.variant == TaskVariant::Ambiguous)
-            .then(|| template.ambiguities.clone())
-            .unwrap_or_default(),
+        ambiguous_choices: if slot.variant == TaskVariant::Ambiguous {
+            template.ambiguities.clone()
+        } else {
+            Vec::new()
+        },
         refusal_reason: (slot.variant == TaskVariant::MustRefuse).then(|| template.refusal.clone()),
         commitments: vec![
             format!("series:{}", authorization.series_id()),
@@ -1311,14 +1313,14 @@ pub(crate) mod tests {
                 },
                 expected_oracle_class: (slot_variant == TaskVariant::Positive)
                     .then(|| "EXTERNAL_SPEC".into()),
-                ambiguous_choices: (slot_variant == TaskVariant::Ambiguous)
-                    .then(|| {
-                        vec![
-                            vec!["DECLARATION=p.a".into()],
-                            vec!["DECLARATION=p.b".into()],
-                        ]
-                    })
-                    .unwrap_or_default(),
+                ambiguous_choices: if slot_variant == TaskVariant::Ambiguous {
+                    vec![
+                        vec!["DECLARATION=p.a".into()],
+                        vec!["DECLARATION=p.b".into()],
+                    ]
+                } else {
+                    Vec::new()
+                },
                 refusal_reason: (slot_variant == TaskVariant::MustRefuse)
                     .then(|| "INCOMPLETE_SEMANTIC_EVIDENCE".into()),
                 commitments: vec![],

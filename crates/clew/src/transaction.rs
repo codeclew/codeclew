@@ -500,10 +500,10 @@ fn canonicalize_owner_symbol_query(owner: &str) -> Option<String> {
         "returnType",
         "jvmDescriptor",
     ] {
-        if !object
+        if object
             .get(field)
             .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
+            .is_none_or(|value| value.is_empty())
         {
             return None;
         }
@@ -2040,14 +2040,18 @@ fn bounded_test_failure_evidence(
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            failures.extend(junit_failure_evidence(&text, &canonical_worktree));
+            failures.extend(junit_failure_evidence(&text, &canonical_worktree, worktree));
             failures.truncate(4);
         }
     }
     failures
 }
 
-fn junit_failure_evidence(text: &str, worktree: &Path) -> Vec<String> {
+fn junit_failure_evidence(
+    text: &str,
+    canonical_worktree: &Path,
+    requested_worktree: &Path,
+) -> Vec<String> {
     let mut evidence = Vec::new();
     let mut cursor = 0usize;
     while evidence.len() < 4 {
@@ -2079,7 +2083,11 @@ fn junit_failure_evidence(text: &str, worktree: &Path) -> Vec<String> {
                     "testFailure={}#{}:{}:{}",
                     class_name, test_name, failure_type, message
                 );
-                evidence.push(sanitize_test_failure_summary(&summary, worktree));
+                evidence.push(sanitize_test_failure_summary(
+                    &summary,
+                    canonical_worktree,
+                    requested_worktree,
+                ));
             }
         }
         cursor = close + "</testcase>".len();
@@ -2094,10 +2102,16 @@ fn xml_attribute_value<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     Some(&tag[start..end])
 }
 
-fn sanitize_test_failure_summary(summary: &str, worktree: &Path) -> String {
-    let worktree = worktree.to_string_lossy();
+fn sanitize_test_failure_summary(
+    summary: &str,
+    canonical_worktree: &Path,
+    requested_worktree: &Path,
+) -> String {
+    let canonical_worktree = canonical_worktree.to_string_lossy();
+    let requested_worktree = requested_worktree.to_string_lossy();
     let compact = summary
-        .replace(worktree.as_ref(), "<worktree>")
+        .replace(requested_worktree.as_ref(), "<worktree>")
+        .replace(canonical_worktree.as_ref(), "<worktree>")
         .replace("&quot;", "\"")
         .replace("&lt;", "<")
         .replace("&gt;", ">")

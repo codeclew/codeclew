@@ -1,3 +1,5 @@
+mod support;
+
 use clew::evidence_authority::{
     EvidenceAuthority, MapEdgeRefusalReason, MapEdgeWithContextDecision,
     TYPED_GOAL_BINDING_REQUEST_SCHEMA, TypedGoalBindingDecision, TypedGoalBindingRequest,
@@ -38,6 +40,27 @@ fn committed_fixture(
         "fixtures/kotlin-2-1/src/test/kotlin/com/acme/RunnerTest.kt",
     ] {
         std::fs::copy(workspace.join(relative), checkout.join(relative)).unwrap();
+    }
+    let build = checkout.join("fixtures/kotlin-2-1/build.gradle.kts");
+    let build_source = std::fs::read_to_string(&build).unwrap();
+    std::fs::write(
+        &build,
+        build_source
+            .replace(
+                "kotlin(\"jvm\") version \"2.1.21\"",
+                "kotlin(\"jvm\") version \"2.4.10\"",
+            )
+            .replace(
+                "    kotlin(\"plugin.serialization\") version \"2.1.21\"\n",
+                "",
+            ),
+    )
+    .unwrap();
+    for relative in [
+        "fixtures/kotlin-2-1/src/main/kotlin/com/acme/Adaptive.kt",
+        "fixtures/kotlin-2-1/src/main/kotlin/com/acme/RelationFacts.kt",
+    ] {
+        std::fs::remove_file(checkout.join(relative)).unwrap();
     }
     let main_path = checkout.join("fixtures/kotlin-2-1/src/main/kotlin/com/acme/Runner.kt");
     let test_path = checkout.join("fixtures/kotlin-2-1/src/test/kotlin/com/acme/RunnerTest.kt");
@@ -83,6 +106,25 @@ fn committed_fixture(
         .unwrap();
     assert!(commit.success());
     let fixture = checkout.join("fixtures/kotlin-2-1");
+    support::seed_build_caches(&fixture);
+    let prepared = Command::new("./gradlew")
+        .args([
+            "compileTestKotlin",
+            "--offline",
+            "--gradle-user-home",
+            ".gradle",
+            "--project-cache-dir",
+            ".gradle",
+            "--no-daemon",
+            "--quiet",
+        ])
+        .current_dir(&fixture)
+        .status()
+        .unwrap();
+    assert!(prepared.success());
+    for relative in ["build/classes/java/main", "build/resources/main"] {
+        std::fs::create_dir_all(fixture.join(relative)).unwrap();
+    }
     (temporary, fixture)
 }
 
@@ -163,6 +205,28 @@ include(":service")
             .unwrap()
             .success()
     );
+    support::seed_build_caches(&repository);
+    let prepared = Command::new("./gradlew")
+        .args([
+            ":service:compileTestKotlin",
+            "--offline",
+            "--gradle-user-home",
+            ".gradle",
+            "--project-cache-dir",
+            ".gradle",
+            "--no-daemon",
+            "--quiet",
+        ])
+        .current_dir(&repository)
+        .status()
+        .unwrap();
+    assert!(prepared.success());
+    for relative in [
+        "service/build/classes/java/main",
+        "service/build/resources/main",
+    ] {
+        std::fs::create_dir_all(repository.join(relative)).unwrap();
+    }
     (temporary, repository)
 }
 
@@ -261,7 +325,7 @@ fn signed_external_spec_cli_refuses_unsigned_document() {
 }
 
 #[test]
-fn typed_goal_entrypoint_binds_constraints_and_rejects_forged_summary() {
+fn typed_goal_entrypoint_surfaces_conditional_mapping_and_keeps_strict_proofs_unforgeable() {
     let (temporary, fixture) = committed_fixture(|main, test| {
         for (from, to) in [
             ("mappingContext", "stableSeed"),
@@ -279,46 +343,19 @@ fn typed_goal_entrypoint_binds_constraints_and_rejects_forged_summary() {
     let decision = authority
         .bind_typed_goal(&goal, &["non-authoritative".into()], None, &mut worker)
         .unwrap();
-    let TypedGoalBindingDecision::Bound(receipt) = decision else {
-        panic!("typed constraints must bind: {decision:?}")
+    let TypedGoalBindingDecision::Conditional(conditional) = decision else {
+        panic!("missing compiler call mapping must be conditional: {decision:?}")
     };
-    assert!(receipt.summary().is_complete_for(&goal));
-    assert!(receipt.summary().discharged_operators.len() > goal.operators.len());
     assert_eq!(
-        receipt
-            .summary()
-            .bindings
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>(),
+        conditional.bindings.keys().cloned().collect::<Vec<_>>(),
         vec!["alpha", "beta", "gamma"]
     );
-    assert!(authority.recognizes_typed_goal(&receipt).unwrap());
+    assert_eq!(conditional.unresolved_obligations.len(), 2);
     assert!(
-        authority
-            .recognizes_typed_goal_summary(receipt.summary())
-            .unwrap()
-    );
-    let mut forged = receipt.summary().clone();
-    forged.goal_fingerprint = "forged".into();
-    assert!(!forged.is_complete_for(&goal));
-    assert!(!authority.recognizes_typed_goal_summary(&forged).unwrap());
-    let mut current_unknown = receipt.summary().clone();
-    current_unknown.evidence_relations[0].unknown = true;
-    assert!(!current_unknown.is_complete_for(&goal));
-    assert!(
-        !authority
-            .recognizes_typed_goal_summary(&current_unknown)
-            .unwrap()
-    );
-    let mut relabelled = receipt.summary().clone();
-    relabelled.evidence_relations[0].relation =
-        clew::semantic_goal::EvidenceRelation::ResourceLifetimePreservation;
-    assert!(!relabelled.is_complete_for(&goal));
-    assert!(
-        !authority
-            .recognizes_typed_goal_summary(&relabelled)
-            .unwrap()
+        conditional
+            .unresolved_obligations
+            .iter()
+            .all(|obligation| obligation.publication_blocking)
     );
 
     let unseen = TypedSemanticGoal::new(
@@ -340,13 +377,26 @@ fn typed_goal_entrypoint_binds_constraints_and_rejects_forged_summary() {
     };
     assert!(unseen_receipt.summary().is_complete_for(&unseen));
     assert_eq!(unseen_receipt.summary().discharged_operators.len(), 3);
+    assert!(authority.recognizes_typed_goal(&unseen_receipt).unwrap());
+    let mut forged = unseen_receipt.summary().clone();
+    forged.goal_fingerprint = "forged".into();
+    assert!(!forged.is_complete_for(&unseen));
+    assert!(!authority.recognizes_typed_goal_summary(&forged).unwrap());
+    let mut current_unknown = unseen_receipt.summary().clone();
+    current_unknown.evidence_relations[0].unknown = true;
+    assert!(!current_unknown.is_complete_for(&unseen));
+    assert!(
+        !authority
+            .recognizes_typed_goal_summary(&current_unknown)
+            .unwrap()
+    );
 
     let production = fixture.join("src/main/kotlin/relocated/Feature.kt");
     let original = std::fs::read(&production).unwrap();
     let mut stale = original.clone();
     stale.extend_from_slice(b"\n// stale proof\n");
     std::fs::write(&production, stale).unwrap();
-    assert!(authority.recognizes_typed_goal(&receipt).is_err());
+    assert!(authority.recognizes_typed_goal(&unseen_receipt).is_err());
     std::fs::write(&production, original).unwrap();
     worker.shutdown().unwrap();
 
@@ -374,9 +424,10 @@ fn typed_goal_entrypoint_binds_constraints_and_rejects_forged_summary() {
         String::from_utf8_lossy(&output.stderr)
     );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "BOUND");
-    assert_eq!(result["proof"]["bindings"].as_object().unwrap().len(), 3);
-    assert!(result["proof"].get("source").is_none());
+    assert_eq!(result["status"], "CONDITIONAL");
+    assert_eq!(result["bindings"].as_object().unwrap().len(), 3);
+    assert_eq!(result["unresolvedObligations"].as_array().unwrap().len(), 2);
+    assert!(result.get("proof").is_none());
 }
 
 #[test]
@@ -650,7 +701,7 @@ fn typed_goal_schema_cli_emits_the_canonical_product_registry() {
 }
 
 #[test]
-fn map_edge_with_context_binds_renamed_layout_and_computes_every_invariant() {
+fn map_edge_with_context_surfaces_renamed_layout_with_blocking_oracle_obligations() {
     let (_temporary, fixture) = committed_fixture(|main, test| {
         for (from, to) in [
             ("mappingContext", "environmentSeed"),
@@ -675,11 +726,10 @@ fn map_edge_with_context_binds_renamed_layout_and_computes_every_invariant() {
             &mut worker,
         )
         .unwrap();
-    let MapEdgeWithContextDecision::Bound(receipt) = decision else {
-        panic!("renamed semantic shape must bind: {decision:?}")
+    let MapEdgeWithContextDecision::Conditional(proof) = decision else {
+        panic!("renamed semantic shape must be actionable conditional: {decision:?}")
     };
-    let proof = receipt.summary();
-    assert_eq!(proof.invariants.len(), 12);
+    assert_eq!(proof.established_invariants.len(), 11);
     assert_eq!(proof.change_graph.obligations.len(), 15);
     assert!(proof.change_graph.validate_closure().is_ok());
     assert_eq!(proof.bindings.element_type, "kotlin/Int");
@@ -688,12 +738,12 @@ fn map_edge_with_context_binds_renamed_layout_and_computes_every_invariant() {
         proof.bindings.strategy,
         "KOTLIN_EAGER_LIST_MAP_WITH_CONTEXT_ONCE"
     );
-    assert!(
-        authority
-            .recognizes_map_edge_with_context(&receipt)
-            .unwrap()
-    );
-    let serialized = to_value(proof).unwrap().to_string();
+    assert_eq!(proof.unresolved_obligations.len(), 2);
+    assert!(proof.change_graph.obligations.iter().any(|obligation| {
+        obligation.kind == clew::semantic_goal::ObligationKind::RequireOracle
+            && obligation.status == clew::semantic_goal::DischargeStatus::Unproved
+    }));
+    let serialized = to_value(&proof).unwrap().to_string();
     for forbidden in ["sourceText", "replacement", "regex", "EditIR"] {
         assert!(!serialized.contains(forbidden));
     }
@@ -718,15 +768,19 @@ fn map_edge_with_context_binds_renamed_layout_and_computes_every_invariant() {
         String::from_utf8_lossy(&output.stderr)
     );
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "BOUND");
-    assert_eq!(result["proof"]["invariants"].as_array().unwrap().len(), 12);
+    assert_eq!(result["status"], "CONDITIONAL");
     assert_eq!(
-        result["proof"]["changeGraph"]["obligations"]
+        result["establishedInvariants"].as_array().unwrap().len(),
+        11
+    );
+    assert_eq!(
+        result["changeGraph"]["obligations"]
             .as_array()
             .unwrap()
             .len(),
         15
     );
+    assert!(result.get("proof").is_none());
 }
 
 #[test]

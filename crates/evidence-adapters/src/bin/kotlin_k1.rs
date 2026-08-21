@@ -1132,9 +1132,9 @@ fn explicit_boundary_query_keys(boundary: &Value) -> Option<Vec<String>> {
     (!keys.is_empty()).then(|| keys.into_iter().map(str::to_owned).collect())
 }
 
-fn canonical_boundary_set(
-    boundaries: &[Value],
-) -> Result<(Vec<(String, Value)>, String, BTreeMap<String, u64>)> {
+type CanonicalBoundarySet = (Vec<(String, Value)>, String, BTreeMap<String, u64>);
+
+fn canonical_boundary_set(boundaries: &[Value]) -> Result<CanonicalBoundarySet> {
     let mut members = BTreeMap::new();
     for boundary in boundaries {
         if !boundary.is_object() {
@@ -1588,7 +1588,6 @@ impl AgentGraphIndex {
 #[derive(Debug)]
 pub struct CacheHit {
     pub output: AdapterOutput,
-    pub key_digest: String,
     pub bytes_read: u64,
     pub read_micros: u64,
 }
@@ -1750,7 +1749,6 @@ impl SemanticCache {
         object.verify(key)?;
         Ok(CacheLookup::Hit(Box::new(CacheHit {
             output: object.adapter_output,
-            key_digest: key.digest.clone(),
             bytes_read: bytes.len() as u64,
             read_micros: started.elapsed().as_micros() as u64,
         })))

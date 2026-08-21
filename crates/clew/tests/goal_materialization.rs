@@ -1,3 +1,5 @@
+mod support;
+
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -75,6 +77,7 @@ fn committed_fixture(
             "base",
         ],
     );
+    support::seed_build_caches(&repo);
     (temporary, repo)
 }
 

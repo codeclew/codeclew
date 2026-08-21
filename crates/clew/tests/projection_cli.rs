@@ -1,3 +1,5 @@
+mod support;
+
 use clew::worker::workspace_root;
 use serde_json::Value;
 use std::process::Command;
@@ -10,6 +12,7 @@ fn kotlin_21_cli_returns_a_bounded_l5_claim_with_exact_l0_trace() {
     let _guard = CLI_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-2-1");
+    support::seed_build_caches(&fixture);
     let output = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args([
             "projection",
@@ -63,6 +66,7 @@ fn kotlin_21_cli_refuses_a_fabricated_thread_kind_and_an_unrenderable_budget() {
     let _guard = CLI_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-2-1");
+    support::seed_build_caches(&fixture);
     let base = [
         "projection",
         "--repo",

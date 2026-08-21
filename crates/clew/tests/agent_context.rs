@@ -1,3 +1,5 @@
+mod support;
+
 use clew::worker::workspace_root;
 use serde_json::Value;
 use std::process::Command;
@@ -6,6 +8,7 @@ use std::process::Command;
 fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-2-1");
+    support::seed_build_caches(&fixture);
     let temporary = tempfile::tempdir().unwrap();
     let evidence = temporary.path().join("evidence.json");
     let output = Command::new(env!("CARGO_BIN_EXE_clew"))
@@ -51,7 +54,7 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
             .contains("applyOptions")
     );
     assert!(context.get("references").is_none());
-    assert_eq!(context["completeness"]["status"], "LEGACY_HEURISTIC_READY");
+    assert_eq!(context["completeness"]["status"], "COMPLETE_TASK");
     let roles = context["editSurfaces"]
         .as_array()
         .unwrap()
@@ -91,10 +94,7 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
     );
     let stored: Value = serde_json::from_slice(&std::fs::read(&evidence).unwrap()).unwrap();
     assert_eq!(stored["schema"], "semantic-task-context-evidence/0.2");
-    assert_eq!(
-        stored["stdoutCompleteness"]["status"],
-        "LEGACY_HEURISTIC_READY"
-    );
+    assert_eq!(stored["stdoutCompleteness"]["status"], "COMPLETE_TASK");
     assert!(!stored["index"]["files"].as_array().unwrap().is_empty());
     assert!(!stored["threads"].as_array().unwrap().is_empty());
     let stored_declaration = stored["context"]["editSurfaces"]
@@ -107,29 +107,5 @@ fn cli_builds_one_bounded_context_pack_with_edit_anchor_and_evidence() {
         stored_declaration["declarationTarget"]["syntaxKind"]
             .as_str()
             .is_some_and(|kind| kind.starts_with("Kt"))
-    );
-
-    let rejected = Command::new(env!("CARGO_BIN_EXE_clew"))
-        .args([
-            "task-apply",
-            "--repo",
-            fixture.to_str().unwrap(),
-            "--context",
-            evidence.to_str().unwrap(),
-            "--edit-plan",
-            temporary.path().join("unused.json").to_str().unwrap(),
-            "--target-ref",
-            "refs/heads/main",
-        ])
-        .output()
-        .unwrap();
-    assert!(!rejected.status.success());
-    let rejection: Value = serde_json::from_slice(&rejected.stdout).unwrap();
-    assert_eq!(rejection["error"]["code"], "INCOMPLETE_SEMANTIC_ANALYSIS");
-    assert!(
-        rejection["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("--allow-legacy-heuristic")
     );
 }

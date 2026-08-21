@@ -1,3 +1,5 @@
+mod support;
+
 use clew::canonical;
 use clew::error::ErrorCode;
 use clew::graph;
@@ -10,6 +12,7 @@ use serde_json::json;
 fn k2_fir_golden_language_and_slice_matrix() {
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-basic");
+    support::seed_build_caches(&fixture);
     let mut worker = WorkerClient::start(&root).unwrap();
 
     let project = worker
@@ -446,6 +449,7 @@ fn k2_fir_golden_language_and_slice_matrix() {
     }
 
     let flow_fixture = root.join("fixtures/kotlin-control-flow");
+    support::seed_build_caches(&flow_fixture);
     let short_circuit: LocalGraph = serde_json::from_value(
         worker
             .request(
@@ -465,6 +469,7 @@ fn k2_fir_golden_language_and_slice_matrix() {
         );
     }
     let calls_fixture = root.join("fixtures/kotlin-calls");
+    support::seed_build_caches(&calls_fixture);
     let java_boundary = worker
         .request(
             RequestKind::BuildLocalGraph,

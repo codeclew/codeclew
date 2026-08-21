@@ -282,16 +282,17 @@ fn authorize_materialization_with_verifier(
     }
     let mut visited = BTreeMap::new();
     let mut selected_inputs = BTreeMap::new();
-    validate_ready_receipt_chain(
-        &store_root,
-        &authorization.graph_hash,
-        &store_id,
-        &nodes,
-        R1_ROOT_NODE,
-        &authorization.root_receipt_sha256,
-        &mut visited,
-        &mut selected_inputs,
-    )?;
+    {
+        let mut validator = ReadyReceiptChainValidator {
+            store: &store_root,
+            graph_hash: &authorization.graph_hash,
+            store_id,
+            graph: &nodes,
+            visited: &mut visited,
+            selected_values: &mut selected_inputs,
+        };
+        validator.validate(R1_ROOT_NODE, &authorization.root_receipt_sha256)?;
+    }
     let root_receipt = read_canonical_json(&root_receipt_path, "R1 root receipt")?;
     let root_evidence = object(&root_receipt, "evidence")?;
     if root_evidence
@@ -369,16 +370,17 @@ impl MaterializationAuthorization {
         let nodes = graph_node_specs(&graph)?;
         let mut visited = BTreeMap::new();
         let mut selected_inputs = BTreeMap::new();
-        validate_ready_receipt_chain(
-            &self.store_root,
-            &self.graph_hash,
-            &self.store_id,
-            &nodes,
-            R1_ROOT_NODE,
-            &self.root_receipt_sha256,
-            &mut visited,
-            &mut selected_inputs,
-        )?;
+        {
+            let mut validator = ReadyReceiptChainValidator {
+                store: &self.store_root,
+                graph_hash: &self.graph_hash,
+                store_id: &self.store_id,
+                graph: &nodes,
+                visited: &mut visited,
+                selected_values: &mut selected_inputs,
+            };
+            validator.validate(R1_ROOT_NODE, &self.root_receipt_sha256)?;
+        }
         if selected_inputs.get("r1DecisionSha256") != Some(&self.decision_freeze_sha256) {
             bail!("materialization capability decision selected input changed");
         }
@@ -591,16 +593,17 @@ pub(crate) fn verify_pinned_readiness_root(
     }
     let mut visited = BTreeMap::new();
     let mut selected_inputs = BTreeMap::new();
-    validate_ready_receipt_chain(
-        &store_root,
-        &pinned_hash,
-        expected_store_id,
-        &nodes,
-        root_node,
-        root_receipt_sha256,
-        &mut visited,
-        &mut selected_inputs,
-    )?;
+    {
+        let mut validator = ReadyReceiptChainValidator {
+            store: &store_root,
+            graph_hash: &pinned_hash,
+            store_id: expected_store_id,
+            graph: &nodes,
+            visited: &mut visited,
+            selected_values: &mut selected_inputs,
+        };
+        validator.validate(root_node, root_receipt_sha256)?;
+    }
     Ok(VerifiedReadinessRoot {
         store_root,
         selected_inputs,
@@ -638,139 +641,138 @@ fn validate_decision_freeze(value: &Value, authorization: &SerializedAuthorizati
     Ok(())
 }
 
-fn validate_ready_receipt_chain(
-    store: &Path,
-    graph_hash: &str,
-    store_id: &str,
-    graph: &BTreeMap<String, ReadinessNodeSpec>,
-    node: &str,
-    receipt_hash: &str,
-    visited: &mut BTreeMap<String, String>,
-    selected_values: &mut BTreeMap<String, String>,
-) -> Result<()> {
-    if let Some(previous) = visited.get(node) {
-        if previous != receipt_hash {
-            bail!("readiness DAG references conflicting receipts for {node}");
+struct ReadyReceiptChainValidator<'a> {
+    store: &'a Path,
+    graph_hash: &'a str,
+    store_id: &'a str,
+    graph: &'a BTreeMap<String, ReadinessNodeSpec>,
+    visited: &'a mut BTreeMap<String, String>,
+    selected_values: &'a mut BTreeMap<String, String>,
+}
+
+impl ReadyReceiptChainValidator<'_> {
+    fn validate(&mut self, node: &str, receipt_hash: &str) -> Result<()> {
+        if let Some(previous) = self.visited.get(node) {
+            if previous != receipt_hash {
+                bail!("readiness DAG references conflicting receipts for {node}");
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
-    visited.insert(node.to_owned(), receipt_hash.to_owned());
-    let spec = graph
-        .get(node)
-        .with_context(|| format!("readiness receipt has unknown node {node}"))?;
-    let expected_dependencies = &spec.dependencies;
-    let pointer_path = store.join("current").join(format!("{node}.json"));
-    let pointer = read_canonical_json(&pointer_path, "readiness pointer")?;
-    require_exact_keys(
-        &pointer,
-        &["schema", "storeId", "graphHash", "node", "receiptHash"],
-        "readiness pointer",
-    )?;
-    if string(&pointer, "schema")? != READINESS_POINTER_SCHEMA
-        || string(&pointer, "storeId")? != store_id
-        || string(&pointer, "graphHash")? != graph_hash
-        || string(&pointer, "node")? != node
-        || string(&pointer, "receiptHash")? != receipt_hash
-    {
-        bail!("current readiness pointer mismatch for {node}");
-    }
-    let receipt_path = store.join("objects").join(format!("{receipt_hash}.json"));
-    let receipt = read_canonical_json(&receipt_path, "readiness receipt")?;
-    require_exact_keys(
-        &receipt,
-        &[
-            "schema",
-            "storeId",
-            "graphHash",
-            "checkerVersion",
-            "node",
-            "nodeKey",
-            "status",
-            "selectedInputs",
-            "dependencies",
-            "evidence",
-            "error",
-            "createdUnixNs",
-        ],
-        "readiness receipt",
-    )?;
-    if content_address(&receipt_path)? != receipt_hash
-        || string(&receipt, "schema")? != READINESS_RECEIPT_SCHEMA
-        || string(&receipt, "storeId")? != store_id
-        || string(&receipt, "graphHash")? != graph_hash
-        || string(&receipt, "checkerVersion")? != READINESS_CHECKER_VERSION
-        || string(&receipt, "node")? != node
-        || string(&receipt, "status")? != "READY"
-        || receipt.get("error").is_some_and(|value| !value.is_null())
-        || receipt
-            .get("createdUnixNs")
-            .and_then(Value::as_u64)
-            .is_none()
-        || receipt.get("evidence").and_then(Value::as_object).is_none()
-    {
-        bail!("readiness receipt is not current READY evidence for {node}");
-    }
-    let selected = object(&receipt, "selectedInputs")?;
-    let selected_keys = selected.keys().cloned().collect::<BTreeSet<_>>();
-    let expected_keys = spec
-        .input_selectors
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if selected_keys != expected_keys {
-        bail!("readiness selected-input schema mismatch for {node}");
-    }
-    for (key, value) in selected {
-        let value = value
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .with_context(|| format!("readiness selected input is invalid for {node}"))?;
-        if let Some(previous) = selected_values.insert(key.clone(), value.to_owned())
-            && previous != value
-        {
-            bail!("readiness closure has conflicting selected input {key}");
-        }
-    }
-    let dependencies = object(&receipt, "dependencies")?;
-    if dependencies.len() != expected_dependencies.len()
-        || expected_dependencies
-            .iter()
-            .any(|dependency| !dependencies.contains_key(dependency))
-    {
-        bail!("readiness receipt dependency closure mismatch for {node}");
-    }
-    let node_key_value = serde_json::json!({
-        "storeId":store_id,
-        "graphHash":graph_hash,
-        "checkerVersion":READINESS_CHECKER_VERSION,
-        "checker":spec.checker.as_str(),
-        "checkerSourceSha256":sha256(PINNED_READINESS_CHECKER),
-        "node":node,
-        "inputs":receipt.get("selectedInputs").expect("validated selected inputs"),
-        "dependencies":receipt.get("dependencies").expect("validated dependencies"),
-    });
-    let expected_node_key = sha256(&canonical_bytes(&node_key_value));
-    if string(&receipt, "nodeKey")? != expected_node_key {
-        bail!("readiness checker/nodeKey authority mismatch for {node}");
-    }
-    for dependency in expected_dependencies {
-        let dependency_hash = dependencies
-            .get(dependency)
-            .and_then(Value::as_str)
-            .with_context(|| format!("readiness dependency hash missing for {dependency}"))?;
-        checked_sha(dependency_hash, "readiness dependency hash")?;
-        validate_ready_receipt_chain(
-            store,
-            graph_hash,
-            store_id,
-            graph,
-            dependency,
-            dependency_hash,
-            visited,
-            selected_values,
+        self.visited
+            .insert(node.to_owned(), receipt_hash.to_owned());
+        let spec = self
+            .graph
+            .get(node)
+            .cloned()
+            .with_context(|| format!("readiness receipt has unknown node {node}"))?;
+        let expected_dependencies = &spec.dependencies;
+        let pointer_path = self.store.join("current").join(format!("{node}.json"));
+        let pointer = read_canonical_json(&pointer_path, "readiness pointer")?;
+        require_exact_keys(
+            &pointer,
+            &["schema", "storeId", "graphHash", "node", "receiptHash"],
+            "readiness pointer",
         )?;
+        if string(&pointer, "schema")? != READINESS_POINTER_SCHEMA
+            || string(&pointer, "storeId")? != self.store_id
+            || string(&pointer, "graphHash")? != self.graph_hash
+            || string(&pointer, "node")? != node
+            || string(&pointer, "receiptHash")? != receipt_hash
+        {
+            bail!("current readiness pointer mismatch for {node}");
+        }
+        let receipt_path = self
+            .store
+            .join("objects")
+            .join(format!("{receipt_hash}.json"));
+        let receipt = read_canonical_json(&receipt_path, "readiness receipt")?;
+        require_exact_keys(
+            &receipt,
+            &[
+                "schema",
+                "storeId",
+                "graphHash",
+                "checkerVersion",
+                "node",
+                "nodeKey",
+                "status",
+                "selectedInputs",
+                "dependencies",
+                "evidence",
+                "error",
+                "createdUnixNs",
+            ],
+            "readiness receipt",
+        )?;
+        if content_address(&receipt_path)? != receipt_hash
+            || string(&receipt, "schema")? != READINESS_RECEIPT_SCHEMA
+            || string(&receipt, "storeId")? != self.store_id
+            || string(&receipt, "graphHash")? != self.graph_hash
+            || string(&receipt, "checkerVersion")? != READINESS_CHECKER_VERSION
+            || string(&receipt, "node")? != node
+            || string(&receipt, "status")? != "READY"
+            || receipt.get("error").is_some_and(|value| !value.is_null())
+            || receipt
+                .get("createdUnixNs")
+                .and_then(Value::as_u64)
+                .is_none()
+            || receipt.get("evidence").and_then(Value::as_object).is_none()
+        {
+            bail!("readiness receipt is not current READY evidence for {node}");
+        }
+        let selected = object(&receipt, "selectedInputs")?;
+        let selected_keys = selected.keys().cloned().collect::<BTreeSet<_>>();
+        let expected_keys = spec
+            .input_selectors
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if selected_keys != expected_keys {
+            bail!("readiness selected-input schema mismatch for {node}");
+        }
+        for (key, value) in selected {
+            let value = value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .with_context(|| format!("readiness selected input is invalid for {node}"))?;
+            if let Some(previous) = self.selected_values.insert(key.clone(), value.to_owned())
+                && previous != value
+            {
+                bail!("readiness closure has conflicting selected input {key}");
+            }
+        }
+        let dependencies = object(&receipt, "dependencies")?;
+        if dependencies.len() != expected_dependencies.len()
+            || expected_dependencies
+                .iter()
+                .any(|dependency| !dependencies.contains_key(dependency))
+        {
+            bail!("readiness receipt dependency closure mismatch for {node}");
+        }
+        let node_key_value = serde_json::json!({
+            "storeId":self.store_id,
+            "graphHash":self.graph_hash,
+            "checkerVersion":READINESS_CHECKER_VERSION,
+            "checker":spec.checker.as_str(),
+            "checkerSourceSha256":sha256(PINNED_READINESS_CHECKER),
+            "node":node,
+            "inputs":receipt.get("selectedInputs").expect("validated selected inputs"),
+            "dependencies":receipt.get("dependencies").expect("validated dependencies"),
+        });
+        let expected_node_key = sha256(&canonical_bytes(&node_key_value));
+        if string(&receipt, "nodeKey")? != expected_node_key {
+            bail!("readiness checker/nodeKey authority mismatch for {node}");
+        }
+        for dependency in expected_dependencies {
+            let dependency_hash = dependencies
+                .get(dependency)
+                .and_then(Value::as_str)
+                .with_context(|| format!("readiness dependency hash missing for {dependency}"))?;
+            checked_sha(dependency_hash, "readiness dependency hash")?;
+            self.validate(dependency, dependency_hash)?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn graph_node_specs(value: &Value) -> Result<BTreeMap<String, ReadinessNodeSpec>> {
@@ -1089,6 +1091,7 @@ mod tests {
         ConflictingClosureInput,
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn receipt_chain(
         store: &Path,
         store_id: &str,
