@@ -345,11 +345,12 @@ pub(crate) fn analyze_project_native_index(
         .join(compiler_store_component);
     create_private_directory(&compiler_store)?;
     let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
+    let compiler_store_namespace = format!("sha256:{compiler_store_component}");
     let mut worker = WorkerClient::start_with_managed_states(
         &workspace_root(),
         None,
         Some(&compiler_store),
-        &snapshot.snapshot_id,
+        &compiler_store_namespace,
     )?;
     let request = json!({
         "repo":repo,

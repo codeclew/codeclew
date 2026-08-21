@@ -151,12 +151,7 @@ fn build_ready(
     snapshot_object: CasObject,
     generation_key: String,
 ) -> Result<ReadyGeneration, ClewError> {
-    let compiler_store_key = canonical::hash(&json!({
-        "schema":"codeclew-project-native-compiler-store/2.0",
-        "runtimeKey":runtime.runtime_key,
-        "compilation":session.compilation,
-    }))
-    .map_err(internal)?;
+    let compiler_store_key = compiler_store_key(runtime, &session.compilation)?;
     let index = analyze_project_native_index(
         state,
         store,
@@ -296,6 +291,15 @@ fn build_ready(
     };
     verify_ready(store, &ready, session, true)?;
     Ok(ready)
+}
+
+fn compiler_store_key(runtime: &RuntimeAuthority, compilation: &str) -> Result<String, ClewError> {
+    canonical::hash(&json!({
+        "schema":"codeclew-project-native-compiler-store/3.0",
+        "workers":&runtime.workers,
+        "compilation":compilation,
+    }))
+    .map_err(internal)
 }
 
 fn load_ready(
@@ -442,4 +446,68 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 
 fn io_error(error: std::io::Error) -> ClewError {
     ClewError::new(ErrorCode::Internal, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{RuntimeMode, RuntimeWorker};
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn runtime(runtime_key: &str, binary_byte: u8) -> RuntimeAuthority {
+        RuntimeAuthority {
+            schema: "codeclew-runtime-capsule/2.0".into(),
+            runtime_key: format!("sha256:{}", runtime_key.repeat(64)),
+            mode: RuntimeMode::Release,
+            manifest_digest: format!("sha256:{}", runtime_key.repeat(64)),
+            artifacts: BTreeMap::from([(
+                "clew".into(),
+                crate::runtime::RuntimeArtifact {
+                    path: "bin/clew".into(),
+                    size: 1,
+                    sha256: format!("sha256:{binary_byte:064x}"),
+                },
+            )]),
+            workers: BTreeMap::from([(
+                "kotlin24".into(),
+                RuntimeWorker {
+                    compiler_version: "2.4.10".into(),
+                    distribution: "workers/kotlin24".into(),
+                    tree_hash: format!("sha256:{}", "a".repeat(64)),
+                    files: Vec::new(),
+                },
+            )]),
+            root: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn compiler_store_survives_unrelated_runtime_rebuilds() {
+        let first = runtime("a", 1);
+        let rebuilt = runtime("b", 2);
+        assert_eq!(
+            compiler_store_key(&first, ":workers:kotlin/main").unwrap(),
+            compiler_store_key(&rebuilt, ":workers:kotlin/main").unwrap(),
+        );
+    }
+
+    #[test]
+    fn compiler_store_changes_with_worker_or_compilation_authority() {
+        let first = runtime("a", 1);
+        let mut changed_worker = runtime("b", 2);
+        changed_worker
+            .workers
+            .get_mut("kotlin24")
+            .unwrap()
+            .tree_hash = format!("sha256:{}", "c".repeat(64));
+        assert_ne!(
+            compiler_store_key(&first, ":workers:kotlin/main").unwrap(),
+            compiler_store_key(&changed_worker, ":workers:kotlin/main").unwrap(),
+        );
+        assert_ne!(
+            compiler_store_key(&first, ":workers:kotlin/main").unwrap(),
+            compiler_store_key(&first, ":workers:kotlin/test").unwrap(),
+        );
+    }
 }
