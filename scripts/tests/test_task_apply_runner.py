@@ -53,17 +53,19 @@ if "task-apply" in arguments:
         os.kill(os.getpid(), signal.SIGKILL)
     transaction_id = arguments[arguments.index("--transaction-id") + 1]
     output = Path(arguments[arguments.index("--output") + 1])
+    terminal_status = mode.get("transactionStatus", "COMMITTED")
     transaction = {
         "schema": "semantic-transaction/0.1",
         "txId": transaction_id,
-        "status": "COMMITTED",
-        "finalCommit": "f" * 40,
+        "status": terminal_status,
+        "finalCommit": "f" * 40 if terminal_status == "COMMITTED" else None,
+        "candidateCommit": "c" * 40 if terminal_status == "VALIDATED_CONDITIONAL" else None,
     }
     output.write_text(json.dumps(transaction), encoding="utf-8")
     print(json.dumps({
         "schema": "semantic-task-apply-receipt/0.1",
-        "status": "COMMITTED",
-        "finalCommit": "f" * 40,
+        "status": terminal_status,
+        "finalCommit": "f" * 40 if terminal_status == "COMMITTED" else None,
     }))
     raise SystemExit(0)
 if "inspect" in arguments:
@@ -115,9 +117,22 @@ class TaskApplyRunnerIntegrationTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def set_mode(self, *, sleep: float = 0, send_signal: bool = False) -> None:
+    def set_mode(
+        self,
+        *,
+        sleep: float = 0,
+        send_signal: bool = False,
+        transaction_status: str = "COMMITTED",
+    ) -> None:
         self.mode.write_text(
-            json.dumps({"sleep": sleep, "signal": send_signal}), encoding="utf-8"
+            json.dumps(
+                {
+                    "sleep": sleep,
+                    "signal": send_signal,
+                    "transactionStatus": transaction_status,
+                }
+            ),
+            encoding="utf-8",
         )
 
     def start_command(self) -> list[str]:
@@ -237,6 +252,17 @@ class TaskApplyRunnerIntegrationTest(unittest.TestCase):
         self.assertEqual(inspect[-2:], ["--transaction-id", terminal["transactionId"]])
         attached = self.invoke(self.start_command())
         self.assertEqual(attached["state"], "UNKNOWN_REQUIRES_INSPECTION")
+        self.assertEqual(self.invocation_count(), 1)
+
+    def test_conditional_validation_is_terminal_without_claiming_publication(self) -> None:
+        self.set_mode(transaction_status="VALIDATED_CONDITIONAL")
+        started = self.invoke(self.start_command())
+        terminal = self.await_terminal(started)
+        self.assertEqual(terminal["state"], "VALIDATED_CONDITIONAL")
+        self.assertTrue(terminal["terminal"])
+        completion = terminal["detail"]["completion"]
+        self.assertEqual(completion["transactionStatus"], "VALIDATED_CONDITIONAL")
+        self.assertIsNone(completion["taskApplyResult"]["finalCommit"])
         self.assertEqual(self.invocation_count(), 1)
 
     def test_request_digest_binds_exact_input_bytes(self) -> None:

@@ -271,7 +271,12 @@ fn preview_with_authorization(
         let range = target.get("rangeHint").cloned().unwrap_or(json!([]));
         windows.push(json!({"file":file,"range":range}));
         candidates.insert(file.to_owned(), candidate.clone());
-        let owner = target
+        // ApplyEdit resolves the canonical transport identity. Expected and
+        // actual semantic write facts must use that same identity; comparing
+        // the worker's canonical delta against the pre-transport owner JSON
+        // incorrectly reports a WRITESET_EXCEEDED before the intended stale
+        // binding checks can run.
+        let owner = transport_target
             .get("ownerSymbolId")
             .and_then(Value::as_str)
             .unwrap_or(file);
@@ -982,7 +987,16 @@ pub fn commit(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, ClewError> {
-    commit_with_authorization(repo, transaction, target_ref, worker, false)
+    commit_with_authorization(repo, transaction, target_ref, worker, false, true)
+}
+
+pub fn validate_conditional_candidate(
+    repo: &Path,
+    transaction: &mut Transaction,
+    target_ref: &str,
+    worker: &mut WorkerClient,
+) -> Result<Value, ClewError> {
+    commit_with_authorization(repo, transaction, target_ref, worker, false, false)
 }
 
 pub(crate) fn commit_authorized_semantic(
@@ -991,7 +1005,7 @@ pub(crate) fn commit_authorized_semantic(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, ClewError> {
-    commit_with_authorization(repo, transaction, target_ref, worker, true)
+    commit_with_authorization(repo, transaction, target_ref, worker, true, true)
 }
 
 fn commit_with_authorization(
@@ -1000,6 +1014,7 @@ fn commit_with_authorization(
     target_ref: &str,
     worker: &mut WorkerClient,
     allow_authority_semantic_operation: bool,
+    publication_allowed: bool,
 ) -> Result<Value, ClewError> {
     validate_required_threads(transaction)?;
     let qualified_target_ref;
@@ -1016,6 +1031,7 @@ fn commit_with_authorization(
             "authority semantic proof is bound to its exact target revision; re-prove on the current target",
         ));
     }
+    validate_textual_edit_authority(transaction, &current)?;
     let checked_out_target_is_clean = checked_out_target_is_clean(repo, target_ref, &current);
     transaction.target_ref = Some(target_ref.into());
     let base_index_snapshot = transaction
@@ -1049,8 +1065,9 @@ fn commit_with_authorization(
         ));
     }
     let edit_hash = canonical::hash(&transaction.edit).map_err(internal)?;
-    if let Some(existing) =
-        find_matching_transaction_commit(repo, target_ref, &transaction.tx_id, &edit_hash)?
+    if publication_allowed
+        && let Some(existing) =
+            find_matching_transaction_commit(repo, target_ref, &transaction.tx_id, &edit_hash)?
     {
         let compilation = &transaction.thread.snapshot.compilation;
         let repository_index = RepositoryIndex::open_compilation(repo, Some(compilation))?;
@@ -1126,6 +1143,20 @@ fn commit_with_authorization(
     transaction.status = "VALIDATED".into();
     ledger(repo)?.append(transaction, "preview and Gradle validation passed")?;
     if report.candidates.is_empty() {
+        if !publication_allowed {
+            transaction.status = "VALIDATED_CONDITIONAL".into();
+            ledger(repo)?.append(
+                transaction,
+                "conditional candidate is an idempotent no-op; publication remains blocked",
+            )?;
+            return Ok(json!({
+                "schema":"semantic-conditional-validation/0.1",
+                "transactionId":transaction.tx_id,
+                "baseRevision":current,
+                "status":"VALIDATED_CONDITIONAL",
+                "published":false,
+            }));
+        }
         transaction.final_commit = Some(current.clone());
         transaction.status = "COMMITTED".into();
         ledger(repo)?.append(transaction, "idempotent no-op merged at current ref")?;
@@ -1264,6 +1295,22 @@ fn commit_with_authorization(
         if let Some(transition) = project_model_transition {
             transaction.validation_evidence.push(transition);
         }
+        if !publication_allowed {
+            transaction.status = "VALIDATED_CONDITIONAL".into();
+            ledger(repo)?.append(
+                transaction,
+                "candidate compiled, tested, and indexed; publication remains blocked by unresolved verification obligations",
+            )?;
+            return Ok(json!({
+                "schema":"semantic-conditional-validation/0.1",
+                "transactionId":transaction.tx_id,
+                "baseRevision":current,
+                "candidateCommit":candidate,
+                "status":"VALIDATED_CONDITIONAL",
+                "published":false,
+                "gradleValidationDurationMs":compile_duration_ms + test_duration_ms,
+            }));
+        }
         git(repo, &["update-ref", target_ref, &candidate, &current]).map_err(|_| {
             ClewError::new(
                 ErrorCode::RefCompareAndSwapFailed,
@@ -1331,6 +1378,44 @@ fn commit_with_authorization(
         ],
     );
     result
+}
+
+fn validate_textual_edit_authority(
+    transaction: &Transaction,
+    current_revision: &str,
+) -> Result<(), ClewError> {
+    let unproved = transaction.edit.operations.iter().find(|operation| {
+        matches!(
+            operation.kind.as_str(),
+            "REPLACE_EXPRESSION" | "REPLACE_FUNCTION_BODY"
+        ) && operation.preconditions.is_empty()
+            && operation.postconditions.is_empty()
+    });
+    let Some(operation) = unproved else {
+        return Ok(());
+    };
+    let owner = operation
+        .target
+        .get("ownerSymbolId")
+        .and_then(Value::as_str)
+        .filter(|owner| !owner.is_empty())
+        .map(str::to_owned);
+    let (code, message) = if current_revision != transaction.base_revision {
+        (
+            ErrorCode::StaleRequiresReslice,
+            "target moved after an unproved textual edit was sliced; reslice with explicit semantic conditions",
+        )
+    } else {
+        (
+            ErrorCode::BindingChanged,
+            "textual expression/body edit has no semantic preconditions or postconditions",
+        )
+    };
+    let mut error = ClewError::new(code, message);
+    if let Some(owner) = owner {
+        error = error.with_relevant(owner);
+    }
+    Err(error)
 }
 
 fn project_model_transition_evidence(

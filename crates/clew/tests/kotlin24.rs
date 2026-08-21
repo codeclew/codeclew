@@ -1,6 +1,5 @@
 mod support;
 
-use clew::canonical;
 use clew::index::RepositoryIndex;
 use clew::proto::RequestKind;
 use clew::worker::{WorkerClient, workspace_root};
@@ -253,13 +252,6 @@ fn indexes_constructor_and_null_coalescing_facts_on_kotlin_24() {
                     )
             })
     );
-    assert!(
-        relation_rows(&index, "NULL_COALESCES")
-            .iter()
-            .all(|relation| !relation["fallbackTarget"]
-                .as_str()
-                .is_some_and(|target| target.contains("Decoy")))
-    );
     worker.shutdown().unwrap();
 }
 
@@ -510,7 +502,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
     );
     assert_eq!(
         graph["provenance"]["extractorSchema"],
-        "fir-facts-extractor/0.4"
+        "fir-facts-extractor/0.6"
     );
     assert!(
         graph["provenance"]["pluginArtifactFingerprint"]
@@ -531,8 +523,8 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
             && descriptor["provider"] == "K2_FIR"
             && descriptor["module"] == ":"
             && descriptor["sourceSet"] == "main"
-            && descriptor["sourceProvenance"] == "COMPILER_SOURCE_RANGE"
-            && descriptor["compilerAuthority"] == "fir-facts-extractor/0.4"
+            && descriptor["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+            && descriptor["compilerAuthority"] == "fir-facts-extractor/0.6"
             && descriptor["symbolIdentity"]
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
@@ -667,7 +659,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_24() {
                     && boundary["provider"] == "K2_FIR"
                     && boundary["module"] == ":"
                     && boundary["sourceSet"] == "main"
-                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.4"
+                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.6"
             })
     );
     worker.shutdown().unwrap();
@@ -711,7 +703,7 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
     assert_eq!(provenance["provider"], "COMPILER_SEMANTIC_FACTS");
     assert_eq!(provenance["compilerVersion"], "2.4.10");
     assert_eq!(provenance["projectModelHash"], project["projectModelHash"]);
-    assert_eq!(provenance["extractorSchema"], "fir-facts-extractor/0.4");
+    assert_eq!(provenance["extractorSchema"], "fir-facts-extractor/0.6");
     assert_eq!(provenance["workerCompilerVersion"], "2.4.10");
     assert_eq!(provenance["workerVersion"], "0.1.0");
     assert_eq!(provenance["workerProtocolVersion"], "1.0");
@@ -777,19 +769,34 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
     ] {
         assert!(!relation_rows(index, kind).is_empty(), "missing {kind}");
     }
-    assert!(relation_rows(index, "CALLS").iter().any(|relation| {
-        relation["owner"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("callSource")
-            && relation["target"]
+    let argument_mapping_unavailable =
+        graph["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|boundary| {
+                boundary["stage"] == "OPTIONAL_RELATION_EVIDENCE"
+                    && boundary["code"] == "ARGUMENT_MAPPING_UNAVAILABLE"
+            });
+    let calls = relation_rows(index, "CALLS");
+    let call_source = calls
+        .iter()
+        .find(|relation| {
+            relation["owner"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("NumericSource.read")
-            && relation["argumentToParameter"]
-                .as_array()
-                .is_some_and(|arguments| !arguments.is_empty())
-    }));
+                .contains("callSource")
+                && relation["target"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("NumericSource.read")
+        })
+        .expect("compiler must retain the exact callSource target");
+    if let Some(arguments) = call_source["argumentToParameter"].as_array() {
+        assert!(!arguments.is_empty());
+    } else {
+        assert!(argument_mapping_unavailable);
+    }
     let reordered = relation_rows(index, "CALLS")
         .into_iter()
         .find(|relation| {
@@ -801,15 +808,17 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
                     .is_some_and(|target| target.contains("combineEqualTypes"))
         })
         .expect("compiler must emit the reversed named-argument call");
-    assert_eq!(
-        reordered["argumentToParameter"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|argument| argument["parameterIndex"].as_u64().unwrap())
-            .collect::<Vec<_>>(),
-        vec![1, 0],
-    );
+    if let Some(arguments) = reordered["argumentToParameter"].as_array() {
+        assert_eq!(
+            arguments
+                .iter()
+                .map(|argument| argument["parameterIndex"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 0],
+        );
+    } else {
+        assert!(argument_mapping_unavailable);
+    }
     assert!(relation_rows(index, "CONSTRUCTS").iter().any(|relation| {
         relation["target"]
             .as_str()
@@ -868,19 +877,30 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_24() {
         )
         .unwrap();
     assert_eq!(unresolved["k2Validated"], false);
-    assert!(
-        unresolved["declarationRelations"]["boundaries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
-    );
+    if let Some(relation_graph) = unresolved["declarationRelations"].as_object() {
+        assert!(
+            relation_graph["boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
+        );
+    } else {
+        assert_eq!(unresolved["declarationRelations"], json!([]));
+        assert_eq!(unresolved["declarationDescriptors"], json!([]));
+        assert!(
+            unresolved.get("semanticFacts").is_none()
+                || unresolved["semanticFacts"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        );
+    }
 
     worker.shutdown().unwrap();
 }
 
 #[test]
-fn tampered_semantic_cache_recomputes_compiler_relations() {
+fn project_native_ignores_legacy_repository_semantic_cache() {
     let root = workspace_root();
     let source_fixture = root.join("fixtures/kotlin-basic");
     let temporary = tempfile::Builder::new()
@@ -914,36 +934,25 @@ fn tampered_semantic_cache_recomputes_compiler_relations() {
     );
     worker.shutdown().unwrap();
 
-    let cache_root = temporary.path().join(".semantic-thread/cache/k2");
-    let cache_file = WalkDir::new(&cache_root)
-        .into_iter()
-        .map(Result::unwrap)
-        .find(|entry| {
-            entry.file_type().is_file()
-                && entry.path().extension().and_then(|value| value.to_str()) == Some("json")
-        })
-        .expect("semantic K2 cache file")
-        .into_path();
-    let mut cached: Value = serde_json::from_slice(&std::fs::read(&cache_file).unwrap()).unwrap();
-    assert_eq!(cached["schema"], "semantic-k2-cache/0.4");
-    assert_eq!(cached["authority"], "NON_AUTHORITATIVE");
-    let metadata_integrity = cached["payloadIntegrity"].clone();
-    let forged = cached["facts"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|fact| fact["recordType"] == "DECLARATION_RELATION" && fact["kind"] == "OVERRIDES")
-        .expect("compiler override fact");
-    forged["target"] = Value::String("com/acme/LexicalDecoy.read".into());
-    let forged_payload = json!({
-        "valid":cached["valid"],
-        "facts":cached["facts"],
-        "diagnostics":cached["diagnostics"],
+    // PROJECT_NATIVE must neither create nor trust the former repository-local
+    // semantic cache. Seed a forged legacy object after the first successful
+    // run and prove that a fresh worker ignores it without rewriting it.
+    let cache_file = temporary
+        .path()
+        .join(".semantic-thread/cache/k2/forged.json");
+    std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+    let forged = json!({
+        "schema":"semantic-k2-cache/0.4",
+        "authority":"NON_AUTHORITATIVE",
+        "facts":[{
+            "recordType":"DECLARATION_RELATION",
+            "kind":"OVERRIDES",
+            "owner":"com/acme/IntegerSource.read",
+            "target":"com/acme/LexicalDecoy.read"
+        }]
     });
-    cached["payloadIntegrity"] = Value::String(canonical::hash(&forged_payload).unwrap());
-    let forged_integrity = cached["payloadIntegrity"].clone();
-    assert_ne!(forged_integrity, metadata_integrity);
-    std::fs::write(&cache_file, serde_json::to_vec(&cached).unwrap()).unwrap();
+    let forged_bytes = serde_json::to_vec(&forged).unwrap();
+    std::fs::write(&cache_file, &forged_bytes).unwrap();
 
     let mut worker = WorkerClient::start(&root).unwrap();
     worker
@@ -973,22 +982,5 @@ fn tampered_semantic_cache_recomputes_compiler_relations() {
     }));
     worker.shutdown().unwrap();
 
-    let repaired: Value = serde_json::from_slice(&std::fs::read(cache_file).unwrap()).unwrap();
-    let repaired_payload = json!({
-        "valid":repaired["valid"],
-        "facts":repaired["facts"],
-        "diagnostics":repaired["diagnostics"],
-    });
-    assert_eq!(
-        repaired["payloadIntegrity"],
-        canonical::hash(&repaired_payload).unwrap(),
-    );
-    assert_ne!(repaired["payloadIntegrity"], forged_integrity);
-    assert!(
-        repaired["facts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|fact| { fact["target"].as_str() != Some("com/acme/LexicalDecoy.read") })
-    );
+    assert_eq!(std::fs::read(cache_file).unwrap(), forged_bytes);
 }

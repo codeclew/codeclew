@@ -2202,6 +2202,11 @@ mod tests {
                 })
         );
         assert!(!conditional.is_complete_for_goal(&goal, &kernel_for(&facts)));
+        facts.facts.behavioral_oracle_available = true;
+        let discharged = prove(&goal, &facts);
+        assert_eq!(discharged.status, ProofStatus::Bound);
+        assert!(discharged.unresolved_obligations.is_empty());
+        assert!(discharged.is_complete_for_goal(&goal, &kernel_for(&facts)));
 
         let mut facts = evidence();
         facts.facts.no_unsupported_boundary = false;

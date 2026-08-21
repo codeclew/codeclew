@@ -70,6 +70,17 @@ transaction artifact, and `completion.json` live below
 after both lifetime locks have been released, use only the returned
 `transactionInspectCommand` to reconcile the existing transaction.
 
+When compiler evidence identifies a useful edit contour but cannot prove a
+call target or argument-to-parameter edge, `prove typed-goal` and
+`prove map-edge-with-context` return `CONDITIONAL`, never `BOUND`. The result
+contains stable, publication-blocking `unresolvedObligations`. It may be
+attached to a generic context with `agent-context --conditional-decision
+<decision.json>`. `task-apply` will then build, test, and index the detached
+candidate, but returns terminal `VALIDATED_CONDITIONAL` without updating the
+target ref. Re-run proof after a compiler/runtime verifier discharges the
+obligations to obtain an ordinary publishable proof; strict publication is the
+default and there is no implicit confidence threshold.
+
 For slicing, preview and commit the target must be a Git repository with a committed `HEAD`. The reproducible demonstration creates an isolated copy:
 
 ```bash

@@ -483,6 +483,7 @@ def _status_envelope(
         "state": state,
         "terminal": state in {
             "SUCCEEDED",
+            "VALIDATED_CONDITIONAL",
             "FAILED",
             "UNKNOWN_REQUIRES_INSPECTION",
         },
@@ -611,9 +612,14 @@ def _completion_after_exit(
     transaction = _read_optional_json(
         paths["transaction"], "task transaction artifact", MAX_RESULT_BYTES
     )
-    if isinstance(transaction, dict) and transaction.get("status") == "COMMITTED":
-        state = "SUCCEEDED"
-        reason = None if exit_code == 0 else "COMMITTED_WITH_NONZERO_PROCESS_EXIT"
+    transaction_status = transaction.get("status") if isinstance(transaction, dict) else None
+    if transaction_status in {"COMMITTED", "VALIDATED_CONDITIONAL"}:
+        state = "SUCCEEDED" if transaction_status == "COMMITTED" else "VALIDATED_CONDITIONAL"
+        reason = (
+            None
+            if exit_code == 0
+            else f"{transaction_status}_WITH_NONZERO_PROCESS_EXIT"
+        )
     else:
         parsed = None
         try:
@@ -664,16 +670,21 @@ def _status_after_owner_exit(request: dict[str, Any], run_dir: Path) -> dict[str
     transaction = _read_optional_json(
         paths["transaction"], "task transaction artifact", MAX_RESULT_BYTES
     )
-    if isinstance(transaction, dict) and transaction.get("status") == "COMMITTED":
+    transaction_status = transaction.get("status") if isinstance(transaction, dict) else None
+    if transaction_status in {"COMMITTED", "VALIDATED_CONDITIONAL"}:
         status = _read_optional_json(paths["status"], "task status", MAX_RESULT_BYTES)
         started_ns = status.get("startedUnixNs") if isinstance(status, dict) else None
         completion = _completion(
             request,
-            state="SUCCEEDED",
+            state=(
+                "SUCCEEDED"
+                if transaction_status == "COMMITTED"
+                else "VALIDATED_CONDITIONAL"
+            ),
             started_ns=started_ns if isinstance(started_ns, int) else None,
             finished_ns=time.time_ns(),
             exit_code=None,
-            reason="COMPLETION_RECOVERED_FROM_COMMITTED_TRANSACTION_ARTIFACT",
+            reason=f"COMPLETION_RECOVERED_FROM_{transaction_status}_TRANSACTION_ARTIFACT",
         )
     else:
         parsed = None

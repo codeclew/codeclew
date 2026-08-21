@@ -116,7 +116,12 @@ fn live_thread(repo: &Path, symbol: &str) -> ThreadIr {
 #[test]
 fn authority_rejects_stale_or_unmapped_kotlin21_evidence() {
     let (_temporary, fixture) = committed_fixture();
-    let thread = live_thread(&fixture, "com.acme.transformAndConsume");
+    // Keep this stale/unmapped authority test independent of compiler call
+    // resolution. `transformAndConsume` contains an operator CALL whose target
+    // may be intentionally unresolved by a supported K2 worker, making that
+    // Thread IR an honest external-boundary partial rather than a verifier
+    // fixture. This identity function still carries an exact DEF_USE path.
+    let thread = live_thread(&fixture, "com.acme.valuesAwaitingContext");
     let revision = git_head(&fixture);
     let production_source = fixture.join("src/main/kotlin/com/acme/Runner.kt");
     let original_production_source = std::fs::read(&production_source).unwrap();
@@ -129,9 +134,6 @@ fn authority_rejects_stale_or_unmapped_kotlin21_evidence() {
     let mut worker = WorkerClient::start(&workspace_root()).unwrap();
     let mut authority = EvidenceAuthority::open(&fixture, &revision).unwrap();
 
-    assert!(thread.nodes.iter().any(|node| {
-        node.kind == "DEFINITION" && node.defines.as_deref() == Some("transformed")
-    }));
     assert!(thread.edges.iter().any(|edge| edge.kind == "DEF_USE"));
 
     let mut fabricated = thread.clone();

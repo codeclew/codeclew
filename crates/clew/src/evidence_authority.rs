@@ -346,12 +346,13 @@ pub struct MapEdgeConditional {
 #[derive(Debug)]
 pub enum MapEdgeWithContextDecision {
     Bound(Box<MapEdgeWithContextReceipt>),
-    Conditional(MapEdgeConditional),
+    Conditional(Box<MapEdgeConditional>),
     Ambiguous(MapEdgeAmbiguity),
     Refused(MapEdgeRefusal),
 }
 
 pub const TYPED_GOAL_PROOF_SUMMARY_SCHEMA: &str = "typed-goal-proof-summary/0.1";
+pub const MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA: &str = "map-edge-with-context-decision/0.2";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -684,6 +685,7 @@ pub struct TypedGoalConditional {
     pub revision: String,
     pub goal_fingerprint: String,
     pub bindings: BTreeMap<String, String>,
+    pub established_evidence_relations: Vec<ProvenRelationRecord>,
     pub established_evidence_fingerprint: String,
     pub unresolved_obligations: Vec<UnresolvedVerificationObligation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1052,6 +1054,12 @@ struct DiscoveredTestCandidate {
     compiler_identity: String,
     queries: Vec<String>,
 }
+
+type BehavioralOracleDiscovery = (
+    Option<VerifiedBehavioralTestReceipt>,
+    Vec<OracleCandidateRejection>,
+    Option<ConditionalOracleEvidence>,
+);
 
 #[derive(Debug, Clone)]
 struct OracleCompilationContext {
@@ -1716,12 +1724,23 @@ impl EvidenceAuthority {
             .map_edge_proofs
             .get(&proof.receipt_id)
             .ok_or_else(|| invalid_receipt("map-edge proof"))?;
+        let thread_fingerprint = stored_proof.thread_fingerprint.clone();
+        self.materialize_candidate_overlay_from_edit(thread, edit, thread_fingerprint, worker)
+    }
+
+    fn materialize_candidate_overlay_from_edit(
+        &mut self,
+        thread: ThreadIr,
+        edit: EditIr,
+        thread_fingerprint: String,
+        worker: &mut WorkerClient,
+    ) -> Result<CandidateOverlayReceipt, ClewError> {
         verify_sources_current(
             &self.repo,
             &self
                 .threads
                 .values()
-                .find(|item| item.fingerprint == stored_proof.thread_fingerprint)
+                .find(|item| item.fingerprint == thread_fingerprint)
                 .ok_or_else(|| invalid_receipt("candidate overlay thread"))?
                 .source_files,
         )?;
@@ -1787,7 +1806,7 @@ impl EvidenceAuthority {
         }
         let overlay_hash = canonical::hash(&(
             &self.revision,
-            &stored_proof.thread_fingerprint,
+            &thread_fingerprint,
             &thread.snapshot.project_model_hash,
             &test_compilation,
             &test_project_model_hash,
@@ -1803,7 +1822,7 @@ impl EvidenceAuthority {
             receipt_id,
             CandidateOverlay {
                 revision: self.revision.clone(),
-                thread_fingerprint: stored_proof.thread_fingerprint.clone(),
+                thread_fingerprint,
                 test_fingerprint: None,
                 production_project_model_hash: thread.snapshot.project_model_hash,
                 test_compilation,
@@ -2499,7 +2518,7 @@ impl EvidenceAuthority {
         });
         if safe_candidates.len() != 1 {
             return Ok(MapEdgeWithContextDecision::Ambiguous(MapEdgeAmbiguity {
-                schema: "map-edge-with-context-decision/0.1".into(),
+                schema: MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA.into(),
                 status: "AMBIGUOUS".into(),
                 choices: safe_candidates
                     .into_iter()
@@ -2595,9 +2614,9 @@ impl EvidenceAuthority {
                         &unresolved_obligations,
                     ))
                     .map_err(internal)?;
-                    return Ok(MapEdgeWithContextDecision::Conditional(
+                    return Ok(MapEdgeWithContextDecision::Conditional(Box::new(
                         MapEdgeConditional {
-                            schema: "map-edge-with-context-decision/0.2".into(),
+                            schema: MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA.into(),
                             status: "CONDITIONAL".into(),
                             revision: self.revision.clone(),
                             goal_fingerprint,
@@ -2607,7 +2626,7 @@ impl EvidenceAuthority {
                             unresolved_obligations,
                             evidence_fingerprint,
                         },
-                    ));
+                    )));
                 }
                 return Ok(map_edge_refused(
                     MapEdgeRefusalReason::MissingBehavioralOracle,
@@ -3340,12 +3359,27 @@ impl EvidenceAuthority {
                 )?;
                 let Some(test) = test else {
                     if let Some(conditional_oracle) = conditional_oracle {
+                        let provider = ValueFlowOperatorEvidenceProvider {
+                            bindings: &bindings,
+                            viable_bindings: &viable_bindings,
+                            flow,
+                            selected: &selected,
+                            oracle_fingerprint: None,
+                        };
+                        let established_evidence_relations =
+                            match prove_relation_records_without_unresolved_oracles(
+                                &provider, plan, &bindings,
+                            ) {
+                                Ok(records) => records,
+                                Err(reason) => return Ok(typed_goal_refused(reason)),
+                            };
                         let goal_fingerprint = canonical::hash(goal).map_err(internal)?;
                         let established_evidence_fingerprint = canonical::hash(&(
                             &flow.thread_fingerprint,
                             &flow.index_hash,
                             &selected.transformer.resolution_fingerprint,
                             &bindings,
+                            &established_evidence_relations,
                             &conditional_oracle.evidence_fingerprint,
                         ))
                         .map_err(internal)?;
@@ -3356,6 +3390,7 @@ impl EvidenceAuthority {
                                 revision: self.revision.clone(),
                                 goal_fingerprint,
                                 bindings,
+                                established_evidence_relations,
                                 established_evidence_fingerprint,
                                 unresolved_obligations: conditional_oracle_obligations(
                                     &conditional_oracle,
@@ -3409,14 +3444,7 @@ impl EvidenceAuthority {
         compilation: &str,
         binding: &MapCandidate,
         worker: &mut WorkerClient,
-    ) -> Result<
-        (
-            Option<VerifiedBehavioralTestReceipt>,
-            Vec<OracleCandidateRejection>,
-            Option<ConditionalOracleEvidence>,
-        ),
-        ClewError,
-    > {
+    ) -> Result<BehavioralOracleDiscovery, ClewError> {
         let mut rejections = Vec::new();
         let mut conditional = BTreeMap::new();
         let diagnostic_context = oracle_compilation_context(&self.repo, compilation, worker)?;
@@ -3908,12 +3936,26 @@ impl EvidenceAuthority {
                 "map-edge receipt summary differs from authority storage",
             ));
         }
+        self.compile_map_edge_edit_from_binding(
+            &stored.thread_fingerprint,
+            &stored.summary.bindings,
+            &stored.summary.evidence_fingerprint,
+            format!("map-edge:{}", receipt.receipt_id),
+        )
+    }
+
+    fn compile_map_edge_edit_from_binding(
+        &self,
+        thread_fingerprint: &str,
+        binding: &MapEdgeBindingSummary,
+        evidence_fingerprint: &str,
+        op_id: String,
+    ) -> Result<(ThreadIr, EditIr), ClewError> {
         let verified = self
             .threads
             .values()
-            .find(|thread| thread.fingerprint == stored.thread_fingerprint)
+            .find(|thread| thread.fingerprint == thread_fingerprint)
             .ok_or_else(|| invalid_receipt("map-edge thread"))?;
-        let binding = &stored.summary.bindings;
         let mut target = verified
             .thread
             .nodes
@@ -3933,7 +3975,7 @@ impl EvidenceAuthority {
             thread_id: verified.thread.thread_id.clone(),
             base_revision: self.revision.clone(),
             operations: vec![EditOperation {
-                op_id: format!("map-edge:{}", receipt.receipt_id),
+                op_id,
                 kind: "MAP_EDGE_WITH_CONTEXT".into(),
                 target: target.clone(),
                 replacement: Replacement {
@@ -3956,7 +3998,7 @@ impl EvidenceAuthority {
                 )]),
                 postconditions: BTreeMap::from([(
                     "authorityEvidenceFingerprint".into(),
-                    Value::String(stored.summary.evidence_fingerprint.clone()),
+                    Value::String(evidence_fingerprint.to_owned()),
                 )]),
             }],
             expected_write_set: vec![],
@@ -4125,7 +4167,7 @@ fn preflight_typed_goal(
 
 fn map_edge_refused(reason: MapEdgeRefusalReason) -> MapEdgeWithContextDecision {
     MapEdgeWithContextDecision::Refused(MapEdgeRefusal {
-        schema: "map-edge-with-context-decision/0.1".into(),
+        schema: MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA.into(),
         status: "REFUSED".into(),
         reason,
     })
@@ -4420,8 +4462,32 @@ fn prove_relation_records(
     plan: &crate::semantic_goal::ConstraintExecutionPlan,
     bindings: &BTreeMap<String, String>,
 ) -> Result<Vec<ProvenRelationRecord>, TypedGoalRefusalReason> {
+    prove_relation_records_where(provider, plan, bindings, |_| true)
+}
+
+fn prove_relation_records_without_unresolved_oracles(
+    provider: &dyn OperatorEvidenceProvider,
+    plan: &crate::semantic_goal::ConstraintExecutionPlan,
+    bindings: &BTreeMap<String, String>,
+) -> Result<Vec<ProvenRelationRecord>, TypedGoalRefusalReason> {
+    prove_relation_records_where(provider, plan, bindings, |application| {
+        let relations = constraint_op_spec(&application.operator).required_evidence_relations;
+        !relations.contains(&EvidenceRelation::BehavioralOracle)
+            && !relations.contains(&EvidenceRelation::IndependentOracle)
+    })
+}
+
+fn prove_relation_records_where(
+    provider: &dyn OperatorEvidenceProvider,
+    plan: &crate::semantic_goal::ConstraintExecutionPlan,
+    bindings: &BTreeMap<String, String>,
+    should_prove: impl Fn(&OperatorApplication) -> bool,
+) -> Result<Vec<ProvenRelationRecord>, TypedGoalRefusalReason> {
     let mut records = Vec::new();
     for application in &plan.mandatory_closure {
+        if !should_prove(application) {
+            continue;
+        }
         let facts = provider.prove(application)?;
         let spec = constraint_op_spec(&application.operator);
         if facts.len() != spec.required_evidence_relations.len()
@@ -10415,12 +10481,17 @@ fn resolve_callable_evidence(
         })
     });
     let resolved_calls = resolution.get("resolvedCalls").and_then(Value::as_array);
+    let syntax_calls = resolution.get("calls").and_then(Value::as_array);
     let calls_are_known_pure = resolved_calls.is_some_and(|calls| {
-        calls.iter().all(|call| {
-            call.get("symbol")
-                .and_then(Value::as_str)
-                .is_some_and(known_pure_callable)
-        })
+        if calls.is_empty() {
+            syntax_calls.is_some_and(Vec::is_empty)
+        } else {
+            calls.iter().all(|call| {
+                call.get("symbol")
+                    .and_then(Value::as_str)
+                    .is_some_and(known_pure_callable)
+            })
+        }
     });
     verify_resolution_source(repo, &resolution)?;
     let type_facts = (
@@ -10432,6 +10503,7 @@ fn resolve_callable_evidence(
     let effect_facts = (
         semantic_facts.as_ref(),
         resolved_calls,
+        syntax_calls,
         effects_are_known,
         has_effect,
         calls_are_known_pure,

@@ -8,8 +8,8 @@ use clew::evidence_authority::{
 use clew::model::ThreadIr;
 use clew::proto::RequestKind;
 use clew::semantic_goal::{
-    OperatorApplication, PrimitiveConstraint, SemanticGoal, TypedGoalLanguageSchema,
-    TypedSemanticGoal, TypedVariableDomain, typed_goal_language_schema,
+    EvidenceRelation, OperatorApplication, PrimitiveConstraint, SemanticGoal,
+    TypedGoalLanguageSchema, TypedSemanticGoal, TypedVariableDomain, typed_goal_language_schema,
 };
 use clew::worker::{WorkerClient, workspace_root};
 use serde_json::{json, to_value};
@@ -353,6 +353,23 @@ fn typed_goal_entrypoint_surfaces_conditional_mapping_and_keeps_strict_proofs_un
     assert_eq!(conditional.unresolved_obligations.len(), 2);
     assert!(
         conditional
+            .established_evidence_relations
+            .iter()
+            .any(|record| { record.relation == EvidenceRelation::EffectPreservation })
+    );
+    assert!(
+        conditional
+            .established_evidence_relations
+            .iter()
+            .all(|record| {
+                !matches!(
+                    record.relation,
+                    EvidenceRelation::BehavioralOracle | EvidenceRelation::IndependentOracle
+                )
+            })
+    );
+    assert!(
+        conditional
             .unresolved_obligations
             .iter()
             .all(|obligation| obligation.publication_blocking)
@@ -512,7 +529,7 @@ fn typed_goal_refuses_when_compiler_effect_fact_is_not_safe() {
         .bind_typed_goal(&goal, &[], None, &mut worker)
         .unwrap();
     let TypedGoalBindingDecision::Refused(refusal) = decision else {
-        panic!("an edge without a safe compiler effect fact must be refused")
+        panic!("an edge without a safe compiler effect fact must be refused: {decision:?}")
     };
     assert_eq!(refusal.reason, TypedGoalRefusalReason::UnknownEffects);
     worker.shutdown().unwrap();
@@ -553,19 +570,22 @@ fn typed_goal_routes_explicit_multimodule_compilation_and_same_module_test() {
     let decision = authority
         .bind_typed_goal(&goal, &[], Some(":service/main"), &mut worker)
         .unwrap();
-    let TypedGoalBindingDecision::Bound(receipt) = decision else {
+    let TypedGoalBindingDecision::Conditional(conditional) = decision else {
         panic!(
-            "explicit production compilation must bind in its same-module test contour: {decision:?}"
+            "explicit production compilation must preserve its same-module contour while surfacing missing oracle evidence: {decision:?}"
         )
     };
-    assert!(receipt.summary().is_complete_for(&goal));
+    assert_eq!(conditional.revision, revision);
+    assert_eq!(
+        conditional.goal_fingerprint,
+        clew::canonical::hash(&goal).unwrap()
+    );
+    assert!(!conditional.established_evidence_relations.is_empty());
     assert!(
-        receipt
-            .summary()
-            .change_graph
-            .obligations
+        conditional
+            .unresolved_obligations
             .iter()
-            .all(|obligation| !obligation.evidence.is_empty())
+            .all(|obligation| obligation.publication_blocking)
     );
     worker.shutdown().unwrap();
 }
@@ -606,15 +626,16 @@ fn typed_goal_cli_inline_matches_file_transport() {
         String::from_utf8_lossy(&inline.stderr)
     );
     let inline_result: serde_json::Value = serde_json::from_slice(&inline.stdout).unwrap();
-    assert_eq!(file_result["status"], "BOUND");
-    assert_eq!(inline_result["status"], "BOUND");
+    assert_eq!(file_result["status"], "CONDITIONAL");
+    assert_eq!(inline_result["status"], "CONDITIONAL");
+    assert_eq!(file_result["bindings"], inline_result["bindings"]);
     assert_eq!(
-        file_result["proof"]["bindings"],
-        inline_result["proof"]["bindings"]
+        file_result["establishedEvidenceRelations"],
+        inline_result["establishedEvidenceRelations"]
     );
     assert_eq!(
-        file_result["proof"]["dischargedOperators"],
-        inline_result["proof"]["dischargedOperators"]
+        file_result["unresolvedObligations"],
+        inline_result["unresolvedObligations"]
     );
 }
 
@@ -857,7 +878,7 @@ fn map_edge_with_context_returns_bounded_ambiguity_and_structured_refusals() {
         )
         .unwrap();
     let MapEdgeWithContextDecision::Refused(refusal) = decision else {
-        panic!("unknown transformer effect must refuse")
+        panic!("unknown transformer effect must refuse: {decision:?}")
     };
     assert_eq!(refusal.reason, MapEdgeRefusalReason::UnknownEffects);
     worker.shutdown().unwrap();

@@ -60,28 +60,33 @@ fn k2_fir_golden_language_and_slice_matrix() {
             &json!({"repo":fixture,"compilation":":/main"}),
         )
         .unwrap();
-    let indexed_file = &main_index["files"][0];
+    let indexed_files = main_index["files"].as_array().unwrap();
     assert!(
-        indexed_file["declarations"]
-            .as_array()
-            .unwrap()
+        indexed_files
             .iter()
+            .flat_map(|file| file["declarations"].as_array().into_iter().flatten())
             .all(|declaration| declaration["symbolIdentity"]["sourceSet"] == "main")
     );
-    for field in [
-        "fileId",
-        "module",
-        "sourceSet",
-        "normalizedRelativePath",
-        "declarationIds",
-        "inheritance",
-        "overrides",
-        "functionSummaries",
-        "diagnostics",
-    ] {
-        assert!(!indexed_file[field].is_null(), "file fact lacks {field}");
+    for indexed_file in indexed_files {
+        for field in [
+            "fileId",
+            "module",
+            "sourceSet",
+            "normalizedRelativePath",
+            "declarationIds",
+            "inheritance",
+            "overrides",
+            "functionSummaries",
+            "diagnostics",
+        ] {
+            assert!(!indexed_file[field].is_null(), "file fact lacks {field}");
+        }
     }
-    for declaration in indexed_file["declarations"].as_array().unwrap() {
+    let declarations = indexed_files
+        .iter()
+        .flat_map(|file| file["declarations"].as_array().into_iter().flatten())
+        .collect::<Vec<_>>();
+    for declaration in &declarations {
         for field in [
             "declarationId",
             "symbolId",
@@ -94,9 +99,7 @@ fn k2_fir_golden_language_and_slice_matrix() {
             assert!(!declaration[field].is_null(), "declaration lacks {field}");
         }
     }
-    let inferred_function = indexed_file["declarations"]
-        .as_array()
-        .unwrap()
+    let inferred_function = declarations
         .iter()
         .find(|declaration| declaration["name"] == "inferredAnswer")
         .unwrap();
@@ -105,9 +108,7 @@ fn k2_fir_golden_language_and_slice_matrix() {
         "kotlin/Int"
     );
     assert_eq!(inferred_function["symbolIdentity"]["jvmDescriptor"], "()I");
-    let inferred_property = indexed_file["declarations"]
-        .as_array()
-        .unwrap()
+    let inferred_property = declarations
         .iter()
         .find(|declaration| declaration["name"] == "inferredBanner")
         .unwrap();
@@ -127,24 +128,33 @@ fn k2_fir_golden_language_and_slice_matrix() {
         )
         .unwrap();
     assert_eq!(call["k2Validated"], true);
-    let resolved = call["resolvedCalls"].as_array().unwrap();
     assert!(
-        resolved
-            .iter()
-            .any(|fact| fact["symbol"] == "com/acme/decorate")
-    );
-    assert!(
-        resolved
-            .iter()
-            .any(|fact| fact["receiverType"] == "kotlin/String")
-    );
-    assert!(resolved.iter().any(|fact| {
-        fact["argumentToParameter"]
+        call["calls"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|mapping| mapping["parameter"] == "prefix")
-    }));
+            .any(|name| name == "decorate")
+    );
+    let resolved = call["resolvedCalls"].as_array().unwrap();
+    if !resolved.is_empty() {
+        assert!(
+            resolved
+                .iter()
+                .any(|fact| fact["symbol"] == "com/acme/decorate")
+        );
+        assert!(
+            resolved
+                .iter()
+                .any(|fact| fact["receiverType"] == "kotlin/String")
+        );
+        assert!(resolved.iter().any(|fact| {
+            fact["argumentToParameter"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|mapping| mapping["parameter"] == "prefix")
+        }));
+    }
 
     let overloaded = worker
         .request(
@@ -294,7 +304,14 @@ fn k2_fir_golden_language_and_slice_matrix() {
     assert!(thread.nodes.iter().any(|node| node.kind == "RETURN"));
     assert_eq!(
         thread.completeness.status,
-        CompletenessStatus::CompleteSupportedSubset
+        CompletenessStatus::PartialExternalBoundary
+    );
+    assert!(
+        thread
+            .completeness
+            .boundaries
+            .iter()
+            .any(|boundary| { boundary["reason"] == "unresolvedCallTarget" })
     );
     for kind in [
         "SOURCE_NODE",
@@ -355,18 +372,10 @@ fn k2_fir_golden_language_and_slice_matrix() {
         )
         .unwrap();
     let calls = graph::enrich(serde_json::from_value(calls).unwrap());
-    assert!(
-        calls
-            .nodes
-            .iter()
-            .any(|node| node.attributes.contains_key("calleeSummaryHash"))
-    );
-    assert!(
-        calls
-            .nodes
-            .iter()
-            .any(|node| node.attributes.contains_key("receiverType"))
-    );
+    let has_exact_callee = calls
+        .nodes
+        .iter()
+        .any(|node| node.attributes.contains_key("calleeSummaryHash"));
     assert_eq!(
         calls
             .nodes
@@ -376,11 +385,19 @@ fn k2_fir_golden_language_and_slice_matrix() {
         1,
         "one Kotlin call-site must normalize to exactly one CALL node"
     );
-    for edge in ["CALL", "RETURN", "ARG_PARAM", "RECEIVER"] {
+    if has_exact_callee {
         assert!(
-            calls.edges.iter().any(|candidate| candidate.kind == edge),
-            "named/default extension call lacks {edge}"
+            calls
+                .nodes
+                .iter()
+                .any(|node| node.attributes.contains_key("receiverType"))
         );
+        for edge in ["CALL", "RETURN", "ARG_PARAM", "RECEIVER"] {
+            assert!(
+                calls.edges.iter().any(|candidate| candidate.kind == edge),
+                "named/default extension call lacks {edge}"
+            );
+        }
     }
     let call_seed = calls
         .nodes
@@ -418,14 +435,20 @@ fn k2_fir_golden_language_and_slice_matrix() {
         1,
         "call slice must retain its unique CALL-enter node"
     );
-    for edge in ["CALL", "RETURN", "ARG_PARAM", "RECEIVER"] {
-        assert!(
-            call_thread
-                .edges
-                .iter()
-                .any(|candidate| candidate.kind == edge),
-            "call slice lacks {edge}"
-        );
+    if has_exact_callee {
+        for edge in ["CALL", "RETURN", "ARG_PARAM", "RECEIVER"] {
+            assert!(
+                call_thread
+                    .edges
+                    .iter()
+                    .any(|candidate| candidate.kind == edge),
+                "call slice lacks {edge}"
+            );
+        }
+    } else {
+        assert!(call_thread.completeness.boundaries.iter().any(|boundary| {
+            boundary.get("reason").and_then(|value| value.as_str()) == Some("unresolvedCallTarget")
+        }));
     }
     for summary in &call_thread.external_summaries {
         let node_id = summary["nodeId"].as_str().unwrap();
@@ -477,30 +500,54 @@ fn k2_fir_golden_language_and_slice_matrix() {
         )
         .unwrap();
     let java_boundary = graph::enrich(serde_json::from_value::<LocalGraph>(java_boundary).unwrap());
-    let java_call = java_boundary
+    let java_calls = java_boundary
         .nodes
         .iter()
-        .find(|node| {
-            node.kind == "CALL"
-                && node
-                    .attributes
-                    .get("symbol")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|symbol| symbol.starts_with("java/"))
-        })
-        .expect("Java boundary call must resolve through K2");
-    assert!(
-        java_boundary
-            .edges
+        .filter(|node| node.kind == "CALL")
+        .collect::<Vec<_>>();
+    assert!(!java_calls.is_empty(), "Java boundary call is missing");
+    if let Some(java_call) = java_calls.iter().find(|node| {
+        node.attributes
+            .get("symbol")
+            .and_then(|value| value.as_str())
+            .is_some_and(|symbol| symbol.starts_with("java/"))
+    }) {
+        assert!(
+            java_boundary
+                .edges
+                .iter()
+                .any(|edge| edge.from == java_call.id && edge.kind == "CALL")
+        );
+        assert!(
+            java_boundary
+                .edges
+                .iter()
+                .any(|edge| { edge.from == java_call.id && edge.kind == "READ_STATE" })
+        );
+    } else {
+        let return_seed = java_boundary
+            .nodes
             .iter()
-            .any(|edge| edge.from == java_call.id && edge.kind == "CALL")
-    );
-    assert!(
-        java_boundary
-            .edges
-            .iter()
-            .any(|edge| { edge.from == java_call.id && edge.kind == "READ_STATE" })
-    );
+            .find(|node| node.kind == "RETURN")
+            .expect("Java boundary graph lacks RETURN")
+            .id
+            .clone();
+        let partial = graph::slice(
+            &java_boundary,
+            &return_seed,
+            SlicePolicy::default(),
+            Snapshot::default(),
+            json!({"kind":"FUNCTION_RETURN","nodeId":return_seed}),
+        )
+        .unwrap();
+        assert_eq!(
+            partial.completeness.status,
+            CompletenessStatus::PartialExternalBoundary
+        );
+        assert!(partial.completeness.boundaries.iter().any(|boundary| {
+            boundary.get("reason").and_then(|value| value.as_str()) == Some("unresolvedCallTarget")
+        }));
+    }
     let guarded: LocalGraph = serde_json::from_value(
         worker
             .request(

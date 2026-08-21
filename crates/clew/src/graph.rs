@@ -766,6 +766,29 @@ pub fn slice(
             }
         }
     }
+    // External calls are part of the proof boundary even when the compiler did
+    // not emit a semantic CALL edge connecting them to the seed. Keep their
+    // nodes in the bounded Thread IR so every boundary/summary remains locally
+    // auditable. If that would exceed the node budget, fail closed as a budget
+    // partial instead of publishing dangling boundary identities.
+    let all_external_calls: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "CALL" && !is_supported_intrinsic(node))
+        .cloned()
+        .collect();
+    let mut missing_external_ids = all_external_calls
+        .iter()
+        .map(|node| node.id.clone())
+        .filter(|id| !selected.contains(id))
+        .collect::<Vec<_>>();
+    missing_external_ids.sort();
+    let remaining = policy.max_nodes.saturating_sub(selected.len());
+    if missing_external_ids.len() > remaining {
+        budget_hit = true;
+    }
+    selected.extend(missing_external_ids.into_iter().take(remaining));
+
     let mut nodes: Vec<_> = graph
         .nodes
         .iter()
@@ -783,12 +806,12 @@ pub fn slice(
     // A depth-zero call anywhere in the selected local function can influence
     // a source-backed seed through control/value evaluation. Until a call
     // summary proves otherwise, completeness must remain partial.
-    let external_calls: Vec<_> = nodes
+    let external_calls: Vec<_> = all_external_calls
         .iter()
-        .filter(|n| is_resolved_semantic_call(n) && !is_supported_intrinsic(n))
+        .filter(|node| selected.contains(&node.id))
         .cloned()
         .collect();
-    let external = !external_calls.is_empty();
+    let external = !all_external_calls.is_empty();
     let unsupported = !graph.boundaries.is_empty();
     let status = if budget_hit {
         CompletenessStatus::PartialBudget
@@ -804,7 +827,12 @@ pub fn slice(
     } else if unsupported {
         graph.boundaries.clone()
     } else if external {
-        external_calls.iter().map(|node| json!({"kind":"EXTERNAL_CALL","nodeId":node.id,"symbol":node.attributes.get("symbol"),"reason":"maxCallDepth=0"})).collect()
+        external_calls.iter().map(|node| json!({
+            "kind":"EXTERNAL_CALL",
+            "nodeId":node.id,
+            "symbol":node.attributes.get("symbol"),
+            "reason":if is_resolved_semantic_call(node) { "maxCallDepth=0" } else { "unresolvedCallTarget" },
+        })).collect()
     } else {
         vec![]
     };
@@ -865,6 +893,29 @@ pub fn slice(
                 }
             }
         }
+        if node.kind == "CALL" && !is_resolved_semantic_call(node) {
+            read_set.push(ReadFact {
+                kind: "CALL_TARGET".into(),
+                key: format!("{semantic_key}:callTarget"),
+                hash: canonical::hash(&json!({"status":"UNRESOLVED"}))?,
+            });
+        }
+    }
+    for node in external_calls
+        .iter()
+        .filter(|node| !is_resolved_semantic_call(node))
+    {
+        let semantic_key = node
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.get("anchorId"))
+            .and_then(Value::as_str)
+            .unwrap_or(&node.id);
+        read_set.push(ReadFact {
+            kind: "CALL_TARGET".into(),
+            key: format!("{semantic_key}:callTarget"),
+            hash: canonical::hash(&json!({"status":"UNRESOLVED"}))?,
+        });
     }
     read_set.push(ReadFact {
         kind: "PROJECT_MODEL".into(),
@@ -1092,5 +1143,65 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ir.completeness.status, CompletenessStatus::PartialBudget);
+    }
+
+    #[test]
+    fn unresolved_call_target_is_an_explicit_external_boundary() {
+        let graph = LocalGraph {
+            schema: "local-cfg/0.1".into(),
+            symbol: "caller".into(),
+            file: "Caller.kt".into(),
+            nodes: vec![
+                node("entry", "ENTRY", None, &[]),
+                node("call", "CALL", None, &[]),
+                node("ret", "RETURN", None, &[]),
+                node("exit", "EXIT", None, &[]),
+            ],
+            edges: vec![
+                Edge {
+                    from: "entry".into(),
+                    to: "call".into(),
+                    kind: "CFG_NORMAL".into(),
+                },
+                Edge {
+                    from: "call".into(),
+                    to: "ret".into(),
+                    kind: "CFG_NORMAL".into(),
+                },
+                Edge {
+                    from: "ret".into(),
+                    to: "exit".into(),
+                    kind: "CFG_NORMAL".into(),
+                },
+            ],
+            boundaries: vec![],
+            diagnostics: vec![],
+            compiler_options_hash: None,
+            classpath_hash: None,
+            inheritance_facts: vec![],
+        };
+        let ir = slice(
+            &graph,
+            "ret",
+            SlicePolicy::default(),
+            Snapshot {
+                base_revision: "x".into(),
+                project_model_hash: "p".into(),
+                compiler_version: "2.4.10".into(),
+                ..Snapshot::default()
+            },
+            json!({}),
+        )
+        .unwrap();
+        assert_eq!(
+            ir.completeness.status,
+            CompletenessStatus::PartialExternalBoundary
+        );
+        assert_eq!(
+            ir.completeness.boundaries[0]["reason"],
+            "unresolvedCallTarget"
+        );
+        assert!(ir.read_set.iter().any(|fact| fact.kind == "CALL_TARGET"));
+        assert_eq!(ir.external_summaries.len(), 1);
     }
 }

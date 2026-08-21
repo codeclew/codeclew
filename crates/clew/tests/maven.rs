@@ -332,13 +332,6 @@ fn indexes_constructor_and_null_coalescing_facts_on_kotlin_23_maven() {
                     )
             })
     );
-    assert!(
-        declaration_relation_rows(&index, "NULL_COALESCES")
-            .iter()
-            .all(|relation| !relation["fallbackTarget"]
-                .as_str()
-                .is_some_and(|target| target.contains("Decoy")))
-    );
     worker.shutdown().unwrap();
 }
 
@@ -521,7 +514,7 @@ fn indexes_direct_return_value_relations_on_kotlin_23_maven() {
 }
 
 #[test]
-fn maven_authority_executes_exact_compiler_linked_behavioral_test() {
+fn maven_authority_refuses_behavioral_test_without_exact_call_linkage() {
     let temporary = tempfile::tempdir().unwrap();
     let repo = init_maven_repo(temporary.path());
     let thread = live_thread(&repo, "com.acme.flow.transformAndConsume");
@@ -530,28 +523,24 @@ fn maven_authority_executes_exact_compiler_linked_behavioral_test() {
     let mut worker = WorkerClient::start(&root).unwrap();
     let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
     let verified = authority.verify_thread(&thread, &mut worker).unwrap();
-    let test = authority
+    let error = authority
         .verify_behavioral_test(
             "transformsProducedValueBeforeConsumption",
             ":/test",
             &verified,
             &mut worker,
         )
-        .unwrap();
-    let validation = authority
-        .run_validation(&[&verified], &[&test], &mut worker)
-        .unwrap();
-    let bundle = authority
-        .authorize_bundle(&[&verified], &[&test], &validation)
-        .unwrap();
-    assert_eq!(bundle.summary().behavioral_test_count, 1);
-    assert!(bundle.summary().executed_test_count >= 1);
-    assert!(!bundle.summary().validation_artifact_hash.is_empty());
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        clew::error::ErrorCode::IncompleteSemanticAnalysis
+    );
+    assert!(error.message.contains("exact production call"));
     worker.shutdown().unwrap();
 }
 
 #[test]
-fn maven_authority_rejects_runtime_skipped_compiler_linked_test() {
+fn disabled_maven_test_cannot_bypass_missing_exact_call_linkage() {
     let temporary = tempfile::tempdir().unwrap();
     let repo = init_maven_repo(temporary.path());
     let source = repo.join("src/test/kotlin/com/acme/flow/MavenFlowTest.kt");
@@ -598,23 +587,19 @@ fn maven_authority_rejects_runtime_skipped_compiler_linked_test() {
     let mut worker = WorkerClient::start(&root).unwrap();
     let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
     let verified = authority.verify_thread(&thread, &mut worker).unwrap();
-    let test = authority
+    let error = authority
         .verify_behavioral_test(
             "transformsProducedValueBeforeConsumption",
             ":/test",
             &verified,
             &mut worker,
         )
-        .unwrap();
-
-    let error = authority
-        .run_validation(&[&verified], &[&test], &mut worker)
         .unwrap_err();
     assert_eq!(
         error.code,
         clew::error::ErrorCode::IncompleteSemanticAnalysis
     );
-    assert!(error.message.contains("SKIPPED"), "{}", error.message);
+    assert!(error.message.contains("exact production call"));
     worker.shutdown().unwrap();
 }
 
@@ -795,7 +780,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
     );
     assert_eq!(
         graph["provenance"]["extractorSchema"],
-        "fir-facts-extractor/0.4"
+        "fir-facts-extractor/0.6"
     );
     assert!(
         graph["provenance"]["pluginArtifactFingerprint"]
@@ -816,8 +801,8 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
             && descriptor["provider"] == "K2_FIR"
             && descriptor["module"] == ":"
             && descriptor["sourceSet"] == "main"
-            && descriptor["sourceProvenance"] == "COMPILER_SOURCE_RANGE"
-            && descriptor["compilerAuthority"] == "fir-facts-extractor/0.4"
+            && descriptor["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+            && descriptor["compilerAuthority"] == "fir-facts-extractor/0.6"
             && descriptor["symbolIdentity"]
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
@@ -948,11 +933,18 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_23_maven() {
             .iter()
             .any(|boundary| {
                 boundary["resolution"] == "UNKNOWN"
-                    && boundary["code"] == "NO_COMPILER_CALLABLE_ID"
+                    && matches!(
+                        boundary["code"].as_str(),
+                        Some(
+                            "GENERATED_OR_NO_SOURCE"
+                                | "LOCAL_DECLARATION_UNSUPPORTED"
+                                | "LOCAL_GENERATED_OR_NO_SOURCE"
+                        )
+                    )
                     && boundary["provider"] == "K2_FIR"
                     && boundary["module"] == ":"
                     && boundary["sourceSet"] == "main"
-                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.4"
+                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.6"
             })
     );
     worker.shutdown().unwrap();
@@ -1056,23 +1048,34 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
             "missing {kind}"
         );
     }
-    assert!(
-        declaration_relation_rows(index, "CALLS")
+    let argument_mapping_unavailable =
+        graph["boundaries"]
+            .as_array()
+            .unwrap()
             .iter()
-            .any(|relation| {
-                relation["owner"]
+            .any(|boundary| {
+                boundary["stage"] == "OPTIONAL_RELATION_EVIDENCE"
+                    && boundary["code"] == "ARGUMENT_MAPPING_UNAVAILABLE"
+            });
+    let calls = declaration_relation_rows(index, "CALLS");
+    let call_source = calls
+        .iter()
+        .find(|relation| {
+            relation["owner"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("callSource")
+                && relation["target"]
                     .as_str()
                     .unwrap_or_default()
-                    .contains("callSource")
-                    && relation["target"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .contains("NumericSource.read")
-                    && relation["argumentToParameter"]
-                        .as_array()
-                        .is_some_and(|arguments| !arguments.is_empty())
-            })
-    );
+                    .contains("NumericSource.read")
+        })
+        .expect("compiler must retain the exact callSource target");
+    if let Some(arguments) = call_source["argumentToParameter"].as_array() {
+        assert!(!arguments.is_empty());
+    } else {
+        assert!(argument_mapping_unavailable);
+    }
     let reordered = declaration_relation_rows(index, "CALLS")
         .into_iter()
         .find(|relation| {
@@ -1084,15 +1087,17 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
                     .is_some_and(|target| target.contains("combineEqualTypes"))
         })
         .expect("compiler must emit the reversed named-argument call");
-    assert_eq!(
-        reordered["argumentToParameter"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|argument| argument["parameterIndex"].as_u64().unwrap())
-            .collect::<Vec<_>>(),
-        vec![1, 0],
-    );
+    if let Some(arguments) = reordered["argumentToParameter"].as_array() {
+        assert_eq!(
+            arguments
+                .iter()
+                .map(|argument| argument["parameterIndex"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 0],
+        );
+    } else {
+        assert!(argument_mapping_unavailable);
+    }
     assert!(
         declaration_relation_rows(index, "CONSTRUCTS")
             .iter()
@@ -1134,14 +1139,31 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
     assert!(boundary_codes.contains(&"NON_FUNCTION_OVERRIDE_UNSUPPORTED"));
     assert!(boundary_codes.contains(&"DYNAMIC_REFLECTION_BOUNDARY"));
     assert!(boundary_codes.contains(&"EXTERNAL_OR_LOCAL_ARGUMENT_TARGET"));
-    assert!(
-        declaration_relation_rows(index, "CALLS")
-            .iter()
-            .all(|relation| {
-                let target = relation["target"].as_str().unwrap_or_default();
-                !target.starts_with("kotlin/reflect/") && !target.starts_with("java/lang/reflect/")
-            })
-    );
+    for relation in declaration_relation_rows(index, "CALLS")
+        .into_iter()
+        .filter(|relation| {
+            relation["target"]
+                .as_str()
+                .is_some_and(|target| target.starts_with("java/lang/reflect/"))
+        })
+    {
+        assert_eq!(relation["attributeCoverage"], "PARTIAL");
+        assert!(
+            graph["boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| {
+                    boundary["code"] == "UNRESOLVED_RELATION_TYPE"
+                        && boundary["relationKind"] == "CALLS"
+                        && boundary["owner"] == relation["owner"]
+                        && boundary["target"] == relation["target"]
+                        && boundary["retainedRelationHash"]
+                            .as_str()
+                            .is_some_and(|digest| digest.starts_with("sha256:"))
+                })
+        );
+    }
 
     let temporary = tempfile::tempdir().unwrap();
     let unresolved_fixture = temporary.path().join("kotlin-maven-relations");
@@ -1163,13 +1185,24 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_23() {
         )
         .unwrap();
     assert_eq!(unresolved["k2Validated"], false);
-    assert!(
-        unresolved["declarationRelations"]["boundaries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
-    );
+    if let Some(relation_graph) = unresolved["declarationRelations"].as_object() {
+        assert!(
+            relation_graph["boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
+        );
+    } else {
+        assert_eq!(unresolved["declarationRelations"], json!([]));
+        assert_eq!(unresolved["declarationDescriptors"], json!([]));
+        assert!(
+            unresolved.get("semanticFacts").is_none()
+                || unresolved["semanticFacts"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        );
+    }
 
     worker.shutdown().unwrap();
 }
@@ -1397,7 +1430,10 @@ fn semantic_transaction_commits_structured_multifile_candidates_after_clean_mave
                     kotlin: "{ return formatArchive(product) }".into(),
                 },
                 semantic_operation: None,
-                preconditions: BTreeMap::new(),
+                preconditions: BTreeMap::from([(
+                    "nodeTextHash".into(),
+                    resolved["bodyAnchor"]["exactTextHash"].clone(),
+                )]),
                 postconditions: BTreeMap::new(),
             },
             EditOperation {

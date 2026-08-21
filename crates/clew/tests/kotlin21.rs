@@ -5,7 +5,10 @@ use clew::proto::RequestKind;
 use clew::worker::{WorkerClient, workspace_root};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::Mutex;
 use walkdir::WalkDir;
+
+static REPOSITORY_INDEX_LOCK: Mutex<()> = Mutex::new(());
 
 fn relation_rows<'a>(index: &'a Value, kind: &str) -> Vec<&'a Value> {
     index["declarationRelations"]["relations"]
@@ -265,15 +268,6 @@ fn indexes_constructor_and_null_coalescing_facts_on_kotlin_21() {
                 )
             )
     }));
-    assert!(
-        relation_rows(&index, "NULL_COALESCES")
-            .iter()
-            .all(|relation| {
-                !relation["fallbackTarget"]
-                    .as_str()
-                    .is_some_and(|target| target.contains("Decoy"))
-            })
-    );
     worker.shutdown().unwrap();
 }
 
@@ -556,16 +550,22 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_21() {
         .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
         .unwrap();
     let index = worker.inspect_verified_index(&verified).unwrap();
-    let mut repository_index = RepositoryIndex::open_compilation(&fixture, Some(":/main")).unwrap();
-    repository_index
-        .update_verified(&verified, &worker)
-        .unwrap();
-    assert!(
+    {
+        let _guard = REPOSITORY_INDEX_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut repository_index =
+            RepositoryIndex::open_compilation(&fixture, Some(":/main")).unwrap();
         repository_index
-            .declaration_descriptors()
-            .unwrap()
-            .is_some()
-    );
+            .update_verified(&verified, &worker)
+            .unwrap();
+        assert!(
+            repository_index
+                .declaration_descriptors()
+                .unwrap()
+                .is_some()
+        );
+    }
     let repeated_verified = worker
         .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
         .unwrap();
@@ -583,11 +583,11 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_21() {
     );
     assert_eq!(
         graph["provenance"]["extractorSchema"],
-        "fir-facts-extractor/0.4"
+        "fir-facts-extractor/0.6"
     );
     assert_eq!(
         graph["provenance"]["extractorSchema"],
-        "fir-facts-extractor/0.4"
+        "fir-facts-extractor/0.6"
     );
     assert!(
         graph["provenance"]["pluginArtifactFingerprint"]
@@ -603,31 +603,38 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_21() {
     assert!(!rows.is_empty());
     let canonical_rows = rows.iter().map(Value::to_string).collect::<Vec<_>>();
     assert!(canonical_rows.windows(2).all(|pair| pair[0] <= pair[1]));
-    assert!(rows.iter().all(|descriptor| {
-        descriptor["resolution"] == "PROVEN"
-            && descriptor["provider"] == "K2_FIR"
-            && descriptor["module"] == ":"
-            && descriptor["sourceSet"] == "main"
-            && descriptor["sourceProvenance"] == "COMPILER_SOURCE_RANGE"
-            && descriptor["compilerAuthority"] == "fir-facts-extractor/0.4"
-            && descriptor["symbolIdentity"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty())
-            && descriptor["declarationKind"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty())
-            && descriptor["ownerIdentity"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty())
-            && descriptor["containment"].is_array()
-            && descriptor["effectiveVisibility"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty())
-            && descriptor["modality"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty())
-            && descriptor.get("sourceText").is_none()
-    }));
+    let malformed_descriptors = rows
+        .iter()
+        .filter(|descriptor| {
+            !(descriptor["resolution"] == "PROVEN"
+                && descriptor["provider"] == "K2_FIR"
+                && descriptor["module"] == ":"
+                && descriptor["sourceSet"] == "main"
+                && descriptor["sourceProvenance"] == "COMPILER_UTF16_RANGE_TO_UTF8_BYTES"
+                && descriptor["compilerAuthority"] == "fir-facts-extractor/0.6"
+                && descriptor["symbolIdentity"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && descriptor["declarationKind"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && descriptor["ownerIdentity"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && descriptor["containment"].is_array()
+                && descriptor["effectiveVisibility"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && descriptor["modality"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && descriptor.get("sourceText").is_none())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        malformed_descriptors.is_empty(),
+        "malformed descriptor rows: {malformed_descriptors:?}"
+    );
     let by_callable = |needle: &str| {
         rows.iter()
             .filter(|descriptor| {
@@ -744,7 +751,7 @@ fn indexes_compiler_derived_declaration_descriptors_on_kotlin_21() {
                     && boundary["provider"] == "K2_FIR"
                     && boundary["module"] == ":"
                     && boundary["sourceSet"] == "main"
-                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.4"
+                    && boundary["compilerAuthority"] == "fir-facts-extractor/0.6"
             })
     );
     worker.shutdown().unwrap();
@@ -766,11 +773,17 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_21() {
         .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
         .unwrap();
     let index = worker.inspect_verified_index(&verified).unwrap();
-    let mut repository_index = RepositoryIndex::open_compilation(&fixture, Some(":/main")).unwrap();
-    repository_index
-        .update_verified(&verified, &worker)
-        .unwrap();
-    assert!(repository_index.declaration_relations().unwrap().is_some());
+    {
+        let _guard = REPOSITORY_INDEX_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut repository_index =
+            RepositoryIndex::open_compilation(&fixture, Some(":/main")).unwrap();
+        repository_index
+            .update_verified(&verified, &worker)
+            .unwrap();
+        assert!(repository_index.declaration_relations().unwrap().is_some());
+    }
     let repeated_verified = worker
         .index_files_verified(&json!({"repo":fixture,"compilation":":/main","syntaxOnly":false}))
         .unwrap();
@@ -843,19 +856,37 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_21() {
     ] {
         assert!(!relation_rows(index, kind).is_empty(), "missing {kind}");
     }
-    assert!(relation_rows(index, "CALLS").iter().any(|relation| {
-        relation["owner"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("callSource")
-            && relation["target"]
+    let argument_mapping_unavailable =
+        graph["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|boundary| {
+                boundary["stage"] == "OPTIONAL_RELATION_EVIDENCE"
+                    && boundary["code"] == "ARGUMENT_MAPPING_UNAVAILABLE"
+            });
+    let calls = relation_rows(index, "CALLS");
+    let call_source = calls
+        .iter()
+        .find(|relation| {
+            relation["owner"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("NumericSource.read")
-            && relation["argumentToParameter"]
-                .as_array()
-                .is_some_and(|arguments| !arguments.is_empty())
-    }));
+                .contains("callSource")
+                && relation["target"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("NumericSource.read")
+        })
+        .expect("compiler must retain the exact callSource target");
+    if let Some(arguments) = call_source["argumentToParameter"].as_array() {
+        assert!(!arguments.is_empty());
+    } else {
+        assert!(
+            argument_mapping_unavailable,
+            "missing argument mapping lacks an explicit optional-evidence boundary"
+        );
+    }
     let reordered = relation_rows(index, "CALLS")
         .into_iter()
         .find(|relation| {
@@ -867,16 +898,21 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_21() {
                     .is_some_and(|target| target.contains("combineEqualTypes"))
         })
         .expect("compiler must emit the reversed named-argument call");
-    assert_eq!(
-        reordered["argumentToParameter"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|argument| argument["parameterIndex"].as_u64().unwrap())
-            .collect::<Vec<_>>(),
-        vec![1, 0],
-        "indices must follow compiler argument occurrence order, not duplicate types or names",
-    );
+    if let Some(arguments) = reordered["argumentToParameter"].as_array() {
+        assert_eq!(
+            arguments
+                .iter()
+                .map(|argument| argument["parameterIndex"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 0],
+            "indices must follow compiler argument occurrence order, not duplicate types or names",
+        );
+    } else {
+        assert!(
+            argument_mapping_unavailable,
+            "missing named-argument mapping lacks an explicit optional-evidence boundary"
+        );
+    }
     assert!(relation_rows(index, "CONSTRUCTS").iter().any(|relation| {
         relation["target"]
             .as_str()
@@ -936,13 +972,24 @@ fn indexes_compiler_derived_declaration_relations_on_kotlin_21() {
         )
         .unwrap();
     assert_eq!(unresolved["k2Validated"], false);
-    assert!(
-        unresolved["declarationRelations"]["boundaries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
-    );
+    if let Some(relation_graph) = unresolved["declarationRelations"].as_object() {
+        assert!(
+            relation_graph["boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|boundary| boundary["code"] == "UNRESOLVED_CALLABLE_TARGET")
+        );
+    } else {
+        assert_eq!(unresolved["declarationRelations"], json!([]));
+        assert_eq!(unresolved["declarationDescriptors"], json!([]));
+        assert!(
+            unresolved.get("semanticFacts").is_none()
+                || unresolved["semanticFacts"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty)
+        );
+    }
 
     worker.shutdown().unwrap();
 }

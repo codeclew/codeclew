@@ -20,8 +20,17 @@ FIRST=$(cargo run --quiet --bin clew -- project inspect --repo fixtures/kotlin-b
 SECOND=$(cargo run --quiet --bin clew -- project inspect --repo fixtures/kotlin-basic)
 [ "$FIRST" = "$SECOND" ]
 cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic >/dev/null
-HASH1=$(cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic)
-HASH2=$(cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic)
+normalize_index_output() {
+  python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+for field in ("timing", "workerProfile", "projectModelCache"):
+    value.pop(field, None)
+json.dump(value, sys.stdout, sort_keys=True, separators=(",", ":"))
+'
+}
+HASH1=$(cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic | normalize_index_output)
+HASH2=$(cargo run --quiet --bin clew -- index --repo fixtures/kotlin-basic | normalize_index_output)
 [ "$HASH1" = "$HASH2" ]
 ./scripts/demo.sh >/dev/null
 ./scripts/benchmark-corpus.sh >/dev/null

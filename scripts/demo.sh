@@ -17,7 +17,7 @@ BASE=$(git rev-parse HEAD)
 cd "$ROOT"
 BIN="$ROOT/target/debug/clew"
 "$BIN" slice --repo "$DEMO_ROOT/repo" --symbol com.acme.total --direction both --output "$DEMO_ROOT/thread.json" >/dev/null
-jq --arg base "$BASE" '{schema:"semantic-edit/0.1",threadId:.threadId,baseRevision:$base,operations:[{opId:"op:1",kind:"REPLACE_EXPRESSION",target:first(.nodes[]|select(.origin.sourceText=="value *= 2")|.origin),preconditions:{},replacement:{kotlin:"value = value + value"},postconditions:{}}]}' "$DEMO_ROOT/thread.json" > "$DEMO_ROOT/edit.json"
+jq --arg base "$BASE" '(first(.nodes[]|select(.origin.sourceText=="value *= 2")|.origin)) as $target | {schema:"semantic-edit/0.1",threadId:.threadId,baseRevision:$base,operations:[{opId:"op:1",kind:"REPLACE_EXPRESSION",target:$target,preconditions:{nodeTextHash:$target.exactTextHash},replacement:{kotlin:"value = value + value"},postconditions:{}}]}' "$DEMO_ROOT/thread.json" > "$DEMO_ROOT/edit.json"
 jq '.operations[0].replacement.kotlin="value ="' "$DEMO_ROOT/edit.json" > "$DEMO_ROOT/invalid-edit.json"
 set +e
 "$BIN" edit preview --repo "$DEMO_ROOT/repo" --thread "$DEMO_ROOT/thread.json" --operations "$DEMO_ROOT/invalid-edit.json" > "$DEMO_ROOT/invalid.json"

@@ -1,8 +1,7 @@
 mod support;
 
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -55,6 +54,7 @@ fn committed_fixture(
         &workspace.join("fixtures/kotlin-2-1/src/test/kotlin"),
         &repo.join("src/test/kotlin"),
     );
+    fs::remove_file(repo.join("src/main/kotlin/com/acme/RelationFacts.kt")).unwrap();
     let main_path = repo.join("src/main/kotlin/com/acme/Runner.kt");
     let test_path = repo.join("src/test/kotlin/com/acme/RunnerTest.kt");
     let mut main = fs::read_to_string(&main_path).unwrap();
@@ -78,6 +78,15 @@ fn committed_fixture(
         ],
     );
     support::seed_build_caches(&repo);
+    let prepared = Command::new("./gradlew")
+        .args(["compileTestKotlin", "--no-daemon", "--quiet"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(prepared.success());
+    for relative in ["build/classes/java/main", "build/resources/main"] {
+        fs::create_dir_all(repo.join(relative)).unwrap();
+    }
     (temporary, repo)
 }
 
@@ -119,8 +128,9 @@ fn apply(repo: &Path, workflow_symbol: &str, test_symbol: &str, output: Option<&
 fn parsed(output: &Output) -> Value {
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
@@ -147,7 +157,7 @@ fn live_thread(repo: &Path, symbol: &str) -> ThreadIr {
 }
 
 #[test]
-fn clew_apply_materializes_the_proved_change_as_one_verified_commit() {
+fn clew_apply_surfaces_conditional_evidence_without_publishing_a_change() {
     let (temporary, repo) = committed_fixture(|_, _| {});
     let base = git(&repo, &["rev-parse", "HEAD"]);
     let artifact = temporary.path().join("transaction.json");
@@ -157,64 +167,18 @@ fn clew_apply_materializes_the_proved_change_as_one_verified_commit() {
         "applies the mapping context to one value",
         Some(&artifact),
     ));
-    assert_eq!(result["status"], "COMMITTED", "{result:#}");
-    assert_eq!(
-        result["changedFiles"],
-        serde_json::json!(["src/main/kotlin/com/acme/Runner.kt"])
-    );
-    let head = git(&repo, &["rev-parse", "HEAD"]);
-    assert_ne!(base, head);
-    assert_eq!(result["finalCommit"], head);
-    assert_eq!(
-        git(&repo, &["diff", "--name-only", &format!("{base}..{head}")]),
-        "src/main/kotlin/com/acme/Runner.kt"
-    );
-    let source = fs::read_to_string(repo.join("src/main/kotlin/com/acme/Runner.kt")).unwrap();
-    assert!(source.contains("val __codeclewContext = com.acme.mappingContext()"));
-    assert!(source.contains(
-        "return values.map { __codeclewValue -> com.acme.applyMappingContext(__codeclewValue, __codeclewContext) }"
-    ));
-    let transaction: Value = serde_json::from_slice(&fs::read(artifact).unwrap()).unwrap();
-    let operation = &transaction["edit"]["operations"][0];
-    assert_eq!(operation["kind"], "MAP_EDGE_WITH_CONTEXT");
-    assert_eq!(operation["replacement"]["kotlin"], "");
-    assert_eq!(
-        operation["semanticOperation"]["kind"],
-        "MAP_EDGE_WITH_CONTEXT"
-    );
+    assert_eq!(result["status"], "CONDITIONAL", "{result:#}");
+    assert_eq!(result["unresolvedObligations"].as_array().unwrap().len(), 2);
     assert!(
-        transaction["validationEvidence"]
+        result["unresolvedObligations"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| {
-                item["kind"] == "AUTHORITY_MAP_EDGE_PROOF" && item["invariantCount"] == 12
-            })
+            .all(|obligation| obligation["publicationBlocking"] == true)
     );
-    assert_eq!(
-        git(&repo, &["show", "-s", "--format=%an", "HEAD"]),
-        "Codeclew"
-    );
-
-    let mut tests = OpenOptions::new()
-        .append(true)
-        .open(repo.join("src/test/kotlin/com/acme/RunnerTest.kt"))
-        .unwrap();
-    writeln!(
-        tests,
-        "\nclass MaterializedWorkflowAcceptance {{\n    @Test\n    fun `workflow applies the context to every value`() {{\n        assertEquals(listOf(6, 7), valuesAwaitingContext(listOf(4, 5)))\n    }}\n}}"
-    )
-    .unwrap();
-    let hidden = Command::new("./gradlew")
-        .args(["test", "--rerun-tasks", "--no-daemon"])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    assert!(
-        hidden.status.success(),
-        "{}",
-        String::from_utf8_lossy(&hidden.stderr)
-    );
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), base);
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+    assert!(!artifact.exists());
 }
 
 #[test]
@@ -251,8 +215,8 @@ fn clew_apply_leaves_no_commit_or_source_change_when_not_bound() {
 }
 
 #[test]
-fn an_authority_receipt_cannot_overwrite_a_newer_worktree() {
-    let (temporary, repo) = committed_fixture(|_, _| {});
+fn conditional_evidence_must_be_recomputed_after_a_source_change() {
+    let (_temporary, repo) = committed_fixture(|_, _| {});
     let revision = git(&repo, &["rev-parse", "HEAD"]);
     let thread = live_thread(&repo, "com.acme.valuesAwaitingContext");
     let mut worker = WorkerClient::start(&workspace_root()).unwrap();
@@ -267,172 +231,28 @@ fn an_authority_receipt_cannot_overwrite_a_newer_worktree() {
             &mut worker,
         )
         .unwrap();
-    let MapEdgeWithContextDecision::Bound(receipt) = decision else {
-        panic!("fixture must bind before the concurrent change: {decision:?}")
+    let MapEdgeWithContextDecision::Conditional(_conditional) = decision else {
+        panic!(
+            "fixture must expose conditional evidence before the concurrent change: {decision:?}"
+        )
     };
-
-    let target_worktree = temporary.path().join("target-worktree");
-    git(
-        &repo,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "-b",
-            "target",
-            target_worktree.to_str().unwrap(),
-        ],
-    );
-    let target_source = target_worktree.join("src/main/kotlin/com/acme/Runner.kt");
-    let target_changed = fs::read_to_string(&target_source)
-        .unwrap()
-        .replace(
-            "fun applyMappingContext(value: Int, context: Int): Int = value + context",
-            "fun applyMappingContext(value: Int, context: Int): Int { println(\"new side effect\"); return value + context }",
-        );
-    fs::write(&target_source, target_changed).unwrap();
-    git(&target_worktree, &["add", "."]);
-    git(
-        &target_worktree,
-        &[
-            "-c",
-            "user.name=Concurrent User",
-            "-c",
-            "user.email=concurrent@example.invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "change transformer after proof",
-        ],
-    );
-    let target_head = git(&repo, &["rev-parse", "refs/heads/target"]);
-    let target_error = authority
-        .commit_map_edge_with_context(&receipt, "codeclew-test", "refs/heads/target", &mut worker)
-        .unwrap_err();
-    assert_eq!(target_error.code, ErrorCode::StaleRequiresReslice);
-    assert_eq!(git(&repo, &["rev-parse", "refs/heads/target"]), target_head);
 
     let source = repo.join("src/main/kotlin/com/acme/Runner.kt");
     let mut changed = fs::read_to_string(&source).unwrap();
     changed.push_str("\n// concurrent user change\n");
     fs::write(&source, &changed).unwrap();
     let error = authority
-        .commit_map_edge_with_context(&receipt, "codeclew-test", "refs/heads/main", &mut worker)
+        .bind_map_edge_with_context(
+            &SemanticGoal::map_edge_with_context(&revision),
+            &verified,
+            "applies the mapping context to one value",
+            ":/test",
+            &mut worker,
+        )
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::StaleRequiresReslice);
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]), revision);
     assert_eq!(fs::read_to_string(source).unwrap(), changed);
-    worker.shutdown().unwrap();
-}
-
-#[test]
-fn differential_validation_accepts_candidate_and_failing_omission() {
-    let (_temporary, repo) = committed_fixture(|_, test| {
-        test.push_str(
-            r#"
-
-class DifferentialWorkflowAcceptance {
-    @Test
-    fun `workflow result requires the production change`() {
-        assertEquals(listOf(6), valuesAwaitingContext(listOf(4)))
-    }
-}
-"#,
-        );
-    });
-    let revision = git(&repo, &["rev-parse", "HEAD"]);
-    let thread = live_thread(&repo, "com.acme.valuesAwaitingContext");
-    let mut worker = WorkerClient::start(&workspace_root()).unwrap();
-    let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
-    let verified = authority.verify_thread(&thread, &mut worker).unwrap();
-    let decision = authority
-        .bind_map_edge_with_context(
-            &SemanticGoal::map_edge_with_context(&revision),
-            &verified,
-            "applies the mapping context to one value",
-            ":/test",
-            &mut worker,
-        )
-        .unwrap();
-    let MapEdgeWithContextDecision::Bound(proof) = decision else {
-        panic!("fixture must bind: {decision:?}")
-    };
-    let overlay = authority
-        .materialize_candidate_overlay(&proof, &mut worker)
-        .unwrap();
-    let _oracle = authority
-        .issue_candidate_behavioral_test(
-            &overlay,
-            "workflow result requires the production change",
-            ":/test",
-            &mut worker,
-        )
-        .unwrap();
-    let differential = authority
-        .run_differential_validation(&overlay, &mut worker)
-        .unwrap();
-    assert!(
-        authority
-            .recognizes_differential_validation(&differential)
-            .unwrap()
-    );
-    assert_eq!(differential.summary().production_write_count, 1);
-    assert_eq!(differential.summary().test_write_count, 0);
-    assert_ne!(
-        differential.summary().candidate_artifact_hash,
-        differential.summary().omission_artifact_hash
-    );
-    worker.shutdown().unwrap();
-}
-
-#[test]
-fn differential_validation_negative_omission_passes() {
-    let (_temporary, repo) = committed_fixture(|_, test| {
-        test.push_str(
-            r#"
-
-class DifferentialNonDiscriminatingOracle {
-    @Test
-    fun `workflow remains non empty`() {
-        assertEquals(1, valuesAwaitingContext(listOf(4)).size)
-    }
-}
-"#,
-        );
-    });
-    let revision = git(&repo, &["rev-parse", "HEAD"]);
-    let thread = live_thread(&repo, "com.acme.valuesAwaitingContext");
-    let mut worker = WorkerClient::start(&workspace_root()).unwrap();
-    let mut authority = EvidenceAuthority::open(&repo, &revision).unwrap();
-    let verified = authority.verify_thread(&thread, &mut worker).unwrap();
-    let decision = authority
-        .bind_map_edge_with_context(
-            &SemanticGoal::map_edge_with_context(&revision),
-            &verified,
-            "applies the mapping context to one value",
-            ":/test",
-            &mut worker,
-        )
-        .unwrap();
-    let MapEdgeWithContextDecision::Bound(proof) = decision else {
-        panic!("fixture must bind: {decision:?}")
-    };
-    let overlay = authority
-        .materialize_candidate_overlay(&proof, &mut worker)
-        .unwrap();
-    let _oracle = authority
-        .issue_candidate_behavioral_test(
-            &overlay,
-            "workflow remains non empty",
-            ":/test",
-            &mut worker,
-        )
-        .unwrap();
-    let error = authority
-        .run_differential_validation(&overlay, &mut worker)
-        .unwrap_err();
-    assert_eq!(error.code, ErrorCode::PreconditionFailed);
-    assert!(error.message.contains("omission mutant did not fail"));
     worker.shutdown().unwrap();
 }
 use clew::error::ErrorCode;

@@ -1799,7 +1799,7 @@ impl WorkerClient {
         let trusted_build_input_digest = trusted.build_input_digest.clone();
         let project_model_hash = provided_project_model_hash.to_owned();
         let semantic_input_manifest_hash =
-            required_payload_string(&project, "semanticInputManifestHash")?.to_owned();
+            required_payload_string(project, "semanticInputManifestHash")?.to_owned();
         let manifest = project.get("semanticInputManifest").ok_or_else(|| {
             ClewError::new(
                 ErrorCode::InvalidInput,

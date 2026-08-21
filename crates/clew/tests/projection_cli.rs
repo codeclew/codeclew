@@ -8,7 +8,7 @@ use std::sync::Mutex;
 static CLI_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
-fn kotlin_21_cli_returns_a_bounded_l5_claim_with_exact_l0_trace() {
+fn kotlin_21_cli_returns_a_bounded_l5_claim_with_exact_l0_trace_and_explicit_boundary() {
     let _guard = CLI_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let root = workspace_root();
     let fixture = root.join("fixtures/kotlin-2-1");
@@ -42,7 +42,16 @@ fn kotlin_21_cli_returns_a_bounded_l5_claim_with_exact_l0_trace() {
     assert!(output.stdout.len() <= 32_768);
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["schema"], "semantic-projection/0.1");
-    assert_eq!(result["status"], "COMPLETE");
+    assert_eq!(result["status"], "PARTIAL_BOUNDARY");
+    assert!(result["boundaries"].as_array().is_some_and(|boundaries| {
+        boundaries.iter().any(|boundary| {
+            boundary["id"] == "THREAD_COMPLETENESS"
+                && boundary["state"] == "UNSUPPORTED"
+                && boundary["reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.starts_with("sha256:"))
+        })
+    }));
     assert_eq!(result["provenance"]["compilerVersion"], "2.1.21");
     assert_eq!(result["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(result["nodes"][0]["level"], "L5");

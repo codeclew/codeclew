@@ -5,7 +5,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 #[test]
-fn semanticd_is_long_lived_and_exports_required_metrics() {
+fn semanticd_is_long_lived_and_does_not_claim_project_native_cache_hits() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("fixtures/kotlin-basic")
@@ -63,10 +63,6 @@ fn semanticd_is_long_lived_and_exports_required_metrics() {
         assert!(!metrics[required].is_null(), "missing metric {required}");
     }
     assert_eq!(metrics["cache_requests"], 2);
-    assert!(metrics["cache_hits"].as_u64().unwrap() >= 1);
-    assert!(metrics["cache_hits"].as_u64().unwrap() <= 2);
-    assert_eq!(
-        responses[5]["result"]["cacheHitRate"].as_f64().unwrap(),
-        metrics["cache_hits"].as_u64().unwrap() as f64 / 2.0
-    );
+    assert_eq!(metrics["cache_hits"], 0);
+    assert_eq!(responses[5]["result"]["cacheHitRate"], 0.0);
 }

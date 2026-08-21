@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct RepositoryIndex {
     connection: Connection,
@@ -107,6 +108,9 @@ impl RepositoryIndex {
 
     fn open_database(repo: &Path, database: PathBuf, blobs: PathBuf) -> Result<Self, ClewError> {
         let connection = Connection::open(database).map_err(db_error)?;
+        connection
+            .busy_timeout(Duration::from_secs(30))
+            .map_err(db_error)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(db_error)?;
@@ -3370,6 +3374,8 @@ fn internal(error: anyhow::Error) -> ClewError {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::mpsc;
+    use std::thread;
 
     fn relation_ingestion_facts(source: &str, target: &str) -> Value {
         let graph = json!({
@@ -5302,5 +5308,24 @@ mod tests {
 
         assert!(index.freshness_status(REPOSITORY_INDEX_FACT).is_err());
         assert!(index.require_fresh(REPOSITORY_INDEX_FACT).is_err());
+    }
+
+    #[test]
+    fn concurrent_open_waits_for_a_short_repository_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let index = RepositoryIndex::open(temp.path()).unwrap();
+        index.connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let repository = temp.path().to_path_buf();
+        let (started_tx, started_rx) = mpsc::channel();
+        let opener = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            RepositoryIndex::open(&repository)
+        });
+        started_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(100));
+        index.connection.execute_batch("COMMIT").unwrap();
+
+        opener.join().unwrap().unwrap();
     }
 }

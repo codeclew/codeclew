@@ -2,9 +2,9 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::evidence_authority::{
-    EvidenceAuthority, MapEdgeWithContextDecision, TYPED_GOAL_BINDING_DECISION_SCHEMA,
-    TYPED_GOAL_BINDING_REQUEST_SCHEMA, TypedGoalBindingDecision, TypedGoalBindingRequest,
-    TypedGoalRefusal, TypedGoalRefusalReason,
+    EvidenceAuthority, MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA, MapEdgeWithContextDecision,
+    TYPED_GOAL_BINDING_DECISION_SCHEMA, TYPED_GOAL_BINDING_REQUEST_SCHEMA,
+    TypedGoalBindingDecision, TypedGoalBindingRequest, TypedGoalRefusal, TypedGoalRefusalReason,
 };
 use clew::graph;
 use clew::index::{REPOSITORY_INDEX_FACT, RepositoryIndex};
@@ -22,6 +22,7 @@ use clew::transaction;
 use clew::worker::{WorkerClient, inherited_build_state_root, workspace_root};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -298,6 +299,10 @@ struct AgentContextArgs {
     /// surface. Repeat the flag to expose more than one manifest-owned input.
     #[arg(long = "model-input")]
     model_inputs: Vec<String>,
+    /// Attach a non-authorizing CONDITIONAL decision so task-apply may build
+    /// and test a candidate while keeping publication blocked.
+    #[arg(long = "conditional-decision")]
+    conditional_decision: Option<PathBuf>,
     #[arg(long, default_value = "")]
     intent: String,
     #[arg(long, default_value_t = 16_384)]
@@ -692,7 +697,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                         ));
                     }
                     Ok(json!({
-                        "schema": "map-edge-with-context-decision/0.1",
+                        "schema": MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA,
                         "status": "BOUND",
                         "proof": receipt.summary(),
                     }))
@@ -834,22 +839,35 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     repo.join(args.evidence)
                 };
                 let base_revision = git_head(&repo)?;
-                let (context, evidence) = task_context::build(task_context::TaskContextBuild {
-                    repo: &repo,
-                    terms: &args.terms,
-                    intent: &args.intent,
-                    compilation: &args.compilation,
-                    project: &project,
-                    index_facts,
-                    selection: &selection,
-                    resolutions: &resolutions,
-                    threads: &threads,
-                    base_revision: &base_revision,
-                    index_snapshot: &index_snapshot,
-                    evidence_path: &evidence_path,
-                    model_input_surfaces: &model_input_surfaces,
-                    max_bytes: args.max_bytes,
-                })?;
+                let (mut context, mut evidence) =
+                    task_context::build(task_context::TaskContextBuild {
+                        repo: &repo,
+                        terms: &args.terms,
+                        intent: &args.intent,
+                        compilation: &args.compilation,
+                        project: &project,
+                        index_facts,
+                        selection: &selection,
+                        resolutions: &resolutions,
+                        threads: &threads,
+                        base_revision: &base_revision,
+                        index_snapshot: &index_snapshot,
+                        evidence_path: &evidence_path,
+                        model_input_surfaces: &model_input_surfaces,
+                        max_bytes: args.max_bytes,
+                    })?;
+                if let Some(decision_path) = args.conditional_decision.as_deref() {
+                    let decision: Value = read_json(decision_path)?;
+                    let obligations = validate_conditional_decision(&decision, &base_revision)?;
+                    context["verificationObligations"] = Value::Array(obligations.clone());
+                    context["publicationPolicy"] = json!({
+                        "mode":"STRICT",
+                        "status":"BLOCKED_UNTIL_DISCHARGED",
+                        "automaticPublication":false,
+                    });
+                    evidence["context"] = context.clone();
+                    evidence["conditionalDecision"] = decision;
+                }
                 write_artifact(&evidence_path, &evidence)?;
                 if let Some(output) = args.output {
                     let output_path = if output.is_absolute() {
@@ -1011,8 +1029,28 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     &transaction,
                     "task-apply request created before semantic validation",
                 )?;
-                let result =
-                    transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?;
+                let conditional_obligations = context
+                    .get("verificationObligations")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if !conditional_obligations.is_empty() {
+                    transaction.validation_evidence.push(json!({
+                        "kind":"UNRESOLVED_VERIFICATION_OBLIGATIONS",
+                        "obligationsHash":canonical::hash(&conditional_obligations).map_err(parse_error)?,
+                        "publicationBlocking":true,
+                    }));
+                }
+                let result = if conditional_obligations.is_empty() {
+                    transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?
+                } else {
+                    transaction::validate_conditional_candidate(
+                        &repo,
+                        &mut transaction,
+                        &args.target_ref,
+                        worker,
+                    )?
+                };
                 if let Some(output) = args.output.as_deref() {
                     write_artifact(output, &transaction)?;
                     let build = transaction
@@ -1027,6 +1065,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                         "finalCommit":transaction.final_commit,
                         "changedFiles":transaction.preview.as_ref().map(|preview| &preview.changed_files),
                         "build":build,
+                        "result":result,
                         "transactionArtifact":output
                     }));
                 }
@@ -1555,6 +1594,86 @@ fn read_typed_goal_request(args: &TypedGoalArgs) -> Result<TypedGoalBindingReque
         ));
     }
     Ok(request)
+}
+
+fn validate_conditional_decision(
+    decision: &Value,
+    expected_revision: &str,
+) -> Result<Vec<Value>, ClewError> {
+    let schema = decision.get("schema").and_then(Value::as_str);
+    if !matches!(
+        schema,
+        Some(TYPED_GOAL_BINDING_DECISION_SCHEMA | MAP_EDGE_WITH_CONTEXT_DECISION_SCHEMA)
+    ) || decision.get("status").and_then(Value::as_str) != Some("CONDITIONAL")
+        || decision.get("revision").and_then(Value::as_str) != Some(expected_revision)
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "conditional decision schema, status, or revision is invalid",
+        ));
+    }
+    let valid_digest = |field: &str| {
+        decision
+            .get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                value.len() == 71
+                    && value.starts_with("sha256:")
+                    && value[7..]
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+    };
+    if !valid_digest("goalFingerprint")
+        || !(valid_digest("evidenceFingerprint") || valid_digest("establishedEvidenceFingerprint"))
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "conditional decision has no canonical evidence identity",
+        ));
+    }
+    let obligations = decision
+        .get("unresolvedObligations")
+        .and_then(Value::as_array)
+        .filter(|obligations| !obligations.is_empty())
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                "conditional decision has no unresolved obligations",
+            )
+        })?;
+    let mut ids = BTreeSet::new();
+    for obligation in obligations {
+        let id = obligation
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let code = obligation
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let subject = obligation.get("subject").and_then(Value::as_array);
+        if id.is_empty()
+            || !ids.insert(id)
+            || !matches!(
+                code,
+                "VERIFY_CALL_TARGET_IDENTITY"
+                    | "VERIFY_ARGUMENT_PARAMETER_MAPPING"
+                    | "VERIFY_BEHAVIORAL_ORACLE"
+            )
+            || subject.is_none_or(Vec::is_empty)
+            || obligation
+                .get("publicationBlocking")
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "conditional verification obligation is malformed or non-blocking",
+            ));
+        }
+    }
+    Ok(obligations.clone())
 }
 fn typed_goal_refusal_json(reason: TypedGoalRefusalReason) -> Result<Value, ClewError> {
     serde_json::to_value(TypedGoalRefusal {
@@ -2596,6 +2715,41 @@ fn exit_code(code: &ErrorCode) -> u8 {
 #[cfg(test)]
 mod task_plan_tests {
     use super::*;
+
+    fn conditional_decision() -> Value {
+        json!({
+            "schema":TYPED_GOAL_BINDING_DECISION_SCHEMA,
+            "status":"CONDITIONAL",
+            "revision":"abc",
+            "goalFingerprint":format!("sha256:{}", "a".repeat(64)),
+            "establishedEvidenceFingerprint":format!("sha256:{}", "b".repeat(64)),
+            "unresolvedObligations":[{
+                "id":"verify-call-target-identity",
+                "code":"VERIFY_CALL_TARGET_IDENTITY",
+                "subject":["p/target"],
+                "establishedAuthority":"SOURCE_STRUCTURAL",
+                "requiredAuthority":"COMPILER_EXACT",
+                "acceptableVerifiers":["COMPILER_ARGUMENT_MAPPING"],
+                "publicationBlocking":true
+            }]
+        })
+    }
+
+    #[test]
+    fn conditional_decision_is_revision_bound_and_always_blocks_publication() {
+        let decision = conditional_decision();
+        let obligations = validate_conditional_decision(&decision, "abc").unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0]["publicationBlocking"], true);
+
+        let mut stale = decision.clone();
+        stale["revision"] = json!("other");
+        assert!(validate_conditional_decision(&stale, "abc").is_err());
+
+        let mut forged = decision;
+        forged["unresolvedObligations"][0]["publicationBlocking"] = json!(false);
+        assert!(validate_conditional_decision(&forged, "abc").is_err());
+    }
 
     #[test]
     fn task_apply_runner_accepts_only_canonical_transaction_ids() {
