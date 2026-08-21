@@ -93,6 +93,14 @@ internal object IncrementalK2Runtime {
             put("reusedFiles", value.reusedFiles)
             put("recovered", value.recovered)
             put("fallbackUsed", fallbackUsed)
+            value.diagnostics.asSequence()
+                .mapNotNull { row ->
+                    (row["code"] as? kotlinx.serialization.json.JsonPrimitive)
+                        ?.takeIf { it.isString }
+                        ?.content
+                }
+                .firstOrNull { Regex("[A-Z][A-Z0-9_]{0,95}").matches(it) }
+                ?.let { put("failureCode", it) }
             value.graphDigest?.let { put("graphDigest", it) }
         })
     }
