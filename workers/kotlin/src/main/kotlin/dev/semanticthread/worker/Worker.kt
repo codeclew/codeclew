@@ -580,34 +580,18 @@ internal fun prepareFixtureBuildState(root: Path) {
     canonicalRoot.resolve(K1_BUILD_STATE_SEED_FILE).writeText("${sha(bytes)}\n")
 }
 
-private fun buildStateNamespaceDigest(repo: Path, seedDigest: String?): String {
-    val canonicalRepo = repo.toRealPath()
-    val inputs = Files.walk(canonicalRepo).use { paths ->
-        paths.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }
-            .map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString to file }
-            .filter { (relative, _) ->
-                val components = relative.split('/')
-                if (components.any { it in setOf(".git", ".gradle", ".kotlin", ".semantic-thread", "build", "target") }) {
-                    false
-                } else {
-                    val name = relative.substringAfterLast('/')
-                    name in setOf(
-                        "settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts",
-                        "gradle.properties", "libs.versions.toml", "gradle-wrapper.properties", "gradle-wrapper.jar",
-                        "gradlew", "gradlew.bat", "pom.xml", "mvnw", "mvnw.cmd",
-                    ) || relative.startsWith(".mvn/") || relative.startsWith("buildSrc/") ||
-                        relative.startsWith("build-logic/") || relative.startsWith("gradle/")
-                }
-            }
-            .sorted(compareBy { it.first })
-            .map { (relative, file) -> "$relative:${sha(file.readBytes())}" }
-            .toList()
+private fun buildStateNamespaceDigest(
+    @Suppress("UNUSED_PARAMETER") repo: Path,
+    @Suppress("UNUSED_PARAMETER") seedDigest: String?,
+): String {
+    val namespace = System.getenv("CODECLEW_K1_BUILD_STATE_NAMESPACE").orEmpty()
+    if (!Regex("^sha256:[0-9a-f]{64}$").matches(namespace)) {
+        throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "managed repository snapshot namespace is unavailable or invalid",
+        )
     }
-    return sha(buildString {
-        append("k1-build-state-namespace/0.1\u0000")
-        append(seedDigest ?: PROJECT_NATIVE_BUILD_STATE_MODE).append('\u0000')
-        inputs.forEach { append(it).append('\u0000') }
-    }.toByteArray())
+    return namespace
 }
 
 internal fun externalBuildStateLayout(repo: Path, configuredRoot: Path): BuildStateLayout {
