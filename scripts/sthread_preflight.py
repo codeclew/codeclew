@@ -520,6 +520,8 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "runDirectory": str(run_directory),
             "repository": str(repository),
             "targetRef": branch,
+            "compilation": args.compilation,
+            "gradleRouteArguments": configuration_arguments,
             "gradleUserHome": str(repository / ".gradle"),
             "trustedClewLauncher": str(trusted_launcher),
             "agentContextEnvironmentRemovals": list(TRUSTED_WORKER_ENVIRONMENT_REMOVALS),
@@ -1493,6 +1495,8 @@ def self_test() -> None:
         prepared_repository = Path(snapshot["repository"])
         assert snapshot["workspaceRevision"] == historical_revision
         assert snapshot["sourceWorkspaceRevision"] == source_revision
+        assert snapshot["compilation"] == ":/main"
+        assert snapshot["gradleRouteArguments"] == ["properties"]
         assert git_stdout(prepared_repository, "rev-parse", "HEAD", stage="SELF_TEST") == snapshot["workspaceRevision"]
         assert git_stdout(prepared_repository, "symbolic-ref", "--short", "HEAD", stage="SELF_TEST") == snapshot["targetRef"]
         assert git_stdout(prepared_repository, "status", "--porcelain=v1", stage="SELF_TEST") == ""
