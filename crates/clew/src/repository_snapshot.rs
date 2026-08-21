@@ -224,8 +224,140 @@ pub fn materialize(
             WorktreeKind::Missing => unreachable!(),
         }
     }
-    seal_directories(destination)?;
+    create_synthetic_git(snapshot, store, destination)?;
+    seal_tree(destination)?;
     Ok(())
+}
+
+fn create_synthetic_git(
+    snapshot: &RepositoryInputSnapshot,
+    store: &CasStore,
+    destination: &Path,
+) -> Result<(), ClewError> {
+    if snapshot.index.iter().any(|entry| entry.stage != 0) {
+        return Err(invalid("unmerged Git index is unsupported in snapshot v2"));
+    }
+    let object_format = if snapshot.index.iter().all(|entry| entry.git_oid.len() == 40) {
+        "sha1"
+    } else if snapshot.index.iter().all(|entry| entry.git_oid.len() == 64) {
+        "sha256"
+    } else {
+        return Err(invalid("snapshot mixes Git object formats"));
+    };
+    git_command(
+        destination,
+        &["init", "-q", &format!("--object-format={object_format}")],
+        None,
+    )?;
+    for entry in &snapshot.index {
+        if entry.mode == 0o160000 {
+            return Err(invalid("Gitlinks are unsupported in snapshot v2"));
+        }
+        let limit = usize::try_from(entry.content.size).map_err(|_| {
+            ClewError::new(ErrorCode::ResourceLimit, "staged blob exceeds host size")
+        })?;
+        let lease = store.read(&entry.content, limit)?;
+        let imported = String::from_utf8(git_command(
+            destination,
+            &["hash-object", "-w", "--stdin"],
+            Some(lease.bytes()),
+        )?)
+        .map_err(|_| corrupt_input("synthetic Git object identity is not UTF-8"))?;
+        if imported.trim() != entry.git_oid {
+            return Err(corrupt_input(
+                "synthetic Git object identity differs from the snapshot",
+            ));
+        }
+        git_command(
+            destination,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("{:o}", entry.mode),
+                &entry.git_oid,
+                &entry.path,
+            ],
+            None,
+        )?;
+    }
+    let tree = String::from_utf8(git_command(destination, &["write-tree"], None)?)
+        .map_err(|_| corrupt_input("synthetic Git tree identity is not UTF-8"))?;
+    let commit = git_command_with_identity(
+        destination,
+        &["commit-tree", tree.trim(), "-m", "Codeclew sealed snapshot"],
+    )?;
+    let commit = String::from_utf8(commit)
+        .map_err(|_| corrupt_input("synthetic Git commit identity is not UTF-8"))?;
+    git_command(
+        destination,
+        &["update-ref", "refs/heads/main", commit.trim()],
+        None,
+    )?;
+    git_command(
+        destination,
+        &["symbolic-ref", "HEAD", "refs/heads/main"],
+        None,
+    )?;
+    Ok(())
+}
+
+fn git_command(
+    repo: &Path,
+    arguments: &[&str],
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>, ClewError> {
+    let mut command = Command::new("git");
+    command
+        .args(arguments)
+        .current_dir(repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(io_error)?;
+    if let Some(bytes) = input {
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| internal("synthetic Git stdin is unavailable"))?
+            .write_all(bytes)
+            .map_err(io_error)?;
+    }
+    let output = child.wait_with_output().map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("synthetic Git operation failed"));
+    }
+    Ok(output.stdout)
+}
+
+fn git_command_with_identity(repo: &Path, arguments: &[&str]) -> Result<Vec<u8>, ClewError> {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Codeclew")
+        .env("GIT_AUTHOR_EMAIL", "noreply@example.invalid")
+        .env("GIT_AUTHOR_DATE", "946684800 +0000")
+        .env("GIT_COMMITTER_NAME", "Codeclew")
+        .env("GIT_COMMITTER_EMAIL", "noreply@example.invalid")
+        .env("GIT_COMMITTER_DATE", "946684800 +0000")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("synthetic Git commit failed"));
+    }
+    Ok(output.stdout)
 }
 
 fn verify_snapshot(snapshot: &RepositoryInputSnapshot) -> Result<(), ClewError> {
@@ -646,19 +778,28 @@ fn resolve_symlink(path: &str, target: &str) -> Result<String, ClewError> {
     Ok(parts.join("/"))
 }
 
-fn seal_directories(root: &Path) -> Result<(), ClewError> {
-    let mut directories = walkdir::WalkDir::new(root)
+fn seal_tree(root: &Path) -> Result<(), ClewError> {
+    let mut entries = walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .map_err(internal)?
         .into_iter()
-        .filter(|entry| entry.file_type().is_dir())
-        .map(|entry| entry.into_path())
+        .map(|entry| (entry.file_type(), entry.into_path()))
         .collect::<Vec<_>>();
-    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    for directory in directories {
-        set_mode(&directory, 0o500)?;
+    entries.sort_by_key(|(_, path)| std::cmp::Reverse(path.components().count()));
+    for (kind, path) in entries {
+        if kind.is_dir() {
+            set_mode(&path, 0o500)?;
+        } else if kind.is_file() {
+            let executable =
+                fs::metadata(&path).map_err(io_error)?.permissions().mode() & 0o111 != 0;
+            set_mode(&path, if executable { 0o500 } else { 0o400 })?;
+        } else if !kind.is_symlink() {
+            return Err(invalid(
+                "synthetic Git snapshot contains an unsupported entry",
+            ));
+        }
     }
     Ok(())
 }
@@ -820,6 +961,8 @@ mod tests {
         let (snapshot, _) = capture(repo.path(), &store).unwrap();
         let destination = state.path().join("materialized-safe");
         materialize(&snapshot, &store, &destination).unwrap();
+        let second_destination = state.path().join("materialized-safe-second");
+        materialize(&snapshot, &store, &second_destination).unwrap();
         assert_eq!(
             fs::read(destination.join("src/main.zeta")).unwrap(),
             b"stable\n"
@@ -834,6 +977,27 @@ mod tests {
         );
         assert_eq!(
             fs::metadata(destination.join("src/main.zeta"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400
+        );
+        let revision = |path: &Path| {
+            String::from_utf8(
+                Command::new("git")
+                    .args(["rev-parse", "HEAD"])
+                    .current_dir(path)
+                    .env("GIT_OPTIONAL_LOCKS", "0")
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+        };
+        assert_eq!(revision(&destination), revision(&second_destination));
+        assert_eq!(
+            fs::metadata(destination.join(".git/config"))
                 .unwrap()
                 .permissions()
                 .mode()
