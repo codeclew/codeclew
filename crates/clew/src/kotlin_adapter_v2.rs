@@ -419,20 +419,36 @@ fn normalize_source_syntax_fallback(
             "obligation":"restore successful compiler-semantic K2 analysis before publication",
         }),
     );
-    object.entry("declarationDescriptors").or_insert_with(|| {
-        json!({
-            "coverage":"PARTIAL",
-            "descriptors":[],
-            "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
-        })
-    });
-    object.entry("declarationRelations").or_insert_with(|| {
-        json!({
-            "coverage":"PARTIAL",
-            "relations":[],
-            "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
-        })
-    });
+    if object
+        .get("declarationDescriptors")
+        .and_then(|value| value.get("descriptors"))
+        .and_then(Value::as_array)
+        .is_none()
+    {
+        object.insert(
+            "declarationDescriptors".into(),
+            json!({
+                "coverage":"PARTIAL",
+                "descriptors":[],
+                "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
+            }),
+        );
+    }
+    if object
+        .get("declarationRelations")
+        .and_then(|value| value.get("relations"))
+        .and_then(Value::as_array)
+        .is_none()
+    {
+        object.insert(
+            "declarationRelations".into(),
+            json!({
+                "coverage":"PARTIAL",
+                "relations":[],
+                "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
+            }),
+        );
+    }
     Ok(())
 }
 
@@ -821,6 +837,8 @@ mod tests {
             "compilation":":/main",
             "compilerVersion":"2.4.10",
             "files":[],
+            "declarationDescriptors":null,
+            "declarationRelations":null,
         });
         normalize_source_syntax_fallback(
             &mut index,
