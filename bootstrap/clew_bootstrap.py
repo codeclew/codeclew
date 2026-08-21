@@ -213,7 +213,7 @@ def state_root() -> Path:
     os.chmod(root, 0o700)
     for child in [
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
-        "objects", "objects/sha256", "generations", "attempts", "gc",
+        "objects", "objects/sha256", "objects/packs", "generations", "attempts", "gc",
         "build-cache", "build-cache/cargo",
     ]:
         path = root / child
