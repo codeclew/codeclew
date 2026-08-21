@@ -271,7 +271,8 @@ pub fn expand(
 pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), ClewError> {
     verify_index_manifest(store, index)?;
     let mut previous = None;
-    let mut terms = 0u64;
+    let mut terms = BTreeSet::new();
+    let mut last_fact_by_term = BTreeMap::<String, FactHit>::new();
     let mut postings = 0u64;
     for reference in &index.shards {
         let order = (
@@ -287,15 +288,23 @@ pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), 
         let shard: QueryShard = serde_json::from_slice(lease.bytes())
             .map_err(|_| corrupt("query shard is not a closed object"))?;
         verify_shard(reference, &shard, lease.bytes())?;
-        terms += shard.postings.len() as u64;
-        postings += shard
-            .postings
-            .iter()
-            .map(|posting| posting.facts.len() as u64)
-            .sum::<u64>();
+        for posting in &shard.postings {
+            if last_fact_by_term
+                .get(&posting.term)
+                .is_some_and(|last| last >= posting.facts.first().expect("verified non-empty"))
+            {
+                return Err(corrupt("query posting chunks overlap or are out of order"));
+            }
+            terms.insert(posting.term.clone());
+            postings += posting.facts.len() as u64;
+            last_fact_by_term.insert(
+                posting.term.clone(),
+                posting.facts.last().expect("verified non-empty").clone(),
+            );
+        }
         previous = Some(order);
     }
-    if terms != index.term_count || postings != index.posting_count {
+    if terms.len() as u64 != index.term_count || postings != index.posting_count {
         return Err(corrupt("query index counts are incomplete"));
     }
     Ok(())
@@ -771,6 +780,6 @@ mod tests {
             posting_count: facts.len() as u64,
         };
         index.index_id = canonical::hash(&index).unwrap();
-        verify_index_manifest(&store, &index).unwrap();
+        verify_index(&store, &index).unwrap();
     }
 }
