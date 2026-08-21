@@ -15,3 +15,9 @@ edit.json
 preview.json
 .DS_Store
 **/.DS_Store
+**/__pycache__/
+*.py[cod]
+# Disposable protocol fixtures created by integration tests.
+/fixtures/open-project-protocol-*/
+# Codex desktop exports may contain user-provided or machine-local context.
+/Codex Image *.png
