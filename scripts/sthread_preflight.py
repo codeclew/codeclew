@@ -535,6 +535,7 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "repository": str(repository),
             "targetRef": branch,
             "compilation": args.compilation,
+            "agentContextCompilation": args.compilation,
             "requiredValidationCompilations": requested_compilations,
             "gradleRouteProbes": route_probes,
             "gradleUserHome": str(repository / ".gradle"),
@@ -1001,7 +1002,11 @@ def probe_group(specifications: Sequence[dict[str, Any]], deadline: float) -> li
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=ROOT)
-    parser.add_argument("--compilation", default=":workers:kotlin21/main")
+    parser.add_argument(
+        "--compilation",
+        default=":workers:kotlin21/main",
+        help="semantic compilation used by the subsequent agent-context command",
+    )
     parser.add_argument(
         "--additional-compilation",
         action="append",
@@ -1518,6 +1523,7 @@ def self_test() -> None:
         assert snapshot["workspaceRevision"] == historical_revision
         assert snapshot["sourceWorkspaceRevision"] == source_revision
         assert snapshot["compilation"] == ":/main"
+        assert snapshot["agentContextCompilation"] == ":/main"
         assert snapshot["requiredValidationCompilations"] == [":/main"]
         assert snapshot["gradleRouteProbes"][0]["configurationArguments"] == ["properties"]
         assert git_stdout(prepared_repository, "rev-parse", "HEAD", stage="SELF_TEST") == snapshot["workspaceRevision"]
