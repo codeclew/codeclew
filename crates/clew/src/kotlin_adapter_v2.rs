@@ -338,7 +338,7 @@ pub(crate) fn analyze_project_native_index(
         .map_err(io_error)?;
     let repo = attempt_root.path().join("repo");
     materialize(snapshot, store, &repo)?;
-    mount_project_derived_state(attempt_root.path(), &repo)?;
+    let derived_mounts = mount_project_derived_state(attempt_root.path(), &repo, snapshot)?;
     let compiler_store = state
         .root()
         .join("generations/compiler-store")
@@ -354,7 +354,7 @@ pub(crate) fn analyze_project_native_index(
     }))?;
     let index = worker.inspect_verified_index(&verified)?.clone();
     worker.shutdown()?;
-    unmount_project_derived_state(&repo)?;
+    unmount_project_derived_state(&repo, &derived_mounts)?;
     let (observed_snapshot, _) = capture(&repo, store)?;
     let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
         && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
@@ -379,9 +379,12 @@ pub(crate) fn analyze_project_native_index(
     Ok(index)
 }
 
-fn unmount_project_derived_state(repo: &std::path::Path) -> Result<(), ClewError> {
-    for name in [".gradle", "build"] {
-        let path = repo.join(name);
+fn unmount_project_derived_state(
+    repo: &std::path::Path,
+    mounts: &[std::path::PathBuf],
+) -> Result<(), ClewError> {
+    for relative in mounts {
+        let path = repo.join(relative);
         let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
         if !metadata.file_type().is_symlink() {
             return Err(ClewError::new(
@@ -397,21 +400,64 @@ fn unmount_project_derived_state(repo: &std::path::Path) -> Result<(), ClewError
 fn mount_project_derived_state(
     attempt_root: &std::path::Path,
     repo: &std::path::Path,
-) -> Result<(), ClewError> {
-    let gradle = attempt_root.join("derived/gradle-project-cache");
-    let build = attempt_root.join("derived/build-output");
-    create_private_directory(&gradle)?;
-    create_private_directory(&build)?;
+    snapshot: &RepositoryInputSnapshot,
+) -> Result<Vec<std::path::PathBuf>, ClewError> {
+    let mut mounts = std::collections::BTreeSet::from([
+        std::path::PathBuf::from(".gradle"),
+        std::path::PathBuf::from("build"),
+    ]);
+    for entry in &snapshot.index {
+        let path = std::path::Path::new(&entry.path);
+        let file = path.file_name().and_then(|value| value.to_str());
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        match file {
+            Some("build.gradle" | "build.gradle.kts") => {
+                mounts.insert(parent.join("build"));
+            }
+            Some("pom.xml") => {
+                mounts.insert(parent.join("target"));
+            }
+            _ => {}
+        }
+    }
+    for entry in walkdir::WalkDir::new(repo)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.path() == repo || entry.file_name() != std::ffi::OsStr::new(".git")
+        })
+    {
+        let entry = entry.map_err(|error| io_error(std::io::Error::other(error)))?;
+        if entry.file_type().is_dir()
+            && entry.path().file_name().and_then(|value| value.to_str()) != Some(".git")
+        {
+            fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o700))
+                .map_err(io_error)?;
+        }
+    }
     #[cfg(unix)]
     {
-        fs::set_permissions(repo, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
-        for (name, target) in [(".gradle", &gradle), ("build", &build)] {
-            if let Err(error) = symlink(target, repo.join(name)) {
+        for relative in &mounts {
+            let mount = repo.join(relative);
+            if fs::symlink_metadata(&mount).is_ok() {
+                return Err(ClewError::new(
+                    ErrorCode::InputMutated,
+                    "derived output path overlaps a repository input",
+                ));
+            }
+            let identity = canonical::hash(&relative.to_string_lossy()).map_err(internal)?;
+            let target = attempt_root
+                .join("derived")
+                .join(identity.strip_prefix("sha256:").unwrap_or(&identity));
+            create_private_directory(&target)?;
+            if let Err(error) = symlink(&target, &mount) {
                 return Err(io_error(error));
             }
         }
     }
-    Ok(())
+    Ok(mounts.into_iter().collect())
 }
 
 pub(crate) fn translate_facts(
@@ -698,6 +744,100 @@ mod tests {
                 .unwrap_err()
                 .code,
             ErrorCode::TransactionRecoveryRequired
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_multi_project_attempt_mounts_every_build_output() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join("workers/kotlin")).unwrap();
+        for (path, bytes) in [
+            (
+                "settings.gradle.kts",
+                b"include(\":workers:kotlin\")\n".as_slice(),
+            ),
+            ("build.gradle.kts", b"plugins {}\n".as_slice()),
+            ("workers/build.gradle.kts", b"plugins {}\n".as_slice()),
+            (
+                "workers/kotlin/build.gradle.kts",
+                b"plugins {}\n".as_slice(),
+            ),
+        ] {
+            std::fs::write(source.path().join(path), bytes).unwrap();
+        }
+        for arguments in [
+            vec!["init", "-q"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=codeclew@localhost",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(arguments)
+                    .current_dir(source.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let private = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(private.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let (snapshot, _) = crate::repository_snapshot::capture(source.path(), &store).unwrap();
+        let attempt = private.path().join("attempt");
+        create_private_directory(&attempt).unwrap();
+        let repo = attempt.join("repo");
+        materialize(&snapshot, &store, &repo).unwrap();
+
+        let mounts = mount_project_derived_state(&attempt, &repo, &snapshot).unwrap();
+        assert_eq!(
+            mounts,
+            vec![
+                std::path::PathBuf::from(".gradle"),
+                std::path::PathBuf::from("build"),
+                std::path::PathBuf::from("workers/build"),
+                std::path::PathBuf::from("workers/kotlin/build"),
+            ]
+        );
+        assert_eq!(
+            std::fs::metadata(repo.join("workers"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o700,
+            0o700
+        );
+        assert!(
+            std::fs::symlink_metadata(repo.join("workers/kotlin/build"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        unmount_project_derived_state(&repo, &mounts).unwrap();
+        let (observed, _) = crate::repository_snapshot::capture(&repo, &store).unwrap();
+        assert_eq!(observed.staged_view_digest, snapshot.staged_view_digest);
+        assert_eq!(observed.cached_view_digest, snapshot.cached_view_digest);
+        assert_eq!(
+            observed.untracked_view_digest,
+            snapshot.untracked_view_digest
+        );
+        assert_eq!(observed.index, snapshot.index);
+        assert!(
+            observed
+                .worktree
+                .iter()
+                .zip(&snapshot.worktree)
+                .all(|(left, right)| left.path == right.path
+                    && left.kind == right.kind
+                    && left.content == right.content)
         );
     }
 
