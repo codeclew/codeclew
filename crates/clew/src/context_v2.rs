@@ -148,10 +148,18 @@ fn load_fact_evidence(store: &CasStore, facts: &[FactHit]) -> Result<Vec<Value>,
         .iter()
         .map(|fact| {
             let limit = usize::try_from(fact.payload.size)
-                .map_err(|_| resource("fact payload exceeds host size"))?
-                .min(MAX_PAYLOAD_BYTES);
-            if fact.payload.size > limit as u64 {
-                return Err(resource("fact payload exceeds context limit"));
+                .map_err(|_| resource("fact payload exceeds host size"))?;
+            if limit > MAX_PAYLOAD_BYTES {
+                return Ok(json!({
+                    "factKey":fact.fact_key,
+                    "domainUri":fact.domain_uri,
+                    "payloadRef":fact.payload,
+                    "payload":{
+                        "opaquePayloadDigest":fact.payload.digest,
+                        "size":fact.payload.size,
+                        "reason":"PAYLOAD_EXCEEDS_CONTEXT_LIMIT",
+                    },
+                }));
             }
             let lease = store.read(&fact.payload, limit)?;
             let payload = serde_json::from_slice::<Value>(lease.bytes()).unwrap_or_else(
@@ -485,7 +493,11 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 
 #[cfg(test)]
 mod tests {
-    use super::{snippet, source_offset_hints};
+    use super::{MAX_PAYLOAD_BYTES, load_fact_evidence, snippet, source_offset_hints};
+    use crate::adapter_v2::CapabilityUri;
+    use crate::cas::CasStore;
+    use crate::query_v2::FactHit;
+    use crate::state::StateAuthority;
     use serde_json::json;
 
     #[test]
@@ -512,5 +524,29 @@ mod tests {
         );
         assert!(text.contains("class Target"));
         assert!(!text.contains("import sample.Target"));
+    }
+
+    #[test]
+    fn oversized_fact_is_retained_as_a_bounded_opaque_reference() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store
+            .put("test/large-fact/1", &vec![b'x'; MAX_PAYLOAD_BYTES + 1])
+            .unwrap();
+        let fact = FactHit {
+            fact_key: "fact:large".into(),
+            domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+            payload,
+        };
+        let evidence = load_fact_evidence(&store, &[fact]).unwrap();
+        assert_eq!(
+            evidence[0]["payload"]["reason"],
+            "PAYLOAD_EXCEEDS_CONTEXT_LIMIT"
+        );
+        assert_eq!(
+            evidence[0]["payload"]["size"],
+            (MAX_PAYLOAD_BYTES + 1) as u64
+        );
     }
 }
