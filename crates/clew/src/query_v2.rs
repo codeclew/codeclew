@@ -31,6 +31,7 @@ pub struct QueryIndexManifest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryShardReference {
     pub bucket: String,
+    pub sequence: u32,
     pub first_term: String,
     pub last_term: String,
     pub object: CasObject,
@@ -140,11 +141,18 @@ pub fn build_query_index(
         publish_bucket(store, &bucket, bucket_postings, &mut references)?;
     }
     references.sort_by(|left, right| {
-        (&left.bucket, &left.first_term, &left.last_term).cmp(&(
-            &right.bucket,
-            &right.first_term,
-            &right.last_term,
-        ))
+        (
+            &left.bucket,
+            &left.first_term,
+            &left.last_term,
+            left.sequence,
+        )
+            .cmp(&(
+                &right.bucket,
+                &right.first_term,
+                &right.last_term,
+                right.sequence,
+            ))
     });
     let mut manifest = QueryIndexManifest {
         schema: QUERY_INDEX_SCHEMA.into(),
@@ -270,6 +278,7 @@ pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), 
             reference.bucket.as_str(),
             reference.first_term.as_str(),
             reference.last_term.as_str(),
+            reference.sequence,
         );
         if previous.is_some_and(|value| value >= order) {
             return Err(corrupt("query shard reference order is invalid"));
@@ -339,6 +348,19 @@ fn publish_bucket(
     let mut current = Vec::new();
     let mut sequence = 0u32;
     for posting in postings {
+        if canonical::bytes(&shard(bucket, sequence, std::slice::from_ref(&posting)))
+            .map_err(internal)?
+            .len()
+            > MAX_QUERY_SHARD_BYTES
+        {
+            if !current.is_empty() {
+                publish_query_shard(store, shard(bucket, sequence, &current), references)?;
+                sequence = next_sequence(sequence)?;
+                current.clear();
+            }
+            sequence = publish_split_posting(store, bucket, sequence, posting, references)?;
+            continue;
+        }
         current.push(posting);
         let candidate = shard(bucket, sequence, &current);
         let bytes = canonical::bytes(&candidate).map_err(internal)?;
@@ -351,9 +373,7 @@ fn publish_bucket(
                 ));
             }
             publish_query_shard(store, shard(bucket, sequence, &current), references)?;
-            sequence = sequence
-                .checked_add(1)
-                .ok_or_else(|| invalid("query shard sequence overflow"))?;
+            sequence = next_sequence(sequence)?;
             current = vec![last];
         }
     }
@@ -361,6 +381,58 @@ fn publish_bucket(
         publish_query_shard(store, shard(bucket, sequence, &current), references)?;
     }
     Ok(())
+}
+
+fn publish_split_posting(
+    store: &CasStore,
+    bucket: &str,
+    mut sequence: u32,
+    posting: TermPosting,
+    references: &mut Vec<QueryShardReference>,
+) -> Result<u32, ClewError> {
+    let mut start = 0usize;
+    while start < posting.facts.len() {
+        let remaining = posting.facts.len() - start;
+        let mut low = 1usize;
+        let mut high = remaining;
+        let mut fitting = 0usize;
+        while low <= high {
+            let middle = low + (high - low) / 2;
+            let candidate = TermPosting {
+                term: posting.term.clone(),
+                facts: posting.facts[start..start + middle].to_vec(),
+            };
+            let size = canonical::bytes(&shard(bucket, sequence, &[candidate]))
+                .map_err(internal)?
+                .len();
+            if size <= MAX_QUERY_SHARD_BYTES {
+                fitting = middle;
+                low = middle + 1;
+            } else {
+                high = middle.saturating_sub(1);
+            }
+        }
+        if fitting == 0 {
+            return Err(ClewError::new(
+                ErrorCode::ResourceLimit,
+                "one query fact reference exceeds the shard limit",
+            ));
+        }
+        let chunk = TermPosting {
+            term: posting.term.clone(),
+            facts: posting.facts[start..start + fitting].to_vec(),
+        };
+        publish_query_shard(store, shard(bucket, sequence, &[chunk]), references)?;
+        sequence = next_sequence(sequence)?;
+        start += fitting;
+    }
+    Ok(sequence)
+}
+
+fn next_sequence(sequence: u32) -> Result<u32, ClewError> {
+    sequence
+        .checked_add(1)
+        .ok_or_else(|| invalid("query shard sequence overflow"))
 }
 
 fn shard(bucket: &str, sequence: u32, postings: &[TermPosting]) -> QueryShard {
@@ -389,6 +461,7 @@ fn publish_query_shard(
     let object = store.put(QUERY_SHARD_SCHEMA, &bytes)?;
     references.push(QueryShardReference {
         bucket: shard.bucket,
+        sequence: shard.sequence,
         first_term: shard.first_term,
         last_term: shard.last_term,
         object,
@@ -404,6 +477,7 @@ fn verify_shard(
     if canonical::bytes(shard).map_err(internal)? != bytes
         || shard.schema != QUERY_SHARD_SCHEMA
         || shard.bucket != reference.bucket
+        || shard.sequence != reference.sequence
         || shard.first_term != reference.first_term
         || shard.last_term != reference.last_term
         || shard.postings.is_empty()
@@ -457,8 +531,7 @@ fn collect_json_strings(
             }
         }
         Value::Object(values) => {
-            for (key, value) in values {
-                output.insert(key.clone());
+            for value in values.values() {
                 collect_json_strings(value, output, depth + 1)?;
             }
         }
@@ -637,12 +710,53 @@ mod tests {
         collect_json_strings(&repeated, &mut strings, 0).unwrap();
         assert_eq!(
             strings,
-            BTreeSet::from([
-                "Target".to_owned(),
-                "declaration".to_owned(),
-                "kind".to_owned(),
-                "name".to_owned(),
-            ])
+            BTreeSet::from(["Target".to_owned(), "declaration".to_owned()])
         );
+    }
+
+    #[test]
+    fn high_fanout_term_is_split_without_dropping_fact_references() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"x").unwrap();
+        let facts = (0..50_000)
+            .map(|index| FactHit {
+                fact_key: format!("symbol:{index:08}"),
+                domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                payload: payload.clone(),
+            })
+            .collect::<Vec<_>>();
+        let posting = TermPosting {
+            term: "popular".into(),
+            facts: facts.clone(),
+        };
+        let posting_bucket = bucket("popular");
+        assert!(
+            canonical::bytes(&shard(&posting_bucket, 0, std::slice::from_ref(&posting)))
+                .unwrap()
+                .len()
+                > MAX_QUERY_SHARD_BYTES
+        );
+        let mut references = Vec::new();
+        publish_bucket(&store, &posting_bucket, vec![posting], &mut references).unwrap();
+        assert!(references.len() > 1);
+        assert!(
+            references
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        let recovered = references
+            .iter()
+            .flat_map(|reference| {
+                let lease = store
+                    .read(&reference.object, MAX_QUERY_SHARD_BYTES)
+                    .unwrap();
+                let shard: QueryShard = serde_json::from_slice(lease.bytes()).unwrap();
+                verify_shard(reference, &shard, lease.bytes()).unwrap();
+                shard.postings.into_iter().flat_map(|posting| posting.facts)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recovered, facts);
     }
 }
