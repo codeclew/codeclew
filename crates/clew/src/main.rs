@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
@@ -33,7 +35,7 @@ use std::process::ExitCode;
 #[command(
     name = "clew",
     version,
-    about = "Codeclew semantic change platform for Kotlin"
+    about = "Codeclew managed semantic change runtime"
 )]
 struct Cli {
     #[arg(
@@ -48,30 +50,40 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[cfg(any())]
     Doctor,
+    #[cfg(any())]
     #[command(about = "Emit a deterministic machine-readable product schema")]
     Schema {
         #[command(subcommand)]
         command: SchemaCommand,
     },
+    #[cfg(any())]
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    #[cfg(any())]
     Index(IndexArgs),
+    #[cfg(any())]
     Resolve {
         #[command(subcommand)]
         command: ResolveCommand,
     },
+    #[cfg(any())]
     Cfg(SymbolArgs),
+    #[cfg(any())]
     Slice(SliceArgs),
+    #[cfg(any())]
     #[command(about = "Query a bounded, evidence-backed semantic view without filesystem search")]
     Projection(ProjectionArgs),
+    #[cfg(any())]
     #[command(about = "Prove a source-free semantic change plan from live compiler evidence")]
     Prove {
         #[command(subcommand)]
         command: ProveCommand,
     },
+    #[cfg(any())]
     #[command(about = "Apply an authority-proved semantic change as an atomic commit")]
     Apply {
         #[command(subcommand)]
@@ -94,10 +106,12 @@ enum Command {
         #[command(subcommand)]
         command: TaskRunCommand,
     },
+    #[cfg(any())]
     Edit {
         #[command(subcommand)]
         command: EditCommand,
     },
+    #[cfg(any())]
     Tx {
         #[command(subcommand)]
         command: TxCommand,
@@ -476,10 +490,7 @@ struct InspectTxArgs {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let stdout_budget = match &cli.command {
-        Command::Projection(args) => Some(args.max_bytes),
-        _ => None,
-    };
+    let stdout_budget = None;
     let started = std::time::Instant::now();
     let result = run(cli);
     let rendered_fits = |rendered: &str| {
@@ -520,26 +531,30 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     let workspace = workspace_root();
-    let compiler_index_root = None::<PathBuf>;
     match cli.command {
+        #[cfg(any())]
         Command::Doctor => {
+            let compiler_index_root = None::<PathBuf>;
             let worker = start_cli_worker(&workspace, compiler_index_root.as_deref())?;
             let result = json!({"schema":"semantic-doctor/0.1","status":"OK","rustCore":env!("CARGO_PKG_VERSION"),"worker":{"language":worker.capabilities.language,"version":worker.capabilities.worker_version,"compilerVersion":worker.capabilities.compiler_version,"operations":worker.capabilities.supported_operations}});
             worker.shutdown()?;
             Ok(result)
         }
+        #[cfg(any())]
         Command::Schema {
             command: SchemaCommand::TypedGoal,
         } => serde_json::to_value(typed_goal_language_schema()).map_err(parse_error),
+        #[cfg(any())]
         Command::Project {
             command: ProjectCommand::Inspect(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        } => with_worker(&workspace, None, |w| {
             w.request(
                 RequestKind::OpenProject,
                 &json!({"repo":absolute(&args.repo)?,"compilation":args.compilation}),
             )
         }),
-        Command::Index(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        #[cfg(any())]
+        Command::Index(args) => with_worker(&workspace, None, |w| {
             let total_started = std::time::Instant::now();
             let repo = absolute(&args.repo)?;
             let index_started = std::time::Instant::now();
@@ -621,23 +636,26 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 },
             }))
         }),
+        #[cfg(any())]
         Command::Resolve {
             command: ResolveCommand::Symbol(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        } => with_worker(&workspace, None, |w| {
             w.request(
                 RequestKind::ResolveSymbol,
                 &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol,"compilation":args.compilation}),
             )
         }),
+        #[cfg(any())]
         Command::Resolve {
             command: ResolveCommand::Expression(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        } => with_worker(&workspace, None, |w| {
             w.request(
                 RequestKind::ResolveExpression,
                 &json!({"repo":absolute(&args.repo)?,"file":args.file,"offset":args.offset}),
             )
         }),
-        Command::Cfg(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        #[cfg(any())]
+        Command::Cfg(args) => with_worker(&workspace, None, |w| {
             let raw = w.request(
                 RequestKind::BuildLocalGraph,
                 &json!({"repo":absolute(&args.repo)?,"symbol":args.symbol,"compilation":args.compilation}),
@@ -645,17 +663,16 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let graph: LocalGraph = serde_json::from_value(raw).map_err(parse_error)?;
             serde_json::to_value(graph::enrich(graph)).map_err(parse_error)
         }),
-        Command::Slice(args) => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
-            slice_command(w, args)
-        }),
+        #[cfg(any())]
+        Command::Slice(args) => with_worker(&workspace, None, |w| slice_command(w, args)),
+        #[cfg(any())]
         Command::Projection(args) => {
-            with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
-                projection_command(worker, args)
-            })
+            with_worker(&workspace, None, |worker| projection_command(worker, args))
         }
+        #[cfg(any())]
         Command::Prove {
             command: ProveCommand::TypedGoal(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
+        } => with_worker(&workspace, None, |worker| {
             let request = read_typed_goal_request(&args)?;
             if request.schema != TYPED_GOAL_BINDING_REQUEST_SCHEMA {
                 return typed_goal_refusal_json(TypedGoalRefusalReason::InvalidGoal);
@@ -734,9 +751,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 }
             }
         }),
+        #[cfg(any())]
         Command::Prove {
             command: ProveCommand::MapEdgeWithContext(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
+        } => with_worker(&workspace, None, |worker| {
             let repo = absolute(&args.repo)?;
             let revision = git_head(&repo)?;
             let thread = build_thread(
@@ -786,9 +804,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 }
             }
         }),
+        #[cfg(any())]
         Command::Apply {
             command: ApplyCommand::MapEdgeWithContext(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
+        } => with_worker(&workspace, None, |worker| {
             let repo = absolute(&args.proof.repo)?;
             let revision = git_head(&repo)?;
             let thread = build_thread(
@@ -955,9 +974,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: SessionCommand::Recover(args),
         } => recover_task_run(&workspace, &args.session, &args.run),
         Command::InternalTaskRunExecute(args) => execute_task_run(&workspace, &args.run),
+        #[cfg(any())]
         Command::Edit {
             command: EditCommand::Preview(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        } => with_worker(&workspace, None, |w| {
             let repo = absolute(&args.repo)?;
             let thread: ThreadIr = read_json(&args.thread)?;
             let edit: EditIr = read_json(&args.edit)?;
@@ -965,9 +985,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             write_optional(args.output.as_deref(), &report)?;
             serde_json::to_value(report).map_err(parse_error)
         }),
+        #[cfg(any())]
         Command::Tx {
             command: TxCommand::Validate(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        } => with_worker(&workspace, None, |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
             transaction::validate_required_threads(&tx)?;
@@ -1005,9 +1026,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 }
             }
         }),
+        #[cfg(any())]
         Command::Tx {
             command: TxCommand::Commit(args),
-        } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
+        } => with_worker(&workspace, None, |w| {
             let repo = absolute(&args.repo)?;
             let mut tx: Transaction = read_json(&args.file)?;
             let transaction_id = tx.tx_id.clone();
@@ -1032,6 +1054,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     .with_relevant(relevant)
             })
         }),
+        #[cfg(any())]
         Command::Tx {
             command: TxCommand::Inspect(args),
         } => transaction::ledger(&absolute(&args.repo)?)?.inspect(&args.transaction_id),
@@ -3216,6 +3239,39 @@ mod task_plan_tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn only_managed_workflow_command_families_are_public() {
+        for legacy in [
+            "doctor",
+            "schema",
+            "project",
+            "index",
+            "resolve",
+            "cfg",
+            "slice",
+            "projection",
+            "prove",
+            "apply",
+            "edit",
+            "tx",
+        ] {
+            assert!(
+                Cli::try_parse_from(["clew", legacy]).is_err(),
+                "legacy command {legacy} remained public"
+            );
+        }
+        for managed in ["session", "context", "plan", "task-run"] {
+            let error = match Cli::try_parse_from(["clew", managed]) {
+                Ok(_) => panic!("managed command {managed} unexpectedly accepted no subcommand"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            );
+        }
     }
 
     #[test]
