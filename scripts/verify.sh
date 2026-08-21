@@ -7,6 +7,7 @@ cd "$ROOT"
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=2
+python3 -I -S scripts/build-trusted-worker-distributions.py --verify-only
 
 ./clew --bootstrap-self-test >/dev/null
 ./clew doctor >/dev/null

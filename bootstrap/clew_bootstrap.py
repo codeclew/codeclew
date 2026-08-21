@@ -362,7 +362,10 @@ def verify_release_worker(stage: Path, manifest_relative: str, rows: list[dict[s
     manifest = json.loads((stage / manifest_relative).read_text())
     expected = manifest.get("files")
     if expected != rows or manifest.get("treeHash") != tree_hash(rows):
-        raise BootstrapError(f"RELEASE worker differs from committed manifest: {manifest_relative}")
+        raise BootstrapError(
+            "RELEASE worker differs from its committed manifest; regenerate and verify all "
+            f"affected worker variants: {manifest_relative}"
+        )
 
 
 def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[dict[str, object]], tools: dict[str, object]) -> Path:
