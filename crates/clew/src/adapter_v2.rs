@@ -1,5 +1,6 @@
-use crate::cas::{CAS_OBJECT_SCHEMA, CasObject};
+use crate::cas::{CAS_OBJECT_SCHEMA, CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -191,6 +192,13 @@ pub struct BuildModel {
     pub compilations: Vec<CompilationDescriptor>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderModel {
+    pub handshake: ProviderHandshake,
+    pub build_model: BuildModel,
+}
+
 pub trait BuildModelProvider: Send + Sync {
     fn handshake(&self) -> Result<ProviderHandshake, ClewError>;
     fn probe(&self, request: &ProbeRequest) -> Result<ProbeDecision, ClewError>;
@@ -378,21 +386,77 @@ impl AdapterRegistry {
         validate_cas(&request.repository_snapshot)?;
         let provider = self.provider(provider_id)?;
         let model = provider.extract_model(request)?;
-        if model.provider_id != provider_id {
-            return Err(protocol("provider returned a model with another identity"));
-        }
-        validate_cas(&model.model)?;
-        if model.compilations.is_empty() || model.compilations.len() > 65_536 {
-            return Err(protocol("provider returned an invalid compilation set"));
-        }
-        let mut compilation_ids = BTreeSet::new();
-        for compilation in &model.compilations {
-            compilation.validate()?;
-            if !compilation_ids.insert(&compilation.compilation_id) {
-                return Err(protocol("provider returned duplicate compilation ids"));
-            }
-        }
+        validate_build_model(provider_id, &model)?;
         Ok(model)
+    }
+
+    pub fn extract_supported_models_sealed(
+        &self,
+        store: &CasStore,
+        repository_snapshot: &CasObject,
+        requested_compilations: Vec<String>,
+    ) -> Result<Vec<ProviderModel>, ClewError> {
+        validate_cas(repository_snapshot)?;
+        let registrations = self
+            .providers
+            .values()
+            .map(|registered| {
+                (
+                    registered.handshake.clone(),
+                    Arc::clone(&registered.provider),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut models = registrations
+            .into_par_iter()
+            .map(
+                |(handshake, provider)| -> Result<Option<ProviderModel>, ClewError> {
+                    let before = read_snapshot_authority(store, repository_snapshot)?;
+                    let probe = provider.probe(&ProbeRequest {
+                        repository_snapshot: repository_snapshot.clone(),
+                    })?;
+                    let model = match probe {
+                        ProbeDecision::Unsupported => None,
+                        ProbeDecision::Supported => {
+                            let model = provider.extract_model(&ModelRequest {
+                                repository_snapshot: repository_snapshot.clone(),
+                                requested_compilations: requested_compilations.clone(),
+                            })?;
+                            validate_build_model(&handshake.provider_id, &model)?;
+                            Some(ProviderModel {
+                                handshake,
+                                build_model: model,
+                            })
+                        }
+                    };
+                    let after =
+                        read_snapshot_authority(store, repository_snapshot).map_err(|_| {
+                            ClewError::new(
+                                ErrorCode::InputMutated,
+                                "repository snapshot authority changed during provider execution",
+                            )
+                        })?;
+                    if before != after {
+                        return Err(ClewError::new(
+                            ErrorCode::InputMutated,
+                            "repository snapshot authority changed during provider execution",
+                        ));
+                    }
+                    Ok(model)
+                },
+            )
+            .collect::<Result<Vec<_>, ClewError>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.handshake.provider_id.cmp(&right.handshake.provider_id));
+        if models.is_empty() {
+            return Err(ClewError::new(
+                ErrorCode::UnsupportedProjectConfiguration,
+                "no build-model provider supports the sealed repository snapshot",
+            ));
+        }
+        Ok(models)
     }
 
     pub fn select_adapter(
@@ -464,6 +528,31 @@ impl AdapterRegistry {
     pub fn adapter_handshakes(&self) -> impl Iterator<Item = &AdapterHandshake> {
         self.adapters.values().map(|value| &value.handshake)
     }
+}
+
+fn read_snapshot_authority(store: &CasStore, object: &CasObject) -> Result<Vec<u8>, ClewError> {
+    let limit = usize::try_from(object.size).map_err(|_| {
+        ClewError::new(ErrorCode::ResourceLimit, "repository snapshot is too large")
+    })?;
+    Ok(store.read(object, limit)?.bytes().to_vec())
+}
+
+fn validate_build_model(provider_id: &str, model: &BuildModel) -> Result<(), ClewError> {
+    if model.provider_id != provider_id {
+        return Err(protocol("provider returned a model with another identity"));
+    }
+    validate_cas(&model.model)?;
+    if model.compilations.is_empty() || model.compilations.len() > 65_536 {
+        return Err(protocol("provider returned an invalid compilation set"));
+    }
+    let mut compilation_ids = BTreeSet::new();
+    for compilation in &model.compilations {
+        compilation.validate()?;
+        if !compilation_ids.insert(&compilation.compilation_id) {
+            return Err(protocol("provider returned duplicate compilation ids"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -681,7 +770,8 @@ fn protocol(message: &str) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
+    use crate::state::StateAuthority;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn digest(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
@@ -823,6 +913,43 @@ mod tests {
         }
     }
 
+    struct CountingProvider {
+        id: &'static str,
+        probes: Arc<AtomicUsize>,
+        extractions: Arc<AtomicUsize>,
+    }
+
+    impl BuildModelProvider for CountingProvider {
+        fn handshake(&self) -> Result<ProviderHandshake, ClewError> {
+            Ok(ProviderHandshake {
+                protocol: PROVIDER_PROTOCOL.into(),
+                provider_id: self.id.into(),
+                provider_digest: digest(if self.id == "provider-a" { 'a' } else { 'b' }),
+                build_system_uris: vec![format!("build:{}", self.id)],
+            })
+        }
+
+        fn probe(&self, _request: &ProbeRequest) -> Result<ProbeDecision, ClewError> {
+            self.probes.fetch_add(1, Ordering::AcqRel);
+            Ok(ProbeDecision::Supported)
+        }
+
+        fn extract_model(&self, _request: &ModelRequest) -> Result<BuildModel, ClewError> {
+            self.extractions.fetch_add(1, Ordering::AcqRel);
+            let mut compilation = zeta_compilation();
+            compilation.compilation_id = format!("{}-main", self.id);
+            Ok(BuildModel {
+                provider_id: self.id.into(),
+                model: object("model/1", if self.id == "provider-a" { '4' } else { '5' }),
+                compilations: vec![compilation],
+            })
+        }
+
+        fn shutdown(&self) -> Result<(), ClewError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn fake_language_registers_without_core_changes_and_streams_complete_generation() {
         let mut registry = AdapterRegistry::default();
@@ -855,6 +982,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(completion.fact_count, 1);
+    }
+
+    #[test]
+    fn supported_providers_execute_once_and_return_in_canonical_order() {
+        let state = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(state.path().join("v2")).unwrap();
+        let store = CasStore::open(&authority).unwrap();
+        let snapshot = store.put("snapshot/2", b"sealed").unwrap();
+        let probes = Arc::new(AtomicUsize::new(0));
+        let extractions = Arc::new(AtomicUsize::new(0));
+        let mut registry = AdapterRegistry::default();
+        for id in ["provider-b", "provider-a"] {
+            registry
+                .register_provider(Arc::new(CountingProvider {
+                    id,
+                    probes: Arc::clone(&probes),
+                    extractions: Arc::clone(&extractions),
+                }))
+                .unwrap();
+        }
+        let models = registry
+            .extract_supported_models_sealed(&store, &snapshot, vec![])
+            .unwrap();
+        assert_eq!(probes.load(Ordering::Acquire), 2);
+        assert_eq!(extractions.load(Ordering::Acquire), 2);
+        assert_eq!(models[0].handshake.provider_id, "provider-a");
+        assert_eq!(models[1].handshake.provider_id, "provider-b");
     }
 
     #[test]
