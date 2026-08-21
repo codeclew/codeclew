@@ -32,8 +32,13 @@ CACHE_MARKER_SCHEMA = "codeclew.sthread-cache-hydration/0.1"
 CACHE_MARKER_NAME = ".codeclew-sthread-preflight-cache.json"
 DEFAULT_SMOKES = (
     ("KOTLIN_2_1_COMPILER_SEMANTIC", "fixtures/kotlin-2-1", ":/main", "GRADLE"),
+    ("KOTLIN_2_4_COMPILER_SEMANTIC", "fixtures/kotlin-basic", ":/main", "GRADLE"),
     ("KOTLIN_2_3_COMPILER_SEMANTIC", "fixtures/kotlin-maven", ":/main", "MAVEN"),
 )
+COMPILER_INDEX_SMOKES = {
+    "KOTLIN_2_1_COMPILER_SEMANTIC",
+    "KOTLIN_2_4_COMPILER_SEMANTIC",
+}
 TRUSTED_WORKER_DISTRIBUTIONS = (
     ("workers/manifests/kotlin21.json", "workers/kotlin21/build/install/kotlin21"),
     ("workers/manifests/kotlin23.json", "workers/kotlin23/build/install/kotlin23"),
@@ -1711,7 +1716,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         for kind, relative_repo, compilation, _build_system in DEFAULT_SMOKES:
             compiler_index_arguments = (
                 ["--compiler-index-root", str(compiler_index_root)]
-                if kind == "KOTLIN_2_1_COMPILER_SEMANTIC"
+                if kind in COMPILER_INDEX_SMOKES
                 else []
             )
             runtime_specifications.append(
@@ -1727,33 +1732,37 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                         compilation,
                     ],
                     "cwd": workspace,
-                    "require_compiler_index": kind == "KOTLIN_2_1_COMPILER_SEMANTIC",
-                    "require_project_model_cache": kind == "KOTLIN_2_1_COMPILER_SEMANTIC",
+                    "require_compiler_index": kind in COMPILER_INDEX_SMOKES,
+                    "require_project_model_cache": kind in COMPILER_INDEX_SMOKES,
                 }
             )
     runtime_probes = probe_group(runtime_specifications, deadline)
     probes.extend(runtime_probes)
     if not args.skip_smoke:
-        kotlin21 = next(row for row in runtime_probes if row["kind"] == "KOTLIN_2_1_COMPILER_SEMANTIC")
-        warm_probe = probe(
-            kind="KOTLIN_2_1_COMPILER_INDEX_WARM",
-            argv=[
-                str(clew),
-                "--compiler-index-root",
-                str(compiler_index_root),
-                "index",
-                "--repo",
-                str(fixture21),
-                "--compilation",
-                ":/main",
-            ],
-            cwd=workspace,
-            deadline=deadline,
-            expected_compiler_index_status="UNCHANGED_HIT",
-            expected_project_model_cache_status="EXTRACTED_NOT_PUBLISHED",
-        )
-        require_same_compiler_index_graph(kotlin21, warm_probe)
-        probes.append(warm_probe)
+        for semantic_kind, warm_kind, fixture in (
+            ("KOTLIN_2_1_COMPILER_SEMANTIC", "KOTLIN_2_1_COMPILER_INDEX_WARM", fixture21),
+            ("KOTLIN_2_4_COMPILER_SEMANTIC", "KOTLIN_2_4_COMPILER_INDEX_WARM", fixture24),
+        ):
+            cold_probe = next(row for row in runtime_probes if row["kind"] == semantic_kind)
+            warm_probe = probe(
+                kind=warm_kind,
+                argv=[
+                    str(clew),
+                    "--compiler-index-root",
+                    str(compiler_index_root),
+                    "index",
+                    "--repo",
+                    str(fixture),
+                    "--compilation",
+                    ":/main",
+                ],
+                cwd=workspace,
+                deadline=deadline,
+                expected_compiler_index_status="UNCHANGED_HIT",
+                expected_project_model_cache_status="EXTRACTED_NOT_PUBLISHED",
+            )
+            require_same_compiler_index_graph(cold_probe, warm_probe)
+            probes.append(warm_probe)
         with tempfile.TemporaryDirectory(prefix="codeclew-sthread-incremental-") as raw:
             incremental_root = Path(raw).resolve()
             incremental_fixture, changed_source = initialize_incremental_fixture(
