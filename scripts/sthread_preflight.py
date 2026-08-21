@@ -1230,6 +1230,23 @@ def self_test() -> None:
         }
     )
     assert project_model_cache_profile(project_model_stdout) == project_model_row
+    project_native_row = {
+        **project_model_row,
+        "status": "EXTRACTED_NOT_PUBLISHED",
+        "publishOutcome": "ROOT_UNAVAILABLE",
+        "loadMicros": 0,
+        "extractionMicros": 30,
+        "publishMicros": 1,
+        "persistentConfigured": False,
+    }
+    assert project_model_cache_profile(
+        canonical(
+            {
+                "schema": "semantic-index-result/0.1",
+                "projectModelCache": project_native_row,
+            }
+        )
+    ) == project_native_row
     invalid_model_row = {
         **project_model_row,
         "status": "EXTRACTED_NOT_PUBLISHED",
@@ -1700,7 +1717,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             cwd=workspace,
             deadline=deadline,
             expected_compiler_index_status="UNCHANGED_HIT",
-            expected_project_model_cache_status="PERSISTENT_HIT",
+            expected_project_model_cache_status="EXTRACTED_NOT_PUBLISHED",
         )
         require_same_compiler_index_graph(kotlin21, warm_probe)
         probes.append(warm_probe)
@@ -1730,7 +1747,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=workspace,
                 deadline=deadline,
                 expected_compiler_index_status="COLD_FULL",
-                expected_project_model_cache_status="EXTRACTED_PUBLISHED",
+                expected_project_model_cache_status="EXTRACTED_NOT_PUBLISHED",
             )
             with changed_source.open("ab") as stream:
                 stream.write(b"\n// codeclew incremental preflight\n")
@@ -1751,7 +1768,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=workspace,
                 deadline=deadline,
                 expected_compiler_index_status="INCREMENTAL",
-                expected_project_model_cache_status="PERSISTENT_HIT",
+                expected_project_model_cache_status="EXTRACTED_NOT_PUBLISHED",
             )
             fresh_full_probe = probe(
                 kind="KOTLIN_2_1_INCREMENTAL_FRESH_FULL",
@@ -1768,7 +1785,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 cwd=workspace,
                 deadline=deadline,
                 expected_compiler_index_status="COLD_FULL",
-                expected_project_model_cache_status="EXTRACTED_PUBLISHED",
+                expected_project_model_cache_status="EXTRACTED_NOT_PUBLISHED",
             )
             require_incremental_equivalent_to_full(incremental_probe, fresh_full_probe)
             probes.extend((base_probe, incremental_probe, fresh_full_probe))
