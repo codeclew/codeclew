@@ -327,12 +327,16 @@ pub fn verify_index_manifest(
             reference.bucket.as_str(),
             reference.first_term.as_str(),
             reference.last_term.as_str(),
+            reference.sequence,
         );
-        if previous.is_some_and(|value| value >= order)
-            || reference.object.object_schema != QUERY_SHARD_SCHEMA
-            || reference.object.size > MAX_QUERY_SHARD_BYTES as u64
-        {
+        if previous.is_some_and(|value| value >= order) {
             return Err(corrupt("query shard reference order is invalid"));
+        }
+        if reference.object.object_schema != QUERY_SHARD_SCHEMA {
+            return Err(corrupt("query shard reference schema is invalid"));
+        }
+        if reference.object.size > MAX_QUERY_SHARD_BYTES as u64 {
+            return Err(corrupt("query shard reference size is invalid"));
         }
         previous = Some(order);
     }
@@ -758,5 +762,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(recovered, facts);
+        let mut index = QueryIndexManifest {
+            schema: QUERY_INDEX_SCHEMA.into(),
+            index_id: String::new(),
+            generation: store.put(GENERATION_SCHEMA, b"generation").unwrap(),
+            shards: references,
+            term_count: 1,
+            posting_count: facts.len() as u64,
+        };
+        index.index_id = canonical::hash(&index).unwrap();
+        verify_index_manifest(&store, &index).unwrap();
     }
 }
