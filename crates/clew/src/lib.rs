@@ -7,6 +7,7 @@ pub mod derived_manifest;
 pub mod error;
 pub mod evidence_authority;
 pub mod freshness;
+pub mod generation_v2;
 pub mod graph;
 pub mod identity;
 pub mod index;

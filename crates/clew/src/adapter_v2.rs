@@ -1,7 +1,7 @@
 use crate::cas::{CAS_OBJECT_SCHEMA, CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -11,7 +11,7 @@ pub const ADAPTER_PROTOCOL: &str = "codeclew-language-adapter/2.0";
 pub const COMPILATION_SCHEMA: &str = "codeclew-compilation-descriptor/2.0";
 pub const ANALYSIS_REQUEST_SCHEMA: &str = "codeclew-analyze-generation-request/2.0";
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct LanguageUri(String);
 
@@ -27,7 +27,14 @@ impl LanguageUri {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for LanguageUri {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct CapabilityUri(String);
 
@@ -40,6 +47,13 @@ impl CapabilityUri {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for CapabilityUri {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -239,6 +253,15 @@ pub struct FactRecord {
     pub fact_key: String,
     pub domain_uri: CapabilityUri,
     pub payload: CasObject,
+}
+
+impl FactRecord {
+    pub fn validate(&self) -> Result<(), ClewError> {
+        if !safe_fact_key(&self.fact_key) {
+            return Err(invalid("fact key is invalid"));
+        }
+        validate_cas(&self.payload)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
