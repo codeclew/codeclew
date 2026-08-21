@@ -203,6 +203,7 @@ class BtaIncrementalBackend21 internal constructor(
     }
 }
 
+@Suppress("DEPRECATION_ERROR")
 @OptIn(org.jetbrains.kotlin.buildtools.api.ExperimentalBuildToolsApi::class)
 internal object RealBtaCompilation21 : BtaCompilation21 {
     private val compilationLock = Any()
