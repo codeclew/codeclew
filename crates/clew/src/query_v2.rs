@@ -492,7 +492,10 @@ fn normalize_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String>
 
 fn bucket(term: &str) -> String {
     let digest = Sha256::digest(term.as_bytes());
-    hex::encode(&digest[..2])
+    // A one-byte routing prefix caps cold publication at 256 durability
+    // boundaries. Oversized buckets are still split by MAX_QUERY_SHARD_BYTES,
+    // while exact queries continue to read only their routed bucket.
+    hex::encode(&digest[..1])
 }
 
 fn invalid(message: &str) -> ClewError {
@@ -579,6 +582,16 @@ mod tests {
         let expanded = expand(&store, &first, &result, &["BetaService".into()], 10).unwrap();
         assert_eq!(expanded.facts.len(), 2);
         assert!(expanded.query_shards_read <= 2);
+        assert_eq!(
+            first
+                .shards
+                .iter()
+                .map(|shard| &shard.bucket)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            first.shards.len()
+        );
+        assert!(first.shards.len() <= 256);
     }
 
     #[test]
