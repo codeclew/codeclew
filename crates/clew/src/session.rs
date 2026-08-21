@@ -1,4 +1,5 @@
 use crate::canonical;
+use crate::cas::CasObject;
 use crate::error::{ClewError, ErrorCode};
 use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::{StateAuthority, create_private_directory};
@@ -17,7 +18,7 @@ use std::os::unix::fs::OpenOptionsExt;
 pub const SESSION_SCHEMA: &str = "codeclew-session/1.0";
 pub const CONTEXT_SCHEMA: &str = "codeclew-context/1.0";
 pub const PLAN_SCHEMA: &str = "codeclew-plan/1.0";
-pub const RUN_SCHEMA: &str = "codeclew-task-run/1.0";
+pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
 pub const MAX_CONTEXT_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
 pub const MAX_PLAN_OPERATIONS: usize = 256;
@@ -89,9 +90,11 @@ pub struct RunRecord {
     pub status: RunStatus,
     pub transaction_id: String,
     pub candidate_commit: Option<String>,
+    pub candidate_snapshot: Option<CasObject>,
     pub final_commit: Option<String>,
     pub publication_blocked: bool,
     pub process_id: Option<u32>,
+    pub process_start_token: Option<String>,
     pub failure: Option<Value>,
     pub updated_unix_ms: u128,
 }
@@ -107,6 +110,7 @@ pub enum RunStatus {
     Published,
     Failed,
     WorktreeRecoveryRequired,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,9 +367,11 @@ impl RunRecord {
             request_digest,
             status: RunStatus::Created,
             candidate_commit: None,
+            candidate_snapshot: None,
             final_commit: None,
             publication_blocked: false,
             process_id: None,
+            process_start_token: None,
             failure: None,
             updated_unix_ms: unix_ms(),
         })

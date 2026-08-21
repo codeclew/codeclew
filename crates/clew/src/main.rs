@@ -144,6 +144,7 @@ enum TaskRunCommand {
     Start(TaskRunStartArgs),
     Status(RunIdArgs),
     Resume(RunIdArgs),
+    Cancel(RunIdArgs),
 }
 
 #[derive(Subcommand)]
@@ -967,6 +968,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::TaskRun {
             command: TaskRunCommand::Resume(args),
         } => resume_task_run(&args.run),
+        Command::TaskRun {
+            command: TaskRunCommand::Cancel(args),
+        } => cancel_task_run(&args.run),
         Command::Session {
             command: SessionCommand::Publish(args),
         } => publish_task_run(&workspace, &args.session, &args.run),
@@ -1203,6 +1207,7 @@ fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
     let mut latest = RunRecord::load(run_id)?;
     if latest.status == RunStatus::Created {
         latest.process_id = Some(child.id());
+        latest.process_start_token = process_start_token(child.id())?;
         latest.save()?;
     }
     Ok(())
@@ -1215,6 +1220,116 @@ fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
         "run":record,
     }))
     .map_err(parse_error)
+}
+
+fn cancel_task_run(run_id: &str) -> Result<Value, ClewError> {
+    let mut record = RunRecord::load(run_id)?;
+    if matches!(
+        record.status,
+        RunStatus::ReadyToPublish
+            | RunStatus::ValidatedConditional
+            | RunStatus::Published
+            | RunStatus::WorktreeRecoveryRequired
+    ) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "validated or published run cannot be cancelled; retain or recover its candidate",
+        ));
+    }
+    if record.status == RunStatus::Cancelled {
+        return task_run_status(run_id);
+    }
+    let process = record.process_id.zip(record.process_start_token.clone());
+    record.status = RunStatus::Cancelled;
+    record.failure = None;
+    record.save()?;
+    if let Some((pid, expected_start)) = process {
+        terminate_verified_process_group(pid, &expected_start)?;
+    }
+    let mut latest = RunRecord::load(run_id)?;
+    latest.status = RunStatus::Cancelled;
+    latest.process_id = None;
+    latest.process_start_token = None;
+    latest.save()?;
+    task_run_status(run_id)
+}
+
+fn process_start_token(pid: u32) -> Result<Option<String>, ClewError> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let token = String::from_utf8(output.stdout)
+        .map_err(|_| ClewError::new(ErrorCode::Internal, "process identity is not UTF-8"))?
+        .trim()
+        .to_owned();
+    Ok((!token.is_empty()).then_some(token))
+}
+
+fn process_is_active(pid: u32, expected_start: &str) -> Result<bool, ClewError> {
+    if process_start_token(pid)?.as_deref() != Some(expected_start) {
+        return Ok(false);
+    }
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let status = String::from_utf8(output.stdout)
+        .map_err(|_| ClewError::new(ErrorCode::Internal, "process status is not UTF-8"))?;
+    Ok(!status.trim().is_empty() && !status.trim_start().starts_with('Z'))
+}
+
+#[cfg(unix)]
+fn terminate_verified_process_group(pid: u32, expected_start: &str) -> Result<(), ClewError> {
+    use std::time::Duration;
+
+    let pid = i32::try_from(pid)
+        .ok()
+        .filter(|pid| *pid > 1)
+        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "run process id is invalid"))?;
+    if !process_is_active(pid as u32, expected_start)? {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run process identity changed before cancellation",
+        ));
+    }
+    let signal = |value| {
+        let result = unsafe { libc::kill(-pid, value) };
+        if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(ClewError::new(
+                ErrorCode::Internal,
+                std::io::Error::last_os_error().to_string(),
+            ))
+        }
+    };
+    signal(libc::SIGTERM)?;
+    for _ in 0..40 {
+        if !process_is_active(pid as u32, expected_start)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    signal(libc::SIGKILL)
+}
+
+#[cfg(not(unix))]
+fn terminate_verified_process_group(_pid: u32, _expected_start: &str) -> Result<(), ClewError> {
+    Err(ClewError::new(
+        ErrorCode::UnsupportedProjectConfiguration,
+        "run cancellation requires Unix process-group authority",
+    ))
 }
 
 fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
@@ -1240,6 +1355,7 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
     record.status = RunStatus::Created;
     record.failure = None;
     record.process_id = None;
+    record.process_start_token = None;
     record.save()?;
     spawn_task_run(run_id)?;
     task_run_status(run_id)
@@ -1255,19 +1371,25 @@ fn execute_task_run(workspace: &Path, run_id: &str) -> Result<Value, ClewError> 
     }
     record.status = RunStatus::Preparing;
     record.process_id = Some(std::process::id());
+    record.process_start_token = process_start_token(std::process::id())?;
     record.failure = None;
     record.save()?;
     let result = prepare_task_run(workspace, &mut record);
     match result {
         Ok(value) => Ok(value),
         Err(error) => {
-            record.status = if error.code == ErrorCode::WorktreeRecoveryRequired {
-                RunStatus::WorktreeRecoveryRequired
+            if RunRecord::load(run_id)?.status == RunStatus::Cancelled {
+                record.status = RunStatus::Cancelled;
             } else {
-                RunStatus::Failed
-            };
+                record.status = if error.code == ErrorCode::WorktreeRecoveryRequired {
+                    RunStatus::WorktreeRecoveryRequired
+                } else {
+                    RunStatus::Failed
+                };
+            }
             record.failure = serde_json::to_value(&error).ok();
             record.process_id = None;
+            record.process_start_token = None;
             let _ = record.save();
             Err(error)
         }
@@ -1453,13 +1575,20 @@ fn prepare_task_run(workspace: &Path, record: &mut RunRecord) -> Result<Value, C
         &canonical::bytes(&transaction).map_err(parse_error)?,
     )?;
     record.candidate_commit = transaction.candidate_commit.clone();
+    let candidate_worktree = candidate_root.join("worktree");
+    let store = clew::cas::CasStore::open(&state)?;
+    let (_, candidate_snapshot) = clew::repository_snapshot::capture(&candidate_worktree, &store)?;
+    record.candidate_snapshot = Some(candidate_snapshot);
     record.publication_blocked = !obligations.is_empty();
-    record.status = if record.publication_blocked {
+    record.status = if RunRecord::load(&record.run_id)?.status == RunStatus::Cancelled {
+        RunStatus::Cancelled
+    } else if record.publication_blocked {
         RunStatus::ValidatedConditional
     } else {
         RunStatus::ReadyToPublish
     };
     record.process_id = None;
+    record.process_start_token = None;
     record.save()?;
     Ok(json!({
         "schema":"codeclew-task-run-preparation/1.0",
@@ -1496,9 +1625,24 @@ fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
     let state = clew::state::StateAuthority::process_default()?;
     let run_root = state.run_root(run_id)?;
     let mut transaction: Transaction = read_json(&run_root.join("transaction.json"))?;
+    let candidate_root = record.candidate_root()?;
+    let expected_snapshot = record.candidate_snapshot.as_ref().ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "validated run has no immutable candidate snapshot",
+        )
+    })?;
+    let store = clew::cas::CasStore::open(&state)?;
+    let (_, observed_snapshot) =
+        clew::repository_snapshot::capture(&candidate_root.join("worktree"), &store)?;
+    if &observed_snapshot != expected_snapshot {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            "candidate changed after validation",
+        ));
+    }
     record.status = RunStatus::Publishing;
     record.save()?;
-    let candidate_root = record.candidate_root()?;
     let repository_state = state.repository(&repo)?;
     let publication = with_worker(
         workspace,
@@ -1521,6 +1665,8 @@ fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
             )?;
             record.status = RunStatus::Published;
             record.final_commit = transaction.final_commit.clone();
+            record.process_id = None;
+            record.process_start_token = None;
             record.save()?;
             Ok(json!({
                 "schema":"codeclew-session-publish-result/1.0",
@@ -1535,6 +1681,8 @@ fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
                 RunStatus::ReadyToPublish
             };
             record.failure = serde_json::to_value(&error).ok();
+            record.process_id = None;
+            record.process_start_token = None;
             record.save()?;
             Err(error)
         }
@@ -1584,6 +1732,7 @@ fn recover_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
         record.status = RunStatus::ReadyToPublish;
         record.failure = None;
         record.process_id = None;
+        record.process_start_token = None;
         record.save()?;
         return publish_task_run(workspace, session_id, run_id);
     }
@@ -1619,6 +1768,7 @@ fn recover_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
             record.final_commit = transaction.final_commit.clone();
             record.failure = None;
             record.process_id = None;
+            record.process_start_token = None;
             record.save()?;
             Ok(json!({
                 "schema":"codeclew-session-recover-result/1.0",
@@ -1630,6 +1780,7 @@ fn recover_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
             record.status = RunStatus::WorktreeRecoveryRequired;
             record.failure = serde_json::to_value(&error).ok();
             record.process_id = None;
+            record.process_start_token = None;
             record.save()?;
             Err(error)
         }
@@ -3315,6 +3466,25 @@ mod task_plan_tests {
         assert!(
             Cli::try_parse_from(["clew", "session", "recover", "--run", "run:request"]).is_err()
         );
+        assert!(
+            Cli::try_parse_from(["clew", "task-run", "cancel", "--run", "run:request"]).is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_targets_only_verified_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let token = process_start_token(child.id()).unwrap().unwrap();
+        terminate_verified_process_group(child.id(), &token).unwrap();
+        assert!(child.wait().unwrap().code().is_none());
+        assert!(process_start_token(child.id()).unwrap().is_none());
     }
 
     #[test]
