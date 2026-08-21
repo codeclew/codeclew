@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import json
@@ -15,11 +16,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 
-SCHEMA = "codeclew-runtime-capsule/1.0"
-DOMAIN = b"codeclew-runtime/v1\0"
+SCHEMA = "codeclew-runtime-capsule/2.0"
+DOMAIN = b"codeclew-runtime/v2\0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 WORKERS = {
     "kotlin21": ("2.1.21", "workers/kotlin21/build/install/kotlin21", "workers/manifests/kotlin21.json"),
@@ -71,6 +73,53 @@ def run(arguments: list[str], cwd: Path, environment: dict[str, str] | None = No
     if completed.returncode != 0:
         raise BootstrapError(f"bootstrap command failed ({completed.returncode}): {arguments[0]}")
     return completed.stdout
+
+
+def progress(event: str, stage: str, **values: object) -> None:
+    print(canonical({
+        "schema": "codeclew-capsule-progress/2.0",
+        "event": event,
+        "stage": stage,
+        **values,
+    }).decode(), file=sys.stderr, flush=True)
+
+
+def run_build_stage(
+    arguments: list[str],
+    cwd: Path,
+    environment: dict[str, str],
+    stage: str,
+) -> None:
+    progress("STAGE_STARTED", stage)
+    started = time.monotonic()
+    process = subprocess.Popen(
+        arguments,
+        cwd=cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=None,
+        start_new_session=True,
+    )
+    next_heartbeat = started + 5
+    while True:
+        return_code = process.poll()
+        if return_code is not None:
+            break
+        now = time.monotonic()
+        if now >= next_heartbeat:
+            progress(
+                "HEARTBEAT",
+                stage,
+                durationMillis=int((now - started) * 1000),
+            )
+            next_heartbeat = now + 5
+        time.sleep(0.25)
+    duration = int((time.monotonic() - started) * 1000)
+    if return_code != 0:
+        progress("STAGE_FAILED", stage, durationMillis=duration, exitCode=return_code)
+        raise BootstrapError(f"capsule build stage failed ({return_code}): {stage}")
+    progress("STAGE_COMPLETED", stage, durationMillis=duration)
 
 
 def selected_source(relative: str) -> bool:
@@ -269,7 +318,7 @@ def read_locator(path: Path, expected: str) -> str | None:
         raise BootstrapError("runtime locator is unsafe")
     value = json.loads(path.read_bytes())
     if (
-        value.get("schema") != "codeclew-runtime-locator/1.0"
+        value.get("schema") != "codeclew-runtime-locator/2.0"
         or value.get("locatorKey") != expected
         or not isinstance(value.get("runtimeKey"), str)
         or not value["runtimeKey"].startswith("sha256:")
@@ -284,7 +333,7 @@ def write_locator(path: Path, locator: str, runtime: str) -> None:
     try:
         with os.fdopen(descriptor, "wb", closefd=False) as stream:
             stream.write(canonical({
-                "schema": "codeclew-runtime-locator/1.0",
+                "schema": "codeclew-runtime-locator/2.0",
                 "locatorKey": locator,
                 "runtimeKey": runtime,
             }) + b"\n")
@@ -306,12 +355,16 @@ def runtime_key(mode: str, inputs: list[dict[str, object]], tools: dict[str, obj
 
 def stage_inputs(source: Path, destination: Path, rows: list[dict[str, object]]) -> None:
     destination.mkdir(mode=0o700)
-    for row in rows:
+
+    def copy(row: dict[str, object]) -> None:
         relative = Path(str(row["path"]))
         target = destination / relative
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.copyfile(source / relative, target, follow_symlinks=False)
         os.chmod(target, 0o755 if row["mode"] else 0o600)
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, os.cpu_count() or 1))) as executor:
+        list(executor.map(copy, rows))
     verify_source_manifest(destination, rows)
 
 
@@ -362,6 +415,43 @@ def bootstrap_self_test() -> None:
     assert first == locator_key("RELEASE", rows, {"tool": "a"})
     assert first != locator_key("DEVELOPMENT", rows, {"tool": "a"})
     assert first != locator_key("RELEASE", rows, {"tool": "b"})
+    assert runtime_build_plan(8, 32 * 1024**3)["parallel"] is True
+    assert runtime_build_plan(8, 4 * 1024**3)["parallel"] is False
+    assert warm_audit_payload(False, False)["status"] == "PASSED"
+    assert warm_audit_payload(True, False)["status"] == "COLD_MISS"
+    assert warm_audit_payload(False, True)["status"] == "COLD_MISS"
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        staged = root / "staged"
+        destination = root / "published"
+        (staged / "bin").mkdir(parents=True)
+        executable = staged / "bin" / "clew"
+        executable.write_bytes(b"binary")
+        os.chmod(executable, 0o700)
+        os.replace(staged, destination)
+        seal_capsule(destination)
+        verify_sealed_capsule(destination)
+        (root / "quarantine").mkdir(mode=0o700)
+        published_executable = destination / "bin" / "clew"
+        os.chmod(published_executable, 0o700)
+        with published_executable.open("ab") as stream:
+            stream.write(b"corrupt")
+        quarantine(root, destination, "SelfTestCorruption")
+        assert not destination.exists()
+        quarantined = [path for path in (root / "quarantine").iterdir() if path.is_dir()]
+        assert len(quarantined) == 1
+        metadata = quarantined[0].with_suffix(".json")
+        assert metadata.is_file() and stat.S_IMODE(metadata.stat().st_mode) == 0o600
+
+
+def warm_audit_payload(toolchain_invoked: bool, capsule_build_invoked: bool) -> dict[str, object]:
+    return {
+        "schema": "codeclew-bootstrap-warm-audit/2.0",
+        "status": "PASSED" if not toolchain_invoked and not capsule_build_invoked else "COLD_MISS",
+        "coldToolchainInvoked": toolchain_invoked,
+        "capsuleBuildInvoked": capsule_build_invoked,
+        "forbiddenWarmProcesses": ["cargo", "rustc", "gradle", "maven"],
+    }
 
 
 def verify_release_worker(stage: Path, manifest_relative: str, rows: list[dict[str, object]]) -> None:
@@ -374,6 +464,118 @@ def verify_release_worker(stage: Path, manifest_relative: str, rows: list[dict[s
         )
 
 
+def runtime_build_plan(cpu_count: int, total_memory_bytes: int) -> dict[str, object]:
+    cpu_count = max(1, cpu_count)
+    reserved = max(1024**3, total_memory_bytes * 15 // 100)
+    memory_budget = max(0, total_memory_bytes - reserved) * 70 // 100
+    cargo_memory = 2 * 1024**3
+    gradle_memory = 3 * 1024**3
+    parallel = cpu_count >= 2 and memory_budget >= cargo_memory + gradle_memory
+    if parallel:
+        cargo_workers = max(1, cpu_count // 2)
+        gradle_workers = max(1, cpu_count - cargo_workers)
+    else:
+        cargo_workers = cpu_count
+        gradle_workers = cpu_count
+    return {
+        "parallel": parallel,
+        "cargoWorkers": cargo_workers,
+        "gradleWorkers": gradle_workers,
+        "memoryBudgetBytes": memory_budget,
+    }
+
+
+def host_memory_bytes() -> int:
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        if pages > 0 and page_size > 0:
+            return int(pages * page_size)
+    except (AttributeError, OSError, ValueError):
+        pass
+    raise BootstrapError("host memory authority is unavailable for capsule admission")
+
+
+def build_toolchains(stage: Path, environment: dict[str, str]) -> dict[str, object]:
+    plan = runtime_build_plan(os.cpu_count() or 1, host_memory_bytes())
+    gradle = [
+        str(stage / "gradlew"),
+        ":workers:kotlin21:installDist",
+        ":workers:kotlin23:installDist",
+        ":workers:kotlin:installDist",
+        "--no-daemon",
+        "--parallel",
+        f"--max-workers={plan['gradleWorkers']}",
+        "--quiet",
+    ]
+    cargo = [
+        "cargo", "build", "--locked", "--release", "-p", "clew",
+        "--bin", "clew", "--bin", "semanticd", "--jobs", str(plan["cargoWorkers"]),
+    ]
+    if plan["parallel"]:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(run_build_stage, gradle, stage, environment, "GRADLE_WORKERS"),
+                executor.submit(run_build_stage, cargo, stage, environment, "CARGO_BINARIES"),
+            ]
+            for future in futures:
+                future.result()
+    else:
+        run_build_stage(gradle, stage, environment, "GRADLE_WORKERS")
+        run_build_stage(cargo, stage, environment, "CARGO_BINARIES")
+    return plan
+
+
+def package_worker(
+    stage: Path,
+    capsule: Path,
+    mode: str,
+    item: tuple[str, tuple[str, str, str]],
+) -> tuple[str, dict[str, object]]:
+    name, (compiler, distribution, manifest) = item
+    source_distribution = stage / distribution
+    destination = capsule / distribution
+    shutil.copytree(source_distribution, destination, symlinks=False)
+    rows = file_rows(destination)
+    if mode == "RELEASE":
+        verify_release_worker(stage, manifest, rows)
+    return name, {
+        "compilerVersion": compiler,
+        "distribution": distribution,
+        "treeHash": tree_hash(rows),
+        "files": rows,
+    }
+
+
+def seal_capsule(capsule: Path) -> None:
+    for path in sorted(capsule.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BootstrapError("capsule output contains a symlink")
+        if stat.S_ISREG(metadata.st_mode):
+            os.chmod(path, 0o500 if metadata.st_mode & 0o111 else 0o400)
+        elif stat.S_ISDIR(metadata.st_mode):
+            os.chmod(path, 0o500)
+        else:
+            raise BootstrapError("capsule output contains an unsupported filesystem entry")
+    os.chmod(capsule, 0o500)
+
+
+def verify_sealed_capsule(capsule: Path) -> None:
+    for path in [capsule, *capsule.rglob("*")]:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BootstrapError("sealed capsule contains a symlink")
+        if stat.S_ISDIR(metadata.st_mode):
+            if metadata.st_mode & 0o277:
+                raise BootstrapError("capsule directory is not sealed read-only")
+        elif stat.S_ISREG(metadata.st_mode):
+            if metadata.st_mode & 0o277:
+                raise BootstrapError("capsule file is not sealed read-only")
+        else:
+            raise BootstrapError("sealed capsule contains an unsupported entry")
+
+
 def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[dict[str, object]], tools: dict[str, object]) -> Path:
     temporary = Path(tempfile.mkdtemp(prefix="capsule-build-", dir=root / "tmp"))
     stage = temporary / "source"
@@ -381,32 +583,21 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
     try:
         stage_inputs(source, stage, inputs)
         environment = build_environment(stage)
-        run([
-            str(stage / "gradlew"), ":workers:kotlin21:installDist", ":workers:kotlin23:installDist",
-            ":workers:kotlin:installDist", "--no-daemon", "--quiet",
-        ], stage, environment)
-        verify_source_manifest(stage, inputs)
-        run(["cargo", "build", "--locked", "--release", "-p", "clew", "--bin", "clew", "--bin", "semanticd"], stage, environment)
+        build_toolchains(stage, environment)
         verify_source_manifest(stage, inputs)
         (capsule / "bin").mkdir(mode=0o700, parents=True)
         cargo_target = Path(environment["CARGO_TARGET_DIR"]) / "release"
         for name in ["clew", "semanticd"]:
             shutil.copy2(cargo_target / name, capsule / "bin" / name)
             os.chmod(capsule / "bin" / name, 0o500)
-        workers: dict[str, object] = {}
-        for name, (compiler, distribution, manifest) in WORKERS.items():
-            source_distribution = stage / distribution
-            destination = capsule / distribution
-            shutil.copytree(source_distribution, destination, symlinks=False)
-            rows = file_rows(destination)
-            if mode == "RELEASE":
-                verify_release_worker(stage, manifest, rows)
-            workers[name] = {
-                "compilerVersion": compiler,
-                "distribution": distribution,
-                "treeHash": tree_hash(rows),
-                "files": rows,
-            }
+        progress("STAGE_STARTED", "PACKAGE_AND_HASH_WORKERS")
+        with ThreadPoolExecutor(max_workers=len(WORKERS)) as executor:
+            packaged = executor.map(
+                lambda item: package_worker(stage, capsule, mode, item),
+                WORKERS.items(),
+            )
+            workers = dict(packaged)
+        progress("STAGE_COMPLETED", "PACKAGE_AND_HASH_WORKERS")
         artifacts = {}
         for name in ["clew", "semanticd"]:
             path = capsule / "bin" / name
@@ -423,38 +614,86 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
         (capsule / "runtime.json").write_bytes(canonical(manifest) + b"\n")
         (capsule / "READY").write_text(key + "\n")
         verify_source_manifest(source, inputs)
+        verify_capsule(capsule, key, require_sealed=False)
         destination = root / "runtimes" / key.removeprefix("sha256:")
         if destination.exists():
             return destination
         os.replace(capsule, destination)
+        try:
+            seal_capsule(destination)
+            verify_sealed_capsule(destination)
+        except Exception as error:
+            quarantine(root, destination, type(error).__name__)
+            raise BootstrapError("published capsule could not be sealed") from error
         return destination
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 
 
-def verify_capsule(path: Path, key: str) -> dict[str, object]:
+def verify_capsule(path: Path, key: str, *, require_sealed: bool = True) -> dict[str, object]:
     manifest_path = path / "runtime.json"
     if not manifest_path.is_file() or manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
         raise BootstrapError("runtime manifest is unavailable")
     manifest = json.loads(manifest_path.read_bytes())
     expected = manifest.get("manifestDigest")
     manifest["manifestDigest"] = ""
-    if expected != digest_bytes(canonical(manifest)) or manifest.get("runtimeKey") != key:
+    if (
+        manifest.get("schema") != SCHEMA
+        or expected != digest_bytes(canonical(manifest))
+        or manifest.get("runtimeKey") != key
+    ):
         raise BootstrapError("runtime manifest authority mismatch")
     manifest["manifestDigest"] = expected
-    binary = manifest["artifacts"]["clew"]
-    path_to_binary = path / binary["path"]
-    if path_to_binary.stat().st_size != binary["size"] or digest_file(path_to_binary) != binary["sha256"]:
-        raise BootstrapError("runtime executable authority mismatch")
+    for artifact in manifest.get("artifacts", {}).values():
+        target = path / artifact["path"]
+        if (
+            not target.is_file()
+            or target.is_symlink()
+            or target.stat().st_size != artifact["size"]
+            or digest_file(target) != artifact["sha256"]
+        ):
+            raise BootstrapError("runtime executable authority mismatch")
+    for worker in manifest.get("workers", {}).values():
+        distribution = path / worker["distribution"]
+        rows = file_rows(distribution)
+        if rows != worker["files"] or tree_hash(rows) != worker["treeHash"]:
+            raise BootstrapError("runtime worker authority mismatch")
+    if require_sealed:
+        verify_sealed_capsule(path)
     return manifest
 
 
 def quarantine(root: Path, capsule: Path, reason: str) -> None:
-    if not capsule.exists():
+    try:
+        metadata = capsule.lstat()
+    except FileNotFoundError:
         return
-    destination = root / "quarantine" / f"{capsule.name}-{uuid.uuid4().hex}"
-    os.replace(capsule, destination)
-    (destination / "QUARANTINE.json").write_bytes(canonical({"schema": "codeclew-runtime-quarantine/1.0", "reason": reason}) + b"\n")
+    reason_token = reason if reason.isascii() and reason.replace("_", "").isalnum() else "VerificationFailure"
+    reason_token = reason_token[:64]
+    directory = root / "quarantine"
+    destination = directory / f"{capsule.name}-{uuid.uuid4().hex}"
+    try:
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            # macOS refuses to rename a sealed directory whose own mode is 0500.
+            # Only the capsule root is relaxed; quarantined contents stay sealed.
+            os.chmod(capsule, 0o700)
+        os.replace(capsule, destination)
+        metadata_path = directory / f"{destination.name}.json"
+        temporary = directory / f".quarantine-{uuid.uuid4().hex}"
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(canonical({
+                    "schema": "codeclew-runtime-quarantine/2.0",
+                    "reason": reason_token,
+                }) + b"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, metadata_path)
+    except OSError as error:
+        raise BootstrapError("unsafe runtime capsule could not be quarantined") from error
 
 
 def main() -> int:
@@ -481,6 +720,7 @@ def main() -> int:
         tools = toolchain_authority(source)
         key = runtime_key(mode, inputs, tools)
     cold_toolchain_invoked = tools is not None
+    capsule_build_invoked = False
     capsule = root / "runtimes" / key.removeprefix("sha256:")
     lock_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lock"
     with lock_path.open("a+b") as lock:
@@ -490,25 +730,22 @@ def main() -> int:
             try:
                 verify_capsule(capsule, key)
             except Exception as error:
-                quarantine(root, capsule, str(error))
+                quarantine(root, capsule, type(error).__name__)
         if not capsule.exists():
             if tools is None:
                 tools = toolchain_authority(source)
+                cold_toolchain_invoked = True
                 rebuilt_key = runtime_key(mode, inputs, tools)
                 if rebuilt_key != key:
                     raise BootstrapError("runtime locator disagrees with cold toolchain authority")
+            capsule_build_invoked = True
             capsule = build_capsule(source, root, key, mode, inputs, tools)
         verify_capsule(capsule, key)
         write_locator(path_to_locator, locator, key)
     if warm_audit:
-        print(canonical({
-            "schema": "codeclew-bootstrap-warm-audit/1.0",
-            "status": "PASSED" if not cold_toolchain_invoked else "COLD_MISS",
-            "coldToolchainInvoked": cold_toolchain_invoked,
-            "forbiddenWarmProcesses": ["cargo", "rustc", "gradle", "maven"],
-        }).decode())
+        print(canonical(warm_audit_payload(cold_toolchain_invoked, capsule_build_invoked)).decode())
         return 0
-    lease_path = capsule / ".lease"
+    lease_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lease"
     lease = lease_path.open("a+b")
     os.chmod(lease_path, 0o600)
     fcntl.flock(lease, fcntl.LOCK_SH)
@@ -526,4 +763,11 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except BootstrapError as error:
         print(canonical({"schema": "codeclew-bootstrap-error/1.0", "error": str(error)}).decode(), file=sys.stderr)
+        raise SystemExit(7)
+    except Exception as error:
+        print(canonical({
+            "schema": "codeclew-bootstrap-error/2.0",
+            "error": "unexpected bootstrap failure",
+            "errorType": type(error).__name__,
+        }).decode(), file=sys.stderr)
         raise SystemExit(7)

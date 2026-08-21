@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/1.0";
+pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/2.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
