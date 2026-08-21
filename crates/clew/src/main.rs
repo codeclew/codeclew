@@ -1310,6 +1310,14 @@ fn prepare_task_run(workspace: &Path, record: &mut RunRecord) -> Result<Value, C
             "run context and plan binding differ",
         ));
     }
+    if context_object
+        .evidence
+        .get("schema")
+        .and_then(Value::as_str)
+        == Some("codeclew-bounded-context-evidence/2.0")
+    {
+        return prepare_task_run_v2(record, &session, &context_object, &plan_object);
+    }
     let evidence = context_object.evidence;
     let context = &evidence["context"];
     let context_status = context
@@ -1493,6 +1501,40 @@ fn prepare_task_run(workspace: &Path, record: &mut RunRecord) -> Result<Value, C
     }))
 }
 
+fn prepare_task_run_v2(
+    record: &mut RunRecord,
+    session: &SessionAuthority,
+    context: &clew::session::ContextObject,
+    plan: &clew::session::PlanObject,
+) -> Result<Value, ClewError> {
+    let candidate_root = record.candidate_root()?;
+    let prepared = clew::task_run_v2::prepare(session, context, plan, &candidate_root)?;
+    let state = clew::state::StateAuthority::process_default()?;
+    let run_root = state.run_root(&record.run_id)?;
+    state.write_private_atomic(
+        &run_root.join("prepared-v2.json"),
+        &canonical::bytes(&prepared).map_err(parse_error)?,
+    )?;
+    record.candidate_commit = Some(prepared.candidate_commit.clone());
+    record.candidate_snapshot = Some(prepared.candidate_snapshot.clone());
+    record.publication_blocked = prepared.publication_blocked;
+    record.status = if RunRecord::load(&record.run_id)?.status == RunStatus::Cancelled {
+        RunStatus::Cancelled
+    } else if prepared.publication_blocked {
+        RunStatus::ValidatedConditional
+    } else {
+        RunStatus::ReadyToPublish
+    };
+    record.process_id = None;
+    record.process_start_token = None;
+    record.save()?;
+    Ok(json!({
+        "schema":"codeclew-task-run-preparation/2.0",
+        "run":record,
+        "candidate":prepared,
+    }))
+}
+
 fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
     let mut record = RunRecord::load(run_id)?;
@@ -1520,6 +1562,10 @@ fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
     let repo = session.repository_path()?;
     let state = clew::state::StateAuthority::process_default()?;
     let run_root = state.run_root(run_id)?;
+    let prepared_v2 = run_root.join("prepared-v2.json");
+    if prepared_v2.exists() {
+        return publish_task_run_v2(&session, &mut record, &prepared_v2);
+    }
     let mut transaction: Transaction = read_json(&run_root.join("transaction.json"))?;
     let candidate_root = record.candidate_root()?;
     let expected_snapshot = record.candidate_snapshot.as_ref().ok_or_else(|| {
@@ -1585,6 +1631,44 @@ fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
     }
 }
 
+fn publish_task_run_v2(
+    session: &SessionAuthority,
+    record: &mut RunRecord,
+    prepared_path: &Path,
+) -> Result<Value, ClewError> {
+    let prepared: clew::task_run_v2::PreparedCandidateV2 = read_json(prepared_path)?;
+    record.status = RunStatus::Publishing;
+    record.save()?;
+    let candidate_root = record.candidate_root()?;
+    match clew::task_run_v2::publish(session, &prepared, &candidate_root) {
+        Ok(publication) => {
+            record.status = RunStatus::Published;
+            record.final_commit = Some(prepared.candidate_commit.clone());
+            record.failure = None;
+            record.process_id = None;
+            record.process_start_token = None;
+            record.save()?;
+            Ok(json!({
+                "schema":"codeclew-session-publish-result/2.0",
+                "run":record,
+                "publication":publication,
+            }))
+        }
+        Err(error) => {
+            record.status = if error.code == ErrorCode::WorktreeRecoveryRequired {
+                RunStatus::WorktreeRecoveryRequired
+            } else {
+                RunStatus::ReadyToPublish
+            };
+            record.failure = serde_json::to_value(&error).ok();
+            record.process_id = None;
+            record.process_start_token = None;
+            record.save()?;
+            Err(error)
+        }
+    }
+}
+
 fn recover_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
     let mut record = RunRecord::load(run_id)?;
@@ -1610,6 +1694,32 @@ fn recover_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
     let repo = session.repository_path()?;
     let state = clew::state::StateAuthority::process_default()?;
     let run_root = state.run_root(run_id)?;
+    let prepared_v2 = run_root.join("prepared-v2.json");
+    if prepared_v2.exists() {
+        let prepared: clew::task_run_v2::PreparedCandidateV2 = read_json(&prepared_v2)?;
+        let candidate_root = record.candidate_root()?;
+        return match clew::task_run_v2::recover(&session, &prepared, &candidate_root) {
+            Ok(recovery) => {
+                record.status = RunStatus::Published;
+                record.final_commit = Some(prepared.candidate_commit.clone());
+                record.failure = None;
+                record.process_id = None;
+                record.process_start_token = None;
+                record.save()?;
+                Ok(json!({
+                    "schema":"codeclew-session-recover-result/2.0",
+                    "run":record,
+                    "recovery":recovery,
+                }))
+            }
+            Err(error) => {
+                record.status = RunStatus::WorktreeRecoveryRequired;
+                record.failure = serde_json::to_value(&error).ok();
+                record.save()?;
+                Err(error)
+            }
+        };
+    }
     let mut transaction: Transaction = read_json(&run_root.join("transaction.json"))?;
     let candidate = transaction.candidate_commit.clone().ok_or_else(|| {
         ClewError::new(

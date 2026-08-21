@@ -26,6 +26,7 @@ pub mod session;
 pub mod state;
 pub mod task_context;
 pub mod task_plan;
+pub mod task_run_v2;
 pub mod thread_projection;
 pub mod transaction;
 pub mod worker;

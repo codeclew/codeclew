@@ -5,7 +5,6 @@ use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::{StateAuthority, create_private_directory};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -139,6 +138,12 @@ impl SessionAuthority {
         let target_ref = qualify_ref(target_ref)?;
         let base_revision = git_output(&repo, &["rev-parse", "HEAD"])?;
         let target_oid = git_output(&repo, &["rev-parse", &target_ref])?;
+        if target_oid != base_revision {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session target ref must identify the checked-out base revision",
+            ));
+        }
         let authority = Self {
             schema: SESSION_SCHEMA.into(),
             session_id: format!("session:{}", Uuid::new_v4()),
@@ -442,33 +447,7 @@ pub fn bounded_context_stdout(context: &ContextObject) -> Result<Value, ClewErro
 }
 
 fn validate_plan_shape(plan: &Value) -> Result<(), ClewError> {
-    let operations = plan
-        .get("operations")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid("plan must contain an operations array"))?;
-    if operations.len() > MAX_PLAN_OPERATIONS {
-        return Err(invalid("plan exceeds 256 operations"));
-    }
-    let mut files = BTreeSet::new();
-    for operation in operations {
-        if let Some(file) = operation.pointer("/target/fileId").and_then(Value::as_str) {
-            files.insert(file);
-        }
-    }
-    if files.len() > MAX_PLAN_FILES {
-        return Err(invalid("plan exceeds 256 files"));
-    }
-    let write_set = plan
-        .get("expectedWriteSet")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if write_set.len() > MAX_WRITE_SET_FACTS {
-        return Err(invalid("plan write set exceeds 4096 facts"));
-    }
-    if canonical::bytes(&write_set).map_err(internal)?.len() > MAX_WRITE_SET_BYTES {
-        return Err(invalid("plan write set exceeds 256 KiB"));
-    }
+    crate::task_run_v2::validate_plan_value(plan)?;
     Ok(())
 }
 
