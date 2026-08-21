@@ -1,5 +1,6 @@
 use crate::error::{ClewError, ErrorCode};
 use crate::state::{StateAuthority, create_private_directory};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -85,6 +86,17 @@ impl CasStore {
         }
         drop(lock);
         Ok(object)
+    }
+
+    /// Publish an indexed batch concurrently while preserving the caller's
+    /// deterministic input order in the returned references. Every member
+    /// retains the same per-object durability and verification contract as
+    /// `put`; a failed batch may leave only unreachable immutable objects.
+    pub fn put_batch(&self, objects: Vec<(String, Vec<u8>)>) -> Result<Vec<CasObject>, ClewError> {
+        objects
+            .into_par_iter()
+            .map(|(schema, bytes)| self.put(&schema, &bytes))
+            .collect()
     }
 
     pub fn read(&self, object: &CasObject, max_bytes: usize) -> Result<CasLease, ClewError> {
@@ -294,6 +306,25 @@ mod tests {
         let second = store.put("test/facts/1", b"same bytes").unwrap();
         assert_eq!(first, second);
         assert_eq!(store.read(&first, 1024).unwrap().bytes(), b"same bytes");
+    }
+
+    #[test]
+    fn concurrent_batch_preserves_input_order_and_durability() {
+        let (_root, store) = store();
+        let objects = (0..128)
+            .map(|index| {
+                (
+                    "test/batch/1".to_owned(),
+                    format!("payload-{index}").into_bytes(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let references = store.put_batch(objects.clone()).unwrap();
+        assert_eq!(references.len(), objects.len());
+        for ((schema, bytes), reference) in objects.iter().zip(&references) {
+            assert_eq!(&reference.object_schema, schema);
+            assert_eq!(store.read(reference, 1024).unwrap().bytes(), bytes);
+        }
     }
 
     #[test]

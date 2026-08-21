@@ -538,7 +538,7 @@ pub(crate) fn translate_facts(
     index: &Value,
 ) -> Result<Vec<FactRecord>, ClewError> {
     let capability = CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?;
-    let mut facts = Vec::new();
+    let mut pending = Vec::new();
     let metadata = json!({
         "schema":"codeclew-kotlin-index-metadata/2.0",
         "compilation":index.get("compilation"),
@@ -548,7 +548,7 @@ pub(crate) fn translate_facts(
         "compilerOptionsHash":index.get("compilerOptionsHash"),
         "semanticInputManifestHash":index.get("semanticInputManifestHash"),
     });
-    push_fact(store, &capability, "metadata", &metadata, &mut facts)?;
+    push_fact(&capability, "metadata", &metadata, &mut pending)?;
     for (category, pointer) in [
         ("file", "/files"),
         ("descriptor", "/declarationDescriptors/descriptors"),
@@ -566,9 +566,24 @@ pub(crate) fn translate_facts(
                 )
             })?;
         for row in rows {
-            push_fact(store, &capability, category, row, &mut facts)?;
+            push_fact(&capability, category, row, &mut pending)?;
         }
     }
+    let payloads = store.put_batch(
+        pending
+            .iter()
+            .map(|fact| (FACT_PAYLOAD_SCHEMA.to_owned(), fact.bytes.clone()))
+            .collect(),
+    )?;
+    let mut facts = pending
+        .into_iter()
+        .zip(payloads)
+        .map(|(fact, payload)| FactRecord {
+            fact_key: fact.fact_key,
+            domain_uri: fact.domain_uri,
+            payload,
+        })
+        .collect::<Vec<_>>();
     facts.sort_by(|left, right| left.fact_key.cmp(&right.fact_key));
     if !facts
         .windows(2)
@@ -582,19 +597,24 @@ pub(crate) fn translate_facts(
     Ok(facts)
 }
 
+struct PendingFact {
+    fact_key: String,
+    domain_uri: CapabilityUri,
+    bytes: Vec<u8>,
+}
+
 fn push_fact(
-    store: &CasStore,
     capability: &CapabilityUri,
     category: &str,
     value: &Value,
-    output: &mut Vec<FactRecord>,
+    output: &mut Vec<PendingFact>,
 ) -> Result<(), ClewError> {
     let bytes = canonical::bytes(value).map_err(internal)?;
     let hash = canonical::hash_bytes(&bytes);
-    output.push(FactRecord {
+    output.push(PendingFact {
         fact_key: format!("kotlin:{category}:{}", hash.trim_start_matches("sha256:")),
         domain_uri: capability.clone(),
-        payload: store.put(FACT_PAYLOAD_SCHEMA, &bytes)?,
+        bytes,
     });
     Ok(())
 }
