@@ -7,6 +7,7 @@ Executable vertical prototype of a language-neutral Rust semantic core and a ver
 - JDK 21
 - Git
 - `jq` for the reproducible transaction demo
+- Python 3 for the durable agent-facing `task-apply` runner
 - Maven on `PATH` for Maven repositories without `./mvnw`
 - Rust is installed automatically according to `rust-toolchain.toml` when rustup is available
 
@@ -15,8 +16,6 @@ Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.
 ## Quick start
 
 ```bash
-python3 scripts/sthread_preflight.py --receipt /private/tmp/codeclew-sthread-preflight.json
-./scripts/verify.sh
 cargo run --bin clew -- doctor
 cargo run --bin clew -- project inspect --repo fixtures/kotlin-basic
 cargo run --bin clew -- index --repo fixtures/kotlin-basic
@@ -32,11 +31,44 @@ cargo run --bin clew -- prove map-edge-with-context \
 printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
 ```
 
-Run the SThread preflight before `agent-context` or `task-apply`. It hydrates
-only dependency-cache directories into ignored repository-local state, rebuilds
-the release CLI offline, verifies the exact project-model path, and runs small
-Kotlin 2.1/2.3 compiler-semantic smoke fixtures. A non-`READY` receipt is a hard
-stop: fix or extend the preflight before retrying the semantic task.
+`project inspect`, `agent-context`, and `task-apply` use the target project's
+normal build environment by default: its wrapper, user-level Maven/Gradle
+caches, settings, mirrors, credentials, and network policy. Codeclew does not
+create or require a second dependency repository below the target checkout.
+The exact Kotlin worker distribution is built lazily on first use and verified
+against its committed manifest before it starts.
+
+`scripts/sthread_preflight.py` and `./scripts/verify.sh` are release/CI
+diagnostics, not prerequisites for an agent task. Use the preflight only when
+you explicitly need the sealed external offline build-state contour and its
+reproducibility receipt. That external contour is currently inspect/index-only;
+`task-apply` fails closed instead of validating a candidate against a different
+ambient dependency authority.
+
+Long `task-apply` operations should be launched through the repository-owned
+runner so an agent tool session can end without terminating or duplicating the
+transaction:
+
+```bash
+python3 scripts/task_apply_runner.py start \
+  --clew "$PWD/target/debug/clew" \
+  --repo /path/to/clean-kotlin-repository \
+  --context /path/to/task-context-evidence.json \
+  --edit-plan /path/to/edit-plan.json \
+  --target-ref main \
+  --actor semantic-task-agent
+```
+
+`start` returns after a short handshake with a deterministic `runId`, a
+`statusCommand` argv, and the bound transaction ID. Repeating the byte-exact
+request attaches to the same run and never invokes `task-apply` again. Run the
+returned status command until `terminal` is true; `STARTING`, `RUNNING`,
+`DRAINING`, and `RUNNING_UNSUPERVISED` are nonterminal. Durable logs, the
+transaction artifact, and `completion.json` live below
+`.semantic-thread/task-runs/<request-digest>/`.
+`UNKNOWN_REQUIRES_INSPECTION` is terminal and is never retried automatically;
+after both lifetime locks have been released, use only the returned
+`transactionInspectCommand` to reconcile the existing transaction.
 
 For slicing, preview and commit the target must be a Git repository with a committed `HEAD`. The reproducible demonstration creates an isolated copy:
 

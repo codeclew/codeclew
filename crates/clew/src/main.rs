@@ -323,6 +323,10 @@ struct TaskApplyArgs {
     target_ref: String,
     #[arg(long, default_value = "semantic-task-agent")]
     actor: String,
+    /// Internal durable-run binding. Agent-facing callers should use the
+    /// repository-owned task-apply runner instead of setting this directly.
+    #[arg(long, hide = true)]
+    transaction_id: Option<String>,
     #[arg(long)]
     output: Option<PathBuf>,
     /// Temporarily opt in to the pre-proof heuristic task surface. This path
@@ -976,7 +980,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 )?;
                 let mut transaction = Transaction {
                     schema: "semantic-transaction/0.1".into(),
-                    tx_id: format!("tx:{}", uuid::Uuid::new_v4()),
+                    tx_id: task_apply_transaction_id(args.transaction_id.as_deref())?,
                     actor_id: args.actor,
                     intent: context
                         .pointer("/task/intent")
@@ -1003,6 +1007,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     final_commit: None,
                     target_ref: None,
                 };
+                transaction::ledger(&repo)?.append(
+                    &transaction,
+                    "task-apply request created before semantic validation",
+                )?;
                 let result =
                     transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?;
                 if let Some(output) = args.output.as_deref() {
@@ -1460,6 +1468,32 @@ fn absolute(path: &Path) -> Result<PathBuf, ClewError> {
     path.canonicalize()
         .map_err(|e| ClewError::new(ErrorCode::InvalidInput, format!("{}: {e}", path.display())))
 }
+
+fn task_apply_transaction_id(provided: Option<&str>) -> Result<String, ClewError> {
+    let Some(provided) = provided else {
+        return Ok(format!("tx:{}", uuid::Uuid::new_v4()));
+    };
+    let raw = provided.strip_prefix("tx:").ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::InvalidInput,
+            "task-apply transaction id must be tx:<canonical UUID>",
+        )
+    })?;
+    let parsed = uuid::Uuid::parse_str(raw).map_err(|_| {
+        ClewError::new(
+            ErrorCode::InvalidInput,
+            "task-apply transaction id must be tx:<canonical UUID>",
+        )
+    })?;
+    if parsed.hyphenated().to_string() != raw {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "task-apply transaction id must be tx:<canonical UUID>",
+        ));
+    }
+    Ok(provided.to_owned())
+}
+
 fn git_head(repo: &Path) -> Result<String, ClewError> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -2562,6 +2596,51 @@ fn exit_code(code: &ErrorCode) -> u8 {
 #[cfg(test)]
 mod task_plan_tests {
     use super::*;
+
+    #[test]
+    fn task_apply_runner_accepts_only_canonical_transaction_ids() {
+        let canonical = "tx:2f1f8596-04ed-5c0d-a1fc-804f56a0a728";
+        assert_eq!(
+            task_apply_transaction_id(Some(canonical)).unwrap(),
+            canonical
+        );
+        let cli = Cli::try_parse_from([
+            "clew",
+            "task-apply",
+            "--repo",
+            "/repo",
+            "--context",
+            "/context.json",
+            "--edit-plan",
+            "/plan.json",
+            "--target-ref",
+            "main",
+            "--transaction-id",
+            canonical,
+        ])
+        .unwrap();
+        let Command::TaskApply(arguments) = cli.command else {
+            panic!("task-apply command was not parsed")
+        };
+        assert_eq!(arguments.transaction_id.as_deref(), Some(canonical));
+        for invalid in [
+            "2f1f8596-04ed-5c0d-a1fc-804f56a0a728",
+            "tx:2F1F8596-04ED-5C0D-A1FC-804F56A0A728",
+            "tx:{2f1f8596-04ed-5c0d-a1fc-804f56a0a728}",
+            "tx:not-a-uuid",
+        ] {
+            assert_eq!(
+                task_apply_transaction_id(Some(invalid)).unwrap_err().code,
+                ErrorCode::InvalidInput
+            );
+        }
+        assert!(
+            task_apply_transaction_id(None)
+                .unwrap()
+                .strip_prefix("tx:")
+                .is_some_and(|raw| uuid::Uuid::parse_str(raw).is_ok())
+        );
+    }
 
     #[test]
     fn compiler_index_root_is_an_explicit_global_cli_authority() {
