@@ -458,29 +458,43 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         for name in TRUSTED_WORKER_ENVIRONMENT_REMOVALS:
             route_environment.pop(name, None)
         route_environment["GRADLE_USER_HOME"] = str(repository / ".gradle")
-        configuration_arguments = gradle_configuration_arguments(args.compilation)
-        route_probe, route_millis = run_capture(
-            [
-                str(gradle_wrapper),
-                "--offline",
-                "--no-daemon",
-                "--quiet",
-                *configuration_arguments,
-            ],
-            cwd=repository,
-            timeout_seconds=deadline - time.monotonic(),
-            stage="STHREAD_SNAPSHOT_GRADLE_ROUTE",
-            environment=route_environment,
+        requested_compilations = list(
+            dict.fromkeys([args.compilation, *args.additional_compilation])
         )
-        if route_probe.returncode != 0:
-            raise PreflightFailure(
-                "STHREAD_SNAPSHOT_GRADLE_ROUTE",
-                "prepared snapshot cannot resolve the requested Gradle compilation",
-                detail={
-                    **failure_summary(route_probe),
-                    "compilation": args.compilation,
+        route_probes: list[dict[str, Any]] = []
+        route_millis = 0
+        for compilation in requested_compilations:
+            configuration_arguments = gradle_configuration_arguments(compilation)
+            route_probe, probe_millis = run_capture(
+                [
+                    str(gradle_wrapper),
+                    "--offline",
+                    "--no-daemon",
+                    "--quiet",
+                    *configuration_arguments,
+                ],
+                cwd=repository,
+                timeout_seconds=deadline - time.monotonic(),
+                stage="STHREAD_SNAPSHOT_GRADLE_ROUTE",
+                environment=route_environment,
+            )
+            route_millis += probe_millis
+            if route_probe.returncode != 0:
+                raise PreflightFailure(
+                    "STHREAD_SNAPSHOT_GRADLE_ROUTE",
+                    "prepared snapshot cannot resolve a required Gradle compilation",
+                    detail={
+                        **failure_summary(route_probe),
+                        "compilation": compilation,
+                        "configurationArguments": configuration_arguments,
+                    },
+                )
+            route_probes.append(
+                {
+                    "compilation": compilation,
                     "configurationArguments": configuration_arguments,
-                },
+                    "durationMillis": probe_millis,
+                }
             )
         trusted_launcher = run_directory / "trusted-clew"
         atomic_trusted_clew_launcher(trusted_launcher, clew)
@@ -521,7 +535,8 @@ def prepare_sthread_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "repository": str(repository),
             "targetRef": branch,
             "compilation": args.compilation,
-            "gradleRouteArguments": configuration_arguments,
+            "requiredValidationCompilations": requested_compilations,
+            "gradleRouteProbes": route_probes,
             "gradleUserHome": str(repository / ".gradle"),
             "trustedClewLauncher": str(trusted_launcher),
             "agentContextEnvironmentRemovals": list(TRUSTED_WORKER_ENVIRONMENT_REMOVALS),
@@ -987,6 +1002,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=ROOT)
     parser.add_argument("--compilation", default=":workers:kotlin21/main")
+    parser.add_argument(
+        "--additional-compilation",
+        action="append",
+        default=[],
+        help="additional affected Gradle compilation that must resolve and be recorded as a post-apply gate",
+    )
     parser.add_argument("--gradle-cache-seed", type=Path, default=Path.home() / ".gradle")
     parser.add_argument("--maven-repository-seed", type=Path, default=Path.home() / ".m2" / "repository")
     parser.add_argument("--cargo-target-seed", type=Path, default=ROOT / "target")
@@ -1487,6 +1508,7 @@ def self_test() -> None:
                 budget_seconds=5.0,
                 clew=fake_clew,
                 compilation=":/main",
+                additional_compilation=[":/main"],
                 snapshot_revision=historical_revision,
             )
         )
@@ -1496,7 +1518,8 @@ def self_test() -> None:
         assert snapshot["workspaceRevision"] == historical_revision
         assert snapshot["sourceWorkspaceRevision"] == source_revision
         assert snapshot["compilation"] == ":/main"
-        assert snapshot["gradleRouteArguments"] == ["properties"]
+        assert snapshot["requiredValidationCompilations"] == [":/main"]
+        assert snapshot["gradleRouteProbes"][0]["configurationArguments"] == ["properties"]
         assert git_stdout(prepared_repository, "rev-parse", "HEAD", stage="SELF_TEST") == snapshot["workspaceRevision"]
         assert git_stdout(prepared_repository, "symbolic-ref", "--short", "HEAD", stage="SELF_TEST") == snapshot["targetRef"]
         assert git_stdout(prepared_repository, "status", "--porcelain=v1", stage="SELF_TEST") == ""
