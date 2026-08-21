@@ -11,6 +11,7 @@ pub mod generation_v2;
 pub mod graph;
 pub mod identity;
 pub mod index;
+pub mod kotlin_adapter_v2;
 pub mod model;
 pub mod projection;
 pub mod repository_snapshot;
