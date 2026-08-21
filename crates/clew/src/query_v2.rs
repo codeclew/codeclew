@@ -3,6 +3,7 @@ use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::generation_v2::{GENERATION_SCHEMA, GenerationManifest};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -136,10 +137,26 @@ pub fn build_query_index(
             facts: facts.into_iter().collect(),
         });
     }
-    let mut references = Vec::new();
-    for (bucket, bucket_postings) in buckets {
-        publish_bucket(store, &bucket, bucket_postings, &mut references)?;
-    }
+    let built = buckets
+        .into_par_iter()
+        .map(|(bucket, bucket_postings)| build_bucket(&bucket, bucket_postings))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut shards = built.into_iter().flatten().collect::<Vec<_>>();
+    shards.sort_by(|left, right| {
+        (
+            &left.bucket,
+            &left.first_term,
+            &left.last_term,
+            left.sequence,
+        )
+            .cmp(&(
+                &right.bucket,
+                &right.first_term,
+                &right.last_term,
+                right.sequence,
+            ))
+    });
+    let mut references = publish_query_shards(store, shards)?;
     references.sort_by(|left, right| {
         (
             &left.bucket,
@@ -352,13 +369,23 @@ pub fn verify_index_manifest(
     Ok(())
 }
 
+#[cfg(test)]
 fn publish_bucket(
     store: &CasStore,
     bucket: &str,
     postings: Vec<TermPosting>,
     references: &mut Vec<QueryShardReference>,
 ) -> Result<(), ClewError> {
+    references.extend(publish_query_shards(
+        store,
+        build_bucket(bucket, postings)?,
+    )?);
+    Ok(())
+}
+
+fn build_bucket(bucket: &str, postings: Vec<TermPosting>) -> Result<Vec<QueryShard>, ClewError> {
     let mut current = Vec::new();
+    let mut shards = Vec::new();
     let mut sequence = 0u32;
     for posting in postings {
         if canonical::bytes(&shard(bucket, sequence, std::slice::from_ref(&posting)))
@@ -367,11 +394,11 @@ fn publish_bucket(
             > MAX_QUERY_SHARD_BYTES
         {
             if !current.is_empty() {
-                publish_query_shard(store, shard(bucket, sequence, &current), references)?;
+                shards.push(shard(bucket, sequence, &current));
                 sequence = next_sequence(sequence)?;
                 current.clear();
             }
-            sequence = publish_split_posting(store, bucket, sequence, posting, references)?;
+            sequence = build_split_posting(bucket, sequence, posting, &mut shards)?;
             continue;
         }
         current.push(posting);
@@ -385,23 +412,22 @@ fn publish_bucket(
                     "one query posting exceeds the shard limit",
                 ));
             }
-            publish_query_shard(store, shard(bucket, sequence, &current), references)?;
+            shards.push(shard(bucket, sequence, &current));
             sequence = next_sequence(sequence)?;
             current = vec![last];
         }
     }
     if !current.is_empty() {
-        publish_query_shard(store, shard(bucket, sequence, &current), references)?;
+        shards.push(shard(bucket, sequence, &current));
     }
-    Ok(())
+    Ok(shards)
 }
 
-fn publish_split_posting(
-    store: &CasStore,
+fn build_split_posting(
     bucket: &str,
     mut sequence: u32,
     posting: TermPosting,
-    references: &mut Vec<QueryShardReference>,
+    shards: &mut Vec<QueryShard>,
 ) -> Result<u32, ClewError> {
     let mut start = 0usize;
     while start < posting.facts.len() {
@@ -435,7 +461,7 @@ fn publish_split_posting(
             term: posting.term.clone(),
             facts: posting.facts[start..start + fitting].to_vec(),
         };
-        publish_query_shard(store, shard(bucket, sequence, &[chunk]), references)?;
+        shards.push(shard(bucket, sequence, &[chunk]));
         sequence = next_sequence(sequence)?;
         start += fitting;
     }
@@ -459,27 +485,33 @@ fn shard(bucket: &str, sequence: u32, postings: &[TermPosting]) -> QueryShard {
     }
 }
 
-fn publish_query_shard(
+fn publish_query_shards(
     store: &CasStore,
-    shard: QueryShard,
-    references: &mut Vec<QueryShardReference>,
-) -> Result<(), ClewError> {
-    let bytes = canonical::bytes(&shard).map_err(internal)?;
-    if bytes.len() > MAX_QUERY_SHARD_BYTES {
-        return Err(ClewError::new(
-            ErrorCode::ResourceLimit,
-            "query shard exceeds the limit",
-        ));
+    shards: Vec<QueryShard>,
+) -> Result<Vec<QueryShardReference>, ClewError> {
+    let mut encoded = Vec::with_capacity(shards.len());
+    for shard in &shards {
+        let bytes = canonical::bytes(shard).map_err(internal)?;
+        if bytes.len() > MAX_QUERY_SHARD_BYTES {
+            return Err(ClewError::new(
+                ErrorCode::ResourceLimit,
+                "query shard exceeds the limit",
+            ));
+        }
+        encoded.push((QUERY_SHARD_SCHEMA.to_owned(), bytes));
     }
-    let object = store.put(QUERY_SHARD_SCHEMA, &bytes)?;
-    references.push(QueryShardReference {
-        bucket: shard.bucket,
-        sequence: shard.sequence,
-        first_term: shard.first_term,
-        last_term: shard.last_term,
-        object,
-    });
-    Ok(())
+    let objects = store.put_batch(encoded)?;
+    Ok(shards
+        .into_iter()
+        .zip(objects)
+        .map(|(shard, object)| QueryShardReference {
+            bucket: shard.bucket,
+            sequence: shard.sequence,
+            first_term: shard.first_term,
+            last_term: shard.last_term,
+            object,
+        })
+        .collect())
 }
 
 fn verify_shard(
