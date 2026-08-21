@@ -111,6 +111,7 @@ enum SessionCommand {
     Open(SessionOpenArgs),
     Inspect(SessionIdArgs),
     Publish(SessionPublishArgs),
+    Recover(SessionPublishArgs),
 }
 
 #[derive(Subcommand)]
@@ -950,6 +951,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Publish(args),
         } => publish_task_run(&workspace, &args.session, &args.run),
+        Command::Session {
+            command: SessionCommand::Recover(args),
+        } => recover_task_run(&workspace, &args.session, &args.run),
         Command::InternalTaskRunExecute(args) => execute_task_run(&workspace, &args.run),
         Command::Edit {
             command: EditCommand::Preview(args),
@@ -1512,6 +1516,116 @@ fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<
             Err(error)
         }
     }
+}
+
+fn recover_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<Value, ClewError> {
+    let (session, _) = SessionAuthority::load(session_id)?;
+    let mut record = RunRecord::load(run_id)?;
+    if record.session_id != session_id {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run belongs to another session",
+        ));
+    }
+    if record.status == RunStatus::Published {
+        return task_run_status(run_id);
+    }
+    if !matches!(
+        record.status,
+        RunStatus::Publishing | RunStatus::WorktreeRecoveryRequired
+    ) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "only a PUBLISHING or WORKTREE_RECOVERY_REQUIRED run can be recovered",
+        ));
+    }
+
+    let repo = session.repository_path()?;
+    let state = clew::state::StateAuthority::process_default()?;
+    let run_root = state.run_root(run_id)?;
+    let mut transaction: Transaction = read_json(&run_root.join("transaction.json"))?;
+    let candidate = transaction.candidate_commit.clone().ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "recovery requires a prepared candidate commit",
+        )
+    })?;
+    let current = git_ref_oid(&repo, &session.target_ref)?;
+
+    if current == session.base_revision {
+        transaction.status = "READY_TO_PUBLISH".into();
+        state.write_private_atomic(
+            &run_root.join("transaction.json"),
+            &canonical::bytes(&transaction).map_err(parse_error)?,
+        )?;
+        record.status = RunStatus::ReadyToPublish;
+        record.failure = None;
+        record.process_id = None;
+        record.save()?;
+        return publish_task_run(workspace, session_id, run_id);
+    }
+    if current != candidate {
+        return Err(ClewError::new(
+            ErrorCode::RefCompareAndSwapFailed,
+            "target ref is neither the session base nor the prepared candidate",
+        ));
+    }
+
+    let candidate_root = record.candidate_root()?;
+    let repository_state = state.repository(&repo)?;
+    let recovery = with_worker(
+        workspace,
+        Some(&repository_state.compiler_index),
+        |worker| {
+            transaction::recover_published_candidate(
+                &repo,
+                &mut transaction,
+                &session.target_ref,
+                &candidate_root.join("worktree"),
+                worker,
+            )
+        },
+    );
+    match recovery {
+        Ok(value) => {
+            state.write_private_atomic(
+                &run_root.join("transaction.json"),
+                &canonical::bytes(&transaction).map_err(parse_error)?,
+            )?;
+            record.status = RunStatus::Published;
+            record.final_commit = transaction.final_commit.clone();
+            record.failure = None;
+            record.process_id = None;
+            record.save()?;
+            Ok(json!({
+                "schema":"codeclew-session-recover-result/1.0",
+                "run":record,
+                "recovery":value,
+            }))
+        }
+        Err(error) => {
+            record.status = RunStatus::WorktreeRecoveryRequired;
+            record.failure = serde_json::to_value(&error).ok();
+            record.process_id = None;
+            record.save()?;
+            Err(error)
+        }
+    }
+}
+
+fn git_ref_oid(repo: &Path, reference: &str) -> Result<String, ClewError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", reference])
+        .current_dir(repo)
+        .output()
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    if !output.status.success() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "unable to resolve the session target ref",
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn slice_command(worker: &mut WorkerClient, args: SliceArgs) -> Result<Value, ClewError> {
@@ -3126,6 +3240,25 @@ mod task_plan_tests {
         ] {
             assert!(Cli::try_parse_from(arguments).is_err());
         }
+    }
+
+    #[test]
+    fn recover_is_an_explicit_session_operation_bound_to_one_run() {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "recover",
+                "--session",
+                "session:authority",
+                "--run",
+                "run:request",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["clew", "session", "recover", "--run", "run:request"]).is_err()
+        );
     }
 
     #[test]

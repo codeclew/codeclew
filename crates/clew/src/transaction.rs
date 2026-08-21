@@ -1637,6 +1637,103 @@ pub fn publish_prepared(
     }))
 }
 
+pub fn recover_published_candidate(
+    repo: &Path,
+    transaction: &mut Transaction,
+    bound_target_ref: &str,
+    candidate_worktree: &Path,
+    worker: &mut WorkerClient,
+) -> Result<Value, ClewError> {
+    if !matches!(
+        transaction.status.as_str(),
+        "PUBLISHING" | "WORKTREE_RECOVERY_REQUIRED"
+    ) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "publication recovery requires a PUBLISHING or WORKTREE_RECOVERY_REQUIRED transaction",
+        ));
+    }
+    if transaction.target_ref.as_deref() != Some(bound_target_ref) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "transaction target ref differs from the session authority",
+        ));
+    }
+    let candidate = transaction.candidate_commit.clone().ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "publication recovery requires a prepared candidate commit",
+        )
+    })?;
+    let candidate_head = git_output(candidate_worktree, &["rev-parse", "HEAD"])?;
+    if candidate_head != candidate {
+        return Err(ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "candidate worktree HEAD differs from the prepared commit",
+        ));
+    }
+    let current = git_output(repo, &["rev-parse", bound_target_ref])?;
+    if current != candidate {
+        return Err(ClewError::new(
+            ErrorCode::RefCompareAndSwapFailed,
+            "target ref has not reached the prepared candidate",
+        ));
+    }
+
+    let checked_out = git_output(repo, &["symbolic-ref", "-q", "HEAD"])
+        .is_ok_and(|head| head == bound_target_ref);
+    if checked_out {
+        let head = git_output(repo, &["rev-parse", "HEAD"])?;
+        let status = Command::new("git")
+            .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+            .current_dir(repo)
+            .output()
+            .map_err(io_error)?;
+        if head != candidate || !status.status.success() || !status.stdout.is_empty() {
+            return Err(ClewError::new(
+                ErrorCode::WorktreeRecoveryRequired,
+                "checked-out target worktree is not a clean materialization of the candidate",
+            ));
+        }
+    }
+
+    let facts = worker.index_files_verified(&json!({
+        "repo":candidate_worktree,
+        "compilation":transaction.thread.snapshot.compilation,
+        "syntaxOnly":false,
+    }))?;
+    let staged = RepositoryIndex::stage_update(
+        repo,
+        Some(&transaction.thread.snapshot.compilation),
+        &facts,
+        worker,
+        candidate_worktree,
+        &candidate,
+    )?;
+    let (final_index_snapshot, invalidations) = staged.publish().map_err(|error| {
+        ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            format!("repository index recovery failed: {}", error.message),
+        )
+    })?;
+    transaction.final_commit = Some(candidate.clone());
+    transaction.status = "PUBLISHED".into();
+    ledger(repo)?.append(
+        transaction,
+        "candidate was already published; repository index recovered without rollback",
+    )?;
+    Ok(json!({
+        "schema":"codeclew-session-recover/1.0",
+        "transactionId":transaction.tx_id,
+        "status":"PUBLISHED",
+        "finalCommit":candidate,
+        "finalIndexSnapshot":final_index_snapshot,
+        "appliedInvalidations":invalidations,
+        "targetRef":bound_target_ref,
+        "recovered":true,
+    }))
+}
+
 fn validate_textual_edit_authority(
     transaction: &Transaction,
     current_revision: &str,
