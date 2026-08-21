@@ -54,8 +54,10 @@ class BtaIncrementalBackend21 internal constructor(
 
     override fun analyze(request: IncrementalK2Request): IncrementalK2Result {
         val started = System.nanoTime()
+        var stage = "CONFIGURATION"
         return try {
             val configDigest = btaConfigurationDigest21(request)
+            stage = "STORE_OPEN"
             val store = K2FactGenerationStore21.open(
                 request.indexRoot,
                 request.repo,
@@ -64,6 +66,7 @@ class BtaIncrementalBackend21 internal constructor(
                 configDigest,
                 storeHooks,
             )
+            stage = "ANALYZE"
             when (val locked = store.withLock {
                 analyzeLocked21(request, store, configDigest, started)
             }) {
@@ -76,9 +79,9 @@ class BtaIncrementalBackend21 internal constructor(
             }
         } catch (error: Exception) {
             if (error is InterruptedException) Thread.currentThread().interrupt()
-            failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_EXCEPTION")
+            failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_" + stage + "_EXCEPTION")
         } catch (_: LinkageError) {
-            failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_LINKAGE")
+            failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_" + stage + "_LINKAGE")
         }
     }
 
