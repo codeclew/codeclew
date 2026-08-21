@@ -138,6 +138,7 @@ pub struct WorkerClient {
     trusted_distribution: Option<TrustedWorkerDistribution>,
     build_state_root: Option<PathBuf>,
     compiler_index_root: Option<PathBuf>,
+    build_namespace_digest: String,
     _transport_root: tempfile::TempDir,
     transport_root: PathBuf,
     issued_index_facts: BTreeMap<Uuid, String>,
@@ -955,10 +956,13 @@ fn configure_worker_state_environment(
     command: &mut Command,
     build_state_root: Option<&Path>,
     compiler_index_root: Option<&Path>,
+    build_namespace_digest: &str,
 ) {
     command
         .env_remove("CODECLEW_K1_BUILD_STATE_ROOT")
-        .env_remove("CODECLEW_K2_INDEX_ROOT");
+        .env_remove("CODECLEW_K2_INDEX_ROOT")
+        .env_remove("CODECLEW_K1_BUILD_STATE_NAMESPACE")
+        .env("CODECLEW_K1_BUILD_STATE_NAMESPACE", build_namespace_digest);
     if let Some(root) = build_state_root {
         command.env("CODECLEW_K1_BUILD_STATE_ROOT", root);
     }
@@ -969,6 +973,21 @@ fn configure_worker_state_environment(
 
 fn build_state_root_from_environment_value(value: Option<OsString>) -> Option<PathBuf> {
     value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+fn validate_build_namespace_digest(value: &str) -> Result<String, ClewError> {
+    if value.len() != 71
+        || !value.starts_with("sha256:")
+        || !value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "worker build namespace must be a canonical digest",
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 /// Select the optional sealed build-state authority from the caller environment.
@@ -1000,6 +1019,7 @@ impl WorkerClient {
             WorkerVariant::Kotlin24,
             inherited_build_state.as_deref(),
             None,
+            None,
         )
     }
 
@@ -1011,6 +1031,7 @@ impl WorkerClient {
             workspace,
             WorkerVariant::Kotlin24,
             Some(build_state_root),
+            None,
             None,
         )
     }
@@ -1028,6 +1049,22 @@ impl WorkerClient {
             WorkerVariant::Kotlin24,
             build_state_root,
             compiler_index_root,
+            None,
+        )
+    }
+
+    pub fn start_with_managed_states(
+        workspace: &Path,
+        build_state_root: Option<&Path>,
+        compiler_index_root: Option<&Path>,
+        build_namespace_digest: &str,
+    ) -> Result<Self, ClewError> {
+        Self::start_variant(
+            workspace,
+            WorkerVariant::Kotlin24,
+            build_state_root,
+            compiler_index_root,
+            Some(build_namespace_digest),
         )
     }
 
@@ -1035,7 +1072,7 @@ impl WorkerClient {
     /// build-state environment. This is intentionally distinct from `start`,
     /// whose inherited environment behavior remains for legacy callers.
     pub fn start_without_build_state(workspace: &Path) -> Result<Self, ClewError> {
-        Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None)
+        Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None, None)
     }
 
     fn start_variant(
@@ -1043,7 +1080,14 @@ impl WorkerClient {
         variant: WorkerVariant,
         build_state_root: Option<&Path>,
         compiler_index_root: Option<&Path>,
+        build_namespace_digest: Option<&str>,
     ) -> Result<Self, ClewError> {
+        let build_namespace_digest = build_namespace_digest
+            .map(validate_build_namespace_digest)
+            .transpose()?
+            .unwrap_or_else(|| {
+                crate::canonical::hash_bytes(b"codeclew-non-product-worker-namespace/2.0")
+            });
         let trusted_distribution = prepare_trusted_worker_distribution(workspace, variant)?;
         let launcher = trusted_distribution
             .as_ref()
@@ -1111,6 +1155,7 @@ impl WorkerClient {
             &mut command,
             canonical_build_state.as_deref(),
             canonical_compiler_index.as_deref(),
+            &build_namespace_digest,
         );
         let mut child = command.spawn().map_err(|e| {
             ClewError::new(
@@ -1152,6 +1197,7 @@ impl WorkerClient {
             trusted_distribution,
             build_state_root: canonical_build_state,
             compiler_index_root: canonical_compiler_index,
+            build_namespace_digest,
             _transport_root: transport_root,
             transport_root: canonical_transport_root,
             issued_index_facts: BTreeMap::new(),
@@ -1168,6 +1214,7 @@ impl WorkerClient {
             variant,
             self.build_state_root.as_deref(),
             self.compiler_index_root.as_deref(),
+            Some(&self.build_namespace_digest),
         )?;
         let previous = std::mem::replace(self, replacement);
         previous.shutdown()
@@ -3721,12 +3768,14 @@ mod tests {
 
     #[test]
     fn worker_state_environment_scrubs_ambient_authority_when_disabled() {
+        let namespace = format!("sha256:{}", "a".repeat(64));
         let mut command = Command::new("not-executed");
         command
             .env("CODECLEW_K1_BUILD_STATE_ROOT", "ambient-k1")
-            .env("CODECLEW_K2_INDEX_ROOT", "ambient-k2");
+            .env("CODECLEW_K2_INDEX_ROOT", "ambient-k2")
+            .env("CODECLEW_K1_BUILD_STATE_NAMESPACE", "ambient-namespace");
 
-        configure_worker_state_environment(&mut command, None, None);
+        configure_worker_state_environment(&mut command, None, None, &namespace);
 
         assert_eq!(
             configured_command_environment(&command, "CODECLEW_K1_BUILD_STATE_ROOT"),
@@ -3736,10 +3785,15 @@ mod tests {
             configured_command_environment(&command, "CODECLEW_K2_INDEX_ROOT"),
             Some(None)
         );
+        assert_eq!(
+            configured_command_environment(&command, "CODECLEW_K1_BUILD_STATE_NAMESPACE"),
+            Some(Some(PathBuf::from(namespace)))
+        );
     }
 
     #[test]
     fn worker_state_environment_passes_only_explicit_canonical_roots() {
+        let namespace = format!("sha256:{}", "b".repeat(64));
         let build_state = tempfile::tempdir().unwrap();
         let compiler_index = tempfile::tempdir().unwrap();
         let canonical_build_state = build_state.path().canonicalize().unwrap();
@@ -3753,6 +3807,7 @@ mod tests {
             &mut command,
             Some(&canonical_build_state),
             Some(&canonical_compiler_index),
+            &namespace,
         );
 
         assert_eq!(
@@ -3762,6 +3817,10 @@ mod tests {
         assert_eq!(
             configured_command_environment(&command, "CODECLEW_K2_INDEX_ROOT"),
             Some(Some(canonical_compiler_index))
+        );
+        assert_eq!(
+            configured_command_environment(&command, "CODECLEW_K1_BUILD_STATE_NAMESPACE"),
+            Some(Some(PathBuf::from(namespace)))
         );
     }
 
