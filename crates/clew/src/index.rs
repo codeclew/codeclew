@@ -7,6 +7,7 @@ use crate::freshness::{
 use crate::identity::{
     IdentityLifecycle, IdentityReport, SnapshotProvenance, decide_identity_delta,
 };
+use crate::state::StateAuthority;
 use crate::worker::{VerifiedIndexFacts, WorkerClient};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -98,12 +99,13 @@ impl RepositoryIndex {
     }
 
     pub fn open_compilation(repo: &Path, compilation: Option<&str>) -> Result<Self, ClewError> {
-        exclude_runtime_state(repo)?;
-        let state = repo.join(".semantic-thread");
-        std::fs::create_dir_all(&state).map_err(io_error)?;
-        let blobs = state.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).map_err(io_error)?;
-        Self::open_database(repo, state.join(database_name(compilation)), blobs)
+        let authority = StateAuthority::process_default()?;
+        let state = authority.repository(repo)?;
+        Self::open_database(
+            repo,
+            state.repository_index.join(database_name(compilation)),
+            state.blobs,
+        )
     }
 
     fn open_database(repo: &Path, database: PathBuf, blobs: PathBuf) -> Result<Self, ClewError> {
@@ -151,12 +153,13 @@ impl RepositoryIndex {
     ) -> Result<StagedIndex, ClewError> {
         let compilation_identity = compilation.unwrap_or(":/main");
         let facts = worker.authorize_index_facts(verified, source_root, compilation_identity)?;
-        let state = repo.join(".semantic-thread");
-        std::fs::create_dir_all(&state).map_err(io_error)?;
-        let blobs = state.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).map_err(io_error)?;
-        let published_path = state.join(database_name(compilation));
-        let staging_path = state.join(format!(".index-stage-{}.sqlite3", uuid::Uuid::new_v4()));
+        let authority = StateAuthority::process_default()?;
+        let state = authority.repository(repo)?;
+        let blobs = state.blobs;
+        let published_path = state.repository_index.join(database_name(compilation));
+        let staging_path = state
+            .repository_index
+            .join(format!(".index-stage-{}.sqlite3", uuid::Uuid::new_v4()));
 
         if published_path.exists() {
             // Materialize WAL contents into the database before taking the
@@ -230,12 +233,11 @@ impl RepositoryIndex {
         source_root: &Path,
         revision: &str,
     ) -> Result<StagedIndex, ClewError> {
-        let state = repo.join(".semantic-thread");
-        std::fs::create_dir_all(&state).map_err(io_error)?;
-        let blobs = state.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).map_err(io_error)?;
-        let published_path = state.join(database_name(compilation));
-        let staging_path = state.join(format!(
+        let authority = StateAuthority::process_default()?;
+        let state = authority.repository(repo)?;
+        let blobs = state.blobs;
+        let published_path = state.repository_index.join(database_name(compilation));
+        let staging_path = state.repository_index.join(format!(
             ".index-stage-test-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
@@ -2860,36 +2862,6 @@ pub(crate) fn descriptor_validation_diagnostic(facts: &Value) -> Value {
         }
     }
     report("DESCRIPTOR_KIND_IDENTITY", descriptors.len(), &Value::Null)
-}
-
-fn exclude_runtime_state(repo: &Path) -> Result<(), ClewError> {
-    let exclude = repo.join(".git/info/exclude");
-    let Some(parent) = exclude.parent() else {
-        return Ok(());
-    };
-    if !parent.is_dir() {
-        // A linked worktree stores .git as a file; its common repository owns
-        // the exclude policy, and leaving the cache visible is preferable to
-        // guessing that location here.
-        return Ok(());
-    }
-    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if existing
-        .lines()
-        .any(|line| line.trim() == ".semantic-thread/")
-    {
-        return Ok(());
-    }
-    let separator = if !existing.is_empty() && !existing.ends_with('\n') {
-        "\n"
-    } else {
-        ""
-    };
-    std::fs::write(
-        &exclude,
-        format!("{existing}{separator}.semantic-thread/\n"),
-    )
-    .map_err(io_error)
 }
 
 fn database_name(compilation: Option<&str>) -> String {

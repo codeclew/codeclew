@@ -1,0 +1,16 @@
+{
+  "schema": "semantic-task-edit-plan/0.1",
+  "operations": [
+    {
+      "kind": "CREATE_FILE",
+      "target": {
+        "fileId": "src/main/kotlin/com/acme/CodeclewDemoMarker.kt"
+      },
+      "replacement": {
+        "kotlin": "package com.acme\n\ninternal object CodeclewDemoMarker"
+      },
+      "preconditions": {},
+      "postconditions": {}
+    }
+  ]
+}

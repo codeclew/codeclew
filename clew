@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT PYTHONWARNINGS PYTHONSAFEPATH
+
+SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+exec python3 -I -S "$SOURCE_ROOT/bootstrap/clew_bootstrap.py" --source-root "$SOURCE_ROOT" "$@"

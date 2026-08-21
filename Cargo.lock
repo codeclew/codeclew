@@ -164,6 +164,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "hex",
+ "libc",
  "pretty_assertions",
  "prost",
  "prost-build",

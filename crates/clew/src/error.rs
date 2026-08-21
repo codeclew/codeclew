@@ -34,6 +34,7 @@ pub enum ErrorCode {
     StaleRequiresReslice,
     RefCompareAndSwapFailed,
     TransactionRecoveryRequired,
+    WorktreeRecoveryRequired,
     InvalidInput,
     Internal,
 }
@@ -66,6 +67,7 @@ impl ClewError {
             ErrorCode::WorkerCrashed
                 | ErrorCode::RefCompareAndSwapFailed
                 | ErrorCode::TransactionRecoveryRequired
+                | ErrorCode::WorktreeRecoveryRequired
         );
         Self {
             code,

@@ -1,130 +1,117 @@
-# Codeclew — Kotlin semantic change engine
+# Codeclew — managed semantic changes for Kotlin
 
-Executable vertical prototype of a language-neutral Rust semantic core and a version-pinned Kotlin/JVM worker. The worker owns Kotlin PSI and compiler interaction; the Rust process owns canonical IR, graph analysis, storage, slicing, transactions, Git and the CLI.
+Codeclew builds bounded compiler-backed context, validates an edit plan in an
+isolated candidate worktree, and publishes the resulting commit explicitly.
+The only supported executable entrypoint is `./clew`.
 
-## Prerequisites
+## Requirements
 
-- JDK 21
+- macOS or Linux
+- Python 3.11+
 - Git
-- `jq` for the reproducible transaction demo
-- Python 3 for the durable agent-facing `task-apply` runner
-- Maven on `PATH` for Maven repositories without `./mvnw`
-- Rust is installed automatically according to `rust-toolchain.toml` when rustup is available
+- JDK 21
+- the Rust toolchain pinned by `rust-toolchain.toml`
+- Maven on `PATH` only for Maven projects without `./mvnw`
 
-Kotlin and `protoc` do not need system installations. Version-pinned Kotlin 2.1.21, 2.3.0, and 2.4.10 workers are resolved by Gradle, selected automatically from the target project, and `protoc` is vendored by the Rust build.
+Kotlin workers for 2.1.21, 2.3.0, and 2.4.10 are packaged into an immutable
+runtime capsule. A cold start may build the capsule. A warm invocation verifies
+and reuses it without running Cargo, Rustc, Gradle, or Maven.
 
-## Quick start
+## Workflow
 
 ```bash
-cargo run --bin clew -- doctor
-cargo run --bin clew -- project inspect --repo fixtures/kotlin-basic
-cargo run --bin clew -- index --repo fixtures/kotlin-basic
-cargo run --bin clew -- index --repo fixtures/kotlin-basic --syntax-only
-cargo run --bin clew -- project inspect --repo fixtures/kotlin-maven
-cargo run --bin clew -- agent-context --repo fixtures/kotlin-2-1 \
-  --term applyAdaptive --term Adaptive --max-bytes 12288 \
-  --evidence .semantic-thread/agent-context.json
-cargo run --bin clew -- prove map-edge-with-context \
+./clew doctor
+
+./clew session open \
   --repo /path/to/clean-kotlin-repository \
-  --workflow-symbol com.example.valuesAwaitingContext \
-  --test-symbol 'applies the mapping context to one value'
-printf '%s\n' '{"id":1,"method":"health"}' '{"id":2,"method":"shutdown"}' | cargo run --bin semanticd
+  --target-ref main
+
+./clew context create \
+  --session session:... \
+  --intent 'describe the requested change' \
+  --term ImportantSymbol \
+  --term ImportantBehavior
+
+./clew context expand \
+  --session session:... \
+  --from context:sha256:... \
+  --term MissingCaller
+
+./clew plan validate \
+  --session session:... \
+  --context context:sha256:... \
+  --plan edit-plan.json
+
+./clew task-run start \
+  --session session:... \
+  --context context:sha256:... \
+  --plan plan:sha256:...
+
+./clew task-run status --run run:...
+./clew session publish --session session:... --run run:...
 ```
 
-`project inspect`, `agent-context`, and `task-apply` use the target project's
-normal build environment by default: its wrapper, user-level Maven/Gradle
-caches, settings, mirrors, credentials, and network policy. Codeclew does not
-create or require a second dependency repository below the target checkout.
-The exact Kotlin worker distribution is built lazily on first use and verified
-against its committed manifest before it starts.
+`task-run start` writes a durable `CREATED` record before detaching. Repeating
+the same request attaches to the same content-addressed run. Preparation may
+compile, test, and build a staged repository index, but it never changes the
+session's target ref. Only `session publish` may fast-forward the ref.
 
-`scripts/sthread_preflight.py` and `./scripts/verify.sh` are release/CI
-diagnostics, not prerequisites for an agent task. Use the preflight only when
-you explicitly need the sealed external offline build-state contour and its
-reproducibility receipt. That external contour is currently inspect/index-only;
-`task-apply` fails closed instead of validating a candidate against a different
-ambient dependency authority.
+Context stdout is bounded to 64 KiB. It contains the edit-ready projection and
+content IDs; full evidence remains in private managed state. Plans are bounded
+to 1 MiB, 256 operations, 256 files, and a 256 KiB expected write set.
 
-Long `task-apply` operations should be launched through the repository-owned
-runner so an agent tool session can end without terminating or duplicating the
-transaction:
+## State and build authority
 
-```bash
-python3 scripts/task_apply_runner.py start \
-  --clew "$PWD/target/debug/clew" \
-  --repo /path/to/clean-kotlin-repository \
-  --context /path/to/task-context-evidence.json \
-  --edit-plan /path/to/edit-plan.json \
-  --target-ref main \
-  --actor semantic-task-agent
+All mutable Codeclew state lives under private `CODECLEW_HOME` (by default the
+user cache directory):
+
+```text
+runtimes/
+repos/
+sessions/
+runs/
+locks/
+tmp/
+quarantine/
 ```
 
-`start` returns after a short handshake with a deterministic `runId`, a
-`statusCommand` argv, and the bound transaction ID. Repeating the byte-exact
-request attaches to the same run and never invokes `task-apply` again. Run the
-returned status command until `terminal` is true; `STARTING`, `RUNNING`,
-`DRAINING`, and `RUNNING_UNSUPERVISED` are nonterminal. Durable logs, the
-transaction artifact, and `completion.json` live below
-`.semantic-thread/task-runs/<request-digest>/`.
-`UNKNOWN_REQUIRES_INSPECTION` is terminal and is never retried automatically;
-after both lifetime locks have been released, use only the returned
-`transactionInspectCommand` to reconcile the existing transaction.
+Codeclew does not discover, read, import, update, or delete `.semantic-thread`.
+Old receipts, indexes, and runs are inert. Absolute repository paths exist only
+in private `0600` locator files and are never emitted in stdout or evidence.
 
-When compiler evidence identifies a useful edit contour but cannot prove a
-call target or argument-to-parameter edge, `prove typed-goal` and
-`prove map-edge-with-context` return `CONDITIONAL`, never `BOUND`. The result
-contains stable, publication-blocking `unresolvedObligations`. It may be
-attached to a generic context with `agent-context --conditional-decision
-<decision.json>`. `task-apply` will then build, test, and index the detached
-candidate, but returns terminal `VALIDATED_CONDITIONAL` without updating the
-target ref. Re-run proof after a compiler/runtime verifier discharges the
-obligations to obtain an ordinary publishable proof; strict publication is the
-default and there is no implicit confidence threshold.
+`PROJECT_NATIVE` uses the project's wrapper and ordinary user build
+environment. Model caching is `NON_CACHEABLE` unless the session explicitly
+selects a tracked `codeclew.model-cache.json` or sealed external authority.
+The sealed external contour remains fail-closed.
 
-For slicing, preview and commit the target must be a Git repository with a committed `HEAD`. The reproducible demonstration creates an isolated copy:
+## Conditional evidence
+
+When evidence is useful but not deterministic, a conditional decision may carry
+explicit publication-blocking obligations. Such a run may compile, test, and
+index a candidate, but terminates as `VALIDATED_CONDITIONAL`. It cannot be
+published. After the obligations are discharged, create a new context, plan,
+and run; there is no confidence threshold or automatic promotion.
+
+## Verification
 
 ```bash
+./scripts/verify.sh
 ./scripts/demo.sh
+./scripts/benchmark.sh
 ```
 
-The CLI always writes machine-readable canonical JSON to stdout; diagnostics from Gradle, Maven, Git, and the JVM go to stderr. Exit codes are stable by error category (`2` input, `3` not found, `4` stale, `5` conflict, `6` validation, `7` worker/protocol).
-
-## Supported vertical
-
-- Gradle Wrapper and single-module Maven Kotlin/JVM inspection with project model fingerprinting
-- §11 PSI declaration/file/semantic facts with typed invalidation persisted in compilation-scoped SQLite WAL/content blobs
-- FQN function and file+offset expression resolution
-- composite semantic anchors with unique replay
-- actual K2 FIR CFG normalization, Rust dominance-frontier SSA/PHI/def-use and post-dominator control dependencies
-- forward/backward/bidirectional bounded slicing and canonical Thread IR
-- authority-backed `MAP_EDGE_WITH_CONTEXT` proof: compiler-derived role binding,
-  twelve preservation invariants, a closed fifteen-obligation change graph, and
-  explicit `BOUND`, `AMBIGUOUS`, or `REFUSED` outcomes without source mutation
-- one-shot `agent-context` discovery with deduplicated source, references, tests,
-  semantic edit anchors, a hard stdout byte budget, and full evidence stored separately
-- `REPLACE_EXPRESSION`, `REPLACE_FUNCTION_BODY`, `ADD_IMPORT`, and `REMOVE_IMPORT` on PSI copies
-- K2 candidate diagnostics, type, protected-binding, call-target, callee-summary, and effect validation
-- minimal preview diff with Expected/ActualWriteSet and ABI enforcement, isolated worktree validation, and configured tests run by default
-- candidate commits with provenance trailers, a completely staged index, CAS ref update, atomic index rename, and inverse-CAS rollback
-- typed Protobuf requests, mandatory snapshots, batching and content-addressed large-source BlobRefs
-- append-only SQLite transaction ledger with pre/post-CAS crash recovery and idempotent retry, semantic ReadSet replay, callee staleness, WW/RW conflicts, and project-model invalidation
-- immutable RepositoryIndex snapshots with pre-CAS construction, atomic publication, executable caller/downstream invalidation, and recovery repair
-- complete language-neutral SymbolId, AST/type edges, and LOCAL/THIS/OBJECT/STATIC/UNKNOWN memory abstractions
-- separate long-lived Rust `semanticd` JSONL service with structured logs and required metrics
-
-This is intentionally fail-closed. Android, KMP, scripts, reflection, precise coroutine lowering, global interprocedural analysis, and ambiguous anchors are rejected or marked as boundaries. Compiler plugins for the selected JVM compilation are honored and content-hashed, but arbitrary plugin-specific semantic interpretation remains outside the MVP. See [progress](docs/progress.md) and [final report](docs/final-report.md).
+The CLI writes canonical JSON to stdout and diagnostics to stderr. The system is
+fail-closed for stale authorities, ambiguous anchors, unsupported project
+models, dirty checked-out publication targets, and recovery uncertainty.
 
 ## Repository map
 
-- `crates/clew`: Rust core and CLI
-- `workers/kotlin`: long-lived Kotlin 2.4.10 PSI/compiler worker
-- `workers/kotlin21`: Kotlin 2.1.21 adapter reusing the common worker implementation
-- `workers/kotlin23`: Kotlin 2.3.0 adapter used by Maven/Spring services such as `product-repo`
-- `schemas`: versioned Protobuf contracts
+- `crates/clew`: Rust core, supervisor, sessions, indexes, and CLI
+- `workers/kotlin*`: version-pinned Kotlin compiler workers
+- `bootstrap`: isolated content-addressed runtime bootstrap
+- `schemas`: typed worker protocol
 - `fixtures`: executable Kotlin corpus
-- `docs`: architecture, safety model, protocol, ADRs, and status
-- `scripts`: one-command verification and demo
-
-## License
+- `scripts`: CI, demo, and benchmark entrypoints
+- `docs`: architecture and experiment history
 
 Licensed under the [Apache License 2.0](LICENSE).

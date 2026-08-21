@@ -5,6 +5,7 @@ use crate::proto::{
     ResolveSymbolRequest, SchemaVersion, ShutdownRequest, SnapshotId, ValidateCandidateRequest,
     WorkerRequest, WorkerResponse, worker_request, worker_response,
 };
+use crate::runtime::RuntimeAuthority;
 use prost::Message;
 use serde::Serialize;
 use serde_json::Value;
@@ -792,6 +793,14 @@ enum WorkerVariant {
 }
 
 impl WorkerVariant {
+    fn runtime_name(self) -> &'static str {
+        match self {
+            Self::Kotlin21 => "kotlin21",
+            Self::Kotlin23 => "kotlin23",
+            Self::Kotlin24 => "kotlin24",
+        }
+    }
+
     fn for_project(version: &str) -> Result<Self, ClewError> {
         match version
             .split('.')
@@ -2192,7 +2201,7 @@ fn snapshot_label(snapshot: &SnapshotId) -> String {
 
 fn source_transport(
     payload: &Value,
-    build_state_root: Option<&Path>,
+    _build_state_root: Option<&Path>,
 ) -> Result<(Vec<u8>, Option<BlobRef>), ClewError> {
     let source = payload
         .get("source")
@@ -2200,39 +2209,9 @@ fn source_transport(
         .unwrap_or_default()
         .as_bytes()
         .to_vec();
-    // K1's external build-state contour must not create transport blobs in the
-    // checkout. Protobuf bytes can carry the large source directly.
-    // An external K1 worker must never materialize transport blobs in the
-    // checkout. Protobuf bytes can carry the large source directly.
-    if source.len() <= 64 * 1024 || build_state_root.is_some() {
-        return Ok((source, None));
-    }
-    let repo = payload
-        .get("repo")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "large source needs repo"))?;
-    let hash = crate::canonical::hash_bytes(&source);
-    let relative = format!(
-        ".semantic-thread/blobs/sha256/{}",
-        hash.trim_start_matches("sha256:")
-    );
-    let path = Path::new(repo).join(&relative);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| ClewError::new(ErrorCode::Internal, format!("blob store: {error}")))?;
-    }
-    if !path.exists() {
-        std::fs::write(&path, &source)
-            .map_err(|error| ClewError::new(ErrorCode::Internal, format!("blob store: {error}")))?;
-    }
-    Ok((
-        vec![],
-        Some(BlobRef {
-            content_hash: hash,
-            relative_path: relative,
-            size_bytes: source.len() as u64,
-        }),
-    ))
+    // Request transport is always inline. Mutable transport CAS belongs to the
+    // private worker process state; the target repository is never a blob store.
+    Ok((source, None))
 }
 
 fn validate_typed_string(canonical: &[u8], pointer: &str, typed: &str) -> Result<(), ClewError> {
@@ -2430,6 +2409,55 @@ fn prepare_trusted_worker_distribution(
     variant: WorkerVariant,
 ) -> Result<Option<TrustedWorkerDistribution>, ClewError> {
     let canonical = workspace.canonicalize().map_err(internal)?;
+    if let Some(runtime) = RuntimeAuthority::from_environment()? {
+        if runtime.root != canonical {
+            return Err(preparation_required(
+                "runtime workspace differs from the verified capsule root",
+            ));
+        }
+        let runtime_worker = runtime.worker(variant.runtime_name())?;
+        if runtime_worker.compiler_version != variant.compiler_version() {
+            return Err(preparation_required(
+                "runtime worker compiler identity differs from the selected variant",
+            ));
+        }
+        let source_distribution = runtime.verify_worker(variant.runtime_name())?;
+        let private_root = tempfile::Builder::new()
+            .prefix("codeclew-worker-authority-")
+            .tempdir()
+            .map_err(internal)?;
+        let distribution_root = private_root.path().join("distribution");
+        copy_regular_tree(&source_distribution, &distribution_root)?;
+        let tree_manifest = regular_tree_manifest(&distribution_root)?;
+        let tree_hash = hash_string_manifest(&tree_manifest);
+        if tree_hash != runtime_worker.tree_hash {
+            return Err(preparation_required(
+                "private worker copy differs from runtime authority",
+            ));
+        }
+        let launcher = distribution_root.join("bin").join(variant.launcher_name());
+        let plugin = distribution_root
+            .join("lib")
+            .join(variant.plugin_jar_name());
+        if !launcher.is_file() || !plugin.is_file() {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "runtime worker distribution is incomplete",
+            ));
+        }
+        return Ok(Some(TrustedWorkerDistribution {
+            workspace: canonical,
+            _private_root: private_root,
+            distribution_root,
+            launcher,
+            tree_manifest,
+            tree_hash,
+            build_input_digest: runtime.runtime_key,
+            plugin_fingerprint: crate::canonical::hash_bytes(
+                &std::fs::read(plugin).map_err(internal)?,
+            ),
+        }));
+    }
     if canonical != workspace_root() {
         return Ok(None);
     }
@@ -3289,6 +3317,12 @@ fn parse_worker_code(code: &str) -> ErrorCode {
 }
 
 pub fn workspace_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("CODECLEW_RUNTIME_ROOT") {
+        let root = PathBuf::from(root);
+        return root
+            .canonicalize()
+            .expect("CODECLEW_RUNTIME_ROOT must be a real runtime capsule");
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()

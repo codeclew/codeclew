@@ -16,6 +16,9 @@ use clew::proto::RequestKind;
 use clew::semantic_goal::{
     SemanticGoal, TYPED_GOAL_MAX_REQUEST_BYTES, TypedGoalLanguageError, typed_goal_language_schema,
 };
+use clew::session::{
+    ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, bounded_context_stdout,
+};
 use clew::task_context;
 use clew::thread_projection;
 use clew::transaction;
@@ -39,13 +42,6 @@ struct Cli {
         help = "Emit stable machine-readable JSON (JSON is also the default)"
     )]
     json: bool,
-    #[arg(
-        long,
-        global = true,
-        value_name = "DIR",
-        help = "Use a private external persistent Kotlin compiler-index directory"
-    )]
-    compiler_index_root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -81,17 +77,23 @@ enum Command {
         #[command(subcommand)]
         command: ApplyCommand,
     },
-    #[command(
-        name = "agent-context",
-        visible_alias = "context",
-        about = "Build one bounded edit-ready semantic context pack for an agent"
-    )]
-    AgentContext(AgentContextArgs),
-    #[command(
-        name = "task-apply",
-        about = "Apply one graph-derived multi-file task edit and commit it after clean validation"
-    )]
-    TaskApply(TaskApplyArgs),
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+    Context {
+        #[command(subcommand)]
+        command: ContextCommand,
+    },
+    Plan {
+        #[command(subcommand)]
+        command: PlanCommand,
+    },
+    #[command(name = "task-run")]
+    TaskRun {
+        #[command(subcommand)]
+        command: TaskRunCommand,
+    },
     Edit {
         #[command(subcommand)]
         command: EditCommand,
@@ -100,6 +102,33 @@ enum Command {
         #[command(subcommand)]
         command: TxCommand,
     },
+    #[command(name = "__task-run-execute", hide = true)]
+    InternalTaskRunExecute(InternalTaskRunArgs),
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    Open(SessionOpenArgs),
+    Inspect(SessionIdArgs),
+    Publish(SessionPublishArgs),
+}
+
+#[derive(Subcommand)]
+enum ContextCommand {
+    Create(ContextCreateArgs),
+    Expand(ContextExpandArgs),
+}
+
+#[derive(Subcommand)]
+enum PlanCommand {
+    Validate(PlanValidateArgs),
+}
+
+#[derive(Subcommand)]
+enum TaskRunCommand {
+    Start(TaskRunStartArgs),
+    Status(RunIdArgs),
+    Resume(RunIdArgs),
 }
 
 #[derive(Subcommand)]
@@ -287,57 +316,100 @@ struct ApplyMapEdgeWithContextArgs {
     #[arg(long)]
     output: Option<PathBuf>,
 }
+
 #[derive(Args)]
-struct AgentContextArgs {
+struct SessionOpenArgs {
     #[arg(long)]
     repo: PathBuf,
-    #[arg(long, default_value = ":/main")]
-    compilation: String,
-    #[arg(long = "term", visible_alias = "symbol", required = true)]
-    terms: Vec<String>,
-    /// Add one exact OpenProject model input as a required whole-file edit
-    /// surface. Repeat the flag to expose more than one manifest-owned input.
-    #[arg(long = "model-input")]
-    model_inputs: Vec<String>,
-    /// Attach a non-authorizing CONDITIONAL decision so task-apply may build
-    /// and test a candidate while keeping publication blocked.
-    #[arg(long = "conditional-decision")]
-    conditional_decision: Option<PathBuf>,
-    #[arg(long, default_value = "")]
-    intent: String,
-    #[arg(long, default_value_t = 16_384)]
-    max_bytes: usize,
-    #[arg(long, default_value = ".semantic-thread/agent-context.json")]
-    evidence: PathBuf,
-    #[arg(long)]
-    output: Option<PathBuf>,
-    #[arg(long, default_value_t = 2)]
-    max_roots: usize,
-    #[arg(long = "max-nodes", hide = true)]
-    _max_nodes: Option<usize>,
-}
-#[derive(Args)]
-struct TaskApplyArgs {
-    #[arg(long)]
-    repo: PathBuf,
-    #[arg(long)]
-    context: PathBuf,
-    #[arg(long = "edit-plan")]
-    edit_plan: PathBuf,
     #[arg(long)]
     target_ref: String,
-    #[arg(long, default_value = "semantic-task-agent")]
-    actor: String,
-    /// Internal durable-run binding. Agent-facing callers should use the
-    /// repository-owned task-apply runner instead of setting this directly.
-    #[arg(long, hide = true)]
-    transaction_id: Option<String>,
+    #[arg(long, default_value = ":/main")]
+    compilation: String,
+    #[arg(long, value_enum, default_value = "non-cacheable")]
+    model_cache: ModelCachePolicyArg,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ModelCachePolicyArg {
+    NonCacheable,
+    TrackedManifest,
+    SealedExternal,
+}
+
+#[derive(Args)]
+struct SessionIdArgs {
     #[arg(long)]
-    output: Option<PathBuf>,
-    /// Temporarily opt in to the pre-proof heuristic task surface. This path
-    /// remains available for compatibility, but is never enabled implicitly.
-    #[arg(long, default_value_t = false)]
-    allow_legacy_heuristic: bool,
+    session: String,
+}
+
+#[derive(Args)]
+struct SessionPublishArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    run: String,
+}
+
+#[derive(Args)]
+struct ContextCreateArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long, default_value = "")]
+    intent: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long = "model-input")]
+    model_inputs: Vec<String>,
+    #[arg(long = "conditional-decision")]
+    conditional_decision: Option<PathBuf>,
+    #[arg(long, default_value_t = 2)]
+    max_roots: usize,
+}
+
+#[derive(Args)]
+struct ContextExpandArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long = "from")]
+    context: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long)]
+    intent: Option<String>,
+    #[arg(long, default_value_t = 4)]
+    max_roots: usize,
+}
+
+#[derive(Args)]
+struct PlanValidateArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    context: String,
+    #[arg(long)]
+    plan: PathBuf,
+}
+
+#[derive(Args)]
+struct TaskRunStartArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    context: String,
+    #[arg(long)]
+    plan: String,
+}
+
+#[derive(Args)]
+struct RunIdArgs {
+    #[arg(long)]
+    run: String,
+}
+
+#[derive(Args)]
+struct InternalTaskRunArgs {
+    #[arg(long)]
+    run: String,
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum DirectionArg {
@@ -447,7 +519,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     let workspace = workspace_root();
-    let compiler_index_root = cli.compiler_index_root;
+    let compiler_index_root = None::<PathBuf>;
     match cli.command {
         Command::Doctor => {
             let worker = start_cli_worker(&workspace, compiler_index_root.as_deref())?;
@@ -773,307 +845,112 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 }
             }
         }),
-        Command::AgentContext(args) => {
-            with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
-                let repo = absolute(&args.repo)?;
-                let (project, verified_index_facts) = worker.open_project_and_index_verified(
-                    &json!({"repo":repo,"compilation":args.compilation,"syntaxOnly":false}),
-                )?;
-                let model_input_surfaces = task_context::resolve_model_input_surfaces(
-                    &repo,
-                    &project,
-                    &args.model_inputs,
-                )?;
-                let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
-                // A task context is the immutable base of the following transaction,
-                // so its snapshot must be published in the same compilation namespace
-                // that task-apply and commit validate.
-                let mut repository_index =
-                    RepositoryIndex::open_compilation(&repo, Some(&args.compilation))?;
-                let index_snapshot =
-                    repository_index.update_verified(&verified_index_facts, worker)?;
-                repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
-                let selection =
-                    task_context::select(&repo, index_facts, &args.terms, &args.intent)?;
-                let mut resolutions = selection
-                    .root_symbols(1)
-                    .into_iter()
-                    .map(|symbol| {
-                        worker.request(
-                            RequestKind::ResolveSymbol,
-                            &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                while resolutions.len() < args.max_roots {
-                    let followups = selection.followup_symbols(
-                        &resolutions,
-                        args.max_roots.saturating_sub(resolutions.len()),
-                    );
-                    if followups.is_empty() {
-                        break;
-                    }
-                    for symbol in followups {
-                        resolutions.push(worker.request(
-                            RequestKind::ResolveSymbol,
-                            &json!({"repo":repo,"compilation":args.compilation,"symbol":symbol}),
-                        )?);
-                    }
-                }
-                let threads = resolutions
-                    .iter()
-                    .map(|resolution| {
-                        build_task_thread(
-                            worker,
-                            &repo,
-                            &args.compilation,
-                            &project,
-                            &index_snapshot,
-                            resolution,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let evidence_path = if args.evidence.is_absolute() {
-                    args.evidence
-                } else {
-                    repo.join(args.evidence)
-                };
-                let base_revision = git_head(&repo)?;
-                let (mut context, mut evidence) =
-                    task_context::build(task_context::TaskContextBuild {
-                        repo: &repo,
-                        terms: &args.terms,
-                        intent: &args.intent,
-                        compilation: &args.compilation,
-                        project: &project,
-                        index_facts,
-                        selection: &selection,
-                        resolutions: &resolutions,
-                        threads: &threads,
-                        base_revision: &base_revision,
-                        index_snapshot: &index_snapshot,
-                        evidence_path: &evidence_path,
-                        model_input_surfaces: &model_input_surfaces,
-                        max_bytes: args.max_bytes,
-                    })?;
-                if let Some(decision_path) = args.conditional_decision.as_deref() {
-                    let decision: Value = read_json(decision_path)?;
-                    let obligations = validate_conditional_decision(&decision, &base_revision)?;
-                    context["verificationObligations"] = Value::Array(obligations.clone());
-                    context["publicationPolicy"] = json!({
-                        "mode":"STRICT",
-                        "status":"BLOCKED_UNTIL_DISCHARGED",
-                        "automaticPublication":false,
-                    });
-                    evidence["context"] = context.clone();
-                    evidence["conditionalDecision"] = decision;
-                }
-                write_artifact(&evidence_path, &evidence)?;
-                if let Some(output) = args.output {
-                    let output_path = if output.is_absolute() {
-                        output
-                    } else {
-                        repo.join(output)
-                    };
-                    write_artifact(&output_path, &context)?;
-                }
-                Ok(context)
-            })
+        Command::Session {
+            command: SessionCommand::Open(args),
+        } => {
+            let policy = match args.model_cache {
+                ModelCachePolicyArg::NonCacheable => ModelCachePolicy::NonCacheable,
+                ModelCachePolicyArg::TrackedManifest => ModelCachePolicy::TrackedManifest,
+                ModelCachePolicyArg::SealedExternal => ModelCachePolicy::SealedExternal,
+            };
+            let session = SessionAuthority::open(
+                &absolute(&args.repo)?,
+                &args.target_ref,
+                &args.compilation,
+                policy,
+            )?;
+            Ok(json!({
+                "schema":"codeclew-session-open/1.0",
+                "status":"OPEN",
+                "session":session,
+            }))
         }
-        Command::TaskApply(args) => {
-            with_worker(&workspace, compiler_index_root.as_deref(), |worker| {
-                let repo = absolute(&args.repo)?;
-                let evidence: Value = read_json(&args.context)?;
-                if evidence["schema"] != "semantic-task-context-evidence/0.2" {
-                    return Err(ClewError::new(
-                        ErrorCode::InvalidInput,
-                        "task-apply needs semantic-task-context-evidence/0.2",
-                    ));
-                }
-                let context = &evidence["context"];
-                let context_status = context
-                    .pointer("/completeness/status")
-                    .and_then(Value::as_str);
-                let stdout_status = evidence
-                    .pointer("/stdoutCompleteness/status")
-                    .and_then(Value::as_str);
-                let complete = context_status == Some("COMPLETE_TASK")
-                    && stdout_status == Some("COMPLETE_TASK");
-                let explicitly_allowed_legacy = args.allow_legacy_heuristic
-                    && context_status == Some("LEGACY_HEURISTIC_READY")
-                    && stdout_status == Some("LEGACY_HEURISTIC_READY");
-                if !complete && !explicitly_allowed_legacy {
-                    return Err(ClewError::new(
-                        ErrorCode::IncompleteSemanticAnalysis,
-                        "task context and its bounded stdout projection must both be COMPLETE_TASK",
-                    ));
-                }
-                let required_threads: Vec<ThreadIr> = serde_json::from_value(
-                    evidence["threads"]
-                        .as_array()
-                        .cloned()
-                        .map(Value::Array)
-                        .ok_or_else(|| {
-                            ClewError::new(
-                                ErrorCode::InvalidInput,
-                                "task context has no threads array",
-                            )
-                        })?,
-                )
-                .map_err(parse_error)?;
-                let thread = required_threads.first().cloned().ok_or_else(|| {
-                    ClewError::new(ErrorCode::InvalidInput, "task context has no Thread IR")
-                })?;
-                let mut plan: Value = read_json(&args.edit_plan)?;
-                clew::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
-                normalize_task_plan(&mut plan)?;
-                expand_task_targets(&mut plan, context)?;
-                inject_created_type_imports(&mut plan)?;
-                inject_explicit_target_imports(&mut plan, context)?;
-                inject_created_contract_overrides(&mut plan)?;
-                let operations: Vec<EditOperation> = serde_json::from_value(
-                    plan["operations"]
-                        .as_array()
-                        .cloned()
-                        .map(Value::Array)
-                        .ok_or_else(|| {
-                            ClewError::new(
-                                ErrorCode::InvalidInput,
-                                "edit plan has no operations array",
-                            )
-                        })?,
-                )
-                .map_err(parse_error)?;
-                let expected_write_set: Vec<ExpectedWriteFact> = plan
-                    .get("expectedWriteSet")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(parse_error)?
-                    .unwrap_or_default();
-                let base_revision = context
-                    .pointer("/snapshot/baseRevision")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned();
-                if base_revision != thread.snapshot.base_revision {
-                    return Err(ClewError::new(
-                        ErrorCode::PreconditionFailed,
-                        "task context snapshot does not match its Thread IR",
-                    ));
-                }
-                if required_threads.iter().any(|required| {
-                    required.snapshot.base_revision != base_revision
-                        || required.snapshot.project_model_hash
-                            != thread.snapshot.project_model_hash
-                        || required.snapshot.compilation != thread.snapshot.compilation
-                }) {
-                    return Err(ClewError::new(
-                        ErrorCode::PreconditionFailed,
-                        "task context threads do not share one revision, project model, and compilation",
-                    ));
-                }
-                let edit = EditIr {
-                    schema: "semantic-edit/0.1".into(),
-                    thread_id: thread.thread_id.clone(),
-                    base_revision: base_revision.clone(),
-                    operations,
-                    expected_write_set,
-                };
-                let mut test_tasks = context
-                    .pointer("/validationPlan/targetedArgs")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
-                include_created_tests(
-                    &mut test_tasks,
-                    &plan,
-                    context
-                        .pointer("/validationPlan/buildSystem")
-                        .and_then(Value::as_str)
-                        .unwrap_or("GRADLE"),
-                )?;
-                let mut transaction = Transaction {
-                    schema: "semantic-transaction/0.1".into(),
-                    tx_id: task_apply_transaction_id(args.transaction_id.as_deref())?,
-                    actor_id: args.actor,
-                    intent: context
-                        .pointer("/task/intent")
-                        .and_then(Value::as_str)
-                        .unwrap_or("task edit")
-                        .to_owned(),
-                    base_revision: base_revision.clone(),
-                    project_model_hash: thread.snapshot.project_model_hash.clone(),
-                    base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
-                    status: "CREATED".into(),
-                    thread,
-                    required_threads,
-                    edit,
-                    preview: None,
-                    expected_write_set_hash: None,
-                    actual_write_set_hash: None,
-                    validation_evidence: vec![json!({
-                        "kind":"TASK_CONTEXT",
-                        "contextHash":canonical::hash(context).map_err(parse_error)?,
-                        "evidence":args.context
-                    })],
-                    test_tasks,
-                    candidate_commit: None,
-                    final_commit: None,
-                    target_ref: None,
-                };
-                transaction::ledger(&repo)?.append(
-                    &transaction,
-                    "task-apply request created before semantic validation",
-                )?;
-                let conditional_obligations = context
-                    .get("verificationObligations")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                if !conditional_obligations.is_empty() {
-                    transaction.validation_evidence.push(json!({
-                        "kind":"UNRESOLVED_VERIFICATION_OBLIGATIONS",
-                        "obligationsHash":canonical::hash(&conditional_obligations).map_err(parse_error)?,
-                        "publicationBlocking":true,
-                    }));
-                }
-                let result = if conditional_obligations.is_empty() {
-                    transaction::commit(&repo, &mut transaction, &args.target_ref, worker)?
-                } else {
-                    transaction::validate_conditional_candidate(
-                        &repo,
-                        &mut transaction,
-                        &args.target_ref,
-                        worker,
-                    )?
-                };
-                if let Some(output) = args.output.as_deref() {
-                    write_artifact(output, &transaction)?;
-                    let build = transaction
-                        .validation_evidence
-                        .iter()
-                        .find(|evidence| evidence["kind"] == "BUILD")
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    return Ok(json!({
-                        "schema":"semantic-task-apply-receipt/0.1",
-                        "status":transaction.status,
-                        "finalCommit":transaction.final_commit,
-                        "changedFiles":transaction.preview.as_ref().map(|preview| &preview.changed_files),
-                        "build":build,
-                        "result":result,
-                        "transactionArtifact":output
-                    }));
-                }
-                Ok(
-                    json!({"schema":"semantic-task-apply/0.1","result":result,"transaction":transaction}),
-                )
-            })
+        Command::Session {
+            command: SessionCommand::Inspect(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            Ok(json!({"schema":"codeclew-session-inspect/1.0","session":session}))
         }
+        Command::Context {
+            command: ContextCommand::Create(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let (projection, evidence) = create_managed_context_evidence(
+                &workspace,
+                &session,
+                &args.intent,
+                &args.terms,
+                &args.model_inputs,
+                args.conditional_decision.as_deref(),
+                args.max_roots,
+            )?;
+            let context =
+                session.store_context(None, args.intent, args.terms, projection, evidence)?;
+            bounded_context_stdout(&context)
+        }
+        Command::Context {
+            command: ContextCommand::Expand(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let parent = session.load_context(&args.context)?;
+            let mut terms = parent.terms.clone();
+            terms.extend(args.terms);
+            terms.sort();
+            terms.dedup();
+            let intent = args.intent.unwrap_or(parent.intent);
+            let (projection, evidence) = create_managed_context_evidence(
+                &workspace,
+                &session,
+                &intent,
+                &terms,
+                &[],
+                None,
+                args.max_roots,
+            )?;
+            let context =
+                session.store_context(Some(args.context), intent, terms, projection, evidence)?;
+            bounded_context_stdout(&context)
+        }
+        Command::Plan {
+            command: PlanCommand::Validate(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let metadata = std::fs::symlink_metadata(&args.plan)
+                .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || metadata.len() as usize > clew::session::MAX_PLAN_BYTES
+            {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "plan is missing, unsafe, or exceeds 1 MiB",
+                ));
+            }
+            let source = std::fs::read(&args.plan)
+                .map_err(|error| ClewError::new(ErrorCode::InvalidInput, error.to_string()))?;
+            let plan = session.validate_plan(&args.context, &source)?;
+            Ok(json!({
+                "schema":"codeclew-plan-validation/1.0",
+                "status":"VALID",
+                "sessionId":session.session_id,
+                "contextId":args.context,
+                "planId":plan.plan_id,
+                "sourceDigest":plan.source_digest,
+            }))
+        }
+        Command::TaskRun {
+            command: TaskRunCommand::Start(args),
+        } => start_task_run(&args.session, &args.context, &args.plan),
+        Command::TaskRun {
+            command: TaskRunCommand::Status(args),
+        } => task_run_status(&args.run),
+        Command::TaskRun {
+            command: TaskRunCommand::Resume(args),
+        } => resume_task_run(&args.run),
+        Command::Session {
+            command: SessionCommand::Publish(args),
+        } => publish_task_run(&workspace, &args.session, &args.run),
+        Command::InternalTaskRunExecute(args) => execute_task_run(&workspace, &args.run),
         Command::Edit {
             command: EditCommand::Preview(args),
         } => with_worker(&workspace, compiler_index_root.as_deref(), |w| {
@@ -1154,6 +1031,486 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Tx {
             command: TxCommand::Inspect(args),
         } => transaction::ledger(&absolute(&args.repo)?)?.inspect(&args.transaction_id),
+    }
+}
+
+fn create_managed_context_evidence(
+    workspace: &Path,
+    session: &SessionAuthority,
+    intent: &str,
+    terms: &[String],
+    model_inputs: &[String],
+    conditional_decision: Option<&Path>,
+    max_roots: usize,
+) -> Result<(Value, Value), ClewError> {
+    let repo = session.repository_path()?;
+    if git_head(&repo)? != session.base_revision {
+        return Err(ClewError::new(
+            ErrorCode::StaleRequiresReslice,
+            "repository HEAD moved after session open",
+        ));
+    }
+    let state = clew::state::StateAuthority::process_default()?.repository(&repo)?;
+    with_worker(workspace, Some(&state.compiler_index), |worker| {
+        let (project, verified_index_facts) = worker.open_project_and_index_verified(
+            &json!({"repo":repo,"compilation":session.compilation,"syntaxOnly":false}),
+        )?;
+        let model_input_surfaces =
+            task_context::resolve_model_input_surfaces(&repo, &project, model_inputs)?;
+        let index_facts = worker.inspect_verified_index(&verified_index_facts)?;
+        let mut repository_index =
+            RepositoryIndex::open_compilation(&repo, Some(&session.compilation))?;
+        let index_snapshot = repository_index.update_verified(&verified_index_facts, worker)?;
+        repository_index.require_fresh(REPOSITORY_INDEX_FACT)?;
+        let selection = task_context::select(&repo, index_facts, terms, intent)?;
+        let mut resolutions = selection
+            .root_symbols(1)
+            .into_iter()
+            .map(|symbol| {
+                worker.request(
+                    RequestKind::ResolveSymbol,
+                    &json!({"repo":repo,"compilation":session.compilation,"symbol":symbol}),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        while resolutions.len() < max_roots {
+            let followups = selection
+                .followup_symbols(&resolutions, max_roots.saturating_sub(resolutions.len()));
+            if followups.is_empty() {
+                break;
+            }
+            for symbol in followups {
+                resolutions.push(worker.request(
+                    RequestKind::ResolveSymbol,
+                    &json!({"repo":repo,"compilation":session.compilation,"symbol":symbol}),
+                )?);
+            }
+        }
+        let threads = resolutions
+            .iter()
+            .map(|resolution| {
+                build_task_thread(
+                    worker,
+                    &repo,
+                    &session.compilation,
+                    &project,
+                    &index_snapshot,
+                    resolution,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (mut context, mut evidence) = task_context::build(task_context::TaskContextBuild {
+            repo: &repo,
+            terms,
+            intent,
+            compilation: &session.compilation,
+            project: &project,
+            index_facts,
+            selection: &selection,
+            resolutions: &resolutions,
+            threads: &threads,
+            base_revision: &session.base_revision,
+            index_snapshot: &index_snapshot,
+            evidence_path: Path::new("codeclew-managed-context"),
+            model_input_surfaces: &model_input_surfaces,
+            max_bytes: 60 * 1024,
+        })?;
+        if let Some(decision_path) = conditional_decision {
+            let decision: Value = read_json(decision_path)?;
+            let obligations = validate_conditional_decision(&decision, &session.base_revision)?;
+            context["verificationObligations"] = Value::Array(obligations.clone());
+            context["publicationPolicy"] = json!({
+                "mode":"STRICT",
+                "status":"BLOCKED_UNTIL_DISCHARGED",
+                "automaticPublication":false,
+            });
+            evidence["context"] = context.clone();
+            evidence["conditionalDecision"] = decision;
+        }
+        Ok((context, evidence))
+    })
+}
+
+fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<Value, ClewError> {
+    let (session, _) = SessionAuthority::load(session_id)?;
+    let record = RunRecord::created(&session, context_id, plan_id)?;
+    if !record.create_once()? {
+        return task_run_status(&record.run_id);
+    }
+    spawn_task_run(&record.run_id)?;
+    task_run_status(&record.run_id)
+}
+
+fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let state = clew::state::StateAuthority::process_default()?;
+    let root = state.run_root(run_id)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let stdout = options
+        .open(root.join("stdout.log"))
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    let stderr = options
+        .open(root.join("stderr.log"))
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    let executable = std::env::current_exe()
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(["__task-run-execute", "--run", run_id])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command
+        .spawn()
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    let mut latest = RunRecord::load(run_id)?;
+    if latest.status == RunStatus::Created {
+        latest.process_id = Some(child.id());
+        latest.save()?;
+    }
+    Ok(())
+}
+
+fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
+    let record = RunRecord::load(run_id)?;
+    serde_json::to_value(json!({
+        "schema":"codeclew-task-run-status/1.0",
+        "run":record,
+    }))
+    .map_err(parse_error)
+}
+
+fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
+    let mut record = RunRecord::load(run_id)?;
+    if matches!(
+        record.status,
+        RunStatus::ReadyToPublish
+            | RunStatus::ValidatedConditional
+            | RunStatus::Published
+            | RunStatus::Publishing
+    ) {
+        return task_run_status(run_id);
+    }
+    if record.candidate_commit.is_some() {
+        record.status = RunStatus::WorktreeRecoveryRequired;
+        record.failure = Some(json!({
+            "code":"WORKTREE_RECOVERY_REQUIRED",
+            "message":"candidate exists but preparation did not reach a terminal validated state"
+        }));
+        record.save()?;
+        return task_run_status(run_id);
+    }
+    record.status = RunStatus::Created;
+    record.failure = None;
+    record.process_id = None;
+    record.save()?;
+    spawn_task_run(run_id)?;
+    task_run_status(run_id)
+}
+
+fn execute_task_run(workspace: &Path, run_id: &str) -> Result<Value, ClewError> {
+    let mut record = RunRecord::load(run_id)?;
+    if matches!(
+        record.status,
+        RunStatus::ReadyToPublish | RunStatus::ValidatedConditional | RunStatus::Published
+    ) {
+        return task_run_status(run_id);
+    }
+    record.status = RunStatus::Preparing;
+    record.process_id = Some(std::process::id());
+    record.failure = None;
+    record.save()?;
+    let result = prepare_task_run(workspace, &mut record);
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            record.status = if error.code == ErrorCode::WorktreeRecoveryRequired {
+                RunStatus::WorktreeRecoveryRequired
+            } else {
+                RunStatus::Failed
+            };
+            record.failure = serde_json::to_value(&error).ok();
+            record.process_id = None;
+            let _ = record.save();
+            Err(error)
+        }
+    }
+}
+
+fn prepare_task_run(workspace: &Path, record: &mut RunRecord) -> Result<Value, ClewError> {
+    let (session, _) = SessionAuthority::load(&record.session_id)?;
+    let repo = session.repository_path()?;
+    let current_head = git_head(&repo)?;
+    if current_head != session.base_revision {
+        return Err(ClewError::new(
+            ErrorCode::StaleRequiresReslice,
+            "repository HEAD moved after session open",
+        ));
+    }
+    let context_object = session.load_context(&record.context_id)?;
+    let plan_object = session.load_plan(&record.plan_id)?;
+    if plan_object.context_id != record.context_id {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run context and plan binding differ",
+        ));
+    }
+    let evidence = context_object.evidence;
+    let context = &evidence["context"];
+    let context_status = context
+        .pointer("/completeness/status")
+        .and_then(Value::as_str);
+    let stdout_status = evidence
+        .pointer("/stdoutCompleteness/status")
+        .and_then(Value::as_str);
+    if context_status != Some("COMPLETE_TASK") || stdout_status != Some("COMPLETE_TASK") {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "context must be COMPLETE_TASK before a run can start",
+        ));
+    }
+    let required_threads: Vec<ThreadIr> = serde_json::from_value(
+        evidence["threads"]
+            .as_array()
+            .cloned()
+            .map(Value::Array)
+            .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "context has no threads"))?,
+    )
+    .map_err(parse_error)?;
+    let thread = required_threads.first().cloned().ok_or_else(|| {
+        ClewError::new(ErrorCode::InvalidInput, "context has no primary Thread IR")
+    })?;
+    let mut plan = plan_object.plan;
+    clew::task_plan::expand_transient_transform(&mut plan, context, &evidence)?;
+    normalize_task_plan(&mut plan)?;
+    expand_task_targets(&mut plan, context)?;
+    inject_created_type_imports(&mut plan)?;
+    inject_explicit_target_imports(&mut plan, context)?;
+    inject_created_contract_overrides(&mut plan)?;
+    let operations: Vec<EditOperation> = serde_json::from_value(
+        plan["operations"]
+            .as_array()
+            .cloned()
+            .map(Value::Array)
+            .ok_or_else(|| {
+                ClewError::new(ErrorCode::InvalidInput, "plan has no operations array")
+            })?,
+    )
+    .map_err(parse_error)?;
+    let expected_write_set: Vec<ExpectedWriteFact> = plan
+        .get("expectedWriteSet")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(parse_error)?
+        .unwrap_or_default();
+    let base_revision = context
+        .pointer("/snapshot/baseRevision")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if base_revision != session.base_revision || base_revision != thread.snapshot.base_revision {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "context snapshot does not match session authority",
+        ));
+    }
+    if required_threads.iter().any(|required| {
+        required.snapshot.base_revision != base_revision
+            || required.snapshot.project_model_hash != thread.snapshot.project_model_hash
+            || required.snapshot.compilation != thread.snapshot.compilation
+    }) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "context threads do not share one authority",
+        ));
+    }
+    let edit = EditIr {
+        schema: "semantic-edit/0.1".into(),
+        thread_id: thread.thread_id.clone(),
+        base_revision: base_revision.clone(),
+        operations,
+        expected_write_set,
+    };
+    let mut test_tasks = context
+        .pointer("/validationPlan/targetedArgs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    include_created_tests(
+        &mut test_tasks,
+        &plan,
+        context
+            .pointer("/validationPlan/buildSystem")
+            .and_then(Value::as_str)
+            .unwrap_or("GRADLE"),
+    )?;
+    let obligations = context
+        .get("verificationObligations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut transaction = Transaction {
+        schema: "semantic-transaction/0.1".into(),
+        tx_id: record.transaction_id.clone(),
+        actor_id: "codeclew-task-run".into(),
+        intent: context
+            .pointer("/task/intent")
+            .and_then(Value::as_str)
+            .unwrap_or("task edit")
+            .to_owned(),
+        base_revision: base_revision.clone(),
+        project_model_hash: thread.snapshot.project_model_hash.clone(),
+        base_index_snapshot: Some(thread.snapshot.index_snapshot.clone()),
+        status: "CREATED".into(),
+        thread,
+        required_threads,
+        edit,
+        preview: None,
+        expected_write_set_hash: None,
+        actual_write_set_hash: None,
+        validation_evidence: vec![json!({
+            "kind":"MANAGED_CONTEXT",
+            "contextId":record.context_id,
+            "contextDigest":canonical::hash(context).map_err(parse_error)?,
+            "planId":record.plan_id,
+            "runtimeKey":session.runtime_key,
+            "runtimeMode":session.runtime_mode,
+        })],
+        test_tasks,
+        candidate_commit: None,
+        final_commit: None,
+        target_ref: Some(session.target_ref.clone()),
+    };
+    transaction::ledger(&repo)?.append(&transaction, "run ledger CREATED before prepare")?;
+    if !obligations.is_empty() {
+        transaction.validation_evidence.push(json!({
+            "kind":"UNRESOLVED_VERIFICATION_OBLIGATIONS",
+            "obligationsHash":canonical::hash(&obligations).map_err(parse_error)?,
+            "publicationBlocking":true,
+        }));
+    }
+    let candidate_root = record.candidate_root()?;
+    let repository_state = clew::state::StateAuthority::process_default()?.repository(&repo)?;
+    let preparation = with_worker(
+        workspace,
+        Some(&repository_state.compiler_index),
+        |worker| {
+            transaction::prepare_candidate(
+                &repo,
+                &mut transaction,
+                &session.target_ref,
+                worker,
+                &candidate_root,
+                !obligations.is_empty(),
+            )
+        },
+    )?;
+    let state = clew::state::StateAuthority::process_default()?;
+    let run_root = state.run_root(&record.run_id)?;
+    state.write_private_atomic(
+        &run_root.join("transaction.json"),
+        &canonical::bytes(&transaction).map_err(parse_error)?,
+    )?;
+    record.candidate_commit = transaction.candidate_commit.clone();
+    record.publication_blocked = !obligations.is_empty();
+    record.status = if record.publication_blocked {
+        RunStatus::ValidatedConditional
+    } else {
+        RunStatus::ReadyToPublish
+    };
+    record.process_id = None;
+    record.save()?;
+    Ok(json!({
+        "schema":"codeclew-task-run-preparation/1.0",
+        "run":record,
+        "preparation":preparation,
+    }))
+}
+
+fn publish_task_run(workspace: &Path, session_id: &str, run_id: &str) -> Result<Value, ClewError> {
+    let (session, _) = SessionAuthority::load(session_id)?;
+    let mut record = RunRecord::load(run_id)?;
+    if record.session_id != session_id {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run belongs to another session",
+        ));
+    }
+    if record.publication_blocked || record.status == RunStatus::ValidatedConditional {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "conditional run cannot be published; create a new context, plan, and run after discharging obligations",
+        ));
+    }
+    if record.status == RunStatus::Published {
+        return task_run_status(run_id);
+    }
+    if record.status != RunStatus::ReadyToPublish {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run is not ready to publish",
+        ));
+    }
+    let repo = session.repository_path()?;
+    let state = clew::state::StateAuthority::process_default()?;
+    let run_root = state.run_root(run_id)?;
+    let mut transaction: Transaction = read_json(&run_root.join("transaction.json"))?;
+    record.status = RunStatus::Publishing;
+    record.save()?;
+    let candidate_root = record.candidate_root()?;
+    let repository_state = state.repository(&repo)?;
+    let publication = with_worker(
+        workspace,
+        Some(&repository_state.compiler_index),
+        |worker| {
+            transaction::publish_prepared(
+                &repo,
+                &mut transaction,
+                &session.target_ref,
+                &candidate_root.join("worktree"),
+                worker,
+            )
+        },
+    );
+    match publication {
+        Ok(value) => {
+            state.write_private_atomic(
+                &run_root.join("transaction.json"),
+                &canonical::bytes(&transaction).map_err(parse_error)?,
+            )?;
+            record.status = RunStatus::Published;
+            record.final_commit = transaction.final_commit.clone();
+            record.save()?;
+            Ok(json!({
+                "schema":"codeclew-session-publish-result/1.0",
+                "run":record,
+                "publication":value,
+            }))
+        }
+        Err(error) => {
+            record.status = if error.code == ErrorCode::WorktreeRecoveryRequired {
+                RunStatus::WorktreeRecoveryRequired
+            } else {
+                RunStatus::ReadyToPublish
+            };
+            record.failure = serde_json::to_value(&error).ok();
+            record.save()?;
+            Err(error)
+        }
     }
 }
 
@@ -1486,13 +1843,13 @@ fn start_cli_worker(
     }
 }
 
-fn with_worker<F>(
+fn with_worker<F, T>(
     workspace: &Path,
     compiler_index_root: Option<&Path>,
     action: F,
-) -> Result<Value, ClewError>
+) -> Result<T, ClewError>
 where
-    F: FnOnce(&mut WorkerClient) -> Result<Value, ClewError>,
+    F: FnOnce(&mut WorkerClient) -> Result<T, ClewError>,
 {
     let mut worker = start_cli_worker(workspace, compiler_index_root)?;
     let result = action(&mut worker);
@@ -1506,31 +1863,6 @@ where
 fn absolute(path: &Path) -> Result<PathBuf, ClewError> {
     path.canonicalize()
         .map_err(|e| ClewError::new(ErrorCode::InvalidInput, format!("{}: {e}", path.display())))
-}
-
-fn task_apply_transaction_id(provided: Option<&str>) -> Result<String, ClewError> {
-    let Some(provided) = provided else {
-        return Ok(format!("tx:{}", uuid::Uuid::new_v4()));
-    };
-    let raw = provided.strip_prefix("tx:").ok_or_else(|| {
-        ClewError::new(
-            ErrorCode::InvalidInput,
-            "task-apply transaction id must be tx:<canonical UUID>",
-        )
-    })?;
-    let parsed = uuid::Uuid::parse_str(raw).map_err(|_| {
-        ClewError::new(
-            ErrorCode::InvalidInput,
-            "task-apply transaction id must be tx:<canonical UUID>",
-        )
-    })?;
-    if parsed.hyphenated().to_string() != raw {
-        return Err(ClewError::new(
-            ErrorCode::InvalidInput,
-            "task-apply transaction id must be tx:<canonical UUID>",
-        ));
-    }
-    Ok(provided.to_owned())
 }
 
 fn git_head(repo: &Path) -> Result<String, ClewError> {
@@ -2752,52 +3084,28 @@ mod task_plan_tests {
     }
 
     #[test]
-    fn task_apply_runner_accepts_only_canonical_transaction_ids() {
-        let canonical = "tx:2f1f8596-04ed-5c0d-a1fc-804f56a0a728";
-        assert_eq!(
-            task_apply_transaction_id(Some(canonical)).unwrap(),
-            canonical
-        );
-        let cli = Cli::try_parse_from([
-            "clew",
-            "task-apply",
-            "--repo",
-            "/repo",
-            "--context",
-            "/context.json",
-            "--edit-plan",
-            "/plan.json",
-            "--target-ref",
-            "main",
-            "--transaction-id",
-            canonical,
-        ])
-        .unwrap();
-        let Command::TaskApply(arguments) = cli.command else {
-            panic!("task-apply command was not parsed")
-        };
-        assert_eq!(arguments.transaction_id.as_deref(), Some(canonical));
-        for invalid in [
-            "2f1f8596-04ed-5c0d-a1fc-804f56a0a728",
-            "tx:2F1F8596-04ED-5C0D-A1FC-804F56A0A728",
-            "tx:{2f1f8596-04ed-5c0d-a1fc-804f56a0a728}",
-            "tx:not-a-uuid",
-        ] {
-            assert_eq!(
-                task_apply_transaction_id(Some(invalid)).unwrap_err().code,
-                ErrorCode::InvalidInput
-            );
-        }
+    fn legacy_task_apply_is_not_public() {
         assert!(
-            task_apply_transaction_id(None)
-                .unwrap()
-                .strip_prefix("tx:")
-                .is_some_and(|raw| uuid::Uuid::parse_str(raw).is_ok())
+            Cli::try_parse_from([
+                "clew",
+                "task-apply",
+                "--repo",
+                "/repo",
+                "--context",
+                "/context.json",
+                "--edit-plan",
+                "/plan.json",
+                "--target-ref",
+                "main",
+                "--transaction-id",
+                "tx:2f1f8596-04ed-5c0d-a1fc-804f56a0a728",
+            ])
+            .is_err()
         );
     }
 
     #[test]
-    fn compiler_index_root_is_an_explicit_global_cli_authority() {
+    fn compiler_index_root_is_not_a_public_cli_authority() {
         for arguments in [
             vec![
                 "clew",
@@ -2816,12 +3124,7 @@ mod task_plan_tests {
                 "/private/tmp/codeclew-index",
             ],
         ] {
-            let cli = Cli::try_parse_from(arguments).unwrap();
-            assert_eq!(
-                cli.compiler_index_root,
-                Some(PathBuf::from("/private/tmp/codeclew-index"))
-            );
-            assert!(matches!(cli.command, Command::Index(_)));
+            assert!(Cli::try_parse_from(arguments).is_err());
         }
     }
 

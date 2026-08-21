@@ -4,6 +4,7 @@ use crate::graph;
 use crate::index::{REPOSITORY_INDEX_FACT, RepositoryIndex, StagedIndex};
 use crate::model::*;
 use crate::proto::RequestKind;
+use crate::state::StateAuthority;
 use crate::worker::{WorkerClient, stable_project_model_identity, workspace_root};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -987,7 +988,13 @@ pub fn commit(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, ClewError> {
-    commit_with_authorization(repo, transaction, target_ref, worker, false, true)
+    commit_with_authorization(
+        repo,
+        transaction,
+        target_ref,
+        worker,
+        CommitMode::publishing(false),
+    )
 }
 
 pub fn validate_conditional_candidate(
@@ -996,7 +1003,30 @@ pub fn validate_conditional_candidate(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, ClewError> {
-    commit_with_authorization(repo, transaction, target_ref, worker, false, false)
+    commit_with_authorization(
+        repo,
+        transaction,
+        target_ref,
+        worker,
+        CommitMode::temporary_validation(),
+    )
+}
+
+pub fn prepare_candidate(
+    repo: &Path,
+    transaction: &mut Transaction,
+    target_ref: &str,
+    worker: &mut WorkerClient,
+    candidate_root: &Path,
+    conditional: bool,
+) -> Result<Value, ClewError> {
+    commit_with_authorization(
+        repo,
+        transaction,
+        target_ref,
+        worker,
+        CommitMode::preparing(candidate_root, conditional),
+    )
 }
 
 pub(crate) fn commit_authorized_semantic(
@@ -1005,7 +1035,57 @@ pub(crate) fn commit_authorized_semantic(
     target_ref: &str,
     worker: &mut WorkerClient,
 ) -> Result<Value, ClewError> {
-    commit_with_authorization(repo, transaction, target_ref, worker, true, true)
+    commit_with_authorization(
+        repo,
+        transaction,
+        target_ref,
+        worker,
+        CommitMode::publishing(true),
+    )
+}
+
+struct CommitMode<'a> {
+    allow_authority_semantic_operation: bool,
+    publication_allowed: bool,
+    candidate_root: Option<&'a Path>,
+    keep_candidate_worktree: bool,
+    prepared_status: Option<&'static str>,
+}
+
+impl<'a> CommitMode<'a> {
+    fn publishing(allow_authority_semantic_operation: bool) -> Self {
+        Self {
+            allow_authority_semantic_operation,
+            publication_allowed: true,
+            candidate_root: None,
+            keep_candidate_worktree: false,
+            prepared_status: None,
+        }
+    }
+
+    fn temporary_validation() -> Self {
+        Self {
+            allow_authority_semantic_operation: false,
+            publication_allowed: false,
+            candidate_root: None,
+            keep_candidate_worktree: false,
+            prepared_status: None,
+        }
+    }
+
+    fn preparing(candidate_root: &'a Path, conditional: bool) -> Self {
+        Self {
+            allow_authority_semantic_operation: false,
+            publication_allowed: false,
+            candidate_root: Some(candidate_root),
+            keep_candidate_worktree: true,
+            prepared_status: Some(if conditional {
+                "VALIDATED_CONDITIONAL"
+            } else {
+                "READY_TO_PUBLISH"
+            }),
+        }
+    }
 }
 
 fn commit_with_authorization(
@@ -1013,9 +1093,15 @@ fn commit_with_authorization(
     transaction: &mut Transaction,
     target_ref: &str,
     worker: &mut WorkerClient,
-    allow_authority_semantic_operation: bool,
-    publication_allowed: bool,
+    mode: CommitMode<'_>,
 ) -> Result<Value, ClewError> {
+    let CommitMode {
+        allow_authority_semantic_operation,
+        publication_allowed,
+        candidate_root,
+        keep_candidate_worktree,
+        prepared_status,
+    } = mode;
     validate_required_threads(transaction)?;
     let qualified_target_ref;
     let target_ref = if target_ref.starts_with("refs/") {
@@ -1144,7 +1230,7 @@ fn commit_with_authorization(
     ledger(repo)?.append(transaction, "preview and Gradle validation passed")?;
     if report.candidates.is_empty() {
         if !publication_allowed {
-            transaction.status = "VALIDATED_CONDITIONAL".into();
+            transaction.status = prepared_status.unwrap_or("VALIDATED_CONDITIONAL").into();
             ledger(repo)?.append(
                 transaction,
                 "conditional candidate is an idempotent no-op; publication remains blocked",
@@ -1153,7 +1239,7 @@ fn commit_with_authorization(
                 "schema":"semantic-conditional-validation/0.1",
                 "transactionId":transaction.tx_id,
                 "baseRevision":current,
-                "status":"VALIDATED_CONDITIONAL",
+                "status":transaction.status,
                 "published":false,
             }));
         }
@@ -1164,8 +1250,20 @@ fn commit_with_authorization(
             json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"finalCommit":current,"targetRef":target_ref,"status":"COMMITTED","idempotent":true}),
         );
     }
-    let worktree = tempfile::tempdir().map_err(io_error)?;
-    let worktree_path = worktree.path().join("worktree");
+    let temporary;
+    let worktree_path = if let Some(root) = candidate_root {
+        std::fs::create_dir_all(root).map_err(io_error)?;
+        root.join("worktree")
+    } else {
+        temporary = tempfile::tempdir().map_err(io_error)?;
+        temporary.path().join("worktree")
+    };
+    if worktree_path.exists() {
+        return Err(ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "candidate worktree already exists; resume or recover the existing run",
+        ));
+    }
     git(
         repo,
         &[
@@ -1296,17 +1394,21 @@ fn commit_with_authorization(
             transaction.validation_evidence.push(transition);
         }
         if !publication_allowed {
-            transaction.status = "VALIDATED_CONDITIONAL".into();
+            transaction.status = prepared_status.unwrap_or("VALIDATED_CONDITIONAL").into();
             ledger(repo)?.append(
                 transaction,
-                "candidate compiled, tested, and indexed; publication remains blocked by unresolved verification obligations",
+                if transaction.status == "READY_TO_PUBLISH" {
+                    "candidate compiled, tested, indexed, and is ready for explicit publication"
+                } else {
+                    "candidate compiled, tested, and indexed; publication remains blocked by unresolved verification obligations"
+                },
             )?;
             return Ok(json!({
-                "schema":"semantic-conditional-validation/0.1",
+                "schema":"codeclew-candidate-preparation/1.0",
                 "transactionId":transaction.tx_id,
                 "baseRevision":current,
                 "candidateCommit":candidate,
-                "status":"VALIDATED_CONDITIONAL",
+                "status":transaction.status,
                 "published":false,
                 "gradleValidationDurationMs":compile_duration_ms + test_duration_ms,
             }));
@@ -1368,16 +1470,171 @@ fn commit_with_authorization(
             json!({"schema":"semantic-commit/0.1","transactionId":transaction.tx_id,"baseRevision":current,"baseIndexSnapshot":base_index_snapshot,"finalCommit":candidate,"finalIndexSnapshot":final_index_snapshot,"appliedInvalidations":invalidations,"targetRef":target_ref,"status":"COMMITTED","gradleValidationDurationMs":compile_duration_ms + test_duration_ms,"ledgerRecorded":ledger_recorded}),
         )
     })();
-    let _ = git(
-        repo,
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            worktree_path.to_str().unwrap(),
-        ],
-    );
+    if !keep_candidate_worktree {
+        let _ = git(
+            repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree_path.to_str().unwrap(),
+            ],
+        );
+    }
     result
+}
+
+pub fn publish_prepared(
+    repo: &Path,
+    transaction: &mut Transaction,
+    bound_target_ref: &str,
+    candidate_worktree: &Path,
+    worker: &mut WorkerClient,
+) -> Result<Value, ClewError> {
+    if transaction.status != "READY_TO_PUBLISH" {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "only a READY_TO_PUBLISH run can be published",
+        ));
+    }
+    if transaction.target_ref.as_deref() != Some(bound_target_ref) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "transaction target ref differs from the session authority",
+        ));
+    }
+    let Some(candidate) = transaction.candidate_commit.as_deref() else {
+        let current = git_output(repo, &["rev-parse", bound_target_ref])?;
+        if current != transaction.base_revision {
+            return Err(ClewError::new(
+                ErrorCode::RefCompareAndSwapFailed,
+                "session target moved after no-op prepare",
+            ));
+        }
+        transaction.final_commit = Some(current.clone());
+        transaction.status = "PUBLISHED".into();
+        ledger(repo)?.append(transaction, "explicit no-op publication completed")?;
+        return Ok(json!({
+            "schema":"codeclew-session-publish/1.0",
+            "transactionId":transaction.tx_id,
+            "status":"PUBLISHED",
+            "finalCommit":current,
+            "targetRef":bound_target_ref,
+            "idempotent":true,
+        }));
+    };
+    let candidate_head = git_output(candidate_worktree, &["rev-parse", "HEAD"])?;
+    if candidate_head != candidate {
+        return Err(ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            "candidate worktree HEAD differs from the prepared commit",
+        ));
+    }
+    let current = git_output(repo, &["rev-parse", bound_target_ref])?;
+    let parent = git_output(repo, &["rev-parse", &format!("{candidate}^")])?;
+    if current != parent || current != transaction.base_revision {
+        return Err(ClewError::new(
+            ErrorCode::RefCompareAndSwapFailed,
+            "session target moved after prepare; open a new session",
+        ));
+    }
+    let facts = worker.index_files_verified(&json!({
+        "repo":candidate_worktree,
+        "compilation":transaction.thread.snapshot.compilation,
+        "syntaxOnly":false,
+    }))?;
+    let staged = RepositoryIndex::stage_update(
+        repo,
+        Some(&transaction.thread.snapshot.compilation),
+        &facts,
+        worker,
+        candidate_worktree,
+        candidate,
+    )?;
+    transaction.status = "PUBLISHING".into();
+    ledger(repo)?.append(transaction, "explicit publication started")?;
+
+    let checked_out = git_output(repo, &["symbolic-ref", "-q", "HEAD"])
+        .is_ok_and(|head| head == bound_target_ref);
+    if checked_out {
+        let status = Command::new("git")
+            .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+            .current_dir(repo)
+            .output()
+            .map_err(io_error)?;
+        if !status.status.success() || !status.stdout.is_empty() {
+            transaction.status = "READY_TO_PUBLISH".into();
+            ledger(repo)?.append(
+                transaction,
+                "publication blocked by a dirty source worktree",
+            )?;
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "checked-out target worktree must be completely clean before publication",
+            ));
+        }
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "merge",
+                "--ff-only",
+                "--no-edit",
+                candidate,
+            ])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
+            .current_dir(repo)
+            .output()
+            .map_err(io_error)?;
+        if !output.status.success() {
+            transaction.status = "READY_TO_PUBLISH".into();
+            ledger(repo)?.append(transaction, "checked-out target fast-forward failed")?;
+            return Err(ClewError::new(
+                ErrorCode::RefCompareAndSwapFailed,
+                "checked-out target could not be fast-forwarded",
+            ));
+        }
+    } else {
+        git(repo, &["update-ref", bound_target_ref, candidate, &current]).map_err(|_| {
+            ClewError::new(
+                ErrorCode::RefCompareAndSwapFailed,
+                "target ref changed during explicit publication",
+            )
+        })?;
+    }
+
+    let (final_index_snapshot, invalidations) = match staged.publish() {
+        Ok(value) => value,
+        Err(error) => {
+            transaction.status = "WORKTREE_RECOVERY_REQUIRED".into();
+            let _ = ledger(repo).and_then(|ledger| {
+                ledger.append(
+                    transaction,
+                    "Git reached the candidate but repository index publication failed; automatic rollback is forbidden",
+                )
+            });
+            return Err(ClewError::new(
+                ErrorCode::WorktreeRecoveryRequired,
+                format!(
+                    "target reached candidate {candidate}, but index publication needs recovery: {}",
+                    error.message
+                ),
+            ));
+        }
+    };
+    transaction.final_commit = Some(candidate.into());
+    transaction.status = "PUBLISHED".into();
+    ledger(repo)?.append(transaction, "target ref and repository index published")?;
+    Ok(json!({
+        "schema":"codeclew-session-publish/1.0",
+        "transactionId":transaction.tx_id,
+        "status":"PUBLISHED",
+        "finalCommit":candidate,
+        "finalIndexSnapshot":final_index_snapshot,
+        "appliedInvalidations":invalidations,
+        "targetRef":bound_target_ref,
+    }))
 }
 
 fn validate_textual_edit_authority(
@@ -2277,9 +2534,9 @@ pub struct Ledger {
 }
 impl Ledger {
     pub fn open(repo: &Path) -> Result<Self, ClewError> {
-        let dir = repo.join(".semantic-thread");
-        std::fs::create_dir_all(&dir).map_err(io_error)?;
-        let connection = Connection::open(dir.join("ledger.sqlite3")).map_err(db_error)?;
+        let authority = StateAuthority::process_default()?;
+        let state = authority.repository(repo)?;
+        let connection = Connection::open(state.ledger).map_err(db_error)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(db_error)?;
