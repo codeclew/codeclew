@@ -51,6 +51,8 @@ pub struct CompilerIndexProfile {
     pub recovered: bool,
     pub fallback_used: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_digest: Option<String>,
     pub semantic_input_manifest_digest: String,
     pub facts_plugin_digest: String,
@@ -3013,6 +3015,19 @@ fn parse_compiler_index_profile(profiling: &Value) -> Option<CompilerIndexProfil
     let reused_files = object.get("reusedFiles")?.as_u64()?;
     let recovered = object.get("recovered")?.as_bool()?;
     let fallback_used = object.get("fallbackUsed")?.as_bool()?;
+    let failure_code = match object.get("failureCode") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(code))
+            if !code.is_empty()
+                && code.len() <= 96
+                && code.bytes().all(|byte| {
+                    byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                }) =>
+        {
+            Some(code.clone())
+        }
+        Some(_) => return None,
+    };
     let graph_digest = match object.get("graphDigest") {
         None | Some(Value::Null) => None,
         Some(Value::String(digest)) if is_lowercase_sha256(digest) => Some(digest.clone()),
@@ -3083,6 +3098,7 @@ fn parse_compiler_index_profile(profiling: &Value) -> Option<CompilerIndexProfil
         reused_files,
         recovered,
         fallback_used,
+        failure_code,
         graph_digest,
         semantic_input_manifest_digest,
         facts_plugin_digest,
@@ -3573,6 +3589,24 @@ mod tests {
         let mut wrong_digest_type = valid_compiler_index_profiling();
         wrong_digest_type["graphDigest"] = Value::from(7);
         assert!(parse_compiler_index_profile(&wrong_digest_type).is_none());
+
+        let mut failed = valid_compiler_index_profiling();
+        failed["status"] = Value::String("FAILED_RECOVERABLE".into());
+        failed["valid"] = Value::Bool(false);
+        failed["compiledFiles"] = Value::from(0);
+        failed["reusedFiles"] = Value::from(0);
+        failed["fallbackUsed"] = Value::Bool(true);
+        failed["graphDigest"] = Value::Null;
+        failed["failureCode"] = Value::String("K2_BACKEND_ANALYZE_EXCEPTION".into());
+        assert_eq!(
+            parse_compiler_index_profile(&failed)
+                .unwrap()
+                .failure_code
+                .as_deref(),
+            Some("K2_BACKEND_ANALYZE_EXCEPTION"),
+        );
+        failed["failureCode"] = Value::String("private/path".into());
+        assert!(parse_compiler_index_profile(&failed).is_none());
 
         for key in [
             "semanticInputManifestDigest",

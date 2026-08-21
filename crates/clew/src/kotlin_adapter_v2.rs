@@ -325,6 +325,23 @@ pub(crate) fn analyze_project_native_index(
     native_compilation: &str,
     compiler_store_component: &str,
 ) -> Result<Value, ClewError> {
+    analyze_project_native_index_profiled(
+        state,
+        store,
+        snapshot,
+        native_compilation,
+        compiler_store_component,
+    )
+    .map(|(index, _)| index)
+}
+
+fn analyze_project_native_index_profiled(
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    native_compilation: &str,
+    compiler_store_component: &str,
+) -> Result<(Value, Option<crate::worker::CompilerIndexProfile>), ClewError> {
     if compiler_store_component.len() != 64
         || !compiler_store_component
             .bytes()
@@ -381,6 +398,7 @@ pub(crate) fn analyze_project_native_index(
         }
         Err(error) => return Err(error),
     };
+    let profile = worker.last_profile.compiler_index.clone();
     worker.shutdown()?;
     unmount_project_derived_state(&repo, &derived_mounts)?;
     let (observed_snapshot, _) = capture(&repo, store)?;
@@ -404,7 +422,7 @@ pub(crate) fn analyze_project_native_index(
             "project-native model extraction modified sealed repository inputs",
         ));
     }
-    Ok(index)
+    Ok((index, profile))
 }
 
 fn normalize_source_syntax_fallback(
@@ -1054,5 +1072,39 @@ mod tests {
             .analyze_generation(&request, &mut sink, &AtomicBool::new(false))
             .unwrap();
         assert!(sink.finish().unwrap().fact_count > 10);
+    }
+
+    #[test]
+    #[ignore = "explicit real-worker BTA24 persistence acceptance"]
+    fn k24_real_worker_reuses_managed_compiler_store() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+        let component = "a".repeat(64);
+
+        let (_, cold) =
+            analyze_project_native_index_profiled(&state, &store, &snapshot, ":/main", &component)
+                .unwrap();
+        let cold = cold.expect("cold compiler profile");
+        assert_eq!(
+            cold.status,
+            crate::worker::CompilerIndexStatus::ColdFull,
+            "cold profiling: {cold:?}",
+        );
+        assert!(!cold.fallback_used, "cold profiling: {cold:?}");
+
+        let (_, warm) =
+            analyze_project_native_index_profiled(&state, &store, &snapshot, ":/main", &component)
+                .unwrap();
+        let warm = warm.expect("warm compiler profile");
+        assert_eq!(
+            warm.status,
+            crate::worker::CompilerIndexStatus::UnchangedHit,
+            "warm profiling: {warm:?}",
+        );
+        assert!(!warm.fallback_used, "warm profiling: {warm:?}");
+        assert_eq!(warm.compiled_files, 0);
     }
 }
