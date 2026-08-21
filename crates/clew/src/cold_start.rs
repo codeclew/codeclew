@@ -1,17 +1,18 @@
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
 use crate::state::{StateAuthority, create_private_directory};
-use crossbeam_channel::{Sender, bounded};
+use crossbeam_channel::{RecvTimeoutError, Sender, bounded};
 use rayon::ThreadPool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-#[cfg(target_os = "linux")]
 use std::fs;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub const DAG_SCHEMA: &str = "codeclew-cold-start-dag/2.0";
@@ -123,7 +124,7 @@ impl HostResources {
 }
 
 pub trait ProgressObserver: Send + Sync + 'static {
-    fn observe(&self, event: &ProgressEvent);
+    fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,16 +145,76 @@ pub struct ProgressEvent {
 pub struct NoopProgress;
 
 impl ProgressObserver for NoopProgress {
-    fn observe(&self, _event: &ProgressEvent) {}
+    fn observe(&self, _event: &ProgressEvent) -> Result<(), ClewError> {
+        Ok(())
+    }
 }
 
 pub struct StderrProgress;
 
 impl ProgressObserver for StderrProgress {
-    fn observe(&self, event: &ProgressEvent) {
-        if let Ok(line) = serde_json::to_string(event) {
-            eprintln!("{line}");
+    fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError> {
+        let line = serde_json::to_string(event)
+            .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+        eprintln!("{line}");
+        Ok(())
+    }
+}
+
+pub struct PersistentProgress {
+    file: Mutex<File>,
+}
+
+impl PersistentProgress {
+    pub fn open(authority: &StateAuthority, attempt_id: &str) -> Result<Self, ClewError> {
+        let component = attempt_id
+            .strip_prefix("attempt:")
+            .filter(|value| safe_identifier(value))
+            .ok_or_else(|| invalid("progress attempt id is invalid"))?;
+        let root = authority.attempts_root().join(component);
+        create_private_directory(&root)?;
+        let path = root.join("progress.jsonl");
+        if path.exists() {
+            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(invalid("progress journal is not a regular file"));
+            }
         }
+        let mut options = OpenOptions::new();
+        options.create(true).append(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(path).map_err(io_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let metadata = file.metadata().map_err(io_error)?;
+            if metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o077 != 0
+            {
+                return Err(invalid("progress journal authority is not private"));
+            }
+        }
+        Ok(Self {
+            file: Mutex::new(file),
+        })
+    }
+}
+
+impl ProgressObserver for PersistentProgress {
+    fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError> {
+        let mut bytes = canonical::bytes(event)
+            .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+        bytes.push(b'\n');
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| ClewError::new(ErrorCode::Internal, "progress journal lock poisoned"))?;
+        file.write_all(&bytes).map_err(io_error)?;
+        file.sync_data().map_err(io_error)
     }
 }
 
@@ -161,6 +222,7 @@ pub struct DagScheduler {
     resources: HostResources,
     pool: ThreadPool,
     observer: Arc<dyn ProgressObserver>,
+    heartbeat_interval: Duration,
 }
 
 impl DagScheduler {
@@ -183,7 +245,18 @@ impl DagScheduler {
             resources,
             pool,
             observer,
+            heartbeat_interval: Duration::from_secs(5),
         })
+    }
+
+    pub fn with_heartbeat_interval(mut self, interval: Duration) -> Result<Self, ClewError> {
+        if interval.is_zero() || interval > Duration::from_secs(5) {
+            return Err(invalid(
+                "cold-start heartbeat interval must be greater than zero and at most five seconds",
+            ));
+        }
+        self.heartbeat_interval = interval;
+        Ok(self)
     }
 
     pub fn execute<F>(&self, plan: DagPlan, executor: F) -> Result<DagReport, ClewError>
@@ -198,14 +271,14 @@ impl DagScheduler {
         let (sender, receiver) = bounded::<CompletedStage>(capacity);
         let mut coordinator = Coordinator::new(validated);
         coordinator.budgets(self.resources);
-        self.emit("DAG_STARTED", None, &coordinator);
+        self.emit("DAG_STARTED", None, &coordinator)?;
         let mut first_error = None;
 
         while coordinator.done.len() < coordinator.total {
             if first_error.is_none() {
                 while let Some(id) = coordinator.next_admissible() {
                     let stage = coordinator.start(&id)?;
-                    self.emit("STAGE_STARTED", Some(id.clone()), &coordinator);
+                    self.emit("STAGE_STARTED", Some(id.clone()), &coordinator)?;
                     spawn_stage(
                         &self.pool,
                         sender.clone(),
@@ -221,18 +294,28 @@ impl DagScheduler {
                 }
                 return Err(invalid("DAG has no admissible stage and no running work"));
             }
-            let completed = receiver.recv().map_err(|_| {
-                ClewError::new(ErrorCode::Internal, "stage result channel disconnected")
-            })?;
+            let completed = match receiver.recv_timeout(self.heartbeat_interval) {
+                Ok(completed) => completed,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.emit("HEARTBEAT", None, &coordinator)?;
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(ClewError::new(
+                        ErrorCode::Internal,
+                        "stage result channel disconnected",
+                    ));
+                }
+            };
             match completed.result {
                 Ok(output) => {
                     coordinator.finish(&completed.id, output)?;
-                    self.emit("STAGE_COMPLETED", Some(completed.id), &coordinator);
+                    self.emit("STAGE_COMPLETED", Some(completed.id), &coordinator)?;
                 }
                 Err(error) => {
                     cancelled.store(true, Ordering::Release);
                     coordinator.fail(&completed.id)?;
-                    self.emit("STAGE_FAILED", Some(completed.id), &coordinator);
+                    self.emit("STAGE_FAILED", Some(completed.id), &coordinator)?;
                     if first_error.is_none() {
                         first_error = Some(error);
                     }
@@ -242,7 +325,7 @@ impl DagScheduler {
         if let Some(error) = first_error {
             return Err(error);
         }
-        self.emit("DAG_READY", None, &coordinator);
+        self.emit("DAG_READY", None, &coordinator)?;
         Ok(DagReport {
             schema: DAG_REPORT_SCHEMA.into(),
             outputs: coordinator.done,
@@ -252,7 +335,12 @@ impl DagScheduler {
         })
     }
 
-    fn emit(&self, event: &str, stage_id: Option<String>, coordinator: &Coordinator) {
+    fn emit(
+        &self,
+        event: &str,
+        stage_id: Option<String>,
+        coordinator: &Coordinator,
+    ) -> Result<(), ClewError> {
         self.observer.observe(&ProgressEvent {
             schema: PROGRESS_SCHEMA.into(),
             event: event.into(),
@@ -263,7 +351,7 @@ impl DagScheduler {
             admitted_cpu: coordinator.admitted_cpu,
             admitted_rss_bytes: coordinator.admitted_rss,
             unix_millis: unix_millis(),
-        });
+        })
     }
 }
 
@@ -704,6 +792,10 @@ fn invalid(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
 }
 
+fn io_error(error: std::io::Error) -> ClewError {
+    ClewError::new(ErrorCode::Internal, error.to_string())
+}
+
 fn detected_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
@@ -749,8 +841,20 @@ fn detected_memory_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+
+    #[derive(Default)]
+    struct RecordedProgress {
+        events: Mutex<Vec<ProgressEvent>>,
+    }
+
+    impl ProgressObserver for RecordedProgress {
+        fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
 
     fn resources(class: &str, cpu: usize, rss: u64) -> ResourceDescriptor {
         ResourceDescriptor {
@@ -957,5 +1061,88 @@ mod tests {
         }
         assert_eq!(journal.attempt().state, AttemptState::Ready);
         assert!(journal.transition(AttemptState::Failed, "late").is_err());
+    }
+
+    #[test]
+    fn long_stage_emits_heartbeat_and_persists_private_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let attempt = format!("attempt:{}", Uuid::new_v4());
+        let persisted = Arc::new(PersistentProgress::open(&authority, &attempt).unwrap());
+        let recorded = Arc::new(RecordedProgress::default());
+        struct Tee {
+            persisted: Arc<PersistentProgress>,
+            recorded: Arc<RecordedProgress>,
+        }
+        impl ProgressObserver for Tee {
+            fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError> {
+                self.persisted.observe(event)?;
+                self.recorded.observe(event)
+            }
+        }
+        let resources = HostResources {
+            logical_cpu: 1,
+            total_memory_bytes: 100,
+            codeclew_memory_budget_bytes: 100,
+        };
+        DagScheduler::new(
+            resources,
+            Arc::new(Tee {
+                persisted: Arc::clone(&persisted),
+                recorded: Arc::clone(&recorded),
+            }),
+        )
+        .unwrap()
+        .with_heartbeat_interval(Duration::from_millis(5))
+        .unwrap()
+        .execute(
+            DagPlan {
+                schema: DAG_SCHEMA.into(),
+                stages: vec![stage("slow", &[], 1, 1)],
+            },
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(18));
+                Ok(json!({}))
+            },
+        )
+        .unwrap();
+        assert!(
+            recorded
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.event == "HEARTBEAT")
+        );
+        let path = authority
+            .attempts_root()
+            .join(attempt.strip_prefix("attempt:").unwrap())
+            .join("progress.jsonl");
+        let metadata = fs::metadata(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(metadata.permissions().mode() & 0o077, 0);
+        }
+        assert!(fs::read_to_string(path).unwrap().contains("HEARTBEAT"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_journal_refuses_symlink_substitution() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let attempt = format!("attempt:{}", Uuid::new_v4());
+        let attempt_root = authority
+            .attempts_root()
+            .join(attempt.strip_prefix("attempt:").unwrap());
+        create_private_directory(&attempt_root).unwrap();
+        let outside = root.path().join("outside");
+        fs::write(&outside, b"private").unwrap();
+        symlink(&outside, attempt_root.join("progress.jsonl")).unwrap();
+        assert!(PersistentProgress::open(&authority, &attempt).is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"private");
     }
 }
