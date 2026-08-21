@@ -99,6 +99,23 @@ impl GenerationManifest {
         }
         Ok(())
     }
+
+    pub fn visit_facts(
+        &self,
+        store: &CasStore,
+        mut visitor: impl FnMut(&FactRecord) -> Result<(), ClewError>,
+    ) -> Result<(), ClewError> {
+        self.verify(store)?;
+        for reference in &self.shards {
+            let lease = store.read(reference, MAX_SHARD_BYTES)?;
+            let shard: CanonicalFactShard = serde_json::from_slice(lease.bytes())
+                .map_err(|_| corrupt("generation shard is not a closed canonical object"))?;
+            for fact in &shard.facts {
+                visitor(fact)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

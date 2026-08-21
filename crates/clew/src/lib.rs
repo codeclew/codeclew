@@ -14,6 +14,7 @@ pub mod index;
 pub mod kotlin_adapter_v2;
 pub mod model;
 pub mod projection;
+pub mod query_v2;
 pub mod repository_snapshot;
 pub mod runtime;
 pub mod semantic_goal;
