@@ -1289,7 +1289,7 @@ fn agent_context_renders_maven_targeted_test_command() {
 #[cfg(unix)]
 #[test]
 fn fails_closed_when_neither_wrapper_nor_maven_is_executable() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     let root = workspace_root();
     let temporary = tempfile::tempdir().unwrap();
@@ -1300,7 +1300,17 @@ fn fails_closed_when_neither_wrapper_nor_maven_is_executable() {
     permissions.set_mode(0o644);
     std::fs::set_permissions(&wrapper, permissions).unwrap();
     let java_home = std::env::var("JAVA_HOME").expect("JAVA_HOME is required by the test suite");
-    let restricted_path = format!("{java_home}/bin:/usr/bin:/bin");
+    let launcher_bin = temporary.path().join("launcher-bin");
+    std::fs::create_dir(&launcher_bin).unwrap();
+    for command in ["ls", "sed", "tr", "uname", "xargs"] {
+        let executable = ["/usr/bin", "/bin"]
+            .into_iter()
+            .map(|directory| std::path::Path::new(directory).join(command))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| panic!("{command} is required by the worker launcher"));
+        symlink(executable, launcher_bin.join(command)).unwrap();
+    }
+    let restricted_path = format!("{}:{java_home}/bin", launcher_bin.display());
 
     let output = Command::new(env!("CARGO_BIN_EXE_clew"))
         .args(["project", "inspect", "--repo", fixture.to_str().unwrap()])
