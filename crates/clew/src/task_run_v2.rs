@@ -131,6 +131,11 @@ pub fn validate_plan_value(value: &Value) -> Result<TaskPlanV2, ClewError> {
                 if old_text.is_empty() {
                     return Err(invalid("REPLACE_TEXT oldText cannot be empty"));
                 }
+                if looks_like_embedded_diff_artifact(new_text) {
+                    return Err(invalid(
+                        "REPLACE_TEXT newText contains embedded unified-diff prefixes",
+                    ));
+                }
                 edit_bytes = edit_bytes
                     .checked_add(old_text.len())
                     .and_then(|size| size.checked_add(new_text.len()))
@@ -184,6 +189,18 @@ pub fn validate_plan_value(value: &Value) -> Result<TaskPlanV2, ClewError> {
         }
     }
     Ok(plan)
+}
+
+fn looks_like_embedded_diff_artifact(text: &str) -> bool {
+    let mut nonempty_after_first = 0usize;
+    let mut plus_prefixed = 0usize;
+    for line in text.lines().skip(1).filter(|line| !line.is_empty()) {
+        nonempty_after_first += 1;
+        if line.starts_with('+') {
+            plus_prefixed += 1;
+        }
+    }
+    plus_prefixed >= 2 && plus_prefixed * 2 >= nonempty_after_first
 }
 
 pub fn prepare(
@@ -911,5 +928,23 @@ mod tests {
             fs::read_to_string(root.path().join("A.kt")).unwrap(),
             "after\n"
         );
+    }
+
+    #[test]
+    fn plan_preflight_rejects_embedded_diff_prefixes() {
+        let plan = json!({
+            "schema":PLAN_V2_SCHEMA,
+            "operations":[{
+                "kind":"REPLACE_TEXT",
+                "opId":"replace",
+                "target":{"fileId":"A.kt","contentRef":reference()},
+                "oldText":"before",
+                "newText":"first\n+second\n+third\n+fourth",
+            }],
+            "validation":[{"launcher":"GRADLE","args":["test"]}],
+        });
+        let error = validate_plan_value(&plan).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.contains("unified-diff"));
     }
 }
