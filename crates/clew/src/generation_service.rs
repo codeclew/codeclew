@@ -43,6 +43,9 @@ pub struct ReadyGeneration {
     pub base_revision: String,
     pub compilation: String,
     pub compiler_version: String,
+    pub coverage: String,
+    pub certainty: String,
+    pub obligations: Vec<String>,
     pub repository_snapshot: CasObject,
     pub derived_input_manifest: CasObject,
     pub generation: CasObject,
@@ -267,6 +270,25 @@ fn build_ready(
         base_revision: session.base_revision.clone(),
         compilation: session.compilation.clone(),
         compiler_version,
+        coverage: index
+            .get("analysisCoverage")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("COMPLETE")
+            .to_owned(),
+        certainty: index
+            .get("analysisCertainty")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("VERIFIED")
+            .to_owned(),
+        obligations: if index
+            .get("analysisCertainty")
+            .and_then(serde_json::Value::as_str)
+            == Some("UNSURE")
+        {
+            vec!["restore-k2-semantic-analysis".into()]
+        } else {
+            Vec::new()
+        },
         repository_snapshot: snapshot_object,
         derived_input_manifest: derived_object,
         generation: generation_object,
@@ -312,6 +334,10 @@ fn verify_ready(
         || ready.repository_snapshot.object_schema != SNAPSHOT_SCHEMA
         || ready.generation.object_schema != GENERATION_SCHEMA
         || ready.query_index.object_schema != QUERY_INDEX_SCHEMA
+        || !matches!(ready.coverage.as_str(), "COMPLETE" | "PARTIAL")
+        || !matches!(ready.certainty.as_str(), "VERIFIED" | "UNSURE")
+        || (ready.certainty == "UNSURE" && ready.obligations.is_empty())
+        || (ready.certainty == "VERIFIED" && !ready.obligations.is_empty())
     {
         return Err(corrupt("ready generation authority is invalid"));
     }

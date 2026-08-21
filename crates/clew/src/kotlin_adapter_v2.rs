@@ -347,12 +347,35 @@ pub(crate) fn analyze_project_native_index(
     let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
     let mut worker =
         WorkerClient::start_with_states(&workspace_root(), None, Some(&compiler_store))?;
-    let verified = worker.index_files_verified(&json!({
+    let request = json!({
         "repo":repo,
         "compilation":native_compilation,
         "syntaxOnly":false,
-    }))?;
-    let index = worker.inspect_verified_index(&verified)?.clone();
+    });
+    let index = match worker.index_files_verified(&request) {
+        Ok(verified) => worker.inspect_verified_index(&verified)?.clone(),
+        Err(error) if error.code == ErrorCode::IncompleteSemanticAnalysis => {
+            let files = snapshot
+                .index
+                .iter()
+                .filter(|entry| entry.stage == 0 && entry.path.ends_with(".kt"))
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>();
+            if files.is_empty() {
+                return Err(error);
+            }
+            let syntax = worker.index_files_source_syntax_verified(&json!({
+                "repo":repo,
+                "compilation":native_compilation,
+                "syntaxOnly":true,
+                "files":files,
+            }))?;
+            let mut syntax = worker.inspect_verified_source_syntax(&syntax)?.clone();
+            normalize_source_syntax_fallback(&mut syntax, &error)?;
+            syntax
+        }
+        Err(error) => return Err(error),
+    };
     worker.shutdown()?;
     unmount_project_derived_state(&repo, &derived_mounts)?;
     let (observed_snapshot, _) = capture(&repo, store)?;
@@ -377,6 +400,40 @@ pub(crate) fn analyze_project_native_index(
         ));
     }
     Ok(index)
+}
+
+fn normalize_source_syntax_fallback(
+    index: &mut Value,
+    semantic_error: &ClewError,
+) -> Result<(), ClewError> {
+    let object = index
+        .as_object_mut()
+        .ok_or_else(|| invalid("SOURCE_SYNTAX fallback is not an object"))?;
+    object.insert("analysisAuthority".into(), json!("SOURCE_SYNTAX"));
+    object.insert("analysisCertainty".into(), json!("UNSURE"));
+    object.insert("analysisCoverage".into(), json!("PARTIAL"));
+    object.insert(
+        "analysisFallback".into(),
+        json!({
+            "code":format!("{:?}", semantic_error.code),
+            "obligation":"restore successful compiler-semantic K2 analysis before publication",
+        }),
+    );
+    object.entry("declarationDescriptors").or_insert_with(|| {
+        json!({
+            "coverage":"PARTIAL",
+            "descriptors":[],
+            "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
+        })
+    });
+    object.entry("declarationRelations").or_insert_with(|| {
+        json!({
+            "coverage":"PARTIAL",
+            "relations":[],
+            "boundaries":[{"code":"SOURCE_SYNTAX_ONLY","resolution":"UNKNOWN"}],
+        })
+    });
+    Ok(())
 }
 
 fn unmount_project_derived_state(
@@ -551,7 +608,9 @@ pub(crate) fn completeness_receipt(
         .pointer("/declarationRelations/coverage")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("Kotlin relation coverage is unavailable"))?;
-    let complete = descriptor_coverage == "COMPLETE_SUPPORTED_SUBSET"
+    let unsure = index.get("analysisCertainty").and_then(Value::as_str) == Some("UNSURE");
+    let complete = !unsure
+        && descriptor_coverage == "COMPLETE_SUPPORTED_SUBSET"
         && relation_coverage == "COMPLETE_SUPPORTED_SUBSET";
     let receipt = json!({
         "schema":RECEIPT_SCHEMA,
@@ -561,10 +620,16 @@ pub(crate) fn completeness_receipt(
                 "domain":KOTLIN_FACTS_CAPABILITY,
                 "support":"SUPPORTED",
                 "coverage":if complete { "COMPLETE" } else { "PARTIAL" },
-                "certainty":"VERIFIED",
+                "certainty":if unsure { "UNSURE" } else { "VERIFIED" },
             }
         ],
-        "obligations":if complete { Vec::<String>::new() } else { vec!["verify-partial-kotlin-boundaries".to_owned()] },
+        "obligations":if complete {
+            Vec::<String>::new()
+        } else if unsure {
+            vec!["restore-k2-semantic-analysis".to_owned()]
+        } else {
+            vec!["verify-partial-kotlin-boundaries".to_owned()]
+        },
     });
     let bytes = canonical::bytes(&receipt).map_err(internal)?;
     store.put(RECEIPT_SCHEMA, &bytes)
@@ -745,6 +810,34 @@ mod tests {
                 .code,
             ErrorCode::TransactionRecoveryRequired
         );
+    }
+
+    #[test]
+    fn source_syntax_fallback_is_explicitly_unsure_and_publication_blocking() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let mut index = json!({
+            "compilation":":/main",
+            "compilerVersion":"2.4.10",
+            "files":[],
+        });
+        normalize_source_syntax_fallback(
+            &mut index,
+            &ClewError::new(
+                ErrorCode::IncompleteSemanticAnalysis,
+                "synthetic K2 refusal",
+            ),
+        )
+        .unwrap();
+        assert_eq!(index["analysisCertainty"], "UNSURE");
+        assert_eq!(index["declarationDescriptors"]["coverage"], "PARTIAL");
+        let receipt =
+            completeness_receipt(&store, &index, &format!("sha256:{}", "1".repeat(64))).unwrap();
+        let lease = store.read(&receipt, 4096).unwrap();
+        let value: Value = serde_json::from_slice(lease.bytes()).unwrap();
+        assert_eq!(value["domains"][0]["certainty"], "UNSURE");
+        assert_eq!(value["obligations"][0], "restore-k2-semantic-analysis");
     }
 
     #[cfg(unix)]

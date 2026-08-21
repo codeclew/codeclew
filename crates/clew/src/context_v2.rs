@@ -59,7 +59,8 @@ pub fn create(
         .flat_map(|fact| paths_in_payload(&fact["payload"]))
         .collect::<BTreeSet<_>>();
     let sources = load_source_snippets(&store, &snapshot, &paths, terms)?;
-    let verified = !query_context.truncated
+    let verified = ready.certainty == "VERIFIED"
+        && !query_context.truncated
         && query_context.unmatched_terms.is_empty()
         && !evidence_facts.is_empty()
         && query_context.requested_terms.iter().all(|term| {
@@ -68,17 +69,26 @@ pub fn create(
                 .any(|fact| exact_identity_match(&fact["payload"], term, None, 0))
         });
     let conditional = !verified && !query_context.facts.is_empty();
-    let obligations = if conditional {
-        vec![json!({
+    let mut obligations = ready
+        .obligations
+        .iter()
+        .map(|obligation| json!({
+            "id":obligation,
+            "code":"UNSURE_GENERATION_AUTHORITY",
+            "subject":query_context.requested_terms,
+            "requiredCheckSet":["restore successful compiler-semantic analysis before publication"],
+            "publicationBlocking":true,
+        }))
+        .collect::<Vec<_>>();
+    if conditional && obligations.is_empty() {
+        obligations.push(json!({
             "id":"verify-query-selection",
             "code":"VERIFY_QUERY_SELECTION",
             "subject":query_context.requested_terms,
             "requiredCheckSet":["confirm exact declarations, callers, boundaries, and tests before publication"],
             "publicationBlocking":true,
-        })]
-    } else {
-        Vec::new()
-    };
+        }));
+    }
     let status = if query_context.facts.is_empty() {
         "INCOMPLETE"
     } else if verified {
@@ -99,6 +109,10 @@ pub fn create(
         "task":{"intent":intent,"terms":query_context.requested_terms},
         "compilation":session.compilation,
         "compilerVersion":ready.compiler_version,
+        "generationAuthority":{
+            "coverage":ready.coverage,
+            "certainty":ready.certainty,
+        },
         "matches":evidence_facts,
         "sources":sources,
         "completeness":{
@@ -270,6 +284,7 @@ fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
         "task":context["task"],
         "compilation":context["compilation"],
         "compilerVersion":context["compilerVersion"],
+        "generationAuthority":context["generationAuthority"],
         "matches":[],
         "sources":[],
         "completeness":context["completeness"],
