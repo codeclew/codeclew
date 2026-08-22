@@ -133,21 +133,47 @@ class BtaIncrementalBackend21 internal constructor(
             )
         }
 
-        val transaction = beginDirty(snapshot, if (full) K2Current21.Empty else current)
-        if (full) resetMutable21(mutable, store.stateRoot)
-        val factsOutput = mutable.resolve("facts.jsonl")
-        require(factsOutput.parent == mutable && !Files.isSymbolicLink(factsOutput))
-        Files.deleteIfExists(factsOutput)
-        val byPath = snapshot.files.associateBy(K2SourceFile21::path)
-        val modified = if (full) {
-            snapshot.files.map(K2SourceFile21::file)
-        } else {
-            delta.addedOrModified.sorted().map { requireNotNull(byPath[it]).file }
+        val transaction = try {
+            beginDirty(snapshot, if (full) K2Current21.Empty else current)
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            return failed21(status, started, "K2_BACKEND_BEGIN_DIRTY_EXCEPTION", totalFiles = snapshot.files.size, recovered = recovery)
         }
-        val removed = if (full) emptyList() else delta.removed.sorted().map { relative ->
-            request.repo.resolve(relative).also { path ->
-                require(path.isAbsolute && path == path.normalize() && path.startsWith(request.repo))
+        if (full) try {
+            resetMutable21(mutable, store.stateRoot)
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            return failed21(status, started, "K2_BACKEND_RESET_MUTABLE_EXCEPTION", totalFiles = snapshot.files.size, recovered = recovery)
+        }
+        val factsOutput = try {
+            mutable.resolve("facts.jsonl").also { output ->
+                require(output.parent == mutable && !Files.isSymbolicLink(output))
+                Files.deleteIfExists(output)
             }
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            return failed21(status, started, "K2_BACKEND_FACTS_OUTPUT_EXCEPTION", totalFiles = snapshot.files.size, recovered = recovery)
+        }
+        val byPath = snapshot.files.associateBy(K2SourceFile21::path)
+        val modified = try {
+            if (full) {
+                snapshot.files.map(K2SourceFile21::file)
+            } else {
+                delta.addedOrModified.sorted().map { requireNotNull(byPath[it]).file }
+            }
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            return failed21(status, started, "K2_BACKEND_MODIFIED_SOURCES_EXCEPTION", totalFiles = snapshot.files.size, recovered = recovery)
+        }
+        val removed = try {
+            if (full) emptyList() else delta.removed.sorted().map { relative ->
+                request.repo.resolve(relative).also { path ->
+                    require(path.isAbsolute && path == path.normalize() && path.startsWith(request.repo))
+                }
+            }
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            return failed21(status, started, "K2_BACKEND_REMOVED_SOURCES_EXCEPTION", totalFiles = snapshot.files.size, recovered = recovery)
         }
         val sortedSources = snapshot.files.map(K2SourceFile21::file)
         val compilation = try {
