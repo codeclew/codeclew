@@ -6,10 +6,7 @@ use crate::adapter_v2::{
 };
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
-use crate::derived_manifest::DerivedAnalysisInputManifest;
 use crate::error::{ClewError, ErrorCode};
-use crate::generation_v2::GenerationManifest;
-use crate::incremental_v2::CompilerStoreKey;
 use crate::repository_snapshot::{RepositoryInputSnapshot, capture, materialize};
 use crate::state::{ManagedTemporaryDirectory, StateAuthority, create_private_directory};
 use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
@@ -210,131 +207,6 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
     }
 }
 
-pub struct LegacyKotlinWorkerDriver {
-    state: StateAuthority,
-    store: CasStore,
-    line: KotlinCompilerLine,
-    adapter_digest: String,
-    exclusive: Mutex<()>,
-}
-
-impl LegacyKotlinWorkerDriver {
-    pub fn new(
-        state: StateAuthority,
-        store: CasStore,
-        line: KotlinCompilerLine,
-        adapter_digest: String,
-    ) -> Self {
-        Self {
-            state,
-            store,
-            line,
-            adapter_digest,
-            exclusive: Mutex::new(()),
-        }
-    }
-
-    fn load_snapshot(
-        &self,
-        request: &AnalyzeGenerationRequest,
-    ) -> Result<RepositoryInputSnapshot, ClewError> {
-        let manifest_limit =
-            usize::try_from(request.derived_input_manifest.size).map_err(|_| {
-                ClewError::new(
-                    ErrorCode::ResourceLimit,
-                    "derived manifest exceeds host size",
-                )
-            })?;
-        let lease = self
-            .store
-            .read(&request.derived_input_manifest, manifest_limit)?;
-        let manifest: DerivedAnalysisInputManifest = serde_json::from_slice(lease.bytes())
-            .map_err(|_| invalid("derived input manifest is invalid"))?;
-        manifest.verify(&self.store)?;
-        let snapshot_limit = usize::try_from(manifest.repository_snapshot.size).map_err(|_| {
-            ClewError::new(
-                ErrorCode::ResourceLimit,
-                "repository snapshot exceeds host size",
-            )
-        })?;
-        let lease = self
-            .store
-            .read(&manifest.repository_snapshot, snapshot_limit)?;
-        serde_json::from_slice(lease.bytes())
-            .map_err(|_| invalid("repository input snapshot is invalid"))
-    }
-}
-
-impl KotlinGenerationDriver for LegacyKotlinWorkerDriver {
-    fn analyze(&self, request: &AnalyzeGenerationRequest) -> Result<Value, ClewError> {
-        let _exclusive = self.exclusive.lock().map_err(poisoned)?;
-        let snapshot = self.load_snapshot(request)?;
-        let options_limit =
-            usize::try_from(request.compilation.canonical_options.size).map_err(|_| {
-                ClewError::new(ErrorCode::ResourceLimit, "Kotlin options exceed host size")
-            })?;
-        let options = self
-            .store
-            .read(&request.compilation.canonical_options, options_limit)?;
-        let options: Value = serde_json::from_slice(options.bytes())
-            .map_err(|_| invalid("Kotlin canonical options are invalid"))?;
-        let native_compilation = options
-            .get("nativeCompilation")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("Kotlin canonical options have no nativeCompilation"))?;
-        if let Some(parent) = &request.parent_generation {
-            let limit = usize::try_from(parent.size).map_err(|_| {
-                ClewError::new(
-                    ErrorCode::ResourceLimit,
-                    "parent generation exceeds host size",
-                )
-            })?;
-            let lease = self.store.read(parent, limit)?;
-            let parent: GenerationManifest = serde_json::from_slice(lease.bytes())
-                .map_err(|_| invalid("parent generation is invalid"))?;
-            parent.verify(&self.store)?;
-        }
-        let compiler_store_key = CompilerStoreKey::create(
-            self.line.adapter_id(),
-            self.adapter_digest.clone(),
-            &request.compilation,
-        )?;
-        let index = analyze_project_native_index(
-            &self.state,
-            &self.store,
-            &snapshot,
-            native_compilation,
-            compiler_store_key.path_component()?,
-        )?;
-        if index.get("compilerVersion").and_then(Value::as_str)
-            != Some(self.line.compiler_version())
-        {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "worker selected another Kotlin compiler line",
-            ));
-        }
-        Ok(index)
-    }
-}
-
-pub(crate) fn analyze_project_native_index(
-    state: &StateAuthority,
-    store: &CasStore,
-    snapshot: &RepositoryInputSnapshot,
-    native_compilation: &str,
-    compiler_store_component: &str,
-) -> Result<Value, ClewError> {
-    analyze_project_native_index_profiled(
-        state,
-        store,
-        snapshot,
-        native_compilation,
-        compiler_store_component,
-    )
-    .map(|(index, _)| index)
-}
-
 pub(crate) struct ProjectNativeKotlinAttempt {
     store: CasStore,
     snapshot: RepositoryInputSnapshot,
@@ -506,25 +378,6 @@ fn verify_materialized_inputs(
         ));
     }
     Ok(())
-}
-
-fn analyze_project_native_index_profiled(
-    state: &StateAuthority,
-    store: &CasStore,
-    snapshot: &RepositoryInputSnapshot,
-    native_compilation: &str,
-    compiler_store_component: &str,
-) -> Result<(Value, Option<crate::worker::CompilerIndexProfile>), ClewError> {
-    let attempt = ProjectNativeKotlinAttempt::open(
-        state,
-        store,
-        snapshot,
-        native_compilation,
-        compiler_store_component,
-        None,
-    )?;
-    let (index, profile, _) = attempt.analyze()?;
-    Ok((index, profile))
 }
 
 fn normalize_source_syntax_fallback(
@@ -835,13 +688,11 @@ fn poisoned<T>(_: std::sync::PoisonError<T>) -> ClewError {
 mod tests {
     use super::*;
     use crate::adapter_v2::{
-        ANALYSIS_REQUEST_SCHEMA, BuildModel, COMPILATION_SCHEMA, CompilationDescriptor,
-        ConformanceSink, DescriptorCompleteness, DescriptorOrigin, PROVIDER_PROTOCOL,
-        ProviderHandshake, ProviderModel, SourceRootDescriptor,
+        ANALYSIS_REQUEST_SCHEMA, COMPILATION_SCHEMA, CompilationDescriptor, ConformanceSink,
+        DescriptorCompleteness, DescriptorOrigin, SourceRootDescriptor,
     };
-    use crate::derived_manifest::DerivedAnalysisInputManifest;
-    use crate::generation_v2::GenerationKind;
-    use crate::incremental_v2::{COMPILER_STORE_KEY_SCHEMA, CompletenessVector};
+    use crate::generation_v2::{GenerationKind, GenerationManifest};
+    use crate::incremental_v2::{COMPILER_STORE_KEY_SCHEMA, CompilerStoreKey, CompletenessVector};
     use crate::repository_snapshot;
     use crate::worker::CompilerIndexStatus;
     use std::path::Path;
@@ -1099,84 +950,6 @@ mod tests {
                     && left.kind == right.kind
                     && left.content == right.content)
         );
-    }
-
-    #[test]
-    fn sealed_k24_snapshot_reaches_verified_streamed_generation() {
-        let root = tempfile::tempdir().unwrap();
-        let state = StateAuthority::open(root.path().join("v2")).unwrap();
-        let store = CasStore::open(&state).unwrap();
-        let fixture = workspace_root().join("fixtures/kotlin-basic");
-        let (_snapshot, snapshot_object) = repository_snapshot::capture(&fixture, &store).unwrap();
-        let toolchain = store.put("test/toolchain/1", b"2.4.10").unwrap();
-        let options = store
-            .put("test/options/1", br#"{"nativeCompilation":":/main"}"#)
-            .unwrap();
-        let compilation = CompilationDescriptor {
-            schema: COMPILATION_SCHEMA.into(),
-            compilation_id: "root-main".into(),
-            language_uri: LanguageUri::parse(KOTLIN_LANGUAGE).unwrap(),
-            source_roots: vec![SourceRootDescriptor {
-                logical_name: "main".into(),
-                tree: store.put("test/tree/1", b"fixture").unwrap(),
-            }],
-            generated_source_roots: vec![],
-            classpath: vec![],
-            toolchain: toolchain.clone(),
-            plugins: vec![],
-            canonical_options: options,
-            dependency_compilation_ids: vec![],
-            operations: vec![],
-            origin: DescriptorOrigin::ProjectNative,
-            completeness: DescriptorCompleteness::Complete,
-        };
-        let provider = ProviderModel {
-            handshake: ProviderHandshake {
-                protocol: PROVIDER_PROTOCOL.into(),
-                provider_id: "fixture-gradle".into(),
-                provider_digest: format!("sha256:{}", "b".repeat(64)),
-                build_system_uris: vec!["build:gradle".into()],
-            },
-            build_model: BuildModel {
-                provider_id: "fixture-gradle".into(),
-                model: store.put("test/model/1", b"fixture-model").unwrap(),
-                compilations: vec![compilation.clone()],
-            },
-        };
-        let (_manifest, manifest_object) =
-            DerivedAnalysisInputManifest::create(&store, snapshot_object, vec![provider]).unwrap();
-        let adapter_digest = format!("sha256:{}", "a".repeat(64));
-        let driver = LegacyKotlinWorkerDriver::new(
-            state,
-            store.clone(),
-            KotlinCompilerLine::K24,
-            adapter_digest.clone(),
-        );
-        let adapter = KotlinAdapterV2::new(
-            KotlinCompilerLine::K24,
-            adapter_digest,
-            toolchain.digest.clone(),
-            store.clone(),
-            driver,
-        )
-        .unwrap();
-        let request = AnalyzeGenerationRequest {
-            schema: ANALYSIS_REQUEST_SCHEMA.into(),
-            attempt_id: "attempt:k24-sealed".into(),
-            generation_key: format!("sha256:{}", "9".repeat(64)),
-            capability: CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY).unwrap(),
-            compilation,
-            derived_input_manifest: manifest_object,
-            parent_generation: None,
-        };
-        let mut sink =
-            ConformanceSink::for_capabilities([
-                CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY).unwrap()
-            ]);
-        adapter
-            .analyze_generation(&request, &mut sink, &AtomicBool::new(false))
-            .unwrap();
-        assert!(sink.finish().unwrap().fact_count > 10);
     }
 
     fn copy_kotlin_basic_fixture(destination: &Path) {
