@@ -132,14 +132,23 @@ and run; there is no confidence threshold or automatic promotion.
 
 ## Verification
 
+Development verification follows the machine-readable stabilization plan in
+`docs/stabilization-plan.json`. Inspect the next admissible step with:
+
 ```bash
-./scripts/verify.sh
-./scripts/bta24-acceptance.sh
-./scripts/cold-multicore-gate.sh
-./scripts/multi-compilation-gate.sh
-./scripts/demo.sh
-./scripts/benchmark.sh
+python3 -I -S scripts/stabilization_control.py status
 ```
+
+Run only the check named by that status through the controller. The controller
+binds immutable receipts to the plan, verifier, command, relevant source bytes,
+environment, host qualification, and source revision. A functional failure
+cannot be retried against the same evidence key.
+
+Full verification, BTA24, cold/multi-compilation performance gates, and the
+warm benchmark refuse direct execution. They become admissible only at their
+declared stabilization steps. This keeps ordinary development on bounded
+static, unit, and component checks; expensive end-to-end evidence is produced
+once per unchanged authority rather than after every edit.
 
 The CLI writes canonical JSON to stdout and diagnostics to stderr. The system is
 fail-closed for stale authorities, ambiguous anchors, unsupported project

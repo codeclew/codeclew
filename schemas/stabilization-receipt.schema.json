@@ -1,0 +1,25 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties":false,
+  "properties":{
+    "checkId":{"pattern":"^[a-z0-9][a-z0-9-]*$","type":"string"},
+    "commandDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "controllerDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "durationMillis":{"minimum":0,"type":"integer"},
+    "environmentDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "exitCode":{"type":"integer"},
+    "inputDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "planDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "receiptDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "schema":{"const":"codeclew-stabilization-receipt/1.0"},
+    "sourceRevision":{"pattern":"^[0-9a-f]{40,64}$","type":"string"},
+    "status":{"enum":["PASS","FAIL","BUDGET_EXCEEDED","UNQUALIFIED_HOST"]},
+    "stderrDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "stdoutDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"},
+    "stepId":{"pattern":"^[A-Z][A-Z0-9]*$","type":"string"},
+    "tier":{"pattern":"^L[0-7]$","type":"string"},
+    "verifierDigest":{"pattern":"^sha256:[0-9a-f]{64}$","type":"string"}
+  },
+  "required":["checkId","commandDigest","controllerDigest","durationMillis","environmentDigest","exitCode","inputDigest","planDigest","receiptDigest","schema","sourceRevision","status","stderrDigest","stdoutDigest","stepId","tier","verifierDigest"],
+  "type":"object"
+}

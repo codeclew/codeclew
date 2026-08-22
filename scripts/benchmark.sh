@@ -3,6 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
+python3 -I -S "$ROOT/scripts/stabilization_control.py" guard --gate final-benchmark >/dev/null
 mkdir -p benchmarks/reports
 
 BENCH_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-benchmark.XXXXXX")

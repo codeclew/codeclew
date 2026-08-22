@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties":false,
+  "properties":{
+    "checks":{"items":{"additionalProperties":false,"properties":{"command":{"items":{"minLength":1,"type":"string"},"minItems":1,"type":"array"},"environmentKeys":{"items":{"pattern":"^[A-Z][A-Z0-9_]*$","type":"string"},"type":"array"},"gate":{"type":["string","null"]},"id":{"pattern":"^[a-z0-9][a-z0-9-]*$","type":"string"},"inputRoots":{"items":{"minLength":1,"type":"string"},"minItems":1,"type":"array"},"step":{"pattern":"^[A-Z][A-Z0-9]*$","type":"string"},"tier":{"pattern":"^L[0-7]$","type":"string"}},"required":["command","environmentKeys","gate","id","inputRoots","step","tier"],"type":"object"},"minItems":1,"type":"array"},
+    "planId":{"minLength":1,"type":"string"},
+    "schema":{"const":"codeclew-stabilization-plan/1.0"},
+    "steps":{"items":{"additionalProperties":false,"properties":{"dependencies":{"items":{"pattern":"^[A-Z][A-Z0-9]*$","type":"string"},"type":"array"},"id":{"pattern":"^[A-Z][A-Z0-9]*$","type":"string"},"requiredChecks":{"items":{"pattern":"^[a-z0-9][a-z0-9-]*$","type":"string"},"minItems":1,"type":"array"}},"required":["dependencies","id","requiredChecks"],"type":"object"},"minItems":1,"type":"array"},
+    "tiers":{"items":{"additionalProperties":false,"properties":{"budgetSeconds":{"minimum":1,"type":"integer"},"cleanRequired":{"type":"boolean"},"id":{"pattern":"^L[0-7]$","type":"string"},"minimumMemoryBytes":{"minimum":0,"type":"integer"},"minimumPhysicalCores":{"minimum":0,"type":"integer"}},"required":["budgetSeconds","cleanRequired","id","minimumMemoryBytes","minimumPhysicalCores"],"type":"object"},"minItems":8,"type":"array"}
+  },
+  "required":["checks","planId","schema","steps","tiers"],
+  "type":"object"
+}

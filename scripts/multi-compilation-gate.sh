@@ -3,6 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
+python3 -I -S "$ROOT/scripts/stabilization_control.py" guard --gate multi-compilation >/dev/null
 umask 077
 
 REPORT="$ROOT/benchmarks/reports/multi-compilation-latest.json"
