@@ -1276,12 +1276,16 @@ impl WorkerClient {
                     .map(str::to_owned)
                     .into_iter()
                     .collect();
+                let code = parse_worker_code(&error.code);
                 let failure = ClewError {
-                    code: parse_worker_code(&error.code),
-                    message: error.message,
+                    message: safe_worker_error_message(&code).into(),
+                    code,
                     transaction_id: None,
                     snapshot_id: self.snapshot.as_ref().map(snapshot_label),
-                    evidence: error.evidence,
+                    // The worker may wrap third-party compiler/build output.
+                    // It is not an evidence authority and can contain absolute
+                    // paths, environment values, or unbounded diagnostics.
+                    evidence: Vec::new(),
                     relevant_anchors_or_symbols: relevant.into_boxed_slice(),
                     retryable: error.retryable,
                 };
@@ -2990,6 +2994,23 @@ fn parse_worker_code(code: &str) -> ErrorCode {
     }
 }
 
+fn safe_worker_error_message(code: &ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::UnsupportedProjectConfiguration => {
+            "project model extraction failed; verify the explicit compilation and run the project wrapper directly for local diagnostics"
+        }
+        ErrorCode::UnsupportedKotlinVersion => "the project Kotlin version is unsupported",
+        ErrorCode::UnsupportedCompilerPluginAbi => {
+            "the project compiler plugin ABI is unsupported by the selected worker"
+        }
+        ErrorCode::ProjectModelChanged => "the project model changed during semantic analysis",
+        ErrorCode::WorkerPreparationRequired => "the sealed Kotlin worker is unavailable",
+        ErrorCode::IncompleteSemanticAnalysis => "the Kotlin worker could not prove complete semantic analysis",
+        ErrorCode::WorkerCrashed => "the Kotlin worker terminated before producing a verified response",
+        _ => "the Kotlin worker rejected the request; inspect private run diagnostics",
+    }
+}
+
 pub fn workspace_root() -> PathBuf {
     #[cfg(not(test))]
     {
@@ -3810,6 +3831,10 @@ mod tests {
             parse_worker_code("FUTURE_OR_MISSPELLED_CODE"),
             ErrorCode::WorkerProtocolMismatch,
         );
+        let message = safe_worker_error_message(&ErrorCode::UnsupportedProjectConfiguration);
+        assert!(!message.contains('/'));
+        assert!(!message.contains("HOME"));
+        assert!(message.contains("explicit compilation"));
     }
 
     #[test]
