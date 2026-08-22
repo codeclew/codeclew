@@ -820,7 +820,18 @@ fn unlink_at(parent: &File, name: &std::ffi::OsStr) -> Result<(), ClewError> {
 
 #[cfg(unix)]
 fn read_directory_names(directory: &File) -> Result<Vec<OsString>, ClewError> {
-    let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    // dup(2) shares the directory stream offset with the pinned authority FD,
+    // so a second enumeration would otherwise appear empty. openat(".")
+    // creates a fresh open-file description while remaining bound to the same
+    // descriptor-authorized directory.
+    let current = b".\0";
+    let duplicate = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            current.as_ptr().cast(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
     if duplicate < 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }

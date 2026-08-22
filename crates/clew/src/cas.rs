@@ -4,10 +4,12 @@ use crate::state::{ManagedDirectory, StateAuthority};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -31,6 +33,12 @@ struct PackManifest {
 struct PackEntry {
     object: CasObject,
     offset: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PackLocation {
+    data_name: String,
+    entry: PackEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +74,7 @@ pub struct CasStore {
     packs: ManagedDirectory,
     locks: ManagedDirectory,
     quarantine: ManagedDirectory,
+    pack_catalog: Arc<RwLock<BTreeMap<String, PackLocation>>>,
 }
 
 impl CasStore {
@@ -75,7 +84,9 @@ impl CasStore {
             packs: authority.directory(Path::new("objects/packs"))?,
             locks: authority.directory(Path::new("locks"))?,
             quarantine: authority.directory(Path::new("quarantine"))?,
+            pack_catalog: Arc::new(RwLock::new(BTreeMap::new())),
         };
+        store.refresh_pack_catalog()?;
         Ok(store)
     }
 
@@ -106,22 +117,27 @@ impl CasStore {
     }
 
     /// Publish an indexed batch as one durable pack while preserving the
-    /// caller's deterministic input order. Loose files are a derived read
-    /// cache and can be rebuilt from the sealed pack after a crash.
+    /// caller's deterministic input order. Packed objects remain pack-first;
+    /// publishing thousands of derived loose files would turn one sequential
+    /// fsync into thousands of metadata transactions.
     pub fn put_batch(&self, objects: Vec<(String, Vec<u8>)>) -> Result<Vec<CasObject>, ClewError> {
-        let mut prepared = Vec::with_capacity(objects.len());
-        for (schema, bytes) in objects {
-            validate_object_schema(&schema)?;
-            let object = CasObject {
-                schema: CAS_OBJECT_SCHEMA.into(),
-                object_schema: schema,
-                digest: String::new(),
-                size: bytes.len() as u64,
-            };
-            let mut object = object;
-            object.digest = object_digest(&object.object_schema, &bytes);
-            prepared.push((object, bytes));
+        for (schema, _) in &objects {
+            validate_object_schema(schema)?;
         }
+        let prepared = objects
+            .into_par_iter()
+            .map(|(schema, bytes)| {
+                let object = CasObject {
+                    schema: CAS_OBJECT_SCHEMA.into(),
+                    object_schema: schema,
+                    digest: String::new(),
+                    size: bytes.len() as u64,
+                };
+                let mut object = object;
+                object.digest = object_digest(&object.object_schema, &bytes);
+                (object, bytes)
+            })
+            .collect::<Vec<_>>();
         let references = prepared
             .iter()
             .map(|(object, _)| object.clone())
@@ -130,32 +146,26 @@ impl CasStore {
             return Ok(references);
         }
         let batch_lock = self.batch_lock()?;
+        self.refresh_pack_catalog()?;
         let mut missing = Vec::new();
+        let mut missing_digests = BTreeSet::new();
         for (object, bytes) in &prepared {
-            let (directory, name) = self.object_location(&object.digest)?;
-            if directory.file_exists(OsStr::new(&name))? {
-                match self.read_path(object, &directory, OsStr::new(&name), bytes.len()) {
-                    Ok(existing) if existing == *bytes => continue,
-                    Ok(_) | Err(_) => {
-                        let lock = self.lock(&object.digest, LockMode::Exclusive)?;
-                        if directory.file_exists(OsStr::new(&name))? {
-                            self.quarantine_locked(&directory, OsStr::new(&name), &object.digest)?;
-                        }
-                        drop(lock);
-                    }
-                }
+            if self
+                .read_from_catalog(object, bytes.len())?
+                .is_some_and(|existing| existing == *bytes)
+            {
+                continue;
             }
-            missing.push((object.clone(), bytes.clone()));
+            if missing_digests.insert(object.digest.clone()) {
+                missing.push((object.clone(), bytes.clone()));
+            }
         }
         if !missing.is_empty() {
             self.write_pack(&missing)?;
-            missing
-                .par_iter()
-                .try_for_each(|(object, bytes)| self.materialize_loose(object, bytes))?;
             for (object, bytes) in &missing {
-                let (directory, name) = self.object_location(&object.digest)?;
-                if self.read_path(object, &directory, OsStr::new(&name), bytes.len())? != *bytes {
-                    return Err(corrupt("CAS pack materialization changed object bytes"));
+                if self.read_from_catalog(object, bytes.len())?.as_deref() != Some(bytes.as_slice())
+                {
+                    return Err(corrupt("CAS pack verification changed object bytes"));
                 }
             }
         }
@@ -172,6 +182,13 @@ impl CasStore {
             ));
         }
         let lock = self.lock(&object.digest, LockMode::Shared)?;
+        if let Some(bytes) = self.read_from_catalog(object, max_bytes)? {
+            return Ok(CasLease {
+                object: object.clone(),
+                bytes,
+                lock,
+            });
+        }
         let (directory, name) = self.object_location(&object.digest)?;
         match self.read_path(object, &directory, OsStr::new(&name), max_bytes) {
             Ok(bytes) => Ok(CasLease {
@@ -185,11 +202,10 @@ impl CasStore {
                 if directory.file_exists(OsStr::new(&name))? {
                     self.quarantine_locked(&directory, OsStr::new(&name), &object.digest)?;
                 }
-                if let Some(bytes) = self.read_from_packs(object, max_bytes)? {
-                    self.materialize_loose(object, &bytes)?;
+                self.refresh_pack_catalog()?;
+                if let Some(bytes) = self.read_from_catalog(object, max_bytes)? {
                     drop(exclusive);
                     let lock = self.lock(&object.digest, LockMode::Shared)?;
-                    let bytes = self.read_path(object, &directory, OsStr::new(&name), max_bytes)?;
                     return Ok(CasLease {
                         object: object.clone(),
                         bytes,
@@ -236,6 +252,7 @@ impl CasStore {
         {
             let _ = self.packs.remove_file(OsStr::new(&temporary));
             self.verify_pack_pair(&data_name, &index_name, Some(&manifest))?;
+            self.refresh_pack_catalog()?;
             return Ok(());
         }
         self.packs
@@ -249,75 +266,78 @@ impl CasStore {
         }
         self.packs.atomic_write(OsStr::new(&index_name), &bytes)?;
         self.verify_pack_pair(&data_name, &index_name, Some(&manifest))?;
+        self.install_pack_manifest(&data_name, &manifest)?;
         Ok(())
     }
 
-    fn materialize_loose(&self, object: &CasObject, bytes: &[u8]) -> Result<(), ClewError> {
-        if object_digest(&object.object_schema, bytes) != object.digest
-            || bytes.len() as u64 != object.size
-        {
-            return Err(corrupt("CAS pack object does not match its reference"));
-        }
-        let (directory, name) = self.object_location(&object.digest)?;
-        if directory.file_exists(OsStr::new(&name))?
-            && self
-                .read_path(object, &directory, OsStr::new(&name), bytes.len())
-                .is_ok()
-        {
-            return Ok(());
-        }
-        let temporary = format!(".derived-{}", uuid::Uuid::new_v4());
-        let mut file = directory.create_file(OsStr::new(&temporary))?;
-        file.write_all(bytes).map_err(io_error)?;
-        file.flush().map_err(io_error)?;
-        drop(file);
-        directory.rename_to(OsStr::new(&temporary), &directory, OsStr::new(&name))
-    }
-
-    fn read_from_packs(
+    fn read_from_catalog(
         &self,
         object: &CasObject,
         max_bytes: usize,
     ) -> Result<Option<Vec<u8>>, ClewError> {
-        let indexes = self
+        let location = self
+            .pack_catalog
+            .read()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?
+            .get(&object.digest)
+            .cloned();
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        if location.entry.object != *object || object.size > max_bytes as u64 {
+            return Err(corrupt("CAS pack reference differs from requested object"));
+        }
+        let mut file = self
+            .packs
+            .open_file(OsStr::new(&location.data_name))
+            .map_err(|_| corrupt("CAS packed data is missing or unsafe"))?;
+        file.seek(SeekFrom::Start(location.entry.offset))
+            .map_err(|_| corrupt("CAS packed object offset is unreadable"))?;
+        let mut bytes = vec![0; object.size as usize];
+        file.read_exact(&mut bytes)
+            .map_err(|_| corrupt("CAS packed object is truncated"))?;
+        if object_digest(&object.object_schema, &bytes) != object.digest {
+            return Err(corrupt("CAS packed object digest mismatch"));
+        }
+        Ok(Some(bytes))
+    }
+
+    fn refresh_pack_catalog(&self) -> Result<(), ClewError> {
+        let mut catalog = BTreeMap::new();
+        for index_name in self
             .packs
             .entries()?
             .into_iter()
             .filter(|name| Path::new(name).extension() == Some(OsStr::new("json")))
-            .collect::<Vec<_>>();
-        for index_name in indexes {
+        {
             let component = Path::new(&index_name)
                 .file_stem()
                 .and_then(OsStr::to_str)
                 .ok_or_else(|| corrupt("CAS pack index name is invalid"))?;
             let data_name = format!("{component}.pack");
-            let manifest = self.verify_pack_pair(
-                &data_name,
-                index_name
-                    .to_str()
-                    .ok_or_else(|| corrupt("CAS pack index name is not UTF-8"))?,
-                None,
-            )?;
-            let Some(entry) = manifest
-                .objects
-                .iter()
-                .find(|entry| entry.object.digest == object.digest)
-            else {
-                continue;
-            };
-            if &entry.object != object || object.size > max_bytes as u64 {
-                return Err(corrupt("CAS pack reference differs from requested object"));
-            }
-            let mut file = self.packs.open_file(OsStr::new(&data_name))?;
-            file.seek(SeekFrom::Start(entry.offset)).map_err(io_error)?;
-            let mut bytes = vec![0; object.size as usize];
-            file.read_exact(&mut bytes).map_err(io_error)?;
-            if object_digest(&object.object_schema, &bytes) != object.digest {
-                return Err(corrupt("CAS packed object digest mismatch"));
-            }
-            return Ok(Some(bytes));
+            let index_name = index_name
+                .to_str()
+                .ok_or_else(|| corrupt("CAS pack index name is not UTF-8"))?;
+            let manifest = self.verify_pack_pair(&data_name, index_name, None)?;
+            add_pack_to_catalog(&mut catalog, &data_name, &manifest)?;
         }
-        Ok(None)
+        *self
+            .pack_catalog
+            .write()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))? = catalog;
+        Ok(())
+    }
+
+    fn install_pack_manifest(
+        &self,
+        data_name: &str,
+        manifest: &PackManifest,
+    ) -> Result<(), ClewError> {
+        let mut catalog = self
+            .pack_catalog
+            .write()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        add_pack_to_catalog(&mut catalog, data_name, manifest)
     }
 
     fn verify_pack_pair(
@@ -447,6 +467,29 @@ impl CasStore {
     }
 }
 
+fn add_pack_to_catalog(
+    catalog: &mut BTreeMap<String, PackLocation>,
+    data_name: &str,
+    manifest: &PackManifest,
+) -> Result<(), ClewError> {
+    for entry in &manifest.objects {
+        let location = PackLocation {
+            data_name: data_name.to_owned(),
+            entry: entry.clone(),
+        };
+        match catalog.get(&entry.object.digest) {
+            Some(existing) if existing.entry.object != entry.object => {
+                return Err(corrupt("CAS pack catalog has a digest collision"));
+            }
+            Some(existing) if existing.data_name <= location.data_name => {}
+            _ => {
+                catalog.insert(entry.object.digest.clone(), location);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum LockMode {
     Shared,
@@ -556,19 +599,70 @@ mod tests {
     }
 
     #[test]
-    fn packed_batch_restores_a_missing_derived_loose_object() {
+    fn large_batch_stays_one_pack_without_loose_metadata_fanout() {
         let (_root, store) = store();
+        let objects = (0..4096)
+            .map(|index| {
+                (
+                    "test/large-batch/1".to_owned(),
+                    format!("fact-{index:04}").into_bytes(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let first = store.put_batch(objects.clone()).unwrap();
+        assert!(store.objects.entries().unwrap().is_empty());
+        assert_eq!(
+            store
+                .packs
+                .entries()
+                .unwrap()
+                .into_iter()
+                .filter(|name| Path::new(name).extension() == Some(OsStr::new("pack")))
+                .count(),
+            1
+        );
+        for index in [0, 1023, 2047, 4095] {
+            assert_eq!(
+                store.read(&first[index], 1024).unwrap().bytes(),
+                objects[index].1
+            );
+        }
+        let second = store.put_batch(objects).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            store
+                .packs
+                .entries()
+                .unwrap()
+                .into_iter()
+                .filter(|name| Path::new(name).extension() == Some(OsStr::new("pack")))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn packed_batch_reads_without_creating_loose_objects() {
+        let (root, store) = store();
         let object = store
             .put_batch(vec![("test/packed/1".into(), b"durable payload".to_vec())])
             .unwrap()
             .remove(0);
         let loose = store.object_path(&object.digest).unwrap();
-        fs::remove_file(&loose).unwrap();
+        assert!(!loose.exists());
         assert_eq!(
             store.read(&object, 1024).unwrap().bytes(),
             b"durable payload"
         );
-        assert!(loose.is_file());
+        assert!(!loose.exists());
+
+        let reopened =
+            CasStore::open(&StateAuthority::open(root.path().join("v2")).unwrap()).unwrap();
+        assert_eq!(
+            reopened.read(&object, 1024).unwrap().bytes(),
+            b"durable payload"
+        );
+        assert!(!loose.exists());
     }
 
     #[test]
@@ -578,7 +672,6 @@ mod tests {
             .put_batch(vec![("test/packed/1".into(), b"trusted payload".to_vec())])
             .unwrap()
             .remove(0);
-        fs::remove_file(store.object_path(&object.digest).unwrap()).unwrap();
         let pack = fs::read_dir(store.packs.path())
             .unwrap()
             .filter_map(Result::ok)
@@ -658,16 +751,12 @@ mod tests {
             .put_batch(vec![("test/root-swap/1".into(), b"trusted".to_vec())])
             .unwrap()
             .remove(0);
-        let hex = digest_component(&object.digest).unwrap();
-        assert_eq!(
-            fs::read(
-                pinned_root
-                    .join("objects/sha256")
-                    .join(&hex[..2])
-                    .join(&hex[2..])
-            )
-            .unwrap(),
-            b"trusted"
+        assert_eq!(store.read(&object, 1024).unwrap().bytes(), b"trusted");
+        assert!(
+            fs::read_dir(pinned_root.join("objects/packs"))
+                .unwrap()
+                .next()
+                .is_some()
         );
         assert!(fs::read_dir(&state_root).unwrap().next().is_none());
     }
