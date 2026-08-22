@@ -103,10 +103,10 @@ fn generate_worker_input_manifests() {
             "pub(crate) const PINNED_{name}_OUTPUT_DIGEST: &str = \"{output_digest}\";\n"
         ));
         generated.push_str(&format!(
-            "pub(crate) static PINNED_{name}_OUTPUTS: &[(&str,u64,&str)] = &["
+            "pub(crate) static PINNED_{name}_OUTPUTS: &[(&str,u32,u64,&str)] = &["
         ));
-        for (path, size, hash) in output_entries {
-            generated.push_str(&format!("(\"{path}\",{size},\"{hash}\"),"));
+        for (path, mode, size, hash) in output_entries {
+            generated.push_str(&format!("(\"{path}\",{mode},{size},\"{hash}\"),"));
         }
         generated.push_str("];\n");
     }
@@ -122,10 +122,10 @@ fn validate_output_manifest(
     relative: &str,
     variant: &str,
     install_task: &str,
-) -> (String, Vec<(String, u64, String)>) {
+) -> (String, Vec<(String, u32, u64, String)>) {
     let bytes = std::fs::read(repo.join(relative)).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["schema"], "trusted-worker-distribution/0.1");
+    assert_eq!(value["schema"], "trusted-worker-distribution/0.2");
     assert_eq!(value["variant"], variant);
     assert_eq!(value["installTask"], install_task);
     let canonical = format!("{}\n", serde_json::to_string(&value).unwrap());
@@ -137,13 +137,16 @@ fn validate_output_manifest(
     let mut entries = Vec::new();
     for row in value["files"].as_array().unwrap() {
         let path = row["path"].as_str().unwrap().to_owned();
+        let raw_mode = row["mode"].as_u64().unwrap();
+        assert!(raw_mode == 0 || raw_mode == 0o111);
+        let mode = u32::try_from(raw_mode).unwrap();
         let size = row["size"].as_u64().unwrap();
         let hash = row["sha256"].as_str().unwrap().to_owned();
         assert!(
             !path.is_empty() && !path.starts_with('/') && !path.split('/').any(|part| part == "..")
         );
         assert!(hash.starts_with("sha256:") && hash.len() == 71);
-        entries.push((path, size, hash));
+        entries.push((path, mode, size, hash));
     }
     assert!(entries.windows(2).all(|pair| pair[0].0 < pair[1].0));
     let digest = distribution_manifest_digest(&entries);
@@ -151,10 +154,12 @@ fn validate_output_manifest(
     (digest, entries)
 }
 
-fn distribution_manifest_digest(entries: &[(String, u64, String)]) -> String {
+fn distribution_manifest_digest(entries: &[(String, u32, u64, String)]) -> String {
     let mut digest = Sha256::new();
-    for (path, size, hash) in entries {
+    for (path, mode, size, hash) in entries {
         digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(mode.to_string().as_bytes());
         digest.update([0]);
         digest.update(size.to_string().as_bytes());
         digest.update([0]);

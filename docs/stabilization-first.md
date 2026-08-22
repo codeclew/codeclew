@@ -69,9 +69,9 @@ authority in an isolated committed clone, reuses the S3 component store, and
 must report all component hits, zero misses, zero build stages, and identical
 core/worker artifacts under a different runtime key.
 
-### S7 OpenProjectSet bridge boundary
+### S7 workspace-set authority boundary
 
-S7 establishes one typed, content-digested authority for the exact ordered
+S7 establishes one typed, content-digested Rust authorization for the exact ordered
 compilation set before any compilation lane starts. It owns the single shared
 repository materialization and derived mounts, rejects empty, unsorted,
 duplicate, widened, or repeated compilation requests, and retains each live
@@ -86,7 +86,7 @@ changes the worker through managed N-to-N+1 self-hosting to implement one real
 set extraction; H2 proves it and removes the private legacy implementation
 without changing the generation-service set authority.
 
-S7 DoD is one set request/digest in private evidence, exact compilation-set
+S7 DoD is one workspace-set authorization/digest in private evidence, exact compilation-set
 admission, one materialization/mount set, per-compilation response and
 cancellation ownership, explicit legacy-call accounting bounded by the set,
 and targeted component tests only. A cold or multi-compilation performance
@@ -225,6 +225,56 @@ Q1 DoD is one successful native Gradle compile and one successful native Maven
 compile, one model/generation context for each provider through `./clew`, one
 shared trusted runtime key, exact warm counters with no subprocess or input
 rehash, no leaked managed session/worktree, and no edit or publication E2E.
+Before every evidence-bearing attempt, the controller runs a non-receipted,
+toolchain-bound preparation hook that may populate missing Gradle/Maven
+dependency content. Preparation proves only readiness and is never reusable on
+its own; the immediately following provider check binds the resulting exact
+cache/configuration snapshot before and after execution. A deleted cache is
+therefore primed again instead of inheriting a stale readiness receipt, while a
+fresh host does not need a deliberate failed evidence attempt and writable
+cache changes cannot be hidden.
+
+### Q2 cold and multi-compilation qualification
+
+Q2 separates two costs. The cold-runtime check owns the only repeated RELEASE
+capsule builds and compares serial with multicore construction by immutable
+artifact identity. The multi-compilation check must not build or copy another
+capsule: all six alternating trials resolve one trusted RELEASE locator, repeat
+verified external-seed lease resolution without a local checkpoint, and use
+that immutable runtime with distinct committed repositories and managed
+sessions. Each trial closes and garbage
+collects its session before the next one.
+
+The controller binds provider checks to separate path-free native Gradle and
+Maven authorities. They select Java exactly as the launcher does (preferring
+`$JAVA_HOME/bin/java`), bind the stable JDK closure plus Git/tar/provider tool
+bytes, digest relevant environment values, and bind Gradle properties/init/
+wrapper/dependency metadata or Maven settings/toolchains/repository bytes. The
+Q2 gate forces Gradle daemon reuse off. Authorities are snapshotted before and
+after a gate; any seed, capsule, toolchain, configuration, or dependency-store
+change refuses the receipt.
+Root-changing JVM/Maven options add every possible effective Gradle or Maven
+home to that closure. Authority-bearing shell materialization also binds its
+external utilities and the actual isolated Python executable, standard library,
+extension-module tree, and readable bytecode. Disabled user site-packages are
+excluded. That Python closure is also part of the global controller/verifier
+authority, so receipts from another interpreter or changed stdlib/bytecode are
+never reused. The controller rechecks the complete evidence authority after the
+command and again after independent receipt verification.
+
+The pre-self-host worker still exposes the private legacy `OpenProject` bridge.
+Q2 therefore requires one content-digested Rust workspace-set authorization, one shared
+materialization/mount set, exactly twelve authorized compilations, and at most
+twelve explicitly counted legacy calls. It does not claim one real Gradle model
+extraction; H1/H2 remove that bridge through the managed N-to-N+1 cutover. A
+typed failure stage is written even for incomplete trials so a functional error
+can be corrected without a blind retry.
+
+Q2 DoD is byte-identical serial/parallel cold artifacts, a qualifying multicore
+speedup, equal semantic generation/query-index identities across six ordered
+multi-compilation trials, median parallel/serial context ratio at most `0.60`,
+one exact set authority per trial, no capsule build/cache copy inside the
+multi-compilation measurement, and no leaked trial session or worktree.
 
 ## Stop rules
 

@@ -1377,7 +1377,7 @@ struct PinnedInputs {
     files: &'static [&'static str],
     entries: &'static [(&'static str, &'static str)],
     digest: &'static str,
-    outputs: &'static [(&'static str, u64, &'static str)],
+    outputs: &'static [(&'static str, u32, u64, &'static str)],
     output_digest: &'static str,
 }
 
@@ -2676,7 +2676,7 @@ fn runtime_worker_manifest(worker: &crate::runtime::RuntimeWorker) -> BTreeMap<S
         .map(|artifact| {
             (
                 artifact.path.clone(),
-                format!("{}:{}", artifact.size, artifact.sha256),
+                format!("{}:{}:{}", artifact.mode, artifact.size, artifact.sha256),
             )
         })
         .collect()
@@ -2827,7 +2827,7 @@ fn verify_pinned_distribution(root: &Path, pinned: &PinnedInputs) -> Result<(), 
     let expected = pinned
         .outputs
         .iter()
-        .map(|(path, size, hash)| ((*path).to_owned(), format!("{size}:{hash}")))
+        .map(|(path, mode, size, hash)| ((*path).to_owned(), format!("{mode}:{size}:{hash}")))
         .collect::<BTreeMap<_, _>>();
     if actual != expected || hash_string_manifest(&actual) != pinned.output_digest {
         return Err(preparation_required(
@@ -2940,10 +2940,21 @@ fn regular_tree_manifest(root: &Path) -> Result<BTreeMap<String, String>, ClewEr
             continue;
         } else if metadata.is_file() {
             let size = metadata.len();
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 != 0 {
+                    0o111
+                } else {
+                    0
+                }
+            };
+            #[cfg(not(unix))]
+            let mode = 0;
             manifest.insert(
                 path,
                 format!(
-                    "{size}:{}",
+                    "{mode}:{size}:{}",
                     crate::canonical::hash_bytes(&std::fs::read(entry.path()).map_err(internal)?)
                 ),
             );
@@ -2959,9 +2970,14 @@ fn regular_tree_manifest(root: &Path) -> Result<BTreeMap<String, String>, ClewEr
 
 fn hash_string_manifest(manifest: &BTreeMap<String, String>) -> String {
     let mut bytes = Vec::new();
-    for (path, size_and_hash) in manifest {
+    for (path, mode_size_and_hash) in manifest {
+        let (mode, size_and_hash) = mode_size_and_hash
+            .split_once(':')
+            .unwrap_or(("", mode_size_and_hash));
         let (size, hash) = size_and_hash.split_once(':').unwrap_or(("", size_and_hash));
         bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(mode.as_bytes());
         bytes.push(0);
         bytes.extend_from_slice(size.as_bytes());
         bytes.push(0);

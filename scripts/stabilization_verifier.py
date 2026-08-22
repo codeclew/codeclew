@@ -11,6 +11,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import stabilization_control as control  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = ROOT / "docs" / "stabilization-plan.json"
@@ -85,8 +88,17 @@ def verify(request: object) -> dict[str, object]:
         raise ValueError("executed command differs from the plan")
 
     plan_digest = digest_bytes(canonical(plan))
-    controller_digest = digest_bytes(CONTROLLER.read_bytes())
-    verifier_digest = digest_bytes(Path(__file__).read_bytes())
+    python_runtime_digest = digest_bytes(
+        canonical(control.native_python_runtime_authority())
+    )
+    controller_digest = digest_bytes(canonical({
+        "pythonRuntimeDigest": python_runtime_digest,
+        "sourceDigest": digest_bytes(CONTROLLER.read_bytes()),
+    }))
+    verifier_digest = digest_bytes(canonical({
+        "pythonRuntimeDigest": python_runtime_digest,
+        "sourceDigest": digest_bytes(Path(__file__).read_bytes()),
+    }))
     if request["planDigest"] != plan_digest:
         raise ValueError("plan digest mismatch")
     if request["controllerDigest"] != controller_digest:

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import signal
 import stat
@@ -23,7 +24,7 @@ import time
 import uuid
 
 
-SCHEMA = "codeclew-runtime-capsule/3.0"
+SCHEMA = "codeclew-runtime-capsule/4.0"
 DOMAIN = b"codeclew-runtime/v2\0"
 COMPONENT_SCHEMA = "codeclew-runtime-component/1.0"
 COMPONENT_AUTHORITY_SCHEMA = "codeclew-runtime-component-authority/1.0"
@@ -735,6 +736,151 @@ def write_locator(path: Path, locator: str, runtime: str) -> None:
     finally:
         os.close(descriptor)
     os.replace(temporary, path)
+
+
+def sealed_runtime_seed(source: Path) -> tuple[str, Path, object]:
+    configured = os.environ.get("CODECLEW_RUNTIME_SEED")
+    if configured is None:
+        raise BootstrapError("sealed runtime seed authority is unavailable")
+    seed_path = Path(configured)
+    if (
+        not seed_path.is_absolute()
+        or ".." in seed_path.parts
+        or seed_path.resolve(strict=True) != seed_path
+    ):
+        raise BootstrapError("sealed runtime seed path is unsafe")
+    descriptor = os.open(
+        seed_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_size > MAX_MANIFEST_BYTES
+        ):
+            raise BootstrapError("sealed runtime seed file is unsafe")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            seed_bytes = stream.read(MAX_MANIFEST_BYTES + 1)
+        if len(seed_bytes) > MAX_MANIFEST_BYTES:
+            raise BootstrapError("sealed runtime seed file is oversized")
+    finally:
+        os.close(descriptor)
+    epoch = seed_path.parent
+    epoch_metadata = epoch.lstat()
+    if (
+        not re.fullmatch(r"release-N-[0-9a-f]{40}", epoch.name)
+        or stat.S_ISLNK(epoch_metadata.st_mode)
+        or not stat.S_ISDIR(epoch_metadata.st_mode)
+        or epoch_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(epoch_metadata.st_mode) != 0o700
+    ):
+        raise BootstrapError("sealed runtime seed epoch is unsafe")
+    try:
+        seed = json.loads(seed_bytes)
+    except (OSError, ValueError, TypeError) as error:
+        raise BootstrapError("sealed runtime seed is invalid") from error
+    expected_fields = {
+        "artifactHashes",
+        "buildEvidenceDigests",
+        "manifestDigest",
+        "mode",
+        "runtimeKey",
+        "schema",
+        "seedDigest",
+        "sourceRevision",
+        "sourceTree",
+        "stateEpoch",
+        "workerTreeHashes",
+    }
+    unsigned = dict(seed) if isinstance(seed, dict) else {}
+    expected_digest = unsigned.pop("seedDigest", None)
+    if (
+        not isinstance(seed, dict)
+        or set(seed) != expected_fields
+        or seed.get("schema") != "codeclew-trusted-release-seed/1.0"
+        or seed.get("mode") != "RELEASE"
+        or expected_digest != digest_bytes(canonical(unsigned))
+        or not valid_runtime_key(seed.get("runtimeKey"))
+    ):
+        raise BootstrapError("sealed runtime seed authority mismatch")
+    revision = run(["git", "rev-parse", "HEAD"], source).decode().strip()
+    tree = run(["git", "rev-parse", "HEAD^{tree}"], source).decode().strip()
+    if seed.get("sourceRevision") != revision or seed.get("sourceTree") != tree:
+        raise BootstrapError("sealed runtime seed source authority mismatch")
+    parallel = epoch / "parallel-state"
+    state = parallel / "v2"
+    for path in (parallel, state):
+        state_metadata = path.lstat()
+        if (
+            stat.S_ISLNK(state_metadata.st_mode)
+            or not stat.S_ISDIR(state_metadata.st_mode)
+            or state_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(state_metadata.st_mode) != 0o700
+            or path.resolve(strict=True) != path
+        ):
+            raise BootstrapError("sealed runtime seed state is unsafe")
+    key = str(seed["runtimeKey"])
+    locks = state / "locks"
+    locks_descriptor = os.open(locks, _directory_flags())
+    locks_metadata = os.fstat(locks_descriptor)
+    if (
+        not stat.S_ISDIR(locks_metadata.st_mode)
+        or locks_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(locks_metadata.st_mode) != 0o700
+    ):
+        os.close(locks_descriptor)
+        raise BootstrapError("sealed runtime seed locks are unsafe")
+    lease_path = locks / f"runtime-{key.removeprefix('sha256:')}.lease"
+    try:
+        lease_descriptor = os.open(
+            lease_path.name,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=locks_descriptor,
+        )
+    except OSError as error:
+        os.close(locks_descriptor)
+        raise BootstrapError("sealed runtime seed lease is unsafe") from error
+    os.close(locks_descriptor)
+    lease_metadata = os.fstat(lease_descriptor)
+    if (
+        not stat.S_ISREG(lease_metadata.st_mode)
+        or lease_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(lease_metadata.st_mode) != 0o600
+    ):
+        os.close(lease_descriptor)
+        raise BootstrapError("sealed runtime seed lease is unsafe")
+    lease = os.fdopen(lease_descriptor, "a+b")
+    fcntl.flock(lease, fcntl.LOCK_SH)
+    try:
+        # The shared lease must cover both discovery and verification. Otherwise
+        # a concurrent GC can remove or replace the capsule after verification
+        # but before the caller starts using it.
+        capsule = _runtime_capsule_directory(state, key)
+        if capsule is None:
+            raise BootstrapError("sealed runtime seed capsule is unavailable")
+        manifest = verify_capsule(capsule, key)
+        artifact_hashes = {
+            name: value["sha256"]
+            for name, value in sorted(manifest["artifacts"].items())
+        }
+        worker_hashes = {
+            name: value["treeHash"]
+            for name, value in sorted(manifest["workers"].items())
+        }
+        if (
+            manifest.get("mode") != "RELEASE"
+            or manifest.get("manifestDigest") != seed.get("manifestDigest")
+            or artifact_hashes != seed.get("artifactHashes")
+            or worker_hashes != seed.get("workerTreeHashes")
+        ):
+            raise BootstrapError("sealed runtime seed capsule authority mismatch")
+        return key, capsule, lease
+    except BaseException:
+        lease.close()
+        raise
 
 
 def checkpoint_path(root: Path, source: Path) -> Path:
@@ -1607,6 +1753,7 @@ def file_rows(root: Path) -> list[dict[str, object]]:
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise BootstrapError("capsule output contains an unsafe file")
         rows.append({
+            "mode": 0o111 if metadata.st_mode & 0o111 else 0,
             "path": path.relative_to(root).as_posix(),
             "size": metadata.st_size,
             "sha256": digest_file(path),
@@ -1645,6 +1792,8 @@ def tree_hash(rows: list[dict[str, object]]) -> str:
     for row in rows:
         digest.update(str(row["path"]).encode())
         digest.update(b"\0")
+        digest.update(str(row["mode"]).encode())
+        digest.update(b"\0")
         digest.update(str(row["size"]).encode())
         digest.update(b"\0")
         digest.update(str(row["sha256"]).encode())
@@ -1654,10 +1803,10 @@ def tree_hash(rows: list[dict[str, object]]) -> str:
 
 def bootstrap_self_test() -> None:
     rows = [
-        {"path": "bin/a", "size": 3, "sha256": "sha256:" + "0" * 64},
-        {"path": "lib/b", "size": 5, "sha256": "sha256:" + "1" * 64},
+        {"mode": 0o111, "path": "bin/a", "size": 3, "sha256": "sha256:" + "0" * 64},
+        {"mode": 0, "path": "lib/b", "size": 5, "sha256": "sha256:" + "1" * 64},
     ]
-    assert tree_hash(rows) == "sha256:17991e194c0c77b4a7ff59263df0339e2a26c7e8bc5556e11a3afeb2510c6177"
+    assert tree_hash(rows) == "sha256:6fd9755d0c290c62d1e09d5f6f13387c889754193b9ff8d30ff15b1e21b6ccdd"
     first = locator_key("RELEASE", rows, {"tool": "a"})
     assert first == locator_key("RELEASE", rows, {"tool": "a"})
     assert first != locator_key("DEVELOPMENT", rows, {"tool": "a"})
@@ -1705,7 +1854,11 @@ def warm_audit_payload(toolchain_invoked: bool, capsule_build_invoked: bool) -> 
 def verify_release_worker(stage: Path, manifest_relative: str, rows: list[dict[str, object]]) -> None:
     manifest = json.loads((stage / manifest_relative).read_text())
     expected = manifest.get("files")
-    if expected != rows or manifest.get("treeHash") != tree_hash(rows):
+    if (
+        manifest.get("schema") != "trusted-worker-distribution/0.2"
+        or expected != rows
+        or manifest.get("treeHash") != tree_hash(rows)
+    ):
         raise BootstrapError(
             "RELEASE worker differs from its committed manifest; regenerate and verify all "
             f"affected worker variants: {manifest_relative}"
@@ -1868,10 +2021,10 @@ def verify_sealed_capsule(capsule: Path) -> None:
         if stat.S_ISLNK(metadata.st_mode):
             raise BootstrapError("sealed capsule contains a symlink")
         if stat.S_ISDIR(metadata.st_mode):
-            if metadata.st_mode & 0o277:
+            if stat.S_IMODE(metadata.st_mode) != 0o500:
                 raise BootstrapError("capsule directory is not sealed read-only")
         elif stat.S_ISREG(metadata.st_mode):
-            if metadata.st_mode & 0o277:
+            if stat.S_IMODE(metadata.st_mode) not in {0o400, 0o500}:
                 raise BootstrapError("capsule file is not sealed read-only")
         else:
             raise BootstrapError("sealed capsule contains an unsupported entry")
@@ -2036,6 +2189,7 @@ def build_capsule(
             name = spec["buildContract"]["artifactName"]
             path = capsule / "bin" / name
             artifacts[name] = {
+                "mode": 0o111 if path.stat().st_mode & 0o111 else 0,
                 "path": f"bin/{name}",
                 "size": path.stat().st_size,
                 "sha256": digest_file(path),
@@ -2137,10 +2291,12 @@ def verify_capsule(
     manifest["manifestDigest"] = expected
     for artifact in manifest.get("artifacts", {}).values():
         target = path / artifact["path"]
+        expected_mode = 0o500 if artifact.get("mode") == 0o111 else 0o400
         if (
             not target.is_file()
             or target.is_symlink()
             or target.stat().st_size != artifact["size"]
+            or stat.S_IMODE(target.stat().st_mode) != expected_mode
             or digest_file(target) != artifact["sha256"]
         ):
             raise BootstrapError("runtime executable authority mismatch")
@@ -2525,6 +2681,9 @@ def main() -> int:
         }).decode())
         return 0
     root, state_fd = state_root()
+    external_seed = os.environ.get("CODECLEW_RUNTIME_SEED") is not None
+    if external_seed and cold_evidence_profile is not None:
+        raise BootstrapError("cold build evidence cannot use a sealed runtime seed")
     path_to_checkpoint = checkpoint_path(root, source)
     checkpoint_key = (
         None
@@ -2536,7 +2695,10 @@ def main() -> int:
     cold_toolchain_invoked = False
     capsule_build_invoked = False
     cold_build_evidence: dict[str, object] = {}
-    if checkpoint_key is not None:
+    if external_seed:
+        key, capsule, lease = sealed_runtime_seed(source)
+        checkpoint = {"externalSeed": True, "runtimeKey": key}
+    elif checkpoint_key is not None:
         checkpoint_lock = root / "locks" / (
             f"runtime-{checkpoint_key.removeprefix('sha256:')}.lock"
         )

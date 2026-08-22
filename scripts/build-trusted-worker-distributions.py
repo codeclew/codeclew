@@ -51,6 +51,7 @@ def distribution_files(root: Path) -> list[dict[str, object]]:
         if stat.S_ISREG(metadata.st_mode):
             rows.append(
                 {
+                    "mode": 0o111 if metadata.st_mode & 0o111 else 0,
                     "path": path.relative_to(root).as_posix(),
                     "size": metadata.st_size,
                     "sha256": sha256(path),
@@ -63,6 +64,8 @@ def tree_hash(rows: list[dict[str, object]]) -> str:
     digest = hashlib.sha256()
     for row in rows:
         digest.update(str(row["path"]).encode())
+        digest.update(b"\0")
+        digest.update(str(row["mode"]).encode())
         digest.update(b"\0")
         digest.update(str(row["size"]).encode())
         digest.update(b"\0")
@@ -101,7 +104,7 @@ def verify_distribution_manifest(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     rows = distribution_files(distribution)
     expected = {
-        "schema": "trusted-worker-distribution/0.1",
+        "schema": "trusted-worker-distribution/0.2",
         "variant": variant,
         "installTask": task,
         "files": rows,
@@ -171,7 +174,7 @@ def main() -> None:
             distribution = ROOT / relative_distribution
             rows = distribution_files(distribution)
             manifest = {
-                "schema": "trusted-worker-distribution/0.1",
+                "schema": "trusted-worker-distribution/0.2",
                 "variant": variant,
                 "installTask": task,
                 "files": rows,

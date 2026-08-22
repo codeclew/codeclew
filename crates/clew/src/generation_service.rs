@@ -52,18 +52,22 @@ const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
 const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/2.0";
-const WORKSPACE_PROFILE_SCHEMA: &str = "codeclew-project-native-workspace-profile/2.0";
+const WORKSPACE_PROFILE_SCHEMA: &str = "codeclew-project-native-workspace-profile/3.0";
 const MAX_BINDING_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GenerationWorkspaceEvidence {
     schema: String,
+    base_revision: String,
     compilation_count: usize,
     materializations: u64,
     derived_mount_sets: u64,
-    open_project_set_digest: String,
-    open_project_set_requests: u64,
+    repository_snapshot: CasObject,
+    runtime_key: String,
+    session_authority_digest: String,
+    workspace_set_authority_digest: String,
+    workspace_set_authorizations: u64,
     authorized_compilation_count: u64,
     legacy_open_project_calls: u64,
 }
@@ -228,6 +232,10 @@ pub fn ensure_session_generation(
         &compilation_root.join("workspace-profile.json"),
         session.compilations.len(),
         profile,
+        &session.base_revision,
+        &session.runtime_key,
+        &session.authority_digest,
+        &snapshot_object,
     )?;
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(&state, &binding_path, &ready)?;
@@ -292,6 +300,10 @@ pub fn ensure_candidate_generation(
         &parent.join("staged-workspace-profile.json"),
         candidate.compilations.len(),
         profile,
+        &candidate.base_revision,
+        &candidate.runtime_key,
+        &candidate.authority_digest,
+        &snapshot_object,
     )?;
     let ready = assemble_ready_set(&candidate, snapshot_object, results)?;
     write_ready_set(&state, binding_path, &ready)?;
@@ -350,12 +362,20 @@ fn write_generation_workspace_evidence(
     path: &Path,
     compilation_count: usize,
     profile: ProjectNativeKotlinWorkspaceProfile,
+    base_revision: &str,
+    runtime_key: &str,
+    session_authority_digest: &str,
+    repository_snapshot: &CasObject,
 ) -> Result<(), ClewError> {
     if compilation_count == 0
-        || digest_component(&profile.open_project_set_digest).is_err()
+        || digest_component(&profile.workspace_set_authority_digest).is_err()
+        || digest_component(runtime_key).is_err()
+        || digest_component(session_authority_digest).is_err()
+        || base_revision.is_empty()
+        || repository_snapshot.object_schema != SNAPSHOT_SCHEMA
         || profile.materializations != 1
         || profile.derived_mount_sets != 1
-        || profile.open_project_set_requests != 1
+        || profile.workspace_set_authorizations != 1
         || profile.authorized_compilation_count != compilation_count as u64
         || profile.legacy_open_project_calls > compilation_count as u64
     {
@@ -366,11 +386,15 @@ fn write_generation_workspace_evidence(
         path,
         &GenerationWorkspaceEvidence {
             schema: WORKSPACE_PROFILE_SCHEMA.into(),
+            base_revision: base_revision.into(),
             compilation_count,
             materializations: profile.materializations,
             derived_mount_sets: profile.derived_mount_sets,
-            open_project_set_digest: profile.open_project_set_digest,
-            open_project_set_requests: profile.open_project_set_requests,
+            repository_snapshot: repository_snapshot.clone(),
+            runtime_key: runtime_key.into(),
+            session_authority_digest: session_authority_digest.into(),
+            workspace_set_authority_digest: profile.workspace_set_authority_digest,
+            workspace_set_authorizations: profile.workspace_set_authorizations,
             authorized_compilation_count: profile.authorized_compilation_count,
             legacy_open_project_calls: profile.legacy_open_project_calls,
         },
@@ -2205,6 +2229,7 @@ mod tests {
             artifacts: BTreeMap::from([(
                 "clew".into(),
                 crate::runtime::RuntimeArtifact {
+                    mode: 0o111,
                     path: "bin/clew".into(),
                     size: 1,
                     sha256: format!("sha256:{binary_byte:064x}"),
@@ -2622,6 +2647,8 @@ mod tests {
     fn workspace_profile_is_private_canonical_and_rejects_impossible_counts() {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let repository_snapshot = store.put(SNAPSHOT_SCHEMA, b"snapshot").unwrap();
         let path = state.root().join("sessions/test/workspace-profile.json");
         write_generation_workspace_evidence(
             &state,
@@ -2630,19 +2657,30 @@ mod tests {
             ProjectNativeKotlinWorkspaceProfile {
                 materializations: 1,
                 derived_mount_sets: 1,
-                open_project_set_digest: format!("sha256:{}", "a".repeat(64)),
-                open_project_set_requests: 1,
+                workspace_set_authority_digest: format!("sha256:{}", "a".repeat(64)),
+                workspace_set_authorizations: 1,
                 authorized_compilation_count: 12,
                 legacy_open_project_calls: 1,
             },
+            "base",
+            &format!("sha256:{}", "b".repeat(64)),
+            &format!("sha256:{}", "c".repeat(64)),
+            &repository_snapshot,
         )
         .unwrap();
         let value: GenerationWorkspaceEvidence =
             serde_json::from_slice(&state.read_private_file(&path, MAX_BINDING_BYTES).unwrap())
                 .unwrap();
         assert_eq!(value.schema, WORKSPACE_PROFILE_SCHEMA);
+        assert_eq!(value.base_revision, "base");
         assert_eq!(value.compilation_count, 12);
-        assert_eq!(value.open_project_set_requests, 1);
+        assert_eq!(value.repository_snapshot, repository_snapshot);
+        assert_eq!(value.runtime_key, format!("sha256:{}", "b".repeat(64)));
+        assert_eq!(
+            value.session_authority_digest,
+            format!("sha256:{}", "c".repeat(64))
+        );
+        assert_eq!(value.workspace_set_authorizations, 1);
         assert_eq!(value.authorized_compilation_count, 12);
         assert_eq!(value.legacy_open_project_calls, 1);
 
@@ -2653,11 +2691,15 @@ mod tests {
             ProjectNativeKotlinWorkspaceProfile {
                 materializations: 2,
                 derived_mount_sets: 1,
-                open_project_set_digest: format!("sha256:{}", "a".repeat(64)),
-                open_project_set_requests: 1,
+                workspace_set_authority_digest: format!("sha256:{}", "a".repeat(64)),
+                workspace_set_authorizations: 1,
                 authorized_compilation_count: 12,
                 legacy_open_project_calls: 13,
             },
+            "base",
+            &format!("sha256:{}", "b".repeat(64)),
+            &format!("sha256:{}", "c".repeat(64)),
+            &repository_snapshot,
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::StateCorrupt);

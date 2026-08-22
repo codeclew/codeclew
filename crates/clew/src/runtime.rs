@@ -17,7 +17,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/3.0";
+pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/4.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +43,7 @@ pub enum RuntimeMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeArtifact {
+    pub mode: u32,
     pub path: String,
     pub size: u64,
     pub sha256: String,
@@ -188,7 +189,7 @@ impl RuntimeAuthority {
             verify_artifact(&root, artifact)?;
             manifest.insert(
                 artifact.path.clone(),
-                format!("{}:{}", artifact.size, artifact.sha256),
+                format!("{}:{}:{}", artifact.mode, artifact.size, artifact.sha256),
             );
         }
         if tree_digest(&manifest) != worker.tree_hash {
@@ -271,11 +272,19 @@ fn descriptor_path(fd: RawFd) -> Result<PathBuf, ClewError> {
 }
 
 fn verify_artifact(root: &Path, artifact: &RuntimeArtifact) -> Result<(), ClewError> {
-    if !is_digest(&artifact.sha256) {
+    if !is_digest(&artifact.sha256) || !matches!(artifact.mode, 0 | 0o111) {
         return Err(invalid("runtime artifact digest is invalid"));
     }
     let path = safe_relative(root, &artifact.path)?;
     let bytes = read_regular(&path, artifact.size, Some(artifact.size))?;
+    #[cfg(unix)]
+    {
+        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+        let expected = if artifact.mode == 0o111 { 0o500 } else { 0o400 };
+        if metadata.permissions().mode() & 0o7777 != expected {
+            return Err(invalid("runtime artifact executable mode mismatch"));
+        }
+    }
     let actual = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
     if actual != artifact.sha256 {
         return Err(invalid("runtime artifact digest mismatch"));
@@ -330,8 +339,13 @@ fn safe_relative(root: &Path, relative: &str) -> Result<PathBuf, ClewError> {
 fn tree_digest(manifest: &BTreeMap<String, String>) -> String {
     let mut digest = Sha256::new();
     for (path, identity) in manifest {
-        let (size, hash) = identity.split_once(':').unwrap_or(("", identity));
+        let mut fields = identity.splitn(3, ':');
+        let mode = fields.next().unwrap_or("");
+        let size = fields.next().unwrap_or("");
+        let hash = fields.next().unwrap_or("");
         digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(mode.as_bytes());
         digest.update([0]);
         digest.update(size.as_bytes());
         digest.update([0]);
@@ -385,12 +399,15 @@ mod tests {
     #[test]
     fn worker_tree_digest_matches_distribution_manifest_contract() {
         let manifest = BTreeMap::from([
-            ("bin/a".to_owned(), format!("3:sha256:{}", "0".repeat(64))),
-            ("lib/b".to_owned(), format!("5:sha256:{}", "1".repeat(64))),
+            (
+                "bin/a".to_owned(),
+                format!("73:3:sha256:{}", "0".repeat(64)),
+            ),
+            ("lib/b".to_owned(), format!("0:5:sha256:{}", "1".repeat(64))),
         ]);
         assert_eq!(
             tree_digest(&manifest),
-            "sha256:17991e194c0c77b4a7ff59263df0339e2a26c7e8bc5556e11a3afeb2510c6177"
+            "sha256:6fd9755d0c290c62d1e09d5f6f13387c889754193b9ff8d30ff15b1e21b6ccdd"
         );
     }
 

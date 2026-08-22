@@ -6,7 +6,7 @@ cd "$ROOT"
 umask 077
 
 CONTROL_HOME=${CODECLEW_CONTROL_HOME:-"$HOME/.cache/codeclew-control"}
-EVIDENCE_PARENT="$CONTROL_HOME/qualification/open-project-set"
+EVIDENCE_PARENT="$CONTROL_HOME/qualification/workspace-set-authority"
 EVIDENCE_ROOT="$EVIDENCE_PARENT/$(git rev-parse --verify HEAD)"
 RUST_TARGET="$CONTROL_HOME/build-targets/rust"
 mkdir -p "$EVIDENCE_PARENT" "$RUST_TARGET"
@@ -20,7 +20,7 @@ run_stage() {
   if "$@" >"$EVIDENCE_ROOT/$stage.stdout" 2>"$EVIDENCE_ROOT/$stage.stderr"; then
     return 0
   fi
-  printf '%s\n' "open-project-set failed: $stage" >&2
+  printf '%s\n' "workspace-set-authority failed: $stage" >&2
   return 1
 }
 
@@ -42,7 +42,7 @@ generation = Path("crates/clew/src/generation_service.rs").read_text(encoding="u
 if adapter.count(".open_project_verified(") != 1:
     raise SystemExit("legacy OpenProject must have exactly one private bridge call site")
 if "fn open_compilation_from_set(" not in adapter:
-    raise SystemExit("typed OpenProjectSet bridge boundary is missing")
+    raise SystemExit("typed workspace-set bridge boundary is missing")
 if ".open_project_verified(" in generation or ".open_compilation(" in generation:
     raise SystemExit("generation service bypasses the set bridge")
 PY
@@ -58,7 +58,7 @@ root = pathlib.Path(sys.argv[1])
 qualification = {
     "contracts": [
         "EXACT_ORDERED_SET_AUTHORITY",
-        "ONE_SET_REQUEST_EVIDENCE",
+        "ONE_WORKSPACE_SET_AUTHORIZATION_EVIDENCE",
         "ONE_MATERIALIZATION_AND_MOUNT_SET",
         "OUTSIDE_DUPLICATE_UNSORTED_REFUSAL",
         "PER_COMPILATION_LIVE_WORKER_OWNERSHIP",
@@ -72,7 +72,7 @@ qualification = {
         if path.is_file() and path.suffix in {".stdout", ".stderr"}
     },
     "performanceClaim": "NOT_RUN_BEFORE_Q2",
-    "schema": "codeclew-open-project-set-qualification/1.0",
+    "schema": "codeclew-workspace-set-authority-qualification/1.0",
     "status": "PASS",
 }
 temporary = root / ".qualification.json.tmp"

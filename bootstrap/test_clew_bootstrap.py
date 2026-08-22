@@ -638,6 +638,13 @@ class BootstrapAuthorityTest(unittest.TestCase):
                     "zeta": adapter_authority["componentKey"],
                 },
             )
+            capsule_core = capsule / "bin" / "clew"
+            os.chmod(capsule_core, 0o400)
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "executable authority mismatch"
+            ):
+                bootstrap.verify_capsule(capsule, runtime_key)
+            os.chmod(capsule_core, 0o500)
 
     def test_selected_closure_excludes_root_and_nested_legacy_state(self) -> None:
         self.assertFalse(bootstrap.selected_source(".semantic-thread/private"))
@@ -660,6 +667,126 @@ class BootstrapAuthorityTest(unittest.TestCase):
         ):
             authority = bootstrap.fast_toolchain_locator_authority()
         self.assertEqual(set(authority["executables"]), {"cargo", "java", "rustc"})
+
+    def test_sealed_runtime_seed_leases_external_capsule_without_copying_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            source.mkdir(mode=0o700)
+            epoch = root / ("release-N-" + "1" * 40)
+            state = epoch / "parallel-state" / "v2"
+            key = "sha256:" + "2" * 64
+            capsule = state / "runtimes" / key.removeprefix("sha256:")
+            capsule.mkdir(parents=True)
+            (state / "locks").mkdir()
+            os.chmod(epoch, 0o700)
+            os.chmod(epoch / "parallel-state", 0o700)
+            os.chmod(state, 0o700)
+            os.chmod(state / "locks", 0o700)
+            manifest = {
+                "artifactHashes": {"clew": "sha256:" + "3" * 64},
+                "manifestDigest": "sha256:" + "4" * 64,
+                "workerTreeHashes": {"kotlin24": "sha256:" + "5" * 64},
+            }
+            seed = {
+                "artifactHashes": manifest["artifactHashes"],
+                "buildEvidenceDigests": ["sha256:" + "6" * 64],
+                "manifestDigest": manifest["manifestDigest"],
+                "mode": "RELEASE",
+                "runtimeKey": key,
+                "schema": "codeclew-trusted-release-seed/1.0",
+                "sourceRevision": "a" * 40,
+                "sourceTree": "b" * 40,
+                "stateEpoch": "sha256:" + "7" * 64,
+                "workerTreeHashes": manifest["workerTreeHashes"],
+            }
+            seed["seedDigest"] = bootstrap.digest_bytes(bootstrap.canonical(seed))
+            seed_path = epoch / "seed.json"
+            seed_path.write_bytes(bootstrap.canonical(seed) + b"\n")
+            os.chmod(seed_path, 0o400)
+            verified = {
+                "artifacts": {
+                    "clew": {"sha256": manifest["artifactHashes"]["clew"]},
+                },
+                "manifestDigest": manifest["manifestDigest"],
+                "mode": "RELEASE",
+                "workers": {
+                    "kotlin24": {"treeHash": manifest["workerTreeHashes"]["kotlin24"]},
+                },
+            }
+
+            def git_authority(arguments, _source):
+                return ("a" * 40 if arguments[-1] == "HEAD" else "b" * 40).encode() + b"\n"
+
+            lease_path = state / "locks" / f"runtime-{key[7:]}.lease"
+
+            def verify_under_lease(_capsule, _key):
+                with lease_path.open("a+b") as contender:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return verified
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"CODECLEW_RUNTIME_SEED": str(seed_path)}, clear=False
+                ),
+                mock.patch.object(bootstrap, "run", side_effect=git_authority),
+                mock.patch.object(bootstrap, "verify_capsule", side_effect=verify_under_lease),
+            ):
+                actual_key, actual_capsule, lease = bootstrap.sealed_runtime_seed(source)
+            try:
+                self.assertEqual(actual_key, key)
+                self.assertEqual(actual_capsule, capsule)
+                self.assertFalse((root / "trial-state" / "runtimes").exists())
+            finally:
+                lease.close()
+
+            def wrong_git_authority(arguments, _source):
+                return ("c" * 40 if arguments[-1] == "HEAD" else "b" * 40).encode() + b"\n"
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"CODECLEW_RUNTIME_SEED": str(seed_path)}, clear=False
+                ),
+                mock.patch.object(bootstrap, "run", side_effect=wrong_git_authority),
+                mock.patch.object(bootstrap, "verify_capsule", return_value=verified),
+                self.assertRaisesRegex(
+                    bootstrap.BootstrapError, "source authority mismatch"
+                ),
+            ):
+                bootstrap.sealed_runtime_seed(source)
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"CODECLEW_RUNTIME_SEED": str(seed_path)}, clear=False
+                ),
+                mock.patch.object(bootstrap, "run", side_effect=git_authority),
+                mock.patch.object(
+                    bootstrap, "verify_capsule", side_effect=bootstrap.BootstrapError("bad")
+                ),
+                self.assertRaises(bootstrap.BootstrapError),
+            ):
+                bootstrap.sealed_runtime_seed(source)
+            with lease_path.open("a+b") as contender:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(contender, fcntl.LOCK_UN)
+
+            lease_path.unlink()
+            victim = root / "victim"
+            victim.write_bytes(b"unchanged")
+            os.chmod(victim, 0o644)
+            lease_path.symlink_to(victim)
+            with (
+                mock.patch.dict(
+                    os.environ, {"CODECLEW_RUNTIME_SEED": str(seed_path)}, clear=False
+                ),
+                mock.patch.object(bootstrap, "run", side_effect=git_authority),
+                mock.patch.object(bootstrap, "verify_capsule", return_value=verified),
+                self.assertRaisesRegex(bootstrap.BootstrapError, "lease is unsafe"),
+            ):
+                bootstrap.sealed_runtime_seed(source)
+            self.assertEqual(victim.read_bytes(), b"unchanged")
+            self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o644)
 
     def test_metadata_checkpoint_warm_path_never_runs_or_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

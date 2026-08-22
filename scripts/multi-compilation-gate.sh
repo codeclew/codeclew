@@ -5,27 +5,58 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 python3 -I -S "$ROOT/scripts/stabilization_control.py" guard --gate multi-compilation >/dev/null
 umask 077
+# Native PROJECT_NATIVE qualification must not inherit or reuse an ambient
+# Gradle daemon. The script bytes are part of the check authority and the
+# parent GRADLE_OPTS value is separately digested by native authority.
+GRADLE_OPTS="${GRADLE_OPTS:+$GRADLE_OPTS }-Dorg.gradle.daemon=false"
+export GRADLE_OPTS
 
 REPORT="$ROOT/benchmarks/reports/multi-compilation-latest.json"
 REPORT_TEMP="$REPORT.tmp.$$"
 GATE_BASE=${CODECLEW_GATE_HOME:-"$HOME/.cache/codeclew-gates"}
+SEED_BASE=${CODECLEW_SEED_HOME:-"$HOME/.cache/codeclew-seeds"}
 WORK=
 SOURCE=
+SEED_STATE=
+SEED_FILE=
+ACTIVE_SESSION=
+ACTIVE_STATE=
 FINISHED=0
+FAILURE_STAGE=SETUP
+CLEANUP_HELPER="$ROOT/scripts/bounded_gate_cleanup.py"
 
 mkdir -p "$ROOT/benchmarks/reports"
 
 write_incomplete_report() {
-    python3 -I -S - "$REPORT_TEMP" <<'PY'
+    cause_file=
+    current_file=
+    if [ -n "$WORK" ]; then
+        cause_file="$WORK/failure-cause"
+        current_file="$WORK/current-stage"
+    fi
+    python3 -I -S - "$REPORT_TEMP" "$FAILURE_STAGE" "$cause_file" "$current_file" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
 path = pathlib.Path(sys.argv[1])
+stage = sys.argv[2]
+for candidate_path in sys.argv[3:]:
+    if not candidate_path:
+        continue
+    try:
+        candidate = pathlib.Path(candidate_path).read_text(encoding="ascii").strip()
+    except OSError:
+        continue
+    if re.fullmatch(r"[A-Z0-9_]{1,128}", candidate):
+        stage = candidate
+        break
 path.write_text(json.dumps({
     "accepted": False,
+    "failureStage": stage,
     "releaseGatePassed": False,
-    "schema": "codeclew-real-multi-compilation-gate/2.0",
+    "schema": "codeclew-real-multi-compilation-gate/3.0",
     "status": "FAILED_INCOMPLETE",
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
@@ -35,35 +66,30 @@ PY
 
 cleanup() {
     result=$?
+    cleanup_failed=0
     trap - EXIT INT TERM
     rm -f -- "$REPORT_TEMP"
-    if [ -n "$WORK" ]; then
-        python3 -I -S - "$WORK" <<'PY'
-import os
-import pathlib
-import shutil
-import stat
-import sys
-
-root = pathlib.Path(sys.argv[1])
-if root.exists():
-    metadata = root.lstat()
-    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-        raise SystemExit("multi-compilation cleanup root is not a physical directory")
-    for current, directories, _files in os.walk(root, topdown=False, followlinks=False):
-        for name in directories:
-            path = pathlib.Path(current, name)
-            child = path.lstat()
-            if stat.S_ISDIR(child.st_mode) and not stat.S_ISLNK(child.st_mode):
-                path.chmod(0o700)
-        pathlib.Path(current).chmod(0o700)
-    shutil.rmtree(root)
-PY
-    fi
-    rmdir -- "$GATE_BASE" 2>/dev/null || :
     if [ "$FINISHED" -eq 0 ]; then
         write_incomplete_report
     fi
+    if [ -n "$ACTIVE_SESSION" ] && [ -n "$SOURCE" ] && [ -n "$ACTIVE_STATE" ] && [ -n "$SEED_FILE" ]; then
+        CODECLEW_HOME="$ACTIVE_STATE" CODECLEW_RUNTIME_SEED="$SEED_FILE" \
+            python3 -I -S "$CLEANUP_HELPER" \
+                session --clew "$SOURCE/clew" --session "$ACTIVE_SESSION" || cleanup_failed=1
+    fi
+    if [ -n "$WORK" ]; then
+        python3 -I -S "$CLEANUP_HELPER" \
+            tree --path "$WORK" || cleanup_failed=1
+    fi
+    if [ "$cleanup_failed" -ne 0 ]; then
+        if [ "$result" -eq 0 ]; then
+            FAILURE_STAGE=CLEANUP_FAILED
+        fi
+        FINISHED=0
+        write_incomplete_report || :
+        result=1
+    fi
+    rmdir -- "$GATE_BASE" 2>/dev/null || :
     exit "$result"
 }
 trap cleanup EXIT INT TERM
@@ -132,21 +158,24 @@ def sysctl_int(name):
 def linux_physical_cores():
     try:
         pairs = set()
-        physical = core = None
+        allowed = os.sched_getaffinity(0)
+        processor = physical = core = None
         with open("/proc/cpuinfo", encoding="utf-8") as stream:
             for line in stream:
                 if not line.strip():
-                    if physical is not None and core is not None:
+                    if processor in allowed and physical is not None and core is not None:
                         pairs.add((physical, core))
-                    physical = core = None
+                    processor = physical = core = None
+                elif line.startswith("processor"):
+                    processor = int(line.split(":", 1)[1].strip())
                 elif line.startswith("physical id"):
                     physical = line.split(":", 1)[1].strip()
                 elif line.startswith("core id"):
                     core = line.split(":", 1)[1].strip()
-        if physical is not None and core is not None:
+        if processor in allowed and physical is not None and core is not None:
             pairs.add((physical, core))
         return len(pairs)
-    except OSError:
+    except (AttributeError, OSError, ValueError):
         return 0
 
 
@@ -176,7 +205,7 @@ try:
     logical = len(os.sched_getaffinity(0))
 except AttributeError:
     logical = os.cpu_count() or 1
-physical = sysctl_int("hw.physicalcpu") or linux_physical_cores()
+physical = linux_physical_cores() or min(sysctl_int("hw.physicalcpu"), logical)
 total_memory = memory_bytes()
 reserved = max(1024**3, total_memory * 15 // 100)
 budget = max(0, total_memory - reserved) * 70 // 100
@@ -197,7 +226,7 @@ import json
 import sys
 
 print(json.dumps({
-    "accepted": True,
+    "accepted": False,
     "qualification": {
         "admittedGenerationJobs": int(sys.argv[4]),
         "logicalCpus": int(sys.argv[2]),
@@ -207,7 +236,7 @@ print(json.dumps({
         "totalMemoryBytes": int(sys.argv[3]),
     },
     "releaseGatePassed": False,
-    "schema": "codeclew-real-multi-compilation-gate/2.0",
+    "schema": "codeclew-real-multi-compilation-gate/3.0",
     "status": "SKIPPED_UNQUALIFIED_HOST",
     "thresholds": {"medianParallelRatioMax": 0.60},
 }, sort_keys=True, separators=(",", ":")))
@@ -216,10 +245,11 @@ PY
     chmod 600 "$REPORT"
     FINISHED=1
     cat "$REPORT"
-    exit 0
+    exit 1
 fi
 
 if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
+    FAILURE_STAGE=SOURCE_NOT_CLEAN
     echo "multi-compilation evidence requires a clean source HEAD" >&2
     exit 1
 fi
@@ -227,11 +257,158 @@ SOURCE_REVISION=$(git rev-parse --verify HEAD)
 SOURCE="$WORK/source"
 git clone --quiet --no-local --no-checkout "$ROOT" "$SOURCE"
 git -C "$SOURCE" checkout --quiet --detach "$SOURCE_REVISION"
+CLEANUP_HELPER="$SOURCE/scripts/bounded_gate_cleanup.py"
 if [ "$(git -C "$SOURCE" rev-parse --verify HEAD)" != "$SOURCE_REVISION" ] ||
     [ -n "$(git -C "$SOURCE" status --porcelain=v1 --untracked-files=all)" ]; then
+    FAILURE_STAGE=FROZEN_CLONE_INVALID
     echo "multi-compilation frozen clone authority is invalid" >&2
     exit 1
 fi
+
+FAILURE_STAGE=TRUSTED_SEED_INVALID
+python3 -I -S - "$SEED_BASE" "$WORK/seed-authority.json" "$SOURCE_REVISION" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+output = pathlib.Path(sys.argv[2])
+source_revision = sys.argv[3]
+if (
+    not root.is_absolute()
+    or ".." in root.parts
+    or root.resolve(strict=True) != root
+):
+    raise SystemExit("trusted seed home is unsafe")
+root_metadata = root.lstat()
+if (
+    not stat.S_ISDIR(root_metadata.st_mode)
+    or stat.S_ISLNK(root_metadata.st_mode)
+    or root_metadata.st_uid != os.geteuid()
+    or stat.S_IMODE(root_metadata.st_mode) != 0o700
+):
+    raise SystemExit("trusted seed home permissions are invalid")
+
+
+def read_private(path, expected_mode, limit, label):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != expected_mode
+            or metadata.st_size > limit
+        ):
+            raise SystemExit(f"{label} permissions are invalid")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            value = stream.read(limit + 1)
+        if len(value) > limit:
+            raise SystemExit(f"{label} is oversized")
+        return value
+    finally:
+        os.close(descriptor)
+
+
+locator_path = root / "current.json"
+locator = json.loads(read_private(locator_path, 0o600, 4096, "trusted seed locator"))
+epoch = locator.get("epoch")
+if (
+    locator.get("schema") != "codeclew-trusted-seed-locator/1.0"
+    or not isinstance(epoch, str)
+    or re.fullmatch(r"release-N-[0-9a-f]{40}", epoch) is None
+    or pathlib.PurePath(epoch).name != epoch
+):
+    raise SystemExit("trusted seed locator authority is invalid")
+epoch_root = root / epoch
+seed_path = epoch_root / "seed.json"
+parallel_root = epoch_root / "parallel-state"
+state = parallel_root / "v2"
+for path in (epoch_root, parallel_root, state):
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or path.resolve(strict=True) != path
+    ):
+        raise SystemExit("trusted seed epoch permissions are invalid")
+seed = json.loads(read_private(seed_path, 0o400, 1024 * 1024, "trusted seed file"))
+unsigned = dict(seed)
+expected_digest = unsigned.pop("seedDigest", None)
+actual_digest = "sha256:" + hashlib.sha256(
+    json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+runtime_key = seed.get("runtimeKey")
+if (
+    seed.get("schema") != "codeclew-trusted-release-seed/1.0"
+    or seed.get("mode") != "RELEASE"
+    or expected_digest != actual_digest
+    or locator.get("seedDigest") != expected_digest
+    or locator.get("runtimeKey") != runtime_key
+    or seed.get("sourceRevision") != source_revision
+    or re.fullmatch(r"sha256:[0-9a-f]{64}", str(runtime_key)) is None
+):
+    raise SystemExit("trusted seed digest authority is invalid")
+value = {
+    "runtimeKey": runtime_key,
+    "schema": "codeclew-multi-compilation-seed-locator/1.0",
+    "seedDigest": expected_digest,
+    "seedPath": str(seed_path),
+    "stateRoot": str(parallel_root),
+}
+output.write_text(
+    json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+os.chmod(output, 0o600)
+PY
+SEED_STATE=$(python3 -I -S -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["stateRoot"])' \
+    "$WORK/seed-authority.json")
+SEED_RUNTIME_KEY=$(python3 -I -S -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["runtimeKey"])' \
+    "$WORK/seed-authority.json")
+SEED_FILE=$(python3 -I -S -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["seedPath"])' \
+    "$WORK/seed-authority.json")
+
+FAILURE_STAGE=RUNTIME_READINESS
+READINESS_STATE="$WORK/runtime-readiness-state"
+CODECLEW_HOME="$READINESS_STATE" CODECLEW_RUNTIME_SEED="$SEED_FILE" \
+    "$SOURCE/clew" --bootstrap-warm-audit \
+    >"$WORK/readiness.json" 2>"$WORK/readiness.stderr"
+CODECLEW_HOME="$READINESS_STATE" CODECLEW_RUNTIME_SEED="$SEED_FILE" \
+    "$SOURCE/clew" --bootstrap-warm-audit \
+    >"$WORK/warm.json" 2>"$WORK/warm.stderr"
+python3 -I -S - "$WORK/readiness.json" "$WORK/warm.json" "$READINESS_STATE" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+readiness = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+warm = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+state = pathlib.Path(sys.argv[3]) / "v2" / "runtimes"
+for value in (readiness, warm):
+    if (
+        value.get("schema") != "codeclew-bootstrap-warm-audit/2.0"
+        or value.get("status") != "PASSED"
+        or value.get("capsuleBuildInvoked") is not False
+        or value.get("coldToolchainInvoked") is not False
+    ):
+        raise SystemExit("trusted runtime readiness is invalid")
+if any(
+    path.is_dir() and re.fullmatch(r"[0-9a-f]{64}", path.name)
+    for path in state.iterdir()
+):
+    raise SystemExit("sealed runtime was copied into disposable state")
+PY
 
 materialize_repository() {
     repository=$1
@@ -269,28 +446,8 @@ run_trial() {
     output="$WORK/pair-$pair-$lowercase.json"
     error_log="$WORK/pair-$pair-$lowercase.stderr"
 
+    FAILURE_STAGE="TRIAL_${pair}_${profile}_MATERIALIZATION"
     materialize_repository "$repository"
-    if ! CODECLEW_HOME="$state_home" "$SOURCE/clew" --help \
-        >"$WORK/pair-$pair-$lowercase-prime.stdout" 2>"$error_log"; then
-        echo "multi-compilation runtime prime failed" >&2
-        exit 1
-    fi
-    runtime_count=$(python3 -I -S - "$state_home/runtimes" <<'PY'
-import pathlib
-import re
-import sys
-
-root = pathlib.Path(sys.argv[1])
-print(sum(
-    path.is_dir() and re.fullmatch(r"[0-9a-f]{64}", path.name) is not None
-    for path in root.iterdir()
-))
-PY
-)
-    if [ "$runtime_count" -ne 1 ]; then
-        echo "multi-compilation trial did not prime exactly one runtime" >&2
-        exit 1
-    fi
 
     set -- session open --repo "$repository" --target-ref main
     module=0
@@ -302,61 +459,289 @@ PY
     if [ "$profile" = SERIAL ]; then
         set -- "$@" --generation-jobs 1
     fi
-    if ! session_json=$(CODECLEW_HOME="$state_home" "$SOURCE/clew" "$@" 2>"$error_log"); then
+    FAILURE_STAGE="TRIAL_${pair}_${profile}_SESSION_OPEN"
+    if ! session_json=$(CODECLEW_HOME="$state_home" CODECLEW_RUNTIME_SEED="$SEED_FILE" \
+        "$SOURCE/clew" "$@" 2>"$error_log"); then
         echo "multi-compilation session open failed" >&2
         exit 1
     fi
-    session_id=$(printf '%s' "$session_json" | python3 -I -S -c '
-import json, sys
+    FAILURE_STAGE="TRIAL_${pair}_${profile}_SESSION_OPEN_PARSE"
+    validated_session=$(printf '%s' "$session_json" | python3 -I -S -c '
+import json, re, sys
 value = json.load(sys.stdin)
 session = value.get("session", {})
 identifier = session.get("sessionId")
-if not isinstance(identifier, str) or not identifier.startswith("session:"):
+authority = session.get("authorityDigest")
+if (
+    value.get("schema") != "codeclew-session-open/4.0"
+    or value.get("status") != "OPEN"
+    or not isinstance(identifier, str)
+    or re.fullmatch(
+        r"session:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        identifier,
+    ) is None
+    or session.get("runtimeMode") != "RELEASE"
+    or session.get("runtimeKey") != sys.argv[1]
+    or session.get("modelCachePolicy") != "NON_CACHEABLE"
+    or re.fullmatch(r"sha256:[0-9a-f]{64}", str(authority)) is None
+):
     raise SystemExit("session open returned invalid authority")
-print(identifier)
-')
+print(json.dumps({"authorityDigest": authority, "sessionId": identifier}, sort_keys=True, separators=(",", ":")))
+' "$SEED_RUNTIME_KEY")
+    session_id=$(printf '%s' "$validated_session" | python3 -I -S -c \
+        'import json,sys; print(json.load(sys.stdin)["sessionId"])')
+    session_authority_digest=$(printf '%s' "$validated_session" | python3 -I -S -c \
+        'import json,sys; print(json.load(sys.stdin)["authorityDigest"])')
+    ACTIVE_SESSION=$session_id
+    ACTIVE_STATE=$state_home
 
-    CODECLEW_HOME="$state_home" python3 -I -S - \
-        "$SOURCE/clew" "$session_id" "$profile" "$pair" >"$output" <<'PY'
+    FAILURE_STAGE="TRIAL_${pair}_${profile}_CONTEXT"
+    CODECLEW_HOME="$state_home" CODECLEW_RUNTIME_SEED="$SEED_FILE" \
+        python3 -I -S - "$SOURCE/clew" "$session_id" "$session_authority_digest" "$profile" "$pair" \
+        "$state_home" "$repository" "$WORK/current-stage" >"$output" <<'PY'
 import json
 import os
 import pathlib
+import selectors
+import signal
+import stat
 import subprocess
 import sys
 import time
 
-clew, session_id, profile, pair = sys.argv[1:]
+(
+    clew,
+    session_id,
+    session_authority_digest,
+    profile,
+    pair,
+    state,
+    repository,
+    stage_path_value,
+) = sys.argv[1:]
+sys.path.insert(0, str(pathlib.Path(clew).parent / "scripts"))
+from multi_compilation_authority import (  # noqa: E402
+    WorkspaceAuthorityError,
+    refuse_copied_runtime,
+    require_session_authority,
+)
+stage_path = pathlib.Path(stage_path_value)
+cause_path = stage_path.with_name("failure-cause")
+
+
+def record_stage(value):
+    temporary = stage_path.with_name(f".{stage_path.name}.{os.getpid()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            stream.write(value + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, stage_path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def record_cause(value):
+    if cause_path.exists():
+        return
+    temporary = cause_path.with_name(f".{cause_path.name}.{os.getpid()}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            stream.write(value + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, cause_path)
+        except FileExistsError:
+            pass
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def invoke(arguments, timeout):
+    process = subprocess.Popen(
+        [clew, *arguments],
+        env=os.environ,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    def terminate():
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            process.wait()
+
+    limits = {"stdout": 64 * 1024, "stderr": 1024 * 1024}
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    deadline = time.monotonic() + timeout
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate()
+                raise SystemExit("multi-compilation command timed out")
+            for key, _events in selector.select(min(remaining, 0.5)):
+                name = key.data
+                chunk = os.read(key.fileobj.fileno(), min(65536, limits[name] + 1 - len(buffers[name])))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                buffers[name].extend(chunk)
+                if len(buffers[name]) > limits[name]:
+                    terminate()
+                    raise SystemExit(f"multi-compilation command {name} exceeded its limit")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            terminate()
+            raise SystemExit("multi-compilation command timed out")
+        process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        terminate()
+        raise SystemExit("multi-compilation command timed out")
+    finally:
+        selector.close()
+    stdout = bytes(buffers["stdout"])
+    stderr = bytes(buffers["stderr"])
+    if b"\0" in stdout:
+        raise SystemExit("multi-compilation command stdout is invalid")
+    if b"\0" in stderr:
+        raise SystemExit("multi-compilation command diagnostics are invalid")
+    return process.returncode, stdout
+
+
+failure = None
+failure_stage = None
+context = None
+workspace_profile = None
 started = time.perf_counter_ns()
-completed = subprocess.run(
-    [
-        clew,
+try:
+    record_stage(f"TRIAL_{pair}_{profile}_CONTEXT")
+    returncode, stdout = invoke([
         "context", "create",
         "--session", session_id,
         "--intent", "inspect the twelve independent value declarations",
         "--term", "value00",
         "--max-roots", "256",
-    ],
-    env=os.environ,
+    ], 1200)
+    elapsed_millis = (time.perf_counter_ns() - started) / 1_000_000
+    if returncode != 0:
+        failure = "multi-compilation context create failed"
+        failure_stage = f"TRIAL_{pair}_{profile}_CONTEXT_COMMAND_FAILED"
+    else:
+        try:
+            context = json.loads(stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            failure = "multi-compilation context create returned invalid JSON"
+            failure_stage = f"TRIAL_{pair}_{profile}_CONTEXT_JSON_INVALID"
+        profile_path = pathlib.Path(state).joinpath(
+            "v2",
+            "sessions",
+            session_id.removeprefix("session:"),
+            "compilations",
+            "workspace-profile.json",
+        )
+        if failure is None:
+            try:
+                metadata = profile_path.lstat()
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                    or metadata.st_size > 1024 * 1024
+                ):
+                    raise OSError("unsafe workspace profile")
+                workspace_profile = json.loads(profile_path.read_text(encoding="utf-8"))
+                require_session_authority(workspace_profile, session_authority_digest)
+            except (OSError, json.JSONDecodeError, WorkspaceAuthorityError):
+                failure = "multi-compilation run has no exact workspace profile"
+                failure_stage = f"TRIAL_{pair}_{profile}_WORKSPACE_PROFILE_INVALID"
+finally:
+    if failure_stage is not None:
+        record_cause(failure_stage)
+    record_stage(f"TRIAL_{pair}_{profile}_SESSION_CLOSE")
+    try:
+        close_code, close_stdout = invoke(
+            ["session", "close", "--json", "--session", session_id], 60
+        )
+    except BaseException:
+        close_code, close_stdout = -1, b""
+        failure = failure or "multi-compilation session close timed out"
+        failure_stage = failure_stage or f"TRIAL_{pair}_{profile}_SESSION_CLOSE_TIMEOUT"
+        record_cause(failure_stage)
+    record_stage(f"TRIAL_{pair}_{profile}_SESSION_GC")
+    try:
+        gc_code, gc_stdout = invoke(
+            ["session", "gc", "--json", "--session", session_id], 60
+        )
+    except BaseException:
+        gc_code, gc_stdout = -1, b""
+        failure = failure or "multi-compilation session GC timed out"
+        failure_stage = failure_stage or f"TRIAL_{pair}_{profile}_SESSION_GC_TIMEOUT"
+        record_cause(failure_stage)
+    try:
+        closed = json.loads(close_stdout)
+        collected = json.loads(gc_stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        failure = failure or "multi-compilation session cleanup returned invalid JSON"
+        failure_stage = failure_stage or f"TRIAL_{pair}_{profile}_SESSION_CLEANUP_JSON_INVALID"
+    else:
+        if (
+            close_code != 0
+            or gc_code != 0
+            or closed.get("lifecycle", {}).get("status") != "CLOSED"
+            or collected.get("lifecycle", {}).get("status") != "GARBAGE_COLLECTED"
+        ):
+            failure = failure or "multi-compilation session cleanup failed"
+            failure_stage = failure_stage or f"TRIAL_{pair}_{profile}_SESSION_CLEANUP_FAILED"
+if failure is not None:
+    record_cause(failure_stage or f"TRIAL_{pair}_{profile}_FAILED")
+    record_stage(failure_stage or f"TRIAL_{pair}_{profile}_FAILED")
+    raise SystemExit(failure)
+record_stage(f"TRIAL_{pair}_{profile}_POST_CLEANUP_AUDIT")
+try:
+    refuse_copied_runtime(pathlib.Path(state))
+except WorkspaceAuthorityError as error:
+    raise SystemExit(str(error)) from error
+worktrees = subprocess.run(
+    ["git", "worktree", "list", "--porcelain"],
+    cwd=repository,
     stdin=subprocess.DEVNULL,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
     check=False,
 )
-elapsed_millis = (time.perf_counter_ns() - started) / 1_000_000
-if completed.returncode != 0:
-    raise SystemExit("multi-compilation context create failed")
+if (
+    worktrees.returncode != 0
+    or sum(line.startswith(b"worktree ") for line in worktrees.stdout.splitlines()) != 1
+):
+    raise SystemExit("multi-compilation trial leaked a managed worktree")
+stage_path.unlink()
 try:
-    context = json.loads(completed.stdout)
-except (UnicodeDecodeError, json.JSONDecodeError):
-    raise SystemExit("multi-compilation context create returned invalid JSON")
-profile_paths = list(
-    pathlib.Path(os.environ["CODECLEW_HOME"])
-    .joinpath("v2", "sessions")
-    .glob("*/compilations/workspace-profile.json")
-)
-if len(profile_paths) != 1:
-    raise SystemExit("multi-compilation run has no unique workspace profile")
-workspace_profile = json.loads(profile_paths[0].read_text(encoding="utf-8"))
+    cause_path.unlink()
+except FileNotFoundError:
+    pass
 print(json.dumps({
     "context": context,
     "elapsedMillis": round(elapsed_millis, 3),
@@ -365,10 +750,14 @@ print(json.dumps({
     "workspaceProfile": workspace_profile,
 }, sort_keys=True, separators=(",", ":")))
 PY
+    ACTIVE_SESSION=
+    ACTIVE_STATE=
 }
 
 # Alternating pair order reduces systematic thermal and cache-order bias. Every
-# trial owns a fresh clean repository, state home, session, and primed capsule.
+# trial owns a fresh clean repository and session while all trials lease the
+# same verified immutable RELEASE capsule. Repository identity prevents
+# generation-head reuse; session close/GC removes each derived worktree.
 run_trial 1 SERIAL
 run_trial 1 PARALLEL
 run_trial 2 PARALLEL
@@ -376,8 +765,10 @@ run_trial 2 SERIAL
 run_trial 3 SERIAL
 run_trial 3 PARALLEL
 
+FAILURE_STAGE=REPORT_VALIDATION
 python3 -I -S - "$WORK" "$SOURCE_REVISION" \
     "$PHYSICAL_CORES" "$LOGICAL_CPUS" "$TOTAL_MEMORY_BYTES" "$ADMITTED_JOBS" \
+    "$SEED_RUNTIME_KEY" \
     >"$REPORT_TEMP" <<'PY'
 import hashlib
 import json
@@ -392,6 +783,7 @@ physical_cores = int(sys.argv[3])
 logical_cpus = int(sys.argv[4])
 total_memory_bytes = int(sys.argv[5])
 admitted_jobs = int(sys.argv[6])
+runtime_key = sys.argv[7]
 orders = {
     1: ["SERIAL", "PARALLEL"],
     2: ["PARALLEL", "SERIAL"],
@@ -408,6 +800,10 @@ def digest(value):
 
 def is_digest(value):
     return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+if not is_digest(runtime_key):
+    raise SystemExit("trusted runtime key is invalid")
 
 
 def cas_identity(value, label):
@@ -478,7 +874,7 @@ def normalized_snapshot(result):
 
 
 baseline = None
-baseline_workspace_profile = None
+baseline_workspace_contour = None
 ratios = []
 trials = []
 for pair, order in orders.items():
@@ -497,27 +893,59 @@ for pair, order in orders.items():
         if (
             not isinstance(workspace_profile, dict)
             or workspace_profile.get("schema")
-            != "codeclew-project-native-workspace-profile/1.0"
+            != "codeclew-project-native-workspace-profile/3.0"
+            or workspace_profile.get("baseRevision") != semantic["baseRevision"]
             or workspace_profile.get("compilationCount") != 12
             or workspace_profile.get("materializations") != 1
             or workspace_profile.get("derivedMountSets") != 1
-            or not isinstance(workspace_profile.get("openProjectCalls"), int)
-            or workspace_profile["openProjectCalls"] < 1
-            or workspace_profile["openProjectCalls"] > 12
+            or workspace_profile.get("runtimeKey") != runtime_key
+            or workspace_profile.get("repositorySnapshot")
+            != semantic["repositorySnapshot"]
+            or workspace_profile.get("workspaceSetAuthorizations") != 1
+            or workspace_profile.get("authorizedCompilationCount") != 12
+            or not is_digest(workspace_profile.get("sessionAuthorityDigest"))
+            or not is_digest(workspace_profile.get("workspaceSetAuthorityDigest"))
+            or not isinstance(workspace_profile.get("legacyOpenProjectCalls"), int)
+            or workspace_profile["legacyOpenProjectCalls"] < 0
+            or workspace_profile["legacyOpenProjectCalls"] > 12
         ):
             raise SystemExit("multi-compilation workspace profile is invalid")
         if baseline is None:
             baseline = semantic
         elif semantic != baseline:
             raise SystemExit("serial and parallel semantic compilation outputs differ")
-        if baseline_workspace_profile is None:
-            baseline_workspace_profile = workspace_profile
-        elif workspace_profile != baseline_workspace_profile:
-            raise SystemExit("serial and parallel workspace request contours differ")
+        workspace_contour = {
+            "authorizedCompilationCount": workspace_profile["authorizedCompilationCount"],
+            "compilationCount": workspace_profile["compilationCount"],
+            "derivedMountSets": workspace_profile["derivedMountSets"],
+            "legacyOpenProjectCalls": workspace_profile["legacyOpenProjectCalls"],
+            "materializations": workspace_profile["materializations"],
+            "schema": workspace_profile["schema"],
+            "workspaceSetAuthorityDigest": workspace_profile[
+                "workspaceSetAuthorityDigest"
+            ],
+            "workspaceSetAuthorizations": workspace_profile[
+                "workspaceSetAuthorizations"
+            ],
+        }
+        expected_workspace_authority = digest({
+            "compilations": [f":module{index:02d}/main" for index in range(12)],
+            "language": "kotlin",
+            "providerMode": "PROJECT_NATIVE_LEGACY_BRIDGE",
+            "repositorySnapshot": semantic["snapshotId"],
+            "schema": "codeclew-kotlin-workspace-set-authorization/1.0",
+        })
+        if workspace_contour["workspaceSetAuthorityDigest"] != expected_workspace_authority:
+            raise SystemExit("workspace-set authority digest is not independently reproducible")
+        if baseline_workspace_contour is None:
+            baseline_workspace_contour = workspace_contour
+        elif workspace_contour != baseline_workspace_contour:
+            raise SystemExit("serial and parallel workspace authority contours differ")
         measured[profile] = {
             "elapsedMillis": elapsed,
             "semanticDigest": digest(semantic),
-            "workspaceProfile": workspace_profile,
+            "sessionAuthorityDigest": workspace_profile["sessionAuthorityDigest"],
+            "workspaceAuthority": workspace_contour,
         }
     ratio = measured["PARALLEL"]["elapsedMillis"] / measured["SERIAL"]["elapsedMillis"]
     ratios.append(ratio)
@@ -531,12 +959,17 @@ for pair, order in orders.items():
 
 median_ratio = statistics.median(ratios)
 threshold = 0.60
-model_request_limit = 1
-model_contour_passed = baseline_workspace_profile["openProjectCalls"] <= model_request_limit
-passed = median_ratio <= threshold and model_contour_passed
+set_authorization_limit = 1
+legacy_call_limit = 12
+workspace_contour_passed = (
+    baseline_workspace_contour["workspaceSetAuthorizations"]
+    == set_authorization_limit
+    and baseline_workspace_contour["legacyOpenProjectCalls"] <= legacy_call_limit
+)
+passed = median_ratio <= threshold and workspace_contour_passed
 status = (
-    "FAILED_MODEL_REQUEST_CONTOUR"
-    if not model_contour_passed
+    "FAILED_WORKSPACE_AUTHORITY_CONTOUR"
+    if not workspace_contour_passed
     else "PASSED" if passed else "FAILED_PARALLEL_RATIO"
 )
 report = {
@@ -554,13 +987,16 @@ report = {
         "totalMemoryBytes": total_memory_bytes,
     },
     "releaseGatePassed": passed,
-    "schema": "codeclew-real-multi-compilation-gate/2.0",
+    "schema": "codeclew-real-multi-compilation-gate/3.0",
     "scope": {
         "compilationCount": 12,
         "fixture": "kotlin-multi-12",
         "publicWorkflow": ["session open", "context create"],
+        "runtimeAuthority": "SHARED_TRUSTED_RELEASE_LEASE",
         "runtimePrimedBeforeTiming": True,
-        "workspaceProfile": baseline_workspace_profile,
+        "temporaryLegacyBridge": baseline_workspace_contour["legacyOpenProjectCalls"] > 0,
+        "workspaceAuthority": "RUST_WORKSPACE_SET_AUTHORIZATION",
+        "workspaceProfile": baseline_workspace_contour,
     },
     "semanticIdentity": {
         "baseRevision": baseline["baseRevision"],
@@ -569,10 +1005,12 @@ report = {
         "repositorySnapshot": baseline["repositorySnapshot"],
         "snapshotId": baseline["snapshotId"],
     },
+    "runtimeKey": runtime_key,
     "sourceRevision": source_revision,
     "status": status,
     "thresholds": {
-        "maxProjectModelCalls": model_request_limit,
+        "maxLegacyOpenProjectCalls": legacy_call_limit,
+        "maxWorkspaceSetAuthorizations": set_authorization_limit,
         "medianParallelRatioMax": threshold,
     },
 }
@@ -585,10 +1023,10 @@ import pathlib
 import sys
 
 value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if value.get("schema") != "codeclew-real-multi-compilation-gate/2.0":
+if value.get("schema") != "codeclew-real-multi-compilation-gate/3.0":
     raise SystemExit("multi-compilation gate returned an unexpected schema")
 status = value.get("status")
-if status not in {"PASSED", "FAILED_PARALLEL_RATIO", "FAILED_MODEL_REQUEST_CONTOUR"}:
+if status not in {"PASSED", "FAILED_PARALLEL_RATIO", "FAILED_WORKSPACE_AUTHORITY_CONTOUR"}:
     raise SystemExit("multi-compilation gate did not complete")
 if (status == "PASSED") != (value.get("releaseGatePassed") is True):
     raise SystemExit("multi-compilation release gate status is inconsistent")
@@ -600,6 +1038,6 @@ chmod 600 "$REPORT"
 FINISHED=1
 cat "$REPORT"
 if [ "$FINAL_STATUS" != PASSED ]; then
-    echo "real multi-compilation gate failed ratio or shared-model request contour" >&2
+    echo "real multi-compilation gate failed ratio or workspace authority contour" >&2
     exit 1
 fi
