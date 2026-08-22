@@ -119,6 +119,21 @@ private class FirFactsCheckersExtension(
             setOf(FirFactsExpressionChecker(output))
     }
     override val declarationCheckers: DeclarationCheckers = object : DeclarationCheckers() {
+        override val fileCheckers: Set<FirDeclarationChecker<org.jetbrains.kotlin.fir.declarations.FirFile>> =
+            setOf(object : FirDeclarationChecker<org.jetbrains.kotlin.fir.declarations.FirFile>(MppCheckerKind.Common) {
+                context(context: CheckerContext, reporter: DiagnosticReporter)
+                override fun check(declaration: org.jetbrains.kotlin.fir.declarations.FirFile) {
+                    val file = context.containingFilePath ?: declaration.sourceFile?.path ?: return
+                    appendFact(
+                        output,
+                        buildJsonObject {
+                            put("recordType", "FIR_FILE_RECEIPT")
+                            put("schema", "fir-file-receipt/0.1")
+                            put("file", file)
+                        },
+                    )
+                }
+            })
         override val functionCheckers: Set<FirDeclarationChecker<FirFunction>> =
             setOf(FirFactsCfgChecker(output))
         override val simpleFunctionCheckers = setOf(
