@@ -1251,7 +1251,7 @@ def _seed_locator(
     verifier = _bootstrap_verifier()
     manifests = []
     try:
-        for state_name in ("parallel-state", "serial-state"):
+        for state_name in ("parallel-state",):
             capsule = (
                 Path(root_value)
                 / epoch
@@ -1542,7 +1542,7 @@ def run_current_state(
     command: list[str],
 ) -> int:
     if (
-        state_name not in {"parallel-state", "serial-state"}
+        state_name != "parallel-state"
         or re.fullmatch(r"[0-9a-f]{40}", expected_revision) is None
         or re.fullmatch(r"[0-9a-f]{40}", expected_tree) is None
         or not command
@@ -1805,7 +1805,7 @@ def main() -> int:
     parser.add_argument("--expected-source-tree")
     parser.add_argument("--expected-source-revision")
     parser.add_argument(
-        "--run-current-state", choices=("parallel-state", "serial-state")
+        "--run-current-state", choices=("parallel-state",)
     )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     arguments = parser.parse_args()

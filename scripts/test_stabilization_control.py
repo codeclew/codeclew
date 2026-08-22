@@ -7,7 +7,6 @@ import copy
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +17,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import stabilization_control as control  # noqa: E402
+import stabilization_verifier as verifier  # noqa: E402
 
 
 class StabilizationControlTest(unittest.TestCase):
@@ -43,6 +43,30 @@ class StabilizationControlTest(unittest.TestCase):
         self.assertEqual(self.model["order"][0], "S0")
         self.assertEqual(self.model["order"][-1], "R5")
         self.assertEqual(set(self.model["tiers"]), {f"L{index}" for index in range(8)})
+        self.assertEqual(
+            self.model["checks"]["s3-trusted-seed"]["timeoutPolicy"],
+            "UNBOUNDED",
+        )
+        self.assertTrue(
+            all(
+                "timeoutPolicy" not in check
+                for check_id, check in self.model["checks"].items()
+                if check_id != "s3-trusted-seed"
+            )
+        )
+
+    def test_unknown_timeout_policy_is_rejected(self) -> None:
+        value = copy.deepcopy(self.plan)
+        value["checks"][0]["timeoutPolicy"] = "SOMETIMES"
+        with self.assertRaisesRegex(control.ControlError, "timeout policy"):
+            control.validate_plan(value)
+
+    def test_unbounded_timeout_is_rejected_outside_trusted_seed(self) -> None:
+        value = copy.deepcopy(self.plan)
+        target = next(check for check in value["checks"] if check["id"] == "r5-push-ci")
+        target["timeoutPolicy"] = "UNBOUNDED"
+        with self.assertRaisesRegex(control.ControlError, "timeout policy"):
+            control.validate_plan(value)
 
     def test_dependency_cycle_is_rejected(self) -> None:
         value = copy.deepcopy(self.plan)
@@ -207,6 +231,68 @@ class StabilizationControlTest(unittest.TestCase):
         exit_code, duration, _stdout, _stderr = control.invoke(check, tier, self.authority)
         self.assertEqual(exit_code, 124)
         self.assertLess(duration, 7000)
+
+    def test_unbounded_execution_waits_without_a_deadline(self) -> None:
+        check = {
+            "command": ["ignored"],
+            "gate": None,
+            "timeoutPolicy": "UNBOUNDED",
+        }
+        tier = {"budgetSeconds": 1}
+        process = mock.Mock(pid=12345)
+        process.wait.return_value = 0
+        with mock.patch.object(control.subprocess, "Popen", return_value=process):
+            exit_code, _duration, _stdout, _stderr = control.invoke(
+                check, tier, self.authority
+            )
+        self.assertEqual(exit_code, 0)
+        process.wait.assert_called_once_with(timeout=None)
+
+    def test_unbounded_check_is_not_rejected_by_the_tier_duration_budget(self) -> None:
+        check = self.model["checks"]["s3-trusted-seed"]
+        tier = self.model["tiers"][check["tier"]]
+        request = {
+            "checkId": check["id"],
+            "clean": True,
+            "command": check["command"],
+            "commandDigest": control.digest_bytes(control.canonical(check["command"])),
+            "controllerDigest": self.authority["controllerDigest"],
+            "durationMillis": (tier["budgetSeconds"] + 1) * 1000,
+            "environmentDigest": "sha256:" + "1" * 64,
+            "exitCode": 0,
+            "inputDigest": "sha256:" + "2" * 64,
+            "memoryBytes": control.memory_bytes(),
+            "physicalCores": control.physical_cores(),
+            "planDigest": self.authority["planDigest"],
+            "sourceRevision": control.git("rev-parse", "HEAD"),
+            "stderrDigest": "sha256:" + "3" * 64,
+            "stdoutDigest": "sha256:" + "4" * 64,
+            "stepId": check["step"],
+            "tier": check["tier"],
+            "verifierDigest": self.authority["verifierDigest"],
+        }
+        self.assertEqual(verifier.verify(request)["status"], "PASS")
+
+    def test_failed_receipt_does_not_probe_a_missing_postcondition(self) -> None:
+        model = copy.deepcopy(self.model)
+        model["steps"]["S3"]["dependencies"] = []
+        with (
+            mock.patch.object(control, "dynamic_authority_digest", return_value="sha256:" + "1" * 64),
+            mock.patch.object(control, "evidence_digest", return_value="sha256:" + "2" * 64),
+            mock.patch.object(
+                control,
+                "verified_receipt",
+                return_value={"exitCode": 124, "status": "FAIL"},
+            ),
+            mock.patch.object(control, "postcondition_authority_digest") as postcondition,
+        ):
+            with self.assertRaisesRegex(
+                control.ControlError, "status FAIL and exit code 124"
+            ):
+                control.run_check(
+                    self.plan, model, self.authority, "S3", "s3-trusted-seed"
+                )
+        postcondition.assert_not_called()
 
     def test_completion_fails_closed_when_required_check_authority_changes(self) -> None:
         step = "S0"
@@ -785,6 +871,7 @@ class StabilizationControlTest(unittest.TestCase):
                 "size": len(b"worker"),
             }
             manifest = {
+                "artifactIds": ["clew"],
                 "artifacts": {
                     "clew": {
                         "mode": 0o111,
@@ -801,6 +888,7 @@ class StabilizationControlTest(unittest.TestCase):
                 "runtimeKey": runtime_key,
                 "schema": "codeclew-runtime-capsule/4.0",
                 "toolchainAuthority": {},
+                "workerIds": ["kotlin24"],
                 "workers": {
                     "kotlin24": {
                         "compilerVersion": "2.4.10",
@@ -883,12 +971,6 @@ class StabilizationControlTest(unittest.TestCase):
                 else:
                     os.chmod(path, 0o500 if metadata.st_mode & 0o111 else 0o400)
             os.chmod(capsule, 0o500)
-            serial_runtimes = epoch / "serial-state" / "v2" / "runtimes"
-            serial_runtimes.mkdir(parents=True)
-            os.chmod(epoch / "serial-state", 0o700)
-            os.chmod(epoch / "serial-state" / "v2", 0o700)
-            os.chmod(serial_runtimes, 0o700)
-            shutil.copytree(capsule, serial_runtimes / runtime_key[7:], copy_function=shutil.copy2)
             with mock.patch.dict(os.environ, {"CODECLEW_SEED_HOME": str(root)}):
                 first = control.trusted_seed_authority_digest()
                 os.chmod(core, 0o700)

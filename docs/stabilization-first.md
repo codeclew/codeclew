@@ -28,6 +28,16 @@ Budgets are valid only on a qualifying host. `UNQUALIFIED_HOST` and
 `BUDGET_EXCEEDED` are typed non-pass results. The controller refuses blind
 retries of a functional failure with the same evidence key.
 
+The S3 trusted-seed check is the sole pre-stabilization exception: its real
+cold build has `timeoutPolicy=UNBOUNDED`. The L2 budget still bounds its
+single-use gate capability and every other L2 check, but it cannot terminate
+an otherwise healthy first build. Warm-path performance remains bounded by the
+later qualification gates.
+S3 builds one admitted parallel RELEASE capsule and publishes it as the trusted
+seed. It does not repeat a serial build: byte-identical serial/parallel output
+and performance are the dedicated Q2 four-arm DoD, so duplicating that E2E
+before foundation stabilization is forbidden.
+
 ## Milestones
 
 ```dot
@@ -244,6 +254,14 @@ verified external-seed lease resolution without a local checkpoint, and use
 that immutable runtime with distinct committed repositories and managed
 sessions. Each trial closes and garbage
 collects its session before the next one.
+
+Cold-runtime preparation performs one untimed online dependency prime, seals a
+content-addressed cache seed, and gives each measured arm a separate
+copy-on-write clone. Cargo and Gradle are offline during measurement. One gate
+invocation owns one complete counterbalanced four-arm cohort; an interrupted
+cohort is discarded in full and no arm receipt is reused by a later invocation.
+The gate independently derives critical-path timings from the exact Cargo and
+Gradle stage set instead of trusting a producer-supplied aggregate.
 
 The controller binds provider checks to separate path-free native Gradle and
 Maven authorities. They select Java exactly as the launcher does (preferring

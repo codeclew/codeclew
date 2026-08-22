@@ -182,13 +182,31 @@ import pathlib
 import sys
 
 value = json.loads(pathlib.Path(sys.argv[1]).read_bytes())
+plan = value.get("parallelBuildPlan")
 if (
-    value.get("schema") != "codeclew-runtime-component-preflight/1.0"
+    set(value) != {"componentIds", "mode", "parallelBuildPlan", "schema", "status"}
+    or value.get("schema") != "codeclew-runtime-component-preflight/2.0"
     or value.get("status") != "PASS"
     or value.get("mode") != "RELEASE"
     or not isinstance(value.get("componentIds"), list)
     or not value["componentIds"]
     or value["componentIds"] != sorted(set(value["componentIds"]))
+    or not isinstance(plan, dict)
+    or set(plan) != {
+        "cargoWorkers", "gradleHeapBytes", "gradleWorkers", "inputWorkers",
+        "memoryBudgetBytes", "packageWorkers", "parallel", "profile",
+    }
+    or plan["profile"] != "PARALLEL"
+    or plan["parallel"] is not True
+    or any(
+        type(plan[field]) is not int or plan[field] <= 0
+        for field in (
+            "cargoWorkers", "gradleHeapBytes", "gradleWorkers", "inputWorkers",
+            "memoryBudgetBytes", "packageWorkers",
+        )
+    )
+    or plan["gradleHeapBytes"] < 2 * 1024**3
+    or plan["gradleHeapBytes"] > plan["memoryBudgetBytes"]
 ):
     raise SystemExit("trusted seed component preflight is invalid")
 PY
@@ -196,9 +214,6 @@ PY
 CODECLEW_HOME="$WORK/parallel-state" \
   "$ROOT/clew" --bootstrap-cold-build-evidence=parallel \
   >"$WORK/parallel.json" 2>"$WORK/parallel.stderr"
-CODECLEW_HOME="$WORK/serial-state" \
-  "$ROOT/clew" --bootstrap-cold-build-evidence=serial \
-  >"$WORK/serial.json" 2>"$WORK/serial.stderr"
 
 if [ "$(git rev-parse --verify HEAD)" != "$SOURCE_REVISION" ] || \
    [ "$(git rev-parse --verify HEAD^{tree})" != "$SOURCE_TREE" ] || \
@@ -216,21 +231,14 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 parallel_bytes = (root / "parallel.json").read_bytes()
-serial_bytes = (root / "serial.json").read_bytes()
 parallel = json.loads(parallel_bytes)
-serial = json.loads(serial_bytes)
-for value in (parallel, serial):
-    if value.get("schema") != "codeclew-real-cold-build-evidence/1.0" or value.get("status") != "MEASURED" or value.get("mode") != "RELEASE":
-        raise SystemExit("trusted seed build returned invalid evidence")
-for field in ("runtimeKey", "manifestDigest", "artifactHashes", "workerTreeHashes"):
-    if parallel.get(field) != serial.get(field):
-        raise SystemExit(f"serial/parallel trusted seed mismatch: {field}")
+if parallel.get("schema") != "codeclew-real-cold-build-evidence/1.0" or parallel.get("status") != "MEASURED" or parallel.get("mode") != "RELEASE":
+    raise SystemExit("trusted seed build returned invalid evidence")
 seed = {
     "artifactHashes": parallel["artifactHashes"],
-    "buildEvidenceDigests": sorted([
-        "sha256:" + hashlib.sha256(parallel_bytes).hexdigest(),
-        "sha256:" + hashlib.sha256(serial_bytes).hexdigest(),
-    ]),
+    "buildEvidenceDigests": [
+        "sha256:" + hashlib.sha256(parallel_bytes).hexdigest()
+    ],
     "manifestDigest": parallel["manifestDigest"],
     "mode": "RELEASE",
     "runtimeKey": parallel["runtimeKey"],

@@ -144,7 +144,10 @@ def verify(request: object) -> dict[str, object]:
         status = "FAIL"
     elif exit_code != 0:
         status = "FAIL"
-    elif duration > tier["budgetSeconds"] * 1000:
+    elif (
+        check.get("timeoutPolicy", "BOUNDED") == "BOUNDED"
+        and duration > tier["budgetSeconds"] * 1000
+    ):
         status = "BUDGET_EXCEEDED"
     else:
         status = "PASS"

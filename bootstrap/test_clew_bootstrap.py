@@ -10,9 +10,13 @@ from pathlib import Path
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 import sys
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_resources
 
 
 MODULE_PATH = Path(__file__).with_name("clew_bootstrap.py")
@@ -22,7 +26,142 @@ bootstrap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bootstrap)
 
 
+def write_minimal_registry(
+    source: Path, *, input_files: list[str], input_roots: list[str]
+) -> None:
+    registry = {
+        "components": [{
+            "buildContract": {
+                "artifactName": "clew",
+                "binary": "clew",
+                "executor": "CARGO",
+                "package": "clew",
+            },
+            "componentId": "clew",
+            "componentKind": "core-binary",
+            "inputFiles": sorted(input_files),
+            "inputRoots": sorted(input_roots),
+            "optionalInputRoots": [],
+            "toolchainKeys": ["platform", "rust"],
+        }],
+        "schema": bootstrap.COMPONENT_REGISTRY_SCHEMA,
+    }
+    target = source / "bootstrap/runtime_components.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(bootstrap.canonical(registry) + b"\n")
+
+
 class BootstrapAuthorityTest(unittest.TestCase):
+    def test_effective_resources_honor_affinity_cpuset_quota_and_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cgroup = root / "cgroup"
+            proc = root / "proc"
+            cgroup.mkdir()
+            (proc / "self").mkdir(parents=True)
+            (proc / "self/cgroup").write_text("0::/\n", encoding="ascii")
+            (cgroup / "cpu.max").write_text("200000 100000\n", encoding="ascii")
+            (cgroup / "cpuset.cpus.effective").write_text("0-5\n", encoding="ascii")
+            (cgroup / "memory.max").write_text(str(4 * 1024**3), encoding="ascii")
+
+            def sysconf(name: str) -> int:
+                return 4 * 1024**3 if name == "SC_PHYS_PAGES" else 4
+
+            with (
+                mock.patch.object(host_resources.os, "cpu_count", return_value=16),
+                mock.patch.object(
+                    host_resources.os,
+                    "sched_getaffinity",
+                    return_value=set(range(8)),
+                    create=True,
+                ),
+                mock.patch.object(host_resources.os, "sysconf", side_effect=sysconf),
+            ):
+                authority = host_resources.effective_host_resources(cgroup, proc)
+            self.assertEqual(authority["logicalCores"], 2)
+            self.assertEqual(authority["totalMemoryBytes"], 4 * 1024**3)
+            self.assertEqual(authority["cpu"]["cpusetCores"], 6)
+            self.assertEqual(authority["memory"]["physicalBytes"], 16 * 1024**3)
+
+    def test_effective_resources_take_nested_cgroup_ancestor_minima(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cgroup = root / "cgroup"
+            leaf = cgroup / "user.slice/session.scope"
+            leaf.mkdir(parents=True)
+            proc = root / "proc"
+            (proc / "self").mkdir(parents=True)
+            (proc / "self/cgroup").write_text(
+                "0::/user.slice/session.scope\n", encoding="ascii"
+            )
+            (cgroup / "cpu.max").write_text("max 100000\n", encoding="ascii")
+            (cgroup / "memory.max").write_text("max\n", encoding="ascii")
+            (cgroup / "user.slice/cpu.max").write_text(
+                "300000 100000\n", encoding="ascii"
+            )
+            (cgroup / "user.slice/memory.max").write_text(
+                str(6 * 1024**3), encoding="ascii"
+            )
+            (leaf / "cpu.max").write_text("200000 100000\n", encoding="ascii")
+            (leaf / "memory.max").write_text(str(4 * 1024**3), encoding="ascii")
+            (leaf / "cpuset.cpus.effective").write_text("2-5\n", encoding="ascii")
+
+            def sysconf(name: str) -> int:
+                return 4 * 1024**3 if name == "SC_PHYS_PAGES" else 4
+
+            with (
+                mock.patch.object(host_resources.os, "cpu_count", return_value=16),
+                mock.patch.object(
+                    host_resources.os,
+                    "sched_getaffinity",
+                    return_value=set(range(8)),
+                    create=True,
+                ),
+                mock.patch.object(host_resources.os, "sysconf", side_effect=sysconf),
+            ):
+                authority = host_resources.effective_host_resources(cgroup, proc)
+            self.assertEqual(authority["logicalCores"], 2)
+            self.assertEqual(authority["totalMemoryBytes"], 4 * 1024**3)
+
+    def test_effective_resources_resolve_v1_controller_memberships(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            cgroup = root / "cgroup"
+            proc = root / "proc"
+            (proc / "self").mkdir(parents=True)
+            (proc / "self/cgroup").write_text(
+                "2:cpu,cpuacct:/jobs/42\n3:memory:/jobs/42\n4:cpuset:/jobs/42\n",
+                encoding="ascii",
+            )
+            cpu = cgroup / "cpu,cpuacct/jobs/42"
+            memory = cgroup / "memory/jobs/42"
+            cpuset = cgroup / "cpuset/jobs/42"
+            for path in (cpu, memory, cpuset):
+                path.mkdir(parents=True)
+            (cpu / "cpu.cfs_quota_us").write_text("200000", encoding="ascii")
+            (cpu / "cpu.cfs_period_us").write_text("100000", encoding="ascii")
+            (memory / "memory.limit_in_bytes").write_text(
+                str(3 * 1024**3), encoding="ascii"
+            )
+            (cpuset / "cpuset.cpus").write_text("0-3", encoding="ascii")
+
+            def sysconf(name: str) -> int:
+                return 2 * 1024**3 if name == "SC_PHYS_PAGES" else 8
+
+            with (
+                mock.patch.object(host_resources.os, "cpu_count", return_value=16),
+                mock.patch.object(
+                    host_resources.os,
+                    "sched_getaffinity",
+                    return_value=set(range(8)),
+                    create=True,
+                ),
+                mock.patch.object(host_resources.os, "sysconf", side_effect=sysconf),
+            ):
+                authority = host_resources.effective_host_resources(cgroup, proc)
+            self.assertEqual(authority["logicalCores"], 2)
+            self.assertEqual(authority["totalMemoryBytes"], 3 * 1024**3)
+
     def test_build_group_shutdown_escalates_after_one_shared_deadline(self) -> None:
         first = mock.Mock(pid=101)
         second = mock.Mock(pid=202)
@@ -64,6 +203,69 @@ class BootstrapAuthorityTest(unittest.TestCase):
         self.assertTrue(supervisor.cancelled())
         terminate.assert_called_once_with([process])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process groups required")
+    def test_successful_build_stage_refuses_and_stops_residual_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "child.pid"
+            program = (
+                "import pathlib,subprocess,sys\n"
+                "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+                "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+            )
+            with mock.patch.object(bootstrap, "progress"):
+                with self.assertRaisesRegex(
+                    bootstrap.BootstrapError, "residual process group"
+                ):
+                    bootstrap.run_build_stage(
+                        [sys.executable, "-c", program, str(marker)],
+                        Path(directory),
+                        os.environ.copy(),
+                        "RESIDUAL_TEST",
+                    )
+            self.assertTrue(marker.exists())
+            child_pid = int(marker.read_text())
+            deadline = time.monotonic() + 5
+            status = ""
+            while time.monotonic() < deadline:
+                status = subprocess.run(
+                    ["/bin/ps", "-p", str(child_pid), "-o", "stat="],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).stdout.strip()
+                if not status or status.startswith("Z"):
+                    break
+                time.sleep(0.05)
+            self.assertTrue(not status or status.startswith("Z"))
+
+    def test_discard_private_tree_unlinks_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            outside = base / "outside"
+            outside.mkdir(mode=0o700)
+            marker = outside / "marker.bin"
+            marker.write_bytes(b"private-bytes\x00\xff")
+            marker.chmod(0o640)
+            outside.chmod(0o750)
+            expected_file_mode = stat.S_IMODE(marker.stat().st_mode)
+            expected_directory_mode = stat.S_IMODE(outside.stat().st_mode)
+
+            temporary = base / "temporary"
+            temporary.mkdir(mode=0o700)
+            nested = temporary / "nested"
+            nested.mkdir(mode=0o700)
+            (nested / "external").symlink_to(marker)
+
+            bootstrap.discard_private_tree(temporary)
+
+            self.assertFalse(temporary.exists())
+            self.assertEqual(marker.read_bytes(), b"private-bytes\x00\xff")
+            self.assertEqual(stat.S_IMODE(marker.stat().st_mode), expected_file_mode)
+            self.assertEqual(
+                stat.S_IMODE(outside.stat().st_mode), expected_directory_mode
+            )
 
     def test_pre_cancelled_build_never_spawns_a_process(self) -> None:
         supervisor = bootstrap.BuildProcessSupervisor()
@@ -126,6 +328,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
                     "profile": "PARALLEL",
                     "parallel": True,
                     "cargoWorkers": 2,
+                    "gradleHeapBytes": 3 * 1024**3,
                     "gradleWorkers": 2,
                     "inputWorkers": 4,
                     "packageWorkers": 3,
@@ -151,9 +354,22 @@ class BootstrapAuthorityTest(unittest.TestCase):
         self.assertEqual((serial["inputWorkers"], serial["packageWorkers"]), (1, 1))
         self.assertEqual(
             (parallel["parallel"], parallel["cargoWorkers"], parallel["gradleWorkers"]),
-            (True, 8, 8),
+            (True, 5, 5),
         )
         self.assertEqual((parallel["inputWorkers"], parallel["packageWorkers"]), (8, 8))
+        self.assertEqual(parallel["gradleHeapBytes"], 8 * 1024**3)
+        non_capped = bootstrap.runtime_build_plan(8, 16 * 1024**3, "PARALLEL")
+        self.assertEqual(non_capped["gradleHeapBytes"] % 1024**2, 0)
+        self.assertIn(
+            f"-Xmx{non_capped['gradleHeapBytes'] // 1024**2}m",
+            bootstrap.gradle_jvm_options(non_capped),
+        )
+        constrained = bootstrap.runtime_build_plan(16, 8 * 1024**3, "AUTO")
+        self.assertFalse(constrained["parallel"])
+        self.assertEqual(constrained["gradleWorkers"], 1)
+        self.assertGreaterEqual(
+            constrained["gradleHeapBytes"], bootstrap.GRADLE_MIN_HEAP_BYTES
+        )
         with self.assertRaisesRegex(bootstrap.BootstrapError, "cannot admit"):
             bootstrap.runtime_build_plan(1, 4 * 1024**3, "PARALLEL")
 
@@ -177,8 +393,16 @@ class BootstrapAuthorityTest(unittest.TestCase):
         self.assertEqual([name for name, _ in observed], ["GRADLE_WORKERS", "CARGO_BINARIES"])
         gradle, cargo = (arguments for _, arguments in observed)
         self.assertNotIn("--parallel", gradle)
+        self.assertIn("--no-watch-fs", gradle)
+        self.assertIn("-Dorg.gradle.daemon.idletimeout=1000", gradle)
+        self.assertIn(
+            "-Dorg.gradle.daemon.registry.base=/.codeclew-gradle-daemon", gradle
+        )
         self.assertIn("--no-build-cache", gradle)
+        self.assertIn("--offline", gradle)
+        self.assertIn("-Pkotlin.compiler.execution.strategy=in-process", gradle)
         self.assertIn("--max-workers=1", gradle)
+        self.assertIn("--frozen", cargo)
         self.assertEqual(cargo[-2:], ["--jobs", "1"])
 
         observed.clear()
@@ -191,9 +415,28 @@ class BootstrapAuthorityTest(unittest.TestCase):
         gradle = next(arguments for name, arguments in observed if name == "GRADLE_WORKERS")
         cargo = next(arguments for name, arguments in observed if name == "CARGO_BINARIES")
         self.assertIn("--parallel", gradle)
+        self.assertIn("--no-watch-fs", gradle)
         self.assertIn("--no-build-cache", gradle)
+        self.assertIn("--offline", gradle)
+        self.assertIn("-Pkotlin.compiler.execution.strategy=in-process", gradle)
         self.assertIn("--max-workers=4", gradle)
+        self.assertIn(
+            "-Dorg.gradle.jvmargs=-Xms256m -Xmx8192m "
+            "-XX:MaxMetaspaceSize=1024m -XX:MaxDirectMemorySize=512m "
+            "-XX:+ExitOnOutOfMemoryError",
+            gradle,
+        )
+        self.assertIn("--frozen", cargo)
         self.assertEqual(cargo[-2:], ["--jobs", "4"])
+
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "must be absolute"):
+            bootstrap.build_toolchains(
+                Path("relative-stage"),
+                {},
+                serial,
+                cargo_required=False,
+                gradle_tasks=[":adapter:installDist"],
+            )
 
     def test_component_misses_start_only_the_required_toolchain(self) -> None:
         observed: list[str] = []
@@ -218,6 +461,8 @@ class BootstrapAuthorityTest(unittest.TestCase):
             )
         self.assertEqual(observed, ["GRADLE_WORKERS"])
         self.assertEqual(result["toolchainStages"], ["GRADLE_WORKERS"])
+        self.assertEqual(set(result["stageWallMillis"]), {"GRADLE_WORKERS"})
+        self.assertGreaterEqual(result["toolchainWallMillis"], 0)
 
         observed.clear()
         with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
@@ -226,6 +471,71 @@ class BootstrapAuthorityTest(unittest.TestCase):
             )
         self.assertEqual(observed, ["CARGO_BINARIES"])
         self.assertEqual(result["toolchainStages"], ["CARGO_BINARIES"])
+        self.assertEqual(set(result["stageWallMillis"]), {"CARGO_BINARIES"})
+
+    def test_dependency_prime_uses_online_fetch_and_in_process_gradle(self) -> None:
+        source = Path("/source")
+        root = Path("/state")
+        inputs = [{"mode": 0, "path": "Cargo.toml", "sha256": "sha256:" + "1" * 64, "size": 1}]
+        tools = {"jdk": {}, "platform": {}, "python": {}, "rust": {}}
+        specs = [
+            {
+                "buildContract": {"executor": "GRADLE", "task": ":zeta:installDist"}
+            }
+        ]
+        observed: list[tuple[str, list[str]]] = []
+
+        def record(arguments, _cwd, _environment, name, _supervisor):
+            observed.append((name, arguments))
+
+        with (
+            mock.patch.object(bootstrap, "dependency_cache_authority", return_value={
+                "artifactIds": ["clew"],
+                "componentIds": ["zeta"],
+                "inputDigest": "sha256:" + "2" * 64,
+                "mode": "RELEASE",
+                "runtimeKey": "sha256:" + "3" * 64,
+                "schema": "codeclew-dependency-cache-authority/1.0",
+                "status": "PASS",
+                "toolchainDigest": "sha256:" + "4" * 64,
+                "workerIds": ["zeta"],
+            }),
+            mock.patch.object(bootstrap, "source_manifest", return_value=(inputs, False)),
+            mock.patch.object(bootstrap, "load_component_registry", return_value={}),
+            mock.patch.object(bootstrap, "toolchain_authority", return_value=tools),
+            mock.patch.object(bootstrap, "runtime_component_specs", return_value=specs),
+            mock.patch.object(bootstrap.tempfile, "mkdtemp", return_value="/state/tmp/prime"),
+            mock.patch.object(bootstrap, "runtime_build_plan", return_value={
+                "cargoWorkers": 4,
+                "gradleHeapBytes": 3 * 1024**3,
+                "gradleWorkers": 4,
+                "inputWorkers": 4,
+                "memoryBudgetBytes": 1,
+                "packageWorkers": 4,
+                "parallel": True,
+                "profile": "PARALLEL",
+            }),
+            mock.patch.object(bootstrap, "stage_inputs"),
+            mock.patch.object(bootstrap, "build_environment", return_value={}),
+            mock.patch.object(bootstrap, "run_build_stage", side_effect=record),
+            mock.patch.object(bootstrap, "verify_source_manifest"),
+            mock.patch.object(bootstrap, "discard_private_tree"),
+        ):
+            evidence = bootstrap.prime_dependency_cache(source, root)
+        self.assertEqual([name for name, _ in observed], [
+            "CARGO_DEPENDENCIES", "GRADLE_DEPENDENCIES"
+        ])
+        cargo = observed[0][1]
+        gradle = observed[1][1]
+        self.assertEqual(cargo, ["cargo", "fetch", "--locked"])
+        self.assertNotIn("--offline", gradle)
+        self.assertIn("-Pkotlin.compiler.execution.strategy=in-process", gradle)
+        self.assertIn(
+            "-Dorg.gradle.daemon.registry.base=/state/tmp/prime/"
+            ".codeclew-gradle-daemon",
+            gradle,
+        )
+        self.assertEqual(evidence["status"], "PRIMED")
 
     def test_concurrent_runtime_lock_admits_exactly_one_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -491,13 +801,65 @@ class BootstrapAuthorityTest(unittest.TestCase):
             "toolchainKeys": ["jdk", "platform"],
         })
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory)
+            source = Path(directory).resolve()
             (source / "bootstrap").mkdir()
             (source / "bootstrap/runtime_components.json").write_bytes(
                 bootstrap.canonical(registry) + b"\n"
             )
+            zeta_source = source / "adapters/zeta/src/main/zeta/Main.zeta"
+            zeta_source.parent.mkdir(parents=True)
+            zeta_source.write_text("language zeta\n", encoding="utf-8")
+            for relative in [
+                "Cargo.lock", "Cargo.toml", "build.gradle.kts", "build.gradle.kts",
+                "clew", "gradle/wrapper/gradle-wrapper.jar",
+                "gradle/wrapper/gradle-wrapper.properties", "gradlew", "gradlew.bat",
+                "rust-toolchain.toml", "schemas/worker.proto", "settings.gradle.kts",
+            ]:
+                target = source / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists():
+                    target.write_text("fixture\n", encoding="utf-8")
+            # Existing registry roots must be nonempty; the new zeta root is the
+            # regression under test and is deliberately outside workers/**.
+            for component in registry["components"]:
+                for relative in component["inputFiles"]:
+                    target = source / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if not target.exists():
+                        target.write_text("fixture\n", encoding="utf-8")
+                for root in component["inputRoots"]:
+                    target = source / root / "Fixture.txt"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            subprocess.run(["git", "add", "."], cwd=source, check=True)
+            environment = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "Tests",
+                "GIT_AUTHOR_EMAIL": "tests@example.invalid",
+                "GIT_COMMITTER_NAME": "Tests",
+                "GIT_COMMITTER_EMAIL": "tests@example.invalid",
+            }
+            subprocess.run(
+                ["git", "commit", "-qm", "fixture"], cwd=source, env=environment, check=True
+            )
             loaded = bootstrap.load_component_registry(source)
+            inputs, development = bootstrap.source_manifest(source)
+            specs = bootstrap.runtime_component_specs(
+                "RELEASE",
+                inputs,
+                {
+                    "jdk": {"digest": "jdk"},
+                    "platform": {"digest": "platform"},
+                    "python": {"digest": "python"},
+                    "rust": {"digest": "rust"},
+                },
+                loaded,
+            )
         self.assertEqual(loaded["components"][-1]["componentId"], "zeta")
+        self.assertFalse(development)
+        self.assertIn("adapters/zeta/src/main/zeta/Main.zeta", {row["path"] for row in inputs})
+        self.assertEqual(specs[-1]["componentId"], "zeta")
 
     def test_capsule_assembly_all_hit_runs_no_stage_or_toolchain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -582,6 +944,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
             ]
             plan = {
                 "cargoWorkers": 1,
+                "gradleHeapBytes": 3 * 1024**3,
                 "gradleWorkers": 1,
                 "inputWorkers": 1,
                 "memoryBudgetBytes": 1,
@@ -647,9 +1010,12 @@ class BootstrapAuthorityTest(unittest.TestCase):
             os.chmod(capsule_core, 0o500)
 
     def test_selected_closure_excludes_root_and_nested_legacy_state(self) -> None:
-        self.assertFalse(bootstrap.selected_source(".semantic-thread/private"))
+        registry = bootstrap.load_component_registry(MODULE_PATH.parent.parent)
+        self.assertFalse(bootstrap.selected_source(".semantic-thread/private", registry))
         self.assertFalse(
-            bootstrap.selected_source("crates/clew/src/.semantic-thread/private.rs")
+            bootstrap.selected_source(
+                "crates/clew/src/.semantic-thread/private.rs", registry
+            )
         )
 
     def test_warm_locator_never_hashes_or_executes_toolchains(self) -> None:
@@ -1014,8 +1380,11 @@ class BootstrapAuthorityTest(unittest.TestCase):
             source = root / "crates/example/src"
             source.mkdir(parents=True)
             (source / "lib.rs").write_text("pub fn one() {}\n")
+            write_minimal_registry(
+                root, input_files=["Cargo.toml"], input_roots=["crates"]
+            )
             subprocess.run(
-                ["git", "add", "Cargo.toml", "crates/example/src/lib.rs"],
+                ["git", "add", "Cargo.toml", "crates/example/src/lib.rs", "bootstrap"],
                 cwd=root,
                 check=True,
             )
@@ -1048,9 +1417,14 @@ class BootstrapAuthorityTest(unittest.TestCase):
             bootstrap_file.parent.mkdir(parents=True)
             bootstrap_file.write_text("#!/usr/bin/env python3\n")
             bootstrap_file.chmod(0o700)
+            write_minimal_registry(
+                source,
+                input_files=["bootstrap/clew_bootstrap.py"],
+                input_roots=["bootstrap"],
+            )
             subprocess.run(["git", "init", "-q"], cwd=source, check=True)
             subprocess.run(
-                ["git", "add", "bootstrap/clew_bootstrap.py"],
+                ["git", "add", "bootstrap"],
                 cwd=source,
                 check=True,
             )

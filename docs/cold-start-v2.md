@@ -1,7 +1,8 @@
 # Codeclew cold start v2
 
-Status: implemented. The design passed independent adversarial review; the
-integrated implementation is guarded by the release gates below.
+Status: implementation candidate under Q2 qualification. The design passed
+independent adversarial review; the integrated implementation is not a release
+claim until the gates below produce independently verified receipts.
 
 ## Goal
 
@@ -161,6 +162,17 @@ graceful stop, then terminates the verified process group. Linux uses pidfds;
 macOS verifies process start time before signaling. Gradle is invoked once with
 parallel K21/K23/K24 tasks and no daemon. JVM heap is derived from the admitted
 reservation with native headroom; a fixed 2 GiB heap is not a contract.
+The parallel plan assigns 55% of the admitted budget to Gradle, reserves 2 GiB
+of that share for native/metaspace/direct memory, caps the resulting heap at
+8 GiB, and admits no more than one toolchain worker per 1.5 GiB. The exact
+`gradleHeapBytes` value is passed through `org.gradle.jvmargs` and recorded in
+cold evidence. Component preflight computes and validates this plan before any
+Cargo or Gradle compilation starts, so an inadmissible host fails early instead
+of reaching a JVM OOM after the Rust build.
+Gradle's required single-use daemon uses a build-private registry, a one-second
+idle timeout, `ExitOnOutOfMemoryError`, and disabled file-system watching. It
+therefore cannot join or stop an ambient user daemon and cannot retain the
+failed file-watcher process that motivated this admission contract.
 
 ## Deterministic CAS
 
@@ -244,6 +256,11 @@ allowlisted relative or tokenized diagnostics. Unknown lines become source,
 severity, digest, and byte count; raw bytes are discarded. Synthetic secrets,
 personal paths, and binary output must never appear in persisted state.
 
+The Q2 cold gate currently takes the strict unknown-output branch for every
+Cargo, Gradle, and Git diagnostic: it persists only a canonical byte count and
+content digest envelope. Raw stderr is discarded before workdir cleanup and is
+never written to the report, cohort, Git, or diagnostic store.
+
 ## State, threat model, and GC
 
 All v2 state lives only in `CODECLEW_HOME/v2`. v2 never lists, probes, imports,
@@ -295,7 +312,8 @@ repository walks, shards no larger than 8 MiB, bounded queues, memory admission,
 no OOM, and progress silence below five seconds.
 
 Pinned multicore corpora include runtime Codeclew, at least twelve independent
-compilations, and one K24 monolith. On at least four physical cores:
+compilations, and one K24 monolith. On at least four effective cores after
+affinity, cpuset, and CPU-quota limits are applied:
 
 - runtime multicore wall time is at most 0.65 of `jobs=1`;
 - multi-compilation generation is at most 0.60 of `jobs=1`;
@@ -305,17 +323,29 @@ compilations, and one K24 monolith. On at least four physical cores:
 
 `scripts/cold-multicore-gate.sh` is the executable runtime-capsule release gate.
 It invokes the real `./clew --bootstrap-cold-build-evidence=serial|parallel`
-path in a fresh private `CODECLEW_HOME` for every measurement. Three
-serial/parallel pairs alternate execution order to reduce order bias. Every
-capsule must have the same runtime key, manifest digest, artifact hashes, and
-worker tree hashes; the median parallel/serial wall-time ratio must be at most
-0.65. The gate requires a clean source HEAD and runs all arms from one detached
-worktree at that exact revision, so concurrent shared-worktree edits cannot
-invalidate a long measurement. The private, path-free machine-readable report
-is written to
-`benchmarks/reports/cold-multicore-latest.json`. A host below four physical
-cores emits the typed `SKIPPED_UNQUALIFIED_HOST` status and cannot set
-`releaseGatePassed`; CI may use that only as a smoke result.
+path in a fresh private `CODECLEW_HOME` for every measurement. One untimed
+online dependency prime publishes an immutable content-addressed cache seed;
+each measured arm receives a distinct copy-on-write clone and runs Cargo and
+Gradle offline. One invocation owns one complete four-arm cohort with two
+counterbalanced blocks, `SERIAL -> PARALLEL` and `PARALLEL -> SERIAL`.
+Interrupted cohorts are never resumed or combined with later arms.
+
+Every arm has an immutable, digest-bearing receipt and every capsule must have
+the same non-empty runtime key, manifest digest, artifact hashes, and worker
+tree hashes. The gate independently recomputes the toolchain critical path from
+the exact Cargo and Gradle stage timings. The geometric-mean parallel/serial
+critical-path ratio and total-wall ratio must each be at most 0.65, each block's
+critical path at most 0.85, and excessive order interaction is a typed noisy
+result.
+The gate requires a clean source HEAD and runs all arms from one detached clone
+at that exact revision, so concurrent shared-worktree edits cannot invalidate a
+long measurement. The private, path-free machine-readable report is written to
+`benchmarks/reports/cold-multicore-latest.json`. A host below four effective
+cores after affinity, cpuset, quota, and memory authority emits the typed
+`SKIPPED_UNQUALIFIED_HOST` status and cannot set
+`releaseGatePassed`; it exits nonzero so the formal controller cannot turn a
+smoke-only result into a Q2 receipt. CI may inspect that typed result only as a
+non-release smoke result.
 
 `scripts/multi-compilation-gate.sh` is the separate product-generation gate. It
 uses the public `session open` and `context create` workflow against twelve

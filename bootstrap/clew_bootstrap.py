@@ -8,6 +8,7 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,22 @@ import threading
 import time
 import uuid
 
+try:
+    from host_resources import HostResourceError, effective_host_resources
+except ModuleNotFoundError as error:
+    if error.name != "host_resources":
+        raise
+    resource_path = Path(__file__).resolve().with_name("host_resources.py")
+    resource_spec = importlib.util.spec_from_file_location(
+        "_codeclew_host_resources", resource_path
+    )
+    if resource_spec is None or resource_spec.loader is None:
+        raise RuntimeError("host resource authority loader is unavailable") from error
+    resource_module = importlib.util.module_from_spec(resource_spec)
+    resource_spec.loader.exec_module(resource_module)
+    HostResourceError = resource_module.HostResourceError
+    effective_host_resources = resource_module.effective_host_resources
+
 
 SCHEMA = "codeclew-runtime-capsule/4.0"
 DOMAIN = b"codeclew-runtime/v2\0"
@@ -34,6 +51,10 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_NODES = 100_000
 MIN_COLD_BUILD_FREE_BYTES = 6 * 1024 * 1024 * 1024
+GRADLE_MIN_HEAP_BYTES = 2 * 1024**3
+GRADLE_MAX_HEAP_BYTES = 8 * 1024**3
+GRADLE_NON_HEAP_BYTES = 2 * 1024**3
+TOOLCHAIN_WORKER_MEMORY_BYTES = 1536 * 1024**2
 BUILD_TERMINATION_GRACE_SECONDS = 2.0
 BUILD_KILL_WAIT_SECONDS = 2.0
 ROOT_FILES = {
@@ -334,6 +355,17 @@ def run_build_stage(
         if return_code != 0:
             progress("STAGE_FAILED", stage, durationMillis=duration, exitCode=return_code)
             raise BootstrapError(f"capsule build stage failed ({return_code}): {stage}")
+        if _process_group_exists(process.pid):
+            progress(
+                "STAGE_FAILED",
+                stage,
+                durationMillis=duration,
+                exitCode=return_code,
+                residualProcessGroup=True,
+            )
+            raise BootstrapError(
+                f"capsule build stage left a residual process group: {stage}"
+            )
         progress("STAGE_COMPLETED", stage, durationMillis=duration)
     except BaseException:
         supervisor.cancel()
@@ -343,7 +375,7 @@ def run_build_stage(
             supervisor.unregister(process)
 
 
-def selected_source(relative: str) -> bool:
+def selected_source(relative: str, registry: dict[str, object]) -> bool:
     if ".semantic-thread" in Path(relative).parts:
         return False
     if relative in ROOT_FILES:
@@ -351,30 +383,20 @@ def selected_source(relative: str) -> bool:
     if relative.startswith("bootstrap/"):
         return relative in {
             "bootstrap/clew_bootstrap.py",
+            "bootstrap/host_resources.py",
             "bootstrap/runtime_components.json",
         }
-    if relative.startswith("schemas/"):
-        return True
-    if relative.startswith("gradle/wrapper/"):
-        return True
-    if relative.startswith(".cargo/"):
-        return True
-    if relative.startswith("crates/"):
-        parts = relative.split("/")
-        if "tests" in parts or "examples" in parts or "target" in parts:
-            return False
-        return parts[-1] in {"Cargo.toml", "build.rs"} or "/src/" in relative
-    if relative.startswith("workers/manifests/"):
-        return relative.endswith(".json")
-    if relative.startswith("workers/"):
-        parts = relative.split("/")
-        if len(parts) == 3 and parts[-1] == "build.gradle.kts":
+    for component in registry["components"]:
+        if relative in component["inputFiles"]:
             return True
-        return "/src/main/" in relative
+        for root in [*component["inputRoots"], *component["optionalInputRoots"]]:
+            if relative.startswith(root + "/"):
+                return True
     return False
 
 
 def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
+    registry = load_component_registry(source)
     exclusions = [
         ":(top,exclude).semantic-thread",
         ":(top,glob,exclude).semantic-thread/**",
@@ -386,7 +408,11 @@ def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
         ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", ".", *exclusions],
         source,
     ).split(b"\0")
-    paths = sorted({row.decode() for row in [*tracked, *untracked] if row and selected_source(row.decode())})
+    paths = sorted({
+        row.decode()
+        for row in [*tracked, *untracked]
+        if row and selected_source(row.decode(), registry)
+    })
     if not paths:
         raise BootstrapError("runtime input closure is empty")
     rows: list[dict[str, object]] = []
@@ -419,7 +445,7 @@ def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
         if " -> " in value:
             value = value.split(" -> ", 1)[1]
         dirty_paths.add(value.strip('"'))
-    development = any(selected_source(path) for path in dirty_paths)
+    development = any(selected_source(path, registry) for path in dirty_paths)
     return rows, development
 
 
@@ -1870,7 +1896,13 @@ def bootstrap_self_test() -> None:
     assert first != locator_key("DEVELOPMENT", rows, {"tool": "a"})
     assert first != locator_key("RELEASE", rows, {"tool": "b"})
     assert runtime_build_plan(8, 32 * 1024**3)["parallel"] is True
-    assert runtime_build_plan(8, 4 * 1024**3)["parallel"] is False
+    assert runtime_build_plan(8, 8 * 1024**3)["parallel"] is False
+    try:
+        runtime_build_plan(8, 4 * 1024**3)
+    except BootstrapError:
+        pass
+    else:
+        raise AssertionError("cold heap admission accepted an undersized host")
     assert warm_audit_payload(False, False)["status"] == "PASSED"
     assert warm_audit_payload(True, False)["status"] == "COLD_MISS"
     assert warm_audit_payload(False, True)["status"] == "COLD_MISS"
@@ -1933,22 +1965,59 @@ def runtime_build_plan(
     cpu_count = max(1, cpu_count)
     reserved = max(1024**3, total_memory_bytes * 15 // 100)
     memory_budget = max(0, total_memory_bytes - reserved) * 70 // 100
-    cargo_memory = 2 * 1024**3
-    gradle_memory = 3 * 1024**3
-    parallel_admissible = cpu_count >= 2 and memory_budget >= cargo_memory + gradle_memory
+    parallel_gradle_budget = memory_budget * 55 // 100
+    parallel_cargo_budget = memory_budget - parallel_gradle_budget
+    parallel_gradle_heap = max(0, parallel_gradle_budget - GRADLE_NON_HEAP_BYTES)
+    parallel_admissible = (
+        cpu_count >= 2
+        and parallel_gradle_heap >= GRADLE_MIN_HEAP_BYTES
+        and parallel_cargo_budget >= TOOLCHAIN_WORKER_MEMORY_BYTES
+    )
     if profile == "PARALLEL" and not parallel_admissible:
         raise BootstrapError("host authority cannot admit the parallel cold build profile")
     parallel = parallel_admissible if profile == "AUTO" else profile == "PARALLEL"
     if parallel:
-        cargo_workers = max(1, cpu_count // 2)
-        gradle_workers = max(1, cpu_count - cargo_workers)
+        gradle_heap = (
+            min(GRADLE_MAX_HEAP_BYTES, parallel_gradle_heap) // 1024**2 * 1024**2
+        )
+        desired_cargo_workers = max(1, cpu_count // 2)
+        desired_gradle_workers = max(1, cpu_count - desired_cargo_workers)
+        cargo_workers = min(
+            desired_cargo_workers,
+            max(1, parallel_cargo_budget // TOOLCHAIN_WORKER_MEMORY_BYTES),
+        )
+        gradle_workers = min(
+            desired_gradle_workers,
+            max(1, gradle_heap // TOOLCHAIN_WORKER_MEMORY_BYTES),
+        )
     else:
-        cargo_workers = 1 if profile == "SERIAL" else cpu_count
-        gradle_workers = 1 if profile == "SERIAL" else cpu_count
+        gradle_heap = min(
+            GRADLE_MAX_HEAP_BYTES,
+            max(0, memory_budget - GRADLE_NON_HEAP_BYTES),
+        ) // 1024**2 * 1024**2
+        if gradle_heap < GRADLE_MIN_HEAP_BYTES:
+            raise BootstrapError("host authority cannot admit the cold build heap")
+        cargo_workers = (
+            1
+            if profile == "SERIAL"
+            else min(
+                cpu_count,
+                max(1, memory_budget // TOOLCHAIN_WORKER_MEMORY_BYTES),
+            )
+        )
+        gradle_workers = (
+            1
+            if profile == "SERIAL"
+            else min(
+                cpu_count,
+                max(1, gradle_heap // TOOLCHAIN_WORKER_MEMORY_BYTES),
+            )
+        )
     return {
         "profile": profile,
         "parallel": parallel,
         "cargoWorkers": cargo_workers,
+        "gradleHeapBytes": gradle_heap,
         "gradleWorkers": gradle_workers,
         "inputWorkers": min(8, cpu_count) if parallel else 1,
         "packageWorkers": min(8, cpu_count) if parallel else 1,
@@ -1958,13 +2027,45 @@ def runtime_build_plan(
 
 def host_memory_bytes() -> int:
     try:
-        pages = os.sysconf("SC_PHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        if pages > 0 and page_size > 0:
-            return int(pages * page_size)
-    except (AttributeError, OSError, ValueError):
-        pass
-    raise BootstrapError("host memory authority is unavailable for capsule admission")
+        return int(effective_host_resources()["totalMemoryBytes"])
+    except (HostResourceError, KeyError, TypeError, ValueError) as error:
+        raise BootstrapError(
+            "host memory authority is unavailable for capsule admission"
+        ) from error
+
+
+def host_cpu_count() -> int:
+    try:
+        return int(effective_host_resources()["logicalCores"])
+    except (HostResourceError, KeyError, TypeError, ValueError) as error:
+        raise BootstrapError(
+            "host CPU authority is unavailable for capsule admission"
+        ) from error
+
+
+def gradle_jvm_options(plan: dict[str, object]) -> str:
+    heap = plan.get("gradleHeapBytes")
+    if (
+        type(heap) is not int
+        or heap < GRADLE_MIN_HEAP_BYTES
+        or heap > GRADLE_MAX_HEAP_BYTES
+        or heap % 1024**2 != 0
+    ):
+        raise BootstrapError("Gradle heap authority is invalid")
+    return (
+        "-Xms256m "
+        f"-Xmx{heap // 1024**2}m "
+        "-XX:MaxMetaspaceSize=1024m "
+        "-XX:MaxDirectMemorySize=512m "
+        "-XX:+ExitOnOutOfMemoryError"
+    )
+
+
+def gradle_daemon_registry_base(stage: Path) -> Path:
+    """Return a private absolute registry path for Gradle's single-use daemon."""
+    if not stage.is_absolute():
+        raise BootstrapError("Gradle build stage authority must be absolute")
+    return stage.parent / ".codeclew-gradle-daemon"
 
 
 def build_toolchains(
@@ -1975,48 +2076,68 @@ def build_toolchains(
     cargo_required: bool = True,
     gradle_tasks: list[str] | None = None,
 ) -> dict[str, object]:
-    plan = plan or runtime_build_plan(os.cpu_count() or 1, host_memory_bytes())
+    started = time.monotonic()
+    plan = plan or runtime_build_plan(host_cpu_count(), host_memory_bytes())
     gradle_tasks = sorted(set(gradle_tasks or []))
+    evidence_profile = plan["profile"] in {"SERIAL", "PARALLEL"}
     stages: list[tuple[str, list[str]]] = []
     if gradle_tasks:
         stages.append(("GRADLE_WORKERS", [
             str(stage / "gradlew"),
             *gradle_tasks,
             "--no-daemon",
+            "--no-watch-fs",
             *(["--parallel"] if plan["parallel"] else []),
-            "--no-build-cache" if plan["profile"] in {"SERIAL", "PARALLEL"} else "--build-cache",
+            "--no-build-cache" if evidence_profile else "--build-cache",
+            *(["--offline", "-Pkotlin.compiler.execution.strategy=in-process"] if evidence_profile else []),
+            "-Dorg.gradle.daemon.idletimeout=1000",
+            "-Dorg.gradle.daemon.registry.base="
+            f"{gradle_daemon_registry_base(stage)}",
+            f"-Dorg.gradle.jvmargs={gradle_jvm_options(plan)}",
             f"--max-workers={plan['gradleWorkers']}",
             "--quiet",
         ]))
     if cargo_required:
         stages.append(("CARGO_BINARIES", [
-            "cargo", "build", "--locked", "--release", "-p", "clew",
+            "cargo", "build", "--frozen" if evidence_profile else "--locked",
+            "--release", "-p", "clew",
             "--bin", "clew", "--jobs", str(plan["cargoWorkers"]),
         ]))
     supervisor = BuildProcessSupervisor()
     max_workers = min(len(stages), 2) if plan["parallel"] else 1
     if not stages:
-        return {**plan, "toolchainStages": []}
+        return {
+            **plan,
+            "stageWallMillis": {},
+            "toolchainCriticalPathMillis": 0,
+            "toolchainStages": [],
+            "toolchainWallMillis": 0,
+        }
+    stage_wall_millis: dict[str, int] = {}
+
+    def execute(name: str, arguments: list[str]) -> tuple[str, int]:
+        stage_started = time.monotonic()
+        run_build_stage(arguments, stage, environment, name, supervisor)
+        return name, int((time.monotonic() - stage_started) * 1000)
+
     with build_signal_scope(supervisor):
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 try:
                     if plan["parallel"] and len(stages) > 1:
                         futures = [
-                            executor.submit(
-                                run_build_stage, arguments, stage, environment,
-                                name, supervisor,
-                            )
+                            executor.submit(execute, name, arguments)
                             for name, arguments in stages
                         ]
                         for future in futures:
-                            future.result()
+                            name, duration = future.result()
+                            stage_wall_millis[name] = duration
                     else:
                         for name, arguments in stages:
-                            executor.submit(
-                                run_build_stage, arguments, stage, environment,
-                                name, supervisor,
+                            measured_name, duration = executor.submit(
+                                execute, name, arguments
                             ).result()
+                            stage_wall_millis[measured_name] = duration
                 except BaseException:
                     # Cancel before ThreadPoolExecutor.__exit__ waits for the
                     # sibling stage, otherwise a failed Gradle task could leave
@@ -2026,7 +2147,114 @@ def build_toolchains(
         except BaseException:
             supervisor.cancel()
             raise
-    return {**plan, "toolchainStages": [name for name, _arguments in stages]}
+    toolchain_wall_millis = int((time.monotonic() - started) * 1000)
+    critical_path_millis = (
+        max(stage_wall_millis.values())
+        if plan["parallel"]
+        else sum(stage_wall_millis.values())
+    )
+    return {
+        **plan,
+        "stageWallMillis": dict(sorted(stage_wall_millis.items())),
+        "toolchainCriticalPathMillis": critical_path_millis,
+        "toolchainStages": [name for name, _arguments in stages],
+        "toolchainWallMillis": toolchain_wall_millis,
+    }
+
+
+def dependency_cache_authority(source: Path) -> dict[str, object]:
+    inputs, development = source_manifest(source)
+    mode = "DEVELOPMENT" if development else "RELEASE"
+    tools = toolchain_authority(source)
+    specs = runtime_component_specs(
+        mode, inputs, tools, load_component_registry(source)
+    )
+    key = runtime_key(mode, inputs, tools)
+    return {
+        "artifactIds": sorted(
+            spec["buildContract"]["artifactName"]
+            for spec in specs
+            if spec["componentKind"] == "core-binary"
+        ),
+        "componentIds": sorted(spec["componentId"] for spec in specs),
+        "inputDigest": digest_bytes(canonical(inputs)),
+        "mode": mode,
+        "runtimeKey": key,
+        "schema": "codeclew-dependency-cache-authority/1.0",
+        "status": "PASS",
+        "toolchainDigest": digest_bytes(canonical(tools)),
+        "workerIds": sorted(
+            spec["buildContract"]["runtimeName"]
+            for spec in specs
+            if spec["componentKind"] == "language-adapter"
+        ),
+    }
+
+
+def prime_dependency_cache(source: Path, root: Path) -> dict[str, object]:
+    authority = dependency_cache_authority(source)
+    inputs, _development = source_manifest(source)
+    tools = toolchain_authority(source)
+    specs = runtime_component_specs(
+        authority["mode"], inputs, tools, load_component_registry(source)
+    )
+    temporary = Path(tempfile.mkdtemp(prefix="dependency-prime-", dir=root / "tmp"))
+    stage = temporary / "source"
+    started = time.monotonic()
+    try:
+        plan = runtime_build_plan(host_cpu_count(), host_memory_bytes(), "PARALLEL")
+        stage_inputs(source, stage, inputs, workers=int(plan["inputWorkers"]))
+        environment = build_environment(stage, root, gradle_required=True)
+        supervisor = BuildProcessSupervisor()
+        gradle_tasks = sorted(
+            spec["buildContract"]["task"]
+            for spec in specs
+            if spec["buildContract"]["executor"] == "GRADLE"
+        )
+        commands = [
+            ("CARGO_DEPENDENCIES", ["cargo", "fetch", "--locked"]),
+            (
+                "GRADLE_DEPENDENCIES",
+                [
+                    str(stage / "gradlew"),
+                    *gradle_tasks,
+                    "--no-daemon",
+                    "--no-watch-fs",
+                    "--parallel",
+                    "--no-build-cache",
+                    "-Dorg.gradle.daemon.idletimeout=1000",
+                    "-Dorg.gradle.daemon.registry.base="
+                    f"{gradle_daemon_registry_base(stage)}",
+                    f"-Dorg.gradle.jvmargs={gradle_jvm_options(plan)}",
+                    f"--max-workers={plan['gradleWorkers']}",
+                    "-Pkotlin.compiler.execution.strategy=in-process",
+                    "--quiet",
+                ],
+            ),
+        ]
+        stage_timings = {}
+        with build_signal_scope(supervisor):
+            for name, arguments in commands:
+                stage_started = time.monotonic()
+                run_build_stage(arguments, stage, environment, name, supervisor)
+                stage_timings[name] = int(
+                    (time.monotonic() - stage_started) * 1000
+                )
+        verify_source_manifest(stage, inputs, full_closure=False)
+        return {
+            **authority,
+            "stageWallMillis": dict(sorted(stage_timings.items())),
+            "status": "PRIMED",
+            "wallMillis": int((time.monotonic() - started) * 1000),
+        }
+    except BaseException:
+        try:
+            supervisor.cancel()
+        except UnboundLocalError:
+            pass
+        raise
+    finally:
+        discard_private_tree(temporary)
 
 
 def seal_capsule(capsule: Path, *, seal_root: bool = True) -> None:
@@ -2061,16 +2289,24 @@ def fsync_tree(root: Path) -> None:
 
 
 def discard_private_tree(root: Path) -> None:
-    if not root.exists():
-        return
-    for path in sorted(
-        (entry for entry in root.rglob("*") if entry.is_dir()),
-        key=lambda value: len(value.parts),
-        reverse=True,
-    ):
-        os.chmod(path, 0o700)
-    os.chmod(root, 0o700)
-    shutil.rmtree(root)
+    if not root.is_absolute() or ".." in root.parts or root == Path(root.anchor):
+        raise BootstrapError("temporary cleanup authority is invalid")
+    parent_fd = _open_private_tree(root.parent)
+    try:
+        try:
+            metadata = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise BootstrapError("temporary cleanup root is unsafe")
+        if not _remove_tree_at(parent_fd, root.name, metadata):
+            raise BootstrapError("temporary cleanup authority changed")
+    finally:
+        os.close(parent_fd)
 
 
 def verify_sealed_capsule(capsule: Path) -> None:
@@ -2100,12 +2336,13 @@ def build_capsule(
     evidence: dict[str, object] | None = None,
 ) -> Path:
     started = time.monotonic()
-    plan = runtime_build_plan(os.cpu_count() or 1, host_memory_bytes(), build_profile)
+    plan = runtime_build_plan(host_cpu_count(), host_memory_bytes(), build_profile)
     registry = load_component_registry(source)
     specs = runtime_component_specs(mode, inputs, tools, registry)
     temporary = Path(tempfile.mkdtemp(prefix="capsule-build-", dir=root / "tmp"))
     stage = temporary / "source"
     capsule = temporary / "capsule"
+    stage_wall_millis: dict[str, int] = {}
     try:
         build_cache_lock = root / "locks/build-cache.lock"
         with build_cache_lock.open("a+b") as lock:
@@ -2127,8 +2364,12 @@ def build_capsule(
                     missing_specs.append(spec)
             build_result = {**plan, "toolchainStages": []}
             if missing_specs:
+                phase_started = time.monotonic()
                 stage_inputs(
                     source, stage, inputs, workers=int(plan["inputWorkers"])
+                )
+                stage_wall_millis["INPUT_STAGING"] = int(
+                    (time.monotonic() - phase_started) * 1000
                 )
                 cargo_required = any(
                     spec["buildContract"]["executor"] == "CARGO"
@@ -2149,7 +2390,9 @@ def build_capsule(
                     cargo_required=cargo_required,
                     gradle_tasks=gradle_tasks,
                 )
+                stage_wall_millis.update(build_result.get("stageWallMillis", {}))
                 verify_source_manifest(stage, inputs, full_closure=False)
+                phase_started = time.monotonic()
                 outputs = temporary / "component-outputs"
                 outputs.mkdir(mode=0o700)
                 for spec in missing_specs:
@@ -2177,7 +2420,11 @@ def build_capsule(
                         spec["authority"]["componentKey"],
                         spec["authority"],
                     )
+                stage_wall_millis["COMPONENT_PUBLICATION"] = int(
+                    (time.monotonic() - phase_started) * 1000
+                )
 
+            phase_started = time.monotonic()
             progress("STAGE_STARTED", "ASSEMBLE_VERIFIED_COMPONENTS")
             core_specs = [
                 spec for spec in specs if spec["componentKind"] == "core-binary"
@@ -2226,7 +2473,11 @@ def build_capsule(
             ) as executor:
                 list(executor.map(assemble, adapter_specs))
             progress("STAGE_COMPLETED", "ASSEMBLE_VERIFIED_COMPONENTS")
+            stage_wall_millis["CAPSULE_ASSEMBLY"] = int(
+                (time.monotonic() - phase_started) * 1000
+            )
 
+        phase_started = time.monotonic()
         workers = {}
         for spec in adapter_specs:
             contract = spec["buildContract"]
@@ -2257,6 +2508,7 @@ def build_capsule(
             "runtimeKey": key,
             "mode": mode,
             "manifestDigest": "",
+            "artifactIds": sorted(artifacts),
             "inputDigest": digest_bytes(canonical(inputs)),
             "platformAuthority": tools["platform"],
             "toolchainAuthority": {
@@ -2270,6 +2522,7 @@ def build_capsule(
                 for spec in specs
             },
             "workers": workers,
+            "workerIds": sorted(workers),
         }
         manifest["manifestDigest"] = digest_bytes(canonical(manifest))
         runtime_manifest = capsule / "runtime.json"
@@ -2310,6 +2563,12 @@ def build_capsule(
                 "componentMisses": sorted(
                     spec["componentId"] for spec in missing_specs
                 ),
+                "stageWallMillis": {
+                    **dict(sorted(stage_wall_millis.items())),
+                    "CAPSULE_SEAL_AND_VERIFY": int(
+                        (time.monotonic() - phase_started) * 1000
+                    ),
+                },
                 "wallMillis": int((time.monotonic() - started) * 1000),
             })
         return destination
@@ -2331,6 +2590,8 @@ def verify_capsule(
     expected = manifest.get("manifestDigest")
     manifest["manifestDigest"] = ""
     components = manifest.get("components")
+    artifacts = manifest.get("artifacts")
+    workers = manifest.get("workers")
     if (
         manifest.get("schema") != SCHEMA
         or expected != digest_bytes(canonical(manifest))
@@ -2339,6 +2600,14 @@ def verify_capsule(
         or not isinstance(manifest.get("toolchainAuthority"), dict)
         or not isinstance(components, dict)
         or not components
+        or not isinstance(artifacts, dict)
+        or not artifacts
+        or manifest.get("artifactIds") != sorted(artifacts)
+        or not isinstance(workers, dict)
+        or not workers
+        or manifest.get("workerIds") != sorted(workers)
+        or any(_component_identifier(name, "artifact id") != name for name in artifacts)
+        or any(_component_identifier(name, "worker id") != name for name in workers)
         or any(
             _component_identifier(name, "manifest id") != name
             or not valid_runtime_key(component_key)
@@ -2347,7 +2616,7 @@ def verify_capsule(
     ):
         raise BootstrapError("runtime manifest authority mismatch")
     manifest["manifestDigest"] = expected
-    for artifact in manifest.get("artifacts", {}).values():
+    for artifact in artifacts.values():
         target = path / artifact["path"]
         expected_mode = 0o500 if artifact.get("mode") == 0o111 else 0o400
         if (
@@ -2358,7 +2627,7 @@ def verify_capsule(
             or digest_file(target) != artifact["sha256"]
         ):
             raise BootstrapError("runtime executable authority mismatch")
-    for worker in manifest.get("workers", {}).values():
+    for worker in workers.values():
         if worker.get("protocol") != "semantic-thread.worker.v1":
             raise BootstrapError("runtime worker protocol authority mismatch")
         distribution = path / worker["distribution"]
@@ -2367,9 +2636,9 @@ def verify_capsule(
             raise BootstrapError("runtime worker authority mismatch")
     expected_files = {"runtime.json"}
     expected_files.update(
-        str(value["path"]) for value in manifest.get("artifacts", {}).values()
+        str(value["path"]) for value in artifacts.values()
     )
-    for worker in manifest.get("workers", {}).values():
+    for worker in workers.values():
         distribution = Path(str(worker["distribution"]))
         expected_files.update(
             (distribution / str(row["path"])).as_posix()
@@ -2479,6 +2748,12 @@ def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result) -> bool
                 os.unlink(entry.name, dir_fd=descriptor)
     finally:
         os.close(descriptor)
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+        return False
     os.rmdir(name, dir_fd=parent_fd)
     return True
 
@@ -2716,6 +2991,8 @@ def main() -> int:
         print(canonical({"schema": "codeclew-bootstrap-self-test/1.0", "status": "PASSED"}).decode())
         return 0
     component_preflight = command == ["--bootstrap-component-preflight"]
+    dependency_authority = command == ["--bootstrap-dependency-cache-authority"]
+    dependency_prime = command == ["--bootstrap-prime-dependency-cache"]
     cold_evidence_profile = None
     if len(command) == 1 and command[0].startswith("--bootstrap-cold-build-evidence="):
         requested = command[0].split("=", 1)[1].upper()
@@ -2724,6 +3001,9 @@ def main() -> int:
         cold_evidence_profile = requested
     warm_audit = command == ["--bootstrap-warm-audit"]
     source = known.source_root.resolve(strict=True)
+    if dependency_authority:
+        print(canonical(dependency_cache_authority(source)).decode())
+        return 0
     if component_preflight:
         inputs, development = source_manifest(source)
         mode = "DEVELOPMENT" if development else "RELEASE"
@@ -2731,14 +3011,27 @@ def main() -> int:
         specs = runtime_component_specs(
             mode, inputs, tools, load_component_registry(source)
         )
+        parallel_plan = runtime_build_plan(
+            host_cpu_count(), host_memory_bytes(), "PARALLEL"
+        )
+        # Derive the same fail-closed path invariant used by cold/prime builds.
+        # Gradle 9.6 rejects a relative registry path before compilation.
+        gradle_daemon_registry_base(source)
         print(canonical({
             "componentIds": sorted(spec["componentId"] for spec in specs),
             "mode": mode,
-            "schema": "codeclew-runtime-component-preflight/1.0",
+            "parallelBuildPlan": parallel_plan,
+            "schema": "codeclew-runtime-component-preflight/2.0",
             "status": "PASS",
         }).decode())
         return 0
     root, state_fd = state_root()
+    if dependency_prime:
+        try:
+            print(canonical(prime_dependency_cache(source, root)).decode())
+        finally:
+            os.close(state_fd)
+        return 0
     external_seed = os.environ.get("CODECLEW_RUNTIME_SEED") is not None
     if external_seed and cold_evidence_profile is not None:
         raise BootstrapError("cold build evidence cannot use a sealed runtime seed")

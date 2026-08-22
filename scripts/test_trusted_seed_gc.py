@@ -98,7 +98,7 @@ class TrustedSeedGcTests(unittest.TestCase):
             tree_hasher.update(b"\0")
         worker_tree = "sha256:" + tree_hasher.hexdigest()
         manifest_digest = None
-        for state_name in ("parallel-state", "serial-state"):
+        for state_name in ("parallel-state",):
             capsule = epoch / state_name / "v2" / "runtimes" / DIGEST[7:]
             core = capsule / "bin" / "clew"
             worker = capsule / "workers" / "kotlin24" / "worker.jar"
@@ -109,6 +109,7 @@ class TrustedSeedGcTests(unittest.TestCase):
             core.chmod(0o500)
             worker.chmod(0o400)
             manifest = {
+                "artifactIds": ["clew"],
                 "artifacts": {
                     "clew": {
                         "mode": 0o111,
@@ -125,6 +126,7 @@ class TrustedSeedGcTests(unittest.TestCase):
                 "runtimeKey": DIGEST,
                 "schema": "codeclew-runtime-capsule/4.0",
                 "toolchainAuthority": {},
+                "workerIds": ["kotlin24"],
                 "workers": {
                     "kotlin24": {
                         "compilerVersion": "2.4.10",
@@ -711,6 +713,19 @@ class TrustedSeedGcTests(unittest.TestCase):
         )
         self.assertEqual(result, trusted_seed_gc.DESCENDANT_LEAK_EXIT)
         self.assertLess(time.monotonic() - started, 8)
+
+    def test_direct_state_runner_rejects_removed_serial_state(self) -> None:
+        current = self.current()
+        with self.assertRaisesRegex(
+            trusted_seed_gc.AuthorityRefusal, "COMMAND_AUTHORITY"
+        ):
+            trusted_seed_gc.run_current_state(
+                str(self.root),
+                "serial-state",
+                current.removeprefix("release-N-"),
+                "8" * 40,
+                ["ignored"],
+            )
 
     @unittest.skipUnless(hasattr(os, "fork"), "requires POSIX process groups")
     def test_direct_state_runner_preserves_nonzero_leader_first_cause(self) -> None:

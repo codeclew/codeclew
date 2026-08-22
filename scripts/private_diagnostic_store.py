@@ -154,8 +154,9 @@ def _verify_object(directory: int, name: str, expected: bytes) -> None:
         os.close(descriptor)
 
 
-def store_diagnostic(source: Path, control_home: Path) -> str:
-    value = read_bounded_owned(source)
+def store_diagnostic_bytes(value: bytes, control_home: Path) -> str:
+    if not isinstance(value, bytes) or not value or len(value) > 1024 * 1024:
+        raise DiagnosticStoreError("diagnostic bytes are invalid")
     digest = "sha256:" + hashlib.sha256(value).hexdigest()
     root = _open_private_root(control_home)
     try:
@@ -205,3 +206,7 @@ def store_diagnostic(source: Path, control_home: Path) -> str:
     finally:
         os.close(root)
     return digest
+
+
+def store_diagnostic(source: Path, control_home: Path) -> str:
+    return store_diagnostic_bytes(read_bounded_owned(source), control_home)

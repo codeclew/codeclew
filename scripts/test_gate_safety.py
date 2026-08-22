@@ -16,6 +16,7 @@ from multi_compilation_authority import (  # noqa: E402
     refuse_copied_runtime,
     require_session_authority,
 )
+from bounded_gate_cleanup import cleanup_tree, run_bounded  # noqa: E402
 
 
 def check_gate(relative: str, *, inline_tree_cleanup: bool) -> None:
@@ -30,22 +31,25 @@ def check_gate(relative: str, *, inline_tree_cleanup: bool) -> None:
 
 
 def main() -> None:
-    check_gate("scripts/cold-multicore-gate.sh", inline_tree_cleanup=True)
     check_gate("scripts/multi-compilation-gate.sh", inline_tree_cleanup=False)
     multi = (ROOT / "scripts/multi-compilation-gate.sh").read_text(encoding="utf-8")
     cold = (ROOT / "scripts/cold-multicore-gate.sh").read_text(encoding="utf-8")
     trusted = (ROOT / "scripts/qualification/trusted-seed.sh").read_text(
         encoding="utf-8"
     )
-    assert "private_diagnostic_store import DiagnosticStoreError, store_diagnostic" in cold
-    assert '"diagnosticDigest": diagnostic_digest' in cold
-    assert '"diagnosticStatus": diagnostic_status' in cold
-    assert '"failureStage": stage' in cold
-    assert "write_incomplete_report || cleanup_failed=1" in cold
-    assert cold.index("write_incomplete_report || cleanup_failed=1") < cold.index(
-        'root = pathlib.Path(sys.argv[1])'
-    )
-    assert 'exit "$result"' in cold
+    assert "exec python3 -I -S scripts/cold_multicore_gate.py" in cold
+    cold_runner = (ROOT / "scripts/cold_multicore_gate.py").read_text(encoding="utf-8")
+    assert "DiagnosticStoreError," in cold_runner
+    assert "store_diagnostic_bytes," in cold_runner
+    assert '"diagnosticDigest": diagnostic_digest' in cold_runner
+    assert '"diagnosticStatus": diagnostic_status' in cold_runner
+    assert '"failureStage": failure_stage' in cold_runner
+    assert "clone_seed(seed, destination" in cold_runner
+    assert '"--bootstrap-warm-audit"' in cold_runner
+    assert '"criticalPathGeometricMeanRatioMax"' in cold_runner
+    assert "shutil.rmtree(work)" in cold_runner
+    assert '"status": "FAILED_INCOMPLETE"' in cold_runner
+    assert '"git", "clone", "--quiet", "--no-local", "--no-checkout"' in cold_runner
     assert '|| cleanup_status=$?' in trusted
     assert '[ "$result" -eq 0 ] && [ "$cleanup_status" -ne 0 ]' in trusted
     assert 'result=$cleanup_status' in trusted
@@ -78,7 +82,7 @@ def main() -> None:
         raise AssertionError("copied workspace profile authority was accepted")
     helper = ROOT / "scripts" / "bounded_gate_cleanup.py"
     with tempfile.TemporaryDirectory() as directory:
-        temporary = Path(directory)
+        temporary = Path(directory).resolve()
         marker = temporary / "gc-ran"
         fake = temporary / "fake-clew"
         fake.write_text(
@@ -112,6 +116,140 @@ def main() -> None:
         assert completed.returncode == 1
         assert marker.is_file(), "GC must run even after close timeout"
         assert time.monotonic() - started < 8
+
+        cancelled_pid = temporary / "cancelled-child.pid"
+        cancelling = temporary / "cancelling-clew"
+        cancelling.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' \"$$\" >\"{cancelled_pid}\"\n"
+            "trap '' TERM INT\n"
+            "while :; do sleep 1; done\n",
+            encoding="utf-8",
+        )
+        os.chmod(cancelling, 0o700)
+        cleanup_process = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(helper),
+                "--timeout-seconds",
+                "30",
+                "session",
+                "--clew",
+                str(cancelling),
+                "--session",
+                "session:test",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 5
+        while not cancelled_pid.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert cancelled_pid.is_file(), "cleanup child did not start"
+        child_pid = int(cancelled_pid.read_text(encoding="utf-8"))
+        cleanup_process.terminate()
+        cleanup_process.wait(timeout=10)
+        assert cleanup_process.returncode == 128 + 15
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError("cleanup child survived controller cancellation")
+
+        outside = temporary / "outside"
+        outside.mkdir()
+        outside_marker = outside / "must-survive"
+        outside_marker.write_text("authority", encoding="utf-8")
+        cleanup_root = temporary / "cleanup-root"
+        nested = cleanup_root / "sealed"
+        nested.mkdir(parents=True)
+        (nested / "derived").write_bytes(b"derived")
+        (cleanup_root / "outside-link").symlink_to(outside, target_is_directory=True)
+        nested.chmod(0o500)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(helper),
+                "--timeout-seconds",
+                "5",
+                "tree",
+                "--path",
+                str(cleanup_root),
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert not cleanup_root.exists()
+        assert outside_marker.read_text(encoding="utf-8") == "authority"
+
+        residual_pid = temporary / "residual.pid"
+        residual_program = temporary / "residual-cleanup"
+        residual_program.write_text(
+            "#!/bin/sh\n"
+            f"sleep 30 & printf '%s' \"$!\" >\"{residual_pid}\"\n",
+            encoding="utf-8",
+        )
+        residual_program.chmod(0o700)
+        assert not run_bounded([str(residual_program)], 5)
+        residual = int(residual_pid.read_text(encoding="utf-8"))
+        status = subprocess.run(
+            ["/bin/ps", "-p", str(residual), "-o", "stat="],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).stdout.strip()
+        assert not status or status.startswith("Z")
+
+        original = temporary / "identity-bound-root"
+        original.mkdir(mode=0o700)
+        original_metadata = original.lstat()
+        displaced = temporary / "displaced-root"
+        original.rename(displaced)
+        original.mkdir(mode=0o700)
+        victim = original / "must-survive"
+        victim.write_text("authority", encoding="utf-8")
+        assert not cleanup_tree(
+            str(original),
+            5,
+            (original_metadata.st_dev, original_metadata.st_ino),
+        )
+        assert victim.read_text(encoding="utf-8") == "authority"
+
+        root_link = temporary / "root-link"
+        root_link.symlink_to(outside, target_is_directory=True)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                str(helper),
+                "--timeout-seconds",
+                "5",
+                "tree",
+                "--path",
+                str(root_link),
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        assert completed.returncode == 1
+        assert root_link.is_symlink()
+        assert outside_marker.read_text(encoding="utf-8") == "authority"
+
         state = temporary / "state"
         (state / "v2" / "runtimes").mkdir(parents=True)
         refuse_copied_runtime(state)

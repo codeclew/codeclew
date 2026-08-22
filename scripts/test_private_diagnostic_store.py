@@ -37,6 +37,15 @@ class PrivateDiagnosticStoreTest(unittest.TestCase):
         self.assertEqual(target.stat().st_mode & 0o777, 0o400)
         self.assertEqual(store_diagnostic(self.source, self.control), digest)
 
+    def test_bytes_store_needs_no_worktree_intermediate(self) -> None:
+        value = b"bounded private failure\n"
+        digest = store.store_diagnostic_bytes(value, self.control)
+        target = self.control / "diagnostics" / "cold-runtime" / f"{digest[7:]}.stderr"
+        self.assertEqual(target.read_bytes(), value)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o400)
+        with self.assertRaises(DiagnosticStoreError):
+            store.store_diagnostic_bytes(b"", self.control)
+
     def test_source_symlink_and_unsafe_mode_are_rejected(self) -> None:
         link = self.root / "source-link"
         link.symlink_to(self.source)

@@ -197,6 +197,7 @@ def validate_plan(plan: object) -> dict[str, object]:
             "dynamicAuthorities",
             "postconditions",
             "prepare",
+            "timeoutPolicy",
         }
         if (
             not isinstance(check, dict)
@@ -227,6 +228,15 @@ def validate_plan(plan: object) -> dict[str, object]:
             raise ControlError("invalid postcondition authority list")
         if check["gate"] is not None and (not isinstance(check["gate"], str) or not check["gate"]):
             raise ControlError("invalid gate identifier")
+        timeout_policy = check.get("timeoutPolicy")
+        if timeout_policy is not None and (
+            timeout_policy != "UNBOUNDED"
+            or check_id != "s3-trusted-seed"
+            or check["step"] != "S3"
+            or check["gate"] != "trusted-seed"
+            or check["tier"] != "L2"
+        ):
+            raise ControlError("invalid check timeout policy")
         prepare = check.get("prepare")
         if prepare is not None:
             required_prepare_keys = {
@@ -1719,7 +1729,12 @@ def invoke(check: dict[str, object], tier: dict[str, object], authority: dict[st
                 exit_code = 127
             else:
                 try:
-                    exit_code = process.wait(timeout=tier["budgetSeconds"])
+                    timeout = (
+                        None
+                        if check.get("timeoutPolicy", "BOUNDED") == "UNBOUNDED"
+                        else tier["budgetSeconds"]
+                    )
+                    exit_code = process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGTERM)
                     try:
@@ -1968,6 +1983,11 @@ def run_check_lifecycle(
                 input_authority,
                 dynamic_authority,
             )
+            if receipt.get("status") != "PASS":
+                raise ControlError(
+                    "check failed with status "
+                    f"{receipt.get('status')} and exit code {receipt.get('exitCode')}"
+                )
             postcondition_authority_digest(check, refresh=True)
         except BaseException:
             failed = {
