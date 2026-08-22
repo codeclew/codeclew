@@ -1027,6 +1027,32 @@ def file_rows(root: Path) -> list[dict[str, object]]:
     return rows
 
 
+def verify_capsule_has_no_private_paths(capsule: Path, paths: list[Path]) -> None:
+    forbidden = sorted(
+        {
+            str(path).encode()
+            for path in paths
+            if path.is_absolute() and str(path) not in {"", "/"}
+        },
+        key=len,
+        reverse=True,
+    )
+    if not forbidden:
+        return
+    overlap = max(map(len, forbidden)) - 1
+    for artifact in sorted(path for path in capsule.rglob("*") if path.is_file()):
+        tail = b""
+        with artifact.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                window = tail + chunk
+                if any(value in window for value in forbidden):
+                    raise BootstrapError(
+                        "capsule artifact contains a private build path: "
+                        f"{artifact.relative_to(capsule).as_posix()}"
+                    )
+                tail = window[-overlap:] if overlap else b""
+
+
 def tree_hash(rows: list[dict[str, object]]) -> str:
     digest = hashlib.sha256()
     for row in rows:
@@ -1323,6 +1349,10 @@ def build_capsule(
             )
             workers = dict(packaged)
         progress("STAGE_COMPLETED", "PACKAGE_AND_HASH_WORKERS")
+        verify_capsule_has_no_private_paths(
+            capsule,
+            [source, temporary, stage, root, Path.home()],
+        )
         artifacts = {}
         for name in ["clew"]:
             path = capsule / "bin" / name

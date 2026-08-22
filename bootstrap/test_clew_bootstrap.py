@@ -560,6 +560,23 @@ class BootstrapAuthorityTest(unittest.TestCase):
             self.assertNotIn("JAVA_TOOL_OPTIONS", environment)
             self.assertNotIn("GRADLE_OPTS", environment)
 
+    def test_capsule_privacy_scan_detects_paths_across_stream_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            capsule = root / "capsule"
+            private = root / "private-build"
+            artifact = capsule / "bin" / "clew"
+            artifact.parent.mkdir(parents=True)
+            marker = str(private).encode()
+            artifact.write_bytes(b"x" * (1024 * 1024 - len(marker) // 2) + marker + b"tail")
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "contains a private build path"
+            ):
+                bootstrap.verify_capsule_has_no_private_paths(capsule, [private])
+
+            artifact.write_bytes(b"binary with /codeclew/source only")
+            bootstrap.verify_capsule_has_no_private_paths(capsule, [private])
+
     def test_state_root_is_preopened_private_and_rejects_symlink_component(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory).resolve()
