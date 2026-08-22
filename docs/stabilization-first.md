@@ -92,6 +92,27 @@ cancellation ownership, explicit legacy-call accounting bounded by the set,
 and targeted component tests only. A cold or multi-compilation performance
 claim remains forbidden until Q2.
 
+### S8 persistent generation boundary
+
+S8 qualifies the existing immutable generation contour rather than adding an
+ambient model shortcut. Compiler-store keys survive unrelated runtime rebuilds
+but change with worker, adapter, compilation, classpath, plugins, or canonical
+options. An exact sealed incremental receipt may yield `UNCHANGED_HIT`, reusing
+the immutable generation and query index while still retaining the live
+project-model authority required by the session policy. Configuration changes,
+UNSURE parents, unknown invalidation, or corrupt heads force a full plan.
+
+Repository query indexes are content-addressed by the sealed generation and
+deterministic across rebuilds; expansion refuses a parent bound to another
+index. PROJECT_NATIVE model reuse remains `NON_CACHEABLE` unless a canonical,
+HEAD-bound tracked manifest is selected, while EXTERNAL requires sealed RELEASE
+authority. S8 does not weaken those model-policy boundaries to improve warm
+numbers.
+
+S8 DoD is stable compiler-store identity, exact unchanged planning, immutable
+generation/query-index reuse, corruption and cross-index tamper refusal,
+model-policy fail-closed tests, and no Gradle/Maven or product E2E execution.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional
