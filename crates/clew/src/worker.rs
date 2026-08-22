@@ -3005,8 +3005,12 @@ fn safe_worker_error_message(code: &ErrorCode) -> &'static str {
         }
         ErrorCode::ProjectModelChanged => "the project model changed during semantic analysis",
         ErrorCode::WorkerPreparationRequired => "the sealed Kotlin worker is unavailable",
-        ErrorCode::IncompleteSemanticAnalysis => "the Kotlin worker could not prove complete semantic analysis",
-        ErrorCode::WorkerCrashed => "the Kotlin worker terminated before producing a verified response",
+        ErrorCode::IncompleteSemanticAnalysis => {
+            "the Kotlin worker could not prove complete semantic analysis"
+        }
+        ErrorCode::WorkerCrashed => {
+            "the Kotlin worker terminated before producing a verified response"
+        }
         _ => "the Kotlin worker rejected the request; inspect private run diagnostics",
     }
 }

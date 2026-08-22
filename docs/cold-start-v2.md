@@ -303,6 +303,21 @@ compilations, and one K24 monolith. On at least eight physical cores:
 - the monolith publishes an Amdahl work/span report and proves exactly one
   sealed compiler stream instead of claiming a false parallel ratio.
 
+`scripts/cold-multicore-gate.sh` is the executable release gate. It uses a
+content-pinned corpus derived from Codeclew's Rust, Python, Kotlin, Gradle, and
+protocol sources, with CPU-bound SHA-256 work standing in for the deterministic
+hashing/canonicalization portion of cold generation. Three serial/parallel
+pairs are alternated to reduce order bias and the median ratios must satisfy the
+limits above on every supported multicore runner. The report is private,
+machine-readable evidence at
+`benchmarks/reports/cold-multicore-latest.json`; it records host authority so an
+eight-physical-core qualification can be distinguished from a lower-core CI
+smoke measurement. A host below that qualification emits the typed
+`SKIPPED_UNQUALIFIED_HOST` status and cannot set `releaseGatePassed`; CI may use
+that as a smoke result, never as evidence that the ratios passed. Toolchain
+cold-build timings remain product-level evidence and are not replaced by this
+scheduler gate.
+
 Warm gates remain:
 
 - launcher p95 <= 1 second;
