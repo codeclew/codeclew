@@ -50,6 +50,10 @@ enum Command {
 enum SessionCommand {
     Open(SessionOpenArgs),
     Inspect(SessionIdArgs),
+    Close(SessionIdArgs),
+    Abort(SessionIdArgs),
+    Relocate(SessionRelocateArgs),
+    Gc(SessionGcArgs),
     Publish(SessionRunArgs),
     Recover(SessionRunArgs),
 }
@@ -106,6 +110,22 @@ struct SessionRunArgs {
     session: String,
     #[arg(long)]
     run: String,
+}
+
+#[derive(Args)]
+struct SessionRelocateArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    repo: PathBuf,
+}
+
+#[derive(Args)]
+struct SessionGcArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args)]
@@ -218,19 +238,54 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 policy,
                 args.external_build_state.as_deref(),
             )?;
-            Ok(json!({"schema":"codeclew-session-open/2.0","status":"OPEN","session":session}))
+            Ok(json!({"schema":"codeclew-session-open/3.0","status":"OPEN","session":session}))
         }
         Command::Session {
             command: SessionCommand::Inspect(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
-            Ok(json!({"schema":"codeclew-session-inspect/2.0","session":session}))
+            let lifecycle = session.lifecycle()?;
+            Ok(
+                json!({"schema":"codeclew-session-inspect/3.0","session":session,"lifecycle":lifecycle}),
+            )
+        }
+        Command::Session {
+            command: SessionCommand::Close(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let lifecycle = session.close()?;
+            Ok(json!({"schema":"codeclew-session-lifecycle-result/1.0","lifecycle":lifecycle}))
+        }
+        Command::Session {
+            command: SessionCommand::Abort(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let lifecycle = session.abort()?;
+            Ok(json!({"schema":"codeclew-session-lifecycle-result/1.0","lifecycle":lifecycle}))
+        }
+        Command::Session {
+            command: SessionCommand::Relocate(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let lifecycle = session.relocate(&absolute(&args.repo)?)?;
+            Ok(
+                json!({"schema":"codeclew-session-relocate-result/1.0","sessionId":session.session_id,
+                "repositoryKey":session.repository_key,"lifecycle":lifecycle}),
+            )
+        }
+        Command::Session {
+            command: SessionCommand::Gc(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            let lifecycle = session.gc(args.force)?;
+            Ok(json!({"schema":"codeclew-session-gc-result/1.0","lifecycle":lifecycle}))
         }
         Command::Context {
             command: ContextCommand::Create(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
             validate_context_request(&args.intent, &args.terms)?;
+            session.require_open()?;
             let (projection, evidence) = clew::context_v2::create(
                 &session,
                 &args.intent,
@@ -250,6 +305,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ContextCommand::Expand(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
+            session.require_open()?;
             let parent = session.load_context(&args.context)?;
             let additional_terms = args.terms;
             let mut terms = parent.terms.clone();
@@ -277,6 +333,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: PlanCommand::Validate(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
+            session.require_open()?;
             let metadata = std::fs::symlink_metadata(&args.plan).map_err(io_error)?;
             if metadata.file_type().is_symlink()
                 || !metadata.is_file()
@@ -359,6 +416,8 @@ fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
 
 fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
     let mut record = RunRecord::load(run_id)?;
+    let (session, _) = SessionAuthority::load(&record.session_id)?;
+    session.require_open()?;
     if matches!(
         record.status,
         RunStatus::ReadyToPublish
@@ -498,6 +557,7 @@ fn prepare_task_run(record: &mut RunRecord) -> Result<Value, ClewError> {
 
 fn publish_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
+    session.require_open()?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
     if record.publication_blocked || record.status == RunStatus::ValidatedConditional {
@@ -546,6 +606,7 @@ fn publish_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
 
 fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
+    session.require_open()?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
     if record.status == RunStatus::Published {
@@ -787,6 +848,41 @@ mod tests {
         assert!(!cancellation_allowed(RunStatus::Publishing));
         assert!(!cancellation_allowed(RunStatus::Published));
         assert!(!cancellation_allowed(RunStatus::WorktreeRecoveryRequired));
+    }
+
+    #[test]
+    fn session_lifecycle_commands_are_explicit() {
+        for command in ["close", "abort"] {
+            assert!(
+                Cli::try_parse_from(
+                    ["clew", "session", command, "--session", "session:authority",]
+                )
+                .is_ok()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "relocate",
+                "--session",
+                "session:authority",
+                "--repo",
+                ".",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "gc",
+                "--session",
+                "session:authority",
+                "--force",
+            ])
+            .is_ok()
+        );
     }
 
     #[cfg(unix)]

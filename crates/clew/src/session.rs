@@ -23,6 +23,9 @@ pub const PLAN_SCHEMA: &str = "codeclew-plan/2.0";
 pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
 const RUN_LEDGER_SCHEMA: &str = "codeclew-task-run-ledger-entry/2.0";
 const MAX_RUN_LEDGER_BYTES: u64 = 32 * 1024 * 1024;
+const SESSION_LIFECYCLE_SCHEMA: &str = "codeclew-session-lifecycle-entry/1.0";
+const SESSION_RUN_REFERENCE_SCHEMA: &str = "codeclew-session-run-reference/1.0";
+const MAX_SESSION_LIFECYCLE_BYTES: u64 = 1024 * 1024;
 const CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-context-evidence-object/2.0";
 const MAX_CONTEXT_EVIDENCE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONTEXT_STDOUT_BYTES: usize = 64 * 1024;
@@ -137,6 +140,38 @@ pub enum RunStatus {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SessionStatus {
+    Open,
+    Closed,
+    Aborted,
+    GarbageCollected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionLifecycle {
+    pub schema: String,
+    pub session_id: String,
+    pub session_authority_digest: String,
+    pub sequence: u64,
+    pub previous_event_hash: Option<String>,
+    pub status: SessionStatus,
+    pub event_hash: String,
+    pub updated_unix_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionRunReference {
+    schema: String,
+    session_id: String,
+    session_authority_digest: String,
+    run_id: String,
+    request_digest: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RepositoryLocator {
@@ -144,6 +179,16 @@ struct RepositoryLocator {
     target_repository_path: PathBuf,
     source_repository_path: PathBuf,
     external_build_state_path: Option<PathBuf>,
+}
+
+fn validate_locator(locator: &RepositoryLocator) -> Result<(), ClewError> {
+    if locator.schema != "codeclew-repository-locator/3.0"
+        || !locator.target_repository_path.is_absolute()
+        || !locator.source_repository_path.is_absolute()
+    {
+        return Err(invalid("repository locator schema or paths are invalid"));
+    }
+    Ok(())
 }
 
 impl SessionAuthority {
@@ -196,7 +241,7 @@ impl SessionAuthority {
         };
         authority.authority_digest = session_authority_digest(&authority)?;
         let root = state.session_root(&authority.session_id)?;
-        for child in ["objects/sha256", "contexts", "plans", "candidates"] {
+        for child in ["objects/sha256", "contexts", "plans", "candidates", "runs"] {
             create_private_directory(&root.join(child))?;
         }
         let source_repository_path = root.join("source");
@@ -216,6 +261,7 @@ impl SessionAuthority {
                 external_build_state_path,
             },
         )?;
+        initialize_session_lifecycle(&state, &root, &authority)?;
         Ok(authority)
     }
 
@@ -241,7 +287,93 @@ impl SessionAuthority {
                 "session runtime authority does not match the active capsule",
             ));
         }
+        load_session_lifecycle(&state, &root, &authority)?;
         Ok((authority, root))
+    }
+
+    pub fn lifecycle(&self) -> Result<SessionLifecycle, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        load_session_lifecycle(&state, &root, self)
+    }
+
+    pub fn require_open(&self) -> Result<(), ClewError> {
+        let lifecycle = self.lifecycle()?;
+        if lifecycle.status != SessionStatus::Open {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session is terminal and cannot accept new work",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn close(&self) -> Result<SessionLifecycle, ClewError> {
+        transition_session_terminal(self, SessionStatus::Closed)
+    }
+
+    pub fn abort(&self) -> Result<SessionLifecycle, ClewError> {
+        transition_session_terminal(self, SessionStatus::Aborted)
+    }
+
+    pub fn relocate(&self, repository: &Path) -> Result<SessionLifecycle, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let _lock = SessionLifecycleLock::acquire(&root)?;
+        let lifecycle = load_session_lifecycle_unlocked(&state, &root, self)?;
+        if lifecycle.status != SessionStatus::Open {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "only an open session can be relocated",
+            ));
+        }
+        let repository = repository.canonicalize().map_err(io_error)?;
+        let runs = load_session_runs(&state, &root, self)?;
+        let expected_target_oid = session_terminal_target_oid(self, &runs)?;
+        if state.repository(&repository)?.key != self.repository_key
+            || git_output(&repository, &["rev-parse", "HEAD"])? != expected_target_oid
+            || git_output(&repository, &["rev-parse", &self.target_ref])? != expected_target_oid
+            || git_output(
+                &repository,
+                &["rev-parse", &format!("{}^{{commit}}", self.base_revision)],
+            )? != self.base_revision
+        {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "relocation target does not preserve repository, base, and target authority",
+            ));
+        }
+        let locator: RepositoryLocator =
+            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+        validate_locator(&locator)?;
+        let source = locator
+            .source_repository_path
+            .canonicalize()
+            .map_err(io_error)?;
+        if !source.starts_with(&root)
+            || git_output(&source, &["rev-parse", "HEAD"])? != self.base_revision
+            || !filtered_worktree_clean(&source)?
+            || state.repository(&source)?.key != self.repository_key
+        {
+            return Err(invalid(
+                "session source locator is invalid during relocation",
+            ));
+        }
+        state.write_private_atomic(
+            &root.join("locator.json"),
+            &canonical::bytes(&RepositoryLocator {
+                schema: locator.schema,
+                target_repository_path: repository,
+                source_repository_path: locator.source_repository_path,
+                external_build_state_path: locator.external_build_state_path,
+            })
+            .map_err(internal)?,
+        )?;
+        Ok(lifecycle)
+    }
+
+    pub fn gc(&self, force: bool) -> Result<SessionLifecycle, ClewError> {
+        garbage_collect_session(self, force)
     }
 
     pub fn repository_path(&self) -> Result<PathBuf, ClewError> {
@@ -249,9 +381,7 @@ impl SessionAuthority {
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
             read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
-        if locator.schema != "codeclew-repository-locator/3.0" {
-            return Err(invalid("repository locator schema is invalid"));
-        }
+        validate_locator(&locator)?;
         let path = locator
             .source_repository_path
             .canonicalize()
@@ -275,9 +405,7 @@ impl SessionAuthority {
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
             read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
-        if locator.schema != "codeclew-repository-locator/3.0" {
-            return Err(invalid("repository locator schema is invalid"));
-        }
+        validate_locator(&locator)?;
         let path = locator
             .target_repository_path
             .canonicalize()
@@ -293,9 +421,7 @@ impl SessionAuthority {
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
             read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
-        if locator.schema != "codeclew-repository-locator/3.0" {
-            return Err(invalid("repository locator schema is invalid"));
-        }
+        validate_locator(&locator)?;
         match (self.model_cache_policy, locator.external_build_state_path) {
             (ModelCachePolicy::SealedExternal, Some(path)) => {
                 let canonical = path.canonicalize().map_err(io_error)?;
@@ -331,6 +457,14 @@ impl SessionAuthority {
             ));
         }
         let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let _lock = SessionLifecycleLock::acquire(&root)?;
+        if load_session_lifecycle_unlocked(&state, &root, self)?.status != SessionStatus::Open {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session is terminal and cannot store context",
+            ));
+        }
         let store = CasStore::open(&state)?;
         let evidence_ref = store.put(CONTEXT_EVIDENCE_SCHEMA, &evidence_bytes)?;
         let evidence_digest = evidence_ref.digest.clone();
@@ -357,7 +491,6 @@ impl SessionAuthority {
             projection,
             evidence,
         };
-        let root = state.session_root(&self.session_id)?;
         store_cas_json(&state, &root, &object.context_id, &object)?;
         state.write_private_atomic(
             &root.join("contexts").join(id_filename(&object.context_id)?),
@@ -401,6 +534,15 @@ impl SessionAuthority {
         if source.len() > MAX_PLAN_BYTES {
             return Err(invalid("plan exceeds the 1 MiB limit"));
         }
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let _lock = SessionLifecycleLock::acquire(&root)?;
+        if load_session_lifecycle_unlocked(&state, &root, self)?.status != SessionStatus::Open {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session is terminal and cannot validate a plan",
+            ));
+        }
         let context = self.load_context(context_id)?;
         let plan: Value = serde_json::from_slice(source).map_err(parse_error)?;
         validate_plan_shape(&plan)?;
@@ -430,8 +572,6 @@ impl SessionAuthority {
             source_digest,
             plan,
         };
-        let state = StateAuthority::process_default()?;
-        let root = state.session_root(&self.session_id)?;
         store_cas_json(&state, &root, &object.plan_id, &object)?;
         state.write_private_atomic(
             &root.join("plans").join(id_filename(&object.plan_id)?),
@@ -468,6 +608,7 @@ impl SessionAuthority {
         context_id: &str,
         plan_id: &str,
     ) -> Result<(String, String), ClewError> {
+        self.require_open()?;
         let request = json!({
             "schema":"codeclew-task-run-request/1.0",
             "sessionId":self.session_id,
@@ -484,6 +625,701 @@ impl SessionAuthority {
             .ok_or_else(|| internal("canonical digest has no sha256 prefix"))?;
         Ok((format!("run:{path_digest}"), request_digest))
     }
+}
+
+struct SessionLifecycleLock(File);
+
+impl SessionLifecycleLock {
+    fn acquire(root: &Path) -> Result<Self, ClewError> {
+        let path = root.join("lifecycle.lock");
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path).map_err(io_error)?;
+        #[cfg(unix)]
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        Ok(Self(file))
+    }
+}
+
+impl Drop for SessionLifecycleLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::flock(std::os::fd::AsRawFd::as_raw_fd(&self.0), libc::LOCK_UN);
+        }
+    }
+}
+
+fn initialize_session_lifecycle(
+    state: &StateAuthority,
+    root: &Path,
+    authority: &SessionAuthority,
+) -> Result<(), ClewError> {
+    let _lock = SessionLifecycleLock::acquire(root)?;
+    if root.join("lifecycle.jsonl").exists() || root.join("lifecycle.json").exists() {
+        return Err(invalid("session lifecycle already exists"));
+    }
+    let entry = SessionLifecycle {
+        schema: SESSION_LIFECYCLE_SCHEMA.into(),
+        session_id: authority.session_id.clone(),
+        session_authority_digest: authority.authority_digest.clone(),
+        sequence: 0,
+        previous_event_hash: None,
+        status: SessionStatus::Open,
+        event_hash: String::new(),
+        updated_unix_ms: unix_ms(),
+    };
+    append_session_lifecycle(state, root, entry)
+}
+
+fn load_session_lifecycle(
+    state: &StateAuthority,
+    root: &Path,
+    authority: &SessionAuthority,
+) -> Result<SessionLifecycle, ClewError> {
+    let _lock = SessionLifecycleLock::acquire(root)?;
+    load_session_lifecycle_unlocked(state, root, authority)
+}
+
+fn load_session_lifecycle_unlocked(
+    state: &StateAuthority,
+    root: &Path,
+    authority: &SessionAuthority,
+) -> Result<SessionLifecycle, ClewError> {
+    let path = root.join("lifecycle.jsonl");
+    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_SESSION_LIFECYCLE_BYTES
+    {
+        return Err(invalid("session lifecycle ledger is missing or unsafe"));
+    }
+    let bytes = fs::read(&path).map_err(io_error)?;
+    if bytes.len() as u64 != metadata.len() || bytes.last() != Some(&b'\n') {
+        return Err(invalid("session lifecycle ledger changed while reading"));
+    }
+    let mut previous: Option<SessionLifecycle> = None;
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let entry: SessionLifecycle = serde_json::from_slice(line)
+            .map_err(|_| invalid("session lifecycle entry is invalid"))?;
+        if canonical::bytes(&entry).map_err(internal)? != line
+            || entry.schema != SESSION_LIFECYCLE_SCHEMA
+            || entry.session_id != authority.session_id
+            || entry.session_authority_digest != authority.authority_digest
+            || !sha256_digest(&entry.event_hash)
+            || entry.event_hash != session_lifecycle_hash(&entry)?
+        {
+            return Err(invalid("session lifecycle authority is invalid"));
+        }
+        match &previous {
+            None => {
+                if entry.sequence != 0
+                    || entry.previous_event_hash.is_some()
+                    || entry.status != SessionStatus::Open
+                {
+                    return Err(invalid("session lifecycle genesis is invalid"));
+                }
+            }
+            Some(prior) => {
+                if entry.sequence != prior.sequence.saturating_add(1)
+                    || entry.previous_event_hash.as_deref() != Some(prior.event_hash.as_str())
+                    || !session_transition_allowed(prior.status, entry.status)
+                {
+                    return Err(invalid("session lifecycle chain is invalid"));
+                }
+            }
+        }
+        previous = Some(entry);
+    }
+    let current = previous.ok_or_else(|| invalid("session lifecycle ledger is empty"))?;
+    let projection_path = root.join("lifecycle.json");
+    let projection_matches =
+        read_json_limited::<SessionLifecycle>(&projection_path, MAX_PLAN_BYTES).is_ok_and(
+            |projection| canonical::bytes(&projection).ok() == canonical::bytes(&current).ok(),
+        );
+    if !projection_matches {
+        state.write_private_atomic(
+            &projection_path,
+            &canonical::bytes(&current).map_err(internal)?,
+        )?;
+    }
+    Ok(current)
+}
+
+fn append_session_lifecycle(
+    state: &StateAuthority,
+    root: &Path,
+    mut entry: SessionLifecycle,
+) -> Result<(), ClewError> {
+    entry.event_hash.clear();
+    entry.event_hash = session_lifecycle_hash(&entry)?;
+    let mut bytes = canonical::bytes(&entry).map_err(internal)?;
+    bytes.push(b'\n');
+    let path = root.join("lifecycle.jsonl");
+    let existing = fs::symlink_metadata(&path).ok();
+    if existing.as_ref().is_some_and(|metadata| {
+        metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len().saturating_add(bytes.len() as u64) > MAX_SESSION_LIFECYCLE_BYTES
+    }) {
+        return Err(invalid("session lifecycle ledger is unsafe or oversized"));
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut ledger = options.open(path).map_err(io_error)?;
+    ledger.write_all(&bytes).map_err(io_error)?;
+    ledger.sync_all().map_err(io_error)?;
+    state.write_private_atomic(
+        &root.join("lifecycle.json"),
+        &canonical::bytes(&entry).map_err(internal)?,
+    )
+}
+
+fn session_lifecycle_hash(entry: &SessionLifecycle) -> Result<String, ClewError> {
+    let mut unsigned = entry.clone();
+    unsigned.event_hash.clear();
+    canonical::hash(&unsigned).map_err(internal)
+}
+
+fn session_transition_allowed(from: SessionStatus, to: SessionStatus) -> bool {
+    matches!(
+        (from, to),
+        (
+            SessionStatus::Open,
+            SessionStatus::Closed | SessionStatus::Aborted
+        ) | (
+            SessionStatus::Closed | SessionStatus::Aborted,
+            SessionStatus::GarbageCollected
+        )
+    )
+}
+
+fn transition_session_terminal(
+    authority: &SessionAuthority,
+    target: SessionStatus,
+) -> Result<SessionLifecycle, ClewError> {
+    if !matches!(target, SessionStatus::Closed | SessionStatus::Aborted) {
+        return Err(invalid("invalid terminal session transition"));
+    }
+    let state = StateAuthority::process_default()?;
+    let root = state.session_root(&authority.session_id)?;
+    transition_session_terminal_with_state(authority, target, &state, &root)
+}
+
+fn transition_session_terminal_with_state(
+    authority: &SessionAuthority,
+    target: SessionStatus,
+    state: &StateAuthority,
+    root: &Path,
+) -> Result<SessionLifecycle, ClewError> {
+    let _lock = SessionLifecycleLock::acquire(root)?;
+    let current = load_session_lifecycle_unlocked(state, root, authority)?;
+    if current.status == target {
+        return Ok(current);
+    }
+    if current.status != SessionStatus::Open {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "session already has a different terminal status",
+        ));
+    }
+    let runs = load_session_runs(state, root, authority)?;
+    if runs
+        .iter()
+        .any(|run| run_status_is_active(run.status) || run.process_id.is_some())
+    {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "session has an active run; publish, recover, or cancel it before closing",
+        ));
+    }
+    let _ = session_terminal_target_oid(authority, &runs)?;
+    let next = SessionLifecycle {
+        schema: SESSION_LIFECYCLE_SCHEMA.into(),
+        session_id: authority.session_id.clone(),
+        session_authority_digest: authority.authority_digest.clone(),
+        sequence: current.sequence.saturating_add(1),
+        previous_event_hash: Some(current.event_hash),
+        status: target,
+        event_hash: String::new(),
+        updated_unix_ms: unix_ms(),
+    };
+    append_session_lifecycle(state, root, next)?;
+    load_session_lifecycle_unlocked(state, root, authority)
+}
+
+fn run_status_is_active(status: RunStatus) -> bool {
+    matches!(
+        status,
+        RunStatus::Created
+            | RunStatus::Preparing
+            | RunStatus::ReadyToPublish
+            | RunStatus::Publishing
+            | RunStatus::WorktreeRecoveryRequired
+    )
+}
+
+fn session_terminal_target_oid(
+    authority: &SessionAuthority,
+    runs: &[RunRecord],
+) -> Result<String, ClewError> {
+    let mut published = runs
+        .iter()
+        .filter(|run| run.status == RunStatus::Published)
+        .map(|run| {
+            run.final_commit
+                .clone()
+                .ok_or_else(|| invalid("published run has no final commit authority"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    published.sort();
+    published.dedup();
+    match published.as_slice() {
+        [] => Ok(authority.target_oid.clone()),
+        [oid] => Ok(oid.clone()),
+        _ => Err(invalid(
+            "session contains conflicting published target commits",
+        )),
+    }
+}
+
+fn ensure_session_run_reference(
+    state: &StateAuthority,
+    session_root: &Path,
+    session: &SessionAuthority,
+    run: &RunRecord,
+) -> Result<(), ClewError> {
+    let reference = SessionRunReference {
+        schema: SESSION_RUN_REFERENCE_SCHEMA.into(),
+        session_id: session.session_id.clone(),
+        session_authority_digest: session.authority_digest.clone(),
+        run_id: run.run_id.clone(),
+        request_digest: run.request_digest.clone(),
+    };
+    let path = session_root
+        .join("runs")
+        .join(format!("{}.json", id_component(&run.run_id, "run:")?));
+    if path.exists() {
+        let existing: SessionRunReference = read_json_limited(&path, MAX_PLAN_BYTES)?;
+        if canonical::bytes(&existing).map_err(internal)?
+            != canonical::bytes(&reference).map_err(internal)?
+        {
+            return Err(invalid(
+                "session run reference conflicts with immutable authority",
+            ));
+        }
+        return Ok(());
+    }
+    state.write_private_atomic(&path, &canonical::bytes(&reference).map_err(internal)?)
+}
+
+fn load_session_runs(
+    state: &StateAuthority,
+    session_root: &Path,
+    session: &SessionAuthority,
+) -> Result<Vec<RunRecord>, ClewError> {
+    let references_root = session_root.join("runs");
+    let mut paths = fs::read_dir(&references_root)
+        .map_err(io_error)?
+        .map(|entry| entry.map(|entry| entry.path()).map_err(io_error))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.sort();
+    let mut runs = Vec::with_capacity(paths.len());
+    for path in paths {
+        let reference: SessionRunReference = read_json_limited(&path, MAX_PLAN_BYTES)?;
+        if reference.schema != SESSION_RUN_REFERENCE_SCHEMA
+            || reference.session_id != session.session_id
+            || reference.session_authority_digest != session.authority_digest
+            || path.file_name()
+                != Some(std::ffi::OsStr::new(&format!(
+                    "{}.json",
+                    id_component(&reference.run_id, "run:")?
+                )))
+        {
+            return Err(invalid("session run reference authority is invalid"));
+        }
+        let run_root = state.run_root(&reference.run_id)?;
+        let _run_lock = RunLedgerLock::acquire(&run_root)?;
+        let run = load_run_projection(state, &run_root, &reference.run_id)?;
+        if run.session_id != session.session_id || run.request_digest != reference.request_digest {
+            return Err(invalid("session run ledger does not match its reference"));
+        }
+        runs.push(run);
+    }
+    Ok(runs)
+}
+
+#[derive(Debug)]
+struct ManagedWorktreeRemoval {
+    path: PathBuf,
+    allow_forced_removal: bool,
+}
+
+fn garbage_collect_session(
+    authority: &SessionAuthority,
+    force: bool,
+) -> Result<SessionLifecycle, ClewError> {
+    let state = StateAuthority::process_default()?;
+    let root = state.session_root(&authority.session_id)?;
+    garbage_collect_session_with_state(authority, force, &state, &root)
+}
+
+fn garbage_collect_session_with_state(
+    authority: &SessionAuthority,
+    force: bool,
+    state: &StateAuthority,
+    root: &Path,
+) -> Result<SessionLifecycle, ClewError> {
+    let _lock = SessionLifecycleLock::acquire(root)?;
+    let current = load_session_lifecycle_unlocked(state, root, authority)?;
+    if current.status == SessionStatus::GarbageCollected {
+        return Ok(current);
+    }
+    if !matches!(
+        current.status,
+        SessionStatus::Closed | SessionStatus::Aborted
+    ) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "session GC requires a closed or aborted session",
+        ));
+    }
+    let runs = load_session_runs(state, root, authority)?;
+    if runs
+        .iter()
+        .any(|run| run_status_is_active(run.status) || run.process_id.is_some())
+    {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "session GC refuses active runs",
+        ));
+    }
+    let locator: RepositoryLocator = read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+    validate_locator(&locator)?;
+    let target = locator
+        .target_repository_path
+        .canonicalize()
+        .map_err(io_error)?;
+    let expected_target_oid = session_terminal_target_oid(authority, &runs)?;
+    if state.repository(&target)?.key != authority.repository_key
+        || git_output(&target, &["rev-parse", &authority.target_ref])? != expected_target_oid
+    {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "session target authority changed before GC",
+        ));
+    }
+
+    // Validate every relevant worktree before deleting any of them. This makes
+    // GC fail closed rather than partially consuming an uncommitted candidate.
+    let mut removals = Vec::new();
+    let source = root.join("source");
+    if source.exists() {
+        let metadata = fs::symlink_metadata(&source).map_err(io_error)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(invalid("session source worktree is unsafe"));
+        }
+        let canonical = source.canonicalize().map_err(io_error)?;
+        if !canonical.starts_with(root)
+            || git_output(&canonical, &["rev-parse", "HEAD"])? != authority.base_revision
+            || !managed_source_clean(&canonical)?
+        {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session source worktree is not immutable and clean",
+            ));
+        }
+        removals.push(ManagedWorktreeRemoval {
+            path: canonical,
+            allow_forced_removal: true,
+        });
+    }
+    let expected_candidates = runs
+        .iter()
+        .map(|run| id_component(&run.run_id, "run:").map(str::to_owned))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    for entry in fs::read_dir(root.join("candidates")).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let metadata = entry.file_type().map_err(io_error)?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("candidate directory name is not UTF-8"))?;
+        if !metadata.is_dir() || !expected_candidates.contains(&name) {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session contains an unregistered candidate state directory",
+            ));
+        }
+    }
+    for run in &runs {
+        let candidate_root = root
+            .join("candidates")
+            .join(id_component(&run.run_id, "run:")?);
+        let worktree = candidate_root.join("worktree");
+        if !worktree.exists() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&worktree).map_err(io_error)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(invalid("candidate worktree is unsafe"));
+        }
+        let canonical = worktree.canonicalize().map_err(io_error)?;
+        if !canonical.starts_with(&candidate_root) {
+            return Err(invalid("candidate worktree escapes managed session state"));
+        }
+        let expected_head = run
+            .candidate_commit
+            .as_deref()
+            .unwrap_or(authority.base_revision.as_str());
+        if git_output(&canonical, &["rev-parse", "HEAD"])? != expected_head {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "candidate HEAD differs from its run authority",
+            ));
+        }
+        let untracked = candidate_untracked_after_clean_tracked_check(&canonical)?;
+        let forced = !untracked.is_empty();
+        if forced
+            && (!force
+                || untracked
+                    .iter()
+                    .any(|path| !proven_derived_untracked(&canonical, path)))
+        {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "candidate contains untracked data that is not proven derived output",
+            ));
+        }
+        removals.push(ManagedWorktreeRemoval {
+            path: canonical,
+            // Filtered legacy paths make Git consider the managed checkout
+            // incomplete, so the actual removal uses --force only after the
+            // stricter product-level verification above has succeeded.
+            allow_forced_removal: true,
+        });
+    }
+
+    for removal in removals {
+        remove_managed_worktree(&target, &removal)?;
+    }
+    for run in &runs {
+        cleanup_candidate_derived_state(root, run)?;
+        cleanup_run_derived_state(state, run)?;
+    }
+    let next = SessionLifecycle {
+        schema: SESSION_LIFECYCLE_SCHEMA.into(),
+        session_id: authority.session_id.clone(),
+        session_authority_digest: authority.authority_digest.clone(),
+        sequence: current.sequence.saturating_add(1),
+        previous_event_hash: Some(current.event_hash),
+        status: SessionStatus::GarbageCollected,
+        event_hash: String::new(),
+        updated_unix_ms: unix_ms(),
+    };
+    append_session_lifecycle(state, root, next)?;
+    load_session_lifecycle_unlocked(state, root, authority)
+}
+
+fn managed_source_clean(root: &Path) -> Result<bool, ClewError> {
+    match candidate_untracked_after_clean_tracked_check(root) {
+        Ok(paths) => Ok(paths.is_empty()),
+        Err(error) if error.code == ErrorCode::PreconditionFailed => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn candidate_untracked_after_clean_tracked_check(root: &Path) -> Result<Vec<String>, ClewError> {
+    let output = Command::new("git")
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--",
+            ".",
+        ])
+        .args(LEGACY_EXCLUDES)
+        .current_dir(root)
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("candidate cleanliness is unavailable"));
+    }
+    let mut untracked = Vec::new();
+    for row in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|row| !row.is_empty())
+    {
+        if row.len() < 4 || row[2] != b' ' {
+            return Err(invalid("candidate Git status row is invalid"));
+        }
+        if &row[..2] != b"??" && &row[..2] != b"!!" {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "candidate has staged or tracked changes and cannot be garbage-collected",
+            ));
+        }
+        let path = std::str::from_utf8(&row[3..])
+            .map_err(|_| invalid("candidate untracked path is not UTF-8"))?;
+        if path.is_empty()
+            || Path::new(path).is_absolute()
+            || Path::new(path)
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(invalid("candidate untracked path is unsafe"));
+        }
+        untracked.push(path.into());
+    }
+    Ok(untracked)
+}
+
+fn proven_derived_untracked(root: &Path, relative: &str) -> bool {
+    let path = Path::new(relative);
+    let derived_component = path.components().any(|component| {
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        matches!(
+            name.to_str(),
+            Some("build" | "target" | "out" | ".gradle" | ".kotlin" | ".codeclew-build")
+        )
+    });
+    derived_component
+        && Command::new("git")
+            .args(["check-ignore", "-q", "--", relative])
+            .current_dir(root)
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
+fn remove_managed_worktree(
+    repository: &Path,
+    removal: &ManagedWorktreeRemoval,
+) -> Result<(), ClewError> {
+    make_managed_worktree_removable(&removal.path)?;
+    let mut command = Command::new("git");
+    command.args(["-c", "core.hooksPath=/dev/null", "worktree", "remove"]);
+    if removal.allow_forced_removal {
+        command.arg("--force");
+    }
+    let output = command
+        .arg(&removal.path)
+        .current_dir(repository)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "managed worktree removal failed without modifying its contents",
+        ));
+    }
+    Ok(())
+}
+
+fn make_managed_worktree_removable(root: &Path) -> Result<(), ClewError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let owner = unsafe { libc::geteuid() };
+        for entry in WalkDir::new(root).follow_links(false) {
+            let entry = entry.map_err(|error| internal(error.to_string()))?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(io_error)?;
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.uid() != owner {
+                return Err(invalid(
+                    "managed worktree contains an entry owned by another user",
+                ));
+            }
+            if metadata.is_dir() {
+                fs::set_permissions(entry.path(), fs::Permissions::from_mode(0o700))
+                    .map_err(io_error)?;
+            } else if metadata.is_file() {
+                let executable = metadata.permissions().mode() & 0o111 != 0;
+                fs::set_permissions(
+                    entry.path(),
+                    fs::Permissions::from_mode(if executable { 0o700 } else { 0o600 }),
+                )
+                .map_err(io_error)?;
+            } else {
+                return Err(invalid("managed worktree contains an unsupported entry"));
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Err(invalid("managed worktree GC requires POSIX"))
+    }
+}
+
+fn cleanup_candidate_derived_state(root: &Path, run: &RunRecord) -> Result<(), ClewError> {
+    let candidate = root
+        .join("candidates")
+        .join(id_component(&run.run_id, "run:")?);
+    if !candidate.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(&candidate).map_err(io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(invalid("candidate state root is unsafe"));
+    }
+    remove_regular_file_if_present(&candidate.join("staged-generation.json"))?;
+    let mut unexpected = fs::read_dir(&candidate)
+        .map_err(io_error)?
+        .map(|entry| entry.map(|entry| entry.path()).map_err(io_error))
+        .collect::<Result<Vec<_>, _>>()?;
+    unexpected.retain(|path| path.file_name() != Some(std::ffi::OsStr::new("worktree")));
+    if unexpected.is_empty() {
+        if candidate.join("worktree").exists() {
+            return Err(invalid("candidate worktree remains after managed removal"));
+        }
+        fs::remove_dir(&candidate).map_err(io_error)?;
+        return Ok(());
+    }
+    Err(ClewError::new(
+        ErrorCode::PreconditionFailed,
+        "candidate contains unknown state; GC refuses recursive deletion",
+    ))
+}
+
+fn cleanup_run_derived_state(state: &StateAuthority, run: &RunRecord) -> Result<(), ClewError> {
+    let root = state.run_root(&run.run_id)?;
+    for name in ["prepared-v2.json", "stdout.log", "stderr.log"] {
+        remove_regular_file_if_present(&root.join(name))?;
+    }
+    Ok(())
+}
+
+fn remove_regular_file_if_present(path: &Path) -> Result<(), ClewError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io_error(error)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(invalid(
+            "managed derived-state target is not a regular file",
+        ));
+    }
+    fs::remove_file(path).map_err(io_error)
 }
 
 impl RunRecord {
@@ -535,6 +1371,16 @@ impl RunRecord {
 
     pub fn create_once(&self) -> Result<bool, ClewError> {
         let state = StateAuthority::process_default()?;
+        let (session, session_root) = SessionAuthority::load(&self.session_id)?;
+        let _session_lock = SessionLifecycleLock::acquire(&session_root)?;
+        let lifecycle = load_session_lifecycle_unlocked(&state, &session_root, &session)?;
+        if lifecycle.status != SessionStatus::Open {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session is terminal and cannot start a run",
+            ));
+        }
+        ensure_session_run_reference(&state, &session_root, &session, self)?;
         let root = state.run_root(&self.run_id)?;
         let _lock = RunLedgerLock::acquire(&root)?;
         if root.join("ledger.jsonl").exists() || root.join("record.json").exists() {
@@ -1288,6 +2134,39 @@ fn io_error(error: std::io::Error) -> ClewError {
 mod tests {
     use super::*;
 
+    fn test_session() -> SessionAuthority {
+        let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut authority = SessionAuthority {
+            schema: SESSION_SCHEMA.into(),
+            authority_digest: String::new(),
+            session_id: format!("session:{digest}"),
+            repository_key: format!("repo:{digest}"),
+            base_revision: "1111111111111111111111111111111111111111".into(),
+            target_ref: "refs/heads/main".into(),
+            target_oid: "1111111111111111111111111111111111111111".into(),
+            runtime_key: format!("runtime:{digest}"),
+            runtime_mode: RuntimeMode::Development,
+            compilation: ":/main".into(),
+            model_cache_policy: ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            created_unix_ms: 1,
+        };
+        authority.authority_digest = session_authority_digest(&authority).unwrap();
+        authority
+    }
+
+    fn initialized_session() -> (tempfile::TempDir, StateAuthority, PathBuf, SessionAuthority) {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let authority = test_session();
+        let root = state.session_root(&authority.session_id).unwrap();
+        for child in ["runs", "candidates"] {
+            create_private_directory(&root.join(child)).unwrap();
+        }
+        initialize_session_lifecycle(&state, &root, &authority).unwrap();
+        (temporary, state, root, authority)
+    }
+
     fn test_run() -> RunRecord {
         let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         RunRecord {
@@ -1350,6 +2229,288 @@ mod tests {
         assert_eq!(
             serde_json::to_value(RunStatus::ValidatedConditional).unwrap(),
             "VALIDATED_CONDITIONAL"
+        );
+    }
+
+    #[test]
+    fn lifecycle_is_append_only_terminal_and_projection_recovers() {
+        let (_temporary, state, root, authority) = initialized_session();
+
+        let closed = transition_session_terminal_with_state(
+            &authority,
+            SessionStatus::Closed,
+            &state,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(closed.status, SessionStatus::Closed);
+        assert_eq!(closed.sequence, 1);
+        fs::write(root.join("lifecycle.json"), b"corrupt projection").unwrap();
+        let recovered = load_session_lifecycle(&state, &root, &authority).unwrap();
+        assert_eq!(recovered.event_hash, closed.event_hash);
+        assert!(
+            transition_session_terminal_with_state(
+                &authority,
+                SessionStatus::Aborted,
+                &state,
+                &root,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn close_refuses_created_and_recovery_required_runs() {
+        let (_temporary, state, root, authority) = initialized_session();
+        let mut run = test_run();
+        let run_root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &run_root, &mut run, None).unwrap();
+        ensure_session_run_reference(&state, &root, &authority, &run).unwrap();
+
+        let error = transition_session_terminal_with_state(
+            &authority,
+            SessionStatus::Closed,
+            &state,
+            &root,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        run.status = RunStatus::WorktreeRecoveryRequired;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        assert!(
+            transition_session_terminal_with_state(
+                &authority,
+                SessionStatus::Closed,
+                &state,
+                &root,
+            )
+            .is_err()
+        );
+
+        run.status = RunStatus::Published;
+        run.final_commit = Some("2222222222222222222222222222222222222222".into());
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        assert_eq!(
+            transition_session_terminal_with_state(
+                &authority,
+                SessionStatus::Closed,
+                &state,
+                &root,
+            )
+            .unwrap()
+            .status,
+            SessionStatus::Closed
+        );
+    }
+
+    #[test]
+    fn abort_allows_cancelled_run_but_not_a_live_preparation() {
+        let (_temporary, state, root, authority) = initialized_session();
+        let mut run = test_run();
+        let run_root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &run_root, &mut run, None).unwrap();
+        ensure_session_run_reference(&state, &root, &authority, &run).unwrap();
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        assert!(
+            transition_session_terminal_with_state(
+                &authority,
+                SessionStatus::Aborted,
+                &state,
+                &root,
+            )
+            .is_err()
+        );
+        run.status = RunStatus::Cancelled;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        assert_eq!(
+            transition_session_terminal_with_state(
+                &authority,
+                SessionStatus::Aborted,
+                &state,
+                &root,
+            )
+            .unwrap()
+            .status,
+            SessionStatus::Aborted
+        );
+    }
+
+    #[test]
+    fn lifecycle_tampering_fails_closed() {
+        let (_temporary, state, root, authority) = initialized_session();
+        let path = root.join("lifecycle.jsonl");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] = b'[';
+        fs::write(path, bytes).unwrap();
+        assert!(load_session_lifecycle(&state, &root, &authority).is_err());
+    }
+
+    #[test]
+    fn gc_force_accepts_only_ignored_conventional_build_outputs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(repository.join(".gitignore"), b"build/\n").unwrap();
+        fs::write(repository.join("tracked"), b"base\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Codeclew Test",
+                    "-c",
+                    "user.email=codeclew@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "base",
+                ])
+                .current_dir(repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::create_dir(repository.join("build")).unwrap();
+        fs::write(repository.join("build/output.class"), b"derived").unwrap();
+        let paths = candidate_untracked_after_clean_tracked_check(repository).unwrap();
+        assert_eq!(paths, vec!["build/".to_string()]);
+        assert!(proven_derived_untracked(repository, &paths[0]));
+        fs::write(repository.join("notes.txt"), b"keep me").unwrap();
+        let paths = candidate_untracked_after_clean_tracked_check(repository).unwrap();
+        assert!(paths.iter().any(|path| path == "notes.txt"));
+        assert!(!proven_derived_untracked(repository, "notes.txt"));
+        fs::write(repository.join("tracked"), b"changed\n").unwrap();
+        assert!(candidate_untracked_after_clean_tracked_check(repository).is_err());
+    }
+
+    #[test]
+    fn gc_removes_only_managed_worktrees_and_leaves_legacy_state_inert() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(repository.join("tracked"), b"base\n").unwrap();
+        fs::write(repository.join(".gitignore"), b"build/\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "tracked", ".gitignore"])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Codeclew Test",
+                    "-c",
+                    "user.email=codeclew@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "base",
+                ])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let mut authority = test_session();
+        authority.repository_key = state.repository(&repository).unwrap().key;
+        authority.base_revision = git_output(&repository, &["rev-parse", "HEAD"]).unwrap();
+        authority.target_oid = authority.base_revision.clone();
+        authority.authority_digest.clear();
+        authority.authority_digest = session_authority_digest(&authority).unwrap();
+        let root = state.session_root(&authority.session_id).unwrap();
+        for child in ["runs", "candidates"] {
+            create_private_directory(&root.join(child)).unwrap();
+        }
+        let source = root.join("source");
+        create_filtered_detached_worktree(&repository, &source, &authority.base_revision).unwrap();
+        seal_source_worktree(&source).unwrap();
+        write_json_create_new(
+            &root.join("locator.json"),
+            &RepositoryLocator {
+                schema: "codeclew-repository-locator/3.0".into(),
+                target_repository_path: repository.clone(),
+                source_repository_path: source.clone(),
+                external_build_state_path: None,
+            },
+        )
+        .unwrap();
+        initialize_session_lifecycle(&state, &root, &authority).unwrap();
+        let mut run = test_run();
+        let run_root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &run_root, &mut run, None).unwrap();
+        ensure_session_run_reference(&state, &root, &authority, &run).unwrap();
+        let candidate = root
+            .join("candidates")
+            .join(id_component(&run.run_id, "run:").unwrap());
+        create_private_directory(&candidate).unwrap();
+        let candidate_worktree = candidate.join("worktree");
+        create_filtered_detached_worktree(
+            &repository,
+            &candidate_worktree,
+            &authority.base_revision,
+        )
+        .unwrap();
+        fs::create_dir(candidate_worktree.join("build")).unwrap();
+        fs::write(candidate_worktree.join("build/output.class"), b"derived").unwrap();
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        run.candidate_commit = Some(authority.base_revision.clone());
+        run.status = RunStatus::ValidatedConditional;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        fs::write(run_root.join("prepared-v2.json"), b"derived evidence").unwrap();
+        transition_session_terminal_with_state(&authority, SessionStatus::Closed, &state, &root)
+            .unwrap();
+        fs::create_dir(repository.join(".semantic-thread")).unwrap();
+        fs::write(repository.join(".semantic-thread/private"), b"legacy").unwrap();
+
+        let error =
+            garbage_collect_session_with_state(&authority, false, &state, &root).unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert!(source.exists());
+        assert!(candidate_worktree.exists());
+
+        let lifecycle =
+            garbage_collect_session_with_state(&authority, true, &state, &root).unwrap();
+
+        assert_eq!(lifecycle.status, SessionStatus::GarbageCollected);
+        assert!(!source.exists());
+        assert!(!candidate.exists());
+        assert!(!run_root.join("prepared-v2.json").exists());
+        assert!(run_root.join("ledger.jsonl").is_file());
+        assert_eq!(
+            fs::read(repository.join(".semantic-thread/private")).unwrap(),
+            b"legacy"
         );
     }
 
