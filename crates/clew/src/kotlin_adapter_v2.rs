@@ -353,6 +353,7 @@ impl ProjectNativeKotlinAttempt {
         snapshot: &RepositoryInputSnapshot,
         native_compilation: &str,
         compiler_store_component: &str,
+        build_state_root: Option<&std::path::Path>,
     ) -> Result<Self, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
         let attempt_root = tempfile::Builder::new()
@@ -371,7 +372,7 @@ impl ProjectNativeKotlinAttempt {
         let compiler_store_namespace = format!("sha256:{compiler_store_component}");
         let mut worker = WorkerClient::start_with_managed_states(
             &workspace_root(),
-            None,
+            build_state_root,
             Some(&compiler_store),
             &compiler_store_namespace,
         )?;
@@ -523,6 +524,7 @@ fn analyze_project_native_index_profiled(
         snapshot,
         native_compilation,
         compiler_store_component,
+        None,
     )?;
     let (index, profile, _) = attempt.analyze()?;
     Ok((index, profile))
@@ -1188,7 +1190,7 @@ mod tests {
         let component = "a".repeat(64);
 
         let cold_attempt =
-            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component)
+            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component, None)
                 .unwrap();
         let (cold_index, cold, cold_requests) = cold_attempt.analyze().unwrap();
         let cold = cold.expect("cold compiler profile");
@@ -1244,7 +1246,7 @@ mod tests {
         // The generation service proves UNCHANGED from its sealed receipt
         // after OpenProject and closes this same worker without IndexFiles.
         let unchanged_attempt =
-            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component)
+            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component, None)
                 .unwrap();
         let warm_requests = unchanged_attempt.close_without_analysis().unwrap();
         assert_eq!(warm_requests.open_project_requests, 1);

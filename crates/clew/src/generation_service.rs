@@ -171,12 +171,14 @@ fn ensure_generation(
         return load_ready(&store, binding_path, session, false);
     }
     let compiler_namespace = compiler_store_key(&runtime, &session.compilation)?;
+    let external_build_state = session.external_build_state_path()?;
     let live_attempt = ProjectNativeKotlinAttempt::open(
         &state,
         &store,
         &snapshot,
         &session.compilation,
         digest_component(&compiler_namespace)?,
+        external_build_state.as_deref(),
     )?;
     let prepared = ensure_prepared_authority(
         &state,

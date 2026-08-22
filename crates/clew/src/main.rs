@@ -89,6 +89,8 @@ struct SessionOpenArgs {
     compilation: String,
     #[arg(long, value_enum, default_value_t = ModelCachePolicyArg::NonCacheable)]
     model_cache: ModelCachePolicyArg,
+    #[arg(long, requires = "model_cache")]
+    external_build_state: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -213,6 +215,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 &args.target_ref,
                 &args.compilation,
                 policy,
+                args.external_build_state.as_deref(),
             )?;
             Ok(json!({"schema":"codeclew-session-open/2.0","status":"OPEN","session":session}))
         }

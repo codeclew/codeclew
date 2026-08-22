@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-pub const SESSION_SCHEMA: &str = "codeclew-session/2.0";
+pub const SESSION_SCHEMA: &str = "codeclew-session/3.0";
 pub const CONTEXT_SCHEMA: &str = "codeclew-context/2.0";
 pub const PLAN_SCHEMA: &str = "codeclew-plan/2.0";
 pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
@@ -46,6 +46,7 @@ pub struct SessionAuthority {
     pub runtime_mode: RuntimeMode,
     pub compilation: String,
     pub model_cache_policy: ModelCachePolicy,
+    pub model_cache_authority: Option<String>,
     pub created_unix_ms: u128,
 }
 
@@ -142,6 +143,7 @@ struct RepositoryLocator {
     schema: String,
     target_repository_path: PathBuf,
     source_repository_path: PathBuf,
+    external_build_state_path: Option<PathBuf>,
 }
 
 impl SessionAuthority {
@@ -150,6 +152,7 @@ impl SessionAuthority {
         target_ref: &str,
         compilation: &str,
         model_cache_policy: ModelCachePolicy,
+        external_build_state: Option<&Path>,
     ) -> Result<Self, ClewError> {
         let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
             ClewError::new(
@@ -169,6 +172,13 @@ impl SessionAuthority {
                 "session target ref must identify the checked-out base revision",
             ));
         }
+        let (model_cache_authority, external_build_state_path) = model_cache_authority(
+            &repo,
+            compilation,
+            model_cache_policy,
+            runtime.mode,
+            external_build_state,
+        )?;
         let mut authority = Self {
             schema: SESSION_SCHEMA.into(),
             authority_digest: String::new(),
@@ -181,6 +191,7 @@ impl SessionAuthority {
             runtime_mode: runtime.mode,
             compilation: compilation.into(),
             model_cache_policy,
+            model_cache_authority,
             created_unix_ms: unix_ms(),
         };
         authority.authority_digest = session_authority_digest(&authority)?;
@@ -199,9 +210,10 @@ impl SessionAuthority {
         write_json_create_new(
             &root.join("locator.json"),
             &RepositoryLocator {
-                schema: "codeclew-repository-locator/2.0".into(),
+                schema: "codeclew-repository-locator/3.0".into(),
                 target_repository_path: repo,
                 source_repository_path,
+                external_build_state_path,
             },
         )?;
         Ok(authority)
@@ -237,7 +249,7 @@ impl SessionAuthority {
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
             read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
-        if locator.schema != "codeclew-repository-locator/2.0" {
+        if locator.schema != "codeclew-repository-locator/3.0" {
             return Err(invalid("repository locator schema is invalid"));
         }
         let path = locator
@@ -263,7 +275,7 @@ impl SessionAuthority {
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
             read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
-        if locator.schema != "codeclew-repository-locator/2.0" {
+        if locator.schema != "codeclew-repository-locator/3.0" {
             return Err(invalid("repository locator schema is invalid"));
         }
         let path = locator
@@ -274,6 +286,30 @@ impl SessionAuthority {
             return Err(invalid("target repository locator is invalid"));
         }
         Ok(path)
+    }
+
+    pub fn external_build_state_path(&self) -> Result<Option<PathBuf>, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let locator: RepositoryLocator =
+            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+        if locator.schema != "codeclew-repository-locator/3.0" {
+            return Err(invalid("repository locator schema is invalid"));
+        }
+        match (self.model_cache_policy, locator.external_build_state_path) {
+            (ModelCachePolicy::SealedExternal, Some(path)) => {
+                let canonical = path.canonicalize().map_err(io_error)?;
+                if canonical != path {
+                    return Err(invalid("external build-state locator changed"));
+                }
+                Ok(Some(canonical))
+            }
+            (ModelCachePolicy::SealedExternal, None) => {
+                Err(invalid("sealed external build-state locator is missing"))
+            }
+            (_, None) => Ok(None),
+            (_, Some(_)) => Err(invalid("unexpected external build-state locator")),
+        }
     }
 
     pub fn store_context(
@@ -1009,6 +1045,187 @@ fn session_authority_digest(authority: &SessionAuthority) -> Result<String, Clew
     canonical::hash(&unsigned).map_err(internal)
 }
 
+fn model_cache_authority(
+    repository: &Path,
+    compilation: &str,
+    policy: ModelCachePolicy,
+    runtime_mode: RuntimeMode,
+    external_build_state: Option<&Path>,
+) -> Result<(Option<String>, Option<PathBuf>), ClewError> {
+    match policy {
+        ModelCachePolicy::NonCacheable => {
+            if external_build_state.is_some() {
+                return Err(invalid(
+                    "external build state requires the sealed-external model-cache policy",
+                ));
+            }
+            Ok((None, None))
+        }
+        ModelCachePolicy::TrackedManifest => {
+            if external_build_state.is_some() {
+                return Err(invalid(
+                    "tracked-manifest policy cannot use external build state",
+                ));
+            }
+            let relative = "codeclew.model-cache.json";
+            for arguments in [
+                vec!["ls-files", "--error-unmatch", "--", relative],
+                vec!["diff", "--quiet", "HEAD", "--", relative],
+                vec!["diff", "--cached", "--quiet", "HEAD", "--", relative],
+            ] {
+                if !Command::new("git")
+                    .args(arguments)
+                    .current_dir(repository)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map_err(io_error)?
+                    .success()
+                {
+                    return Err(invalid(
+                        "tracked model-cache manifest must exactly match HEAD",
+                    ));
+                }
+            }
+            let path = repository.join(relative);
+            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || metadata.len() == 0
+                || metadata.len() > 64 * 1024
+            {
+                return Err(invalid("tracked model-cache manifest is unsafe"));
+            }
+            let bytes = fs::read(path).map_err(io_error)?;
+            let manifest: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| invalid("tracked model-cache manifest is invalid JSON"))?;
+            let object = manifest
+                .as_object()
+                .ok_or_else(|| invalid("tracked model-cache manifest must be an object"))?;
+            if object.len() != 2
+                || object.get("schema").and_then(Value::as_str)
+                    != Some("codeclew-model-cache-policy/2.0")
+            {
+                return Err(invalid("tracked model-cache manifest envelope is invalid"));
+            }
+            let compilations = object
+                .get("compilations")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("tracked model-cache compilations are missing"))?;
+            let values = compilations
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| invalid("tracked model-cache compilation must be a string"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.is_empty()
+                || values.len() > 64
+                || !values.windows(2).all(|pair| pair[0] < pair[1])
+                || !values.contains(&compilation)
+            {
+                return Err(invalid(
+                    "tracked model-cache manifest does not authorize this compilation",
+                ));
+            }
+            let mut expected = canonical::bytes(&manifest).map_err(internal)?;
+            expected.push(b'\n');
+            if bytes != expected {
+                return Err(invalid(
+                    "tracked model-cache manifest must be canonical JSON plus newline",
+                ));
+            }
+            Ok((Some(canonical::hash_bytes(&bytes)), None))
+        }
+        ModelCachePolicy::SealedExternal => {
+            if runtime_mode != RuntimeMode::Release {
+                return Err(invalid(
+                    "sealed external build state requires a RELEASE runtime capsule",
+                ));
+            }
+            let configured = external_build_state
+                .ok_or_else(|| invalid("sealed external build-state path is required"))?;
+            if !configured.is_absolute()
+                || configured
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(invalid(
+                    "sealed external build-state path must be normalized and absolute",
+                ));
+            }
+            let root = configured.canonicalize().map_err(io_error)?;
+            let metadata = fs::symlink_metadata(configured).map_err(io_error)?;
+            if root != configured || metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(invalid("sealed external build-state root is unsafe"));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                if metadata.uid() != unsafe { libc::geteuid() }
+                    || metadata.permissions().mode() & 0o077 != 0
+                {
+                    return Err(invalid(
+                        "sealed external build-state root must be private and caller-owned",
+                    ));
+                }
+            }
+            if root.starts_with(repository) || repository.starts_with(&root) {
+                return Err(invalid(
+                    "sealed external build state must be outside the repository",
+                ));
+            }
+            let manifest_path = root.join("CODECLEW_K1_BUILD_STATE_MANIFEST.json");
+            let marker_path = root.join("CODECLEW_K1_BUILD_STATE_SEED");
+            let manifest_metadata = fs::symlink_metadata(&manifest_path).map_err(io_error)?;
+            let marker_metadata = fs::symlink_metadata(&marker_path).map_err(io_error)?;
+            if manifest_metadata.file_type().is_symlink()
+                || !manifest_metadata.is_file()
+                || manifest_metadata.len() == 0
+                || manifest_metadata.len() > 64 * 1024 * 1024
+                || marker_metadata.file_type().is_symlink()
+                || !marker_metadata.is_file()
+                || marker_metadata.len() != 72
+            {
+                return Err(invalid("sealed external build-state authority is unsafe"));
+            }
+            let manifest = fs::read(manifest_path).map_err(io_error)?;
+            let manifest_value: Value = serde_json::from_slice(&manifest)
+                .map_err(|_| invalid("sealed external build-state manifest is invalid JSON"))?;
+            if manifest_value.get("schema").and_then(Value::as_str)
+                != Some("codeclew.kotlin-k1-build-state-manifest/0.1")
+            {
+                return Err(invalid(
+                    "sealed external build-state manifest schema is invalid",
+                ));
+            }
+            let mut canonical_manifest = canonical::bytes(&manifest_value).map_err(internal)?;
+            canonical_manifest.push(b'\n');
+            if manifest != canonical_manifest {
+                return Err(invalid(
+                    "sealed external build-state manifest must be canonical JSON plus newline",
+                ));
+            }
+            let manifest_digest = canonical::hash_bytes(&manifest);
+            let marker = fs::read(marker_path).map_err(io_error)?;
+            if marker != format!("{manifest_digest}\n").as_bytes() {
+                return Err(invalid(
+                    "sealed external build-state marker does not bind its manifest",
+                ));
+            }
+            let authority = canonical::hash(&json!({
+                "schema":"codeclew-sealed-external-model-cache/2.0",
+                "manifestDigest":manifest_digest,
+                "markerDigest":canonical::hash_bytes(&marker),
+            }))
+            .map_err(internal)?;
+            Ok((Some(authority), Some(root)))
+        }
+    }
+}
+
 fn invalid(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
 }
@@ -1094,6 +1311,108 @@ mod tests {
         assert_eq!(
             transaction_id(request_digest).unwrap(),
             "tx:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn tracked_model_cache_requires_a_canonical_head_bound_manifest() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let manifest = json!({
+            "schema":"codeclew-model-cache-policy/2.0",
+            "compilations":[":/main",":/test"],
+        });
+        let mut bytes = canonical::bytes(&manifest).unwrap();
+        bytes.push(b'\n');
+        fs::write(repository.join("codeclew.model-cache.json"), &bytes).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "codeclew.model-cache.json"])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Codeclew Test",
+                    "-c",
+                    "user.email=codeclew@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "model cache authority",
+                ])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let (authority, external) = model_cache_authority(
+            &repository,
+            ":/main",
+            ModelCachePolicy::TrackedManifest,
+            RuntimeMode::Development,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            authority.as_deref(),
+            Some(canonical::hash_bytes(&bytes).as_str())
+        );
+        assert_eq!(external, None);
+
+        fs::write(
+            repository.join("codeclew.model-cache.json"),
+            [bytes, b" \n".to_vec()].concat(),
+        )
+        .unwrap();
+        assert!(
+            model_cache_authority(
+                &repository,
+                ":/main",
+                ModelCachePolicy::TrackedManifest,
+                RuntimeMode::Development,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn model_cache_modes_reject_mixed_or_non_release_authority() {
+        let repository = tempfile::tempdir().unwrap();
+        assert!(
+            model_cache_authority(
+                repository.path(),
+                ":/main",
+                ModelCachePolicy::NonCacheable,
+                RuntimeMode::Release,
+                Some(repository.path()),
+            )
+            .is_err()
+        );
+        assert!(
+            model_cache_authority(
+                repository.path(),
+                ":/main",
+                ModelCachePolicy::SealedExternal,
+                RuntimeMode::Development,
+                Some(repository.path()),
+            )
+            .is_err()
         );
     }
 
