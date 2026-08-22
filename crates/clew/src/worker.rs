@@ -1,4 +1,5 @@
 use crate::error::{ClewError, ErrorCode};
+use crate::process_isolation::isolate_controller_authority;
 use crate::proto::{
     ApplyEditRequest, BatchRequest, BlobRef, BuildLocalGraphRequest, IndexFilesRequest,
     OpenProjectRequest, ProtocolVersion, RequestKind, ResolveExpressionRequest,
@@ -1096,16 +1097,17 @@ impl WorkerClient {
             .map(|trusted| trusted.launcher.clone())
             .unwrap_or_else(|| worker_launcher(workspace, variant));
         if trusted_distribution.is_none() && !launcher.is_file() {
-            let output = Command::new(workspace.join("gradlew"))
+            let mut command = Command::new(workspace.join("gradlew"));
+            command
                 .args([variant.install_task(), "--no-daemon", "--quiet"])
-                .current_dir(workspace)
-                .output()
-                .map_err(|e| {
-                    ClewError::new(
-                        ErrorCode::WorkerCrashed,
-                        format!("cannot build Kotlin worker: {e}"),
-                    )
-                })?;
+                .current_dir(workspace);
+            isolate_controller_authority(&mut command)?;
+            let output = command.output().map_err(|e| {
+                ClewError::new(
+                    ErrorCode::WorkerCrashed,
+                    format!("cannot build Kotlin worker: {e}"),
+                )
+            })?;
             if !output.stdout.is_empty() {
                 eprint!("{}", String::from_utf8_lossy(&output.stdout));
             }
@@ -1148,6 +1150,7 @@ impl WorkerClient {
             ));
         }
         let mut command = Command::new(&launcher);
+        isolate_controller_authority(&mut command)?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -1,6 +1,7 @@
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
+use crate::process_isolation::isolate_controller_authority;
 use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
 use crate::session::{ContextObject, PlanObject, SessionAuthority};
 use crate::state::{StateAuthority, create_private_directory};
@@ -559,16 +560,14 @@ fn run_validation(
             ValidationLauncher::Maven => "mvn",
             ValidationLauncher::Cargo => "cargo",
         };
-        let output = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .args(&step.args)
             .current_dir(root)
-            .env_remove("CODECLEW_HOME")
-            .env_remove("CODECLEW_RUNTIME_ROOT")
-            .env_remove("CODECLEW_RUNTIME_KEY")
             .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(io_error)?;
+            .stdin(Stdio::null());
+        isolate_controller_authority(&mut command)?;
+        let output = command.output().map_err(io_error)?;
         let total = output.stdout.len().saturating_add(output.stderr.len());
         if total > MAX_VALIDATION_OUTPUT_BYTES {
             return Err(resource("validation output exceeds 4 MiB"));

@@ -12,6 +12,7 @@ pub mod identity;
 pub mod incremental_v2;
 pub mod index;
 pub mod kotlin_adapter_v2;
+pub mod process_isolation;
 pub mod query_v2;
 pub mod repository_snapshot;
 pub mod runtime;
