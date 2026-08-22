@@ -372,6 +372,19 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
         record.save()?;
         return task_run_status(run_id);
     }
+    let (session, _) = SessionAuthority::load(&record.session_id)?;
+    let candidate_root = record.candidate_root()?;
+    if let Some(commit) = clew::task_run_v2::checkpoint_commit(&candidate_root)?.or(
+        clew::task_run_v2::recoverable_candidate_commit(&session, &candidate_root)?,
+    ) {
+        record.candidate_commit = Some(commit);
+        record.status = RunStatus::WorktreeRecoveryRequired;
+        record.failure = Some(json!({"code":"WORKTREE_RECOVERY_REQUIRED",
+            "message":"committed candidate requires deterministic preparation recovery"}));
+        record.save()?;
+        return task_run_status(run_id);
+    }
+    clew::task_run_v2::discard_precommit_candidate(&session, &candidate_root)?;
     record.status = RunStatus::Created;
     record.failure = None;
     record.process_id = None;
@@ -424,17 +437,23 @@ fn execute_task_run(run_id: &str) -> Result<Value, ClewError> {
     match prepare_task_run(&mut record) {
         Ok(value) => Ok(value),
         Err(error) => {
-            record.status = if RunRecord::load(run_id)?.status == RunStatus::Cancelled {
-                RunStatus::Cancelled
-            } else if error.code == ErrorCode::WorktreeRecoveryRequired {
-                RunStatus::WorktreeRecoveryRequired
-            } else {
-                RunStatus::Failed
-            };
-            record.failure = serde_json::to_value(&error).ok();
-            record.process_id = None;
-            record.process_start_token = None;
-            let _ = record.save();
+            let mut latest = RunRecord::load(run_id)?;
+            if latest.status != RunStatus::Cancelled {
+                let candidate_root = latest.candidate_root()?;
+                let checkpoint = clew::task_run_v2::checkpoint_commit(&candidate_root)?;
+                latest.status = if let Some(commit) = checkpoint {
+                    latest.candidate_commit = Some(commit);
+                    RunStatus::WorktreeRecoveryRequired
+                } else if error.code == ErrorCode::WorktreeRecoveryRequired {
+                    RunStatus::WorktreeRecoveryRequired
+                } else {
+                    RunStatus::Failed
+                };
+                latest.failure = serde_json::to_value(&error).ok();
+            }
+            latest.process_id = None;
+            latest.process_start_token = None;
+            let _ = latest.save();
             Err(error)
         }
     }
@@ -456,19 +475,21 @@ fn prepare_task_run(record: &mut RunRecord) -> Result<Value, ClewError> {
         &state.run_root(&record.run_id)?.join("prepared-v2.json"),
         &canonical::bytes(&prepared).map_err(internal)?,
     )?;
-    record.candidate_commit = Some(prepared.candidate_commit.clone());
-    record.candidate_snapshot = Some(prepared.candidate_snapshot.clone());
-    record.publication_blocked = prepared.publication_blocked;
-    record.status = if RunRecord::load(&record.run_id)?.status == RunStatus::Cancelled {
+    let mut latest = RunRecord::load(&record.run_id)?;
+    latest.candidate_commit = Some(prepared.candidate_commit.clone());
+    latest.candidate_snapshot = Some(prepared.candidate_snapshot.clone());
+    latest.publication_blocked = prepared.publication_blocked;
+    latest.status = if latest.status == RunStatus::Cancelled {
         RunStatus::Cancelled
     } else if prepared.publication_blocked {
         RunStatus::ValidatedConditional
     } else {
         RunStatus::ReadyToPublish
     };
-    record.process_id = None;
-    record.process_start_token = None;
-    record.save()?;
+    latest.process_id = None;
+    latest.process_start_token = None;
+    latest.save()?;
+    *record = latest;
     Ok(json!({"schema":"codeclew-task-run-preparation/2.0","run":record,"candidate":prepared}))
 }
 
@@ -537,10 +558,44 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
         ));
     }
     let state = clew::state::StateAuthority::process_default()?;
-    let prepared: clew::task_run_v2::PreparedCandidateV2 = read_json(
-        &state.run_root(run_id)?.join("prepared-v2.json"),
-        16 * 1024 * 1024,
-    )?;
+    let run_root = state.run_root(run_id)?;
+    let prepared_path = run_root.join("prepared-v2.json");
+    if !prepared_path.exists() {
+        let context = session.load_context(&record.context_id)?;
+        let plan = session.load_plan(&record.plan_id)?;
+        match clew::task_run_v2::recover_preparation(
+            &session,
+            &context,
+            &plan,
+            &record.candidate_root()?,
+        ) {
+            Ok(prepared) => {
+                state.write_private_atomic(
+                    &prepared_path,
+                    &canonical::bytes(&prepared).map_err(internal)?,
+                )?;
+                record.candidate_commit = Some(prepared.candidate_commit.clone());
+                record.candidate_snapshot = Some(prepared.candidate_snapshot.clone());
+                record.publication_blocked = prepared.publication_blocked;
+                record.status = if prepared.publication_blocked {
+                    RunStatus::ValidatedConditional
+                } else {
+                    RunStatus::ReadyToPublish
+                };
+                record.failure = None;
+                record.save()?;
+                return Ok(json!({"schema":"codeclew-session-recover-result/2.0",
+                    "run":record,"preparation":prepared}));
+            }
+            Err(error) => {
+                record.failure = serde_json::to_value(&error).ok();
+                record.save()?;
+                return Err(error);
+            }
+        }
+    }
+    let prepared: clew::task_run_v2::PreparedCandidateV2 =
+        read_json(&prepared_path, 16 * 1024 * 1024)?;
     match clew::task_run_v2::recover(&session, &prepared, &record.candidate_root()?) {
         Ok(recovery) => {
             record.status = RunStatus::Published;

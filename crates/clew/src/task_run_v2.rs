@@ -26,6 +26,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const PLAN_V2_SCHEMA: &str = "codeclew-task-plan/2.0";
 pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/3.0";
+const CANDIDATE_CHECKPOINT_SCHEMA: &str = "codeclew-candidate-checkpoint/3.0";
 const MAX_EDIT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_VALIDATION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -116,6 +117,21 @@ pub struct PreparedCandidateV2 {
     pub changed_files: Vec<String>,
     pub validation_evidence: Vec<ValidationEvidence>,
     pub publication_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CandidateCheckpointV2 {
+    schema: String,
+    session_id: String,
+    context_id: String,
+    plan_id: String,
+    base_revision: String,
+    target_ref: String,
+    target_oid: String,
+    candidate_commit: String,
+    changed_files: Vec<String>,
+    validation_evidence: Vec<ValidationEvidence>,
 }
 
 pub fn validate_plan_value(value: &Value) -> Result<TaskPlanV2, ClewError> {
@@ -239,12 +255,6 @@ pub fn prepare(
             "context cannot authorize candidate preparation",
         ));
     }
-    let mut publication_blocked = status != "COMPLETE_TASK"
-        || context
-            .evidence
-            .pointer("/context/verificationObligations")
-            .and_then(Value::as_array)
-            .is_some_and(|obligations| !obligations.is_empty());
     let repo = session.repository_path()?;
     if git(&repo, &["rev-parse", "HEAD"])? != session.base_revision
         || git(&repo, &["rev-parse", &session.target_ref])? != session.target_oid
@@ -308,14 +318,89 @@ pub fn prepare(
     }
     commit_candidate(&worktree, &plan_object.plan_id)?;
     let candidate_commit = git(&worktree, &["rev-parse", "HEAD"])?;
+    let checkpoint = CandidateCheckpointV2 {
+        schema: CANDIDATE_CHECKPOINT_SCHEMA.into(),
+        session_id: session.session_id.clone(),
+        context_id: context.context_id.clone(),
+        plan_id: plan_object.plan_id.clone(),
+        base_revision: session.base_revision.clone(),
+        target_ref: session.target_ref.clone(),
+        target_oid: session.target_oid.clone(),
+        candidate_commit,
+        changed_files,
+        validation_evidence,
+    };
+    write_candidate_checkpoint(candidate_root, &checkpoint)?;
+    finish_preparation(session, context, plan_object, candidate_root, checkpoint)
+}
+
+fn finish_preparation(
+    session: &SessionAuthority,
+    context: &ContextObject,
+    plan_object: &PlanObject,
+    candidate_root: &Path,
+    checkpoint: CandidateCheckpointV2,
+) -> Result<PreparedCandidateV2, ClewError> {
+    validate_checkpoint(session, context, plan_object, &checkpoint)?;
+    let worktree = candidate_root.join("worktree");
+    if git(&worktree, &["rev-parse", "HEAD"])? != checkpoint.candidate_commit {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "candidate worktree no longer identifies its checkpoint commit",
+        ));
+    }
+    if git(
+        &worktree,
+        &["rev-parse", &format!("{}^", checkpoint.candidate_commit)],
+    )? != checkpoint.base_revision
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "candidate checkpoint is not a direct child of the session base",
+        ));
+    }
+    let plan = validate_plan_value(&plan_object.plan)?;
+    let expected_files = planned_files(&plan);
+    let committed_files = nul_paths(
+        &worktree,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            &checkpoint.base_revision,
+            &checkpoint.candidate_commit,
+            "--",
+        ],
+    )?;
+    if expected_files != checkpoint.changed_files.iter().cloned().collect()
+        || committed_files != expected_files
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "candidate checkpoint write set differs from its plan or commit",
+        ));
+    }
+    require_clean(&worktree)?;
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
     let semantic = ensure_candidate_generation(
         session,
         &worktree,
-        &candidate_commit,
+        &checkpoint.candidate_commit,
         &candidate_root.join("staged-generation.json"),
     )?;
     let semantic_generation = store_ready_generation(&store, &semantic)?;
-    publication_blocked |= !semantic.completeness.publishable();
+    let context_blocked = context
+        .evidence
+        .pointer("/context/completeness/status")
+        .and_then(Value::as_str)
+        != Some("COMPLETE_TASK")
+        || context
+            .evidence
+            .pointer("/context/verificationObligations")
+            .and_then(Value::as_array)
+            .is_some_and(|obligations| !obligations.is_empty());
+    let publication_blocked = context_blocked || !semantic.completeness.publishable();
     require_clean(&worktree)?;
     let (_, candidate_snapshot) = capture(&worktree, &store)?;
     Ok(PreparedCandidateV2 {
@@ -326,14 +411,196 @@ pub fn prepare(
         base_revision: session.base_revision.clone(),
         target_ref: session.target_ref.clone(),
         target_oid: session.target_oid.clone(),
-        candidate_commit,
+        candidate_commit: checkpoint.candidate_commit,
         candidate_snapshot,
         semantic_generation,
         semantic_generation_key: semantic.generation_key,
-        changed_files,
-        validation_evidence,
+        changed_files: checkpoint.changed_files,
+        validation_evidence: checkpoint.validation_evidence,
         publication_blocked,
     })
+}
+
+pub fn recover_preparation(
+    session: &SessionAuthority,
+    context: &ContextObject,
+    plan_object: &PlanObject,
+    candidate_root: &Path,
+) -> Result<PreparedCandidateV2, ClewError> {
+    let mut checkpoint = if candidate_root.join("checkpoint-v2.json").exists() {
+        load_candidate_checkpoint(candidate_root)?
+    } else {
+        reconstruct_candidate_checkpoint(session, context, plan_object, candidate_root)?
+    };
+    validate_checkpoint(session, context, plan_object, &checkpoint)?;
+    let plan = validate_plan_value(&plan_object.plan)?;
+    checkpoint.validation_evidence =
+        run_validation(&candidate_root.join("worktree"), &plan.validation)?;
+    finish_preparation(session, context, plan_object, candidate_root, checkpoint)
+}
+
+fn reconstruct_candidate_checkpoint(
+    session: &SessionAuthority,
+    context: &ContextObject,
+    plan_object: &PlanObject,
+    candidate_root: &Path,
+) -> Result<CandidateCheckpointV2, ClewError> {
+    let worktree = candidate_root.join("worktree");
+    let candidate_commit =
+        recoverable_candidate_commit(session, candidate_root)?.ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorktreeRecoveryRequired,
+                "candidate has no committed OID to recover",
+            )
+        })?;
+    require_clean(&worktree)?;
+    let plan = validate_plan_value(&plan_object.plan)?;
+    let checkpoint = CandidateCheckpointV2 {
+        schema: CANDIDATE_CHECKPOINT_SCHEMA.into(),
+        session_id: session.session_id.clone(),
+        context_id: context.context_id.clone(),
+        plan_id: plan_object.plan_id.clone(),
+        base_revision: session.base_revision.clone(),
+        target_ref: session.target_ref.clone(),
+        target_oid: session.target_oid.clone(),
+        candidate_commit,
+        changed_files: planned_files(&plan).into_iter().collect(),
+        validation_evidence: run_validation(&worktree, &plan.validation)?,
+    };
+    validate_checkpoint(session, context, plan_object, &checkpoint)?;
+    write_candidate_checkpoint(candidate_root, &checkpoint)?;
+    Ok(checkpoint)
+}
+
+pub fn checkpoint_commit(candidate_root: &Path) -> Result<Option<String>, ClewError> {
+    let path = candidate_root.join("checkpoint-v2.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(
+        load_candidate_checkpoint(candidate_root)?.candidate_commit,
+    ))
+}
+
+pub fn recoverable_candidate_commit(
+    session: &SessionAuthority,
+    candidate_root: &Path,
+) -> Result<Option<String>, ClewError> {
+    let worktree = candidate_root.join("worktree");
+    if !worktree.exists() {
+        return Ok(None);
+    }
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    if head == session.base_revision {
+        return Ok(None);
+    }
+    if !git_oid(&head)
+        || git(&worktree, &["rev-parse", &format!("{head}^")])? != session.base_revision
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "candidate worktree has an unexpected committed history",
+        ));
+    }
+    Ok(Some(head))
+}
+
+pub fn discard_precommit_candidate(
+    session: &SessionAuthority,
+    candidate_root: &Path,
+) -> Result<bool, ClewError> {
+    let worktree = candidate_root.join("worktree");
+    if !worktree.exists() {
+        return Ok(false);
+    }
+    if checkpoint_commit(candidate_root)?.is_some()
+        || recoverable_candidate_commit(session, candidate_root)?.is_some()
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "committed candidate cannot be discarded automatically",
+        ));
+    }
+    git_status(
+        Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&worktree)
+            .current_dir(session.repository_path()?),
+        "derived pre-commit candidate cleanup failed",
+    )?;
+    Ok(true)
+}
+
+fn write_candidate_checkpoint(
+    candidate_root: &Path,
+    checkpoint: &CandidateCheckpointV2,
+) -> Result<(), ClewError> {
+    let state = StateAuthority::process_default()?;
+    state.write_private_atomic(
+        &candidate_root.join("checkpoint-v2.json"),
+        &canonical::bytes(checkpoint).map_err(internal)?,
+    )
+}
+
+fn load_candidate_checkpoint(candidate_root: &Path) -> Result<CandidateCheckpointV2, ClewError> {
+    let path = candidate_root.join("checkpoint-v2.json");
+    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > 4 * 1024 * 1024
+    {
+        return Err(invalid(
+            "candidate checkpoint is missing, unsafe, or oversized",
+        ));
+    }
+    let bytes = fs::read(path).map_err(io_error)?;
+    let checkpoint: CandidateCheckpointV2 = serde_json::from_slice(&bytes).map_err(parse_error)?;
+    if canonical::bytes(&checkpoint).map_err(internal)? != bytes {
+        return Err(invalid("candidate checkpoint is not canonical"));
+    }
+    Ok(checkpoint)
+}
+
+fn validate_checkpoint(
+    session: &SessionAuthority,
+    context: &ContextObject,
+    plan: &PlanObject,
+    checkpoint: &CandidateCheckpointV2,
+) -> Result<(), ClewError> {
+    if checkpoint.schema != CANDIDATE_CHECKPOINT_SCHEMA
+        || checkpoint.session_id != session.session_id
+        || checkpoint.context_id != context.context_id
+        || checkpoint.plan_id != plan.plan_id
+        || checkpoint.base_revision != session.base_revision
+        || checkpoint.target_ref != session.target_ref
+        || checkpoint.target_oid != session.target_oid
+        || !git_oid(&checkpoint.candidate_commit)
+        || checkpoint.changed_files.is_empty()
+        || checkpoint.validation_evidence.is_empty()
+        || checkpoint
+            .validation_evidence
+            .iter()
+            .any(|evidence| !evidence.success)
+        || !checkpoint
+            .changed_files
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "candidate checkpoint differs from immutable run authority",
+        ));
+    }
+    Ok(())
+}
+
+fn planned_files(plan: &TaskPlanV2) -> BTreeSet<String> {
+    plan.operations
+        .iter()
+        .map(|operation| match operation {
+            FileOperation::ReplaceText { target, .. }
+            | FileOperation::DeleteFile { target, .. } => target.file_id.clone(),
+            FileOperation::CreateFile { target, .. } => target.file_id.clone(),
+        })
+        .collect()
 }
 
 pub fn publish(
@@ -530,7 +797,7 @@ fn require_publish_worktrees(
             candidate_found = item.branch.is_none() && item.head == prepared.candidate_commit;
         }
     }
-    if target_branch_count != 1 || !source_found || !candidate_found {
+    if target_branch_count > 1 || !source_found || !candidate_found {
         return Err(ClewError::new(
             ErrorCode::WorktreeRecoveryRequired,
             "session worktree inventory differs from prepared publication authority",
@@ -1314,5 +1581,69 @@ mod tests {
         assert!(
             parse_worktree_inventory(format!("worktree /repo\0HEAD {oid}\0").as_bytes()).is_err()
         );
+    }
+
+    #[test]
+    fn recovery_accepts_only_one_direct_candidate_commit() {
+        let root = tempfile::tempdir().unwrap();
+        let candidate_root = root.path().join("candidate");
+        let worktree = candidate_root.join("worktree");
+        fs::create_dir_all(&worktree).unwrap();
+        git_status(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(&worktree),
+            "test init failed",
+        )
+        .unwrap();
+        fs::write(worktree.join("A.kt"), b"one\n").unwrap();
+        git_status(
+            Command::new("git")
+                .args(["add", "A.kt"])
+                .current_dir(&worktree),
+            "test add failed",
+        )
+        .unwrap();
+        commit_candidate(&worktree, "plan:base").unwrap();
+        let base = git(&worktree, &["rev-parse", "HEAD"]).unwrap();
+        let session = SessionAuthority {
+            schema: crate::session::SESSION_SCHEMA.into(),
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            session_id: format!("session:{}", uuid::Uuid::new_v4()),
+            repository_key: "a".repeat(64),
+            base_revision: base,
+            target_ref: "refs/heads/main".into(),
+            target_oid: "b".repeat(40),
+            runtime_key: format!("sha256:{}", "c".repeat(64)),
+            runtime_mode: crate::runtime::RuntimeMode::Development,
+            compilation: ":/main".into(),
+            model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            created_unix_ms: 1,
+        };
+        fs::write(worktree.join("A.kt"), b"two\n").unwrap();
+        git_status(
+            Command::new("git")
+                .args(["add", "A.kt"])
+                .current_dir(&worktree),
+            "test add failed",
+        )
+        .unwrap();
+        commit_candidate(&worktree, "plan:candidate").unwrap();
+        let candidate = recoverable_candidate_commit(&session, &candidate_root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate, git(&worktree, &["rev-parse", "HEAD"]).unwrap());
+
+        fs::write(worktree.join("A.kt"), b"three\n").unwrap();
+        git_status(
+            Command::new("git")
+                .args(["add", "A.kt"])
+                .current_dir(&worktree),
+            "test add failed",
+        )
+        .unwrap();
+        commit_candidate(&worktree, "plan:unexpected-second-commit").unwrap();
+        assert!(recoverable_candidate_commit(&session, &candidate_root).is_err());
     }
 }

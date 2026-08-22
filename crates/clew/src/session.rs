@@ -773,8 +773,10 @@ fn run_transition_allowed(from: RunStatus, to: RunStatus) -> bool {
                     | RunStatus::Failed
                     | RunStatus::WorktreeRecoveryRequired
                     | RunStatus::Cancelled
-            ) | (RunStatus::Failed | RunStatus::Cancelled, RunStatus::Created)
-                | (RunStatus::ReadyToPublish, RunStatus::Publishing)
+            ) | (
+                RunStatus::Failed | RunStatus::Cancelled,
+                RunStatus::Created | RunStatus::WorktreeRecoveryRequired
+            ) | (RunStatus::ReadyToPublish, RunStatus::Publishing)
                 | (
                     RunStatus::Publishing,
                     RunStatus::Published
@@ -783,7 +785,11 @@ fn run_transition_allowed(from: RunStatus, to: RunStatus) -> bool {
                 )
                 | (
                     RunStatus::WorktreeRecoveryRequired,
-                    RunStatus::Published | RunStatus::WorktreeRecoveryRequired
+                    RunStatus::ReadyToPublish
+                        | RunStatus::ValidatedConditional
+                        | RunStatus::Published
+                        | RunStatus::Failed
+                        | RunStatus::WorktreeRecoveryRequired
                 )
         )
 }
