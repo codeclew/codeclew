@@ -275,6 +275,10 @@ def environment_digest(check: dict[str, object]) -> str:
 def evidence_digest(check: dict[str, object], authority: dict[str, str]) -> str:
     value = {
         "checkAuthorityDigest": check_authority_digest(check, authority),
+        "clean": is_clean(),
+        "environmentDigest": environment_digest(check),
+        "memoryBytes": memory_bytes(),
+        "physicalCores": physical_cores(),
         "sourceRevision": git("rev-parse", "HEAD"),
     }
     return digest_bytes(canonical(value))
@@ -286,17 +290,13 @@ def check_authority_digest(
     """Return the current reusable authority for one check.
 
     The source revision belongs to the historical receipt, but not to this
-    digest: an unrelated descendant commit must not invalidate a completed
-    step. Relevant input bytes, command/environment/host authority, or any
-    controller/plan/verifier change must invalidate it.
+    digest: an unrelated descendant commit or a transient execution
+    environment must not invalidate a completed step. Relevant input bytes,
+    command bytes, or any controller/plan/verifier change must invalidate it.
     """
     value = {
         **authority,
-        "clean": is_clean(),
         "commandDigest": digest_bytes(canonical(check["command"])),
-        "environmentDigest": environment_digest(check),
-        "memoryBytes": memory_bytes(),
-        "physicalCores": physical_cores(),
         "sourceInputDigest": input_digest(check),
     }
     return digest_bytes(canonical(value))
@@ -375,7 +375,12 @@ def valid_completion(
 
 
 def require_dependencies(model: dict[str, object], authority: dict[str, str], step: str) -> None:
-    missing = [dependency for dependency in model["steps"][step]["dependencies"] if not valid_completion(model, authority, dependency)]
+    completed = completed_steps(model, authority)
+    missing = [
+        dependency
+        for dependency in model["steps"][step]["dependencies"]
+        if dependency not in completed
+    ]
     if missing:
         raise ControlError("step prerequisites are incomplete: " + ",".join(missing))
 
@@ -632,8 +637,21 @@ def seal_step(model: dict[str, object], authority: dict[str, str], step: str) ->
     return {"status": "COMPLETE", "stepId": step}
 
 
+def completed_steps(
+    model: dict[str, object], authority: dict[str, str]
+) -> list[str]:
+    completed: list[str] = []
+    for step in model["order"]:
+        if all(
+            dependency in completed
+            for dependency in model["steps"][step]["dependencies"]
+        ) and valid_completion(model, authority, step):
+            completed.append(step)
+    return completed
+
+
 def status(model: dict[str, object], authority: dict[str, str]) -> dict[str, object]:
-    completed = [step for step in model["order"] if valid_completion(model, authority, step)]
+    completed = completed_steps(model, authority)
     next_step = next((step for step in model["order"] if step not in completed and all(dependency in completed for dependency in model["steps"][step]["dependencies"])), None)
     return {
         "completed": completed,

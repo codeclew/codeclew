@@ -156,6 +156,33 @@ class StabilizationControlTest(unittest.TestCase):
                 control.valid_completion(self.model, self.authority, step)
             )
 
+    def test_completion_reuse_does_not_require_transient_check_environment(self) -> None:
+        check = self.model["checks"]["s0-recovery-baseline"]
+        with mock.patch.dict(
+            os.environ, {"CODECLEW_RECOVERY_MANIFEST": "/private/first.json"}
+        ):
+            first = control.check_authority_digest(check, self.authority)
+            first_evidence = control.evidence_digest(check, self.authority)
+        with mock.patch.dict(
+            os.environ, {"CODECLEW_RECOVERY_MANIFEST": "/private/second.json"}
+        ):
+            second = control.check_authority_digest(check, self.authority)
+            second_evidence = control.evidence_digest(check, self.authority)
+        self.assertEqual(first, second)
+        self.assertNotEqual(first_evidence, second_evidence)
+
+    def test_completed_steps_never_crosses_an_invalid_dependency(self) -> None:
+        valid = {"S0", "S1", "S3", "S4"}
+        with mock.patch.object(
+            control,
+            "valid_completion",
+            side_effect=lambda _model, _authority, step: step in valid,
+        ):
+            self.assertEqual(
+                control.completed_steps(self.model, self.authority),
+                ["S0", "S1"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
