@@ -3,6 +3,7 @@ use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::session::{
     ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, bounded_context_stdout,
+    validate_context_request,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -111,7 +112,7 @@ struct SessionRunArgs {
 struct ContextCreateArgs {
     #[arg(long)]
     session: String,
-    #[arg(long, default_value = "")]
+    #[arg(long)]
     intent: String,
     #[arg(long = "term", required = true)]
     terms: Vec<String>,
@@ -229,6 +230,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ContextCommand::Create(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
+            validate_context_request(&args.intent, &args.terms)?;
             let (projection, evidence) = clew::context_v2::create(
                 &session,
                 &args.intent,
@@ -255,6 +257,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             terms.sort();
             terms.dedup();
             let intent = args.intent.unwrap_or_else(|| parent.intent.clone());
+            validate_context_request(&intent, &terms)?;
             let (projection, evidence) = clew::context_v2::create(
                 &session,
                 &intent,

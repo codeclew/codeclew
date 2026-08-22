@@ -19,6 +19,7 @@ pub mod runtime;
 pub mod session;
 pub mod state;
 pub mod task_run_v2;
+pub mod text_authority;
 pub mod worker;
 
 pub mod proto {

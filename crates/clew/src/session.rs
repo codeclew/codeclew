@@ -320,6 +320,7 @@ impl SessionAuthority {
         projection: Value,
         evidence: Value,
     ) -> Result<ContextObject, ClewError> {
+        validate_context_request(&intent, &terms)?;
         terms.sort();
         terms.dedup();
         let evidence_bytes = canonical::bytes(&evidence).map_err(internal)?;
@@ -826,7 +827,42 @@ pub fn bounded_context_stdout(context: &ContextObject) -> Result<Value, ClewErro
 }
 
 fn validate_plan_shape(plan: &Value) -> Result<(), ClewError> {
+    if !crate::text_authority::json_strings_are_nfc(plan, 0) {
+        return Err(invalid("plan keys and strings must use NFC Unicode"));
+    }
     crate::task_run_v2::validate_plan_value(plan)?;
+    Ok(())
+}
+
+pub fn validate_context_request(intent: &str, terms: &[String]) -> Result<(), ClewError> {
+    if intent.trim().is_empty()
+        || intent.len() > 32 * 1024
+        || intent.contains('\0')
+        || !crate::text_authority::is_nfc(intent)
+    {
+        return Err(invalid(
+            "context intent must be non-empty NFC text no larger than 32 KiB",
+        ));
+    }
+    let total = terms.iter().try_fold(0usize, |total, term| {
+        total
+            .checked_add(term.len())
+            .ok_or_else(|| invalid("context term size overflow"))
+    })?;
+    if terms.is_empty()
+        || terms.len() > 256
+        || total > 64 * 1024
+        || terms.iter().any(|term| {
+            term.trim().is_empty()
+                || term.len() > 4096
+                || term.chars().any(char::is_control)
+                || !crate::text_authority::is_nfc(term)
+        })
+    {
+        return Err(invalid(
+            "context terms must be bounded NFC identities without control characters",
+        ));
+    }
     Ok(())
 }
 
@@ -1291,6 +1327,18 @@ mod tests {
             .map(|index| json!({"target":{"fileId":format!("src/{index}.kt")}}))
             .collect::<Vec<_>>();
         assert!(validate_plan_shape(&json!({"operations":operations})).is_err());
+    }
+
+    #[test]
+    fn context_request_is_bounded_and_nfc_before_analysis() {
+        validate_context_request(
+            "Переименовать функцию без изменения поведения",
+            &["com.example.Café".into()],
+        )
+        .unwrap();
+        assert!(validate_context_request("", &["symbol".into()]).is_err());
+        assert!(validate_context_request("intent", &["com.example.Cafe\u{301}".into()]).is_err());
+        assert!(validate_context_request("intent", &["x".repeat(4097)]).is_err());
     }
 
     #[test]

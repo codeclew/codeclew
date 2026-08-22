@@ -22,6 +22,7 @@ similar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+unicode-normalization.workspace = true
 walkdir.workspace = true
 
 [build-dependencies]

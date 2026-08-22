@@ -1360,6 +1360,7 @@ fn safe_id(value: &str) -> bool {
 fn safe_path(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 4096
+        && crate::text_authority::is_nfc(value)
         && !value.starts_with('/')
         && !value.contains('\0')
         && !value.split('/').any(|component| {

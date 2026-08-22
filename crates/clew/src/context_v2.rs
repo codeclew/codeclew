@@ -23,6 +23,7 @@ pub fn create(
     max_roots: usize,
     parent: Option<&ContextObject>,
 ) -> Result<(Value, Value), ClewError> {
+    crate::session::validate_context_request(intent, terms)?;
     if terms.is_empty() || max_roots == 0 || max_roots > 256 {
         return Err(invalid("bounded context terms or root limit is invalid"));
     }
