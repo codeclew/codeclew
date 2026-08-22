@@ -431,13 +431,15 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 path.write_bytes(bootstrap.canonical({"runtimeKey": removable_key}) + b"\n")
                 path.chmod(0o600)
 
-            session_id = "session:gc-root"
-            session = root / "sessions" / session_id
+            session_name = "gc-root"
+            session_id = f"session:{session_name}"
+            session = root / "sessions" / session_name
             session.mkdir(mode=0o700, parents=True)
             authority = session / "authority.json"
             authority.write_bytes(bootstrap.canonical({
                 "schema": "codeclew-session/3.0",
                 "sessionId": session_id,
+                "authorityDigest": "sha256:" + "9" * 64,
                 "runtimeKey": "sha256:" + names["session"],
             }) + b"\n")
             authority.chmod(0o600)
@@ -477,6 +479,49 @@ class BootstrapAuthorityTest(unittest.TestCase):
             stale_checkpoint.chmod(0o600)
             self.assertIsNone(
                 bootstrap.read_checkpoint_candidate_key(stale_checkpoint, root)
+            )
+
+    def test_session_runtime_root_uses_uuid_directory_and_exact_terminal_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            session_name = "01234567-89ab-cdef-0123-456789abcdef"
+            session_id = f"session:{session_name}"
+            session = root / "sessions" / session_name
+            session.mkdir(mode=0o700, parents=True)
+            runtime_key = "sha256:" + "8" * 64
+            authority_digest = "sha256:" + "9" * 64
+            (session / "authority.json").write_bytes(bootstrap.canonical({
+                "schema": "codeclew-session/3.0",
+                "sessionId": session_id,
+                "authorityDigest": authority_digest,
+                "runtimeKey": runtime_key,
+            }) + b"\n")
+
+            # Missing lifecycle fails open and retains the runtime.
+            self.assertEqual(
+                bootstrap._session_runtime_roots(root),
+                {runtime_key.removeprefix("sha256:")},
+            )
+
+            lifecycle = {
+                "schema": "codeclew-session-lifecycle-entry/1.0",
+                "sessionId": session_id,
+                "sessionAuthorityDigest": authority_digest,
+                "sequence": 2,
+                "previousEventHash": "sha256:" + "7" * 64,
+                "status": "GARBAGE_COLLECTED",
+                "eventHash": "",
+                "updatedUnixMs": 1,
+            }
+            lifecycle["eventHash"] = bootstrap.digest_bytes(bootstrap.canonical(lifecycle))
+            (session / "lifecycle.json").write_bytes(bootstrap.canonical(lifecycle))
+            self.assertEqual(bootstrap._session_runtime_roots(root), set())
+
+            lifecycle["status"] = "ABORTED"
+            (session / "lifecycle.json").write_bytes(bootstrap.canonical(lifecycle))
+            self.assertEqual(
+                bootstrap._session_runtime_roots(root),
+                {runtime_key.removeprefix("sha256:")},
             )
 
 

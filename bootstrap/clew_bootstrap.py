@@ -1353,6 +1353,59 @@ def _cleanup_runtime_records(root: Path, runtime_key_value: str) -> None:
             os.close(descriptor)
 
 
+def _session_lifecycle_is_collected(
+    session_fd: int,
+    session_id: str,
+    authority_digest: object,
+) -> bool:
+    """Return true only for one exact, self-authenticating terminal projection.
+
+    Any missing, malformed, stale, or replaced lifecycle file retains the
+    runtime. GC safety is more important than reclaiming a questionable root.
+    """
+    if not valid_runtime_key(authority_digest):
+        return False
+    lifecycle_fd = -1
+    try:
+        lifecycle_fd = os.open(
+            "lifecycle.json",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=session_fd,
+        )
+        metadata = os.fstat(lifecycle_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_size > MAX_MANIFEST_BYTES
+        ):
+            return False
+        with os.fdopen(lifecycle_fd, "rb") as stream:
+            lifecycle_fd = -1
+            payload = stream.read(MAX_MANIFEST_BYTES + 1)
+        value = json.loads(payload)
+        if not isinstance(value, dict) or canonical(value) != payload:
+            return False
+        if (
+            value.get("schema") != "codeclew-session-lifecycle-entry/1.0"
+            or value.get("sessionId") != session_id
+            or value.get("sessionAuthorityDigest") != authority_digest
+            or value.get("status") != "GARBAGE_COLLECTED"
+            or not isinstance(value.get("sequence"), int)
+            or value.get("sequence", -1) < 2
+            or not valid_runtime_key(value.get("eventHash"))
+        ):
+            return False
+        unsigned = dict(value)
+        expected = unsigned["eventHash"]
+        unsigned["eventHash"] = ""
+        return digest_bytes(canonical(unsigned)) == expected
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return False
+    finally:
+        if lifecycle_fd >= 0:
+            os.close(lifecycle_fd)
+
+
 def _session_runtime_roots(root: Path) -> set[str]:
     directory = root / "sessions"
     try:
@@ -1389,15 +1442,24 @@ def _session_runtime_roots(root: Path) -> set[str]:
                     finally:
                         if authority_fd >= 0:
                             os.close(authority_fd)
+                    if not isinstance(value, dict) or not valid_runtime_key(value.get("runtimeKey")):
+                        continue
+                    session_id = f"session:{entry.name}"
+                    # A valid terminal lifecycle is the only authority that
+                    # may release a session root. Every questionable record
+                    # fails open by retaining the referenced runtime.
+                    if not (
+                        value.get("schema") == "codeclew-session/3.0"
+                        and value.get("sessionId") == session_id
+                        and _session_lifecycle_is_collected(
+                            session_fd,
+                            session_id,
+                            value.get("authorityDigest"),
+                        )
+                    ):
+                        roots.add(str(value["runtimeKey"]).removeprefix("sha256:"))
                 finally:
                     os.close(session_fd)
-                if (
-                    isinstance(value, dict)
-                    and value.get("schema") == "codeclew-session/3.0"
-                    and value.get("sessionId") == entry.name
-                    and valid_runtime_key(value.get("runtimeKey"))
-                ):
-                    roots.add(str(value["runtimeKey"]).removeprefix("sha256:"))
             except (FileNotFoundError, OSError, ValueError, TypeError):
                 continue
         return roots
