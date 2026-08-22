@@ -35,6 +35,12 @@ pub(crate) struct ManagedDirectory {
     handle: Arc<File>,
 }
 
+pub(crate) struct ManagedTemporaryDirectory {
+    parent: ManagedDirectory,
+    directory: ManagedDirectory,
+    name: OsString,
+}
+
 #[derive(Debug, Clone)]
 pub struct RepositoryState {
     pub key: String,
@@ -302,6 +308,19 @@ impl ManagedDirectory {
         &self.path
     }
 
+    /// Resolve the currently pinned leaf descriptor for an external tool that
+    /// only accepts path arguments. This never walks `StateAuthority::root`.
+    pub(crate) fn resolved_path(&self) -> Result<PathBuf, ClewError> {
+        #[cfg(unix)]
+        {
+            descriptor_path(self.handle.as_raw_fd())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(invalid("managed directory references require POSIX"))
+        }
+    }
+
     pub(crate) fn child(&self, relative: &Path) -> Result<Self, ClewError> {
         validate_relative(relative)?;
         let mut directory = duplicate_file(&self.handle)?;
@@ -314,6 +333,30 @@ impl ManagedDirectory {
         Ok(Self {
             path: self.path.join(relative),
             handle: Arc::new(directory),
+        })
+    }
+
+    pub(crate) fn temporary_child(
+        &self,
+        prefix: &str,
+    ) -> Result<ManagedTemporaryDirectory, ClewError> {
+        if prefix.is_empty()
+            || prefix.len() > 64
+            || !prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(invalid("managed temporary directory prefix is invalid"));
+        }
+        let name = OsString::from(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        let handle = create_private_child_directory(&self.handle, &name)?;
+        Ok(ManagedTemporaryDirectory {
+            parent: self.clone(),
+            directory: ManagedDirectory {
+                path: self.path.join(&name),
+                handle: Arc::new(handle),
+            },
+            name,
         })
     }
 
@@ -406,6 +449,18 @@ impl ManagedDirectory {
 
     pub(crate) fn entries(&self) -> Result<Vec<OsString>, ClewError> {
         read_directory_names(&self.handle)
+    }
+}
+
+impl ManagedTemporaryDirectory {
+    pub(crate) fn directory(&self) -> &ManagedDirectory {
+        &self.directory
+    }
+}
+
+impl Drop for ManagedTemporaryDirectory {
+    fn drop(&mut self) {
+        let _ = remove_directory_tree_at(&self.parent.handle, &self.name);
     }
 }
 
@@ -565,6 +620,26 @@ fn open_private_child_directory(
     }
     validate_private_directory_file(&directory)?;
     Ok(directory)
+}
+
+#[cfg(unix)]
+fn create_private_child_directory(
+    parent: &File,
+    name: &std::ffi::OsStr,
+) -> Result<File, ClewError> {
+    let name = component_name(name)?;
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    open_private_child_directory(parent, std::ffi::OsStr::from_bytes(name.to_bytes()), false)
+}
+
+#[cfg(not(unix))]
+fn create_private_child_directory(
+    _parent: &File,
+    _name: &std::ffi::OsStr,
+) -> Result<File, ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
 }
 
 #[cfg(unix)]
@@ -819,6 +894,56 @@ fn unlink_at(parent: &File, name: &std::ffi::OsStr) -> Result<(), ClewError> {
 }
 
 #[cfg(unix)]
+fn remove_directory_tree_at(parent: &File, name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    validate_file_name(name)?;
+    let directory = open_private_child_directory(parent, name, false)?;
+    remove_directory_contents(&directory)?;
+    let name = component_name(name)?;
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    parent.sync_all().map_err(io_error)
+}
+
+#[cfg(unix)]
+fn remove_directory_contents(directory: &File) -> Result<(), ClewError> {
+    for name in read_directory_names(directory)? {
+        let encoded = component_name(&name)?;
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                encoded.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        let status = unsafe { status.assume_init() };
+        if status.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            let child = open_private_child_directory(directory, &name, false)?;
+            remove_directory_contents(&child)?;
+            if unsafe {
+                libc::unlinkat(directory.as_raw_fd(), encoded.as_ptr(), libc::AT_REMOVEDIR)
+            } != 0
+            {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+        } else if unsafe { libc::unlinkat(directory.as_raw_fd(), encoded.as_ptr(), 0) } != 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+    }
+    directory.sync_all().map_err(io_error)
+}
+
+#[cfg(not(unix))]
+fn remove_directory_tree_at(_parent: &File, _name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
+}
+
+#[cfg(unix)]
 fn read_directory_names(directory: &File) -> Result<Vec<OsString>, ClewError> {
     // dup(2) shares the directory stream offset with the pinned authority FD,
     // so a second enumeration would otherwise appear empty. openat(".")
@@ -924,7 +1049,7 @@ fn validate_directory_fd(fd: RawFd, label: &str) -> Result<(), ClewError> {
 fn descriptor_path(fd: RawFd) -> Result<PathBuf, ClewError> {
     let path = fs::read_link(format!("/proc/self/fd/{fd}")).map_err(io_error)?;
     if !path.is_absolute() || path.as_os_str().as_bytes().ends_with(b" (deleted)") {
-        return Err(invalid("state root descriptor has no stable path"));
+        return Err(invalid("managed directory descriptor has no stable path"));
     }
     Ok(path)
 }
@@ -1141,5 +1266,78 @@ mod tests {
                 .is_err()
         );
         assert!(!victim.join("escaped.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_attempt_and_compiler_stay_on_open_inode_after_root_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let state_root = parent.path().join("state");
+        let moved_root = parent.path().join("state-open-inode");
+        let state = StateAuthority::open(state_root.clone()).unwrap();
+        let attempts = state.directory(Path::new("attempts")).unwrap();
+        let compiler = state
+            .directory(Path::new("generations/compiler-store"))
+            .unwrap()
+            .child(Path::new("trusted"))
+            .unwrap();
+
+        fs::rename(&state_root, &moved_root).unwrap();
+        fs::create_dir(&state_root).unwrap();
+        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(state_root.join("attempts")).unwrap();
+        fs::create_dir_all(state_root.join("generations/compiler-store/trusted")).unwrap();
+
+        let attempt = attempts.temporary_child("pinned-attempt").unwrap();
+        let attempt_path = attempt.directory().resolved_path().unwrap();
+        fs::write(attempt_path.join("marker"), b"attempt").unwrap();
+        let compiler_path = compiler.resolved_path().unwrap();
+        let status = Command::new("/bin/sh")
+            .args(["-c", "printf compiler > \"$MANAGED/probe\""])
+            .env("MANAGED", compiler_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        assert!(
+            attempt_path
+                .canonicalize()
+                .unwrap()
+                .starts_with(moved_root.canonicalize().unwrap())
+        );
+        assert_eq!(
+            fs::read(moved_root.join("generations/compiler-store/trusted/probe")).unwrap(),
+            b"compiler"
+        );
+        assert!(
+            !state_root
+                .join("generations/compiler-store/trusted/probe")
+                .exists()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_attempt_and_compiler_children_refuse_symlink_substitution() {
+        let parent = tempfile::tempdir().unwrap();
+        let state_root = parent.path().join("state");
+        let state = StateAuthority::open(state_root.clone()).unwrap();
+        let victim = parent.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+
+        fs::remove_dir(state_root.join("attempts")).unwrap();
+        symlink(&victim, state_root.join("attempts")).unwrap();
+        assert!(state.directory(Path::new("attempts/forged")).is_err());
+        assert!(!victim.join("forged").exists());
+
+        fs::remove_file(state_root.join("attempts")).unwrap();
+        fs::create_dir(state_root.join("attempts")).unwrap();
+        symlink(&victim, state_root.join("generations/compiler-store")).unwrap();
+        assert!(
+            state
+                .directory(Path::new("generations/compiler-store/forged"))
+                .is_err()
+        );
+        assert!(!victim.join("forged").exists());
     }
 }

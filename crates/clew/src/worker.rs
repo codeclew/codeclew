@@ -7,6 +7,7 @@ use crate::proto::{
     WorkerRequest, WorkerResponse, worker_request, worker_response,
 };
 use crate::runtime::RuntimeAuthority;
+use crate::state::ManagedDirectory;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -140,7 +141,7 @@ pub struct WorkerClient {
     authority_session: Uuid,
     trusted_distribution: Option<TrustedWorkerDistribution>,
     build_state_root: Option<PathBuf>,
-    compiler_index_root: Option<PathBuf>,
+    compiler_index_root: Option<ManagedDirectory>,
     build_namespace_digest: String,
     _transport_root: tempfile::TempDir,
     transport_root: PathBuf,
@@ -920,6 +921,7 @@ struct PinnedInputs {
     output_digest: &'static str,
 }
 
+#[cfg(test)]
 fn validate_compiler_index_root(workspace: &Path, root: &Path) -> Result<PathBuf, ClewError> {
     if !root.is_absolute() {
         return Err(ClewError::new(
@@ -1015,10 +1017,10 @@ impl WorkerClient {
         Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None, None)
     }
 
-    pub fn start_with_managed_states(
+    pub(crate) fn start_with_managed_states(
         workspace: &Path,
         build_state_root: Option<&Path>,
-        compiler_index_root: Option<&Path>,
+        compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: &str,
     ) -> Result<Self, ClewError> {
         Self::start_variant(
@@ -1034,7 +1036,7 @@ impl WorkerClient {
         workspace: &Path,
         variant: WorkerVariant,
         build_state_root: Option<&Path>,
-        compiler_index_root: Option<&Path>,
+        compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: Option<&str>,
     ) -> Result<Self, ClewError> {
         let build_namespace_digest = build_namespace_digest
@@ -1076,12 +1078,13 @@ impl WorkerClient {
         let canonical_build_state = build_state_root
             .map(|root| root.canonicalize().map_err(internal))
             .transpose()?;
-        let canonical_compiler_index = compiler_index_root
-            .map(|root| validate_compiler_index_root(workspace, root))
+        let resolved_compiler_index = compiler_index_root
+            .map(ManagedDirectory::resolved_path)
             .transpose()?;
-        if let (Some(build_state), Some(compiler_index)) =
-            (&canonical_build_state, &canonical_compiler_index)
-            && (build_state.starts_with(compiler_index) || compiler_index.starts_with(build_state))
+        if let (Some(build_state), Some(compiler_index)) = (
+            &canonical_build_state,
+            compiler_index_root.map(ManagedDirectory::path),
+        ) && (build_state.starts_with(compiler_index) || compiler_index.starts_with(build_state))
         {
             return Err(ClewError::new(
                 ErrorCode::InvalidInput,
@@ -1111,7 +1114,7 @@ impl WorkerClient {
         configure_worker_state_environment(
             &mut command,
             canonical_build_state.as_deref(),
-            canonical_compiler_index.as_deref(),
+            resolved_compiler_index.as_deref(),
             &build_namespace_digest,
         );
         let mut child = command.spawn().map_err(|e| {
@@ -1153,7 +1156,7 @@ impl WorkerClient {
             authority_session: Uuid::new_v4(),
             trusted_distribution,
             build_state_root: canonical_build_state,
-            compiler_index_root: canonical_compiler_index,
+            compiler_index_root: compiler_index_root.cloned(),
             build_namespace_digest,
             _transport_root: transport_root,
             transport_root: canonical_transport_root,
@@ -1171,7 +1174,7 @@ impl WorkerClient {
             &self.workspace,
             variant,
             self.build_state_root.as_deref(),
-            self.compiler_index_root.as_deref(),
+            self.compiler_index_root.as_ref(),
             Some(&self.build_namespace_digest),
         )?;
         replacement.request_counters = self.request_counters;

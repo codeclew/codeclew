@@ -11,7 +11,7 @@ use crate::error::{ClewError, ErrorCode};
 use crate::generation_v2::GenerationManifest;
 use crate::incremental_v2::CompilerStoreKey;
 use crate::repository_snapshot::{RepositoryInputSnapshot, capture, materialize};
-use crate::state::{StateAuthority, create_private_directory};
+use crate::state::{ManagedTemporaryDirectory, StateAuthority, create_private_directory};
 use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -338,7 +338,7 @@ pub(crate) fn analyze_project_native_index(
 pub(crate) struct ProjectNativeKotlinAttempt {
     store: CasStore,
     snapshot: RepositoryInputSnapshot,
-    _attempt_root: tempfile::TempDir,
+    _attempt_root: ManagedTemporaryDirectory,
     repo: std::path::PathBuf,
     derived_mounts: Vec<std::path::PathBuf>,
     worker: Option<WorkerClient>,
@@ -356,19 +356,16 @@ impl ProjectNativeKotlinAttempt {
         build_state_root: Option<&std::path::Path>,
     ) -> Result<Self, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
-        let attempt_root = tempfile::Builder::new()
-            .prefix("kotlin-generation-")
-            .tempdir_in(state.attempts_root())
-            .map_err(io_error)?;
-        let repo = attempt_root.path().join("repo");
+        let attempt_root = state
+            .directory(std::path::Path::new("attempts"))?
+            .temporary_child("kotlin-generation")?;
+        let attempt_path = attempt_root.directory().resolved_path()?;
+        let repo = attempt_path.join("repo");
         materialize(snapshot, store, &repo)?;
-        let derived_mounts = mount_project_derived_state(attempt_root.path(), &repo, snapshot)?;
+        let derived_mounts = mount_project_derived_state(&attempt_path, &repo, snapshot)?;
         let compiler_store = state
-            .root()
-            .join("generations/compiler-store")
-            .join(compiler_store_component);
-        create_private_directory(&compiler_store)?;
-        let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
+            .directory(std::path::Path::new("generations/compiler-store"))?
+            .child(std::path::Path::new(compiler_store_component))?;
         let compiler_store_namespace = format!("sha256:{compiler_store_component}");
         let mut worker = WorkerClient::start_with_managed_states(
             &workspace_root(),
@@ -1183,11 +1180,26 @@ mod tests {
     #[test]
     fn k24_real_worker_cold_then_product_unchanged_skips_index_files() {
         let root = tempfile::tempdir().unwrap();
-        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let state_path = root.path().join("v2");
+        let moved_state_path = root.path().join("v2-open-inode");
+        let state = StateAuthority::open(state_path.clone()).unwrap();
         let store = CasStore::open(&state).unwrap();
         let fixture = workspace_root().join("fixtures/kotlin-basic");
         let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
         let component = "a".repeat(64);
+
+        // Kotlin's path-only worker boundary must derive its attempt and
+        // compiler-store paths from the pinned leaf descriptors, never by
+        // walking StateAuthority's original root again.
+        std::fs::rename(&state_path, &moved_state_path).unwrap();
+        std::fs::create_dir(&state_path).unwrap();
+        std::fs::set_permissions(
+            &state_path,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::create_dir(state_path.join("attempts")).unwrap();
+        std::fs::create_dir_all(state_path.join("generations/compiler-store")).unwrap();
 
         let cold_attempt =
             ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component, None)
@@ -1202,6 +1214,18 @@ mod tests {
         assert!(!cold.fallback_used, "cold profiling: {cold:?}");
         assert_eq!(cold_requests.open_project_requests, 1);
         assert_eq!(cold_requests.index_files_requests, 1);
+        assert!(
+            std::fs::read_dir(state_path.join("attempts"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        assert!(
+            std::fs::read_dir(state_path.join("generations/compiler-store"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
 
         let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
         let object = |schema: &str, character: char| CasObject {
@@ -1253,7 +1277,10 @@ mod tests {
         assert_eq!(warm_requests.index_files_requests, 0);
 
         let hex = receipt_object.digest.strip_prefix("sha256:").unwrap();
-        let receipt_path = state.objects_root().join(&hex[..2]).join(&hex[2..]);
+        let receipt_path = moved_state_path
+            .join("objects/sha256")
+            .join(&hex[..2])
+            .join(&hex[2..]);
         std::fs::write(receipt_path, b"corrupt").unwrap();
         assert_eq!(
             store.read(&receipt_object, 1024 * 1024).unwrap_err().code,
