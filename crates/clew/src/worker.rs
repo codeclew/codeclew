@@ -277,7 +277,9 @@ fn attach_verified_index_failure(
         "workerDiagnosticCount":facts.and_then(|value| value.get("diagnostics")).and_then(Value::as_array).map_or(0, Vec::len),
         "workerDiagnostics":worker_diagnostics,
         "descriptorFailure":if stage == "DESCRIPTOR_GRAPH" {
-            facts.map(crate::index::descriptor_validation_diagnostic).unwrap_or(Value::Null)
+            facts
+                .map(crate::semantic_validation::descriptor_validation_diagnostic)
+                .unwrap_or(Value::Null)
         } else {
             Value::Null
         },
@@ -765,10 +767,6 @@ fn normalize_optional_relation_evidence(facts: &mut Value) -> Result<(), ClewErr
 impl VerifiedIndexFacts {
     pub fn authority(&self) -> &'static str {
         COMPILER_SEMANTIC_AUTHORITY
-    }
-
-    pub(crate) fn compilation(&self) -> &str {
-        &self.compilation
     }
 }
 
@@ -1944,17 +1942,17 @@ impl WorkerClient {
                 Some(&facts),
             ));
         }
-        let descriptor =
-            crate::index::validate_declaration_descriptor_snapshot(&facts).map_err(|error| {
-                attach_verified_index_failure(error, "DESCRIPTOR_GRAPH", Some(&facts))
-            })?;
+        let descriptor = crate::semantic_validation::validate_declaration_descriptor_snapshot(
+            &facts,
+        )
+        .map_err(|error| attach_verified_index_failure(error, "DESCRIPTOR_GRAPH", Some(&facts)))?;
         normalize_optional_relation_evidence(&mut facts).map_err(|error| {
             attach_verified_index_failure(error, "RELATION_NORMALIZATION", Some(&facts))
         })?;
-        let relation =
-            crate::index::validate_declaration_relation_snapshot(&facts).map_err(|error| {
-                attach_verified_index_failure(error, "RELATION_GRAPH", Some(&facts))
-            })?;
+        let relation = crate::semantic_validation::validate_declaration_relation_snapshot(&facts)
+            .map_err(|error| {
+            attach_verified_index_failure(error, "RELATION_GRAPH", Some(&facts))
+        })?;
         for provenance in [&relation.provenance, &descriptor.provenance] {
             if provenance
                 .get("pluginArtifactFingerprint")
@@ -2048,7 +2046,8 @@ impl WorkerClient {
         Ok(&facts.payload)
     }
 
-    pub(crate) fn authorize_index_facts<'a>(
+    #[cfg(test)]
+    fn authorize_index_facts<'a>(
         &self,
         facts: &'a VerifiedIndexFacts,
         source_root: &Path,
@@ -2098,8 +2097,10 @@ impl WorkerClient {
             ));
         }
         require_k2_validated(&facts.payload)?;
-        let relation = crate::index::validate_declaration_relation_snapshot(&facts.payload)?;
-        let descriptor = crate::index::validate_declaration_descriptor_snapshot(&facts.payload)?;
+        let relation =
+            crate::semantic_validation::validate_declaration_relation_snapshot(&facts.payload)?;
+        let descriptor =
+            crate::semantic_validation::validate_declaration_descriptor_snapshot(&facts.payload)?;
         if relation.hash != facts.relation_hash || descriptor.hash != facts.descriptor_hash {
             return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
@@ -3330,7 +3331,6 @@ pub fn workspace_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::RepositoryIndex;
     use serde_json::json;
     use std::ffi::OsStr;
     use walkdir::WalkDir;
@@ -4858,16 +4858,9 @@ ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
                 "syntaxOnly":false
             }))
             .unwrap();
-        let state_root = tempfile::tempdir().unwrap();
-        let authority =
-            crate::state::StateAuthority::open(state_root.path().to_path_buf()).unwrap();
-        let mut index =
-            RepositoryIndex::open_compilation_with_authority(&repo, Some(":/main"), &authority)
-                .unwrap();
-        let snapshot = index.update_verified(&verified, &worker).unwrap();
-        assert!(!snapshot.is_empty());
-        assert!(index.declaration_relations().unwrap().is_some());
-        assert!(index.declaration_descriptors().unwrap().is_some());
+        let inspected = worker.inspect_verified_index(&verified).unwrap();
+        crate::semantic_validation::validate_declaration_relation_snapshot(inspected).unwrap();
+        crate::semantic_validation::validate_declaration_descriptor_snapshot(inspected).unwrap();
 
         let original_session = verified.authority_session;
         verified.authority_session = Uuid::new_v4();
