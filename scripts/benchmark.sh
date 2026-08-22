@@ -85,7 +85,7 @@ session_id = session["session"]["sessionId"]
 context_arguments = [
     "context", "create",
     "--session", session_id,
-    "--intent", "inspect total and its tests",
+    "--intent", "inspect total and related behavior",
     "--term", "total",
 ]
 context, cold_context, _ = invoke(context_arguments)
@@ -93,7 +93,7 @@ expand_arguments = [
     "context", "expand",
     "--session", session_id,
     "--from", context["contextId"],
-    "--term", "SampleTest",
+    "--term", "classify",
 ]
 expanded_context, cold_expand, _ = invoke(expand_arguments)
 
@@ -176,6 +176,7 @@ slo = {
     "contextExpand": measurements["contextExpandP95"] <= 30000,
     "stableContextIdentity": len(context_ids) == 1,
     "stableExpansionIdentity": len(expanded_context_ids) == 1,
+    "expansionResolved": not expanded_context["completeness"].get("unmatchedTerms"),
     "noWarmBuildEvents": not forbidden_observed,
     "metadataOnlyBootstrap": metadata_only_bootstrap,
 }
