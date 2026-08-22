@@ -52,7 +52,7 @@ const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
 const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/2.0";
-const WORKSPACE_PROFILE_SCHEMA: &str = "codeclew-project-native-workspace-profile/1.0";
+const WORKSPACE_PROFILE_SCHEMA: &str = "codeclew-project-native-workspace-profile/2.0";
 const MAX_BINDING_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,7 +62,10 @@ struct GenerationWorkspaceEvidence {
     compilation_count: usize,
     materializations: u64,
     derived_mount_sets: u64,
-    open_project_calls: u64,
+    open_project_set_digest: String,
+    open_project_set_requests: u64,
+    authorized_compilation_count: u64,
+    legacy_open_project_calls: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,11 +188,11 @@ pub fn ensure_session_generation(
     let compilation_root = session_root.join("compilations");
     state.directory_at(&compilation_root)?;
     let pool = generation_pool(session)?;
-    let workspace = ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot)?;
-    // Only the immutable repository materialization and derived mounts are
-    // shared. Until Kotlin exposes OpenProjectSet, every compilation below
-    // still performs one OpenProject and retains that call in its own request
-    // counters/evidence.
+    let workspace =
+        ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &session.compilations)?;
+    // The exact selected set is authorized once. The private bridge retains
+    // legacy per-compilation OpenProject calls until the post-G1 worker
+    // protocol cutover; no caller can bypass or widen the set authority.
     let lane = GenerationLaneContext {
         session,
         repo: &repo,
@@ -252,9 +255,8 @@ pub fn ensure_candidate_generation(
         .parent()
         .ok_or_else(|| corrupt("candidate generation binding has no parent"))?;
     let pool = generation_pool(&candidate)?;
-    let workspace = ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot)?;
-    // This is one shared filesystem authority, not one project-model call.
-    // Each component preserves its independent OpenProject counter.
+    let workspace =
+        ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &candidate.compilations)?;
     let lane = GenerationLaneContext {
         session: &candidate,
         repo: repository,
@@ -350,9 +352,12 @@ fn write_generation_workspace_evidence(
     profile: ProjectNativeKotlinWorkspaceProfile,
 ) -> Result<(), ClewError> {
     if compilation_count == 0
+        || digest_component(&profile.open_project_set_digest).is_err()
         || profile.materializations != 1
         || profile.derived_mount_sets != 1
-        || profile.open_project_calls > compilation_count as u64
+        || profile.open_project_set_requests != 1
+        || profile.authorized_compilation_count != compilation_count as u64
+        || profile.legacy_open_project_calls > compilation_count as u64
     {
         return Err(corrupt("project-native workspace profile is inconsistent"));
     }
@@ -364,7 +369,10 @@ fn write_generation_workspace_evidence(
             compilation_count,
             materializations: profile.materializations,
             derived_mount_sets: profile.derived_mount_sets,
-            open_project_calls: profile.open_project_calls,
+            open_project_set_digest: profile.open_project_set_digest,
+            open_project_set_requests: profile.open_project_set_requests,
+            authorized_compilation_count: profile.authorized_compilation_count,
+            legacy_open_project_calls: profile.legacy_open_project_calls,
         },
     )
 }
@@ -415,7 +423,7 @@ fn ensure_generation(
     }
     let compiler_namespace = compiler_store_key(&runtime, compilation)?;
     let external_build_state = session.external_build_state_path()?;
-    let live_attempt = workspace.open_compilation(
+    let live_attempt = workspace.open_compilation_from_set(
         &state,
         compilation,
         digest_component(&compiler_namespace)?,
@@ -2622,7 +2630,10 @@ mod tests {
             ProjectNativeKotlinWorkspaceProfile {
                 materializations: 1,
                 derived_mount_sets: 1,
-                open_project_calls: 1,
+                open_project_set_digest: format!("sha256:{}", "a".repeat(64)),
+                open_project_set_requests: 1,
+                authorized_compilation_count: 12,
+                legacy_open_project_calls: 1,
             },
         )
         .unwrap();
@@ -2631,7 +2642,9 @@ mod tests {
                 .unwrap();
         assert_eq!(value.schema, WORKSPACE_PROFILE_SCHEMA);
         assert_eq!(value.compilation_count, 12);
-        assert_eq!(value.open_project_calls, 1);
+        assert_eq!(value.open_project_set_requests, 1);
+        assert_eq!(value.authorized_compilation_count, 12);
+        assert_eq!(value.legacy_open_project_calls, 1);
 
         let error = write_generation_workspace_evidence(
             &state,
@@ -2640,7 +2653,10 @@ mod tests {
             ProjectNativeKotlinWorkspaceProfile {
                 materializations: 2,
                 derived_mount_sets: 1,
-                open_project_calls: 13,
+                open_project_set_digest: format!("sha256:{}", "a".repeat(64)),
+                open_project_set_requests: 1,
+                authorized_compilation_count: 12,
+                legacy_open_project_calls: 13,
             },
         )
         .unwrap_err();

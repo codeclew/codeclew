@@ -24,6 +24,7 @@ pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
 const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/2.0";
 const RECEIPT_SCHEMA: &str = "codeclew-completeness-receipt/2.0";
+const OPEN_PROJECT_SET_SCHEMA: &str = "codeclew-open-project-set/1.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KotlinCompilerLine {
@@ -192,11 +193,14 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProjectNativeKotlinWorkspaceProfile {
     pub(crate) materializations: u64,
     pub(crate) derived_mount_sets: u64,
-    pub(crate) open_project_calls: u64,
+    pub(crate) open_project_set_digest: String,
+    pub(crate) open_project_set_requests: u64,
+    pub(crate) authorized_compilation_count: u64,
+    pub(crate) legacy_open_project_calls: u64,
 }
 
 pub(crate) struct ProjectNativeKotlinWorkspace {
@@ -206,8 +210,10 @@ pub(crate) struct ProjectNativeKotlinWorkspace {
     repo: std::path::PathBuf,
     derived_mounts: Vec<std::path::PathBuf>,
     preparation_profile: ProjectNativeKotlinWorkspaceProfile,
+    authorized_compilations: BTreeSet<String>,
+    issued_compilations: Mutex<BTreeSet<String>>,
     model_extraction_gate: Mutex<()>,
-    open_project_calls: AtomicU64,
+    legacy_open_project_calls: AtomicU64,
 }
 
 pub(crate) struct ProjectNativeKotlinAttempt {
@@ -225,7 +231,23 @@ impl ProjectNativeKotlinWorkspace {
         state: &StateAuthority,
         store: &CasStore,
         snapshot: &RepositoryInputSnapshot,
+        compilations: &[String],
     ) -> Result<Self, ClewError> {
+        if compilations.is_empty()
+            || compilations
+                .windows(2)
+                .any(|pair| pair[0].as_str() >= pair[1].as_str())
+        {
+            return Err(invalid(
+                "OpenProjectSet compilations must be non-empty, sorted, and unique",
+            ));
+        }
+        let authorized_compilations = compilations.iter().cloned().collect::<BTreeSet<_>>();
+        let open_project_set_digest = canonical::hash(&json!({
+            "schema":OPEN_PROJECT_SET_SCHEMA,
+            "compilations":compilations,
+        }))
+        .map_err(internal)?;
         let attempt_root = state
             .directory(std::path::Path::new("attempts"))?
             .temporary_child("kotlin-generation-set")?;
@@ -236,6 +258,10 @@ impl ProjectNativeKotlinWorkspace {
         preparation_profile.materializations += 1;
         let derived_mounts = mount_project_derived_state(&attempt_path, &repo, snapshot)?;
         preparation_profile.derived_mount_sets += 1;
+        preparation_profile.open_project_set_digest = open_project_set_digest;
+        preparation_profile.open_project_set_requests = 1;
+        preparation_profile.authorized_compilation_count =
+            u64::try_from(compilations.len()).map_err(internal)?;
         Ok(Self {
             store: store.clone(),
             snapshot: snapshot.clone(),
@@ -243,12 +269,14 @@ impl ProjectNativeKotlinWorkspace {
             repo,
             derived_mounts,
             preparation_profile,
+            authorized_compilations,
+            issued_compilations: Mutex::new(BTreeSet::new()),
             model_extraction_gate: Mutex::new(()),
-            open_project_calls: AtomicU64::new(0),
+            legacy_open_project_calls: AtomicU64::new(0),
         })
     }
 
-    pub(crate) fn open_compilation(
+    pub(crate) fn open_compilation_from_set(
         &self,
         state: &StateAuthority,
         native_compilation: &str,
@@ -256,10 +284,25 @@ impl ProjectNativeKotlinWorkspace {
         build_state_root: Option<&std::path::Path>,
     ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
-        // Gradle and Maven model extraction share the same derived mounts.
-        // Until the worker protocol has OpenProjectSet, serialize this unsafe
-        // build-tool phase while allowing the independent compiler lanes to
-        // continue concurrently after OpenProject returns.
+        if !self.authorized_compilations.contains(native_compilation) {
+            return Err(invalid(
+                "compilation is outside the exact OpenProjectSet authority",
+            ));
+        }
+        if !self
+            .issued_compilations
+            .lock()
+            .map_err(poisoned)?
+            .insert(native_compilation.to_owned())
+        {
+            return Err(invalid(
+                "compilation was opened twice within one OpenProjectSet",
+            ));
+        }
+        // This is the only private legacy bridge. Until the post-G1 worker
+        // cutover replaces it with one protocol request, Gradle/Maven model
+        // extraction is serialized while independent compiler lanes continue
+        // concurrently after their exact OpenProject response returns.
         let _model_extraction = self.model_extraction_gate.lock().map_err(poisoned)?;
         let compiler_store = state
             .directory(std::path::Path::new("generations/compiler-store"))?
@@ -277,7 +320,8 @@ impl ProjectNativeKotlinWorkspace {
             "syntaxOnly":false,
         });
         let project = worker.open_project_verified(&request)?;
-        self.open_project_calls.fetch_add(1, Ordering::AcqRel);
+        self.legacy_open_project_calls
+            .fetch_add(1, Ordering::AcqRel);
         Ok(ProjectNativeKotlinAttempt {
             store: self.store.clone(),
             snapshot: self.snapshot.clone(),
@@ -296,8 +340,8 @@ impl ProjectNativeKotlinWorkspace {
 
     fn current_profile(&self) -> ProjectNativeKotlinWorkspaceProfile {
         ProjectNativeKotlinWorkspaceProfile {
-            open_project_calls: self.open_project_calls.load(Ordering::Acquire),
-            ..self.preparation_profile
+            legacy_open_project_calls: self.legacy_open_project_calls.load(Ordering::Acquire),
+            ..self.preparation_profile.clone()
         }
     }
 
@@ -1089,13 +1133,16 @@ mod tests {
         WorkerRequestCounters,
     ) {
         let (snapshot, _) = repository_snapshot::capture(fixture, store).unwrap();
-        let workspace = ProjectNativeKotlinWorkspace::prepare(state, store, &snapshot).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(state, store, &snapshot, &[":/main".into()])
+                .unwrap();
         let attempt = workspace
-            .open_compilation(state, ":/main", component, None)
+            .open_compilation_from_set(state, ":/main", component, None)
             .unwrap();
         let (index, profile, requests) = attempt.analyze().unwrap();
         let workspace_profile = workspace.finish().unwrap();
-        assert_eq!(workspace_profile.open_project_calls, 1);
+        assert_eq!(workspace_profile.open_project_set_requests, 1);
+        assert_eq!(workspace_profile.legacy_open_project_calls, 1);
         (index, profile.expect("K24 compiler profile"), requests)
     }
 
@@ -1135,15 +1182,28 @@ mod tests {
         let fixture = workspace_root().join("fixtures/kotlin-basic");
         let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
 
-        let workspace = ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        let initial = workspace.profile();
+        assert_eq!(initial.materializations, 1);
+        assert_eq!(initial.derived_mount_sets, 1);
+        assert_eq!(initial.open_project_set_requests, 1);
+        assert_eq!(initial.authorized_compilation_count, 1);
+        assert_eq!(initial.legacy_open_project_calls, 0);
         assert_eq!(
-            workspace.profile(),
-            ProjectNativeKotlinWorkspaceProfile {
-                materializations: 1,
-                derived_mount_sets: 1,
-                open_project_calls: 0,
-            }
+            initial.open_project_set_digest,
+            canonical::hash(&json!({
+                "schema":OPEN_PROJECT_SET_SCHEMA,
+                "compilations":[":/main"],
+            }))
+            .unwrap()
         );
+        let outside = workspace
+            .open_compilation_from_set(&state, ":other/main", &"a".repeat(64), None)
+            .err()
+            .expect("outside compilation must be rejected before worker start");
+        assert_eq!(outside.code, ErrorCode::InvalidInput);
         assert!(
             std::fs::symlink_metadata(workspace.repo.join(".gradle"))
                 .unwrap()
@@ -1159,7 +1219,27 @@ mod tests {
         let profile = workspace.finish().unwrap();
         assert_eq!(profile.materializations, 1);
         assert_eq!(profile.derived_mount_sets, 1);
-        assert_eq!(profile.open_project_calls, 0);
+        assert_eq!(profile.open_project_set_requests, 1);
+        assert_eq!(profile.legacy_open_project_calls, 0);
+
+        let unsorted = ProjectNativeKotlinWorkspace::prepare(
+            &state,
+            &store,
+            &snapshot,
+            &[":b/main".into(), ":a/main".into()],
+        )
+        .err()
+        .expect("unsorted OpenProjectSet must be rejected");
+        assert_eq!(unsorted.code, ErrorCode::InvalidInput);
+        let duplicate = ProjectNativeKotlinWorkspace::prepare(
+            &state,
+            &store,
+            &snapshot,
+            &[":a/main".into(), ":a/main".into()],
+        )
+        .err()
+        .expect("duplicate OpenProjectSet must be rejected");
+        assert_eq!(duplicate.code, ErrorCode::InvalidInput);
     }
 
     #[test]
@@ -1187,10 +1267,11 @@ mod tests {
         std::fs::create_dir(state_path.join("attempts")).unwrap();
         std::fs::create_dir_all(state_path.join("generations/compiler-store")).unwrap();
 
-        let generation_workspace =
-            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot).unwrap();
-        let cold_attempt = generation_workspace
-            .open_compilation(&state, ":/main", &component, None)
+        let cold_workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        let cold_attempt = cold_workspace
+            .open_compilation_from_set(&state, ":/main", &component, None)
             .unwrap();
         let (cold_index, cold, cold_requests) = cold_attempt.analyze().unwrap();
         let cold = cold.expect("cold compiler profile");
@@ -1202,6 +1283,9 @@ mod tests {
         assert!(!cold.fallback_used, "cold profiling: {cold:?}");
         assert_eq!(cold_requests.open_project_requests, 1);
         assert_eq!(cold_requests.index_files_requests, 1);
+        let cold_workspace_profile = cold_workspace.finish().unwrap();
+        assert_eq!(cold_workspace_profile.open_project_set_requests, 1);
+        assert_eq!(cold_workspace_profile.legacy_open_project_calls, 1);
         assert!(
             std::fs::read_dir(state_path.join("attempts"))
                 .unwrap()
@@ -1257,14 +1341,18 @@ mod tests {
 
         // The generation service proves UNCHANGED from its sealed receipt
         // after OpenProject and closes this same worker without IndexFiles.
-        let unchanged_attempt = generation_workspace
-            .open_compilation(&state, ":/main", &component, None)
+        let unchanged_workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &[":/main".into()])
+                .unwrap();
+        let unchanged_attempt = unchanged_workspace
+            .open_compilation_from_set(&state, ":/main", &component, None)
             .unwrap();
         let warm_requests = unchanged_attempt.close_without_analysis().unwrap();
-        let workspace_profile = generation_workspace.finish().unwrap();
+        let workspace_profile = unchanged_workspace.finish().unwrap();
         assert_eq!(workspace_profile.materializations, 1);
         assert_eq!(workspace_profile.derived_mount_sets, 1);
-        assert_eq!(workspace_profile.open_project_calls, 2);
+        assert_eq!(workspace_profile.open_project_set_requests, 1);
+        assert_eq!(workspace_profile.legacy_open_project_calls, 1);
         assert_eq!(warm_requests.open_project_requests, 1);
         assert_eq!(warm_requests.index_files_requests, 0);
 

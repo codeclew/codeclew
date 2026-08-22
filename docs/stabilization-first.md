@@ -69,6 +69,29 @@ authority in an isolated committed clone, reuses the S3 component store, and
 must report all component hits, zero misses, zero build stages, and identical
 core/worker artifacts under a different runtime key.
 
+### S7 OpenProjectSet bridge boundary
+
+S7 establishes one typed, content-digested authority for the exact ordered
+compilation set before any compilation lane starts. It owns the single shared
+repository materialization and derived mounts, rejects empty, unsorted,
+duplicate, widened, or repeated compilation requests, and retains each live
+worker for its matching compiler lane and cancellation contour.
+
+The pre-G1 bridge is deliberately honest about its temporary implementation:
+the Kotlin worker protocol still exposes only legacy `OpenProject`, so the
+private bridge serializes and counts one legacy call per opened compilation.
+No caller outside that bridge may issue the call, and qualification must not
+describe this contour as shared model extraction. After `G1 STABLE_CLEW`, H1
+changes the worker through managed N-to-N+1 self-hosting to implement one real
+set extraction; H2 proves it and removes the private legacy implementation
+without changing the generation-service set authority.
+
+S7 DoD is one set request/digest in private evidence, exact compilation-set
+admission, one materialization/mount set, per-compilation response and
+cancellation ownership, explicit legacy-call accounting bounded by the set,
+and targeted component tests only. A cold or multi-compilation performance
+claim remains forbidden until Q2.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional
