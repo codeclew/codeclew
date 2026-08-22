@@ -1,21 +1,20 @@
 use crate::error::{ClewError, ErrorCode};
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-#[cfg(target_os = "macos")]
-use std::ffi::CStr;
 #[cfg(unix)]
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -26,6 +25,14 @@ pub const STATE_SCHEMA: &str = "codeclew-state-authority/2.0";
 pub struct StateAuthority {
     root: PathBuf,
     _root_handle: Arc<File>,
+}
+
+/// A pinned managed-state directory capability. `path` is diagnostic only;
+/// every filesystem operation is resolved relative to `handle`.
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedDirectory {
+    path: PathBuf,
+    handle: Arc<File>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +160,35 @@ impl StateAuthority {
         self.root.join("attempts")
     }
 
+    pub(crate) fn directory(&self, relative: &Path) -> Result<ManagedDirectory, ClewError> {
+        let handle = self.open_private_directory(relative, true)?;
+        Ok(ManagedDirectory {
+            path: self.root.join(relative),
+            handle: Arc::new(handle),
+        })
+    }
+
+    pub(crate) fn directory_at(&self, path: &Path) -> Result<ManagedDirectory, ClewError> {
+        let relative = self.relative_path(path)?;
+        self.directory(relative)
+    }
+
+    pub(crate) fn private_file_exists(&self, path: &Path) -> Result<bool, ClewError> {
+        let relative = self.relative_path(path)?;
+        let (parent, name) = split_relative_file(relative)?;
+        self.directory(parent)?.file_exists(name)
+    }
+
+    pub(crate) fn read_private_file(
+        &self,
+        path: &Path,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ClewError> {
+        let relative = self.relative_path(path)?;
+        let (parent, name) = split_relative_file(relative)?;
+        self.directory(parent)?.read_file(name, max_bytes)
+    }
+
     pub fn repository(&self, repo: &Path) -> Result<RepositoryState, ClewError> {
         let canonical = repo.canonicalize().map_err(io_error)?;
         let key = repository_key(&canonical)?;
@@ -261,6 +297,118 @@ impl StateAuthority {
     }
 }
 
+impl ManagedDirectory {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn child(&self, relative: &Path) -> Result<Self, ClewError> {
+        validate_relative(relative)?;
+        let mut directory = duplicate_file(&self.handle)?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(invalid("managed state directory path is not canonical"));
+            };
+            directory = open_private_child_directory(&directory, name, true)?;
+        }
+        Ok(Self {
+            path: self.path.join(relative),
+            handle: Arc::new(directory),
+        })
+    }
+
+    pub(crate) fn create_file(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
+        validate_file_name(name)?;
+        open_new_private_file_at(&self.handle, name)
+    }
+
+    pub(crate) fn open_file(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
+        validate_file_name(name)?;
+        open_existing_private_file_at(&self.handle, name, libc::O_RDONLY)
+    }
+
+    pub(crate) fn open_append(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
+        validate_file_name(name)?;
+        open_or_create_private_file_at(&self.handle, name, libc::O_WRONLY | libc::O_APPEND)
+    }
+
+    pub(crate) fn open_lock(&self, name: &std::ffi::OsStr) -> Result<File, ClewError> {
+        validate_file_name(name)?;
+        open_or_create_private_file_at(&self.handle, name, libc::O_RDWR)
+    }
+
+    pub(crate) fn file_exists(&self, name: &std::ffi::OsStr) -> Result<bool, ClewError> {
+        validate_file_name(name)?;
+        private_file_status_at(&self.handle, name).map(|status| status.is_some())
+    }
+
+    pub(crate) fn read_file(
+        &self,
+        name: &std::ffi::OsStr,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, ClewError> {
+        let file = self.open_file(name)?;
+        let metadata = file.metadata().map_err(io_error)?;
+        if metadata.len() > max_bytes as u64 {
+            return Err(invalid("managed state file exceeds its read bound"));
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(max_bytes as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        if bytes.len() as u64 != metadata.len() {
+            return Err(invalid("managed state file changed during read"));
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn atomic_write(
+        &self,
+        name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> Result<(), ClewError> {
+        validate_file_name(name)?;
+        validate_replace_target_at(&self.handle, name)?;
+        let temporary_name = format!(".tmp-{}", uuid::Uuid::new_v4());
+        let temporary_name = std::ffi::OsStr::new(&temporary_name);
+        let mut file = self.create_file(temporary_name)?;
+        file.write_all(bytes).map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        drop(file);
+        if let Err(error) = rename_at(&self.handle, temporary_name, name) {
+            let _ = unlink_at(&self.handle, temporary_name);
+            return Err(error);
+        }
+        self.handle.sync_all().map_err(io_error)
+    }
+
+    pub(crate) fn rename_to(
+        &self,
+        source: &std::ffi::OsStr,
+        destination: &ManagedDirectory,
+        target: &std::ffi::OsStr,
+    ) -> Result<(), ClewError> {
+        validate_file_name(source)?;
+        validate_file_name(target)?;
+        rename_between(&self.handle, source, &destination.handle, target)?;
+        self.handle.sync_all().map_err(io_error)?;
+        if self.handle.as_raw_fd() != destination.handle.as_raw_fd() {
+            destination.handle.sync_all().map_err(io_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_file(&self, name: &std::ffi::OsStr) -> Result<(), ClewError> {
+        validate_file_name(name)?;
+        unlink_at(&self.handle, name)?;
+        self.handle.sync_all().map_err(io_error)
+    }
+
+    pub(crate) fn entries(&self) -> Result<Vec<OsString>, ClewError> {
+        read_directory_names(&self.handle)
+    }
+}
+
 fn validate_relative(path: &Path) -> Result<(), ClewError> {
     if path.as_os_str().is_empty() {
         return Err(invalid("managed state path is empty"));
@@ -286,6 +434,18 @@ fn split_relative_file(path: &Path) -> Result<(&Path, &std::ffi::OsStr), ClewErr
         .ok_or_else(|| invalid("managed state file has no name"))?;
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     Ok((parent, name))
+}
+
+fn validate_file_name(name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    let path = Path::new(name);
+    if name.is_empty()
+        || path.is_absolute()
+        || path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+    {
+        return Err(invalid("managed state file name is not canonical"));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -408,6 +568,15 @@ fn open_private_child_directory(
 }
 
 #[cfg(unix)]
+fn duplicate_file(file: &File) -> Result<File, ClewError> {
+    let descriptor = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if descriptor < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+#[cfg(unix)]
 fn open_new_private_file_at(parent: &File, name: &std::ffi::OsStr) -> Result<File, ClewError> {
     let name = component_name(name)?;
     let descriptor = unsafe {
@@ -432,6 +601,118 @@ fn open_new_private_file_at(parent: &File, name: &std::ffi::OsStr) -> Result<Fil
         ));
     }
     Ok(file)
+}
+
+#[cfg(unix)]
+fn open_existing_private_file_at(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    access: i32,
+) -> Result<File, ClewError> {
+    let name = component_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            access | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    validate_private_file(&file)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_or_create_private_file_at(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    access: i32,
+) -> Result<File, ClewError> {
+    let name = component_name(name)?;
+    let common = access | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let mut attempts = 0_u8;
+    let descriptor = loop {
+        attempts = attempts.saturating_add(1);
+        let existing = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), common) };
+        if existing >= 0 {
+            break existing;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(io_error(error));
+        }
+        let created = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                common | libc::O_CREAT | libc::O_EXCL,
+                0o600,
+            )
+        };
+        if created >= 0 {
+            break created;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(io_error(error));
+        }
+        if attempts >= 16 {
+            return Err(invalid("managed state file changed repeatedly during open"));
+        }
+    };
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    validate_private_file(&file)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn validate_private_file(file: &File) -> Result<(), ClewError> {
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(invalid(
+            "managed state file ownership or permissions are unsafe",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn private_file_status_at(
+    parent: &File,
+    name: &std::ffi::OsStr,
+) -> Result<Option<libc::stat>, ClewError> {
+    let name = component_name(name)?;
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            status.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        return if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(io_error(error))
+        };
+    }
+    let status = unsafe { status.assume_init() };
+    if status.st_mode & libc::S_IFMT != libc::S_IFREG
+        || status.st_uid != unsafe { libc::geteuid() }
+        || status.st_mode & 0o077 != 0
+    {
+        return Err(invalid("managed state file authority is unsafe"));
+    }
+    Ok(Some(status))
 }
 
 #[cfg(not(unix))]
@@ -496,6 +777,29 @@ fn rename_at(
     Ok(())
 }
 
+#[cfg(unix)]
+fn rename_between(
+    source_parent: &File,
+    source: &std::ffi::OsStr,
+    destination_parent: &File,
+    destination: &std::ffi::OsStr,
+) -> Result<(), ClewError> {
+    let source = component_name(source)?;
+    let destination = component_name(destination)?;
+    if unsafe {
+        libc::renameat(
+            source_parent.as_raw_fd(),
+            source.as_ptr(),
+            destination_parent.as_raw_fd(),
+            destination.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 #[cfg(not(unix))]
 fn rename_at(
     _parent: &File,
@@ -512,6 +816,62 @@ fn unlink_at(parent: &File, name: &std::ffi::OsStr) -> Result<(), ClewError> {
         return Err(io_error(std::io::Error::last_os_error()));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn read_directory_names(directory: &File) -> Result<Vec<OsString>, ClewError> {
+    let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicate < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let stream = unsafe { libc::fdopendir(duplicate) };
+    if stream.is_null() {
+        unsafe {
+            libc::close(duplicate);
+        }
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let mut names = Vec::new();
+    loop {
+        set_errno(0);
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() {
+            let error = get_errno();
+            unsafe {
+                libc::closedir(stream);
+            }
+            if error != 0 {
+                return Err(io_error(std::io::Error::from_raw_os_error(error)));
+            }
+            break;
+        }
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn set_errno(value: i32) {
+    unsafe { *libc::__errno_location() = value };
+}
+
+#[cfg(target_os = "linux")]
+fn get_errno() -> i32 {
+    unsafe { *libc::__errno_location() }
+}
+
+#[cfg(target_os = "macos")]
+fn set_errno(value: i32) {
+    unsafe { *libc::__error() = value };
+}
+
+#[cfg(target_os = "macos")]
+fn get_errno() -> i32 {
+    unsafe { *libc::__error() }
 }
 
 #[cfg(not(unix))]

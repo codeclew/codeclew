@@ -31,19 +31,18 @@ use crate::query_v2::{
 use crate::repository_snapshot::{RepositoryInputSnapshot, SNAPSHOT_SCHEMA, WorktreeKind, capture};
 use crate::runtime::RuntimeAuthority;
 use crate::session::{ModelCachePolicy, SessionAuthority};
-use crate::state::{StateAuthority, create_private_directory};
+use crate::state::StateAuthority;
 use crate::worker::WorkerRequestCounters;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::ffi::OsStr;
+use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 pub const READY_GENERATION_SCHEMA: &str = "codeclew-ready-generation/2.0";
 const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/2.0";
@@ -148,8 +147,8 @@ fn ensure_generation(
 ) -> Result<ReadyGeneration, ClewError> {
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
-    if binding_path.exists() {
-        return load_ready(&store, binding_path, session, false);
+    if state.private_file_exists(binding_path)? {
+        return load_ready(&state, &store, binding_path, session, false);
     }
     let (snapshot, snapshot_object) = capture(repo, &store)?;
     let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
@@ -167,8 +166,8 @@ fn ensure_generation(
     let preparation_key =
         project_model_key(&runtime.runtime_key, &snapshot_object, &session.compilation)?;
     let _preparation_lock = GenerationLock::acquire(&state, &preparation_key)?;
-    if binding_path.exists() {
-        return load_ready(&store, binding_path, session, false);
+    if state.private_file_exists(binding_path)? {
+        return load_ready(&state, &store, binding_path, session, false);
     }
     let compiler_namespace = compiler_store_key(&runtime, &session.compilation)?;
     let external_build_state = session.external_build_state_path()?;
@@ -198,12 +197,12 @@ fn ensure_generation(
         &prepared.derived_input_manifest,
     )?;
     let _lock = GenerationLock::acquire(&state, &generation_key)?;
-    if binding_path.exists() {
+    if state.private_file_exists(binding_path)? {
         live_attempt.close_without_analysis()?;
-        return load_ready(&store, binding_path, session, false);
+        return load_ready(&state, &store, binding_path, session, false);
     }
     let cache_root = repository.root.join("generations");
-    create_private_directory(&cache_root)?;
+    state.directory_at(&cache_root)?;
     let cache_path = cache_root.join(format!("{}.json", digest_component(&generation_key)?));
     let compiler_store = CompilerStoreKey::create(
         compiler_line(&prepared.compiler_version)?.2,
@@ -218,7 +217,7 @@ fn ensure_generation(
     }))
     .map_err(internal)?;
     let _head_lock = GenerationLock::acquire(&state, &head_lock_key)?;
-    let previous = load_incremental_head(&store, &head_path)?;
+    let previous = load_incremental_head(&state, &store, &head_path)?;
     let (plan, unchanged_is_exact) = incremental_plan_for(
         &store,
         &snapshot,
@@ -331,7 +330,7 @@ pub fn load_session_generation(session: &SessionAuthority) -> Result<ReadyGenera
     let path = state
         .session_root(&session.session_id)?
         .join("generation.json");
-    load_ready(&store, &path, session, false)
+    load_ready(&state, &store, &path, session, false)
 }
 
 pub fn load_query_index(
@@ -562,7 +561,7 @@ fn ensure_prepared_authority(
 ) -> Result<PreparedGenerationAuthority, ClewError> {
     let model_key = project_model_key(&runtime.runtime_key, snapshot_object, &session.compilation)?;
     let root = repository_root.join("generations/models");
-    create_private_directory(&root)?;
+    state.directory_at(&root)?;
     let path = root.join(format!("{}.json", digest_component(&model_key)?));
     let current = prepare_authority(
         store,
@@ -572,9 +571,17 @@ fn ensure_prepared_authority(
         &session.compilation,
         project,
     )?;
-    if session.model_cache_policy != ModelCachePolicy::NonCacheable && path.exists() {
-        let cached =
-            load_prepared_authority(store, &path, runtime, snapshot_object, &session.compilation)?;
+    if session.model_cache_policy != ModelCachePolicy::NonCacheable
+        && state.private_file_exists(&path)?
+    {
+        let cached = load_prepared_authority(
+            state,
+            store,
+            &path,
+            runtime,
+            snapshot_object,
+            &session.compilation,
+        )?;
         if cached != current {
             return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
@@ -690,20 +697,16 @@ fn prepare_authority(
 }
 
 fn load_prepared_authority(
+    state: &StateAuthority,
     store: &CasStore,
     path: &Path,
     runtime: &RuntimeAuthority,
     snapshot: &CasObject,
     compilation: &str,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_BINDING_BYTES as u64
-    {
-        return Err(corrupt("prepared authority binding is unsafe"));
-    }
-    let bytes = fs::read(path).map_err(io_error)?;
+    let bytes = state
+        .read_private_file(path, MAX_BINDING_BYTES)
+        .map_err(|_| corrupt("prepared authority binding is unsafe"))?;
     let prepared: PreparedGenerationAuthority = serde_json::from_slice(&bytes)
         .map_err(|_| corrupt("prepared authority binding is invalid"))?;
     if canonical::bytes(&prepared).map_err(internal)? != bytes {
@@ -1394,9 +1397,10 @@ fn publish_incremental_head(
     compiler_store_key: &str,
 ) -> Result<(), ClewError> {
     let _ = digest_component(compiler_store_key)?;
-    if let Some(parent) = path.parent() {
-        create_private_directory(parent)?;
-    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| corrupt("incremental head has no managed parent"))?;
+    state.directory_at(parent)?;
     let ready_object = store.put(
         READY_GENERATION_SCHEMA,
         &canonical::bytes(ready).map_err(internal)?,
@@ -1411,20 +1415,16 @@ fn publish_incremental_head(
 }
 
 fn load_incremental_head(
+    state: &StateAuthority,
     store: &CasStore,
     path: &Path,
 ) -> Result<Option<LoadedIncrementalHead>, ClewError> {
-    if !path.exists() {
+    if !state.private_file_exists(path)? {
         return Ok(None);
     }
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_BINDING_BYTES as u64
-    {
-        return Err(corrupt("incremental head binding is unsafe"));
-    }
-    let bytes = fs::read(path).map_err(io_error)?;
+    let bytes = state
+        .read_private_file(path, MAX_BINDING_BYTES)
+        .map_err(|_| corrupt("incremental head binding is unsafe"))?;
     let head: IncrementalHead = serde_json::from_slice(&bytes)
         .map_err(|_| corrupt("incremental head binding is invalid"))?;
     if canonical::bytes(&head).map_err(internal)? != bytes
@@ -1471,19 +1471,15 @@ fn load_generation(store: &CasStore, object: &CasObject) -> Result<GenerationMan
 }
 
 fn load_ready(
+    state: &StateAuthority,
     store: &CasStore,
     path: &Path,
     session: &SessionAuthority,
     deep: bool,
 ) -> Result<ReadyGeneration, ClewError> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_BINDING_BYTES as u64
-    {
-        return Err(corrupt("ready generation binding is unsafe"));
-    }
-    let bytes = fs::read(path).map_err(io_error)?;
+    let bytes = state
+        .read_private_file(path, MAX_BINDING_BYTES)
+        .map_err(|_| corrupt("ready generation binding is unsafe"))?;
     let ready: ReadyGeneration =
         serde_json::from_slice(&bytes).map_err(|_| corrupt("ready generation is invalid"))?;
     if canonical::bytes(&ready).map_err(internal)? != bytes {
@@ -1661,14 +1657,10 @@ struct GenerationLock {
 
 impl GenerationLock {
     fn acquire(state: &StateAuthority, key: &str) -> Result<Self, ClewError> {
-        let path = state
-            .locks_root()
-            .join(format!("generation-{}.lock", digest_component(key)?));
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let file = options.open(path).map_err(io_error)?;
+        let name = format!("generation-{}.lock", digest_component(key)?);
+        let file = state
+            .directory(Path::new("locks"))?
+            .open_lock(OsStr::new(&name))?;
         #[cfg(unix)]
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
             return Err(io_error(std::io::Error::last_os_error()));

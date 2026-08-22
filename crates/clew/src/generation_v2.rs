@@ -3,16 +3,14 @@ use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::derived_manifest::DERIVED_MANIFEST_SCHEMA;
 use crate::error::{ClewError, ErrorCode};
-use crate::state::{StateAuthority, create_private_directory};
+use crate::state::{ManagedDirectory, StateAuthority};
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap};
-use std::fs::{self, File, OpenOptions};
+use std::ffi::OsString;
+use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::PathBuf;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 pub const FACT_SHARD_SCHEMA: &str = "codeclew-canonical-fact-shard/2.0";
 pub const GENERATION_SCHEMA: &str = "codeclew-generation-manifest/2.0";
@@ -167,7 +165,8 @@ struct CanonicalFactShard {
 }
 
 pub struct FactRunWriter {
-    path: PathBuf,
+    directory: ManagedDirectory,
+    name: OsString,
     writer: BufWriter<File>,
     last_key: Option<String>,
     count: u64,
@@ -175,22 +174,19 @@ pub struct FactRunWriter {
 }
 
 pub struct FactRun {
-    path: PathBuf,
+    directory: ManagedDirectory,
+    name: OsString,
     count: u64,
 }
 
 impl FactRunWriter {
     pub fn create(state: &StateAuthority) -> Result<Self, ClewError> {
-        let directory = state.attempts_root().join("fact-runs");
-        create_private_directory(&directory)?;
-        let path = directory.join(format!("run-{}", uuid::Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let file = options.open(&path).map_err(io_error)?;
+        let directory = state.directory(Path::new("attempts/fact-runs"))?;
+        let name = OsString::from(format!("run-{}", uuid::Uuid::new_v4()));
+        let file = directory.create_file(&name)?;
         Ok(Self {
-            path,
+            directory,
+            name,
             writer: BufWriter::new(file),
             last_key: None,
             count: 0,
@@ -228,7 +224,8 @@ impl FactRunWriter {
         self.writer.get_ref().sync_all().map_err(io_error)?;
         self.delete_on_drop = false;
         Ok(FactRun {
-            path: self.path.clone(),
+            directory: self.directory.clone(),
+            name: self.name.clone(),
             count: self.count,
         })
     }
@@ -237,14 +234,14 @@ impl FactRunWriter {
 impl Drop for FactRunWriter {
     fn drop(&mut self) {
         if self.delete_on_drop {
-            let _ = fs::remove_file(&self.path);
+            let _ = self.directory.remove_file(&self.name);
         }
     }
 }
 
 impl Drop for FactRun {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let _ = self.directory.remove_file(&self.name);
     }
 }
 
@@ -521,7 +518,7 @@ struct RunReader {
 impl RunReader {
     fn open(run: &FactRun) -> Result<Self, ClewError> {
         Ok(Self {
-            reader: BufReader::new(File::open(&run.path).map_err(io_error)?),
+            reader: BufReader::new(run.directory.open_file(&run.name)?),
             remaining: run.count,
         })
     }
@@ -658,6 +655,25 @@ mod tests {
                 .map(|chunk| run(state, chunk))
                 .collect()
         })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fact_run_stays_bound_after_state_root_replacement() {
+        let (root, state, store, _derived, _attempt) = fixture();
+        let record = fact(&store, "bound");
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        writer.push(&record).unwrap();
+        let state_root = root.path().join("v2");
+        let pinned_root = root.path().join("pinned-v2");
+        std::fs::rename(&state_root, &pinned_root).unwrap();
+        std::fs::create_dir(&state_root).unwrap();
+
+        let run = writer.finish().unwrap();
+        let mut reader = RunReader::open(&run).unwrap();
+        assert_eq!(reader.next().unwrap().unwrap().record, record);
+        assert!(reader.next().unwrap().is_none());
+        assert!(std::fs::read_dir(&state_root).unwrap().next().is_none());
     }
 
     #[test]

@@ -1,15 +1,14 @@
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
-use crate::state::{StateAuthority, create_private_directory};
+use crate::state::StateAuthority;
 use crossbeam_channel::{RecvTimeoutError, Sender, bounded};
 use rayon::ThreadPool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -171,33 +170,10 @@ impl PersistentProgress {
             .strip_prefix("attempt:")
             .filter(|value| safe_identifier(value))
             .ok_or_else(|| invalid("progress attempt id is invalid"))?;
-        let root = authority.attempts_root().join(component);
-        create_private_directory(&root)?;
-        let path = root.join("progress.jsonl");
-        if path.exists() {
-            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(invalid("progress journal is not a regular file"));
-            }
-        }
-        let mut options = OpenOptions::new();
-        options.create(true).append(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options.open(path).map_err(io_error)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let metadata = file.metadata().map_err(io_error)?;
-            if metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.permissions().mode() & 0o077 != 0
-            {
-                return Err(invalid("progress journal authority is not private"));
-            }
-        }
+        let root = authority
+            .directory(Path::new("attempts"))?
+            .child(Path::new(component))?;
+        let file = root.open_append(std::ffi::OsStr::new("progress.jsonl"))?;
         Ok(Self {
             file: Mutex::new(file),
         })
@@ -683,13 +659,14 @@ impl AttemptJournal {
     ) -> Result<Self, ClewError> {
         digest_component(generation_key)?;
         let attempt_id = format!("attempt:{}", Uuid::new_v4());
-        let root = authority.attempts_root().join(
-            attempt_id
-                .strip_prefix("attempt:")
-                .expect("known attempt prefix"),
-        );
-        create_private_directory(&root)?;
-        let path = root.join("journal.json");
+        let root = authority
+            .directory(Path::new("attempts"))?
+            .child(Path::new(
+                attempt_id
+                    .strip_prefix("attempt:")
+                    .expect("known attempt prefix"),
+            ))?;
+        let path = root.path().join("journal.json");
         let attempt = GenerationAttempt {
             schema: ATTEMPT_SCHEMA.into(),
             attempt_id,
@@ -1138,11 +1115,50 @@ mod tests {
         let attempt_root = authority
             .attempts_root()
             .join(attempt.strip_prefix("attempt:").unwrap());
-        create_private_directory(&attempt_root).unwrap();
+        fs::create_dir(&attempt_root).unwrap();
         let outside = root.path().join("outside");
         fs::write(&outside, b"private").unwrap();
         symlink(&outside, attempt_root.join("progress.jsonl")).unwrap();
         assert!(PersistentProgress::open(&authority, &attempt).is_err());
         assert_eq!(fs::read(&outside).unwrap(), b"private");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn progress_journal_stays_bound_after_state_root_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let state_root = root.path().join("v2");
+        let pinned_root = root.path().join("pinned-v2");
+        let authority = StateAuthority::open(state_root.clone()).unwrap();
+        let attempt = format!("attempt:{}", Uuid::new_v4());
+        let journal = PersistentProgress::open(&authority, &attempt).unwrap();
+        fs::rename(&state_root, &pinned_root).unwrap();
+        fs::create_dir(&state_root).unwrap();
+        let event = ProgressEvent {
+            schema: PROGRESS_SCHEMA.into(),
+            event: "BOUND".into(),
+            stage_id: None,
+            queued: 1,
+            running: 0,
+            done: 0,
+            admitted_cpu: 0,
+            admitted_rss_bytes: 0,
+            unix_millis: unix_millis(),
+        };
+
+        journal.observe(&event).unwrap();
+
+        let component = attempt.strip_prefix("attempt:").unwrap();
+        assert!(
+            fs::read_to_string(
+                pinned_root
+                    .join("attempts")
+                    .join(component)
+                    .join("progress.jsonl")
+            )
+            .unwrap()
+            .contains("BOUND")
+        );
+        assert!(fs::read_dir(&state_root).unwrap().next().is_none());
     }
 }
