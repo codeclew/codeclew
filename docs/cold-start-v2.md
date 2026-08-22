@@ -1,7 +1,7 @@
 # Codeclew cold start v2
 
-Status: approved for implementation. Independent adversarial review completed
-after four rounds with `PASS` and no remaining P0/P1 findings.
+Status: implemented. The design passed independent adversarial review; the
+integrated implementation is guarded by the release gates below.
 
 ## Goal
 
@@ -185,11 +185,15 @@ authoritative per-file and cross-boundary receipts. Classpath, config, plugin,
 or toolchain changes force a full generation. Unknown invalidation forces full
 analysis or a non-complete result; it can never produce false `COMPLETE`.
 
-K24 BTA implements this generic generation/delta contract. Compaction publishes
-a new immutable generation and never mutates parents. Compiler output from a
-crashed attempt remains attempt-private and cannot be reused. Only verified
-snapshot, model, and derived-manifest objects may survive retry. Rust
-normalization starts only after a sealed `AnalysisAttemptComplete`.
+K24 BTA implements cold-full, unchanged-hit, changed-source incremental reuse,
+fresh-full semantic equivalence, and recovered-full after mutable-authority
+corruption. The generic Rust planner may select `DELTA`, but until an adapter
+subset protocol exists it records the execution honestly as `FULL` with subset
+support false. Compaction publishes a new immutable generation and never
+mutates parents. Compiler output from a crashed attempt remains attempt-private
+and cannot be reused. Only verified snapshot, model, and derived-manifest
+objects may survive retry. Rust normalization starts only after a sealed
+`AnalysisAttemptComplete`.
 
 ## Completeness and conditional evidence
 

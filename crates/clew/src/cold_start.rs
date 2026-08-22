@@ -160,6 +160,28 @@ impl ProgressObserver for StderrProgress {
     }
 }
 
+pub struct CompositeProgress {
+    observers: Vec<Arc<dyn ProgressObserver>>,
+}
+
+impl CompositeProgress {
+    pub fn new(observers: Vec<Arc<dyn ProgressObserver>>) -> Result<Self, ClewError> {
+        if observers.is_empty() {
+            return Err(invalid("composite progress requires at least one observer"));
+        }
+        Ok(Self { observers })
+    }
+}
+
+impl ProgressObserver for CompositeProgress {
+    fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError> {
+        for observer in &self.observers {
+            observer.observe(event)?;
+        }
+        Ok(())
+    }
+}
+
 pub struct PersistentProgress {
     file: Mutex<File>,
 }
@@ -1047,16 +1069,7 @@ mod tests {
         let attempt = format!("attempt:{}", Uuid::new_v4());
         let persisted = Arc::new(PersistentProgress::open(&authority, &attempt).unwrap());
         let recorded = Arc::new(RecordedProgress::default());
-        struct Tee {
-            persisted: Arc<PersistentProgress>,
-            recorded: Arc<RecordedProgress>,
-        }
-        impl ProgressObserver for Tee {
-            fn observe(&self, event: &ProgressEvent) -> Result<(), ClewError> {
-                self.persisted.observe(event)?;
-                self.recorded.observe(event)
-            }
-        }
+        let observers: Vec<Arc<dyn ProgressObserver>> = vec![persisted.clone(), recorded.clone()];
         let resources = HostResources {
             logical_cpu: 1,
             total_memory_bytes: 100,
@@ -1064,10 +1077,7 @@ mod tests {
         };
         DagScheduler::new(
             resources,
-            Arc::new(Tee {
-                persisted: Arc::clone(&persisted),
-                recorded: Arc::clone(&recorded),
-            }),
+            Arc::new(CompositeProgress::new(observers).unwrap()),
         )
         .unwrap()
         .with_heartbeat_interval(Duration::from_millis(5))

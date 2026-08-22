@@ -7,8 +7,8 @@ use crate::adapter_v2::{
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::cold_start::{
-    AttemptJournal, AttemptState, DAG_SCHEMA, DagPlan, DagScheduler, HostResources,
-    PersistentProgress, ResourceDescriptor, StageSpec,
+    AttemptJournal, AttemptState, CompositeProgress, DAG_SCHEMA, DagPlan, DagScheduler,
+    HostResources, PersistentProgress, ResourceDescriptor, StageSpec, StderrProgress,
 };
 use crate::derived_manifest::DerivedAnalysisInputManifest;
 use crate::error::{ClewError, ErrorCode};
@@ -968,7 +968,10 @@ fn execute_analysis_dag_with_jobs(
             input: json!({"partition":partition,"partitions":jobs}),
         });
     }
-    let observer = Arc::new(PersistentProgress::open(state, &request.attempt_id)?);
+    let observer = Arc::new(CompositeProgress::new(vec![
+        Arc::new(PersistentProgress::open(state, &request.attempt_id)?),
+        Arc::new(StderrProgress),
+    ])?);
     let scheduler = DagScheduler::new(resources, observer)?;
     let state_for_executor = state.clone();
     let analysis_for_executor = Arc::clone(&analysis);

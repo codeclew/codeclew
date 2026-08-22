@@ -47,12 +47,22 @@ and reuses it without running Cargo, Rustc, Gradle, or Maven.
 
 ./clew task-run status --run run:...
 ./clew session publish --session session:... --run run:...
+./clew session close --session session:...
+./clew session gc --session session:...
 ```
 
 `task-run start` writes a durable `CREATED` record before detaching. Repeating
 the same request attaches to the same content-addressed run. Preparation may
 compile, test, and build a staged repository index, but it never changes the
 session's target ref. Only `session publish` may fast-forward the ref.
+
+Interrupted pre-commit work can be continued with `task-run resume`. A committed
+candidate is never reset automatically: use `session recover` with its session
+and run IDs to reconcile it. `session close` requires no live or unresolved run;
+`session abort` is the explicit cancellation terminal. If the repository moved,
+use `session relocate --session ... --repo ...`. GC deletes only worktrees proven
+to be Codeclew-owned and refuses every non-empty candidate without an exact
+receipt, including with `--force`.
 
 Context stdout is bounded to 64 KiB. It contains the edit-ready projection and
 content IDs; full evidence remains in private managed state. Plans are bounded
@@ -82,6 +92,18 @@ environment. Model caching is `NON_CACHEABLE` unless the session explicitly
 selects a tracked `codeclew.model-cache.json` or sealed external authority.
 The sealed external contour remains fail-closed.
 
+A tracked cache manifest must exactly match `HEAD`, be canonical JSON plus one
+newline, and explicitly list the authorized compilations:
+
+```json
+{"compilations":[":/main"],"schema":"codeclew-model-cache-policy/2.0"}
+```
+
+Select it with `session open --model-cache tracked-manifest`. Sealed external
+state requires a RELEASE capsule, a private absolute directory with its signed
+manifest/seed, and both `--model-cache sealed-external` and
+`--external-build-state /private/path`.
+
 ## Conditional evidence
 
 When evidence is useful but not deterministic, a conditional decision may carry
@@ -94,6 +116,7 @@ and run; there is no confidence threshold or automatic promotion.
 
 ```bash
 ./scripts/verify.sh
+./scripts/bta24-acceptance.sh
 ./scripts/demo.sh
 ./scripts/benchmark.sh
 ```
