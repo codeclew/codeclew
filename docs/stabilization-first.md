@@ -198,6 +198,29 @@ Passing G0 permits the bounded Q1 provider integration and Q2 cold/multicore
 gates. It does not itself claim product readiness, enable self-hosting, or run
 Gradle/Maven/Cargo builds.
 
+### Q1 provider-model qualification
+
+Q1 is the single pre-self-host provider integration. It resolves and verifies
+the private trusted RELEASE seed locator before invoking any public `./clew` command,
+performs a readiness audit followed by an exact warm audit, and then exercises
+fresh committed Gradle and Maven product repositories materialized from tracked
+fixtures. Each repository first passes its ordinary native compile and then
+opens one `:/main` session and creates one bounded semantic context.
+
+Q1 does not validate a plan, edit source, start a task run, publish a ref, or
+claim cold/multicore performance. `COMPLETE_TASK` and an honestly explained
+`CONDITIONAL_TASK` are both valid provider results at this boundary. The gate
+requires exact compilation and RELEASE runtime authority, compiler version,
+immutable generation and query-index objects, a 64-KiB-bounded context result,
+`NON_CACHEABLE` native model policy, zero runtime capsule/toolchain build, and
+successful session close plus managed GC. Evidence contains only digests,
+bounded timings, versions, statuses, and path-free authority.
+
+Q1 DoD is one successful native Gradle compile and one successful native Maven
+compile, one model/generation context for each provider through `./clew`, one
+shared trusted runtime key, exact warm counters with no subprocess or input
+rehash, no leaked managed session/worktree, and no edit or publication E2E.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional
