@@ -186,6 +186,18 @@ subtree inertness, exhaustive managed-worktree cleanup checks, and privacy
 regression coverage. The unreachable legacy Kotlin edit implementation is not
 re-enabled or modified before G1; R2 removes it after mandatory self-hosting.
 
+### G0 FOUNDATION_ENTRY
+
+G0 is a zero-E2E checkpoint over S0-S11. It requires the exact controller plan
+to report every foundation step complete, a clean single-worktree repository,
+no active capsule/task-run/foundation qualification process, and every
+foundation gate to be a regular executable file. It records only booleans,
+digests, step identifiers, and the source revision in private evidence.
+
+Passing G0 permits the bounded Q1 provider integration and Q2 cold/multicore
+gates. It does not itself claim product readiness, enable self-hosting, or run
+Gradle/Maven/Cargo builds.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional
