@@ -1,6 +1,10 @@
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
+use crate::generation_service::{
+    ensure_candidate_generation, load_candidate_generation, publish_candidate_generation,
+    store_ready_generation,
+};
 use crate::process_isolation::isolate_controller_authority;
 use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
 use crate::session::{ContextObject, PlanObject, SessionAuthority};
@@ -21,7 +25,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const PLAN_V2_SCHEMA: &str = "codeclew-task-plan/2.0";
-pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/2.0";
+pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/3.0";
 const MAX_EDIT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_VALIDATION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -107,6 +111,8 @@ pub struct PreparedCandidateV2 {
     pub target_oid: String,
     pub candidate_commit: String,
     pub candidate_snapshot: CasObject,
+    pub semantic_generation: CasObject,
+    pub semantic_generation_key: String,
     pub changed_files: Vec<String>,
     pub validation_evidence: Vec<ValidationEvidence>,
     pub publication_blocked: bool,
@@ -233,7 +239,7 @@ pub fn prepare(
             "context cannot authorize candidate preparation",
         ));
     }
-    let publication_blocked = status != "COMPLETE_TASK"
+    let mut publication_blocked = status != "COMPLETE_TASK"
         || context
             .evidence
             .pointer("/context/verificationObligations")
@@ -302,6 +308,15 @@ pub fn prepare(
     }
     commit_candidate(&worktree, &plan_object.plan_id)?;
     let candidate_commit = git(&worktree, &["rev-parse", "HEAD"])?;
+    let semantic = ensure_candidate_generation(
+        session,
+        &worktree,
+        &candidate_commit,
+        &candidate_root.join("staged-generation.json"),
+    )?;
+    let semantic_generation = store_ready_generation(&store, &semantic)?;
+    publication_blocked |= !semantic.completeness.publishable();
+    require_clean(&worktree)?;
     let (_, candidate_snapshot) = capture(&worktree, &store)?;
     Ok(PreparedCandidateV2 {
         schema: PREPARED_V2_SCHEMA.into(),
@@ -313,6 +328,8 @@ pub fn prepare(
         target_oid: session.target_oid.clone(),
         candidate_commit,
         candidate_snapshot,
+        semantic_generation,
+        semantic_generation_key: semantic.generation_key,
         changed_files,
         validation_evidence,
         publication_blocked,
@@ -339,9 +356,26 @@ pub fn publish(
     let source = session.repository_path()?;
     let inventory = require_publish_worktrees(session, prepared, &repo, &source, &worktree)?;
     verify_candidate_snapshot(&worktree, &prepared.candidate_snapshot)?;
+    let store = CasStore::open(&state)?;
+    let semantic = load_candidate_generation(
+        &store,
+        &prepared.semantic_generation,
+        session,
+        &prepared.candidate_commit,
+        true,
+    )?;
+    if semantic.generation_key != prepared.semantic_generation_key
+        || !semantic.completeness.publishable()
+    {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "candidate semantic generation is not publication-ready",
+        ));
+    }
     let current = git(&repo, &["rev-parse", &session.target_ref])?;
     if current == prepared.candidate_commit {
         synchronize_checked_out_target(&repo, prepared)?;
+        publish_candidate_generation(session, &semantic).map_err(publication_recovery_error)?;
         verify_published_worktrees(session, prepared, &repo, &inventory)?;
         return Ok(json!({
             "schema":"codeclew-publish-result/2.0",
@@ -396,6 +430,7 @@ pub fn publish(
             "target publication result is inconsistent",
         ));
     }
+    publish_candidate_generation(session, &semantic).map_err(publication_recovery_error)?;
     verify_published_worktrees(session, prepared, &repo, &inventory)?;
     Ok(json!({
         "schema":"codeclew-publish-result/2.0",
@@ -403,6 +438,18 @@ pub fn publish(
         "candidateCommit":prepared.candidate_commit,
         "recovered":false,
     }))
+}
+
+fn publication_recovery_error(error: ClewError) -> ClewError {
+    ClewError {
+        code: ErrorCode::WorktreeRecoveryRequired,
+        message: format!(
+            "candidate ref is published but staged semantic index publication failed: {}",
+            error.message
+        ),
+        retryable: true,
+        ..error
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,6 +680,9 @@ fn validate_prepared(
         || prepared.base_revision != session.base_revision
         || prepared.target_ref != session.target_ref
         || prepared.target_oid != session.target_oid
+        || prepared.semantic_generation.object_schema
+            != crate::generation_service::READY_GENERATION_SCHEMA
+        || !digest(&prepared.semantic_generation_key)
     {
         return Err(ClewError::new(
             ErrorCode::PreconditionFailed,

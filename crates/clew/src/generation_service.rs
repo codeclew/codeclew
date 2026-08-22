@@ -120,26 +120,55 @@ struct LoadedIncrementalHead {
 
 pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGeneration, ClewError> {
     let state = StateAuthority::process_default()?;
-    let store = CasStore::open(&state)?;
     let session_root = state.session_root(&session.session_id)?;
     let binding_path = session_root.join("generation.json");
-    if binding_path.exists() {
-        return load_ready(&store, &binding_path, session, false);
-    }
     let repo = session.repository_path()?;
-    let (snapshot, snapshot_object) = capture(&repo, &store)?;
+    ensure_generation(session, &repo, &binding_path, true)
+}
+
+pub fn ensure_candidate_generation(
+    session: &SessionAuthority,
+    repository: &Path,
+    candidate_revision: &str,
+    binding_path: &Path,
+) -> Result<ReadyGeneration, ClewError> {
+    if !git_oid(candidate_revision) {
+        return Err(corrupt("candidate generation revision is invalid"));
+    }
+    let mut candidate = session.clone();
+    candidate.base_revision = candidate_revision.into();
+    ensure_generation(&candidate, repository, binding_path, false)
+}
+
+fn ensure_generation(
+    session: &SessionAuthority,
+    repo: &Path,
+    binding_path: &Path,
+    publish_head: bool,
+) -> Result<ReadyGeneration, ClewError> {
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
+    if binding_path.exists() {
+        return load_ready(&store, binding_path, session, false);
+    }
+    let (snapshot, snapshot_object) = capture(repo, &store)?;
     let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
         ClewError::new(
             ErrorCode::WorkerPreparationRequired,
             "generation service must run through ./clew",
         )
     })?;
-    let repository = state.repository(&repo)?;
+    let repository = state.repository(repo)?;
+    if repository.key != session.repository_key {
+        return Err(corrupt(
+            "generation repository differs from session Git authority",
+        ));
+    }
     let preparation_key =
         project_model_key(&runtime.runtime_key, &snapshot_object, &session.compilation)?;
     let _preparation_lock = GenerationLock::acquire(&state, &preparation_key)?;
     if binding_path.exists() {
-        return load_ready(&store, &binding_path, session, false);
+        return load_ready(&store, binding_path, session, false);
     }
     let compiler_namespace = compiler_store_key(&runtime, &session.compilation)?;
     let live_attempt = ProjectNativeKotlinAttempt::open(
@@ -169,7 +198,7 @@ pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGene
     let _lock = GenerationLock::acquire(&state, &generation_key)?;
     if binding_path.exists() {
         live_attempt.close_without_analysis()?;
-        return load_ready(&store, &binding_path, session, false);
+        return load_ready(&store, binding_path, session, false);
     }
     let cache_root = repository.root.join("generations");
     create_private_directory(&cache_root)?;
@@ -226,9 +255,72 @@ pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGene
     if session.model_cache_policy != ModelCachePolicy::NonCacheable {
         write_private_atomic(&state, &cache_path, &ready)?;
     }
-    publish_incremental_head(&state, &store, &head_path, &ready, &compiler_store)?;
-    write_private_atomic(&state, &binding_path, &ready)?;
+    if publish_head {
+        publish_incremental_head(&state, &store, &head_path, &ready, &compiler_store.key)?;
+    }
+    write_private_atomic(&state, binding_path, &ready)?;
     Ok(ready)
+}
+
+pub fn store_ready_generation(
+    store: &CasStore,
+    ready: &ReadyGeneration,
+) -> Result<CasObject, ClewError> {
+    store.put(
+        READY_GENERATION_SCHEMA,
+        &canonical::bytes(ready).map_err(internal)?,
+    )
+}
+
+pub fn load_candidate_generation(
+    store: &CasStore,
+    object: &CasObject,
+    session: &SessionAuthority,
+    candidate_revision: &str,
+    deep: bool,
+) -> Result<ReadyGeneration, ClewError> {
+    if object.object_schema != READY_GENERATION_SCHEMA {
+        return Err(corrupt("candidate generation CAS schema is invalid"));
+    }
+    let ready: ReadyGeneration = read_canonical_object(store, object)?;
+    let mut candidate = session.clone();
+    candidate.base_revision = candidate_revision.into();
+    verify_ready(store, &ready, &candidate, deep)?;
+    Ok(ready)
+}
+
+pub fn publish_candidate_generation(
+    session: &SessionAuthority,
+    ready: &ReadyGeneration,
+) -> Result<(), ClewError> {
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
+    let mut candidate = session.clone();
+    candidate.base_revision = ready.base_revision.clone();
+    verify_ready(&store, ready, &candidate, true)?;
+    let receipt: IncrementalReceipt = read_canonical_object(&store, &ready.incremental_receipt)?;
+    receipt.validate()?;
+    let repository = state.repository(&session.target_repository_path()?)?;
+    if repository.key != session.repository_key {
+        return Err(corrupt(
+            "candidate generation publish repository authority changed",
+        ));
+    }
+    let head_path = incremental_head_path(&repository.root, &session.compilation)?;
+    let lock_key = canonical::hash(&json!({
+        "schema":"codeclew-incremental-head-lock/2.0",
+        "repositoryKey":session.repository_key,
+        "compilation":session.compilation,
+    }))
+    .map_err(internal)?;
+    let _lock = GenerationLock::acquire(&state, &lock_key)?;
+    publish_incremental_head(
+        &state,
+        &store,
+        &head_path,
+        ready,
+        &receipt.compiler_store_key,
+    )
 }
 
 pub fn load_session_generation(session: &SessionAuthority) -> Result<ReadyGeneration, ClewError> {
@@ -1297,8 +1389,9 @@ fn publish_incremental_head(
     store: &CasStore,
     path: &Path,
     ready: &ReadyGeneration,
-    compiler_store: &CompilerStoreKey,
+    compiler_store_key: &str,
 ) -> Result<(), ClewError> {
+    let _ = digest_component(compiler_store_key)?;
     if let Some(parent) = path.parent() {
         create_private_directory(parent)?;
     }
@@ -1308,7 +1401,7 @@ fn publish_incremental_head(
     )?;
     let head = IncrementalHead {
         schema: INCREMENTAL_HEAD_SCHEMA.into(),
-        compiler_store_key: compiler_store.key.clone(),
+        compiler_store_key: compiler_store_key.into(),
         receipt: ready.incremental_receipt.clone(),
         ready: ready_object,
     };
@@ -1551,6 +1644,13 @@ fn digest_component(value: &str) -> Result<&str, ClewError> {
         return Err(corrupt("generation digest is invalid"));
     }
     Ok(component)
+}
+
+fn git_oid(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 struct GenerationLock {
