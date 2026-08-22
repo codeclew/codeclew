@@ -164,6 +164,28 @@ verified process-tree cancellation, recoverable preparation/publication,
 append-only ledger CAS, no rollback after candidate OID, and component tests
 only. Real publication remains deferred to Q3.
 
+### S11 security and cleanup boundary
+
+S11 qualifies all new mutable state as descriptor-bound, owner-controlled data
+under private `CODECLEW_HOME`. Repository keys contain no personal path;
+absolute repository/build-state paths exist only in private locator records.
+Managed directories and files enforce `0700/0600`, refuse symlink ancestors or
+targets, and continue using their pinned descriptors if an attacker replaces a
+path after open.
+
+Repository capture ignores root and nested `.semantic-thread` without reading
+their contents. Materialization is private and read-only and refuses escaping
+symlinks. Session GC inventories source/candidate worktrees, HEAD, index,
+ignored and untracked paths before deletion. It removes only proven managed
+derived worktrees/state, refuses replaced roots and unknown candidate content,
+and leaves all legacy state inert and untouched.
+
+S11 DoD is path-free public authority, private locator/state permissions,
+descriptor and symlink race refusal, sealed snapshot materialization, legacy
+subtree inertness, exhaustive managed-worktree cleanup checks, and privacy
+regression coverage. The unreachable legacy Kotlin edit implementation is not
+re-enabled or modified before G1; R2 removes it after mandatory self-hosting.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional
