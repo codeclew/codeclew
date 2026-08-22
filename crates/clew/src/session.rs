@@ -1,5 +1,5 @@
 use crate::canonical;
-use crate::cas::CasObject;
+use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::repository_snapshot::LEGACY_EXCLUDES;
 use crate::runtime::{RuntimeAuthority, RuntimeMode};
@@ -18,11 +18,13 @@ use walkdir::WalkDir;
 use std::os::unix::fs::OpenOptionsExt;
 
 pub const SESSION_SCHEMA: &str = "codeclew-session/2.0";
-pub const CONTEXT_SCHEMA: &str = "codeclew-context/1.0";
-pub const PLAN_SCHEMA: &str = "codeclew-plan/1.0";
+pub const CONTEXT_SCHEMA: &str = "codeclew-context/2.0";
+pub const PLAN_SCHEMA: &str = "codeclew-plan/2.0";
 pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
 const RUN_LEDGER_SCHEMA: &str = "codeclew-task-run-ledger-entry/2.0";
 const MAX_RUN_LEDGER_BYTES: u64 = 32 * 1024 * 1024;
+const CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-context-evidence-object/2.0";
+const MAX_CONTEXT_EVIDENCE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONTEXT_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
 pub const MAX_PLAN_OPERATIONS: usize = 256;
@@ -66,7 +68,9 @@ pub struct ContextObject {
     pub intent: String,
     pub terms: Vec<String>,
     pub evidence_digest: String,
+    pub evidence_ref: CasObject,
     pub projection: Value,
+    #[serde(skip)]
     pub evidence: Value,
 }
 
@@ -282,7 +286,17 @@ impl SessionAuthority {
     ) -> Result<ContextObject, ClewError> {
         terms.sort();
         terms.dedup();
-        let evidence_digest = canonical::hash(&evidence).map_err(internal)?;
+        let evidence_bytes = canonical::bytes(&evidence).map_err(internal)?;
+        if evidence_bytes.len() > MAX_CONTEXT_EVIDENCE_BYTES {
+            return Err(ClewError::new(
+                ErrorCode::SliceBudgetExceeded,
+                "context evidence exceeds the 64 MiB CAS object limit",
+            ));
+        }
+        let state = StateAuthority::process_default()?;
+        let store = CasStore::open(&state)?;
+        let evidence_ref = store.put(CONTEXT_EVIDENCE_SCHEMA, &evidence_bytes)?;
+        let evidence_digest = evidence_ref.digest.clone();
         let binding = json!({
             "schema": CONTEXT_SCHEMA,
             "sessionId": self.session_id,
@@ -290,7 +304,7 @@ impl SessionAuthority {
             "parentContextId": parent_context_id,
             "intent": intent,
             "terms": terms,
-            "evidenceDigest": evidence_digest,
+            "evidenceRef": evidence_ref,
         });
         let context_id = format!("context:{}", canonical::hash(&binding).map_err(internal)?);
         let object = ContextObject {
@@ -302,10 +316,10 @@ impl SessionAuthority {
             intent,
             terms,
             evidence_digest,
+            evidence_ref,
             projection,
             evidence,
         };
-        let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         store_cas_json(&state, &root, &object.context_id, &object)?;
         state.write_private_atomic(
@@ -318,17 +332,30 @@ impl SessionAuthority {
     pub fn load_context(&self, context_id: &str) -> Result<ContextObject, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
-        let object: ContextObject = read_json_limited(
+        let mut object: ContextObject = read_json_limited(
             &root.join("contexts").join(id_filename(context_id)?),
-            64 * 1024 * 1024,
+            MAX_PLAN_BYTES * 2,
         )?;
         if object.schema != CONTEXT_SCHEMA
             || object.context_id != context_id
             || object.session_id != self.session_id
             || object.session_authority_digest != self.authority_digest
-            || canonical::hash(&object.evidence).map_err(internal)? != object.evidence_digest
+            || object.evidence_ref.object_schema != CONTEXT_EVIDENCE_SCHEMA
+            || object.evidence_ref.digest != object.evidence_digest
         {
             return Err(invalid("context authority is invalid"));
+        }
+        let store = CasStore::open(&state)?;
+        let limit = usize::try_from(object.evidence_ref.size)
+            .map_err(|_| invalid("context evidence exceeds the host size"))?;
+        if limit > MAX_CONTEXT_EVIDENCE_BYTES {
+            return Err(invalid("context evidence exceeds its CAS object limit"));
+        }
+        let lease = store.read(&object.evidence_ref, limit)?;
+        object.evidence = serde_json::from_slice(lease.bytes())
+            .map_err(|_| invalid("context evidence CAS object is invalid"))?;
+        if canonical::bytes(&object.evidence).map_err(internal)? != lease.bytes() {
+            return Err(invalid("context evidence CAS object is not canonical"));
         }
         Ok(object)
     }
