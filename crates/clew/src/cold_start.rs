@@ -86,6 +86,9 @@ pub struct DagReport {
     pub max_admitted_cpu: usize,
     pub max_admitted_rss_bytes: u64,
     pub duration_millis: u128,
+    pub total_work_millis: u128,
+    pub critical_path_millis: u128,
+    pub observed_parallelism_milli: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,12 +327,21 @@ impl DagScheduler {
             return Err(error);
         }
         self.emit("DAG_READY", None, &coordinator)?;
+        let duration_millis = started.elapsed().as_millis();
+        let (total_work_millis, critical_path_millis) =
+            work_span(&coordinator.stages, &coordinator.done)?;
         Ok(DagReport {
             schema: DAG_REPORT_SCHEMA.into(),
             outputs: coordinator.done,
             max_admitted_cpu: coordinator.max_admitted_cpu,
             max_admitted_rss_bytes: coordinator.max_admitted_rss,
-            duration_millis: started.elapsed().as_millis(),
+            duration_millis,
+            total_work_millis,
+            critical_path_millis,
+            observed_parallelism_milli: total_work_millis
+                .saturating_mul(1_000)
+                .checked_div(duration_millis.max(1))
+                .unwrap_or(0),
         })
     }
 
@@ -351,6 +363,63 @@ impl DagScheduler {
             unix_millis: unix_millis(),
         })
     }
+}
+
+fn work_span(
+    stages: &BTreeMap<String, StageSpec>,
+    outputs: &BTreeMap<String, StageOutput>,
+) -> Result<(u128, u128), ClewError> {
+    let total_work = outputs.values().map(|output| output.duration_millis).sum();
+    let mut spans = BTreeMap::<String, u128>::new();
+    while spans.len() < stages.len() {
+        let before = spans.len();
+        for (id, stage) in stages {
+            if spans.contains_key(id)
+                || !stage
+                    .dependencies
+                    .iter()
+                    .all(|dependency| spans.contains_key(dependency))
+            {
+                continue;
+            }
+            let own = outputs
+                .get(id)
+                .ok_or_else(|| invalid("completed DAG report is missing a stage output"))?
+                .duration_millis;
+            let dependency_span = stage
+                .dependencies
+                .iter()
+                .filter_map(|dependency| spans.get(dependency).copied())
+                .max()
+                .unwrap_or(0);
+            spans.insert(id.clone(), dependency_span.saturating_add(own));
+        }
+        if spans.len() == before {
+            return Err(invalid(
+                "completed DAG report has no computable critical path",
+            ));
+        }
+    }
+    Ok((total_work, spans.values().copied().max().unwrap_or(0)))
+}
+
+pub fn persist_dag_report(
+    authority: &StateAuthority,
+    attempt_id: &str,
+    report: &DagReport,
+) -> Result<(), ClewError> {
+    let component = attempt_id
+        .strip_prefix("attempt:")
+        .filter(|value| safe_identifier(value))
+        .ok_or_else(|| invalid("DAG report attempt id is invalid"))?;
+    let path = authority
+        .attempts_root()
+        .join(component)
+        .join("dag-report.json");
+    let mut bytes = canonical::bytes(report)
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))?;
+    bytes.push(b'\n');
+    authority.write_private_atomic(&path, &bytes)
 }
 
 fn spawn_stage<F>(
@@ -930,6 +999,9 @@ mod tests {
         );
         assert_eq!(report.max_admitted_cpu, 2);
         assert_eq!(report.max_admitted_rss_bytes, 20);
+        assert!(report.total_work_millis >= report.critical_path_millis);
+        assert!(report.critical_path_millis >= 30);
+        assert!(report.observed_parallelism_milli >= 1_000);
     }
 
     #[test]
@@ -1060,6 +1132,40 @@ mod tests {
         }
         assert_eq!(journal.attempt().state, AttemptState::Ready);
         assert!(journal.transition(AttemptState::Failed, "late").is_err());
+    }
+
+    #[test]
+    fn dag_report_is_persisted_as_private_attempt_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let attempt = format!("attempt:{}", Uuid::new_v4());
+        let report = scheduler(1, 100)
+            .execute(
+                DagPlan {
+                    schema: DAG_SCHEMA.into(),
+                    stages: vec![stage("only", &[], 1, 1)],
+                },
+                |_, _| Ok(json!({"sealedCompilerStreams":1})),
+            )
+            .unwrap();
+        persist_dag_report(&authority, &attempt, &report).unwrap();
+        let bytes = authority
+            .read_private_file(
+                &authority
+                    .attempts_root()
+                    .join(attempt.strip_prefix("attempt:").unwrap())
+                    .join("dag-report.json"),
+                1024 * 1024,
+            )
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["schema"], DAG_REPORT_SCHEMA);
+        assert_eq!(
+            value["outputs"]["only"]["output"]["sealedCompilerStreams"],
+            1
+        );
+        assert!(value.get("totalWorkMillis").is_some());
+        assert!(value.get("criticalPathMillis").is_some());
     }
 
     #[test]

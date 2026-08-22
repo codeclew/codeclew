@@ -973,10 +973,11 @@ fn execute_analysis_dag_with_jobs(
         Arc::new(StderrProgress),
     ])?);
     let scheduler = DagScheduler::new(resources, observer)?;
+    let attempt_id = request.attempt_id.clone();
     let state_for_executor = state.clone();
     let analysis_for_executor = Arc::clone(&analysis);
     let runs_for_executor = Arc::clone(&runs);
-    scheduler.execute(
+    let report = scheduler.execute(
         DagPlan {
             schema: DAG_SCHEMA.into(),
             stages,
@@ -1000,7 +1001,7 @@ fn execute_analysis_dag_with_jobs(
                 }
                 *analysis_for_executor.lock().map_err(poisoned)? =
                     Some((Arc::new(sink.facts), completion.clone()));
-                Ok(json!({"factCount":completion.fact_count}))
+                Ok(json!({"factCount":completion.fact_count,"sealedCompilerStreams":1}))
             }
             "core:fact-run" => {
                 let partition = stage
@@ -1030,6 +1031,7 @@ fn execute_analysis_dag_with_jobs(
             _ => Err(corrupt("cold-start DAG contains an unknown operation")),
         },
     )?;
+    crate::cold_start::persist_dag_report(state, &attempt_id, &report)?;
     let completion = analysis
         .lock()
         .map_err(poisoned)?
