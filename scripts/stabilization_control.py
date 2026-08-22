@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import hmac
 import json
@@ -230,7 +231,17 @@ def selected_files(roots: list[str]) -> list[str]:
 
 def input_digest(check: dict[str, object]) -> str:
     hasher = hashlib.sha256()
-    roots = check["inputRoots"]
+    roots = list(check["inputRoots"])
+    for argument in check["command"]:
+        candidate = Path(argument)
+        if (
+            not argument.startswith("-")
+            and not candidate.is_absolute()
+            and "/" in argument
+            and argument not in roots
+        ):
+            validate_relative(argument)
+            roots.append(argument)
     for root in roots:
         path = ROOT / root
         if root != "." and not path.exists() and not path.is_symlink():
@@ -348,6 +359,16 @@ def require_dependencies(model: dict[str, object], authority: dict[str, str], st
 
 def receipt_path(authority: dict[str, str], check: str, input_authority: str) -> Path:
     return plan_state(authority) / "checks" / check / f"{input_authority.split(':', 1)[1]}.json"
+
+
+def exclusive_lock(authority: dict[str, str], name: str):
+    path = plan_state(authority) / "locks" / f"{name}.lock"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    stream = path.open("a+b")
+    os.chmod(path, 0o600)
+    fcntl.flock(stream, fcntl.LOCK_EX)
+    return stream
 
 
 def private_secret() -> bytes:
@@ -523,19 +544,20 @@ def run_check(plan: dict[str, object], model: dict[str, object], authority: dict
     require_dependencies(model, authority, step)
     input_authority = evidence_digest(check, authority)
     path = receipt_path(authority, check_id, input_authority)
-    if path.exists():
-        existing = load_json(path)
-        if (
-            isinstance(existing, dict)
-            and existing.get("status") == "PASS"
-            and has_valid_embedded_digest(existing, "receiptDigest")
-            and all(existing.get(key) == authority[key] for key in authority)
-        ):
-            return {"checkId": check_id, "reused": True, "status": "PASS"}
-        raise ControlError("blind retry refused for the same failed evidence key")
-    receipt = verified_receipt(plan, authority, check, model["tiers"][check["tier"]], input_authority)
-    atomic_private_write(path, canonical(receipt) + b"\n")
-    return {"checkId": check_id, "reused": False, "status": receipt["status"]}
+    with exclusive_lock(authority, f"check-{check_id}-{input_authority.split(':', 1)[1]}"):
+        if path.exists():
+            existing = load_json(path)
+            if (
+                isinstance(existing, dict)
+                and existing.get("status") == "PASS"
+                and has_valid_embedded_digest(existing, "receiptDigest")
+                and all(existing.get(key) == authority[key] for key in authority)
+            ):
+                return {"checkId": check_id, "reused": True, "status": "PASS"}
+            raise ControlError("blind retry refused for the same failed evidence key")
+        receipt = verified_receipt(plan, authority, check, model["tiers"][check["tier"]], input_authority)
+        atomic_private_write(path, canonical(receipt) + b"\n")
+        return {"checkId": check_id, "reused": False, "status": receipt["status"]}
 
 
 def seal_step(model: dict[str, object], authority: dict[str, str], step: str) -> dict[str, object]:
@@ -556,16 +578,17 @@ def seal_step(model: dict[str, object], authority: dict[str, str], step: str) ->
         if any(receipt.get(key) != authority[key] for key in authority):
             raise ControlError("required check authority is stale")
         receipt_digests.append(receipt["receiptDigest"])
-    completion: dict[str, object] = {
-        **authority,
-        "receiptDigests": sorted(receipt_digests),
-        "schema": "codeclew-stabilization-step-completion/1.0",
-        "sourceRevision": git("rev-parse", "HEAD"),
-        "status": "COMPLETE",
-        "stepId": step,
-    }
-    completion["completionDigest"] = digest_bytes(canonical(completion))
-    atomic_private_write(completion_path(authority, step), canonical(completion) + b"\n")
+    with exclusive_lock(authority, f"completion-{step}"):
+        completion: dict[str, object] = {
+            **authority,
+            "receiptDigests": sorted(receipt_digests),
+            "schema": "codeclew-stabilization-step-completion/1.0",
+            "sourceRevision": git("rev-parse", "HEAD"),
+            "status": "COMPLETE",
+            "stepId": step,
+        }
+        completion["completionDigest"] = digest_bytes(canonical(completion))
+        atomic_private_write(completion_path(authority, step), canonical(completion) + b"\n")
     return {"status": "COMPLETE", "stepId": step}
 
 
