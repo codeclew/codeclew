@@ -4,6 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 python3 -I -S "$ROOT/scripts/stabilization_control.py" guard --gate cold-runtime >/dev/null
+python3 -I -S "$ROOT/scripts/test_private_diagnostic_store.py" >/dev/null
 mkdir -p benchmarks/reports
 umask 077
 
@@ -96,16 +97,36 @@ PY
 WORK=$(mktemp -d "$GATE_BASE/run.XXXXXX")
 SOURCE=
 FINISHED=0
+FAILURE_STAGE=INITIALIZATION
+FAILURE_DIAGNOSTIC=
+CONTROL_HOME=${CODECLEW_CONTROL_HOME:-"$HOME/.cache/codeclew-control"}
 
 write_incomplete_report() {
-    python3 -I -S - "$TEMPORARY" <<'PY'
+    python3 -I -S - "$TEMPORARY" "$FAILURE_STAGE" "$FAILURE_DIAGNOSTIC" "$CONTROL_HOME" "$ROOT/scripts" <<'PY'
 import json
 import pathlib
 import sys
 
+sys.path.insert(0, sys.argv[5])
+from private_diagnostic_store import DiagnosticStoreError, store_diagnostic
+
 path = pathlib.Path(sys.argv[1])
+stage = sys.argv[2]
+source = pathlib.Path(sys.argv[3]) if sys.argv[3] else None
+control_home = pathlib.Path(sys.argv[4])
+diagnostic_digest = None
+diagnostic_status = "NOT_AVAILABLE"
+if source is not None:
+    try:
+        diagnostic_digest = store_diagnostic(source, control_home)
+        diagnostic_status = "STORED_PRIVATE"
+    except (DiagnosticStoreError, OSError):
+        diagnostic_status = "PERSISTENCE_FAILED"
 path.write_text(json.dumps({
     "accepted": False,
+    "diagnosticDigest": diagnostic_digest,
+    "diagnosticStatus": diagnostic_status,
+    "failureStage": stage,
     "releaseGatePassed": False,
     "schema": "codeclew-real-cold-runtime-gate/1.0",
     "status": "FAILED_INCOMPLETE",
@@ -117,9 +138,13 @@ PY
 
 cleanup() {
     result=$?
+    cleanup_failed=0
     trap - EXIT INT TERM
     rm -f -- "$TEMPORARY"
-    python3 -I -S - "$WORK" <<'PY'
+    if [ "$FINISHED" -eq 0 ]; then
+        write_incomplete_report || cleanup_failed=1
+    fi
+    if ! python3 -I -S - "$WORK" <<'PY'
 import os
 import pathlib
 import shutil
@@ -141,9 +166,12 @@ for current, directories, _files in os.walk(root, topdown=False, followlinks=Fal
     pathlib.Path(current).chmod(0o700)
 shutil.rmtree(root)
 PY
+    then
+        cleanup_failed=1
+    fi
     rmdir -- "$GATE_BASE" 2>/dev/null || :
-    if [ "$FINISHED" -eq 0 ]; then
-        write_incomplete_report
+    if [ "$result" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then
+        result=1
     fi
     exit "$result"
 }
@@ -187,7 +215,14 @@ else
         lowercase=$(printf '%s' "$profile" | tr '[:upper:]' '[:lower:]')
         home="$WORK/pair-$pair-$lowercase-home"
         output="$WORK/pair-$pair-$lowercase.json"
-        CODECLEW_HOME="$home" "$SOURCE/clew" "--bootstrap-cold-build-evidence=$lowercase" >"$output"
+        error_log="$WORK/pair-$pair-$lowercase.stderr"
+        FAILURE_STAGE="PAIR_${pair}_${profile}_COLD_BUILD"
+        if ! CODECLEW_HOME="$home" "$SOURCE/clew" \
+            "--bootstrap-cold-build-evidence=$lowercase" \
+            >"$output" 2>"$error_log"; then
+            FAILURE_DIAGNOSTIC=$error_log
+            return 1
+        fi
     }
 
     run_evidence 1 SERIAL
@@ -197,7 +232,10 @@ else
     run_evidence 3 SERIAL
     run_evidence 3 PARALLEL
 
-    python3 -I -S - "$WORK" "$PHYSICAL_CORES" "$SOURCE_REVISION" >"$TEMPORARY" <<'PY'
+    FAILURE_STAGE=EVIDENCE_AGGREGATION
+    FAILURE_DIAGNOSTIC="$WORK/aggregation.stderr"
+    if ! python3 -I -S - "$WORK" "$PHYSICAL_CORES" "$SOURCE_REVISION" \
+        >"$TEMPORARY" 2>"$FAILURE_DIAGNOSTIC" <<'PY'
 import json
 import pathlib
 import statistics
@@ -323,6 +361,10 @@ report = {
 }
 print(json.dumps(report, sort_keys=True, separators=(",", ":")))
 PY
+    then
+        exit 1
+    fi
+    FAILURE_DIAGNOSTIC=
 fi
 
 mv -f -- "$TEMPORARY" "$REPORT"

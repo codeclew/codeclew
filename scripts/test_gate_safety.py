@@ -33,6 +33,16 @@ def main() -> None:
     check_gate("scripts/cold-multicore-gate.sh", inline_tree_cleanup=True)
     check_gate("scripts/multi-compilation-gate.sh", inline_tree_cleanup=False)
     multi = (ROOT / "scripts/multi-compilation-gate.sh").read_text(encoding="utf-8")
+    cold = (ROOT / "scripts/cold-multicore-gate.sh").read_text(encoding="utf-8")
+    assert "private_diagnostic_store import DiagnosticStoreError, store_diagnostic" in cold
+    assert '"diagnosticDigest": diagnostic_digest' in cold
+    assert '"diagnosticStatus": diagnostic_status' in cold
+    assert '"failureStage": stage' in cold
+    assert "write_incomplete_report || cleanup_failed=1" in cold
+    assert cold.index("write_incomplete_report || cleanup_failed=1") < cold.index(
+        'root = pathlib.Path(sys.argv[1])'
+    )
+    assert 'exit "$result"' in cold
     assert 'state_home="$WORK/pair-' in multi
     assert 'CODECLEW_RUNTIME_SEED="$SEED_FILE"' in multi
     assert multi.count("--bootstrap-warm-audit") == 2
