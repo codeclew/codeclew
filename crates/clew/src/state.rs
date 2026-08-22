@@ -175,20 +175,22 @@ impl StateAuthority {
         self.directory(relative)
     }
 
-    pub(crate) fn private_file_exists(&self, path: &Path) -> Result<bool, ClewError> {
+    pub fn private_file_exists(&self, path: &Path) -> Result<bool, ClewError> {
         let relative = self.relative_path(path)?;
         let (parent, name) = split_relative_file(relative)?;
         self.directory(parent)?.file_exists(name)
     }
 
-    pub(crate) fn read_private_file(
-        &self,
-        path: &Path,
-        max_bytes: usize,
-    ) -> Result<Vec<u8>, ClewError> {
+    pub fn read_private_file(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, ClewError> {
         let relative = self.relative_path(path)?;
         let (parent, name) = split_relative_file(relative)?;
         self.directory(parent)?.read_file(name, max_bytes)
+    }
+
+    pub fn open_private_append(&self, path: &Path) -> Result<File, ClewError> {
+        let relative = self.relative_path(path)?;
+        let (parent, name) = split_relative_file(relative)?;
+        self.directory(parent)?.open_append(name)
     }
 
     pub fn repository(&self, repo: &Path) -> Result<RepositoryState, ClewError> {
@@ -315,6 +317,22 @@ impl ManagedDirectory {
         {
             Err(invalid("managed directory references require POSIX"))
         }
+    }
+
+    pub(crate) fn require_path_identity(&self) -> Result<(), ClewError> {
+        let path_metadata = fs::symlink_metadata(&self.path).map_err(io_error)?;
+        let handle_metadata = self.handle.metadata().map_err(io_error)?;
+        #[cfg(unix)]
+        if path_metadata.file_type().is_symlink()
+            || !path_metadata.is_dir()
+            || path_metadata.dev() != handle_metadata.dev()
+            || path_metadata.ino() != handle_metadata.ino()
+        {
+            return Err(invalid(
+                "managed directory path no longer names its descriptor authority",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn child(&self, relative: &Path) -> Result<Self, ClewError> {

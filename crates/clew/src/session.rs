@@ -3,19 +3,18 @@ use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::repository_snapshot::LEGACY_EXCLUDES;
 use crate::runtime::{RuntimeAuthority, RuntimeMode};
-use crate::state::{StateAuthority, create_private_directory};
+use crate::state::StateAuthority;
+#[cfg(test)]
+use crate::state::create_private_directory;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use walkdir::WalkDir;
-
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
 
 pub const SESSION_SCHEMA: &str = "codeclew-session/3.0";
 pub const CONTEXT_SCHEMA: &str = "codeclew-context/2.0";
@@ -162,6 +161,10 @@ pub struct SessionLifecycle {
     pub updated_unix_ms: u128,
 }
 
+pub struct SessionAdmission {
+    _lock: SessionLifecycleLock,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SessionRunReference {
@@ -241,8 +244,10 @@ impl SessionAuthority {
         };
         authority.authority_digest = session_authority_digest(&authority)?;
         let root = state.session_root(&authority.session_id)?;
+        let session_directory = state.directory_at(&root)?;
+        session_directory.require_path_identity()?;
         for child in ["objects/sha256", "contexts", "plans", "candidates", "runs"] {
-            create_private_directory(&root.join(child))?;
+            session_directory.child(Path::new(child))?;
         }
         let source_repository_path = root.join("source");
         create_filtered_detached_worktree(
@@ -251,8 +256,9 @@ impl SessionAuthority {
             &authority.base_revision,
         )?;
         seal_source_worktree(&source_repository_path)?;
-        write_json_create_new(&root.join("authority.json"), &authority)?;
-        write_json_create_new(
+        write_managed_json_create_new(&state, &root.join("authority.json"), &authority)?;
+        write_managed_json_create_new(
+            &state,
             &root.join("locator.json"),
             &RepositoryLocator {
                 schema: "codeclew-repository-locator/3.0".into(),
@@ -268,7 +274,8 @@ impl SessionAuthority {
     pub fn load(session_id: &str) -> Result<(Self, PathBuf), ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(session_id)?;
-        let authority: Self = read_json_limited(&root.join("authority.json"), MAX_PLAN_BYTES)?;
+        let authority: Self =
+            read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
         if authority.schema != SESSION_SCHEMA
             || authority.session_id != session_id
             || authority.authority_digest != session_authority_digest(&authority)?
@@ -308,6 +315,12 @@ impl SessionAuthority {
         Ok(())
     }
 
+    pub fn open_admission(&self) -> Result<SessionAdmission, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        open_session_admission_with_state(self, &state, &root)
+    }
+
     pub fn close(&self) -> Result<SessionLifecycle, ClewError> {
         transition_session_terminal(self, SessionStatus::Closed)
     }
@@ -319,7 +332,7 @@ impl SessionAuthority {
     pub fn relocate(&self, repository: &Path) -> Result<SessionLifecycle, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
-        let _lock = SessionLifecycleLock::acquire(&root)?;
+        let _lock = SessionLifecycleLock::acquire(&state, &root)?;
         let lifecycle = load_session_lifecycle_unlocked(&state, &root, self)?;
         if lifecycle.status != SessionStatus::Open {
             return Err(ClewError::new(
@@ -344,7 +357,7 @@ impl SessionAuthority {
             ));
         }
         let locator: RepositoryLocator =
-            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+            read_managed_json(&state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
         validate_locator(&locator)?;
         let source = locator
             .source_repository_path
@@ -380,7 +393,7 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
-            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+            read_managed_json(&state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
         validate_locator(&locator)?;
         let path = locator
             .source_repository_path
@@ -404,7 +417,7 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
-            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+            read_managed_json(&state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
         validate_locator(&locator)?;
         let path = locator
             .target_repository_path
@@ -420,7 +433,7 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
-            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+            read_managed_json(&state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
         validate_locator(&locator)?;
         match (self.model_cache_policy, locator.external_build_state_path) {
             (ModelCachePolicy::SealedExternal, Some(path)) => {
@@ -458,7 +471,7 @@ impl SessionAuthority {
         }
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
-        let _lock = SessionLifecycleLock::acquire(&root)?;
+        let _lock = SessionLifecycleLock::acquire(&state, &root)?;
         if load_session_lifecycle_unlocked(&state, &root, self)?.status != SessionStatus::Open {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
@@ -502,7 +515,8 @@ impl SessionAuthority {
     pub fn load_context(&self, context_id: &str) -> Result<ContextObject, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
-        let mut object: ContextObject = read_json_limited(
+        let mut object: ContextObject = read_managed_json(
+            &state,
             &root.join("contexts").join(id_filename(context_id)?),
             MAX_PLAN_BYTES * 2,
         )?;
@@ -536,7 +550,7 @@ impl SessionAuthority {
         }
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
-        let _lock = SessionLifecycleLock::acquire(&root)?;
+        let _lock = SessionLifecycleLock::acquire(&state, &root)?;
         if load_session_lifecycle_unlocked(&state, &root, self)?.status != SessionStatus::Open {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
@@ -583,7 +597,8 @@ impl SessionAuthority {
     pub fn load_plan(&self, plan_id: &str) -> Result<PlanObject, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
-        let object: PlanObject = read_json_limited(
+        let object: PlanObject = read_managed_json(
+            &state,
             &root.join("plans").join(id_filename(plan_id)?),
             MAX_PLAN_BYTES * 2,
         )?;
@@ -627,16 +642,27 @@ impl SessionAuthority {
     }
 }
 
+fn open_session_admission_with_state(
+    authority: &SessionAuthority,
+    state: &StateAuthority,
+    root: &Path,
+) -> Result<SessionAdmission, ClewError> {
+    let lock = SessionLifecycleLock::acquire(state, root)?;
+    if load_session_lifecycle_unlocked(state, root, authority)?.status != SessionStatus::Open {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "session is terminal and cannot admit work",
+        ));
+    }
+    Ok(SessionAdmission { _lock: lock })
+}
+
 struct SessionLifecycleLock(File);
 
 impl SessionLifecycleLock {
-    fn acquire(root: &Path) -> Result<Self, ClewError> {
-        let path = root.join("lifecycle.lock");
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let file = options.open(path).map_err(io_error)?;
+    fn acquire(state: &StateAuthority, root: &Path) -> Result<Self, ClewError> {
+        let directory = state.directory_at(root)?;
+        let file = directory.open_lock(std::ffi::OsStr::new("lifecycle.lock"))?;
         #[cfg(unix)]
         if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
             return Err(io_error(std::io::Error::last_os_error()));
@@ -659,8 +685,10 @@ fn initialize_session_lifecycle(
     root: &Path,
     authority: &SessionAuthority,
 ) -> Result<(), ClewError> {
-    let _lock = SessionLifecycleLock::acquire(root)?;
-    if root.join("lifecycle.jsonl").exists() || root.join("lifecycle.json").exists() {
+    let _lock = SessionLifecycleLock::acquire(state, root)?;
+    if state.private_file_exists(&root.join("lifecycle.jsonl"))?
+        || state.private_file_exists(&root.join("lifecycle.json"))?
+    {
         return Err(invalid("session lifecycle already exists"));
     }
     let entry = SessionLifecycle {
@@ -681,7 +709,7 @@ fn load_session_lifecycle(
     root: &Path,
     authority: &SessionAuthority,
 ) -> Result<SessionLifecycle, ClewError> {
-    let _lock = SessionLifecycleLock::acquire(root)?;
+    let _lock = SessionLifecycleLock::acquire(state, root)?;
     load_session_lifecycle_unlocked(state, root, authority)
 }
 
@@ -691,16 +719,13 @@ fn load_session_lifecycle_unlocked(
     authority: &SessionAuthority,
 ) -> Result<SessionLifecycle, ClewError> {
     let path = root.join("lifecycle.jsonl");
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > MAX_SESSION_LIFECYCLE_BYTES
-    {
+    let bytes = state
+        .read_private_file(&path, MAX_SESSION_LIFECYCLE_BYTES as usize)
+        .map_err(|_| invalid("session lifecycle ledger is missing or unsafe"))?;
+    if bytes.is_empty() {
         return Err(invalid("session lifecycle ledger is missing or unsafe"));
     }
-    let bytes = fs::read(&path).map_err(io_error)?;
-    if bytes.len() as u64 != metadata.len() || bytes.last() != Some(&b'\n') {
+    if bytes.last() != Some(&b'\n') {
         return Err(invalid("session lifecycle ledger changed while reading"));
     }
     let mut previous: Option<SessionLifecycle> = None;
@@ -742,7 +767,7 @@ fn load_session_lifecycle_unlocked(
     let current = previous.ok_or_else(|| invalid("session lifecycle ledger is empty"))?;
     let projection_path = root.join("lifecycle.json");
     let projection_matches =
-        read_json_limited::<SessionLifecycle>(&projection_path, MAX_PLAN_BYTES).is_ok_and(
+        read_managed_json::<SessionLifecycle>(state, &projection_path, MAX_PLAN_BYTES).is_ok_and(
             |projection| canonical::bytes(&projection).ok() == canonical::bytes(&current).ok(),
         );
     if !projection_matches {
@@ -763,20 +788,17 @@ fn append_session_lifecycle(
     entry.event_hash = session_lifecycle_hash(&entry)?;
     let mut bytes = canonical::bytes(&entry).map_err(internal)?;
     bytes.push(b'\n');
-    let path = root.join("lifecycle.jsonl");
-    let existing = fs::symlink_metadata(&path).ok();
-    if existing.as_ref().is_some_and(|metadata| {
-        metadata.file_type().is_symlink()
-            || !metadata.is_file()
-            || metadata.len().saturating_add(bytes.len() as u64) > MAX_SESSION_LIFECYCLE_BYTES
-    }) {
+    let directory = state.directory_at(root)?;
+    let mut ledger = directory.open_append(std::ffi::OsStr::new("lifecycle.jsonl"))?;
+    if ledger
+        .metadata()
+        .map_err(io_error)?
+        .len()
+        .saturating_add(bytes.len() as u64)
+        > MAX_SESSION_LIFECYCLE_BYTES
+    {
         return Err(invalid("session lifecycle ledger is unsafe or oversized"));
     }
-    let mut options = OpenOptions::new();
-    options.create(true).append(true).write(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut ledger = options.open(path).map_err(io_error)?;
     ledger.write_all(&bytes).map_err(io_error)?;
     ledger.sync_all().map_err(io_error)?;
     state.write_private_atomic(
@@ -822,7 +844,7 @@ fn transition_session_terminal_with_state(
     state: &StateAuthority,
     root: &Path,
 ) -> Result<SessionLifecycle, ClewError> {
-    let _lock = SessionLifecycleLock::acquire(root)?;
+    let _lock = SessionLifecycleLock::acquire(state, root)?;
     let current = load_session_lifecycle_unlocked(state, root, authority)?;
     if current.status == target {
         return Ok(current);
@@ -909,8 +931,8 @@ fn ensure_session_run_reference(
     let path = session_root
         .join("runs")
         .join(format!("{}.json", id_component(&run.run_id, "run:")?));
-    if path.exists() {
-        let existing: SessionRunReference = read_json_limited(&path, MAX_PLAN_BYTES)?;
+    if state.private_file_exists(&path)? {
+        let existing: SessionRunReference = read_managed_json(state, &path, MAX_PLAN_BYTES)?;
         if canonical::bytes(&existing).map_err(internal)?
             != canonical::bytes(&reference).map_err(internal)?
         {
@@ -929,18 +951,15 @@ fn load_session_runs(
     session: &SessionAuthority,
 ) -> Result<Vec<RunRecord>, ClewError> {
     let references_root = session_root.join("runs");
-    let mut paths = fs::read_dir(&references_root)
-        .map_err(io_error)?
-        .map(|entry| entry.map(|entry| entry.path()).map_err(io_error))
-        .collect::<Result<Vec<_>, _>>()?;
-    paths.sort();
-    let mut runs = Vec::with_capacity(paths.len());
-    for path in paths {
-        let reference: SessionRunReference = read_json_limited(&path, MAX_PLAN_BYTES)?;
+    let references = state.directory_at(&references_root)?.entries()?;
+    let mut runs = Vec::with_capacity(references.len());
+    for name in references {
+        let path = references_root.join(&name);
+        let reference: SessionRunReference = read_managed_json(state, &path, MAX_PLAN_BYTES)?;
         if reference.schema != SESSION_RUN_REFERENCE_SCHEMA
             || reference.session_id != session.session_id
             || reference.session_authority_digest != session.authority_digest
-            || path.file_name()
+            || Some(name.as_os_str())
                 != Some(std::ffi::OsStr::new(&format!(
                     "{}.json",
                     id_component(&reference.run_id, "run:")?
@@ -949,7 +968,7 @@ fn load_session_runs(
             return Err(invalid("session run reference authority is invalid"));
         }
         let run_root = state.run_root(&reference.run_id)?;
-        let _run_lock = RunLedgerLock::acquire(&run_root)?;
+        let _run_lock = RunLedgerLock::acquire(state, &run_root)?;
         let run = load_run_projection(state, &run_root, &reference.run_id)?;
         if run.session_id != session.session_id || run.request_digest != reference.request_digest {
             return Err(invalid("session run ledger does not match its reference"));
@@ -980,7 +999,7 @@ fn garbage_collect_session_with_state(
     state: &StateAuthority,
     root: &Path,
 ) -> Result<SessionLifecycle, ClewError> {
-    let _lock = SessionLifecycleLock::acquire(root)?;
+    let _lock = SessionLifecycleLock::acquire(state, root)?;
     let current = load_session_lifecycle_unlocked(state, root, authority)?;
     if current.status == SessionStatus::GarbageCollected {
         return Ok(current);
@@ -1004,7 +1023,13 @@ fn garbage_collect_session_with_state(
             "session GC refuses active runs",
         ));
     }
-    let locator: RepositoryLocator = read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+    let session_directory = state.directory_at(root)?;
+    // Git requires a path, so destructive worktree operations are allowed
+    // only while that path still names the exact directory authority pinned
+    // by StateAuthority. A renamed/replaced state root fails closed here.
+    session_directory.require_path_identity()?;
+    let locator: RepositoryLocator =
+        read_managed_json(state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
     validate_locator(&locator)?;
     let target = locator
         .target_repository_path
@@ -1048,17 +1073,30 @@ fn garbage_collect_session_with_state(
         .iter()
         .map(|run| id_component(&run.run_id, "run:").map(str::to_owned))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    for entry in fs::read_dir(root.join("candidates")).map_err(io_error)? {
-        let entry = entry.map_err(io_error)?;
-        let metadata = entry.file_type().map_err(io_error)?;
-        let name = entry
-            .file_name()
+    let candidates_directory = session_directory.child(Path::new("candidates"))?;
+    for name in candidates_directory.entries()? {
+        let name = name
             .into_string()
             .map_err(|_| invalid("candidate directory name is not UTF-8"))?;
-        if !metadata.is_dir() || !expected_candidates.contains(&name) {
+        if !expected_candidates.contains(&name) {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
                 "session contains an unregistered candidate state directory",
+            ));
+        }
+        let candidate_directory = candidates_directory.child(Path::new(&name))?;
+        for entry in candidate_directory.entries()? {
+            if entry == std::ffi::OsStr::new("worktree") {
+                continue;
+            }
+            if entry == std::ffi::OsStr::new("staged-generation.json")
+                && candidate_directory.file_exists(&entry)?
+            {
+                continue;
+            }
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "candidate contains unknown state; GC refuses deletion",
             ));
         }
     }
@@ -1089,16 +1127,14 @@ fn garbage_collect_session_with_state(
             ));
         }
         let untracked = candidate_untracked_after_clean_tracked_check(&canonical)?;
-        let forced = !untracked.is_empty();
-        if forced
-            && (!force
-                || untracked
-                    .iter()
-                    .any(|path| !proven_derived_untracked(&canonical, path)))
-        {
+        if !untracked.is_empty() {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
-                "candidate contains untracked data that is not proven derived output",
+                if force {
+                    "candidate is non-empty and has no exact Codeclew-owned derived-output receipt; --force cannot delete it"
+                } else {
+                    "candidate is non-empty; remove its untracked outputs before GC"
+                },
             ));
         }
         removals.push(ManagedWorktreeRemoval {
@@ -1114,7 +1150,7 @@ fn garbage_collect_session_with_state(
         remove_managed_worktree(&target, &removal)?;
     }
     for run in &runs {
-        cleanup_candidate_derived_state(root, run)?;
+        cleanup_candidate_derived_state_with_authority(state, root, run)?;
         cleanup_run_derived_state(state, run)?;
     }
     let next = SessionLifecycle {
@@ -1187,25 +1223,6 @@ fn candidate_untracked_after_clean_tracked_check(root: &Path) -> Result<Vec<Stri
     Ok(untracked)
 }
 
-fn proven_derived_untracked(root: &Path, relative: &str) -> bool {
-    let path = Path::new(relative);
-    let derived_component = path.components().any(|component| {
-        let std::path::Component::Normal(name) = component else {
-            return false;
-        };
-        matches!(
-            name.to_str(),
-            Some("build" | "target" | "out" | ".gradle" | ".kotlin" | ".codeclew-build")
-        )
-    });
-    derived_component
-        && Command::new("git")
-            .args(["check-ignore", "-q", "--", relative])
-            .current_dir(root)
-            .status()
-            .is_ok_and(|status| status.success())
-}
-
 fn remove_managed_worktree(
     repository: &Path,
     removal: &ManagedWorktreeRemoval,
@@ -1270,28 +1287,19 @@ fn make_managed_worktree_removable(root: &Path) -> Result<(), ClewError> {
     }
 }
 
-fn cleanup_candidate_derived_state(root: &Path, run: &RunRecord) -> Result<(), ClewError> {
-    let candidate = root
-        .join("candidates")
-        .join(id_component(&run.run_id, "run:")?);
-    if !candidate.exists() {
-        return Ok(());
+fn cleanup_candidate_derived_state_with_authority(
+    state: &StateAuthority,
+    root: &Path,
+    run: &RunRecord,
+) -> Result<(), ClewError> {
+    let relative = Path::new("candidates").join(id_component(&run.run_id, "run:")?);
+    let session = state.directory_at(root)?;
+    let candidate_directory = session.child(&relative)?;
+    if candidate_directory.file_exists(std::ffi::OsStr::new("staged-generation.json"))? {
+        candidate_directory.remove_file(std::ffi::OsStr::new("staged-generation.json"))?;
     }
-    let metadata = fs::symlink_metadata(&candidate).map_err(io_error)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(invalid("candidate state root is unsafe"));
-    }
-    remove_regular_file_if_present(&candidate.join("staged-generation.json"))?;
-    let mut unexpected = fs::read_dir(&candidate)
-        .map_err(io_error)?
-        .map(|entry| entry.map(|entry| entry.path()).map_err(io_error))
-        .collect::<Result<Vec<_>, _>>()?;
-    unexpected.retain(|path| path.file_name() != Some(std::ffi::OsStr::new("worktree")));
+    let unexpected = candidate_directory.entries()?;
     if unexpected.is_empty() {
-        if candidate.join("worktree").exists() {
-            return Err(invalid("candidate worktree remains after managed removal"));
-        }
-        fs::remove_dir(&candidate).map_err(io_error)?;
         return Ok(());
     }
     Err(ClewError::new(
@@ -1302,24 +1310,14 @@ fn cleanup_candidate_derived_state(root: &Path, run: &RunRecord) -> Result<(), C
 
 fn cleanup_run_derived_state(state: &StateAuthority, run: &RunRecord) -> Result<(), ClewError> {
     let root = state.run_root(&run.run_id)?;
+    let directory = state.directory_at(&root)?;
     for name in ["prepared-v2.json", "stdout.log", "stderr.log"] {
-        remove_regular_file_if_present(&root.join(name))?;
+        let name = std::ffi::OsStr::new(name);
+        if directory.file_exists(name)? {
+            directory.remove_file(name)?;
+        }
     }
     Ok(())
-}
-
-fn remove_regular_file_if_present(path: &Path) -> Result<(), ClewError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(io_error(error)),
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(invalid(
-            "managed derived-state target is not a regular file",
-        ));
-    }
-    fs::remove_file(path).map_err(io_error)
 }
 
 impl RunRecord {
@@ -1359,7 +1357,7 @@ impl RunRecord {
     pub fn load(run_id: &str) -> Result<Self, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.run_root(run_id)?;
-        let _lock = RunLedgerLock::acquire(&root)?;
+        let _lock = RunLedgerLock::acquire(&state, &root)?;
         load_run_projection(&state, &root, run_id)
     }
 
@@ -1372,7 +1370,7 @@ impl RunRecord {
     pub fn create_once(&self) -> Result<bool, ClewError> {
         let state = StateAuthority::process_default()?;
         let (session, session_root) = SessionAuthority::load(&self.session_id)?;
-        let _session_lock = SessionLifecycleLock::acquire(&session_root)?;
+        let _session_lock = SessionLifecycleLock::acquire(&state, &session_root)?;
         let lifecycle = load_session_lifecycle_unlocked(&state, &session_root, &session)?;
         if lifecycle.status != SessionStatus::Open {
             return Err(ClewError::new(
@@ -1382,8 +1380,10 @@ impl RunRecord {
         }
         ensure_session_run_reference(&state, &session_root, &session, self)?;
         let root = state.run_root(&self.run_id)?;
-        let _lock = RunLedgerLock::acquire(&root)?;
-        if root.join("ledger.jsonl").exists() || root.join("record.json").exists() {
+        let _lock = RunLedgerLock::acquire(&state, &root)?;
+        if state.private_file_exists(&root.join("ledger.jsonl"))?
+            || state.private_file_exists(&root.join("record.json"))?
+        {
             let _ = load_run_projection(&state, &root, &self.run_id)?;
             return Ok(false);
         }
@@ -1397,11 +1397,14 @@ impl RunRecord {
     }
 
     pub fn candidate_root(&self) -> Result<PathBuf, ClewError> {
+        let state = StateAuthority::process_default()?;
         let (_, session_root) = SessionAuthority::load(&self.session_id)?;
+        let session = state.directory_at(&session_root)?;
+        session.require_path_identity()?;
         let root = session_root
             .join("candidates")
             .join(id_component(&self.run_id, "run:")?);
-        create_private_directory(&root)?;
+        session.child(&Path::new("candidates").join(id_component(&self.run_id, "run:")?))?;
         Ok(root)
     }
 }
@@ -1411,7 +1414,7 @@ fn save_run_transition(
     root: &Path,
     record: &mut RunRecord,
 ) -> Result<(), ClewError> {
-    let _lock = RunLedgerLock::acquire(root)?;
+    let _lock = RunLedgerLock::acquire(state, root)?;
     let current = load_run_projection(state, root, &record.run_id)?;
     if record.sequence != current.sequence || record.ledger_head != current.ledger_head {
         return Err(ClewError::new(
@@ -1437,13 +1440,9 @@ fn save_run_transition(
 struct RunLedgerLock(File);
 
 impl RunLedgerLock {
-    fn acquire(root: &Path) -> Result<Self, ClewError> {
-        let path = root.join("ledger.lock");
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let file = options.open(path).map_err(io_error)?;
+    fn acquire(state: &StateAuthority, root: &Path) -> Result<Self, ClewError> {
+        let directory = state.directory_at(root)?;
+        let file = directory.open_lock(std::ffi::OsStr::new("ledger.lock"))?;
         #[cfg(unix)]
         if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
             return Err(io_error(std::io::Error::last_os_error()));
@@ -1484,20 +1483,17 @@ fn append_run_entry(
     entry.event_hash = run_event_hash(&entry)?;
     let mut bytes = canonical::bytes(&entry).map_err(internal)?;
     bytes.push(b'\n');
-    let path = root.join("ledger.jsonl");
-    let existing = fs::symlink_metadata(&path).ok();
-    if existing.as_ref().is_some_and(|metadata| {
-        metadata.file_type().is_symlink()
-            || !metadata.is_file()
-            || metadata.len().saturating_add(bytes.len() as u64) > MAX_RUN_LEDGER_BYTES
-    }) {
+    let directory = state.directory_at(root)?;
+    let mut ledger = directory.open_append(std::ffi::OsStr::new("ledger.jsonl"))?;
+    if ledger
+        .metadata()
+        .map_err(io_error)?
+        .len()
+        .saturating_add(bytes.len() as u64)
+        > MAX_RUN_LEDGER_BYTES
+    {
         return Err(invalid("run ledger is unsafe or exceeds its limit"));
     }
-    let mut options = OpenOptions::new();
-    options.create(true).append(true).write(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut ledger = options.open(path).map_err(io_error)?;
     ledger.write_all(&bytes).map_err(io_error)?;
     ledger.sync_all().map_err(io_error)?;
     record.ledger_head = entry.event_hash;
@@ -1513,16 +1509,13 @@ fn load_run_projection(
     expected_run_id: &str,
 ) -> Result<RunRecord, ClewError> {
     let path = root.join("ledger.jsonl");
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > MAX_RUN_LEDGER_BYTES
-    {
+    let bytes = state
+        .read_private_file(&path, MAX_RUN_LEDGER_BYTES as usize)
+        .map_err(|_| invalid("run ledger is missing or unsafe"))?;
+    if bytes.is_empty() {
         return Err(invalid("run ledger is missing or unsafe"));
     }
-    let bytes = fs::read(&path).map_err(io_error)?;
-    if bytes.len() as u64 != metadata.len() || bytes.last() != Some(&b'\n') {
+    if bytes.last() != Some(&b'\n') {
         return Err(invalid("run ledger changed while reading"));
     }
     let mut previous = None::<RunLedgerEntry>;
@@ -1570,8 +1563,10 @@ fn load_run_projection(
     let mut projected = last.record;
     projected.ledger_head = last.event_hash;
     let projection_path = root.join("record.json");
-    let projection_matches = read_json_limited::<RunRecord>(&projection_path, MAX_PLAN_BYTES)
-        .is_ok_and(|record| canonical::bytes(&record).ok() == canonical::bytes(&projected).ok());
+    let projection_matches =
+        read_managed_json::<RunRecord>(state, &projection_path, MAX_PLAN_BYTES).is_ok_and(
+            |record| canonical::bytes(&record).ok() == canonical::bytes(&projected).ok(),
+        );
     if !projection_matches {
         state.write_private_atomic(
             &projection_path,
@@ -1725,7 +1720,7 @@ fn store_cas_json<T: Serialize>(
     let path = session_root
         .join("objects/sha256")
         .join(format!("{digest}.json"));
-    if path.exists() {
+    if state.private_file_exists(&path)? {
         return Ok(());
     }
     state.write_private_atomic(&path, &canonical::bytes(value).map_err(internal)?)
@@ -1784,27 +1779,34 @@ fn transaction_id(request_digest: &str) -> Result<String, ClewError> {
     Ok(format!("tx:{digest}"))
 }
 
-fn write_json_create_new<T: Serialize>(path: &Path, value: &T) -> Result<(), ClewError> {
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(path).map_err(io_error)?;
-    serde_json::to_writer(&mut file, value).map_err(parse_error)?;
+fn write_managed_json_create_new<T: Serialize>(
+    state: &StateAuthority,
+    path: &Path,
+    value: &T,
+) -> Result<(), ClewError> {
+    let relative = path
+        .strip_prefix(state.root())
+        .map_err(|_| invalid("managed JSON path escapes state authority"))?;
+    let parent = relative
+        .parent()
+        .ok_or_else(|| invalid("managed JSON path has no parent"))?;
+    let name = relative
+        .file_name()
+        .ok_or_else(|| invalid("managed JSON path has no file name"))?;
+    let mut file = state.directory(parent)?.create_file(name)?;
+    file.write_all(&canonical::bytes(value).map_err(internal)?)
+        .map_err(io_error)?;
     file.sync_all().map_err(io_error)
 }
 
-fn read_json_limited<T: for<'de> Deserialize<'de>>(
+fn read_managed_json<T: for<'de> Deserialize<'de>>(
+    state: &StateAuthority,
     path: &Path,
     limit: usize,
 ) -> Result<T, ClewError> {
-    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() as usize > limit {
-        return Err(invalid(
-            "managed JSON object is missing or exceeds its limit",
-        ));
-    }
-    let bytes = fs::read(path).map_err(io_error)?;
+    let bytes = state
+        .read_private_file(path, limit)
+        .map_err(|_| invalid("managed JSON object is missing or exceeds its limit"))?;
     serde_json::from_slice(&bytes).map_err(parse_error)
 }
 
@@ -2340,6 +2342,160 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_authority_ignores_a_replaced_state_root_path() {
+        let (_temporary, state, root, authority) = initialized_session();
+        let mut run = test_run();
+        let run_root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &run_root, &mut run, None).unwrap();
+        ensure_session_run_reference(&state, &root, &authority, &run).unwrap();
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        run.status = RunStatus::Failed;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+
+        let original_state_root = state.root().to_path_buf();
+        let pinned_state_root = original_state_root.with_file_name("pinned-v2");
+        fs::rename(&original_state_root, &pinned_state_root).unwrap();
+        let fake_session_root =
+            original_state_root.join(root.strip_prefix(&original_state_root).unwrap());
+        fs::create_dir_all(&fake_session_root).unwrap();
+        fs::write(fake_session_root.join("lifecycle.jsonl"), b"forged\n").unwrap();
+        fs::write(fake_session_root.join("lifecycle.json"), b"forged").unwrap();
+
+        let closed = transition_session_terminal_with_state(
+            &authority,
+            SessionStatus::Closed,
+            &state,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(closed.status, SessionStatus::Closed);
+        assert_eq!(
+            fs::read(fake_session_root.join("lifecycle.jsonl")).unwrap(),
+            b"forged\n"
+        );
+
+        let pinned_session_root =
+            pinned_state_root.join(root.strip_prefix(&original_state_root).unwrap());
+        let pinned_ledger = fs::read(pinned_session_root.join("lifecycle.jsonl")).unwrap();
+        assert!(
+            pinned_ledger
+                .windows(b"CLOSED".len())
+                .any(|bytes| bytes == b"CLOSED")
+        );
+        assert_eq!(
+            load_run_projection(&state, &run_root, &run.run_id)
+                .unwrap()
+                .status,
+            RunStatus::Failed
+        );
+    }
+
+    #[test]
+    fn close_cannot_cross_an_in_progress_resume_admission() {
+        use std::sync::{Arc, Barrier, mpsc};
+        use std::time::Duration;
+
+        let (_temporary, state, root, authority) = initialized_session();
+        let mut run = test_run();
+        let run_root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &run_root, &mut run, None).unwrap();
+        ensure_session_run_reference(&state, &root, &authority, &run).unwrap();
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+        run.status = RunStatus::Failed;
+        save_run_transition(&state, &run_root, &mut run).unwrap();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let (release_sender, release_receiver) = mpsc::channel();
+        let (close_sender, close_receiver) = mpsc::channel();
+        let resume_state = state.clone();
+        let resume_root = root.clone();
+        let resume_authority = authority.clone();
+        let resume_barrier = barrier.clone();
+        let resume = std::thread::spawn(move || {
+            let _admission =
+                open_session_admission_with_state(&resume_authority, &resume_state, &resume_root)
+                    .unwrap();
+            resume_barrier.wait();
+            release_receiver.recv().unwrap();
+            run.status = RunStatus::Created;
+            save_run_transition(&resume_state, &run_root, &mut run).unwrap();
+        });
+
+        let close_state = state.clone();
+        let close_root = root.clone();
+        let close_authority = authority.clone();
+        let close = std::thread::spawn(move || {
+            barrier.wait();
+            let result = transition_session_terminal_with_state(
+                &close_authority,
+                SessionStatus::Closed,
+                &close_state,
+                &close_root,
+            );
+            close_sender.send(result).unwrap();
+        });
+
+        assert!(matches!(
+            close_receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        release_sender.send(()).unwrap();
+        let error = close_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        resume.join().unwrap();
+        close.join().unwrap();
+        assert_eq!(
+            load_session_lifecycle(&state, &root, &authority)
+                .unwrap()
+                .status,
+            SessionStatus::Open
+        );
+    }
+
+    #[test]
+    fn gc_refuses_a_replaced_state_root_before_following_any_locator() {
+        let (_temporary, state, root, authority) = initialized_session();
+        transition_session_terminal_with_state(&authority, SessionStatus::Closed, &state, &root)
+            .unwrap();
+        state
+            .write_private_atomic(&root.join("preserve.marker"), b"owned state")
+            .unwrap();
+
+        let original_state_root = state.root().to_path_buf();
+        let pinned_state_root = original_state_root.with_file_name("pinned-v2");
+        fs::rename(&original_state_root, &pinned_state_root).unwrap();
+        let fake_session_root =
+            original_state_root.join(root.strip_prefix(&original_state_root).unwrap());
+        fs::create_dir_all(&fake_session_root).unwrap();
+        fs::write(fake_session_root.join("locator.json"), b"forged locator").unwrap();
+
+        let error =
+            garbage_collect_session_with_state(&authority, true, &state, &root).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert_eq!(
+            fs::read(fake_session_root.join("locator.json")).unwrap(),
+            b"forged locator"
+        );
+        let pinned_session_root =
+            pinned_state_root.join(root.strip_prefix(&original_state_root).unwrap());
+        assert_eq!(
+            fs::read(pinned_session_root.join("preserve.marker")).unwrap(),
+            b"owned state"
+        );
+        assert_eq!(
+            load_session_lifecycle(&state, &root, &authority)
+                .unwrap()
+                .status,
+            SessionStatus::Closed
+        );
+    }
+
+    #[test]
     fn lifecycle_tampering_fails_closed() {
         let (_temporary, state, root, authority) = initialized_session();
         let path = root.join("lifecycle.jsonl");
@@ -2350,7 +2506,7 @@ mod tests {
     }
 
     #[test]
-    fn gc_force_accepts_only_ignored_conventional_build_outputs() {
+    fn gc_cleanliness_reports_ignored_and_untracked_outputs_without_classifying_them() {
         let temporary = tempfile::tempdir().unwrap();
         let repository = temporary.path();
         assert!(
@@ -2392,11 +2548,9 @@ mod tests {
         fs::write(repository.join("build/output.class"), b"derived").unwrap();
         let paths = candidate_untracked_after_clean_tracked_check(repository).unwrap();
         assert_eq!(paths, vec!["build/".to_string()]);
-        assert!(proven_derived_untracked(repository, &paths[0]));
         fs::write(repository.join("notes.txt"), b"keep me").unwrap();
         let paths = candidate_untracked_after_clean_tracked_check(repository).unwrap();
         assert!(paths.iter().any(|path| path == "notes.txt"));
-        assert!(!proven_derived_untracked(repository, "notes.txt"));
         fs::write(repository.join("tracked"), b"changed\n").unwrap();
         assert!(candidate_untracked_after_clean_tracked_check(repository).is_err());
     }
@@ -2455,7 +2609,8 @@ mod tests {
         let source = root.join("source");
         create_filtered_detached_worktree(&repository, &source, &authority.base_revision).unwrap();
         seal_source_worktree(&source).unwrap();
-        write_json_create_new(
+        write_managed_json_create_new(
+            &state,
             &root.join("locator.json"),
             &RepositoryLocator {
                 schema: "codeclew-repository-locator/3.0".into(),
@@ -2482,13 +2637,16 @@ mod tests {
         )
         .unwrap();
         fs::create_dir(candidate_worktree.join("build")).unwrap();
-        fs::write(candidate_worktree.join("build/output.class"), b"derived").unwrap();
+        let private_output = candidate_worktree.join("build/private-notes.txt");
+        fs::write(&private_output, b"must survive").unwrap();
         run.status = RunStatus::Preparing;
         save_run_transition(&state, &run_root, &mut run).unwrap();
         run.candidate_commit = Some(authority.base_revision.clone());
         run.status = RunStatus::ValidatedConditional;
         save_run_transition(&state, &run_root, &mut run).unwrap();
-        fs::write(run_root.join("prepared-v2.json"), b"derived evidence").unwrap();
+        state
+            .write_private_atomic(&run_root.join("prepared-v2.json"), b"derived evidence")
+            .unwrap();
         transition_session_terminal_with_state(&authority, SessionStatus::Closed, &state, &root)
             .unwrap();
         fs::create_dir(repository.join(".semantic-thread")).unwrap();
@@ -2500,14 +2658,44 @@ mod tests {
         assert!(source.exists());
         assert!(candidate_worktree.exists());
 
+        let forced_error =
+            garbage_collect_session_with_state(&authority, true, &state, &root).unwrap_err();
+        assert_eq!(forced_error.code, ErrorCode::PreconditionFailed);
+        assert_eq!(fs::read(&private_output).unwrap(), b"must survive");
+        assert!(source.exists());
+        assert!(candidate_worktree.exists());
+
+        fs::remove_file(&private_output).unwrap();
+        fs::remove_dir(candidate_worktree.join("build")).unwrap();
+        let unknown_candidate_state = candidate.join("private-note");
+        fs::write(&unknown_candidate_state, b"must also survive").unwrap();
+        let unknown_error =
+            garbage_collect_session_with_state(&authority, true, &state, &root).unwrap_err();
+        assert_eq!(unknown_error.code, ErrorCode::PreconditionFailed);
+        assert_eq!(
+            fs::read(&unknown_candidate_state).unwrap(),
+            b"must also survive"
+        );
+        assert!(source.exists());
+        assert!(candidate_worktree.exists());
+        fs::remove_file(unknown_candidate_state).unwrap();
         let lifecycle =
-            garbage_collect_session_with_state(&authority, true, &state, &root).unwrap();
+            garbage_collect_session_with_state(&authority, false, &state, &root).unwrap();
 
         assert_eq!(lifecycle.status, SessionStatus::GarbageCollected);
         assert!(!source.exists());
-        assert!(!candidate.exists());
-        assert!(!run_root.join("prepared-v2.json").exists());
-        assert!(run_root.join("ledger.jsonl").is_file());
+        assert!(candidate.is_dir());
+        assert!(fs::read_dir(&candidate).unwrap().next().is_none());
+        assert!(
+            !state
+                .private_file_exists(&run_root.join("prepared-v2.json"))
+                .unwrap()
+        );
+        assert!(
+            state
+                .private_file_exists(&run_root.join("ledger.jsonl"))
+                .unwrap()
+        );
         assert_eq!(
             fs::read(repository.join(".semantic-thread/private")).unwrap(),
             b"legacy"
@@ -2636,7 +2824,9 @@ mod tests {
         let (_temporary, state, root, mut run) = initialized_run();
         run.status = RunStatus::Preparing;
         save_run_transition(&state, &root, &mut run).unwrap();
-        fs::write(root.join("record.json"), b"corrupt projection").unwrap();
+        state
+            .write_private_atomic(&root.join("record.json"), b"corrupt projection")
+            .unwrap();
 
         let recovered = load_run_projection(&state, &root, &run.run_id).unwrap();
 
@@ -2644,7 +2834,7 @@ mod tests {
         assert_eq!(recovered.sequence, 1);
         assert_eq!(recovered.ledger_head, run.ledger_head);
         let projection: RunRecord =
-            read_json_limited(&root.join("record.json"), MAX_PLAN_BYTES).unwrap();
+            read_managed_json(&state, &root.join("record.json"), MAX_PLAN_BYTES).unwrap();
         assert_eq!(projection.ledger_head, recovered.ledger_head);
     }
 

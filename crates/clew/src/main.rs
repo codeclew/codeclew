@@ -383,17 +383,11 @@ fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<V
 
 fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
     #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
     let state = clew::state::StateAuthority::process_default()?;
     let root = state.run_root(run_id)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true).write(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let stdout = options.open(root.join("stdout.log")).map_err(io_error)?;
-    let stderr = options.open(root.join("stderr.log")).map_err(io_error)?;
+    let stdout = state.open_private_append(&root.join("stdout.log"))?;
+    let stderr = state.open_private_append(&root.join("stderr.log"))?;
     let mut command = std::process::Command::new(std::env::current_exe().map_err(io_error)?);
     command
         .args(["__task-run-execute", "--run", run_id])
@@ -417,7 +411,10 @@ fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
 fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
     let mut record = RunRecord::load(run_id)?;
     let (session, _) = SessionAuthority::load(&record.session_id)?;
-    session.require_open()?;
+    // Admission stays locked until the inactive run is either classified as
+    // recovery-required or durably returned to CREATED and handed to the
+    // supervisor. close/abort use the same session -> run lock order.
+    let _admission = session.open_admission()?;
     if matches!(
         record.status,
         RunStatus::ReadyToPublish
@@ -577,6 +574,7 @@ fn publish_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
     }
     let state = clew::state::StateAuthority::process_default()?;
     let prepared: clew::task_run_v2::PreparedCandidateV2 = read_json(
+        &state,
         &state.run_root(run_id)?.join("prepared-v2.json"),
         16 * 1024 * 1024,
     )?;
@@ -624,7 +622,7 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
     let state = clew::state::StateAuthority::process_default()?;
     let run_root = state.run_root(run_id)?;
     let prepared_path = run_root.join("prepared-v2.json");
-    if !prepared_path.exists() {
+    if !state.private_file_exists(&prepared_path)? {
         let context = session.load_context(&record.context_id)?;
         let plan = session.load_plan(&record.plan_id)?;
         match clew::task_run_v2::recover_preparation(
@@ -659,7 +657,7 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
         }
     }
     let prepared: clew::task_run_v2::PreparedCandidateV2 =
-        read_json(&prepared_path, 16 * 1024 * 1024)?;
+        read_json(&state, &prepared_path, 16 * 1024 * 1024)?;
     match clew::task_run_v2::recover(&session, &prepared, &record.candidate_root()?) {
         Ok(recovery) => {
             record.status = RunStatus::Published;
@@ -763,12 +761,17 @@ fn terminate_verified_process_group(_pid: u32, _expected_start: &str) -> Result<
     ))
 }
 
-fn read_json<T: DeserializeOwned>(path: &Path, limit: usize) -> Result<T, ClewError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(io_error)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > limit as u64 {
-        return Err(invalid("managed JSON is missing, unsafe, or oversized"));
-    }
-    serde_json::from_slice(&std::fs::read(path).map_err(io_error)?).map_err(parse_error)
+fn read_json<T: DeserializeOwned>(
+    state: &clew::state::StateAuthority,
+    path: &Path,
+    limit: usize,
+) -> Result<T, ClewError> {
+    serde_json::from_slice(
+        &state
+            .read_private_file(path, limit)
+            .map_err(|_| invalid("managed JSON is missing, unsafe, or oversized"))?,
+    )
+    .map_err(parse_error)
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, ClewError> {
