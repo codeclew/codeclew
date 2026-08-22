@@ -50,6 +50,10 @@ impl KotlinCompilerLine {
 
 pub trait KotlinGenerationDriver: Send + Sync {
     fn analyze(&self, request: &AnalyzeGenerationRequest) -> Result<Value, ClewError>;
+
+    fn cancel(&self) -> Result<(), ClewError> {
+        Ok(())
+    }
 }
 
 pub struct KotlinAdapterV2<D> {
@@ -177,12 +181,12 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
             .lock()
             .map_err(poisoned)?
             .insert(attempt_id.into());
-        Ok(())
+        self.driver.cancel()
     }
 
     fn shutdown(&self) -> Result<(), ClewError> {
         self.stopped.store(true, Ordering::Release);
-        Ok(())
+        self.driver.cancel()
     }
 }
 
@@ -244,6 +248,13 @@ impl ProjectNativeKotlinAttempt {
 
     pub(crate) fn project_authority(&self) -> &Value {
         &self.project
+    }
+
+    pub(crate) fn cancellation_handle(&self) -> crate::worker::WorkerCancellationHandle {
+        self.worker
+            .as_ref()
+            .expect("live project-native worker")
+            .cancellation_handle()
     }
 
     pub(crate) fn analyze(

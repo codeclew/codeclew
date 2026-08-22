@@ -14,7 +14,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/worker_build_inputs.rs"));
@@ -137,7 +138,7 @@ pub struct RequestProfile {
 pub struct WorkerClient {
     workspace: PathBuf,
     variant: WorkerVariant,
-    child: Child,
+    process: OwnedWorkerProcess,
     stdin: ChildStdin,
     stdout: ChildStdout,
     next_id: u64,
@@ -154,6 +155,133 @@ pub struct WorkerClient {
     issued_index_facts: BTreeMap<Uuid, String>,
     issued_source_syntax: BTreeMap<Uuid, String>,
     request_counters: WorkerRequestCounters,
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkerCancellationHandle {
+    authority: Arc<Mutex<WorkerProcessGroupAuthority>>,
+}
+
+struct WorkerProcessGroupAuthority {
+    #[cfg(unix)]
+    pgid: i32,
+    active: bool,
+}
+
+impl WorkerCancellationHandle {
+    pub(crate) fn cancel(&self) -> Result<(), ClewError> {
+        let mut authority = self.authority.lock().map_err(|_| {
+            ClewError::new(ErrorCode::Internal, "worker process authority is poisoned")
+        })?;
+        if !authority.active {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        terminate_worker_process_group(authority.pgid)?;
+        authority.active = false;
+        Ok(())
+    }
+}
+
+struct OwnedWorkerProcess {
+    child: Child,
+    cancellation: WorkerCancellationHandle,
+}
+
+impl OwnedWorkerProcess {
+    fn new(child: Child) -> Result<Self, ClewError> {
+        #[cfg(unix)]
+        let pgid = i32::try_from(child.id())
+            .ok()
+            .filter(|pid| *pid > 1)
+            .ok_or_else(|| {
+                ClewError::new(ErrorCode::WorkerCrashed, "worker process id is invalid")
+            })?;
+        Ok(Self {
+            child,
+            cancellation: WorkerCancellationHandle {
+                authority: Arc::new(Mutex::new(WorkerProcessGroupAuthority {
+                    #[cfg(unix)]
+                    pgid,
+                    active: true,
+                })),
+            },
+        })
+    }
+
+    fn cancellation_handle(&self) -> WorkerCancellationHandle {
+        self.cancellation.clone()
+    }
+
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let status = self.child.wait()?;
+        // The worker may have exited while a project-native launcher remained.
+        // A successful protocol shutdown therefore still closes the complete
+        // process-group authority before the runtime can release its lease.
+        let _ = self.cancellation.cancel();
+        Ok(status)
+    }
+}
+
+impl Drop for OwnedWorkerProcess {
+    fn drop(&mut self) {
+        let _ = self.cancellation.cancel();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(unix)]
+fn terminate_worker_process_group(pgid: i32) -> Result<(), ClewError> {
+    signal_worker_process_group(pgid, libc::SIGTERM, false)?;
+    for _ in 0..40 {
+        if !worker_process_group_exists(pgid)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // If the original group disappeared during the grace period and its id was
+    // reused by another user, EPERM is a safe terminal observation: never
+    // broaden cancellation beyond the process group we created.
+    signal_worker_process_group(pgid, libc::SIGKILL, true)
+}
+
+#[cfg(unix)]
+fn signal_worker_process_group(
+    pgid: i32,
+    signal: i32,
+    permission_denied_is_terminal: bool,
+) -> Result<(), ClewError> {
+    let result = unsafe { libc::kill(-pgid, signal) };
+    let error = std::io::Error::last_os_error();
+    if result == 0
+        || error.raw_os_error() == Some(libc::ESRCH)
+        || (permission_denied_is_terminal && error.raw_os_error() == Some(libc::EPERM))
+    {
+        Ok(())
+    } else {
+        Err(ClewError::new(
+            ErrorCode::WorkerCrashed,
+            format!("cannot terminate worker process group: {}", error.kind()),
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn worker_process_group_exists(pgid: i32) -> Result<bool, ClewError> {
+    let result = unsafe { libc::kill(-pgid, 0) };
+    if result == 0 {
+        Ok(true)
+    } else {
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(false),
+            Some(libc::EPERM) => Ok(true),
+            _ => Err(ClewError::new(
+                ErrorCode::WorkerCrashed,
+                format!("cannot inspect worker process group: {}", error.kind()),
+            )),
+        }
+    }
 }
 
 const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -1042,6 +1170,8 @@ impl WorkerClient {
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: Option<&str>,
     ) -> Result<Self, ClewError> {
+        #[cfg(unix)]
+        use std::os::unix::process::CommandExt;
         let build_namespace_digest = build_namespace_digest
             .map(validate_build_namespace_digest)
             .transpose()?
@@ -1110,6 +1240,8 @@ impl WorkerClient {
             resolved_compiler_index.as_deref(),
             &build_namespace_digest,
         );
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command.spawn().map_err(|e| {
             ClewError::new(
                 ErrorCode::WorkerCrashed,
@@ -1118,6 +1250,7 @@ impl WorkerClient {
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
+        let process = OwnedWorkerProcess::new(child)?;
         let hello = read_message(&mut stdout)?;
         let capabilities = match hello.payload {
             Some(worker_response::Payload::Capabilities(value)) => value,
@@ -1139,7 +1272,7 @@ impl WorkerClient {
         Ok(Self {
             workspace: workspace.to_path_buf(),
             variant,
-            child,
+            process,
             stdin,
             stdout,
             next_id: 1,
@@ -1157,6 +1290,10 @@ impl WorkerClient {
             issued_source_syntax: BTreeMap::new(),
             request_counters: WorkerRequestCounters::default(),
         })
+    }
+
+    pub(crate) fn cancellation_handle(&self) -> WorkerCancellationHandle {
+        self.process.cancellation_handle()
     }
 
     fn switch_variant(&mut self, variant: WorkerVariant) -> Result<(), ClewError> {
@@ -1926,7 +2063,7 @@ impl WorkerClient {
     pub fn shutdown(mut self) -> Result<(), ClewError> {
         let _ = self.request(RequestKind::Shutdown, &serde_json::json!({}))?;
         let status = self
-            .child
+            .process
             .wait()
             .map_err(|e| ClewError::new(ErrorCode::WorkerCrashed, e.to_string()))?;
         if status.success() {
@@ -1937,13 +2074,6 @@ impl WorkerClient {
                 format!("worker exited with {status}"),
             ))
         }
-    }
-}
-
-impl Drop for WorkerClient {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -3056,6 +3186,55 @@ mod tests {
     use serde_json::json;
     use std::ffi::OsStr;
     use walkdir::WalkDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_cancellation_terminates_the_owned_descendant_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let descendant_file = root.path().join("descendant.pid");
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "sleep 30 & descendant=$!; echo $descendant > \"$1\"; wait",
+                "codeclew-worker-test",
+            ])
+            .arg(&descendant_file)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut process = OwnedWorkerProcess::new(child).unwrap();
+        for _ in 0..40 {
+            if descendant_file.is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let descendant = std::fs::read_to_string(&descendant_file)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        process.cancellation_handle().cancel().unwrap();
+        assert!(process.child.wait().unwrap().code().is_none());
+
+        for _ in 0..40 {
+            let status = Command::new("ps")
+                .args(["-o", "stat=", "-p", &descendant.to_string()])
+                .output()
+                .unwrap();
+            if !status.status.success()
+                || String::from_utf8_lossy(&status.stdout)
+                    .trim_start()
+                    .starts_with('Z')
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("worker descendant survived process-group cancellation");
+    }
 
     fn valid_compiler_index_profiling() -> Value {
         json!({

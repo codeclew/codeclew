@@ -123,9 +123,12 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 bootstrap,
                 "runtime_build_plan",
                 return_value={
+                    "profile": "PARALLEL",
                     "parallel": True,
                     "cargoWorkers": 2,
                     "gradleWorkers": 2,
+                    "inputWorkers": 4,
+                    "packageWorkers": 3,
                     "memoryBudgetBytes": 8 * 1024**3,
                 },
             ),
@@ -135,6 +138,56 @@ class BootstrapAuthorityTest(unittest.TestCase):
             with self.assertRaisesRegex(bootstrap.BootstrapError, "Gradle failed"):
                 bootstrap.build_toolchains(Path("/stage"), {})
         self.assertTrue(sibling_observed_cancel.is_set())
+
+    def test_explicit_cold_build_profiles_control_all_parallelism(self) -> None:
+        serial = bootstrap.runtime_build_plan(16, 32 * 1024**3, "SERIAL")
+        parallel = bootstrap.runtime_build_plan(16, 32 * 1024**3, "PARALLEL")
+        self.assertEqual(
+            (serial["parallel"], serial["cargoWorkers"], serial["gradleWorkers"]),
+            (False, 1, 1),
+        )
+        self.assertEqual((serial["inputWorkers"], serial["packageWorkers"]), (1, 1))
+        self.assertEqual(
+            (parallel["parallel"], parallel["cargoWorkers"], parallel["gradleWorkers"]),
+            (True, 8, 8),
+        )
+        self.assertEqual((parallel["inputWorkers"], parallel["packageWorkers"]), (8, 3))
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "cannot admit"):
+            bootstrap.runtime_build_plan(1, 4 * 1024**3, "PARALLEL")
+
+    def test_real_cold_profiles_use_exact_cargo_and_gradle_argv(self) -> None:
+        observed: list[tuple[str, list[str]]] = []
+
+        def record(
+            arguments: list[str],
+            _cwd: Path,
+            _environment: dict[str, str],
+            name: str,
+            _supervisor: bootstrap.BuildProcessSupervisor,
+        ) -> None:
+            observed.append((name, arguments))
+
+        serial = bootstrap.runtime_build_plan(8, 32 * 1024**3, "SERIAL")
+        with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
+            bootstrap.build_toolchains(Path("/stage"), {}, serial)
+        self.assertEqual([name for name, _ in observed], ["GRADLE_WORKERS", "CARGO_BINARIES"])
+        gradle, cargo = (arguments for _, arguments in observed)
+        self.assertNotIn("--parallel", gradle)
+        self.assertIn("--no-build-cache", gradle)
+        self.assertIn("--max-workers=1", gradle)
+        self.assertEqual(cargo[-2:], ["--jobs", "1"])
+
+        observed.clear()
+        parallel = bootstrap.runtime_build_plan(8, 32 * 1024**3, "PARALLEL")
+        with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
+            bootstrap.build_toolchains(Path("/stage"), {}, parallel)
+        self.assertEqual({name for name, _ in observed}, {"GRADLE_WORKERS", "CARGO_BINARIES"})
+        gradle = next(arguments for name, arguments in observed if name == "GRADLE_WORKERS")
+        cargo = next(arguments for name, arguments in observed if name == "CARGO_BINARIES")
+        self.assertIn("--parallel", gradle)
+        self.assertIn("--no-build-cache", gradle)
+        self.assertIn("--max-workers=4", gradle)
+        self.assertEqual(cargo[-2:], ["--jobs", "4"])
 
     def test_concurrent_runtime_lock_admits_exactly_one_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

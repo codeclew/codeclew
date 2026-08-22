@@ -404,8 +404,10 @@ fn build_ready(
 ) -> Result<ReadyGeneration, ClewError> {
     let line = compiler_line(&prepared.compiler_version)?.1;
     let semantic_output = Arc::new(Mutex::new(None));
+    let cancellation = live_attempt.cancellation_handle();
     let driver = LiveKotlinDriver {
         attempt: Mutex::new(Some(live_attempt)),
+        cancellation,
         store: store.clone(),
         output: Arc::clone(&semantic_output),
     };
@@ -830,6 +832,7 @@ struct SemanticExecutionOutput {
 
 struct LiveKotlinDriver {
     attempt: Mutex<Option<ProjectNativeKotlinAttempt>>,
+    cancellation: crate::worker::WorkerCancellationHandle,
     store: CasStore,
     output: Arc<Mutex<Option<SemanticExecutionOutput>>>,
 }
@@ -852,6 +855,10 @@ impl KotlinGenerationDriver for LiveKotlinDriver {
             worker_requests,
         });
         Ok(index)
+    }
+
+    fn cancel(&self) -> Result<(), ClewError> {
+        self.cancellation.cancel()
     }
 }
 

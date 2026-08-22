@@ -961,7 +961,13 @@ def runtime_key(mode: str, inputs: list[dict[str, object]], tools: dict[str, obj
     return "sha256:" + digest.hexdigest()
 
 
-def stage_inputs(source: Path, destination: Path, rows: list[dict[str, object]]) -> None:
+def stage_inputs(
+    source: Path,
+    destination: Path,
+    rows: list[dict[str, object]],
+    *,
+    workers: int | None = None,
+) -> None:
     destination.mkdir(mode=0o700)
 
     def copy(row: dict[str, object]) -> None:
@@ -971,7 +977,8 @@ def stage_inputs(source: Path, destination: Path, rows: list[dict[str, object]])
         shutil.copyfile(source / relative, target, follow_symlinks=False)
         os.chmod(target, 0o755 if row["mode"] else 0o600)
 
-    with ThreadPoolExecutor(max_workers=min(8, max(1, os.cpu_count() or 1))) as executor:
+    selected_workers = workers or min(8, max(1, os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=selected_workers) as executor:
         list(executor.map(copy, rows))
     verify_source_manifest(destination, rows, full_closure=False)
 
@@ -1076,23 +1083,35 @@ def verify_release_worker(stage: Path, manifest_relative: str, rows: list[dict[s
         )
 
 
-def runtime_build_plan(cpu_count: int, total_memory_bytes: int) -> dict[str, object]:
+def runtime_build_plan(
+    cpu_count: int,
+    total_memory_bytes: int,
+    profile: str = "AUTO",
+) -> dict[str, object]:
+    if profile not in {"AUTO", "SERIAL", "PARALLEL"}:
+        raise BootstrapError("cold build profile is invalid")
     cpu_count = max(1, cpu_count)
     reserved = max(1024**3, total_memory_bytes * 15 // 100)
     memory_budget = max(0, total_memory_bytes - reserved) * 70 // 100
     cargo_memory = 2 * 1024**3
     gradle_memory = 3 * 1024**3
-    parallel = cpu_count >= 2 and memory_budget >= cargo_memory + gradle_memory
+    parallel_admissible = cpu_count >= 2 and memory_budget >= cargo_memory + gradle_memory
+    if profile == "PARALLEL" and not parallel_admissible:
+        raise BootstrapError("host authority cannot admit the parallel cold build profile")
+    parallel = parallel_admissible if profile == "AUTO" else profile == "PARALLEL"
     if parallel:
         cargo_workers = max(1, cpu_count // 2)
         gradle_workers = max(1, cpu_count - cargo_workers)
     else:
-        cargo_workers = cpu_count
-        gradle_workers = cpu_count
+        cargo_workers = 1 if profile == "SERIAL" else cpu_count
+        gradle_workers = 1 if profile == "SERIAL" else cpu_count
     return {
+        "profile": profile,
         "parallel": parallel,
         "cargoWorkers": cargo_workers,
         "gradleWorkers": gradle_workers,
+        "inputWorkers": min(8, cpu_count) if parallel else 1,
+        "packageWorkers": len(WORKERS) if parallel else 1,
         "memoryBudgetBytes": memory_budget,
     }
 
@@ -1108,22 +1127,26 @@ def host_memory_bytes() -> int:
     raise BootstrapError("host memory authority is unavailable for capsule admission")
 
 
-def build_toolchains(stage: Path, environment: dict[str, str]) -> dict[str, object]:
-    plan = runtime_build_plan(os.cpu_count() or 1, host_memory_bytes())
+def build_toolchains(
+    stage: Path,
+    environment: dict[str, str],
+    plan: dict[str, object] | None = None,
+) -> dict[str, object]:
+    plan = plan or runtime_build_plan(os.cpu_count() or 1, host_memory_bytes())
     gradle = [
         str(stage / "gradlew"),
         ":workers:kotlin21:installDist",
         ":workers:kotlin23:installDist",
         ":workers:kotlin:installDist",
         "--no-daemon",
-        "--parallel",
-        "--build-cache",
+        *(["--parallel"] if plan["parallel"] else []),
+        "--no-build-cache" if plan["profile"] in {"SERIAL", "PARALLEL"} else "--build-cache",
         f"--max-workers={plan['gradleWorkers']}",
         "--quiet",
     ]
     cargo = [
         "cargo", "build", "--locked", "--release", "-p", "clew",
-        "--bin", "clew", "--bin", "semanticd", "--jobs", str(plan["cargoWorkers"]),
+        "--bin", "clew", "--jobs", str(plan["cargoWorkers"]),
     ]
     supervisor = BuildProcessSupervisor()
     max_workers = 2 if plan["parallel"] else 1
@@ -1246,26 +1269,38 @@ def verify_sealed_capsule(capsule: Path) -> None:
             raise BootstrapError("sealed capsule contains an unsupported entry")
 
 
-def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[dict[str, object]], tools: dict[str, object]) -> Path:
+def build_capsule(
+    source: Path,
+    root: Path,
+    key: str,
+    mode: str,
+    inputs: list[dict[str, object]],
+    tools: dict[str, object],
+    *,
+    build_profile: str = "AUTO",
+    evidence: dict[str, object] | None = None,
+) -> Path:
+    started = time.monotonic()
+    plan = runtime_build_plan(os.cpu_count() or 1, host_memory_bytes(), build_profile)
     temporary = Path(tempfile.mkdtemp(prefix="capsule-build-", dir=root / "tmp"))
     stage = temporary / "source"
     capsule = temporary / "capsule"
     try:
-        stage_inputs(source, stage, inputs)
+        stage_inputs(source, stage, inputs, workers=int(plan["inputWorkers"]))
         environment = build_environment(stage, root)
         build_cache_lock = root / "locks/build-cache.lock"
         with build_cache_lock.open("a+b") as lock:
             os.chmod(build_cache_lock, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
-            build_toolchains(stage, environment)
+            build_toolchains(stage, environment, plan)
         verify_source_manifest(stage, inputs, full_closure=False)
         (capsule / "bin").mkdir(mode=0o700, parents=True)
         cargo_target = Path(environment["CARGO_TARGET_DIR"]) / "release"
-        for name in ["clew", "semanticd"]:
+        for name in ["clew"]:
             shutil.copy2(cargo_target / name, capsule / "bin" / name)
             os.chmod(capsule / "bin" / name, 0o500)
         progress("STAGE_STARTED", "PACKAGE_AND_HASH_WORKERS")
-        with ThreadPoolExecutor(max_workers=len(WORKERS)) as executor:
+        with ThreadPoolExecutor(max_workers=int(plan["packageWorkers"])) as executor:
             packaged = executor.map(
                 lambda item: package_worker(stage, capsule, mode, item),
                 WORKERS.items(),
@@ -1273,7 +1308,7 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
             workers = dict(packaged)
         progress("STAGE_COMPLETED", "PACKAGE_AND_HASH_WORKERS")
         artifacts = {}
-        for name in ["clew", "semanticd"]:
+        for name in ["clew"]:
             path = capsule / "bin" / name
             artifacts[name] = {"path": f"bin/{name}", "size": path.stat().st_size, "sha256": digest_file(path)}
         manifest = {
@@ -1324,6 +1359,11 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
         except Exception as error:
             quarantine(root, destination, type(error).__name__)
             raise BootstrapError("published capsule could not be sealed") from error
+        if evidence is not None:
+            evidence.update({
+                "buildPlan": plan,
+                "wallMillis": int((time.monotonic() - started) * 1000),
+            })
         return destination
     finally:
         discard_private_tree(temporary)
@@ -1717,15 +1757,26 @@ def main() -> int:
         bootstrap_self_test()
         print(canonical({"schema": "codeclew-bootstrap-self-test/1.0", "status": "PASSED"}).decode())
         return 0
+    cold_evidence_profile = None
+    if len(command) == 1 and command[0].startswith("--bootstrap-cold-build-evidence="):
+        requested = command[0].split("=", 1)[1].upper()
+        if requested not in {"SERIAL", "PARALLEL"}:
+            raise BootstrapError("cold build evidence profile must be serial or parallel")
+        cold_evidence_profile = requested
     warm_audit = command == ["--bootstrap-warm-audit"]
     source = known.source_root.resolve(strict=True)
     root, state_fd = state_root()
     path_to_checkpoint = checkpoint_path(root, source)
-    checkpoint_key = read_checkpoint_candidate_key(path_to_checkpoint, root)
+    checkpoint_key = (
+        None
+        if cold_evidence_profile is not None
+        else read_checkpoint_candidate_key(path_to_checkpoint, root)
+    )
     checkpoint = None
     lease = None
     cold_toolchain_invoked = False
     capsule_build_invoked = False
+    cold_build_evidence: dict[str, object] = {}
     if checkpoint_key is not None:
         checkpoint_lock = root / "locks" / (
             f"runtime-{checkpoint_key.removeprefix('sha256:')}.lock"
@@ -1755,6 +1806,8 @@ def main() -> int:
             tools = toolchain_authority(source)
             key = runtime_key(mode, inputs, tools)
         capsule = root / "runtimes" / key.removeprefix("sha256:")
+        if cold_evidence_profile is not None and capsule.exists():
+            raise BootstrapError("cold build evidence requires a fresh CODECLEW_HOME")
         cold_toolchain_invoked = tools is not None
         lock_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lock"
         with lock_path.open("a+b") as lock:
@@ -1776,7 +1829,16 @@ def main() -> int:
                             "runtime locator disagrees with cold toolchain authority"
                         )
                 capsule_build_invoked = True
-                capsule = build_capsule(source, root, key, mode, inputs, tools)
+                capsule = build_capsule(
+                    source,
+                    root,
+                    key,
+                    mode,
+                    inputs,
+                    tools,
+                    build_profile=cold_evidence_profile or "AUTO",
+                    evidence=cold_build_evidence if cold_evidence_profile is not None else None,
+                )
             verify_capsule(capsule, key)
             write_locator(path_to_locator, locator, key)
             write_checkpoint(
@@ -1792,6 +1854,26 @@ def main() -> int:
         raise BootstrapError("runtime lease authority is unavailable")
     if checkpoint is None:
         garbage_collect_runtime_capsules(root, key)
+    if cold_evidence_profile is not None:
+        manifest = verify_capsule(capsule, key)
+        lease.close()
+        print(canonical({
+            "schema": "codeclew-real-cold-build-evidence/1.0",
+            "status": "MEASURED",
+            "mode": manifest["mode"],
+            "runtimeKey": key,
+            "manifestDigest": manifest["manifestDigest"],
+            "artifactHashes": {
+                name: value["sha256"]
+                for name, value in sorted(manifest["artifacts"].items())
+            },
+            "workerTreeHashes": {
+                name: value["treeHash"]
+                for name, value in sorted(manifest["workers"].items())
+            },
+            **cold_build_evidence,
+        }).decode())
+        return 0
     if warm_audit:
         lease.close()
         print(canonical(warm_audit_payload(cold_toolchain_invoked, capsule_build_invoked)).decode())
