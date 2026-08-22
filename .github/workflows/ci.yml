@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '21' }
       - uses: dtolnay/rust-toolchain@1.92.0
-        with: { components: rustfmt, clippy }
+        with: { components: 'rustfmt,clippy' }
       - uses: Swatinem/rust-cache@v2
       - run: chmod +x gradlew fixtures/kotlin-basic/gradlew scripts/*.sh
       - run: ./scripts/ci-verify.sh

@@ -858,17 +858,19 @@ fn io_error(error: std::io::Error) -> ClewError {
 fn detected_memory_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
-        let cgroup = fs::read_to_string("/sys/fs/cgroup/memory.max")
+        let cgroup = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok());
-        let host = fs::read_to_string("/proc/meminfo").ok().and_then(|value| {
-            value.lines().find_map(|line| {
-                line.strip_prefix("MemTotal:")
-                    .and_then(|rest| rest.split_whitespace().next())
-                    .and_then(|kib| kib.parse::<u64>().ok())
-                    .map(|kib| kib.saturating_mul(1024))
-            })
-        });
+        let host = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|value| {
+                value.lines().find_map(|line| {
+                    line.strip_prefix("MemTotal:")
+                        .and_then(|rest| rest.split_whitespace().next())
+                        .and_then(|kib| kib.parse::<u64>().ok())
+                        .map(|kib| kib.saturating_mul(1024))
+                })
+            });
         return match (host, cgroup) {
             (Some(host), Some(cgroup)) => Some(host.min(cgroup)),
             (Some(host), None) => Some(host),
