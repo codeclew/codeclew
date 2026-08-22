@@ -83,12 +83,23 @@ class BtaIncrementalBackend21 internal constructor(
                 .filter { it.className.startsWith("dev.semanticthread.worker.") }
                 .map { frame -> frame.methodName.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' || it == '_' } }
                 .firstOrNull(String::isNotBlank)
-                ?.take(40)
+                ?.take(32)
                 ?: "UNKNOWN"
+            val detail = when (error.message) {
+                "blank compiler fact row" -> "BLANK_ROW"
+                "compiler row is outside current sources" -> "ROW_OUTSIDE_SOURCES"
+                "duplicate file receipt" -> "DUPLICATE_RECEIPT"
+                "duplicate compiler fact" -> "DUPLICATE_FACT"
+                "fact without file receipt" -> "FACT_WITHOUT_RECEIPT"
+                "full receipt closure is incomplete" -> "FULL_RECEIPT_CLOSURE"
+                "incremental receipt closure misses source delta" -> "INCREMENTAL_RECEIPT_CLOSURE"
+                "Failed requirement." -> "REQUIREMENT"
+                else -> "UNKNOWN"
+            }
             failed21(
                 IncrementalK2Status.FAILED_RECOVERABLE,
                 started,
-                "K2_BACKEND_" + stage + "_" + origin + "_EXCEPTION",
+                ("K2_BACKEND_" + stage + "_" + origin + "_" + detail + "_EXCEPTION").take(96),
             )
         } catch (_: LinkageError) {
             failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_" + stage + "_LINKAGE")
