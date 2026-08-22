@@ -481,6 +481,47 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 legacy.chmod(stat.S_IRWXU)
                 nested_legacy.chmod(stat.S_IRWXU)
 
+    def test_executable_authority_is_independent_of_checkout_umask(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            stage = root / "stage"
+            bootstrap_file = source / "bootstrap" / "clew_bootstrap.py"
+            bootstrap_file.parent.mkdir(parents=True)
+            bootstrap_file.write_text("#!/usr/bin/env python3\n")
+            bootstrap_file.chmod(0o700)
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            subprocess.run(
+                ["git", "add", "bootstrap/clew_bootstrap.py"],
+                cwd=source,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Codeclew Tests",
+                    "-c", "user.email=tests@codeclew.invalid",
+                    "commit", "-qm", "fixture",
+                ],
+                cwd=source,
+                check=True,
+            )
+
+            rows, development = bootstrap.source_manifest(source)
+            self.assertFalse(development)
+            self.assertEqual(rows[0]["mode"], 0o111)
+            bootstrap.stage_inputs(source, stage, rows, workers=1)
+            self.assertEqual(stat.S_IMODE(bootstrap_file.stat().st_mode), 0o700)
+            self.assertEqual(
+                stat.S_IMODE((stage / "bootstrap/clew_bootstrap.py").stat().st_mode),
+                0o700,
+            )
+
+            bootstrap_file.chmod(0o755)
+            bootstrap.verify_source_manifest(source, rows)
+            bootstrap_file.chmod(0o600)
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "changed during bootstrap"):
+                bootstrap.verify_source_manifest(source, rows)
+
     def test_build_outputs_are_private_and_injection_environment_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

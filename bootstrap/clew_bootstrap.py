@@ -400,7 +400,10 @@ def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
         rows.append({
             "path": relative,
             "size": metadata.st_size,
-            "mode": metadata.st_mode & 0o111,
+            # Git's executable bit is boolean.  The process umask may materialize
+            # the same tracked executable as 0700 or 0755, but that must not
+            # create a different RELEASE authority.
+            "mode": 0o111 if metadata.st_mode & 0o111 else 0,
             "sha256": digest_file(path),
         })
     dirty_output = run(
@@ -431,7 +434,7 @@ def verify_source_manifest(
             stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISREG(metadata.st_mode)
             or metadata.st_size != row["size"]
-            or metadata.st_mode & 0o111 != row["mode"]
+            or (bool(metadata.st_mode & 0o111) != bool(row["mode"]))
             or digest_file(path) != row["sha256"]
         ):
             raise BootstrapError(f"runtime input changed during bootstrap: {row['path']}")
@@ -975,7 +978,7 @@ def stage_inputs(
         target = destination / relative
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.copyfile(source / relative, target, follow_symlinks=False)
-        os.chmod(target, 0o755 if row["mode"] else 0o600)
+        os.chmod(target, 0o700 if row["mode"] else 0o600)
 
     selected_workers = workers or min(8, max(1, os.cpu_count() or 1))
     with ThreadPoolExecutor(max_workers=selected_workers) as executor:
