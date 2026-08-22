@@ -5942,6 +5942,7 @@ mod adapter_local_tests {
                 reused_files: 3,
                 recovered: false,
                 fallback_used: false,
+                failure_code: None,
                 graph_digest: Some("a".repeat(64)),
                 semantic_input_manifest_digest: format!("sha256:{}", "b".repeat(64)),
                 facts_plugin_digest: format!("sha256:{}", "c".repeat(64)),
