@@ -117,6 +117,30 @@ struct LoadedIncrementalHead {
     ready: ReadyGeneration,
 }
 
+enum IncrementalHeadState {
+    Missing,
+    Ready(Box<LoadedIncrementalHead>),
+    Corrupt,
+}
+
+impl IncrementalHeadState {
+    fn ready(&self) -> Option<&LoadedIncrementalHead> {
+        match self {
+            Self::Ready(ready) => Some(ready.as_ref()),
+            Self::Missing | Self::Corrupt => None,
+        }
+    }
+
+    fn forced_full_plan(&self) -> Option<(IncrementalPlan, bool)> {
+        matches!(self, Self::Corrupt).then_some((
+            IncrementalPlan::Full {
+                reason: FullAnalysisReason::InvalidReceipt,
+            },
+            false,
+        ))
+    }
+}
+
 pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGeneration, ClewError> {
     let state = StateAuthority::process_default()?;
     let session_root = state.session_root(&session.session_id)?;
@@ -217,15 +241,19 @@ fn ensure_generation(
     }))
     .map_err(internal)?;
     let _head_lock = GenerationLock::acquire(&state, &head_lock_key)?;
-    let previous = load_incremental_head(&state, &store, &head_path)?;
-    let (plan, unchanged_is_exact) = incremental_plan_for(
-        &store,
-        &snapshot,
-        &snapshot_object,
-        &prepared,
-        &compiler_store,
-        previous.as_ref(),
-    )?;
+    let head = load_incremental_head_for_planning(&state, &store, &head_path)?;
+    let previous = head.ready();
+    let (plan, unchanged_is_exact) = match head.forced_full_plan() {
+        Some(forced) => forced,
+        None => incremental_plan_for(
+            &store,
+            &snapshot,
+            &snapshot_object,
+            &prepared,
+            &compiler_store,
+            previous,
+        )?,
+    };
     let ready = if unchanged_is_exact {
         build_unchanged_ready(
             &state,
@@ -235,7 +263,7 @@ fn ensure_generation(
             snapshot_object,
             generation_key,
             &prepared,
-            previous.as_ref().expect("exact unchanged head"),
+            previous.expect("exact unchanged head"),
             plan,
             live_attempt,
         )?
@@ -456,13 +484,7 @@ fn build_ready(
             coverage: coverage_label(&completeness).into(),
             certainty: certainty_label(&completeness).into(),
             obligations: obligation_codes(&completeness),
-            incremental: IncrementalExecutionEvidence {
-                schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
-                planned,
-                executed: IncrementalExecutionMode::Full,
-                subset_analysis_supported: false,
-                worker_requests: semantic.worker_requests,
-            },
+            incremental: full_execution_evidence(planned, semantic.worker_requests),
             incremental_receipt: incremental_receipt_object,
             repository_snapshot: snapshot_object,
             derived_input_manifest: prepared.derived_input_manifest,
@@ -546,6 +568,19 @@ fn build_unchanged_ready(
     verify_ready(store, &ready, session, true)?;
     journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
     Ok(ready)
+}
+
+fn full_execution_evidence(
+    planned: IncrementalPlan,
+    worker_requests: WorkerRequestCounters,
+) -> IncrementalExecutionEvidence {
+    IncrementalExecutionEvidence {
+        schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
+        planned,
+        executed: IncrementalExecutionMode::Full,
+        subset_analysis_supported: false,
+        worker_requests,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1435,9 +1470,12 @@ fn load_incremental_head(
         return Err(corrupt("incremental head authority is invalid"));
     }
     let receipt: IncrementalReceipt = read_canonical_object(store, &head.receipt)?;
-    receipt.validate()?;
+    receipt
+        .validate()
+        .map_err(|_| corrupt("incremental receipt authority is invalid"))?;
     let ready: ReadyGeneration = read_canonical_object(store, &head.ready)?;
-    verify_ready_authority(store, &ready, true)?;
+    verify_ready_authority(store, &ready, true)
+        .map_err(|_| corrupt("incremental ready authority is invalid"))?;
     if head.compiler_store_key != receipt.compiler_store_key
         || head.receipt != ready.incremental_receipt
         || receipt.generation_id != load_generation(store, &ready.generation)?.generation_id
@@ -1449,6 +1487,19 @@ fn load_incremental_head(
         receipt,
         ready,
     }))
+}
+
+fn load_incremental_head_for_planning(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+) -> Result<IncrementalHeadState, ClewError> {
+    match load_incremental_head(state, store, path) {
+        Ok(Some(ready)) => Ok(IncrementalHeadState::Ready(Box::new(ready))),
+        Ok(None) => Ok(IncrementalHeadState::Missing),
+        Err(error) if error.code == ErrorCode::StateCorrupt => Ok(IncrementalHeadState::Corrupt),
+        Err(error) => Err(error),
+    }
 }
 
 fn read_canonical_object<T: for<'de> Deserialize<'de> + Serialize>(
@@ -2010,6 +2061,53 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn delta_plan_executes_full_until_subset_protocol_exists() {
+        let planned = IncrementalPlan::Delta {
+            parent_generation_id: format!("sha256:{}", "1".repeat(64)),
+            changed_files: vec!["src/main/kotlin/Sample.kt".into()],
+            invalidated_files: vec![
+                "src/main/kotlin/Sample.kt".into(),
+                "src/test/kotlin/SampleTest.kt".into(),
+            ],
+        };
+        let requests = WorkerRequestCounters {
+            open_project_requests: 1,
+            index_files_requests: 1,
+        };
+
+        let evidence = full_execution_evidence(planned.clone(), requests);
+
+        assert_eq!(evidence.planned, planned);
+        assert_eq!(evidence.executed, IncrementalExecutionMode::Full);
+        assert!(!evidence.subset_analysis_supported);
+        assert_eq!(evidence.worker_requests, requests);
+    }
+
+    #[test]
+    fn corrupt_incremental_head_forces_invalid_receipt_full_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let head_path = state
+            .root()
+            .join("repos/test-repository/generations/incremental.json");
+        state
+            .write_private_atomic(&head_path, b"{not-json\n")
+            .unwrap();
+
+        let head = load_incremental_head_for_planning(&state, &store, &head_path).unwrap();
+        assert!(matches!(head, IncrementalHeadState::Corrupt));
+        let (plan, exact) = head.forced_full_plan().expect("corrupt head fallback");
+        assert_eq!(
+            plan,
+            IncrementalPlan::Full {
+                reason: FullAnalysisReason::InvalidReceipt,
+            },
+        );
+        assert!(!exact);
     }
 
     #[test]

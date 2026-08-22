@@ -843,6 +843,8 @@ mod tests {
     use crate::generation_v2::GenerationKind;
     use crate::incremental_v2::{COMPILER_STORE_KEY_SCHEMA, CompletenessVector};
     use crate::repository_snapshot;
+    use crate::worker::CompilerIndexStatus;
+    use std::path::Path;
 
     #[derive(Clone)]
     struct FakeDriver {
@@ -1177,6 +1179,102 @@ mod tests {
         assert!(sink.finish().unwrap().fact_count > 10);
     }
 
+    fn copy_kotlin_basic_fixture(destination: &Path) {
+        let source = workspace_root().join("fixtures/kotlin-basic");
+        for entry in walkdir::WalkDir::new(&source)
+            .into_iter()
+            .map(Result::unwrap)
+        {
+            let relative = entry.path().strip_prefix(&source).unwrap();
+            if relative.components().any(|component| {
+                matches!(
+                    component.as_os_str().to_str(),
+                    Some(".git" | ".gradle" | ".semantic-thread" | "build")
+                )
+            }) {
+                continue;
+            }
+            let target = destination.join(relative);
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target).unwrap();
+            } else if entry.file_type().is_file() {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+        let empty = destination.join("src/main/kotlin/com/acme/Empty.kt");
+        std::fs::write(empty, b"").unwrap();
+        for arguments in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=codeclew@localhost",
+                "commit",
+                "-qm",
+                "K24 acceptance fixture",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(destination)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "fixture Git command failed: {}",
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    fn real_k24_analysis(
+        state: &StateAuthority,
+        store: &CasStore,
+        fixture: &Path,
+        component: &str,
+    ) -> (
+        Value,
+        crate::worker::CompilerIndexProfile,
+        WorkerRequestCounters,
+    ) {
+        let (snapshot, _) = repository_snapshot::capture(fixture, store).unwrap();
+        let attempt =
+            ProjectNativeKotlinAttempt::open(state, store, &snapshot, ":/main", component, None)
+                .unwrap();
+        let (index, profile, requests) = attempt.analyze().unwrap();
+        (index, profile.expect("K24 compiler profile"), requests)
+    }
+
+    fn mutable_authority(state: &StateAuthority, component: &str) -> std::path::PathBuf {
+        let compiler_store = state
+            .root()
+            .join("generations/compiler-store")
+            .join(component);
+        let matches = walkdir::WalkDir::new(compiler_store)
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                entry.file_type().is_file()
+                    && entry.file_name() == "AUTHORITY"
+                    && entry
+                        .path()
+                        .parent()
+                        .and_then(Path::file_name)
+                        .is_some_and(|name| name == "mutable")
+            })
+            .map(|entry| entry.into_path())
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "one active K24 mutable authority");
+        matches.into_iter().next().unwrap()
+    }
+
+    fn assert_one_real_index_request(requests: &WorkerRequestCounters) {
+        assert_eq!(requests.open_project_requests, 1);
+        assert_eq!(requests.index_files_requests, 1);
+    }
+
     #[test]
     fn k24_real_worker_cold_then_product_unchanged_skips_index_files() {
         let root = tempfile::tempdir().unwrap();
@@ -1286,5 +1384,94 @@ mod tests {
             store.read(&receipt_object, 1024 * 1024).unwrap_err().code,
             ErrorCode::StateCorrupt
         );
+    }
+
+    #[test]
+    #[ignore = "release acceptance launches five real Kotlin 2.4 worker analyses"]
+    fn k24_real_bta_acceptance_matrix() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let fixture = fixture_root.path().join("kotlin-basic");
+        copy_kotlin_basic_fixture(&fixture);
+        let component = "a".repeat(64);
+
+        let (cold_index, cold, cold_requests) =
+            real_k24_analysis(&state, &store, &fixture, &component);
+        assert_eq!(cold.status, CompilerIndexStatus::ColdFull, "{cold:?}");
+        assert!(!cold.fallback_used, "cold profiling: {cold:?}");
+        assert_eq!(cold.compiled_files, cold.total_files);
+        assert!(
+            cold.total_files >= 3,
+            "empty source must have a receipt: {cold:?}"
+        );
+        assert_one_real_index_request(&cold_requests);
+
+        let (unchanged_index, unchanged, unchanged_requests) =
+            real_k24_analysis(&state, &store, &fixture, &component);
+        assert_eq!(
+            unchanged.status,
+            CompilerIndexStatus::UnchangedHit,
+            "{unchanged:?}"
+        );
+        assert_eq!(unchanged.compiled_files, 0);
+        assert_eq!(unchanged.reused_files, unchanged.total_files);
+        assert_eq!(unchanged.graph_digest, cold.graph_digest);
+        assert_eq!(
+            semantic_scope_digest(&unchanged_index).unwrap(),
+            semantic_scope_digest(&cold_index).unwrap(),
+        );
+        assert_one_real_index_request(&unchanged_requests);
+
+        let changed_source = fixture.join("src/main/kotlin/com/acme/Samples.kt");
+        let mut changed = std::fs::read_to_string(&changed_source).unwrap();
+        changed.push_str("\nfun bta24Changed(value: Int): Int = value + 1\n");
+        std::fs::write(&changed_source, changed).unwrap();
+        let (incremental_index, incremental, incremental_requests) =
+            real_k24_analysis(&state, &store, &fixture, &component);
+        assert_eq!(
+            incremental.status,
+            CompilerIndexStatus::Incremental,
+            "{incremental:?}"
+        );
+        assert!(incremental.compiled_files > 0);
+        assert!(incremental.compiled_files < incremental.total_files);
+        assert_eq!(
+            incremental.compiled_files + incremental.reused_files,
+            incremental.total_files,
+        );
+        assert_one_real_index_request(&incremental_requests);
+
+        let fresh_root = tempfile::tempdir().unwrap();
+        let fresh_state = StateAuthority::open(fresh_root.path().join("v2")).unwrap();
+        let fresh_store = CasStore::open(&fresh_state).unwrap();
+        let (fresh_index, fresh, fresh_requests) =
+            real_k24_analysis(&fresh_state, &fresh_store, &fixture, &component);
+        assert_eq!(fresh.status, CompilerIndexStatus::ColdFull, "{fresh:?}");
+        assert_eq!(
+            semantic_scope_digest(&fresh_index).unwrap(),
+            semantic_scope_digest(&incremental_index).unwrap(),
+            "incremental={incremental:?}; fresh={fresh:?}",
+        );
+        assert!(incremental.graph_digest.is_some());
+        assert!(fresh.graph_digest.is_some());
+        assert_one_real_index_request(&fresh_requests);
+
+        std::fs::write(mutable_authority(&state, &component), b"corrupt\n").unwrap();
+        let (recovered_index, recovered, recovered_requests) =
+            real_k24_analysis(&state, &store, &fixture, &component);
+        assert_eq!(
+            recovered.status,
+            CompilerIndexStatus::RecoveredFull,
+            "{recovered:?}"
+        );
+        assert!(recovered.recovered);
+        assert!(recovered.graph_digest.is_some());
+        assert_eq!(
+            semantic_scope_digest(&recovered_index).unwrap(),
+            semantic_scope_digest(&fresh_index).unwrap(),
+        );
+        assert_one_real_index_request(&recovered_requests);
     }
 }
