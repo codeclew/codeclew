@@ -1,6 +1,6 @@
 use crate::error::{ClewError, ErrorCode};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -10,13 +10,15 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
 #[cfg(unix)]
-use std::os::fd::{FromRawFd, RawFd};
-#[cfg(target_os = "linux")]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 pub const STATE_SCHEMA: &str = "codeclew-state-authority/2.0";
 
@@ -58,6 +60,9 @@ impl StateAuthority {
         }
     }
 
+    /// Test-only constructor. Production authority is accepted exclusively as
+    /// an inherited descriptor from the verified launcher.
+    #[cfg(test)]
     pub fn open(root: PathBuf) -> Result<Self, ClewError> {
         if !root.is_absolute()
             || root
@@ -66,28 +71,24 @@ impl StateAuthority {
         {
             return Err(invalid("state root must use normalized absolute spelling"));
         }
-        create_private_directory(&root)?;
-        let metadata = fs::symlink_metadata(&root).map_err(io_error)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(invalid("state root must be a real directory"));
-        }
         #[cfg(unix)]
         {
-            if metadata.uid() != unsafe { libc::geteuid() } {
-                return Err(invalid("state root must be owned by the current user"));
-            }
-            if metadata.permissions().mode() & 0o077 != 0 {
-                return Err(invalid(
-                    "state root must not be accessible by group or world",
-                ));
-            }
+            let parent = root
+                .parent()
+                .ok_or_else(|| invalid("state root has no parent"))?
+                .canonicalize()
+                .map_err(io_error)?;
+            let name = root
+                .file_name()
+                .ok_or_else(|| invalid("state root has no directory name"))?;
+            let root = parent.join(name);
+            let handle = open_absolute_private_directory(&root, true)?;
+            Self::from_handle(root, handle)
         }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
-        let handle = options.open(&root).map_err(io_error)?;
-        Self::from_handle(root, handle)
+        #[cfg(not(unix))]
+        {
+            Err(invalid("state descriptor authority requires POSIX"))
+        }
     }
 
     fn from_handle(root: PathBuf, handle: File) -> Result<Self, ClewError> {
@@ -104,6 +105,10 @@ impl StateAuthority {
                 return Err(invalid("state root descriptor must have mode 0700"));
             }
         }
+        let authority = Self {
+            root,
+            _root_handle: Arc::new(handle),
+        };
         for child in [
             "runtimes",
             "repos",
@@ -119,12 +124,9 @@ impl StateAuthority {
             "attempts",
             "gc",
         ] {
-            create_private_directory(&root.join(child))?;
+            authority.ensure_private_directory(Path::new(child))?;
         }
-        Ok(Self {
-            root,
-            _root_handle: Arc::new(handle),
-        })
+        Ok(authority)
     }
 
     pub fn root(&self) -> &Path {
@@ -154,19 +156,20 @@ impl StateAuthority {
     pub fn repository(&self, repo: &Path) -> Result<RepositoryState, ClewError> {
         let canonical = repo.canonicalize().map_err(io_error)?;
         let key = repository_key(&canonical)?;
-        let root = self.root.join("repos").join(&key);
+        let relative_root = Path::new("repos").join(&key);
+        let root = self.root.join(&relative_root);
         let repository_index = root.join("repository-index");
         let blobs = root.join("blobs/sha256");
         let model_cache = root.join("model-cache");
         let compiler_index = root.join("compiler-index");
         for directory in [
-            &root,
-            &repository_index,
-            &blobs,
-            &model_cache,
-            &compiler_index,
+            relative_root.clone(),
+            relative_root.join("repository-index"),
+            relative_root.join("blobs/sha256"),
+            relative_root.join("model-cache"),
+            relative_root.join("compiler-index"),
         ] {
-            create_private_directory(directory)?;
+            self.ensure_private_directory(&directory)?;
         }
         Ok(RepositoryState {
             key,
@@ -180,76 +183,340 @@ impl StateAuthority {
     }
 
     pub fn create_private_file(&self, relative: &Path) -> Result<File, ClewError> {
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(invalid("managed state file path is not canonical relative"));
-        }
-        let path = self.root.join(relative);
-        if !path.starts_with(&self.root) {
-            return Err(invalid("managed state file escapes its authority root"));
-        }
-        if let Some(parent) = path.parent() {
-            create_private_directory(parent)?;
-        }
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        options.open(path).map_err(io_error)
+        let (parent, name) = split_relative_file(relative)?;
+        let directory = self.open_private_directory(parent, true)?;
+        open_new_private_file_at(&directory, name)
     }
 
     pub fn session_root(&self, session_id: &str) -> Result<PathBuf, ClewError> {
         let name = managed_id_component(session_id, "session:")?;
-        let path = self.root.join("sessions").join(name);
-        create_private_directory(&path)?;
+        let relative = Path::new("sessions").join(name);
+        self.ensure_private_directory(&relative)?;
+        let path = self.root.join(relative);
         Ok(path)
     }
 
     pub fn run_root(&self, run_id: &str) -> Result<PathBuf, ClewError> {
         let name = managed_id_component(run_id, "run:")?;
-        let path = self.root.join("runs").join(name);
-        create_private_directory(&path)?;
+        let relative = Path::new("runs").join(name);
+        self.ensure_private_directory(&relative)?;
+        let path = self.root.join(relative);
         Ok(path)
     }
 
     pub fn write_private_atomic(&self, path: &Path, bytes: &[u8]) -> Result<(), ClewError> {
+        let relative = self.relative_path(path)?;
+        let (parent, name) = split_relative_file(relative)?;
+        let directory = self.open_private_directory(parent, true)?;
+        validate_replace_target_at(&directory, name)?;
+        let temporary_name = format!(".tmp-{}", uuid::Uuid::new_v4());
+        let temporary_name = std::ffi::OsStr::new(&temporary_name);
+        let mut file = open_new_private_file_at(&directory, temporary_name)?;
+        file.write_all(bytes).map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        drop(file);
+        if let Err(error) = rename_at(&directory, temporary_name, name) {
+            let _ = unlink_at(&directory, temporary_name);
+            return Err(error);
+        }
+        directory.sync_all().map_err(io_error)?;
+        Ok(())
+    }
+
+    fn relative_path<'a>(&self, path: &'a Path) -> Result<&'a Path, ClewError> {
         let relative = path
             .strip_prefix(&self.root)
             .map_err(|_| invalid("managed state file escapes its authority root"))?;
-        if relative.as_os_str().is_empty()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(invalid("managed state file path is not canonical"));
-        }
-        let parent = path
-            .parent()
-            .ok_or_else(|| invalid("managed state file has no parent"))?;
-        create_private_directory(parent)?;
-        let temporary = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&temporary).map_err(io_error)?;
-        file.write_all(bytes).map_err(io_error)?;
-        file.sync_all().map_err(io_error)?;
-        fs::rename(&temporary, path).map_err(io_error)?;
-        let mut directory_options = OpenOptions::new();
-        directory_options.read(true);
-        #[cfg(unix)]
-        directory_options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
-        directory_options
-            .open(parent)
-            .map_err(io_error)?
-            .sync_all()
-            .map_err(io_error)?;
-        Ok(())
+        validate_relative(relative)?;
+        Ok(relative)
     }
+
+    fn ensure_private_directory(&self, relative: &Path) -> Result<(), ClewError> {
+        self.open_private_directory(relative, true).map(drop)
+    }
+
+    fn open_private_directory(&self, relative: &Path, create: bool) -> Result<File, ClewError> {
+        validate_relative_or_empty(relative)?;
+        #[cfg(unix)]
+        {
+            let duplicate =
+                unsafe { libc::fcntl(self._root_handle.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+            if duplicate < 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+            let mut directory = unsafe { File::from_raw_fd(duplicate) };
+            for component in relative.components() {
+                let Component::Normal(name) = component else {
+                    return Err(invalid("managed state directory path is not canonical"));
+                };
+                directory = open_private_child_directory(&directory, name, create)?;
+            }
+            Ok(directory)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = create;
+            Err(invalid("descriptor-relative managed state requires POSIX"))
+        }
+    }
+}
+
+fn validate_relative(path: &Path) -> Result<(), ClewError> {
+    if path.as_os_str().is_empty() {
+        return Err(invalid("managed state path is empty"));
+    }
+    validate_relative_or_empty(path)
+}
+
+fn validate_relative_or_empty(path: &Path) -> Result<(), ClewError> {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(invalid("managed state path is not canonical relative"));
+    }
+    Ok(())
+}
+
+fn split_relative_file(path: &Path) -> Result<(&Path, &std::ffi::OsStr), ClewError> {
+    validate_relative(path)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| invalid("managed state file has no name"))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    Ok((parent, name))
+}
+
+#[cfg(unix)]
+fn component_name(value: &std::ffi::OsStr) -> Result<CString, ClewError> {
+    CString::new(value.as_bytes()).map_err(|_| invalid("managed state path contains NUL"))
+}
+
+#[cfg(all(test, unix))]
+fn open_absolute_private_directory(path: &Path, create_leaf: bool) -> Result<File, ClewError> {
+    if !path.is_absolute() {
+        return Err(invalid("state root must be absolute"));
+    }
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(Ok(value)),
+            Component::RootDir => None,
+            _ => Some(Err(invalid("state root path is not canonical"))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if components.is_empty() {
+        return Err(invalid("state root cannot be the filesystem root"));
+    }
+    let root = CString::new("/").expect("static root path");
+    let descriptor = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let mut directory = unsafe { File::from_raw_fd(descriptor) };
+    for (index, component) in components.iter().enumerate() {
+        let component = component_name(component)?;
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let mut child = unsafe { libc::openat(directory.as_raw_fd(), component.as_ptr(), flags) };
+        if child < 0 {
+            let error = std::io::Error::last_os_error();
+            if !create_leaf
+                || index + 1 != components.len()
+                || error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(io_error(error));
+            }
+            if unsafe { libc::mkdirat(directory.as_raw_fd(), component.as_ptr(), 0o700) } != 0 {
+                let mkdir_error = std::io::Error::last_os_error();
+                if mkdir_error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(io_error(mkdir_error));
+                }
+            }
+            child = unsafe { libc::openat(directory.as_raw_fd(), component.as_ptr(), flags) };
+            if child < 0 {
+                return Err(io_error(std::io::Error::last_os_error()));
+            }
+        }
+        directory = unsafe { File::from_raw_fd(child) };
+    }
+    validate_owned_directory_file(&directory)?;
+    if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    validate_private_directory_file(&directory)?;
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn validate_owned_directory_file(directory: &File) -> Result<(), ClewError> {
+    let metadata = directory.metadata().map_err(io_error)?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(invalid(
+            "managed state directory type or ownership is unsafe",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_private_directory_file(directory: &File) -> Result<(), ClewError> {
+    validate_owned_directory_file(directory)?;
+    if directory.metadata().map_err(io_error)?.permissions().mode() & 0o077 != 0 {
+        return Err(invalid("managed state directory permissions are unsafe"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_private_child_directory(
+    parent: &File,
+    name: &std::ffi::OsStr,
+    create: bool,
+) -> Result<File, ClewError> {
+    let name = component_name(name)?;
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let mut descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if descriptor < 0 {
+        let error = std::io::Error::last_os_error();
+        if !create || error.kind() != std::io::ErrorKind::NotFound {
+            return Err(io_error(error));
+        }
+        if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            let mkdir_error = std::io::Error::last_os_error();
+            if mkdir_error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(io_error(mkdir_error));
+            }
+        }
+        descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+        if descriptor < 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+    }
+    let directory = unsafe { File::from_raw_fd(descriptor) };
+    validate_owned_directory_file(&directory)?;
+    if unsafe { libc::fchmod(directory.as_raw_fd(), 0o700) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    validate_private_directory_file(&directory)?;
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn open_new_private_file_at(parent: &File, name: &std::ffi::OsStr) -> Result<File, ClewError> {
+    let name = component_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let file = unsafe { File::from_raw_fd(descriptor) };
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(invalid(
+            "managed state file ownership or permissions are unsafe",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_new_private_file_at(_parent: &File, _name: &std::ffi::OsStr) -> Result<File, ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
+}
+
+#[cfg(unix)]
+fn validate_replace_target_at(parent: &File, name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    let name = component_name(name)?;
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            status.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        return if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(())
+        } else {
+            Err(io_error(error))
+        };
+    }
+    let status = unsafe { status.assume_init() };
+    if status.st_mode & libc::S_IFMT != libc::S_IFREG
+        || status.st_uid != unsafe { libc::geteuid() }
+        || status.st_mode & 0o077 != 0
+    {
+        return Err(invalid("managed state replacement target is unsafe"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_replace_target_at(_parent: &File, _name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
+}
+
+#[cfg(unix)]
+fn rename_at(
+    parent: &File,
+    source: &std::ffi::OsStr,
+    destination: &std::ffi::OsStr,
+) -> Result<(), ClewError> {
+    let source = component_name(source)?;
+    let destination = component_name(destination)?;
+    if unsafe {
+        libc::renameat(
+            parent.as_raw_fd(),
+            source.as_ptr(),
+            parent.as_raw_fd(),
+            destination.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn rename_at(
+    _parent: &File,
+    _source: &std::ffi::OsStr,
+    _destination: &std::ffi::OsStr,
+) -> Result<(), ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
+}
+
+#[cfg(unix)]
+fn unlink_at(parent: &File, name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    let name = component_name(name)?;
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn unlink_at(_parent: &File, _name: &std::ffi::OsStr) -> Result<(), ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
 }
 
 #[cfg(unix)]
@@ -392,6 +659,9 @@ fn io_error(error: std::io::Error) -> ClewError {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+
     #[test]
     fn repository_state_is_external_private_and_path_free() {
         let home = tempfile::tempdir().unwrap();
@@ -406,5 +676,99 @@ mod tests {
                 .key
                 .contains(repo.path().to_string_lossy().as_ref())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descendant_symlink_cannot_redirect_session_creation() {
+        let parent = tempfile::tempdir().unwrap();
+        let state_root = parent.path().join("state");
+        let state = StateAuthority::open(state_root.clone()).unwrap();
+        let victim = parent.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        fs::remove_dir(state_root.join("sessions")).unwrap();
+        symlink(&victim, state_root.join("sessions")).unwrap();
+
+        assert!(state.session_root("session:redirected").is_err());
+        assert!(!victim.join("redirected").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_root_open_refuses_symlink_leaf() {
+        let parent = tempfile::tempdir().unwrap();
+        let victim = parent.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        symlink(&victim, parent.path().join("state")).unwrap();
+
+        assert!(StateAuthority::open(parent.path().join("state")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_remains_bound_to_open_root_after_path_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let state_root = parent.path().join("state");
+        let moved_root = parent.path().join("state-open-inode");
+        let state = StateAuthority::open(state_root.clone()).unwrap();
+        let session = state.session_root("session:bound").unwrap();
+        let receipt = session.join("receipt.json");
+
+        fs::rename(&state_root, &moved_root).unwrap();
+        fs::create_dir(&state_root).unwrap();
+        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(state_root.join("sessions")).unwrap();
+        fs::set_permissions(
+            state_root.join("sessions"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::create_dir(state_root.join("sessions/bound")).unwrap();
+        fs::set_permissions(
+            state_root.join("sessions/bound"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+
+        state.write_private_atomic(&receipt, b"trusted").unwrap();
+        assert_eq!(
+            fs::read(moved_root.join("sessions/bound/receipt.json")).unwrap(),
+            b"trusted"
+        );
+        assert!(!state_root.join("sessions/bound/receipt.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_refuses_symlink_target_without_touching_victim() {
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let session = state.session_root("session:symlink-target").unwrap();
+        let victim = parent.path().join("victim.json");
+        fs::write(&victim, b"private").unwrap();
+        let receipt = session.join("receipt.json");
+        symlink(&victim, &receipt).unwrap();
+
+        assert!(state.write_private_atomic(&receipt, b"forged").is_err());
+        assert_eq!(fs::read(victim).unwrap(), b"private");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_private_file_refuses_symlink_ancestor() {
+        let parent = tempfile::tempdir().unwrap();
+        let state_root = parent.path().join("state");
+        let state = StateAuthority::open(state_root.clone()).unwrap();
+        let victim = parent.path().join("victim");
+        fs::create_dir(&victim).unwrap();
+        fs::remove_dir(state_root.join("tmp")).unwrap();
+        symlink(&victim, state_root.join("tmp")).unwrap();
+
+        assert!(
+            state
+                .create_private_file(Path::new("tmp/escaped.json"))
+                .is_err()
+        );
+        assert!(!victim.join("escaped.json").exists());
     }
 }
