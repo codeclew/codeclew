@@ -17,51 +17,12 @@ enum RequestKind {
   HANDSHAKE = 1;
   OPEN_PROJECT = 2;
   INDEX_FILES = 3;
-  RESOLVE_SYMBOL = 4;
-  RESOLVE_EXPRESSION = 5;
-  BUILD_LOCAL_GRAPH = 6;
-  APPLY_EDIT = 7;
-  VALIDATE_CANDIDATE = 8;
   SHUTDOWN = 9;
-  BATCH = 10;
 }
 
 message OpenProjectRequest { SchemaVersion schema_version = 1; string repo = 2; optional string compilation = 3; }
 message IndexFilesRequest { SchemaVersion schema_version = 1; string repo = 2; optional string compilation = 3; bool syntax_only = 4; repeated string relative_files = 5; }
-message ResolveSymbolRequest { SchemaVersion schema_version = 1; string repo = 2; string symbol = 3; optional string compilation = 4; }
-message ResolveExpressionRequest { SchemaVersion schema_version = 1; string repo = 2; string file = 3; uint64 offset = 4; optional string compilation = 5; }
-message BuildLocalGraphRequest { SchemaVersion schema_version = 1; string repo = 2; string symbol = 3; optional string compilation = 4; }
-message ApplyEditRequest {
-  SchemaVersion schema_version = 1;
-  string repo = 2;
-  string file = 3;
-  bytes source_inline = 4;
-  BlobRef source_blob = 5;
-  string owner_symbol_id = 6;
-  string exact_text_hash = 7;
-  string syntax_kind = 8;
-  string normalized_token_hash = 9;
-  string ancestor_path_hash = 10;
-  optional uint64 local_ordinal = 11;
-  string left_context_hash = 12;
-  string right_context_hash = 13;
-  string operation_kind = 14;
-  string replacement = 15;
-  bytes preconditions_json = 16;
-  bytes postconditions_json = 17;
-  optional string compilation = 18;
-  bool defer_semantic_validation = 19;
-  bytes semantic_operation_json = 20;
-}
-message ValidateCandidateRequest {
-  SchemaVersion schema_version = 1;
-  string repo = 2;
-  string file = 3;
-  bytes source_inline = 4;
-  BlobRef source_blob = 5;
-}
 message ShutdownRequest { SchemaVersion schema_version = 1; }
-message BatchRequest { SchemaVersion schema_version = 1; repeated WorkerRequest requests = 2; }
 
 message WorkerRequest {
   uint64 request_id = 1;
@@ -70,13 +31,7 @@ message WorkerRequest {
   oneof payload {
     OpenProjectRequest open_project = 10;
     IndexFilesRequest index_files = 11;
-    ResolveSymbolRequest resolve_symbol = 12;
-    ResolveExpressionRequest resolve_expression = 13;
-    BuildLocalGraphRequest build_local_graph = 14;
-    ApplyEditRequest apply_edit = 15;
-    ValidateCandidateRequest validate_candidate = 16;
     ShutdownRequest shutdown = 17;
-    BatchRequest batch = 18;
   }
 }
 
@@ -97,13 +52,7 @@ message WorkerError {
 }
 message OpenProjectResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string project_model_hash = 4; string compiler_version = 5; string compilation = 6; }
 message IndexFilesResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string index_hash = 4; string project_model_hash = 5; string compilation = 6; uint64 file_count = 7; bool partial = 8; }
-message ResolveSymbolResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string symbol_id = 4; }
-message ResolveExpressionResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string anchor_id = 4; }
-message BuildLocalGraphResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string symbol_id = 4; uint64 node_count = 5; uint64 edge_count = 6; }
-message ApplyEditResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; string original_hash = 4; string candidate_hash = 5; bool k2_validated = 6; }
-message ValidateCandidateResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; repeated BlobRef blobs = 3; bool valid = 4; uint64 diagnostic_count = 5; }
 message ShutdownResponse { SchemaVersion schema_version = 1; bytes canonical_json = 2; }
-message BatchResponse { SchemaVersion schema_version = 1; repeated WorkerResponse responses = 2; }
 
 message WorkerResponse {
   uint64 request_id = 1;
@@ -112,13 +61,7 @@ message WorkerResponse {
     WorkerCapabilities capabilities = 10;
     OpenProjectResponse open_project = 11;
     IndexFilesResponse index_files = 12;
-    ResolveSymbolResponse resolve_symbol = 13;
-    ResolveExpressionResponse resolve_expression = 14;
-    BuildLocalGraphResponse build_local_graph = 15;
-    ApplyEditResponse apply_edit = 16;
-    ValidateCandidateResponse validate_candidate = 17;
     WorkerError error = 18;
     ShutdownResponse shutdown = 19;
-    BatchResponse batch = 20;
   }
 }

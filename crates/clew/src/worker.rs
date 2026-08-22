@@ -771,7 +771,11 @@ impl VerifiedSourceSyntax {
 
 struct TrustedWorkerDistribution {
     workspace: PathBuf,
-    _private_root: tempfile::TempDir,
+    // Capsule distributions are already sealed, verified by the launcher and
+    // protected by the inherited runtime lease. Checkout-only test/development
+    // starts retain the older private-copy contour.
+    _private_root: Option<tempfile::TempDir>,
+    sealed_runtime: bool,
     distribution_root: PathBuf,
     launcher: PathBuf,
     tree_manifest: BTreeMap<String, String>,
@@ -2144,21 +2148,17 @@ fn prepare_trusted_worker_distribution(
             ));
         }
         let source_distribution = runtime.verify_worker(variant.runtime_name())?;
-        let private_root = tempfile::Builder::new()
-            .prefix("codeclew-worker-authority-")
-            .tempdir()
-            .map_err(internal)?;
-        let distribution_root = private_root.path().join("distribution");
-        copy_regular_tree(&source_distribution, &distribution_root)?;
-        let tree_manifest = regular_tree_manifest(&distribution_root)?;
+        let tree_manifest = runtime_worker_manifest(runtime_worker);
         let tree_hash = hash_string_manifest(&tree_manifest);
         if tree_hash != runtime_worker.tree_hash {
             return Err(preparation_required(
-                "private worker copy differs from runtime authority",
+                "runtime worker manifest differs from runtime authority",
             ));
         }
-        let launcher = distribution_root.join("bin").join(variant.launcher_name());
-        let plugin = distribution_root
+        let launcher = source_distribution
+            .join("bin")
+            .join(variant.launcher_name());
+        let plugin = source_distribution
             .join("lib")
             .join(variant.plugin_jar_name());
         if !launcher.is_file() || !plugin.is_file() {
@@ -2169,8 +2169,9 @@ fn prepare_trusted_worker_distribution(
         }
         return Ok(Some(TrustedWorkerDistribution {
             workspace: canonical,
-            _private_root: private_root,
-            distribution_root,
+            _private_root: None,
+            sealed_runtime: true,
+            distribution_root: source_distribution,
             launcher,
             tree_manifest,
             tree_hash,
@@ -2220,7 +2221,8 @@ fn prepare_trusted_worker_distribution(
     }
     Ok(Some(TrustedWorkerDistribution {
         workspace: canonical,
-        _private_root: private_root,
+        _private_root: Some(private_root),
+        sealed_runtime: false,
         distribution_root,
         launcher,
         tree_manifest,
@@ -2228,6 +2230,19 @@ fn prepare_trusted_worker_distribution(
         build_input_digest: pinned.digest.to_owned(),
         plugin_fingerprint: crate::canonical::hash_bytes(&std::fs::read(plugin).map_err(internal)?),
     }))
+}
+
+fn runtime_worker_manifest(worker: &crate::runtime::RuntimeWorker) -> BTreeMap<String, String> {
+    worker
+        .files
+        .iter()
+        .map(|artifact| {
+            (
+                artifact.path.clone(),
+                format!("{}:{}", artifact.size, artifact.sha256),
+            )
+        })
+        .collect()
 }
 
 fn bootstrap_trusted_worker_distribution_if_missing(
@@ -2522,6 +2537,16 @@ fn hash_input_manifest(manifest: &BTreeMap<String, String>) -> String {
 }
 
 fn verify_trusted_distribution(trusted: &TrustedWorkerDistribution) -> Result<(), ClewError> {
+    if trusted.sealed_runtime {
+        let metadata = std::fs::symlink_metadata(&trusted.distribution_root).map_err(internal)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "sealed runtime worker distribution lost its directory identity",
+            ));
+        }
+        return Ok(());
+    }
     let actual = regular_tree_manifest(&trusted.distribution_root)?;
     if actual != trusted.tree_manifest || hash_string_manifest(&actual) != trusted.tree_hash {
         return Err(ClewError::new(
