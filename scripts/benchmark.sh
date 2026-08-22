@@ -7,7 +7,19 @@ mkdir -p benchmarks/reports
 
 BENCH_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-benchmark.XXXXXX")
 BENCH_ROOT=$(CDPATH= cd -- "$BENCH_ROOT" && pwd -P)
-trap 'rm -rf "$BENCH_ROOT"' EXIT INT TERM
+cleanup_benchmark_root() {
+  case "$BENCH_ROOT" in
+    "${TMPDIR:-/tmp}"/codeclew-benchmark.*|/private/var/folders/*/codeclew-benchmark.*)
+      chmod -R u+rwX "$BENCH_ROOT" 2>/dev/null || true
+      rm -rf -- "$BENCH_ROOT"
+      ;;
+    *)
+      printf '%s\n' 'refusing to clean an unexpected benchmark root' >&2
+      return 1
+      ;;
+  esac
+}
+trap cleanup_benchmark_root EXIT INT TERM
 mkdir "$BENCH_ROOT/repository"
 git archive HEAD fixtures/kotlin-basic |
   tar -x -C "$BENCH_ROOT/repository" --strip-components=2
