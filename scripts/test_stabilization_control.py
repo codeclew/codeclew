@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -120,6 +121,40 @@ class StabilizationControlTest(unittest.TestCase):
         exit_code, duration, _stdout, _stderr = control.invoke(check, tier, self.authority)
         self.assertEqual(exit_code, 124)
         self.assertLess(duration, 7000)
+
+    def test_completion_fails_closed_when_required_check_authority_changes(self) -> None:
+        step = "S0"
+        authorities = {
+            check_id: control.check_authority_digest(
+                self.model["checks"][check_id], self.authority
+            )
+            for check_id in self.model["steps"][step]["requiredChecks"]
+        }
+        completion = {
+            **self.authority,
+            "checkAuthorities": authorities,
+            "receiptDigests": [],
+            "schema": "codeclew-stabilization-step-completion/1.0",
+            "sourceRevision": control.git("rev-parse", "HEAD"),
+            "status": "COMPLETE",
+            "stepId": step,
+        }
+        completion["completionDigest"] = control.digest_bytes(
+            control.canonical(completion)
+        )
+        control.atomic_private_write(
+            control.completion_path(self.authority, step),
+            control.canonical(completion) + b"\n",
+        )
+        self.assertTrue(control.valid_completion(self.model, self.authority, step))
+
+        changed = "sha256:" + "f" * 64
+        with mock.patch.object(
+            control, "check_authority_digest", return_value=changed
+        ):
+            self.assertFalse(
+                control.valid_completion(self.model, self.authority, step)
+            )
 
 
 if __name__ == "__main__":

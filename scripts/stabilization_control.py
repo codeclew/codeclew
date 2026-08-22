@@ -274,6 +274,23 @@ def environment_digest(check: dict[str, object]) -> str:
 
 def evidence_digest(check: dict[str, object], authority: dict[str, str]) -> str:
     value = {
+        "checkAuthorityDigest": check_authority_digest(check, authority),
+        "sourceRevision": git("rev-parse", "HEAD"),
+    }
+    return digest_bytes(canonical(value))
+
+
+def check_authority_digest(
+    check: dict[str, object], authority: dict[str, str]
+) -> str:
+    """Return the current reusable authority for one check.
+
+    The source revision belongs to the historical receipt, but not to this
+    digest: an unrelated descendant commit must not invalidate a completed
+    step. Relevant input bytes, command/environment/host authority, or any
+    controller/plan/verifier change must invalidate it.
+    """
+    value = {
         **authority,
         "clean": is_clean(),
         "commandDigest": digest_bytes(canonical(check["command"])),
@@ -281,7 +298,6 @@ def evidence_digest(check: dict[str, object], authority: dict[str, str]) -> str:
         "memoryBytes": memory_bytes(),
         "physicalCores": physical_cores(),
         "sourceInputDigest": input_digest(check),
-        "sourceRevision": git("rev-parse", "HEAD"),
     }
     return digest_bytes(canonical(value))
 
@@ -336,23 +352,30 @@ def completion_path(authority: dict[str, str], step: str) -> Path:
     return plan_state(authority) / "completions" / f"{step}.json"
 
 
-def valid_completion(authority: dict[str, str], step: str) -> bool:
+def valid_completion(
+    model: dict[str, object], authority: dict[str, str], step: str
+) -> bool:
     path = completion_path(authority, step)
     try:
         value = load_json(path)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return False
+    required = {
+        check_id: check_authority_digest(model["checks"][check_id], authority)
+        for check_id in model["steps"][step]["requiredChecks"]
+    }
     return (
         isinstance(value, dict)
         and value.get("status") == "COMPLETE"
         and value.get("stepId") == step
+        and value.get("checkAuthorities") == required
         and has_valid_embedded_digest(value, "completionDigest")
         and all(value.get(key) == authority[key] for key in authority)
     )
 
 
 def require_dependencies(model: dict[str, object], authority: dict[str, str], step: str) -> None:
-    missing = [dependency for dependency in model["steps"][step]["dependencies"] if not valid_completion(authority, dependency)]
+    missing = [dependency for dependency in model["steps"][step]["dependencies"] if not valid_completion(model, authority, dependency)]
     if missing:
         raise ControlError("step prerequisites are incomplete: " + ",".join(missing))
 
@@ -594,6 +617,10 @@ def seal_step(model: dict[str, object], authority: dict[str, str], step: str) ->
     with exclusive_lock(authority, f"completion-{step}"):
         completion: dict[str, object] = {
             **authority,
+            "checkAuthorities": {
+                check_id: check_authority_digest(model["checks"][check_id], authority)
+                for check_id in model["steps"][step]["requiredChecks"]
+            },
             "receiptDigests": sorted(receipt_digests),
             "schema": "codeclew-stabilization-step-completion/1.0",
             "sourceRevision": git("rev-parse", "HEAD"),
@@ -606,7 +633,7 @@ def seal_step(model: dict[str, object], authority: dict[str, str], step: str) ->
 
 
 def status(model: dict[str, object], authority: dict[str, str]) -> dict[str, object]:
-    completed = [step for step in model["order"] if valid_completion(authority, step)]
+    completed = [step for step in model["order"] if valid_completion(model, authority, step)]
     next_step = next((step for step in model["order"] if step not in completed and all(dependency in completed for dependency in model["steps"][step]["dependencies"])), None)
     return {
         "completed": completed,
