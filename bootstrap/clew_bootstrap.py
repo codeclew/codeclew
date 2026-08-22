@@ -1059,7 +1059,7 @@ def _validate_component_value(value: object, depth: int = 0) -> None:
         raise BootstrapError("runtime component authority is too deeply nested")
     if value is None or isinstance(value, (bool, int, str)):
         return
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         for item in value:
             _validate_component_value(item, depth + 1)
         return
@@ -2501,6 +2501,7 @@ def main() -> int:
         bootstrap_self_test()
         print(canonical({"schema": "codeclew-bootstrap-self-test/1.0", "status": "PASSED"}).decode())
         return 0
+    component_preflight = command == ["--bootstrap-component-preflight"]
     cold_evidence_profile = None
     if len(command) == 1 and command[0].startswith("--bootstrap-cold-build-evidence="):
         requested = command[0].split("=", 1)[1].upper()
@@ -2509,6 +2510,20 @@ def main() -> int:
         cold_evidence_profile = requested
     warm_audit = command == ["--bootstrap-warm-audit"]
     source = known.source_root.resolve(strict=True)
+    if component_preflight:
+        inputs, development = source_manifest(source)
+        mode = "DEVELOPMENT" if development else "RELEASE"
+        tools = toolchain_authority(source)
+        specs = runtime_component_specs(
+            mode, inputs, tools, load_component_registry(source)
+        )
+        print(canonical({
+            "componentIds": sorted(spec["componentId"] for spec in specs),
+            "mode": mode,
+            "schema": "codeclew-runtime-component-preflight/1.0",
+            "status": "PASS",
+        }).decode())
+        return 0
     root, state_fd = state_root()
     path_to_checkpoint = checkpoint_path(root, source)
     checkpoint_key = (

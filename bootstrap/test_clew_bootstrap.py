@@ -308,6 +308,17 @@ class BootstrapAuthorityTest(unittest.TestCase):
             bootstrap.component_authority(
                 "RELEASE", "core-binary", "clew", [core], {"ratio": 0.5}, contract
             )
+        tuple_authority = bootstrap.component_authority(
+            "RELEASE",
+            "core-binary",
+            "clew",
+            [core],
+            {"libc": ("libSystem", "")},
+            {"entrypoint": "bin/clew"},
+        )
+        self.assertTrue(
+            bootstrap.valid_runtime_key(tuple_authority["componentKey"])
+        )
 
     def test_component_publish_verify_materialize_and_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -104,10 +104,32 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+"$ROOT/clew" --bootstrap-component-preflight \
+  >"$WORK/component-preflight.json" \
+  2>"$WORK/component-preflight.stderr"
+python3 -I -S - "$WORK/component-preflight.json" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_bytes())
+if (
+    value.get("schema") != "codeclew-runtime-component-preflight/1.0"
+    or value.get("status") != "PASS"
+    or value.get("mode") != "RELEASE"
+    or not isinstance(value.get("componentIds"), list)
+    or not value["componentIds"]
+    or value["componentIds"] != sorted(set(value["componentIds"]))
+):
+    raise SystemExit("trusted seed component preflight is invalid")
+PY
+
 CODECLEW_HOME="$WORK/parallel-state" \
-  "$ROOT/clew" --bootstrap-cold-build-evidence=parallel >"$WORK/parallel.json"
+  "$ROOT/clew" --bootstrap-cold-build-evidence=parallel \
+  >"$WORK/parallel.json" 2>"$WORK/parallel.stderr"
 CODECLEW_HOME="$WORK/serial-state" \
-  "$ROOT/clew" --bootstrap-cold-build-evidence=serial >"$WORK/serial.json"
+  "$ROOT/clew" --bootstrap-cold-build-evidence=serial \
+  >"$WORK/serial.json" 2>"$WORK/serial.stderr"
 
 if [ "$(git rev-parse --verify HEAD)" != "$SOURCE_REVISION" ] || \
    [ "$(git rev-parse --verify HEAD^{tree})" != "$SOURCE_TREE" ] || \
