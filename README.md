@@ -15,7 +15,9 @@ The only supported executable entrypoint is `./clew`.
 
 Kotlin workers for 2.1.21, 2.3.0, and 2.4.10 are packaged into an immutable
 runtime capsule. A cold start may build the capsule. A warm invocation verifies
-and reuses it without running Cargo, Rustc, Gradle, or Maven.
+and reuses it without running Cargo, Rustc, Gradle, or Maven. Workers execute
+directly from that sealed capsule under its shared lease; the warm path does not
+copy their distributions.
 
 ## Workflow
 
@@ -124,6 +126,8 @@ and run; there is no confidence threshold or automatic promotion.
 The CLI writes canonical JSON to stdout and diagnostics to stderr. The system is
 fail-closed for stale authorities, ambiguous anchors, unsupported project
 models, dirty checked-out publication targets, and recovery uncertainty.
+Each cold generation also retains a private `dag-report.json` with total work,
+critical path, observed parallelism, and the number of sealed compiler streams.
 
 ## Repository map
 

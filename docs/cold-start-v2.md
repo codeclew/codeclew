@@ -126,6 +126,13 @@ constraint. Its v2 RPC surface is:
 Generation queries are owned by immutable core indexes and candidate validation
 is owned by the transaction layer; neither is an adapter RPC.
 
+The Kotlin adapter currently realizes `AnalyzeGeneration` through one private,
+closed bridge containing only `OpenProject`, `IndexFiles`, and `Shutdown`.
+Historical resolve/edit/validate/batch messages are absent from the Rust schema
+and cannot be constructed by the core. The remaining inert Kotlin handlers are
+not publication authority and may be deleted only after compiler-backed context
+can prove their complete private call closure.
+
 Transport protobuf is not evidence. The core decodes closed typed structures
 and owns canonicalization and CAS publication. A fake `.zeta` provider/adapter
 must be dynamically registerable without changing or recompiling the core.
@@ -172,6 +179,11 @@ runs. A deterministic external merge orders by `FactKey` and greedily packs
 exact canonical records into shards no larger than 8 MiB. Job count and arrival
 order cannot affect shard boundaries or digests. `jobs=1` and `jobs=N` must
 produce byte-identical objects and generation digests.
+
+Every execution persists a private DAG report containing total stage work,
+critical-path span, observed parallelism, and the adapter stage's exact sealed
+compiler-stream count. Kotlin monolith reports one stream; parallel speedup is
+claimed only for independent work outside that stream.
 
 CAS writes use directory authority, `openat2` or component-by-component
 `openat(O_NOFOLLOW)`, owner/mode validation, same-filesystem temporary files,
