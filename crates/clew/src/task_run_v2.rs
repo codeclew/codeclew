@@ -10,11 +10,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -330,11 +332,17 @@ pub fn publish(
         ));
     }
     let repo = session.target_repository_path()?;
+    let state = StateAuthority::process_default()?;
+    let repository = state.repository(&repo)?;
+    let _publish_lock = RepositoryPublishLock::acquire(&state, &repository.key)?;
     let worktree = candidate_root.join("worktree");
+    let source = session.repository_path()?;
+    let inventory = require_publish_worktrees(session, prepared, &repo, &source, &worktree)?;
     verify_candidate_snapshot(&worktree, &prepared.candidate_snapshot)?;
     let current = git(&repo, &["rev-parse", &session.target_ref])?;
     if current == prepared.candidate_commit {
         synchronize_checked_out_target(&repo, prepared)?;
+        verify_published_worktrees(session, prepared, &repo, &inventory)?;
         return Ok(json!({
             "schema":"codeclew-publish-result/2.0",
             "status":"PUBLISHED",
@@ -388,12 +396,211 @@ pub fn publish(
             "target publication result is inconsistent",
         ));
     }
+    verify_published_worktrees(session, prepared, &repo, &inventory)?;
     Ok(json!({
         "schema":"codeclew-publish-result/2.0",
         "status":"PUBLISHED",
         "candidateCommit":prepared.candidate_commit,
         "recovered":false,
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorktreeView {
+    path: PathBuf,
+    head: String,
+    branch: Option<String>,
+}
+
+struct RepositoryPublishLock(File);
+
+impl RepositoryPublishLock {
+    fn acquire(state: &StateAuthority, repository_key: &str) -> Result<Self, ClewError> {
+        if repository_key.len() != 64
+            || !repository_key
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(invalid("repository publish lock key is invalid"));
+        }
+        let path = state
+            .locks_root()
+            .join(format!("publish-{repository_key}.lock"));
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path).map_err(io_error)?;
+        #[cfg(unix)]
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        Ok(Self(file))
+    }
+}
+
+impl Drop for RepositoryPublishLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn require_publish_worktrees(
+    session: &SessionAuthority,
+    prepared: &PreparedCandidateV2,
+    target: &Path,
+    source: &Path,
+    candidate: &Path,
+) -> Result<Vec<WorktreeView>, ClewError> {
+    let inventory = worktree_inventory(target)?;
+    let target = target.canonicalize().map_err(io_error)?;
+    let source = source.canonicalize().map_err(io_error)?;
+    let candidate = candidate.canonicalize().map_err(io_error)?;
+    let mut target_branch_count = 0usize;
+    let mut source_found = false;
+    let mut candidate_found = false;
+    for item in &inventory {
+        let path = item.path.canonicalize().map_err(io_error)?;
+        if item.branch.as_deref() == Some(session.target_ref.as_str()) {
+            target_branch_count += 1;
+            if path != target
+                || (item.head != prepared.target_oid && item.head != prepared.candidate_commit)
+            {
+                return Err(ClewError::new(
+                    ErrorCode::PreconditionFailed,
+                    "session target ref is checked out by an unexpected worktree",
+                ));
+            }
+            require_clean(&path)?;
+        }
+        if path == source {
+            source_found = item.branch.is_none() && item.head == session.base_revision;
+        }
+        if path == candidate {
+            candidate_found = item.branch.is_none() && item.head == prepared.candidate_commit;
+        }
+    }
+    if target_branch_count != 1 || !source_found || !candidate_found {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "session worktree inventory differs from prepared publication authority",
+        ));
+    }
+    Ok(inventory)
+}
+
+fn verify_published_worktrees(
+    session: &SessionAuthority,
+    prepared: &PreparedCandidateV2,
+    target: &Path,
+    before: &[WorktreeView],
+) -> Result<(), ClewError> {
+    let after = worktree_inventory(target)?;
+    if after.len() != before.len()
+        || after.iter().zip(before).any(|(observed, prior)| {
+            observed.path != prior.path
+                || observed.branch != prior.branch
+                || (observed.branch.as_deref() != Some(session.target_ref.as_str())
+                    && observed.head != prior.head)
+        })
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "Git worktree inventory changed during publication",
+        ));
+    }
+    let target = target.canonicalize().map_err(io_error)?;
+    for item in &after {
+        if item.branch.as_deref() == Some(session.target_ref.as_str()) {
+            if item.path.canonicalize().map_err(io_error)? != target
+                || item.head != prepared.candidate_commit
+            {
+                return Err(ClewError::new(
+                    ErrorCode::WorktreeRecoveryRequired,
+                    "published target worktree is inconsistent",
+                ));
+            }
+            require_clean(&target)?;
+        }
+    }
+    Ok(())
+}
+
+fn worktree_inventory(repository: &Path) -> Result<Vec<WorktreeView>, ClewError> {
+    let output = Command::new("git")
+        .args(["worktree", "list", "--porcelain", "-z"])
+        .current_dir(repository)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("Git worktree inventory is unavailable"));
+    }
+    parse_worktree_inventory(&output.stdout)
+}
+
+fn parse_worktree_inventory(bytes: &[u8]) -> Result<Vec<WorktreeView>, ClewError> {
+    if !bytes.ends_with(b"\0\0") {
+        return Err(invalid("Git worktree inventory is not record terminated"));
+    }
+    let mut inventory = Vec::new();
+    let mut path = None::<PathBuf>;
+    let mut head = None::<String>;
+    let mut branch = None::<String>;
+    for field in bytes.split(|byte| *byte == 0) {
+        if field.is_empty() {
+            if path.is_none() && head.is_none() && branch.is_none() {
+                continue;
+            }
+            inventory.push(WorktreeView {
+                path: path
+                    .take()
+                    .ok_or_else(|| invalid("Git worktree path is missing"))?,
+                head: head
+                    .take()
+                    .ok_or_else(|| invalid("Git worktree HEAD is missing"))?,
+                branch: branch.take(),
+            });
+            continue;
+        }
+        let field = std::str::from_utf8(field)
+            .map_err(|_| invalid("Git worktree inventory is not UTF-8"))?;
+        if let Some(value) = field.strip_prefix("worktree ") {
+            if path.replace(PathBuf::from(value)).is_some() {
+                return Err(invalid("Git worktree inventory repeats a path"));
+            }
+        } else if let Some(value) = field.strip_prefix("HEAD ") {
+            if !git_oid(value) || head.replace(value.into()).is_some() {
+                return Err(invalid("Git worktree inventory has an invalid HEAD"));
+            }
+        } else if let Some(value) = field.strip_prefix("branch ") {
+            if !value.starts_with("refs/heads/") || branch.replace(value.into()).is_some() {
+                return Err(invalid("Git worktree inventory has an invalid branch"));
+            }
+        } else if !matches!(field, "detached" | "bare" | "prunable" | "locked")
+            && !field.starts_with("prunable ")
+            && !field.starts_with("locked ")
+        {
+            return Err(invalid("Git worktree inventory has an unknown field"));
+        }
+    }
+    if path.is_some() || head.is_some() || branch.is_some() {
+        return Err(invalid("Git worktree inventory is not record terminated"));
+    }
+    if inventory.is_empty() {
+        return Err(invalid("Git worktree inventory is empty"));
+    }
+    Ok(inventory)
+}
+
+fn git_oid(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 pub fn recover(
@@ -1025,6 +1232,37 @@ mod tests {
         assert_eq!(
             require_clean(repository.path()).unwrap_err().code,
             ErrorCode::PreconditionFailed
+        );
+    }
+
+    #[test]
+    fn parses_nul_delimited_worktree_authority_without_path_guessing() {
+        let first = "a".repeat(40);
+        let second = "b".repeat(40);
+        let bytes = format!(
+            "worktree /repo\0HEAD {first}\0branch refs/heads/main\0\0worktree /repo/candidate\0HEAD {second}\0detached\0\0"
+        );
+
+        let inventory = parse_worktree_inventory(bytes.as_bytes()).unwrap();
+
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(inventory[0].path, Path::new("/repo"));
+        assert_eq!(inventory[0].branch.as_deref(), Some("refs/heads/main"));
+        assert_eq!(inventory[1].path, Path::new("/repo/candidate"));
+        assert_eq!(inventory[1].branch, None);
+    }
+
+    #[test]
+    fn worktree_inventory_rejects_unknown_or_unterminated_records() {
+        let oid = "a".repeat(40);
+        assert!(
+            parse_worktree_inventory(
+                format!("worktree /repo\0HEAD {oid}\0surprise\0\0").as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_worktree_inventory(format!("worktree /repo\0HEAD {oid}\0").as_bytes()).is_err()
         );
     }
 }
