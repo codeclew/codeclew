@@ -113,6 +113,28 @@ S8 DoD is stable compiler-store identity, exact unchanged planning, immutable
 generation/query-index reuse, corruption and cross-index tamper refusal,
 model-policy fail-closed tests, and no Gradle/Maven or product E2E execution.
 
+### S9 bounded context boundary
+
+S9 stores the complete evidence as an immutable CAS object and emits only a
+canonical projection. The projection target is 54 KiB so the public context
+envelope remains at or below 64 KiB. Oversized fact payloads become bounded
+opaque references; compilation provenance, completeness, publication-blocking
+obligations, and content references remain explicit.
+
+One authorized source row exists per `fileId`. A row may contain up to four
+ordered, non-overlapping source windows with an aggregate 32-KiB text budget.
+Exact compiler identity/range facts win over earlier textual import matches;
+multiple disjoint callers or declarations in the same file no longer collapse
+to the first range. The row retains one immutable full-file `contentRef`, so
+plan/task-run edit authority remains unambiguous. Window order, aggregate text,
+bounds, duplicate files, and complete-file claims are validated fail-closed.
+
+Expansion remains bound to the parent context and immutable session generation;
+cross-index expansion is refused and only requested term buckets are read. S9
+DoD is bounded deterministic stdout, multi-window source coverage, immutable
+full evidence, cheap parent expansion semantics, exact provenance, and tamper
+refusal under component tests without a product E2E.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional

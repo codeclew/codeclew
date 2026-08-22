@@ -1,5 +1,5 @@
 use crate::canonical;
-use crate::cas::CasStore;
+use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::generation_service::{
     ensure_session_generation, load_query_index, load_session_generation, load_snapshot,
@@ -15,11 +15,13 @@ use std::collections::{BTreeMap, BTreeSet};
 const MAX_EVIDENCE_FACTS: usize = 4096;
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SNIPPET_BYTES: usize = 16 * 1024;
+const MAX_SOURCE_BYTES: usize = 32 * 1024;
+const MAX_SOURCE_WINDOWS: usize = 4;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
 pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-context/1.0";
-pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/3.0";
-pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/3.0";
-pub const BOUNDED_CONTEXT_PROJECTION_SCHEMA: &str = "codeclew-bounded-context-projection/3.0";
+pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/4.0";
+pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/4.0";
+pub const BOUNDED_CONTEXT_PROJECTION_SCHEMA: &str = "codeclew-bounded-context-projection/4.0";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -115,6 +117,90 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             })
         {
             return Err(invalid("context fact has no compilation provenance"));
+        }
+    }
+    validate_source_rows(
+        evidence
+            .pointer("/context/sources")
+            .ok_or_else(|| invalid("context has no source authority"))?,
+    )?;
+    validate_source_rows(
+        projection
+            .get("sources")
+            .ok_or_else(|| invalid("projection has no source authority"))?,
+    )?;
+    Ok(())
+}
+
+fn validate_source_rows(value: &Value) -> Result<(), ClewError> {
+    let rows = value
+        .as_array()
+        .ok_or_else(|| invalid("context sources are invalid"))?;
+    let mut files = BTreeSet::new();
+    for row in rows {
+        let file = row
+            .get("fileId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("context source has no file identity"))?;
+        let content: CasObject = serde_json::from_value(
+            row.get("contentRef")
+                .cloned()
+                .ok_or_else(|| invalid("context source has no content authority"))?,
+        )
+        .map_err(parse_error)?;
+        let windows = row
+            .get("windows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("context source has no windows"))?;
+        if !safe_path(file)
+            || !files.insert(file)
+            || windows.is_empty()
+            || windows.len() > MAX_SOURCE_WINDOWS
+        {
+            return Err(invalid("context source set authority is invalid"));
+        }
+        let mut previous_end = 0u64;
+        let mut total = 0usize;
+        let mut combined = String::new();
+        for (index, window) in windows.iter().enumerate() {
+            let start = window
+                .get("startLine")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("context source window start is invalid"))?;
+            let end = window
+                .get("endLine")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid("context source window end is invalid"))?;
+            let text = window
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("context source window text is invalid"))?;
+            if start == 0 || end < start || start <= previous_end {
+                return Err(invalid("context source windows overlap or are unordered"));
+            }
+            previous_end = end;
+            total = total.saturating_add(text.len());
+            if index > 0 {
+                combined.push_str(&format!("\nCODECLEW_OMITTED_LINES_BEFORE_{start}\n"));
+            }
+            combined.push_str(text);
+        }
+        let complete = row
+            .get("completeFile")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| invalid("context source completeness is invalid"))?;
+        if total > MAX_SOURCE_BYTES
+            || row.get("startLine").and_then(Value::as_u64)
+                != windows[0].get("startLine").and_then(Value::as_u64)
+            || row.get("endLine").and_then(Value::as_u64)
+                != windows
+                    .last()
+                    .and_then(|window| window.get("endLine"))
+                    .and_then(Value::as_u64)
+            || row.get("text").and_then(Value::as_str) != Some(combined.as_str())
+            || (complete && (windows.len() != 1 || content.size != total as u64))
+        {
+            return Err(invalid("context source projection authority is invalid"));
         }
     }
     Ok(())
@@ -408,7 +494,7 @@ fn load_source_snippets(
     snapshot: &RepositoryInputSnapshot,
     paths: &BTreeSet<String>,
     terms: &[String],
-    source_hints: &BTreeMap<String, usize>,
+    source_hints: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Result<Vec<Value>, ClewError> {
     let worktree = snapshot
         .worktree
@@ -441,20 +527,45 @@ fn load_source_snippets(
         let Ok(source) = std::str::from_utf8(lease.bytes()) else {
             continue;
         };
-        let (start_line, end_line, text) = snippet(source, terms, source_hints.get(path).copied());
+        let windows = source_windows(source, terms, source_hints.get(path));
+        let start_line = windows.first().map(|window| window.0).unwrap_or(1);
+        let end_line = windows.last().map(|window| window.1).unwrap_or(start_line);
+        let text = windows
+            .iter()
+            .enumerate()
+            .map(|(index, window)| {
+                if index == 0 {
+                    window.2.clone()
+                } else {
+                    format!("CODECLEW_OMITTED_LINES_BEFORE_{}\n{}", window.0, window.2)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let projected_windows = windows
+            .iter()
+            .map(|(start_line, end_line, text)| {
+                json!({
+                    "startLine":start_line,
+                    "endLine":end_line,
+                    "text":text,
+                })
+            })
+            .collect::<Vec<_>>();
         snippets.push(json!({
             "fileId":path,
             "contentRef":content,
             "startLine":start_line,
             "endLine":end_line,
             "text":text,
-            "completeFile":text.len() == source.len(),
+            "windows":projected_windows,
+            "completeFile":windows.len() == 1 && windows[0].2.len() == source.len(),
         }));
     }
     Ok(snippets)
 }
 
-fn source_offset_hints(facts: &[Value], terms: &[String]) -> BTreeMap<String, usize> {
+fn source_offset_hints(facts: &[Value], terms: &[String]) -> BTreeMap<String, BTreeSet<usize>> {
     let lowered_terms = terms
         .iter()
         .map(|term| term.to_lowercase())
@@ -469,7 +580,7 @@ fn source_offset_hints(facts: &[Value], terms: &[String]) -> BTreeMap<String, us
 fn collect_source_offset_hints(
     value: &Value,
     terms: &BTreeSet<String>,
-    output: &mut BTreeMap<String, usize>,
+    output: &mut BTreeMap<String, BTreeSet<usize>>,
     depth: usize,
 ) {
     if depth > 32 {
@@ -507,7 +618,7 @@ fn collect_source_offset_hints(
                     && safe_path(file)
                     && let Ok(offset) = usize::try_from(offset)
                 {
-                    output.entry(file.to_owned()).or_insert(offset);
+                    output.entry(file.to_owned()).or_default().insert(offset);
                 }
             }
             for value in values.values() {
@@ -516,6 +627,53 @@ fn collect_source_offset_hints(
         }
         _ => {}
     }
+}
+
+fn source_windows(
+    source: &str,
+    terms: &[String],
+    source_offsets: Option<&BTreeSet<usize>>,
+) -> Vec<(usize, usize, String)> {
+    let offsets = source_offsets
+        .filter(|offsets| !offsets.is_empty())
+        .map(|offsets| offsets.iter().copied().map(Some).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![None]);
+    let mut windows = Vec::new();
+    let mut projected_bytes = 0usize;
+    let lines = source.lines().collect::<Vec<_>>();
+    for offset in offsets {
+        let window = snippet(source, terms, offset);
+        if windows.iter().any(|existing: &(usize, usize, String)| {
+            existing.0 == window.0 && existing.1 == window.1
+        }) {
+            continue;
+        }
+        if let Some(previous) = windows.last_mut()
+            && window.0 <= previous.1.saturating_add(1)
+        {
+            let merged_end = previous.1.max(window.1);
+            let merged_text = lines[previous.0 - 1..merged_end].join("\n");
+            let merged_bytes = projected_bytes
+                .saturating_sub(previous.2.len())
+                .saturating_add(merged_text.len());
+            if merged_bytes > MAX_SOURCE_BYTES {
+                break;
+            }
+            previous.1 = merged_end;
+            previous.2 = merged_text;
+            projected_bytes = merged_bytes;
+            continue;
+        }
+        if windows.len() == MAX_SOURCE_WINDOWS
+            || (!windows.is_empty()
+                && projected_bytes.saturating_add(window.2.len()) > MAX_SOURCE_BYTES)
+        {
+            break;
+        }
+        projected_bytes = projected_bytes.saturating_add(window.2.len());
+        windows.push(window);
+    }
+    windows
 }
 
 fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usize, usize, String) {
@@ -691,8 +849,9 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, bounded_projection,
-        load_fact_evidence, merge_query_contexts, snippet, source_offset_hints,
+        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES,
+        PROJECTION_TARGET_BYTES, bounded_projection, load_fact_evidence, merge_query_contexts,
+        source_offset_hints, source_windows, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -718,6 +877,48 @@ mod tests {
         assert_eq!(projection["compilerVersions"], context["compilerVersions"]);
         assert!(projection.get("compilation").is_none());
         assert!(projection.get("compilerVersion").is_none());
+    }
+
+    #[test]
+    fn projection_is_bounded_and_source_windows_fail_closed() {
+        let reference = json!({
+            "schema":crate::cas::CAS_OBJECT_SCHEMA,
+            "objectSchema":"codeclew-repository-input-blob/2.0",
+            "digest":format!("sha256:{}", "a".repeat(64)),
+            "size":100_000,
+        });
+        let combined = "first\nCODECLEW_OMITTED_LINES_BEFORE_100\nsecond";
+        let source = json!({
+            "fileId":"src/Target.kt",
+            "contentRef":reference,
+            "startLine":10,
+            "endLine":110,
+            "text":combined,
+            "windows":[
+                {"startLine":10,"endLine":20,"text":"first"},
+                {"startLine":100,"endLine":110,"text":"second"},
+            ],
+            "completeFile":false,
+        });
+        validate_source_rows(&json!([source.clone()])).unwrap();
+        let mut overlapping = source.clone();
+        overlapping["windows"][1]["startLine"] = json!(20);
+        assert!(validate_source_rows(&json!([overlapping])).is_err());
+
+        let context = json!({
+            "snapshot":{},
+            "task":{},
+            "compilations":[":/main"],
+            "compilerVersions":{},
+            "generationAuthority":{},
+            "matches":(0..128).map(|index| json!({"row":index,"payload":"x".repeat(1024)})).collect::<Vec<_>>(),
+            "sources":[source],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+        let projection = bounded_projection(&context).unwrap();
+        assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
+        assert_eq!(projection["truncated"], true);
     }
 
     #[test]
@@ -798,11 +999,9 @@ mod tests {
             }
         })];
         let hints = source_offset_hints(&facts, &["Target".into()]);
-        let (_, _, text) = snippet(
-            &source,
-            &["Target".into()],
-            hints.get("src/Target.kt").copied(),
-        );
+        let windows = source_windows(&source, &["Target".into()], hints.get("src/Target.kt"));
+        assert_eq!(windows.len(), 1);
+        let text = &windows[0].2;
         assert!(text.contains("class Target"));
         assert!(!text.contains("import sample.Target"));
     }
@@ -822,13 +1021,44 @@ mod tests {
             }
         })];
         let hints = source_offset_hints(&facts, &["Target".into()]);
-        let (_, _, text) = snippet(
-            &source,
-            &["Target".into()],
-            hints.get("src/Target.kt").copied(),
-        );
+        let windows = source_windows(&source, &["Target".into()], hints.get("src/Target.kt"));
+        assert_eq!(windows.len(), 1);
+        let text = &windows[0].2;
         assert!(text.contains("class Target"));
         assert!(!text.contains("import sample.Target"));
+    }
+
+    #[test]
+    fn multiple_identity_ranges_become_bounded_disjoint_windows() {
+        let mut source = "import sample.Target\n".to_owned();
+        source.push_str(&"before\n".repeat(3_000));
+        let first_offset = source.len();
+        source.push_str("class Target { val first = \"FIRST_WINDOW\" }\n");
+        source.push_str(&"between\n".repeat(3_000));
+        let second_offset = source.len();
+        source.push_str("fun Target.second() = \"SECOND_WINDOW\"\n");
+        let facts = vec![
+            json!({"payload": {
+                "compilerClassId": "sample/Target",
+                "file": "src/Target.kt",
+                "start": first_offset,
+            }}),
+            json!({"payload": {
+                "ownerIdentity": "class:sample/Target",
+                "file": "src/Target.kt",
+                "start": second_offset,
+            }}),
+        ];
+        let hints = source_offset_hints(&facts, &["Target".into()]);
+        let windows = source_windows(&source, &["Target".into()], hints.get("src/Target.kt"));
+        assert_eq!(windows.len(), 2);
+        assert!(windows[0].2.contains("FIRST_WINDOW"));
+        assert!(windows[1].2.contains("SECOND_WINDOW"));
+        assert!(!windows[0].2.contains("SECOND_WINDOW"));
+        assert!(!windows[1].2.contains("FIRST_WINDOW"));
+        assert!(
+            windows.iter().map(|window| window.2.len()).sum::<usize>() <= super::MAX_SOURCE_BYTES
+        );
     }
 
     #[test]
