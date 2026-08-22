@@ -308,7 +308,7 @@ def state_root() -> tuple[Path, int]:
     root_fd = _open_private_tree(root)
     for child in [
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
-        "objects", "objects/sha256", "objects/packs", "generations", "attempts", "gc",
+        "objects", "objects/sha256", "objects/packs-v3", "generations", "attempts", "gc",
         "dependency-cache", "runtimes/locators",
     ]:
         _ensure_private_descendant(root_fd, child)

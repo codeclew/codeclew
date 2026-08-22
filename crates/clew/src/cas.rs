@@ -16,7 +16,7 @@ use std::os::fd::AsRawFd;
 
 const CAS_DOMAIN: &[u8] = b"codeclew-cas/v2\0";
 pub const CAS_OBJECT_SCHEMA: &str = "codeclew-cas-object/2.0";
-const CAS_PACK_SCHEMA: &str = "codeclew-cas-pack/2.0";
+const CAS_PACK_SCHEMA: &str = "codeclew-cas-pack/3.0";
 const MAX_PACK_INDEX_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ impl CasStore {
     pub fn open(authority: &StateAuthority) -> Result<Self, ClewError> {
         let store = Self {
             objects: authority.directory(Path::new("objects/sha256"))?,
-            packs: authority.directory(Path::new("objects/packs"))?,
+            packs: authority.directory(Path::new("objects/packs-v3"))?,
             locks: authority.directory(Path::new("locks"))?,
             quarantine: authority.directory(Path::new("quarantine"))?,
             pack_catalog: Arc::new(RwLock::new(BTreeMap::new())),
@@ -238,33 +238,59 @@ impl CasStore {
         file.sync_all().map_err(io_error)?;
         drop(file);
         let data_sha256 = format!("sha256:{}", hex::encode(digest.finalize()));
-        let component = digest_component(&data_sha256)?;
-        let data_name = format!("{component}.pack");
-        let index_name = format!("{component}.json");
         let manifest = PackManifest {
             schema: CAS_PACK_SCHEMA.into(),
             data_sha256,
             data_size: offset,
             objects: entries,
         };
-        if self.packs.file_exists(OsStr::new(&data_name))?
-            || self.packs.file_exists(OsStr::new(&index_name))?
-        {
-            let _ = self.packs.remove_file(OsStr::new(&temporary));
-            self.verify_pack_pair(&data_name, &index_name, Some(&manifest))?;
-            self.refresh_pack_catalog()?;
-            return Ok(());
-        }
-        self.packs
-            .rename_to(OsStr::new(&temporary), &self.packs, OsStr::new(&data_name))?;
         let bytes = canonical::bytes(&manifest).map_err(internal)?;
         if bytes.len() > MAX_PACK_INDEX_BYTES {
+            let _ = self.packs.remove_file(OsStr::new(&temporary));
             return Err(ClewError::new(
                 ErrorCode::ResourceLimit,
                 "CAS pack index exceeds its bounded size",
             ));
         }
-        self.packs.atomic_write(OsStr::new(&index_name), &bytes)?;
+        let manifest_digest = canonical::hash(&manifest).map_err(internal)?;
+        let component = digest_component(&manifest_digest)?;
+        let data_name = format!("{component}.pack");
+        let index_name = format!("{component}.json");
+        let data_exists = self.packs.file_exists(OsStr::new(&data_name))?;
+        let index_exists = self.packs.file_exists(OsStr::new(&index_name))?;
+        match (data_exists, index_exists) {
+            (true, true) => {
+                let _ = self.packs.remove_file(OsStr::new(&temporary));
+            }
+            (true, false) => {
+                let _ = self.packs.remove_file(OsStr::new(&temporary));
+                self.verify_pack_data(&data_name, &manifest)?;
+                self.packs.atomic_write(OsStr::new(&index_name), &bytes)?;
+            }
+            (false, true) => {
+                let existing = self
+                    .packs
+                    .read_file(OsStr::new(&index_name), MAX_PACK_INDEX_BYTES)
+                    .map_err(|_| corrupt("CAS orphan pack index is unsafe"))?;
+                if existing != bytes {
+                    let _ = self.packs.remove_file(OsStr::new(&temporary));
+                    return Err(corrupt("CAS orphan pack index has another authority"));
+                }
+                self.packs.rename_to(
+                    OsStr::new(&temporary),
+                    &self.packs,
+                    OsStr::new(&data_name),
+                )?;
+            }
+            (false, false) => {
+                self.packs.rename_to(
+                    OsStr::new(&temporary),
+                    &self.packs,
+                    OsStr::new(&data_name),
+                )?;
+                self.packs.atomic_write(OsStr::new(&index_name), &bytes)?;
+            }
+        }
         self.verify_pack_pair(&data_name, &index_name, Some(&manifest))?;
         self.install_pack_manifest(&data_name, &manifest)?;
         Ok(())
@@ -350,23 +376,18 @@ impl CasStore {
             .packs
             .read_file(OsStr::new(index_name), MAX_PACK_INDEX_BYTES)
             .map_err(|_| corrupt("CAS pack index is missing or unsafe"))?;
-        let data_file = self
-            .packs
-            .open_file(OsStr::new(data_name))
-            .map_err(|_| corrupt("CAS pack data is missing or unsafe"))?;
-        let data_metadata = data_file.metadata().map_err(io_error)?;
         let manifest: PackManifest =
             serde_json::from_slice(&bytes).map_err(|_| corrupt("CAS pack index is invalid"))?;
         if manifest.schema != CAS_PACK_SCHEMA
             || canonical::bytes(&manifest).map_err(internal)? != bytes
-            || manifest.data_size != data_metadata.len()
             || expected.is_some_and(|expected| expected != &manifest)
         {
             return Err(corrupt("CAS pack authority mismatch"));
         }
-        let component = digest_component(&manifest.data_sha256)?;
+        let manifest_digest = canonical::hash(&manifest).map_err(internal)?;
+        let component = digest_component(&manifest_digest)?;
         if Path::new(data_name).file_stem().and_then(OsStr::to_str) != Some(component) {
-            return Err(corrupt("CAS pack data name differs from its digest"));
+            return Err(corrupt("CAS pack data name differs from its manifest"));
         }
         let mut end = 0u64;
         for entry in &manifest.objects {
@@ -381,7 +402,33 @@ impl CasStore {
         if end != manifest.data_size {
             return Err(corrupt("CAS pack object ranges do not cover pack data"));
         }
+        self.verify_pack_data(data_name, &manifest)?;
         Ok(manifest)
+    }
+
+    fn verify_pack_data(&self, data_name: &str, manifest: &PackManifest) -> Result<(), ClewError> {
+        let mut data_file = self
+            .packs
+            .open_file(OsStr::new(data_name))
+            .map_err(|_| corrupt("CAS pack data is missing or unsafe"))?;
+        let data_metadata = data_file.metadata().map_err(io_error)?;
+        if data_metadata.len() != manifest.data_size {
+            return Err(corrupt("CAS pack data size differs from its manifest"));
+        }
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0u8; 1024 * 1024];
+        loop {
+            let read = data_file.read(&mut buffer).map_err(io_error)?;
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+        }
+        let actual = format!("sha256:{}", hex::encode(digest.finalize()));
+        if actual != manifest.data_sha256 {
+            return Err(corrupt("CAS pack data digest differs from its manifest"));
+        }
+        Ok(())
     }
 
     fn read_path(
@@ -686,6 +733,113 @@ mod tests {
     }
 
     #[test]
+    fn reopening_rejects_same_size_tampered_pack() {
+        let (root, store) = store();
+        store
+            .put_batch(vec![("test/packed/1".into(), b"trusted payload".to_vec())])
+            .unwrap();
+        let pack = fs::read_dir(store.packs.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension() == Some(OsStr::new("pack")))
+            .unwrap();
+        fs::write(pack, b"forged! payload").unwrap();
+
+        assert_eq!(
+            CasStore::open(&StateAuthority::open(root.path().join("v2")).unwrap())
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
+    }
+
+    #[test]
+    fn identical_retry_recovers_pack_with_missing_index() {
+        let (root, store) = store();
+        let input = vec![("test/recovery/1".into(), b"durable payload".to_vec())];
+        let object = store.put_batch(input.clone()).unwrap().remove(0);
+        let index = fs::read_dir(store.packs.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension() == Some(OsStr::new("json")))
+            .unwrap();
+        fs::remove_file(index).unwrap();
+
+        let reopened =
+            CasStore::open(&StateAuthority::open(root.path().join("v2")).unwrap()).unwrap();
+        assert_eq!(reopened.put_batch(input).unwrap(), vec![object.clone()]);
+        assert_eq!(
+            reopened.read(&object, 1024).unwrap().bytes(),
+            b"durable payload"
+        );
+        assert_eq!(
+            reopened
+                .packs
+                .entries()
+                .unwrap()
+                .into_iter()
+                .filter(|name| Path::new(name).extension() == Some(OsStr::new("json")))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn existing_reader_refreshes_catalog_after_another_store_publishes() {
+        let (root, first) = store();
+        let second =
+            CasStore::open(&StateAuthority::open(root.path().join("v2")).unwrap()).unwrap();
+        let object = second
+            .put_batch(vec![(
+                "test/visibility/1".into(),
+                b"published later".to_vec(),
+            )])
+            .unwrap()
+            .remove(0);
+
+        assert_eq!(
+            first.read(&object, 1024).unwrap().bytes(),
+            b"published later"
+        );
+    }
+
+    #[test]
+    fn equal_pack_bytes_with_different_object_boundaries_do_not_collide() {
+        let (_root, store) = store();
+        let first = store
+            .put_batch(vec![
+                ("test/boundary/1".into(), b"ab".to_vec()),
+                ("test/boundary/1".into(), b"c".to_vec()),
+            ])
+            .unwrap();
+        let second = store
+            .put_batch(vec![
+                ("test/boundary/1".into(), b"a".to_vec()),
+                ("test/boundary/1".into(), b"bc".to_vec()),
+            ])
+            .unwrap();
+
+        assert_eq!(
+            store
+                .packs
+                .entries()
+                .unwrap()
+                .into_iter()
+                .filter(|name| Path::new(name).extension() == Some(OsStr::new("pack")))
+                .count(),
+            2
+        );
+        for (object, expected) in first.iter().zip([b"ab".as_slice(), b"c".as_slice()]) {
+            assert_eq!(store.read(object, 1024).unwrap().bytes(), expected);
+        }
+        for (object, expected) in second.iter().zip([b"a".as_slice(), b"bc".as_slice()]) {
+            assert_eq!(store.read(object, 1024).unwrap().bytes(), expected);
+        }
+    }
+
+    #[test]
     fn schema_is_part_of_the_digest_domain() {
         let (_root, store) = store();
         let left = store.put("test/left/1", b"same bytes").unwrap();
@@ -753,7 +907,7 @@ mod tests {
             .remove(0);
         assert_eq!(store.read(&object, 1024).unwrap().bytes(), b"trusted");
         assert!(
-            fs::read_dir(pinned_root.join("objects/packs"))
+            fs::read_dir(pinned_root.join("objects/packs-v3"))
                 .unwrap()
                 .next()
                 .is_some()

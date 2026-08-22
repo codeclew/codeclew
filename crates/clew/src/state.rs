@@ -132,7 +132,7 @@ impl StateAuthority {
             "quarantine",
             "objects",
             "objects/sha256",
-            "objects/packs",
+            "objects/packs-v3",
             "generations",
             "attempts",
             "gc",
@@ -148,10 +148,6 @@ impl StateAuthority {
 
     pub fn objects_root(&self) -> PathBuf {
         self.root.join("objects/sha256")
-    }
-
-    pub fn packs_root(&self) -> PathBuf {
-        self.root.join("objects/packs")
     }
 
     pub fn locks_root(&self) -> PathBuf {
