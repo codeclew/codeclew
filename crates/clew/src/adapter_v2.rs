@@ -290,36 +290,6 @@ pub trait AnalysisSink {
     fn accept(&mut self, event: AnalysisEvent) -> Result<(), ClewError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct QueryGenerationRequest {
-    pub generation: CasObject,
-    pub capability: CapabilityUri,
-    pub keys: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct QueryGenerationResult {
-    pub generation: CasObject,
-    pub facts: Vec<FactRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ValidateCandidateRequest {
-    pub candidate_snapshot: CasObject,
-    pub generation: CasObject,
-    pub operations: Vec<CapabilityUri>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ValidateCandidateResult {
-    pub validated: bool,
-    pub evidence: Vec<CasObject>,
-}
-
 pub trait LanguageAdapter: Send + Sync {
     fn handshake(&self) -> Result<AdapterHandshake, ClewError>;
     fn analyze_generation(
@@ -328,14 +298,6 @@ pub trait LanguageAdapter: Send + Sync {
         sink: &mut dyn AnalysisSink,
         cancelled: &AtomicBool,
     ) -> Result<(), ClewError>;
-    fn query_generation(
-        &self,
-        request: &QueryGenerationRequest,
-    ) -> Result<QueryGenerationResult, ClewError>;
-    fn validate_candidate(
-        &self,
-        request: &ValidateCandidateRequest,
-    ) -> Result<ValidateCandidateResult, ClewError>;
     fn cancel(&self, attempt_id: &str) -> Result<(), ClewError>;
     fn shutdown(&self) -> Result<(), ClewError>;
 }
@@ -957,26 +919,6 @@ mod tests {
             }))
         }
 
-        fn query_generation(
-            &self,
-            request: &QueryGenerationRequest,
-        ) -> Result<QueryGenerationResult, ClewError> {
-            Ok(QueryGenerationResult {
-                generation: request.generation.clone(),
-                facts: vec![],
-            })
-        }
-
-        fn validate_candidate(
-            &self,
-            _request: &ValidateCandidateRequest,
-        ) -> Result<ValidateCandidateResult, ClewError> {
-            Ok(ValidateCandidateResult {
-                validated: true,
-                evidence: vec![],
-            })
-        }
-
         fn cancel(&self, _attempt_id: &str) -> Result<(), ClewError> {
             Ok(())
         }
@@ -1143,18 +1085,6 @@ mod tests {
                 cancelled: &AtomicBool,
             ) -> Result<(), ClewError> {
                 ZetaAdapter.analyze_generation(request, sink, cancelled)
-            }
-            fn query_generation(
-                &self,
-                request: &QueryGenerationRequest,
-            ) -> Result<QueryGenerationResult, ClewError> {
-                ZetaAdapter.query_generation(request)
-            }
-            fn validate_candidate(
-                &self,
-                request: &ValidateCandidateRequest,
-            ) -> Result<ValidateCandidateResult, ClewError> {
-                ZetaAdapter.validate_candidate(request)
             }
             fn cancel(&self, attempt_id: &str) -> Result<(), ClewError> {
                 ZetaAdapter.cancel(attempt_id)

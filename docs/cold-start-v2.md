@@ -120,10 +120,11 @@ constraint. Its v2 RPC surface is:
 
 - `Handshake`;
 - `AnalyzeGeneration` (streaming);
-- `QueryGeneration`;
-- `ValidateCandidate`;
 - `Cancel`;
 - `Shutdown`.
+
+Generation queries are owned by immutable core indexes and candidate validation
+is owned by the transaction layer; neither is an adapter RPC.
 
 Transport protobuf is not evidence. The core decodes closed typed structures
 and owns canonicalization and CAS publication. A fake `.zeta` provider/adapter

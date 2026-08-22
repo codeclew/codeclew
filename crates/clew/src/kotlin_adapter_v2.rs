@@ -1,8 +1,7 @@
 use crate::adapter_v2::{
     ADAPTER_PROTOCOL, AdapterHandshake, AnalysisAttemptComplete, AnalysisEvent, AnalysisSink,
     AnalyzeGenerationRequest, CapabilityUri, FactRecord, FactShard, LanguageAdapter, LanguageUri,
-    QueryGenerationRequest, QueryGenerationResult, ToolchainConstraint, ValidateCandidateRequest,
-    ValidateCandidateResult,
+    ToolchainConstraint,
 };
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
@@ -168,26 +167,6 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
             completeness_receipt: receipt,
             fact_count,
         }))
-    }
-
-    fn query_generation(
-        &self,
-        _request: &QueryGenerationRequest,
-    ) -> Result<QueryGenerationResult, ClewError> {
-        Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            "generation queries are owned by the core query index",
-        ))
-    }
-
-    fn validate_candidate(
-        &self,
-        _request: &ValidateCandidateRequest,
-    ) -> Result<ValidateCandidateResult, ClewError> {
-        Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            "candidate validation is not available before candidate snapshot v2",
-        ))
     }
 
     fn cancel(&self, attempt_id: &str) -> Result<(), ClewError> {

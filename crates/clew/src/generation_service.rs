@@ -1747,9 +1747,7 @@ fn poisoned<T>(_error: std::sync::PoisonError<T>) -> ClewError {
 mod tests {
     use super::*;
     use crate::adapter_v2::{
-        ADAPTER_PROTOCOL, AdapterHandshake, FactShard, LanguageAdapter, QueryGenerationRequest,
-        QueryGenerationResult, ToolchainConstraint, ValidateCandidateRequest,
-        ValidateCandidateResult,
+        ADAPTER_PROTOCOL, AdapterHandshake, FactShard, LanguageAdapter, ToolchainConstraint,
     };
     use crate::derived_manifest::DERIVED_MANIFEST_SCHEMA;
     use crate::generation_v2::GenerationKind;
@@ -1826,26 +1824,6 @@ mod tests {
                 completeness_receipt: self.receipt.clone(),
                 fact_count: self.facts.len() as u64,
             }))
-        }
-
-        fn query_generation(
-            &self,
-            request: &QueryGenerationRequest,
-        ) -> Result<QueryGenerationResult, ClewError> {
-            Ok(QueryGenerationResult {
-                generation: request.generation.clone(),
-                facts: Vec::new(),
-            })
-        }
-
-        fn validate_candidate(
-            &self,
-            _request: &ValidateCandidateRequest,
-        ) -> Result<ValidateCandidateResult, ClewError> {
-            Ok(ValidateCandidateResult {
-                validated: true,
-                evidence: Vec::new(),
-            })
         }
 
         fn cancel(&self, _attempt_id: &str) -> Result<(), ClewError> {

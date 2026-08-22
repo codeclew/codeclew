@@ -1,10 +1,8 @@
 use crate::error::{ClewError, ErrorCode};
 use crate::process_isolation::isolate_controller_authority;
 use crate::proto::{
-    ApplyEditRequest, BatchRequest, BlobRef, BuildLocalGraphRequest, IndexFilesRequest,
-    OpenProjectRequest, ProtocolVersion, RequestKind, ResolveExpressionRequest,
-    ResolveSymbolRequest, SchemaVersion, ShutdownRequest, SnapshotId, ValidateCandidateRequest,
-    WorkerRequest, WorkerResponse, worker_request, worker_response,
+    BlobRef, IndexFilesRequest, OpenProjectRequest, ProtocolVersion, RequestKind, SchemaVersion,
+    ShutdownRequest, SnapshotId, WorkerRequest, WorkerResponse, worker_request, worker_response,
 };
 use crate::runtime::RuntimeAuthority;
 use crate::state::ManagedDirectory;
@@ -198,16 +196,6 @@ pub struct VerifiedSourceSyntax {
 
 pub const COMPILER_SEMANTIC_AUTHORITY: &str = "COMPILER_SEMANTIC";
 pub const SOURCE_SYNTAX_AUTHORITY: &str = "SOURCE_SYNTAX";
-
-/// Stable, read-only identity of the exact worker distribution trusted by this
-/// client.  Callers may use it as a cache-key input, but it grants no authority
-/// to issue or replay compiler receipts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrustedDistributionIdentity {
-    pub tree_hash: String,
-    pub build_input_digest: String,
-    pub plugin_fingerprint: String,
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -998,20 +986,6 @@ fn validate_build_namespace_digest(value: &str) -> Result<String, ClewError> {
 }
 
 impl WorkerClient {
-    pub fn pid(&self) -> u32 {
-        self.child.id()
-    }
-
-    pub fn trusted_distribution_identity(&self) -> Option<TrustedDistributionIdentity> {
-        self.trusted_distribution
-            .as_ref()
-            .map(|trusted| TrustedDistributionIdentity {
-                tree_hash: trusted.tree_hash.clone(),
-                build_input_digest: trusted.build_input_digest.clone(),
-                plugin_fingerprint: trusted.plugin_fingerprint.clone(),
-            })
-    }
-
     #[cfg(test)]
     pub fn start(workspace: &Path) -> Result<Self, ClewError> {
         Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None, None)
@@ -1182,7 +1156,7 @@ impl WorkerClient {
         previous.shutdown()
     }
 
-    pub fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
+    fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
         self.request_with_discovery_variants(kind, payload, 0)
     }
 
@@ -1204,16 +1178,6 @@ impl WorkerClient {
                     self.request_counters.index_files_requests.saturating_add(1);
             }
             _ => {}
-        }
-        if self.snapshot.is_none()
-            && request_requires_project_snapshot(kind, payload)
-            && payload.get("repo").and_then(Value::as_str).is_some()
-        {
-            let bootstrap = serde_json::json!({
-                "repo":payload.get("repo"),
-                "compilation":payload.get("compilation")
-            });
-            let _ = self.request(RequestKind::OpenProject, &bootstrap)?;
         }
         let request_id = self.next_id;
         self.next_id += 1;
@@ -1244,80 +1208,6 @@ impl WorkerClient {
                     .map(str::to_owned)
                     .collect(),
             }),
-            RequestKind::ResolveSymbol => {
-                worker_request::Payload::ResolveSymbol(ResolveSymbolRequest {
-                    schema_version: schema_version(),
-                    repo: repo(),
-                    symbol: json_string(payload, "symbol"),
-                    compilation: compilation(),
-                })
-            }
-            RequestKind::ResolveExpression => {
-                worker_request::Payload::ResolveExpression(ResolveExpressionRequest {
-                    schema_version: schema_version(),
-                    repo: repo(),
-                    file: json_string(payload, "file"),
-                    offset: payload.get("offset").and_then(Value::as_u64).unwrap_or(0),
-                    compilation: compilation(),
-                })
-            }
-            RequestKind::BuildLocalGraph => {
-                worker_request::Payload::BuildLocalGraph(BuildLocalGraphRequest {
-                    schema_version: schema_version(),
-                    repo: repo(),
-                    symbol: json_string(payload, "symbol"),
-                    compilation: compilation(),
-                })
-            }
-            RequestKind::ApplyEdit => {
-                let (source_inline, source_blob) =
-                    source_transport(payload, self.build_state_root.as_deref())?;
-                worker_request::Payload::ApplyEdit(ApplyEditRequest {
-                    schema_version: schema_version(),
-                    repo: repo(),
-                    file: json_string(payload, "file"),
-                    source_inline,
-                    source_blob,
-                    owner_symbol_id: json_string(payload, "ownerSymbolId"),
-                    exact_text_hash: json_string(payload, "exactTextHash"),
-                    syntax_kind: json_string(payload, "syntaxKind"),
-                    normalized_token_hash: json_string(payload, "normalizedTokenHash"),
-                    ancestor_path_hash: json_string(payload, "ancestorPathHash"),
-                    local_ordinal: payload.get("localOrdinal").and_then(Value::as_u64),
-                    left_context_hash: json_string(payload, "leftContextHash"),
-                    right_context_hash: json_string(payload, "rightContextHash"),
-                    operation_kind: json_string(payload, "kind"),
-                    replacement: json_string(payload, "replacement"),
-                    preconditions_json: serde_json::to_vec(
-                        payload.get("preconditions").unwrap_or(&Value::Null),
-                    )
-                    .map_err(internal)?,
-                    postconditions_json: serde_json::to_vec(
-                        payload.get("postconditions").unwrap_or(&Value::Null),
-                    )
-                    .map_err(internal)?,
-                    compilation: compilation(),
-                    defer_semantic_validation: payload
-                        .get("deferSemanticValidation")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    semantic_operation_json: serde_json::to_vec(
-                        payload.get("semanticOperation").unwrap_or(&Value::Null),
-                    )
-                    .map_err(internal)?,
-                })
-            }
-            RequestKind::ValidateCandidate => {
-                let (source_inline, source_blob) =
-                    source_transport(payload, self.build_state_root.as_deref())?;
-                worker_request::Payload::ValidateCandidate(ValidateCandidateRequest {
-                    schema_version: schema_version(),
-                    repo: repo(),
-                    file: json_string(payload, "file"),
-                    source_inline,
-                    source_blob,
-                })
-            }
             RequestKind::Shutdown => worker_request::Payload::Shutdown(ShutdownRequest {
                 schema_version: schema_version(),
             }),
@@ -1425,43 +1315,6 @@ impl WorkerClient {
                 validate_typed_bool(&canonical_json, "/partial", value.partial)?;
                 canonical_json
             }
-            Some(worker_response::Payload::ResolveSymbol(value)) => {
-                validate_typed_string(
-                    &value.canonical_json,
-                    "/declaration/symbolId",
-                    &value.symbol_id,
-                )?;
-                value.canonical_json
-            }
-            Some(worker_response::Payload::ResolveExpression(value)) => {
-                validate_typed_string(&value.canonical_json, "/anchor/anchorId", &value.anchor_id)?;
-                value.canonical_json
-            }
-            Some(worker_response::Payload::BuildLocalGraph(value)) => {
-                validate_typed_string(&value.canonical_json, "/symbol", &value.symbol_id)?;
-                validate_typed_count(&value.canonical_json, "/nodes", value.node_count)?;
-                validate_typed_count(&value.canonical_json, "/edges", value.edge_count)?;
-                value.canonical_json
-            }
-            Some(worker_response::Payload::ApplyEdit(value)) => {
-                validate_typed_string(
-                    &value.canonical_json,
-                    "/candidateHash",
-                    &value.candidate_hash,
-                )?;
-                value.canonical_json
-            }
-            Some(worker_response::Payload::ValidateCandidate(value)) => {
-                let canonical: Value =
-                    serde_json::from_slice(&value.canonical_json).map_err(internal)?;
-                if canonical.get("valid").and_then(Value::as_bool) != Some(value.valid) {
-                    return Err(ClewError::new(
-                        ErrorCode::WorkerProtocolMismatch,
-                        "typed validation result disagrees with canonical payload",
-                    ));
-                }
-                value.canonical_json
-            }
             Some(worker_response::Payload::Shutdown(value)) => value.canonical_json,
             _ => {
                 return Err(ClewError::new(
@@ -1473,18 +1326,6 @@ impl WorkerClient {
         let json_started = Instant::now();
         let mut value: Value = serde_json::from_slice(&canonical_json).map_err(internal)?;
         let json_micros = json_started.elapsed().as_micros() as u64;
-        if kind == RequestKind::ApplyEdit && value.get("source").is_none() {
-            let blob = value.get("sourceBlob").ok_or_else(|| {
-                ClewError::new(
-                    ErrorCode::WorkerProtocolMismatch,
-                    "candidate response has neither inline source nor BlobRef",
-                )
-            })?;
-            let source = read_response_blob(payload, blob)?;
-            value["source"] = Value::String(String::from_utf8(source).map_err(|error| {
-                ClewError::new(ErrorCode::WorkerProtocolMismatch, error.to_string())
-            })?);
-        }
         if kind == RequestKind::OpenProject {
             let project_compiler = value
                 .get("declaredCompilerVersion")
@@ -2074,95 +1915,6 @@ impl WorkerClient {
             ))
         }
     }
-
-    pub fn validate_candidates_batch(
-        &mut self,
-        candidates: &[(String, String)],
-    ) -> Result<Vec<Value>, ClewError> {
-        let snapshot = self.snapshot.clone().unwrap_or(SnapshotId {
-            base_revision: "UNVERSIONED".into(),
-            project_model_hash: "UNRESOLVED".into(),
-        });
-        let mut requests = Vec::with_capacity(candidates.len());
-        for (file, source) in candidates {
-            let request_id = self.next_id;
-            self.next_id += 1;
-            requests.push(WorkerRequest {
-                request_id,
-                protocol_version: Some(ProtocolVersion { major: 1, minor: 0 }),
-                snapshot: Some(snapshot.clone()),
-                payload: Some(worker_request::Payload::ValidateCandidate(
-                    ValidateCandidateRequest {
-                        schema_version: Some(SchemaVersion { major: 1, minor: 0 }),
-                        repo: String::new(),
-                        file: file.clone(),
-                        source_inline: source.as_bytes().to_vec(),
-                        source_blob: None,
-                    },
-                )),
-            });
-        }
-        let request_id = self.next_id;
-        self.next_id += 1;
-        write_message(
-            &mut self.stdin,
-            &WorkerRequest {
-                request_id,
-                protocol_version: Some(ProtocolVersion { major: 1, minor: 0 }),
-                snapshot: Some(snapshot),
-                payload: Some(worker_request::Payload::Batch(BatchRequest {
-                    schema_version: Some(SchemaVersion { major: 1, minor: 0 }),
-                    requests,
-                })),
-            },
-        )?;
-        let response = read_message(&mut self.stdout)?;
-        if response.request_id != request_id {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "batch response request_id mismatch",
-            ));
-        }
-        let batch = match response.payload {
-            Some(worker_response::Payload::Batch(batch)) => batch,
-            _ => {
-                return Err(ClewError::new(
-                    ErrorCode::WorkerProtocolMismatch,
-                    "worker returned no BatchResponse",
-                ));
-            }
-        };
-        batch
-            .responses
-            .into_iter()
-            .map(|response| match response.payload {
-                Some(worker_response::Payload::ValidateCandidate(value)) => {
-                    serde_json::from_slice(&value.canonical_json).map_err(internal)
-                }
-                Some(worker_response::Payload::Error(error)) => Err(ClewError {
-                    code: parse_worker_code(&error.code),
-                    message: error.message,
-                    transaction_id: None,
-                    snapshot_id: None,
-                    evidence: error.evidence,
-                    relevant_anchors_or_symbols: vec!["batch-validation".into()].into_boxed_slice(),
-                    retryable: error.retryable,
-                }),
-                _ => Err(ClewError::new(
-                    ErrorCode::WorkerProtocolMismatch,
-                    "unexpected response inside batch",
-                )),
-            })
-            .collect()
-    }
-}
-
-fn request_requires_project_snapshot(kind: RequestKind, payload: &Value) -> bool {
-    match kind {
-        RequestKind::OpenProject | RequestKind::ValidateCandidate | RequestKind::Shutdown => false,
-        RequestKind::IndexFiles => payload.get("syntaxOnly").and_then(Value::as_bool) != Some(true),
-        _ => true,
-    }
 }
 
 impl Drop for WorkerClient {
@@ -2214,21 +1966,6 @@ fn snapshot_label(snapshot: &SnapshotId) -> String {
     )
 }
 
-fn source_transport(
-    payload: &Value,
-    _build_state_root: Option<&Path>,
-) -> Result<(Vec<u8>, Option<BlobRef>), ClewError> {
-    let source = payload
-        .get("source")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .as_bytes()
-        .to_vec();
-    // Request transport is always inline. Mutable transport CAS belongs to the
-    // private worker process state; the target repository is never a blob store.
-    Ok((source, None))
-}
-
 fn validate_typed_string(canonical: &[u8], pointer: &str, typed: &str) -> Result<(), ClewError> {
     let value: Value = serde_json::from_slice(canonical).map_err(internal)?;
     if value.pointer(pointer).and_then(Value::as_str) != Some(typed) {
@@ -2265,36 +2002,6 @@ fn validate_typed_bool(canonical: &[u8], pointer: &str, typed: bool) -> Result<(
         ));
     }
     Ok(())
-}
-
-fn read_response_blob(payload: &Value, blob: &Value) -> Result<Vec<u8>, ClewError> {
-    let repo = payload
-        .get("repo")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ClewError::new(ErrorCode::WorkerProtocolMismatch, "BlobRef has no repo"))?;
-    let relative = blob
-        .get("relativePath")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ClewError::new(ErrorCode::WorkerProtocolMismatch, "BlobRef has no path"))?;
-    if relative.starts_with('/') || relative.split('/').any(|part| part == "..") {
-        return Err(ClewError::new(
-            ErrorCode::WorkerProtocolMismatch,
-            "response BlobRef escapes repository",
-        ));
-    }
-    let bytes = std::fs::read(Path::new(repo).join(relative))
-        .map_err(|error| ClewError::new(ErrorCode::WorkerProtocolMismatch, error.to_string()))?;
-    let expected = blob
-        .get("contentHash")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if crate::canonical::hash_bytes(&bytes) != expected {
-        return Err(ClewError::new(
-            ErrorCode::WorkerProtocolMismatch,
-            "response BlobRef content hash mismatch",
-        ));
-    }
-    Ok(bytes)
 }
 
 fn index_response_body(
@@ -2876,20 +2583,6 @@ fn git_revision(repo: &Path) -> Result<String, ClewError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn write_message<M: Message>(writer: &mut impl Write, message: &M) -> Result<(), ClewError> {
-    let bytes = message.encode_to_vec();
-    writer
-        .write_all(&(bytes.len() as u32).to_be_bytes())
-        .and_then(|_| writer.write_all(&bytes))
-        .and_then(|_| writer.flush())
-        .map_err(|e| {
-            ClewError::new(
-                ErrorCode::WorkerCrashed,
-                format!("worker write failed: {e}"),
-            )
-        })
-}
-
 fn write_message_profiled<M: Message>(
     writer: &mut impl Write,
     message: &M,
@@ -3298,30 +2991,6 @@ mod tests {
     use serde_json::json;
     use std::ffi::OsStr;
     use walkdir::WalkDir;
-
-    #[test]
-    fn source_syntax_index_does_not_bootstrap_a_project_model() {
-        assert!(!request_requires_project_snapshot(
-            RequestKind::ValidateCandidate,
-            &json!({}),
-        ));
-        assert!(!request_requires_project_snapshot(
-            RequestKind::IndexFiles,
-            &json!({"syntaxOnly":true}),
-        ));
-        assert!(request_requires_project_snapshot(
-            RequestKind::IndexFiles,
-            &json!({"syntaxOnly":false}),
-        ));
-        assert!(request_requires_project_snapshot(
-            RequestKind::IndexFiles,
-            &json!({}),
-        ));
-        assert!(request_requires_project_snapshot(
-            RequestKind::ApplyEdit,
-            &json!({"syntaxOnly":true}),
-        ));
-    }
 
     fn valid_compiler_index_profiling() -> Value {
         json!({
@@ -4403,17 +4072,6 @@ mod tests {
         restored.shutdown().unwrap();
     }
 
-    #[test]
-    fn trusted_distribution_identity_is_read_only_cache_key_material() {
-        let workspace = workspace_root();
-        let worker = WorkerClient::start(&workspace).unwrap();
-        let identity = worker.trusted_distribution_identity().unwrap();
-        assert!(identity.tree_hash.starts_with("sha256:"));
-        assert!(identity.build_input_digest.starts_with("sha256:"));
-        assert!(identity.plugin_fingerprint.starts_with("sha256:"));
-        worker.shutdown().unwrap();
-    }
-
     #[cfg(unix)]
     #[test]
     fn missing_trusted_distribution_runs_the_exact_wrapper_task_once() {
@@ -4593,16 +4251,6 @@ ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
             ErrorCode::IncompleteSemanticAnalysis
         );
         require_k2_validated(&json!({"k2Validated":true})).unwrap();
-    }
-
-    #[test]
-    fn external_build_state_uses_inline_large_source_transport() {
-        let source = "x".repeat(64 * 1024 + 1);
-        let state = tempfile::tempdir().unwrap();
-        let (inline, blob) =
-            source_transport(&json!({"source":source}), Some(state.path())).unwrap();
-        assert_eq!(inline.len(), 64 * 1024 + 1);
-        assert!(blob.is_none());
     }
 
     fn transport_blob(root: &Path, bytes: &[u8]) -> BlobRef {
