@@ -157,7 +157,7 @@ def validate_plan(plan: object) -> dict[str, object]:
 
     checks: dict[str, dict[str, object]] = {}
     for check in plan["checks"]:
-        if not isinstance(check, dict) or set(check) != {
+        required_check_keys = {
             "command",
             "environmentKeys",
             "gate",
@@ -165,7 +165,13 @@ def validate_plan(plan: object) -> dict[str, object]:
             "inputRoots",
             "step",
             "tier",
-        }:
+        }
+        allowed_check_keys = required_check_keys | {"dynamicAuthorities"}
+        if (
+            not isinstance(check, dict)
+            or not required_check_keys.issubset(check)
+            or not set(check).issubset(allowed_check_keys)
+        ):
             raise ControlError("invalid check")
         check_id = check["id"]
         if not isinstance(check_id, str) or not check_id or check_id in checks:
@@ -182,6 +188,17 @@ def validate_plan(plan: object) -> dict[str, object]:
             validate_relative(root)
         if not isinstance(check["environmentKeys"], list) or not all(isinstance(value, str) and value for value in check["environmentKeys"]):
             raise ControlError("invalid environment key list")
+        dynamic_authorities = check.get("dynamicAuthorities", [])
+        if not isinstance(dynamic_authorities, list) or not all(
+            value == "git-worktrees"
+            or (
+                isinstance(value, str)
+                and value.startswith("environment-file:")
+                and value.removeprefix("environment-file:") in check["environmentKeys"]
+            )
+            for value in dynamic_authorities
+        ):
+            raise ControlError("invalid dynamic authority list")
         if check["gate"] is not None and (not isinstance(check["gate"], str) or not check["gate"]):
             raise ControlError("invalid gate identifier")
         checks[check_id] = check
@@ -272,10 +289,38 @@ def environment_digest(check: dict[str, object]) -> str:
     return digest_bytes(canonical(values))
 
 
+def dynamic_authority_digest(check: dict[str, object]) -> str:
+    values: dict[str, object] = {}
+    for authority in check.get("dynamicAuthorities", []):
+        if authority == "git-worktrees":
+            raw = subprocess.check_output(
+                ("git", "worktree", "list", "--porcelain"), cwd=ROOT
+            )
+            values[authority] = digest_bytes(raw)
+            continue
+        key = authority.removeprefix("environment-file:")
+        configured = os.environ.get(key)
+        if configured is None:
+            values[authority] = None
+            continue
+        path = Path(configured)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ControlError("dynamic authority file must be normalized and absolute")
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ControlError("dynamic authority file must be regular")
+            values[authority] = digest_bytes(path.read_bytes())
+        except FileNotFoundError:
+            values[authority] = "MISSING"
+    return digest_bytes(canonical(values))
+
+
 def evidence_digest(check: dict[str, object], authority: dict[str, str]) -> str:
     value = {
         "checkAuthorityDigest": check_authority_digest(check, authority),
         "clean": is_clean(),
+        "dynamicAuthorityDigest": dynamic_authority_digest(check),
         "environmentDigest": environment_digest(check),
         "memoryBytes": memory_bytes(),
         "physicalCores": physical_cores(),

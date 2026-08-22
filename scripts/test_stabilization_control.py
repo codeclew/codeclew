@@ -171,6 +171,19 @@ class StabilizationControlTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first_evidence, second_evidence)
 
+    def test_dynamic_environment_file_changes_evidence_key(self) -> None:
+        check = copy.deepcopy(self.model["checks"]["s0-recovery-baseline"])
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "recovery.json"
+            manifest.write_text("first", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {"CODECLEW_RECOVERY_MANIFEST": str(manifest)}
+            ):
+                first = control.dynamic_authority_digest(check)
+                manifest.write_text("second", encoding="utf-8")
+                second = control.dynamic_authority_digest(check)
+        self.assertNotEqual(first, second)
+
     def test_completed_steps_never_crosses_an_invalid_dependency(self) -> None:
         valid = {"S0", "S1", "S3", "S4"}
         with mock.patch.object(
