@@ -30,7 +30,7 @@ run_stage() {
 # singleflight, managed-state safety, leases, and runtime-root retention without
 # starting a real cold build or an edit/publish end-to-end flow.
 run_stage bootstrap-contracts \
-  python3 -I -S -m unittest -q bootstrap/test_clew_bootstrap.py
+  python3 -I -S bootstrap/test_clew_bootstrap.py -q
 run_stage rust-runtime-authority \
   cargo test --locked -p clew --lib 'runtime::tests::' -- --test-threads=1
 run_stage rust-state-authority \
