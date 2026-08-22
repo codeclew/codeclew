@@ -604,6 +604,12 @@ struct FdRoot {
     descriptor: OwnedFd,
 }
 
+#[allow(clippy::unnecessary_cast)]
+fn permission_bits(mode: libc::mode_t) -> u32 {
+    // mode_t is u16 on macOS and u32 on Linux; normalize without platform branches.
+    mode as u32 & 0o777
+}
+
 impl FdRoot {
     fn open(repo: &Path) -> Result<Self, ClewError> {
         let path = CString::new(repo.as_os_str().as_bytes())
@@ -699,7 +705,7 @@ impl FdRoot {
                     return Err(mutated("repository file size changed during capture"));
                 }
                 Ok(RawWorktreeEntry::Regular {
-                    mode: mode as u32 & 0o777,
+                    mode: permission_bits(mode),
                     bytes,
                 })
             }
@@ -731,7 +737,7 @@ impl FdRoot {
                 }
                 target.truncate(length as usize);
                 Ok(RawWorktreeEntry::Symlink {
-                    mode: mode as u32 & 0o777,
+                    mode: permission_bits(mode),
                     target,
                 })
             }
