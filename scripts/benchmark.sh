@@ -79,7 +79,15 @@ context_arguments = [
 ]
 context, cold_context, _ = invoke(context_arguments)
 
+bootstrap_audits = []
+bootstrap_audit_times = []
 warm_events = []
+for _ in range(3):
+    value, elapsed, events = invoke(["--bootstrap-warm-audit"])
+    bootstrap_audits.append(value)
+    bootstrap_audit_times.append(elapsed)
+    warm_events.append(events)
+
 launcher = []
 for _ in range(20):
     _, elapsed, events = invoke(["--help"], parse_json=False)
@@ -124,13 +132,22 @@ measurements = {
     "launcherOverheadP95": p95(launcher),
     "sessionOpenP95": p95(sessions),
     "contextCreateP95": p95(contexts),
+    "bootstrapMetadataAuditP95": p95(bootstrap_audit_times),
 }
+metadata_only_bootstrap = all(
+    audit.get("status") == "PASSED"
+    and audit.get("counters", {}).get("processRuns") == 0
+    and audit.get("counters", {}).get("digestFileCalls") == 0
+    and audit.get("counters", {}).get("checkpointHits", 0) >= 1
+    for audit in bootstrap_audits
+)
 slo = {
     "launcherOverhead": measurements["launcherOverheadP95"] <= 1000,
     "sessionOpen": measurements["sessionOpenP95"] <= 2000,
     "contextCreate": measurements["contextCreateP95"] <= 30000,
     "stableContextIdentity": len(context_ids) == 1,
     "noWarmBuildEvents": not forbidden_observed,
+    "metadataOnlyBootstrap": metadata_only_bootstrap,
 }
 report = {
     "schema": "codeclew-managed-warm-benchmark/2.0",
@@ -140,6 +157,7 @@ report = {
     "coldBootstrapObserved": '"event":"STAGE_STARTED"' in cold_bootstrap_events,
     "contextCompleteness": context["completeness"],
     "warmForbiddenBuildMarkers": forbidden_observed,
+    "bootstrapWarmAudits": bootstrap_audits,
     "sloPassed": slo,
     "passed": all(slo.values()),
 }
