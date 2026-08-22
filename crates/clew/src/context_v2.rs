@@ -486,7 +486,10 @@ fn collect_source_offset_hints(
                 .get("name")
                 .and_then(Value::as_str)
                 .is_some_and(|name| terms.contains(&name.to_lowercase()));
-            if exact_name_match {
+            let exact_identity_match = terms
+                .iter()
+                .any(|term| exact_identity_match(value, term, None, 0));
+            if exact_name_match || exact_identity_match {
                 let file = values
                     .get("sourceOrigin")
                     .and_then(Value::as_object)
@@ -498,7 +501,8 @@ fn collect_source_offset_hints(
                     .and_then(Value::as_object)
                     .and_then(|origin| origin.get("rangeStart"))
                     .and_then(Value::as_u64)
-                    .or_else(|| values.get("rangeStart").and_then(Value::as_u64));
+                    .or_else(|| values.get("rangeStart").and_then(Value::as_u64))
+                    .or_else(|| values.get("start").and_then(Value::as_u64));
                 if let (Some(file), Some(offset)) = (file, offset)
                     && safe_path(file)
                     && let Ok(offset) = usize::try_from(offset)
@@ -791,6 +795,30 @@ mod tests {
                     "rangeStart": declaration_offset,
                     "rangeEnd": source.len(),
                 }]
+            }
+        })];
+        let hints = source_offset_hints(&facts, &["Target".into()]);
+        let (_, _, text) = snippet(
+            &source,
+            &["Target".into()],
+            hints.get("src/Target.kt").copied(),
+        );
+        assert!(text.contains("class Target"));
+        assert!(!text.contains("import sample.Target"));
+    }
+
+    #[test]
+    fn compiler_identity_and_start_offset_beat_an_earlier_import_match() {
+        let mut source = "import sample.Target\n".to_owned();
+        source.push_str(&"padding\n".repeat(2_100));
+        let declaration_offset = source.len();
+        source.push_str("class Target {\n    fun changed() = true\n}\n");
+        let facts = vec![json!({
+            "payload": {
+                "compilerClassId": "sample/Target",
+                "file": "src/Target.kt",
+                "start": declaration_offset,
+                "end": source.len(),
             }
         })];
         let hints = source_offset_hints(&facts, &["Target".into()]);
