@@ -87,9 +87,15 @@ context_arguments = [
     "--session", session_id,
     "--intent", "inspect total and its tests",
     "--term", "total",
-    "--term", "SamplesTest",
 ]
 context, cold_context, _ = invoke(context_arguments)
+expand_arguments = [
+    "context", "expand",
+    "--session", session_id,
+    "--from", context["contextId"],
+    "--term", "SamplesTest",
+]
+expanded_context, cold_expand, _ = invoke(expand_arguments)
 
 bootstrap_audits = []
 bootstrap_audit_times = []
@@ -125,6 +131,14 @@ for _ in range(20):
     context_ids.add(value["contextId"])
     warm_events.append(events)
 
+expansions = []
+expanded_context_ids = set()
+for _ in range(20):
+    value, elapsed, events = invoke(expand_arguments)
+    expansions.append(elapsed)
+    expanded_context_ids.add(value["contextId"])
+    warm_events.append(events)
+
 forbidden_markers = (
     '"event":"STAGE_STARTED"',
     "Compiling ",
@@ -141,9 +155,11 @@ measurements = {
     "coldBootstrap": cold_bootstrap,
     "coldSessionOpen": cold_session,
     "coldContextCreate": cold_context,
+    "coldContextExpand": cold_expand,
     "launcherOverheadP95": p95(launcher),
     "sessionOpenP95": p95(sessions),
     "contextCreateP95": p95(contexts),
+    "contextExpandP95": p95(expansions),
     "bootstrapMetadataAuditP95": p95(bootstrap_audit_times),
 }
 metadata_only_bootstrap = all(
@@ -157,17 +173,30 @@ slo = {
     "launcherOverhead": measurements["launcherOverheadP95"] <= 1000,
     "sessionOpen": measurements["sessionOpenP95"] <= 2000,
     "contextCreate": measurements["contextCreateP95"] <= 30000,
+    "contextExpand": measurements["contextExpandP95"] <= 30000,
     "stableContextIdentity": len(context_ids) == 1,
+    "stableExpansionIdentity": len(expanded_context_ids) == 1,
     "noWarmBuildEvents": not forbidden_observed,
     "metadataOnlyBootstrap": metadata_only_bootstrap,
 }
 report = {
     "schema": "codeclew-managed-warm-benchmark/2.0",
     "scope": "fresh-kotlin24-managed-session",
+    "sourceRevision": subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).stdout.strip(),
+    "runtimeKey": session["session"]["runtimeKey"],
     "samples": 20,
     "measurementsMs": measurements,
     "coldBootstrapObserved": '"event":"STAGE_STARTED"' in cold_bootstrap_events,
     "contextCompleteness": context["completeness"],
+    "expandedContextCompleteness": expanded_context["completeness"],
     "warmForbiddenBuildMarkers": forbidden_observed,
     "bootstrapWarmAudits": bootstrap_audits,
     "sloPassed": slo,
