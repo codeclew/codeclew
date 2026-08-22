@@ -93,7 +93,7 @@ expand_arguments = [
     "context", "expand",
     "--session", session_id,
     "--from", context["contextId"],
-    "--term", "SamplesTest",
+    "--term", "SampleTest",
 ]
 expanded_context, cold_expand, _ = invoke(expand_arguments)
 
