@@ -79,7 +79,17 @@ class BtaIncrementalBackend21 internal constructor(
             }
         } catch (error: Exception) {
             if (error is InterruptedException) Thread.currentThread().interrupt()
-            failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_" + stage + "_EXCEPTION")
+            val origin = error.stackTrace.asSequence()
+                .filter { it.className.startsWith("dev.semanticthread.worker.") }
+                .map { frame -> frame.methodName.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' || it == '_' } }
+                .firstOrNull(String::isNotBlank)
+                ?.take(40)
+                ?: "UNKNOWN"
+            failed21(
+                IncrementalK2Status.FAILED_RECOVERABLE,
+                started,
+                "K2_BACKEND_" + stage + "_" + origin + "_EXCEPTION",
+            )
         } catch (_: LinkageError) {
             failed21(IncrementalK2Status.FAILED_RECOVERABLE, started, "K2_BACKEND_" + stage + "_LINKAGE")
         }
