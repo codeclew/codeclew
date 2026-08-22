@@ -154,12 +154,18 @@ temporary = root / ".seed.json.tmp"
 temporary.write_text(json.dumps(seed, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 os.chmod(temporary, 0o400)
 os.replace(temporary, root / "seed.json")
-print(json.dumps({
+qualification = {
     "runtimeKey": seed["runtimeKey"],
     "schema": "codeclew-trusted-seed-qualification/1.0",
     "seedDigest": seed["seedDigest"],
     "status": "PASS",
-}, sort_keys=True, separators=(",", ":")))
+}
+qualification_path = root / "qualification.json"
+qualification_path.write_text(
+    json.dumps(qualification, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+os.chmod(qualification_path, 0o400)
 PY
 
 mv "$WORK" "$FINAL"
