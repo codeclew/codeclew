@@ -20,8 +20,6 @@ and reuses it without running Cargo, Rustc, Gradle, or Maven.
 ## Workflow
 
 ```bash
-./clew doctor
-
 ./clew session open \
   --repo /path/to/clean-kotlin-repository \
   --target-ref main

@@ -604,6 +604,7 @@ fn io_error(error: std::io::Error) -> ClewError {
 mod tests {
     use super::*;
     use crate::cas::CasStore;
+    use rayon::prelude::*;
 
     fn fixture() -> (
         tempfile::TempDir,
@@ -645,6 +646,20 @@ mod tests {
         writer.finish().unwrap()
     }
 
+    fn parallel_runs(state: &StateAuthority, facts: &[FactRecord], jobs: usize) -> Vec<FactRun> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build()
+            .unwrap();
+        let chunk_size = facts.len().div_ceil(jobs);
+        pool.install(|| {
+            facts
+                .par_chunks(chunk_size)
+                .map(|chunk| run(state, chunk))
+                .collect()
+        })
+    }
+
     #[test]
     fn run_arrival_order_cannot_change_shards_or_generation_digest() {
         let (_root, state, store, derived, attempt) = fixture();
@@ -678,6 +693,32 @@ mod tests {
         for shard in &first.shards {
             assert!(shard.size <= 600);
         }
+    }
+
+    #[test]
+    fn jobs_one_and_jobs_n_publish_byte_identical_generation() {
+        let (_root, state, store, derived, attempt) = fixture();
+        let facts = ["a", "b", "c", "d", "e", "f"].map(|key| fact(&store, key));
+        let (single, single_object) = finalize_with_limit(
+            &store,
+            derived.clone(),
+            vec![attempt.clone()],
+            parallel_runs(&state, &facts, 1),
+            None,
+            600,
+        )
+        .unwrap();
+        let (parallel, parallel_object) = finalize_with_limit(
+            &store,
+            derived,
+            vec![attempt],
+            parallel_runs(&state, &facts, 3),
+            None,
+            600,
+        )
+        .unwrap();
+        assert_eq!(single, parallel);
+        assert_eq!(single_object, parallel_object);
     }
 
     #[test]

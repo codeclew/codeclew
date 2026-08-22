@@ -1,6 +1,7 @@
 use crate::canonical;
 use crate::cas::CasObject;
 use crate::error::{ClewError, ErrorCode};
+use crate::repository_snapshot::LEGACY_EXCLUDES;
 use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::{StateAuthority, create_private_directory};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use walkdir::WalkDir;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -116,7 +118,8 @@ pub enum RunStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RepositoryLocator {
     schema: String,
-    repository_path: PathBuf,
+    target_repository_path: PathBuf,
+    source_repository_path: PathBuf,
 }
 
 impl SessionAuthority {
@@ -161,12 +164,20 @@ impl SessionAuthority {
         for child in ["objects/sha256", "contexts", "plans", "candidates"] {
             create_private_directory(&root.join(child))?;
         }
+        let source_repository_path = root.join("source");
+        create_filtered_detached_worktree(
+            &repo,
+            &source_repository_path,
+            &authority.base_revision,
+        )?;
+        seal_source_worktree(&source_repository_path)?;
         write_json_create_new(&root.join("authority.json"), &authority)?;
         write_json_create_new(
             &root.join("locator.json"),
             &RepositoryLocator {
-                schema: "codeclew-repository-locator/1.0".into(),
-                repository_path: repo,
+                schema: "codeclew-repository-locator/2.0".into(),
+                target_repository_path: repo,
+                source_repository_path,
             },
         )?;
         Ok(authority)
@@ -199,11 +210,41 @@ impl SessionAuthority {
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
             read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
-        let path = locator.repository_path.canonicalize().map_err(io_error)?;
+        if locator.schema != "codeclew-repository-locator/2.0" {
+            return Err(invalid("repository locator schema is invalid"));
+        }
+        let path = locator
+            .source_repository_path
+            .canonicalize()
+            .map_err(io_error)?;
+        if !path.starts_with(&root)
+            || git_output(&path, &["rev-parse", "HEAD"])? != self.base_revision
+            || !filtered_worktree_clean(&path)?
+        {
+            return Err(invalid("session source authority is invalid"));
+        }
         if state.repository(&path)?.key != self.repository_key {
             return Err(invalid(
                 "repository locator no longer matches session authority",
             ));
+        }
+        Ok(path)
+    }
+
+    pub fn target_repository_path(&self) -> Result<PathBuf, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let locator: RepositoryLocator =
+            read_json_limited(&root.join("locator.json"), MAX_PLAN_BYTES)?;
+        if locator.schema != "codeclew-repository-locator/2.0" {
+            return Err(invalid("repository locator schema is invalid"));
+        }
+        let path = locator
+            .target_repository_path
+            .canonicalize()
+            .map_err(io_error)?;
+        if state.repository(&path)?.key != self.repository_key {
+            return Err(invalid("target repository locator is invalid"));
         }
         Ok(path)
     }
@@ -362,9 +403,10 @@ impl RunRecord {
             return Err(invalid("plan is not bound to the requested context"));
         }
         let (run_id, request_digest) = session.run_identity(context_id, plan_id)?;
+        let transaction_id = transaction_id(&request_digest)?;
         Ok(Self {
             schema: RUN_SCHEMA.into(),
-            transaction_id: format!("tx:{}", Uuid::new_v4()),
+            transaction_id,
             run_id,
             session_id: session.session_id.clone(),
             context_id: context_id.into(),
@@ -406,10 +448,17 @@ impl RunRecord {
         let state = StateAuthority::process_default()?;
         let root = state.run_root(&self.run_id)?;
         let path = root.join("record.json");
-        if path.exists() {
-            return Ok(false);
-        }
-        write_json_create_new(&path, self)?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(io_error(error)),
+        };
+        serde_json::to_writer(&mut file, self).map_err(parse_error)?;
+        file.sync_all().map_err(io_error)?;
         Ok(true)
     }
 
@@ -509,6 +558,20 @@ fn id_component<'a>(value: &'a str, prefix: &str) -> Result<&'a str, ClewError> 
     Ok(value)
 }
 
+fn transaction_id(request_digest: &str) -> Result<String, ClewError> {
+    let digest = request_digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| internal("request digest has no sha256 prefix"))?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(internal("request digest is not canonical"));
+    }
+    Ok(format!("tx:{digest}"))
+}
+
 fn write_json_create_new<T: Serialize>(path: &Path, value: &T) -> Result<(), ClewError> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
@@ -531,6 +594,104 @@ fn read_json_limited<T: for<'de> Deserialize<'de>>(
     }
     let bytes = fs::read(path).map_err(io_error)?;
     serde_json::from_slice(&bytes).map_err(parse_error)
+}
+
+fn create_filtered_detached_worktree(
+    repository: &Path,
+    destination: &Path,
+    revision: &str,
+) -> Result<(), ClewError> {
+    if destination.exists() {
+        return Err(invalid("session source worktree already exists"));
+    }
+    let add = Command::new("git")
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "--detach",
+            "--no-checkout",
+        ])
+        .arg(destination)
+        .arg(revision)
+        .current_dir(repository)
+        .output()
+        .map_err(io_error)?;
+    if !add.status.success() {
+        return Err(invalid("session source worktree creation failed"));
+    }
+    let checkout = Command::new("git")
+        .args(["checkout", "--force", revision, "--", "."])
+        .args(LEGACY_EXCLUDES)
+        .current_dir(destination)
+        .output()
+        .map_err(io_error)?;
+    if !checkout.status.success() {
+        let _ = Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(destination)
+            .current_dir(repository)
+            .status();
+        return Err(invalid("session source checkout failed"));
+    }
+    Ok(())
+}
+
+fn seal_source_worktree(root: &Path) -> Result<(), ClewError> {
+    let mut directories = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry.map_err(|error| internal(error.to_string()))?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(io_error)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            directories.push(entry.path().to_path_buf());
+        } else if metadata.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let executable = metadata.permissions().mode() & 0o111 != 0;
+                fs::set_permissions(
+                    entry.path(),
+                    fs::Permissions::from_mode(if executable { 0o500 } else { 0o400 }),
+                )
+                .map_err(io_error)?;
+            }
+        } else {
+            return Err(invalid("session source contains an unsupported entry"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        for directory in directories {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o500)).map_err(io_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn filtered_worktree_clean(repository: &Path) -> Result<bool, ClewError> {
+    let output = Command::new("git")
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ])
+        .args(LEGACY_EXCLUDES)
+        .current_dir(repository)
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("session source cleanliness is unavailable"));
+    }
+    Ok(output.stdout.is_empty())
 }
 
 fn git_output(repo: &Path, arguments: &[&str]) -> Result<String, ClewError> {
@@ -603,5 +764,88 @@ mod tests {
         assert_eq!(id_component(&run_id, "run:").unwrap(), path_digest);
         assert!(!run_id[4..].contains(':'));
         assert!(request_digest.starts_with("sha256:"));
+        assert_eq!(
+            transaction_id(request_digest).unwrap(),
+            "tx:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn detached_source_is_filtered_clean_and_read_only() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repository = temporary.path().join("repository");
+        let source = temporary.path().join("managed-source");
+        fs::create_dir(&repository).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(repository.join("README.md"), b"fixture\n").unwrap();
+        fs::create_dir(repository.join(".semantic-thread")).unwrap();
+        fs::write(repository.join(".semantic-thread/tracked"), b"legacy\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Codeclew Test",
+                    "-c",
+                    "user.email=codeclew@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "baseline",
+                ])
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let revision = git_output(&repository, &["rev-parse", "HEAD"]).unwrap();
+        create_filtered_detached_worktree(&repository, &source, &revision).unwrap();
+        assert!(source.join("README.md").is_file());
+        assert!(!source.join(".semantic-thread").exists());
+        assert!(filtered_worktree_clean(&source).unwrap());
+        seal_source_worktree(&source).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(source.join("README.md"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o400
+            );
+            for entry in WalkDir::new(&source).contents_first(true) {
+                let path = entry.unwrap().into_path();
+                if !path.is_symlink() {
+                    let mode = if path.is_dir() { 0o700 } else { 0o600 };
+                    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+                }
+            }
+        }
+        assert!(
+            Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&source)
+                .current_dir(&repository)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 }

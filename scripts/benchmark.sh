@@ -5,95 +5,148 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 mkdir -p benchmarks/reports
 
-python3 -I -S - "$ROOT" <<'PY'
+BENCH_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-benchmark.XXXXXX")
+trap 'rm -rf "$BENCH_ROOT"' EXIT INT TERM
+mkdir "$BENCH_ROOT/repository"
+git archive HEAD fixtures/kotlin-basic |
+  tar -x -C "$BENCH_ROOT/repository" --strip-components=2
+git init -q -b main "$BENCH_ROOT/repository"
+git -C "$BENCH_ROOT/repository" add .
+git -C "$BENCH_ROOT/repository" \
+  -c user.name='Codeclew Benchmark' \
+  -c user.email='benchmark@codeclew.invalid' \
+  commit -q -m baseline
+
+CODECLEW_HOME="$BENCH_ROOT/state" \
+python3 -I -S - "$ROOT" "$BENCH_ROOT/repository" <<'PY'
 import json
+import math
+import os
 from pathlib import Path
-import statistics
 import subprocess
 import sys
 import time
 
 root = Path(sys.argv[1])
+repository = Path(sys.argv[2])
 clew = root / "clew"
-fixture = root / "fixtures/kotlin-basic"
+environment = dict(os.environ)
+environment["CODECLEW_HOME"] = str(repository.parent / "state")
 
-def invoke(*arguments):
+
+def invoke(arguments, *, parse_json=True):
     started = time.perf_counter_ns()
     completed = subprocess.run(
         [str(clew), *arguments],
         cwd=root,
+        env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=True,
+        stderr=subprocess.PIPE,
+        check=False,
     )
     elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
-    return json.loads(completed.stdout), elapsed_ms
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"clew command failed ({completed.returncode}): {' '.join(arguments)}\n"
+            + completed.stdout.decode(errors="replace")
+            + completed.stderr.decode(errors="replace")
+        )
+    value = json.loads(completed.stdout) if parse_json else None
+    return value, elapsed_ms, completed.stderr.decode(errors="replace")
+
 
 def p95(values):
     ordered = sorted(values)
-    return ordered[max(0, (len(ordered) * 95 + 99) // 100 - 1)]
+    return ordered[max(0, math.ceil(len(ordered) * 0.95) - 1)]
 
-invoke("doctor")
-launcher = [invoke("--bootstrap-warm-audit")[1] for _ in range(20)]
-sessions = [
-    invoke("session", "open", "--repo", str(root), "--target-ref", "main")[1]
-    for _ in range(20)
-]
 
-session, _ = invoke("session", "open", "--repo", str(root), "--target-ref", "main")
+_, cold_bootstrap, cold_bootstrap_events = invoke(["--help"], parse_json=False)
+session, cold_session, _ = invoke([
+    "session", "open",
+    "--repo", str(repository),
+    "--target-ref", "main",
+    "--compilation", ":/main",
+])
 session_id = session["session"]["sessionId"]
-contexts = []
-for _ in range(5):
-    _, elapsed = invoke(
-        "context", "create",
-        "--session", session_id,
-        "--intent", "inspect total and its tests",
-        "--term", "com.acme.total",
-    )
-    contexts.append(elapsed)
+context_arguments = [
+    "context", "create",
+    "--session", session_id,
+    "--intent", "inspect total and its tests",
+    "--term", "total",
+    "--term", "SamplesTest",
+]
+context, cold_context, _ = invoke(context_arguments)
 
-invoke("index", "--repo", str(fixture))
-indexes = []
-compiler = []
+warm_events = []
+launcher = []
 for _ in range(20):
-    value, elapsed = invoke("index", "--repo", str(fixture))
-    indexes.append(elapsed)
-    profile = value.get("compilerIndex")
-    if profile:
-        compiler.append(profile.get("compilerMicros", 0) / 1000)
-preflight = {
-    "code": "READY" if compiler else "BACKEND_UNAVAILABLE",
-    "configured": True,
-    "backendAvailable": bool(compiler),
-    "compilerVersion": "2.4.10",
-}
+    _, elapsed, events = invoke(["--help"], parse_json=False)
+    launcher.append(elapsed)
+    warm_events.append(events)
 
+sessions = []
+for _ in range(20):
+    _, elapsed, events = invoke([
+        "session", "open",
+        "--repo", str(repository),
+        "--target-ref", "main",
+        "--compilation", ":/main",
+    ])
+    sessions.append(elapsed)
+    warm_events.append(events)
+
+contexts = []
+context_ids = set()
+for _ in range(20):
+    value, elapsed, events = invoke(context_arguments)
+    contexts.append(elapsed)
+    context_ids.add(value["contextId"])
+    warm_events.append(events)
+
+forbidden_markers = (
+    '"event":"STAGE_STARTED"',
+    "Compiling ",
+    "Finished release profile",
+    "Gradle build daemon",
+)
+forbidden_observed = sorted({
+    marker
+    for events in warm_events
+    for marker in forbidden_markers
+    if marker in events
+})
 measurements = {
+    "coldBootstrap": cold_bootstrap,
+    "coldSessionOpen": cold_session,
+    "coldContextCreate": cold_context,
     "launcherOverheadP95": p95(launcher),
     "sessionOpenP95": p95(sessions),
     "contextCreateP95": p95(contexts),
-    "k24CompilerIndexInternalP95": p95(compiler) if compiler else None,
-    "k24IndexEndToEndP95": p95(indexes),
 }
 slo = {
     "launcherOverhead": measurements["launcherOverheadP95"] <= 1000,
     "sessionOpen": measurements["sessionOpenP95"] <= 2000,
     "contextCreate": measurements["contextCreateP95"] <= 30000,
-    "k24CompilerIndexInternal": measurements["k24CompilerIndexInternalP95"] is not None
-        and measurements["k24CompilerIndexInternalP95"] <= 300,
-    "k24IndexEndToEnd": measurements["k24IndexEndToEndP95"] <= 2000,
+    "stableContextIdentity": len(context_ids) == 1,
+    "noWarmBuildEvents": not forbidden_observed,
 }
 report = {
-    "schema": "codeclew-warm-benchmark/1.0",
-    "scope": "warm-single-host-kotlin24",
+    "schema": "codeclew-managed-warm-benchmark/2.0",
+    "scope": "fresh-kotlin24-managed-session",
+    "samples": 20,
     "measurementsMs": measurements,
-    "compilerIndexPreflight": preflight,
+    "coldBootstrapObserved": '"event":"STAGE_STARTED"' in cold_bootstrap_events,
+    "contextCompleteness": context["completeness"],
+    "warmForbiddenBuildMarkers": forbidden_observed,
     "sloPassed": slo,
     "passed": all(slo.values()),
 }
 path = root / "benchmarks/reports/latest.json"
-path.write_text(json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n")
+path.write_text(
+    json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
 print(json.dumps(report, sort_keys=True, separators=(",", ":")))
 if not report["passed"]:
     raise SystemExit(1)

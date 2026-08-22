@@ -4822,7 +4822,12 @@ ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
                 "syntaxOnly":false
             }))
             .unwrap();
-        let mut index = RepositoryIndex::open_compilation(&repo, Some(":/main")).unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        let authority =
+            crate::state::StateAuthority::open(state_root.path().to_path_buf()).unwrap();
+        let mut index =
+            RepositoryIndex::open_compilation_with_authority(&repo, Some(":/main"), &authority)
+                .unwrap();
         let snapshot = index.update_verified(&verified, &worker).unwrap();
         assert!(!snapshot.is_empty());
         assert!(index.declaration_relations().unwrap().is_some());

@@ -22,7 +22,10 @@ git -C "$DEMO_ROOT" add .
 git -C "$DEMO_ROOT" -c user.name=Demo -c user.email=demo@localhost commit -q -m baseline
 BASE=$(git -C "$DEMO_ROOT" rev-parse HEAD)
 
-SESSION_JSON=$(./clew session open --repo "$DEMO_ROOT" --target-ref main)
+SESSION_JSON=$(./clew session open \
+  --repo "$DEMO_ROOT" \
+  --target-ref main \
+  --compilation :/main)
 SESSION_ID=$(printf '%s' "$SESSION_JSON" | json_get session.sessionId)
 
 CONTEXT_JSON=$(./clew context create \

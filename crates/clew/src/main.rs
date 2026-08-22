@@ -382,20 +382,14 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
 
 fn cancel_task_run(run_id: &str) -> Result<Value, ClewError> {
     let mut record = RunRecord::load(run_id)?;
-    if matches!(
-        record.status,
-        RunStatus::ReadyToPublish
-            | RunStatus::ValidatedConditional
-            | RunStatus::Published
-            | RunStatus::WorktreeRecoveryRequired
-    ) {
-        return Err(ClewError::new(
-            ErrorCode::PreconditionFailed,
-            "validated or published run cannot be cancelled; retain or recover its candidate",
-        ));
-    }
     if record.status == RunStatus::Cancelled {
         return task_run_status(run_id);
+    }
+    if !cancellation_allowed(record.status) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "only a created or preparing run can be cancelled",
+        ));
     }
     let process = record.process_id.zip(record.process_start_token.clone());
     record.status = RunStatus::Cancelled;
@@ -412,12 +406,13 @@ fn cancel_task_run(run_id: &str) -> Result<Value, ClewError> {
     task_run_status(run_id)
 }
 
+fn cancellation_allowed(status: RunStatus) -> bool {
+    matches!(status, RunStatus::Created | RunStatus::Preparing)
+}
+
 fn execute_task_run(run_id: &str) -> Result<Value, ClewError> {
     let mut record = RunRecord::load(run_id)?;
-    if matches!(
-        record.status,
-        RunStatus::ReadyToPublish | RunStatus::ValidatedConditional | RunStatus::Published
-    ) {
+    if record.status != RunStatus::Created {
         return task_run_status(run_id);
     }
     record.status = RunStatus::Preparing;
@@ -728,6 +723,11 @@ mod tests {
         assert!(
             Cli::try_parse_from(["clew", "task-run", "cancel", "--run", "run:request"]).is_ok()
         );
+        assert!(cancellation_allowed(RunStatus::Created));
+        assert!(cancellation_allowed(RunStatus::Preparing));
+        assert!(!cancellation_allowed(RunStatus::Publishing));
+        assert!(!cancellation_allowed(RunStatus::Published));
+        assert!(!cancellation_allowed(RunStatus::WorktreeRecoveryRequired));
     }
 
     #[cfg(unix)]

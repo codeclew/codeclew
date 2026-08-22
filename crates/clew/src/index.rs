@@ -100,6 +100,14 @@ impl RepositoryIndex {
 
     pub fn open_compilation(repo: &Path, compilation: Option<&str>) -> Result<Self, ClewError> {
         let authority = StateAuthority::process_default()?;
+        Self::open_compilation_with_authority(repo, compilation, &authority)
+    }
+
+    pub(crate) fn open_compilation_with_authority(
+        repo: &Path,
+        compilation: Option<&str>,
+        authority: &StateAuthority,
+    ) -> Result<Self, ClewError> {
         let state = authority.repository(repo)?;
         Self::open_database(
             repo,
@@ -227,13 +235,13 @@ impl RepositoryIndex {
 
     #[cfg(test)]
     fn stage_update_unchecked_for_test(
+        authority: &StateAuthority,
         repo: &Path,
         compilation: Option<&str>,
         facts: &Value,
         source_root: &Path,
         revision: &str,
     ) -> Result<StagedIndex, ClewError> {
-        let authority = StateAuthority::process_default()?;
         let state = authority.repository(repo)?;
         let blobs = state.blobs;
         let published_path = state.repository_index.join(database_name(compilation));
@@ -3346,8 +3354,25 @@ fn internal(error: anyhow::Error) -> ClewError {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::OnceLock;
     use std::sync::mpsc;
     use std::thread;
+
+    fn test_authority() -> &'static StateAuthority {
+        static AUTHORITY: OnceLock<(tempfile::TempDir, StateAuthority)> = OnceLock::new();
+        &AUTHORITY
+            .get_or_init(|| {
+                let root = tempfile::tempdir().unwrap();
+                let authority = StateAuthority::open(root.path().to_path_buf()).unwrap();
+                (root, authority)
+            })
+            .1
+    }
+
+    fn open_test_index(repository: &Path) -> RepositoryIndex {
+        RepositoryIndex::open_compilation_with_authority(repository, None, test_authority())
+            .unwrap()
+    }
 
     fn relation_ingestion_facts(source: &str, target: &str) -> Value {
         let graph = json!({
@@ -3957,7 +3982,7 @@ mod tests {
         let first = return_value_ingestion_facts(&source, "p/source");
         validate_declaration_descriptor_snapshot(&first).unwrap();
         validate_declaration_relation_snapshot(&first).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         let first_snapshot = index.update(&first).unwrap();
         let stored = index.declaration_relations().unwrap().unwrap();
         assert_eq!(stored.graph, first["declarationRelations"]);
@@ -4071,7 +4096,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = " ".repeat(160);
         std::fs::write(temp.path().join("A.kt"), &source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         let first = constructor_null_ingestion_facts(&source, "p/fallback");
         let first_snapshot = index.update(&first).unwrap();
         assert_eq!(
@@ -4393,7 +4418,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun read() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         let first = descriptor_ingestion_facts(source, "kotlin/Int");
         let first_snapshot = index.update(&first).unwrap();
         let stored = index.declaration_descriptors().unwrap().unwrap();
@@ -4425,7 +4450,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun read() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
 
         let mut hash_mismatch = descriptor_ingestion_facts(source, "kotlin/Int");
         hash_mismatch["declarationDescriptorHash"] = Value::String("sha256:forged".into());
@@ -4531,7 +4556,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun read() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         let descriptor_facts = descriptor_ingestion_facts(source, "kotlin/Int");
         let mut first = relation_ingestion_facts(source, "p/Base.read");
         first["declarationDescriptors"] = descriptor_facts["declarationDescriptors"].clone();
@@ -4568,7 +4593,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun read() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
 
         // Relation validation is intentionally cross-graph: exercise relation
         // failures with the authoritative descriptor graph present so the
@@ -4708,7 +4733,7 @@ mod tests {
             )
         };
         std::fs::write(&source_path, "fun a() = 1\n").unwrap();
-        let mut live = RepositoryIndex::open(temp.path()).unwrap();
+        let mut live = open_test_index(temp.path());
         let old_hash = live.update(&facts("fun a() = 1\n")).unwrap();
         let old_identity_snapshot = live
             .identity_report()
@@ -4722,6 +4747,7 @@ mod tests {
 
         std::fs::write(&source_path, "fun a() = 2\n").unwrap();
         let stage = RepositoryIndex::stage_update_unchecked_for_test(
+            test_authority(),
             temp.path(),
             None,
             &facts("fun a() = 2\n"),
@@ -4730,7 +4756,7 @@ mod tests {
         )
         .unwrap();
         let new_hash = stage.hash().to_owned();
-        let visible = RepositoryIndex::open(temp.path()).unwrap();
+        let visible = open_test_index(temp.path());
         assert_eq!(visible.hash().unwrap().as_deref(), Some(old_hash.as_str()));
         assert_eq!(
             visible.published_revision().unwrap().as_deref(),
@@ -4749,7 +4775,7 @@ mod tests {
         drop(visible);
 
         stage.publish().unwrap();
-        let visible = RepositoryIndex::open(temp.path()).unwrap();
+        let visible = open_test_index(temp.path());
         assert_eq!(visible.hash().unwrap().as_deref(), Some(new_hash.as_str()));
         assert_eq!(
             visible.published_revision().unwrap().as_deref(),
@@ -4785,12 +4811,13 @@ mod tests {
         let facts = |source: &str| {
             authoritative_index_facts(source, false, "2.4.10", vec![json!({"symbolId":"a"})])
         };
-        let mut live = RepositoryIndex::open(temp.path()).unwrap();
+        let mut live = open_test_index(temp.path());
         let old_hash = live.update(&facts("fun a() = 1\n")).unwrap();
         live.mark_published_revision("old").unwrap();
         drop(live);
 
         let error = RepositoryIndex::stage_update_unchecked_for_test(
+            test_authority(),
             temp.path(),
             None,
             &facts("fun a() = 2\n"),
@@ -4799,7 +4826,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::ProjectModelChanged);
-        let visible = RepositoryIndex::open(temp.path()).unwrap();
+        let visible = open_test_index(temp.path());
         assert_eq!(visible.hash().unwrap().as_deref(), Some(old_hash.as_str()));
         assert_eq!(
             visible.published_revision().unwrap().as_deref(),
@@ -4812,7 +4839,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut live = RepositoryIndex::open(temp.path()).unwrap();
+        let mut live = open_test_index(temp.path());
         let published_hash = live
             .update(&freshness_facts(source, false, "2.1.21"))
             .unwrap();
@@ -4836,6 +4863,7 @@ mod tests {
         .unwrap_err();
         drop(live);
         let error = RepositoryIndex::stage_update_unchecked_for_test(
+            test_authority(),
             temp.path(),
             None,
             &freshness_facts(source, true, "2.1.21"),
@@ -4845,11 +4873,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::ProjectModelChanged);
         assert_eq!(
-            RepositoryIndex::open(temp.path())
-                .unwrap()
-                .hash()
-                .unwrap()
-                .as_deref(),
+            open_test_index(temp.path()).hash().unwrap().as_deref(),
             Some(published_hash.as_str())
         );
     }
@@ -4861,7 +4885,7 @@ mod tests {
         let facts = |source: &str, declarations: Vec<Value>| {
             authoritative_index_facts(source, false, "2.4.10", declarations)
         };
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         let first = facts("fun a() = 1\n", vec![json!({"symbolId":"a"})]);
         index.update(&first).unwrap();
         assert_eq!(
@@ -4978,7 +5002,7 @@ mod tests {
         let facts = |source: &str, declarations: Vec<Value>| {
             authoritative_index_facts(source, false, "2.4.10", declarations)
         };
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         std::fs::write(&source_path, "fun old() = value\n").unwrap();
         index
             .update(&facts(
@@ -5030,7 +5054,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
 
         index
             .update(&freshness_facts(source, false, "2.1.21"))
@@ -5070,7 +5094,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         index
             .update(&freshness_facts(source, false, "2.1.21"))
             .unwrap();
@@ -5118,7 +5142,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         index
             .update(&freshness_facts(source, false, "2.1.21"))
             .unwrap();
@@ -5146,7 +5170,7 @@ mod tests {
         ));
         drop(index);
 
-        let mut recovered = RepositoryIndex::open(temp.path()).unwrap();
+        let mut recovered = open_test_index(temp.path());
         assert!(matches!(
             recovered.freshness_status(REPOSITORY_INDEX_FACT).unwrap(),
             FactFreshness::Unknown { .. }
@@ -5177,7 +5201,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         index
             .update(&freshness_facts(source, false, "2.1.21"))
             .unwrap();
@@ -5230,8 +5254,8 @@ mod tests {
         std::fs::write(left.path().join("A.kt"), source).unwrap();
         std::fs::write(right.path().join("A.kt"), source).unwrap();
         let facts = freshness_facts(source, false, "2.1.21");
-        let mut left_index = RepositoryIndex::open(left.path()).unwrap();
-        let mut right_index = RepositoryIndex::open(right.path()).unwrap();
+        let mut left_index = open_test_index(left.path());
+        let mut right_index = open_test_index(right.path());
 
         assert_eq!(
             left_index.update(&facts).unwrap(),
@@ -5256,7 +5280,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = "fun a() = 1\n";
         std::fs::write(temp.path().join("A.kt"), source).unwrap();
-        let mut index = RepositoryIndex::open(temp.path()).unwrap();
+        let mut index = open_test_index(temp.path());
         index
             .update(&freshness_facts(source, false, "2.1.21"))
             .unwrap();
@@ -5285,19 +5309,19 @@ mod tests {
     #[test]
     fn concurrent_open_waits_for_a_short_repository_writer() {
         let temp = tempfile::tempdir().unwrap();
-        let index = RepositoryIndex::open(temp.path()).unwrap();
+        let index = open_test_index(temp.path());
         index.connection.execute_batch("BEGIN IMMEDIATE").unwrap();
 
         let repository = temp.path().to_path_buf();
         let (started_tx, started_rx) = mpsc::channel();
         let opener = thread::spawn(move || {
             started_tx.send(()).unwrap();
-            RepositoryIndex::open(&repository)
+            open_test_index(&repository)
         });
         started_rx.recv().unwrap();
         thread::sleep(Duration::from_millis(100));
         index.connection.execute_batch("COMMIT").unwrap();
 
-        opener.join().unwrap().unwrap();
+        opener.join().unwrap();
     }
 }

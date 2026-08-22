@@ -1,16 +1,23 @@
 {
-  "schema": "semantic-task-edit-plan/0.1",
+  "schema": "codeclew-task-plan/2.0",
   "operations": [
     {
       "kind": "CREATE_FILE",
+      "opId": "create-demo-marker",
       "target": {
         "fileId": "src/main/kotlin/com/acme/CodeclewDemoMarker.kt"
       },
-      "replacement": {
-        "kotlin": "package com.acme\n\ninternal object CodeclewDemoMarker"
-      },
-      "preconditions": {},
-      "postconditions": {}
+      "text": "package com.acme\n\ninternal object CodeclewDemoMarker\n"
+    }
+  ],
+  "validation": [
+    {
+      "launcher": "GRADLE",
+      "args": [
+        "test",
+        "--no-daemon",
+        "--quiet"
+      ]
     }
   ]
 }

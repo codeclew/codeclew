@@ -213,6 +213,11 @@ impl CompletenessVector {
                 observed.extend(coverage_scopes(right));
                 let mut boundaries = coverage_boundaries(left);
                 boundaries.extend(coverage_boundaries(right));
+                if matches!(left, Coverage::Complete { .. })
+                    && matches!(right, Coverage::Complete { .. })
+                {
+                    boundaries.insert("SCOPE_MISMATCH".into());
+                }
                 Coverage::Partial {
                     observed_scopes: observed.into_iter().collect(),
                     boundaries: boundaries.into_iter().collect(),
@@ -257,6 +262,15 @@ impl CompletenessVector {
             && self.obligations.is_empty()
     }
 
+    pub fn publishable_for(&self, expected_scope_digest: &str) -> bool {
+        digest(expected_scope_digest)
+            && self.publishable()
+            && matches!(
+                &self.coverage,
+                Coverage::Complete { scope_digest } if scope_digest == expected_scope_digest
+            )
+    }
+
     pub fn validate(&self) -> Result<(), ClewError> {
         if self.schema != COMPLETENESS_VECTOR_SCHEMA {
             return Err(invalid("completeness vector schema is invalid"));
@@ -268,7 +282,9 @@ impl CompletenessVector {
             Coverage::Partial {
                 observed_scopes,
                 boundaries,
-            } if observed_scopes.windows(2).any(|pair| pair[0] >= pair[1])
+            } if observed_scopes.is_empty()
+                || boundaries.is_empty()
+                || observed_scopes.windows(2).any(|pair| pair[0] >= pair[1])
                 || boundaries.windows(2).any(|pair| pair[0] >= pair[1]) =>
             {
                 return Err(invalid("partial coverage sets are not canonical"));
@@ -624,5 +640,37 @@ mod tests {
         assert_eq!(unsure.meet(&unsure).unwrap(), unsure);
         assert!(!left.publishable());
         assert!(matches!(left.certainty, Certainty::Unsure { .. }));
+    }
+
+    #[test]
+    fn mismatched_complete_scopes_degrade_and_publish_requires_expected_scope() {
+        let left = CompletenessVector::verified_complete(d('a')).unwrap();
+        let right = CompletenessVector::verified_complete(d('b')).unwrap();
+        let met = left.meet(&right).unwrap();
+        assert_eq!(
+            met.coverage,
+            Coverage::Partial {
+                observed_scopes: vec![d('a'), d('b')],
+                boundaries: vec!["SCOPE_MISMATCH".into()],
+            }
+        );
+        assert!(!met.publishable());
+        assert!(left.publishable_for(&d('a')));
+        assert!(!left.publishable_for(&d('b')));
+    }
+
+    #[test]
+    fn empty_partial_authority_is_rejected() {
+        let value = CompletenessVector {
+            schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+            support: Support::Supported,
+            coverage: Coverage::Partial {
+                observed_scopes: Vec::new(),
+                boundaries: Vec::new(),
+            },
+            certainty: Certainty::Verified,
+            obligations: Vec::new(),
+        };
+        assert_eq!(value.validate().unwrap_err().code, ErrorCode::InvalidInput);
     }
 }

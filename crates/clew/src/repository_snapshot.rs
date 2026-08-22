@@ -19,7 +19,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt, symlink};
 pub const SNAPSHOT_SCHEMA: &str = "codeclew-repository-input-snapshot/2.0";
 const BLOB_SCHEMA: &str = "codeclew-repository-input-blob/2.0";
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
-const LEGACY_EXCLUDES: [&str; 4] = [
+pub const LEGACY_EXCLUDES: [&str; 4] = [
     ":(top,glob,exclude).semantic-thread/**",
     ":(top,exclude).semantic-thread",
     ":(top,glob,exclude)**/.semantic-thread/**",

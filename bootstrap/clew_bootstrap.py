@@ -34,10 +34,15 @@ ROOT_FILES = {
 }
 INJECTION_ENV = {
     "RUSTC", "RUSTC_WRAPPER", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTUP_TOOLCHAIN", "CARGO_BUILD_TARGET", "CARGO_TARGET_DIR",
     "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "GRADLE_OPTS",
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT",
     "PYTHONWARNINGS", "PYTHONSAFEPATH",
 }
+
+STATE_ROOT_FD_ENV = "CODECLEW_STATE_ROOT_FD"
+RUNTIME_ROOT_FD_ENV = "CODECLEW_RUNTIME_ROOT_FD"
+RUNTIME_LEASE_FD_ENV = "CODECLEW_RUNTIME_LEASE_FD"
 
 
 class BootstrapError(RuntimeError):
@@ -123,10 +128,12 @@ def run_build_stage(
 
 
 def selected_source(relative: str) -> bool:
+    if ".semantic-thread" in Path(relative).parts:
+        return False
     if relative in ROOT_FILES:
         return True
     if relative.startswith("bootstrap/"):
-        return relative.endswith(".py")
+        return relative == "bootstrap/clew_bootstrap.py"
     if relative.startswith("schemas/"):
         return True
     if relative.startswith("gradle/wrapper/"):
@@ -149,15 +156,29 @@ def selected_source(relative: str) -> bool:
 
 
 def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
-    tracked = run(["git", "ls-files", "-z"], source).split(b"\0")
-    untracked = run(["git", "ls-files", "--others", "--exclude-standard", "-z"], source).split(b"\0")
+    exclusions = [
+        ":(top,exclude).semantic-thread",
+        ":(top,glob,exclude).semantic-thread/**",
+        ":(top,glob,exclude)**/.semantic-thread",
+        ":(top,glob,exclude)**/.semantic-thread/**",
+    ]
+    tracked = run(["git", "ls-files", "-z", "--", ".", *exclusions], source).split(b"\0")
+    untracked = run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", ".", *exclusions],
+        source,
+    ).split(b"\0")
     paths = sorted({row.decode() for row in [*tracked, *untracked] if row and selected_source(row.decode())})
     if not paths:
         raise BootstrapError("runtime input closure is empty")
     rows: list[dict[str, object]] = []
     for relative in paths:
         path = source / relative
-        metadata = path.lstat()
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            # A tracked deletion is part of DEVELOPMENT mode, but deleted bytes are
+            # intentionally absent from the actual runtime input closure.
+            continue
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
             raise BootstrapError(f"runtime input is not a regular file: {relative}")
         rows.append({
@@ -166,7 +187,10 @@ def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
             "mode": metadata.st_mode & 0o111,
             "sha256": digest_file(path),
         })
-    dirty_output = run(["git", "status", "--porcelain=v1", "--untracked-files=all"], source).decode()
+    dirty_output = run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", ".", *exclusions],
+        source,
+    ).decode()
     dirty_paths = set()
     for line in dirty_output.splitlines():
         value = line[3:]
@@ -177,7 +201,13 @@ def source_manifest(source: Path) -> tuple[list[dict[str, object]], bool]:
     return rows, development
 
 
-def verify_source_manifest(source: Path, rows: list[dict[str, object]]) -> None:
+def verify_source_manifest(
+    source: Path,
+    rows: list[dict[str, object]],
+    *,
+    full_closure: bool = True,
+    expected_development: bool | None = None,
+) -> None:
     for row in rows:
         path = source / str(row["path"])
         metadata = path.lstat()
@@ -189,9 +219,79 @@ def verify_source_manifest(source: Path, rows: list[dict[str, object]]) -> None:
             or digest_file(path) != row["sha256"]
         ):
             raise BootstrapError(f"runtime input changed during bootstrap: {row['path']}")
+    if full_closure:
+        observed, development = source_manifest(source)
+        if observed != rows or (
+            expected_development is not None and development != expected_development
+        ):
+            raise BootstrapError("runtime input closure changed during bootstrap")
 
 
-def state_root() -> Path:
+def _directory_flags() -> int:
+    return os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _open_private_tree(path: Path) -> int:
+    """Create/open an absolute private tree without following a path component."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise BootstrapError("Codeclew state root must be normalized and absolute")
+    descriptor = os.open("/", _directory_flags())
+    try:
+        parts = [part for part in path.parts if part != path.anchor]
+        for index, component in enumerate(parts):
+            try:
+                child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            metadata = os.fstat(child)
+            leaf = index == len(parts) - 1
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid not in {0, os.geteuid()}:
+                os.close(child)
+                raise BootstrapError("Codeclew state ancestor is unsafe")
+            if not leaf and stat.S_IMODE(metadata.st_mode) & 0o022:
+                os.close(child)
+                raise BootstrapError("Codeclew state ancestor is group/world writable")
+            if leaf:
+                if metadata.st_uid != os.geteuid():
+                    os.close(child)
+                    raise BootstrapError("Codeclew state root has a different owner")
+                os.fchmod(child, 0o700)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _ensure_private_descendant(root_fd: int, relative: str) -> None:
+    descriptor = os.dup(root_fd)
+    try:
+        for component in Path(relative).parts:
+            if component in {"", ".", ".."}:
+                raise BootstrapError("Codeclew state child is invalid")
+            try:
+                child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o700, dir_fd=descriptor)
+                child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            metadata = os.fstat(child)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o077
+            ):
+                os.close(child)
+                raise BootstrapError(f"Codeclew state child is unsafe: {relative}")
+            os.fchmod(child, 0o700)
+            os.close(descriptor)
+            descriptor = child
+    finally:
+        os.close(descriptor)
+
+
+def state_root() -> tuple[Path, int]:
     explicit = os.environ.get("CODECLEW_HOME")
     if explicit:
         root = Path(explicit)
@@ -199,37 +299,41 @@ def state_root() -> Path:
         root = Path(os.environ["XDG_CACHE_HOME"]) / "codeclew"
     else:
         root = Path.home() / ".cache" / "codeclew"
-    if not root.is_absolute() or ".." in root.parts:
-        raise BootstrapError("Codeclew state root must be normalized and absolute")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    metadata = root.lstat()
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise BootstrapError("Codeclew state root is unsafe")
-    if metadata.st_uid != os.geteuid():
-        raise BootstrapError("Codeclew state root has a different owner")
-    os.chmod(root, 0o700)
+    home_fd = _open_private_tree(root)
+    try:
+        _ensure_private_descendant(home_fd, "v2")
+    finally:
+        os.close(home_fd)
     root = root / "v2"
-    root.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(root, 0o700)
+    root_fd = _open_private_tree(root)
     for child in [
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
         "objects", "objects/sha256", "objects/packs", "generations", "attempts", "gc",
-        "build-cache", "build-cache/cargo",
+        "dependency-cache", "runtimes/locators",
     ]:
-        path = root / child
-        path.mkdir(mode=0o700, exist_ok=True)
-        child_metadata = path.lstat()
-        if stat.S_ISLNK(child_metadata.st_mode) or not stat.S_ISDIR(child_metadata.st_mode):
-            raise BootstrapError(f"Codeclew state child is unsafe: {child}")
-        os.chmod(path, 0o700)
-    return root.resolve(strict=True)
+        _ensure_private_descendant(root_fd, child)
+    return root, root_fd
+
+
+def sanitized_environment() -> dict[str, str]:
+    def allowed(name: str) -> bool:
+        if name in INJECTION_ENV or name.startswith("CODECLEW_"):
+            return False
+        if name.startswith("CARGO_TARGET_") and name.endswith(("_RUNNER", "_LINKER", "_RUSTFLAGS")):
+            return False
+        if name.startswith("CARGO_BUILD_") and name.endswith(("RUSTC", "RUSTC_WRAPPER", "RUSTFLAGS")):
+            return False
+        return True
+
+    return {name: value for name, value in os.environ.items() if allowed(name)}
 
 
 def toolchain_authority(source: Path) -> dict[str, object]:
+    environment = sanitized_environment()
     python_executable = Path(sys.executable).resolve(strict=True)
-    rustc = run(["rustc", "-Vv"], source).decode().strip()
-    cargo = run(["cargo", "-V"], source).decode().strip()
-    java_home = Path(os.environ.get("JAVA_HOME", ""))
+    rustc = run(["rustc", "-Vv"], source, environment).decode().strip()
+    cargo = run(["cargo", "-V"], source, environment).decode().strip()
+    java_home = Path(environment.get("JAVA_HOME", ""))
     if not java_home.is_absolute():
         java_binary = shutil.which("java")
         if not java_binary:
@@ -239,6 +343,29 @@ def toolchain_authority(source: Path) -> dict[str, object]:
     if not all(path.is_file() and not path.is_symlink() for path in java_files[:2]):
         raise BootstrapError("JDK authority files are unavailable")
     java_release = (java_home / "release").read_text(errors="strict")
+    platform_authority: dict[str, object] = {
+        "system": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "libc": platform.libc_ver(),
+        "rustTarget": next(
+            (line.split(":", 1)[1].strip() for line in rustc.splitlines() if line.startswith("host:")),
+            None,
+        ),
+    }
+    if platform.system() == "Darwin":
+        platform_authority["deploymentTarget"] = environment.get("MACOSX_DEPLOYMENT_TARGET")
+        platform_authority["productVersion"] = platform.mac_ver()[0]
+    elif platform.system() == "Linux":
+        loaders = [
+            Path("/lib64/ld-linux-x86-64.so.2"),
+            Path("/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"),
+            Path("/lib/ld-musl-x86_64.so.1"),
+            Path("/lib/ld-musl-aarch64.so.1"),
+            Path("/lib/ld-linux-aarch64.so.1"),
+        ]
+        loader = next((candidate for candidate in loaders if candidate.is_file()), None)
+        platform_authority["elfLoaderSha256"] = digest_file(loader) if loader else None
     return {
         "python": {
             "implementation": platform.python_implementation(),
@@ -251,12 +378,7 @@ def toolchain_authority(source: Path) -> dict[str, object]:
             "javaSha256": digest_file(java_home / "bin/java"),
             "modulesSha256": digest_file(java_home / "lib/modules") if (java_home / "lib/modules").is_file() else None,
         },
-        "platform": {
-            "system": platform.system(),
-            "release": platform.release(),
-            "machine": platform.machine(),
-            "libc": platform.libc_ver(),
-        },
+        "platform": platform_authority,
     }
 
 
@@ -268,10 +390,13 @@ def fast_toolchain_locator_authority() -> dict[str, object]:
         if not executable:
             raise BootstrapError(f"{name} is unavailable")
         path = Path(executable).resolve(strict=True)
+        metadata = path.stat()
         resolved[name] = {
             "path": str(path),
-            "size": path.stat().st_size,
-            "sha256": digest_file(path),
+            "device": metadata.st_dev,
+            "inode": metadata.st_ino,
+            "size": metadata.st_size,
+            "modifiedNs": metadata.st_mtime_ns,
         }
     java_home = Path(os.environ.get("JAVA_HOME", ""))
     if not java_home.is_absolute():
@@ -279,15 +404,25 @@ def fast_toolchain_locator_authority() -> dict[str, object]:
     release = java_home / "release"
     if not release.is_file() or release.is_symlink():
         raise BootstrapError("JDK release authority is unavailable")
+    release_metadata = release.stat()
+    python_metadata = python_executable.stat()
     return {
         "python": {
             "implementation": platform.python_implementation(),
             "version": platform.python_version(),
             "path": str(python_executable),
-            "sha256": digest_file(python_executable),
+            "device": python_metadata.st_dev,
+            "inode": python_metadata.st_ino,
+            "size": python_metadata.st_size,
+            "modifiedNs": python_metadata.st_mtime_ns,
         },
         "executables": resolved,
-        "jdkReleaseSha256": digest_file(release),
+        "jdkRelease": {
+            "device": release_metadata.st_dev,
+            "inode": release_metadata.st_ino,
+            "size": release_metadata.st_size,
+            "modifiedNs": release_metadata.st_mtime_ns,
+        },
         "platform": {
             "system": platform.system(),
             "release": platform.release(),
@@ -366,16 +501,15 @@ def stage_inputs(source: Path, destination: Path, rows: list[dict[str, object]])
 
     with ThreadPoolExecutor(max_workers=min(8, max(1, os.cpu_count() or 1))) as executor:
         list(executor.map(copy, rows))
-    verify_source_manifest(destination, rows)
+    verify_source_manifest(destination, rows, full_closure=False)
 
 
 def build_environment(stage: Path, root: Path) -> dict[str, str]:
-    environment = {name: value for name, value in os.environ.items() if name not in INJECTION_ENV and not name.startswith("CODECLEW_")}
-    cargo_cache = root / "build-cache/cargo"
-    cargo_cache.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(cargo_cache, 0o700)
-    environment["CARGO_TARGET_DIR"] = str(cargo_cache)
-    environment["CARGO_INCREMENTAL"] = "1"
+    environment = sanitized_environment()
+    cargo_target = stage.parent / "cargo-target"
+    cargo_target.mkdir(mode=0o700)
+    environment["CARGO_TARGET_DIR"] = str(cargo_target)
+    environment["CARGO_INCREMENTAL"] = "0"
     environment["GIT_TERMINAL_PROMPT"] = "0"
     gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
     for relative in ["init.gradle", "init.gradle.kts", "init.d"]:
@@ -547,13 +681,14 @@ def package_worker(
         verify_release_worker(stage, manifest, rows)
     return name, {
         "compilerVersion": compiler,
+        "protocol": "semantic-thread.worker.v1",
         "distribution": distribution,
         "treeHash": tree_hash(rows),
         "files": rows,
     }
 
 
-def seal_capsule(capsule: Path) -> None:
+def seal_capsule(capsule: Path, *, seal_root: bool = True) -> None:
     for path in sorted(capsule.rglob("*"), key=lambda value: len(value.parts), reverse=True):
         metadata = path.lstat()
         if stat.S_ISLNK(metadata.st_mode):
@@ -564,7 +699,37 @@ def seal_capsule(capsule: Path) -> None:
             os.chmod(path, 0o500)
         else:
             raise BootstrapError("capsule output contains an unsupported filesystem entry")
-    os.chmod(capsule, 0o500)
+    os.chmod(capsule, 0o500 if seal_root else 0o700)
+
+
+def fsync_tree(root: Path) -> None:
+    files = [path for path in root.rglob("*") if path.is_file()]
+    directories = [root, *(path for path in root.rglob("*") if path.is_dir())]
+    for path in files:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    for path in sorted(directories, key=lambda value: len(value.parts), reverse=True):
+        descriptor = os.open(path, _directory_flags())
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def discard_private_tree(root: Path) -> None:
+    if not root.exists():
+        return
+    for path in sorted(
+        (entry for entry in root.rglob("*") if entry.is_dir()),
+        key=lambda value: len(value.parts),
+        reverse=True,
+    ):
+        os.chmod(path, 0o700)
+    os.chmod(root, 0o700)
+    shutil.rmtree(root)
 
 
 def verify_sealed_capsule(capsule: Path) -> None:
@@ -594,7 +759,7 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
             os.chmod(build_cache_lock, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
             build_toolchains(stage, environment)
-        verify_source_manifest(stage, inputs)
+        verify_source_manifest(stage, inputs, full_closure=False)
         (capsule / "bin").mkdir(mode=0o700, parents=True)
         cargo_target = Path(environment["CARGO_TARGET_DIR"]) / "release"
         for name in ["clew", "semanticd"]:
@@ -617,30 +782,61 @@ def build_capsule(source: Path, root: Path, key: str, mode: str, inputs: list[di
             "runtimeKey": key,
             "mode": mode,
             "manifestDigest": "",
+            "inputDigest": digest_bytes(canonical(inputs)),
+            "platformAuthority": tools["platform"],
+            "toolchainAuthority": {
+                "python": tools["python"],
+                "rust": tools["rust"],
+                "jdk": tools["jdk"],
+            },
             "artifacts": artifacts,
             "workers": workers,
         }
         manifest["manifestDigest"] = digest_bytes(canonical(manifest))
-        (capsule / "runtime.json").write_bytes(canonical(manifest) + b"\n")
-        (capsule / "READY").write_text(key + "\n")
-        verify_source_manifest(source, inputs)
+        runtime_manifest = capsule / "runtime.json"
+        runtime_manifest.write_bytes(canonical(manifest) + b"\n")
+        verify_source_manifest(
+            source,
+            inputs,
+            expected_development=mode == "DEVELOPMENT",
+        )
+        verify_capsule(capsule, key, require_sealed=False, require_ready=False)
+        ready = capsule / "READY"
+        ready.write_text(key + "\n")
+        # macOS refuses to rename a directory whose own mode is 0500. Seal every
+        # descendant first, retain a private 0700 staging root for the rename,
+        # then seal that root before releasing the per-key lock.
+        seal_capsule(capsule, seal_root=False)
+        fsync_tree(capsule)
         verify_capsule(capsule, key, require_sealed=False)
         destination = root / "runtimes" / key.removeprefix("sha256:")
         if destination.exists():
             return destination
-        os.replace(capsule, destination)
+        os.rename(capsule, destination)
         try:
-            seal_capsule(destination)
-            verify_sealed_capsule(destination)
+            os.chmod(destination, 0o500)
+            fsync_tree(destination)
+            verify_capsule(destination, key)
+            runtimes_fd = os.open(root / "runtimes", _directory_flags())
+            try:
+                os.fsync(runtimes_fd)
+            finally:
+                os.close(runtimes_fd)
         except Exception as error:
             quarantine(root, destination, type(error).__name__)
             raise BootstrapError("published capsule could not be sealed") from error
         return destination
     finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        discard_private_tree(temporary)
 
 
-def verify_capsule(path: Path, key: str, *, require_sealed: bool = True) -> dict[str, object]:
+def verify_capsule(
+    path: Path,
+    key: str,
+    *,
+    require_sealed: bool = True,
+    require_ready: bool = True,
+) -> dict[str, object]:
     manifest_path = path / "runtime.json"
     if not manifest_path.is_file() or manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
         raise BootstrapError("runtime manifest is unavailable")
@@ -651,6 +847,8 @@ def verify_capsule(path: Path, key: str, *, require_sealed: bool = True) -> dict
         manifest.get("schema") != SCHEMA
         or expected != digest_bytes(canonical(manifest))
         or manifest.get("runtimeKey") != key
+        or not isinstance(manifest.get("platformAuthority"), dict)
+        or not isinstance(manifest.get("toolchainAuthority"), dict)
     ):
         raise BootstrapError("runtime manifest authority mismatch")
     manifest["manifestDigest"] = expected
@@ -664,10 +862,16 @@ def verify_capsule(path: Path, key: str, *, require_sealed: bool = True) -> dict
         ):
             raise BootstrapError("runtime executable authority mismatch")
     for worker in manifest.get("workers", {}).values():
+        if worker.get("protocol") != "semantic-thread.worker.v1":
+            raise BootstrapError("runtime worker protocol authority mismatch")
         distribution = path / worker["distribution"]
         rows = file_rows(distribution)
         if rows != worker["files"] or tree_hash(rows) != worker["treeHash"]:
             raise BootstrapError("runtime worker authority mismatch")
+    if require_ready:
+        ready = path / "READY"
+        if not ready.is_file() or ready.is_symlink() or ready.read_text() != key + "\n":
+            raise BootstrapError("runtime capsule is not ready")
     if require_sealed:
         verify_sealed_capsule(path)
     return manifest
@@ -718,7 +922,7 @@ def main() -> int:
         return 0
     warm_audit = command == ["--bootstrap-warm-audit"]
     source = known.source_root.resolve(strict=True)
-    root = state_root()
+    root, state_fd = state_root()
     inputs, development = source_manifest(source)
     mode = "DEVELOPMENT" if development else "RELEASE"
     fast_tools = fast_toolchain_locator_authority()
@@ -759,11 +963,17 @@ def main() -> int:
     lease = lease_path.open("a+b")
     os.chmod(lease_path, 0o600)
     fcntl.flock(lease, fcntl.LOCK_SH)
+    runtime_fd = os.open(capsule, _directory_flags())
+    os.set_inheritable(state_fd, True)
+    os.set_inheritable(runtime_fd, True)
     os.set_inheritable(lease.fileno(), True)
     environment = {name: value for name, value in os.environ.items() if not name.startswith("CODECLEW_")}
-    environment["CODECLEW_HOME"] = str(root.parent)
+    environment[STATE_ROOT_FD_ENV] = str(state_fd)
+    environment[RUNTIME_ROOT_FD_ENV] = str(runtime_fd)
+    environment[RUNTIME_LEASE_FD_ENV] = str(lease.fileno())
+    # Temporary non-authoritative compatibility locator for worker code that has not
+    # yet been converted to RuntimeAuthority. Core authority never reads this value.
     environment["CODECLEW_RUNTIME_ROOT"] = str(capsule)
-    environment["CODECLEW_RUNTIME_LEASE_FD"] = str(lease.fileno())
     os.execve(capsule / "bin/clew", [str(capsule / "bin/clew"), *command], environment)
     return 1
 

@@ -996,7 +996,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit cold-start acceptance using a real trusted Kotlin worker"]
     fn sealed_k24_snapshot_reaches_verified_streamed_generation() {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
@@ -1075,7 +1074,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit real-worker BTA24 persistence acceptance"]
     fn k24_real_worker_reuses_managed_compiler_store() {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();

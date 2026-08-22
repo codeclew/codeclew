@@ -1,7 +1,10 @@
 # Benchmarks
 
-Run `scripts/benchmark.sh` for an isolated cache-clean fixture and 20-sample p95 measurements. Changed-file reindex performs K2 semantic analysis for a distinct source revision on every sample (never `syntaxOnly`). Edit preview uses 20 distinct, semantically equivalent candidates after a ready slice, so no candidate result can be served from a persistent cache. The report keeps the first ready-slice preview, p95 values, cold semantic index, and Gradle validation separately and fails if any applicable p95 SLO is exceeded.
+`../scripts/benchmark.sh` measures only the supported managed workflow through
+`./clew`: launcher reuse, session creation, and content-addressed context reuse.
+Generated reports live under `benchmarks/reports/`, which is ignored by Git
+because diagnostic output may contain host-specific measurements.
 
-Run `scripts/benchmark-corpus.sh` for the non-extrapolated cold syntax/declaration gate. It generates 100,002 Kotlin lines, indexes them in `--syntax-only` mode, records the measured duration and fails the report field when the 20-second SLO is exceeded.
-
-The Maven/Spring agent comparison is recorded in `reports/maven-product-repo.json`. It keeps efficiency and fresh hidden acceptance separate; a fast patch is not counted as a winner when clean validation rejects it.
+Release comparisons use fresh temporary repositories and separate cold, warm,
+incremental, recovery, and unchanged-hit results. Historical E04/K1 harnesses
+are not part of the product or benchmark contour.

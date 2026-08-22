@@ -498,18 +498,32 @@ impl AdapterRegistry {
         request: &AnalyzeGenerationRequest,
         cancelled: &AtomicBool,
     ) -> Result<AnalysisAttemptComplete, ClewError> {
+        let mut sink = DiscardAnalysisSink;
+        self.analyze_generation_into(request, &mut sink, cancelled)
+    }
+
+    pub fn analyze_generation_into(
+        &self,
+        request: &AnalyzeGenerationRequest,
+        sink: &mut dyn AnalysisSink,
+        cancelled: &AtomicBool,
+    ) -> Result<AnalysisAttemptComplete, ClewError> {
         request.validate()?;
         let registered = self.select_registered(
             &request.compilation.language_uri,
             &request.capability,
             &request.compilation.toolchain.digest,
         )?;
-        let mut sink =
+        let conformance =
             ConformanceSink::for_capabilities(registered.handshake.capabilities.iter().cloned());
+        let mut forwarding = ForwardingAnalysisSink {
+            conformance,
+            downstream: sink,
+        };
         registered
             .adapter
-            .analyze_generation(request, &mut sink, cancelled)?;
-        sink.finish()
+            .analyze_generation(request, &mut forwarding, cancelled)?;
+        forwarding.finish()
     }
 
     fn select_registered(
@@ -550,6 +564,32 @@ impl AdapterRegistry {
 
     pub fn adapter_handshakes(&self) -> impl Iterator<Item = &AdapterHandshake> {
         self.adapters.values().map(|value| &value.handshake)
+    }
+}
+
+struct DiscardAnalysisSink;
+
+impl AnalysisSink for DiscardAnalysisSink {
+    fn accept(&mut self, _event: AnalysisEvent) -> Result<(), ClewError> {
+        Ok(())
+    }
+}
+
+struct ForwardingAnalysisSink<'a> {
+    conformance: ConformanceSink,
+    downstream: &'a mut dyn AnalysisSink,
+}
+
+impl ForwardingAnalysisSink<'_> {
+    fn finish(self) -> Result<AnalysisAttemptComplete, ClewError> {
+        self.conformance.finish()
+    }
+}
+
+impl AnalysisSink for ForwardingAnalysisSink<'_> {
+    fn accept(&mut self, event: AnalysisEvent) -> Result<(), ClewError> {
+        self.conformance.accept(event.clone())?;
+        self.downstream.accept(event)
     }
 }
 
@@ -864,6 +904,16 @@ mod tests {
 
     struct ZetaAdapter;
 
+    #[derive(Default)]
+    struct RecordingSink(Vec<AnalysisEvent>);
+
+    impl AnalysisSink for RecordingSink {
+        fn accept(&mut self, event: AnalysisEvent) -> Result<(), ClewError> {
+            self.0.push(event);
+            Ok(())
+        }
+    }
+
     impl LanguageAdapter for ZetaAdapter {
         fn handshake(&self) -> Result<AdapterHandshake, ClewError> {
             Ok(AdapterHandshake {
@@ -1005,6 +1055,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(completion.fact_count, 1);
+    }
+
+    #[test]
+    fn registry_forwards_only_conformant_streams_to_product_sink() {
+        let mut registry = AdapterRegistry::default();
+        registry.register_adapter(Arc::new(ZetaAdapter)).unwrap();
+        let mut sink = RecordingSink::default();
+        let completion = registry
+            .analyze_generation_into(
+                &AnalyzeGenerationRequest {
+                    schema: ANALYSIS_REQUEST_SCHEMA.into(),
+                    attempt_id: "attempt:product".into(),
+                    generation_key: digest('9'),
+                    capability: CapabilityUri::parse("analysis:facts").unwrap(),
+                    compilation: zeta_compilation(),
+                    derived_input_manifest: object("derived/1", '8'),
+                    parent_generation: None,
+                },
+                &mut sink,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(completion.fact_count, 1);
+        assert!(matches!(
+            sink.0.as_slice(),
+            [
+                AnalysisEvent::FactShard(_),
+                AnalysisEvent::AttemptComplete(_)
+            ]
+        ));
     }
 
     #[test]

@@ -1,15 +1,26 @@
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+#[cfg(target_os = "macos")]
+use std::ffi::CStr;
+#[cfg(unix)]
+use std::os::fd::RawFd;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/2.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeAuthority {
     pub schema: String,
     pub runtime_key: String,
@@ -55,45 +66,101 @@ impl RuntimeAuthority {
         if canonical_root != root {
             return Err(invalid("runtime root must use canonical spelling"));
         }
-        let manifest_path = canonical_root.join("runtime.json");
-        let manifest_metadata = fs::symlink_metadata(&manifest_path).map_err(io_error)?;
-        if manifest_metadata.file_type().is_symlink()
-            || !manifest_metadata.is_file()
-            || manifest_metadata.len() > 1024 * 1024
-        {
-            return Err(invalid("runtime manifest is missing or unsafe"));
-        }
-        let bytes = fs::read(&manifest_path).map_err(io_error)?;
-        let mut authority: RuntimeAuthority = serde_json::from_slice(&bytes)
+        Self::load_root(canonical_root)
+    }
+
+    fn load_root(root: PathBuf) -> Result<Self, ClewError> {
+        let manifest_path = root.join("runtime.json");
+        let bytes = read_regular(&manifest_path, 1024 * 1024, None)?;
+        let mut manifest: Value = serde_json::from_slice(&bytes)
             .map_err(|error| invalid(&format!("runtime manifest is invalid: {error}")))?;
-        if authority.schema != RUNTIME_SCHEMA
-            || !is_digest(&authority.runtime_key)
-            || !is_digest(&authority.manifest_digest)
+        if !manifest
+            .get("platformAuthority")
+            .is_some_and(Value::is_object)
+            || !manifest
+                .get("toolchainAuthority")
+                .is_some_and(Value::is_object)
+            || !manifest
+                .get("inputDigest")
+                .and_then(Value::as_str)
+                .is_some_and(is_digest)
         {
-            return Err(invalid("runtime manifest identity is invalid"));
+            return Err(invalid("runtime platform/toolchain authority is missing"));
         }
-        let expected_digest = authority.manifest_digest.clone();
-        authority.manifest_digest.clear();
-        let actual_digest = canonical::hash(&authority).map_err(internal)?;
+        let expected_digest = manifest
+            .get("manifestDigest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("runtime manifest digest is missing"))?
+            .to_owned();
+        manifest["manifestDigest"] = Value::String(String::new());
+        let actual_digest = canonical::hash(&manifest).map_err(internal)?;
         if expected_digest != actual_digest {
             return Err(invalid("runtime manifest digest mismatch"));
         }
-        authority.manifest_digest = expected_digest;
-        authority.root = canonical_root;
+        manifest["manifestDigest"] = Value::String(expected_digest.clone());
+        if !manifest
+            .get("workers")
+            .and_then(Value::as_object)
+            .is_some_and(|workers| {
+                workers.values().all(|worker| {
+                    worker.get("protocol").and_then(Value::as_str)
+                        == Some("semantic-thread.worker.v1")
+                })
+            })
+        {
+            return Err(invalid("runtime worker protocol authority is invalid"));
+        }
+        let mut authority: RuntimeAuthority = serde_json::from_value(manifest)
+            .map_err(|error| invalid(&format!("runtime manifest is invalid: {error}")))?;
+        if authority.schema != RUNTIME_SCHEMA
+            || !is_digest(&authority.runtime_key)
+            || authority.manifest_digest != expected_digest
+        {
+            return Err(invalid("runtime manifest identity is invalid"));
+        }
+        authority.root = root;
         for artifact in authority.artifacts.values() {
             verify_artifact(&authority.root, artifact)?;
+        }
+        let ready = authority.root.join("READY");
+        let ready_bytes = read_regular(&ready, 80, None)?;
+        if ready_bytes != format!("{}\n", authority.runtime_key).as_bytes() {
+            return Err(invalid("runtime capsule is not ready"));
         }
         Ok(authority)
     }
 
     pub fn from_environment() -> Result<Option<Self>, ClewError> {
-        let Some(value) = std::env::var_os("CODECLEW_RUNTIME_ROOT") else {
+        let Some(value) = std::env::var_os("CODECLEW_RUNTIME_ROOT_FD") else {
             return Ok(None);
         };
-        if value.is_empty() {
-            return Err(invalid("CODECLEW_RUNTIME_ROOT cannot be empty"));
+        #[cfg(unix)]
+        {
+            let runtime_fd = parse_fd(&value, "runtime root")?;
+            let lease_value = std::env::var_os("CODECLEW_RUNTIME_LEASE_FD")
+                .ok_or_else(|| invalid("runtime lease descriptor is unavailable"))?;
+            let lease_fd = parse_fd(&lease_value, "runtime lease")?;
+            validate_directory_fd(runtime_fd, 0o077, "runtime root")?;
+            validate_lease_fd(lease_fd)?;
+            let root = descriptor_path(runtime_fd)?;
+            let authority = Self::load_root(root.clone())?;
+            let executable = std::env::current_exe()
+                .map_err(io_error)?
+                .canonicalize()
+                .map_err(io_error)?;
+            let expected = root.join("bin/clew").canonicalize().map_err(io_error)?;
+            if executable != expected {
+                return Err(invalid(
+                    "runtime descriptor does not contain the executing core binary",
+                ));
+            }
+            Ok(Some(authority))
         }
-        Self::load(&PathBuf::from(value)).map(Some)
+        #[cfg(not(unix))]
+        {
+            let _ = value;
+            Err(invalid("runtime descriptor authority requires POSIX"))
+        }
     }
 
     pub fn worker(&self, name: &str) -> Result<&RuntimeWorker, ClewError> {
@@ -124,21 +191,116 @@ impl RuntimeAuthority {
     }
 }
 
+#[cfg(unix)]
+fn parse_fd(value: &std::ffi::OsStr, label: &str) -> Result<RawFd, ClewError> {
+    let text = value
+        .to_str()
+        .ok_or_else(|| invalid(&format!("{label} descriptor is not UTF-8")))?;
+    let descriptor: RawFd = text
+        .parse()
+        .map_err(|_| invalid(&format!("{label} descriptor is invalid")))?;
+    if descriptor < 3 || unsafe { libc::fcntl(descriptor, libc::F_GETFD) } < 0 {
+        return Err(invalid(&format!("{label} descriptor is not open")));
+    }
+    Ok(descriptor)
+}
+
+#[cfg(unix)]
+fn validate_directory_fd(
+    fd: RawFd,
+    forbidden_mode: libc::mode_t,
+    label: &str,
+) -> Result<(), ClewError> {
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, status.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let status = unsafe { status.assume_init() };
+    if status.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || status.st_uid != unsafe { libc::geteuid() }
+        || status.st_mode & forbidden_mode != 0
+    {
+        return Err(invalid(&format!("{label} descriptor is unsafe")));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_lease_fd(fd: RawFd) -> Result<(), ClewError> {
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, status.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let status = unsafe { status.assume_init() };
+    if status.st_mode & libc::S_IFMT != libc::S_IFREG
+        || status.st_uid != unsafe { libc::geteuid() }
+        || status.st_mode & 0o077 != 0
+    {
+        return Err(invalid("runtime lease descriptor is unsafe"));
+    }
+    if unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+        return Err(invalid("runtime lease descriptor cannot be acquired"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_path(fd: RawFd) -> Result<PathBuf, ClewError> {
+    let path = fs::read_link(format!("/proc/self/fd/{fd}")).map_err(io_error)?;
+    if !path.is_absolute() || path.as_os_str().as_bytes().ends_with(b" (deleted)") {
+        return Err(invalid("runtime root descriptor has no stable path"));
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+fn descriptor_path(fd: RawFd) -> Result<PathBuf, ClewError> {
+    let mut buffer = [0 as libc::c_char; 4096];
+    if unsafe { libc::fcntl(fd, libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let bytes = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_bytes();
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
+}
+
 fn verify_artifact(root: &Path, artifact: &RuntimeArtifact) -> Result<(), ClewError> {
     if !is_digest(&artifact.sha256) {
         return Err(invalid("runtime artifact digest is invalid"));
     }
     let path = safe_relative(root, &artifact.path)?;
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != artifact.size {
-        return Err(invalid("runtime artifact is missing or unsafe"));
-    }
-    let bytes = fs::read(path).map_err(io_error)?;
+    let bytes = read_regular(&path, artifact.size, Some(artifact.size))?;
     let actual = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
     if actual != artifact.sha256 {
         return Err(invalid("runtime artifact digest mismatch"));
     }
     Ok(())
+}
+
+fn read_regular(path: &Path, limit: u64, exact_size: Option<u64>) -> Result<Vec<u8>, ClewError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let mut file = options.open(path).map_err(io_error)?;
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file()
+        || metadata.len() > limit
+        || exact_size.is_some_and(|size| metadata.len() != size)
+    {
+        return Err(invalid("runtime file is missing or unsafe"));
+    }
+    #[cfg(unix)]
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.permissions().mode() & 0o022 != 0 {
+        return Err(invalid("runtime file ownership or mode is unsafe"));
+    }
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| invalid("runtime file exceeds host address space"))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.read_to_end(&mut bytes).map_err(io_error)?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err(invalid("runtime file changed while it was read"));
+    }
+    Ok(bytes)
 }
 
 fn safe_relative(root: &Path, relative: &str) -> Result<PathBuf, ClewError> {

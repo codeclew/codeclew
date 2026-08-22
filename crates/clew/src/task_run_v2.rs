@@ -1,7 +1,7 @@
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
-use crate::repository_snapshot::capture;
+use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
 use crate::session::{ContextObject, PlanObject, SessionAuthority};
 use crate::state::{StateAuthority, create_private_directory};
 use serde::{Deserialize, Serialize};
@@ -261,6 +261,7 @@ pub fn prepare(
                 "worktree",
                 "add",
                 "--detach",
+                "--no-checkout",
                 worktree
                     .to_str()
                     .ok_or_else(|| invalid("candidate path is not UTF-8"))?,
@@ -268,6 +269,13 @@ pub fn prepare(
             ])
             .current_dir(&repo),
         "candidate worktree creation failed",
+    )?;
+    git_status(
+        Command::new("git")
+            .args(["checkout", "--force", &session.base_revision, "--", "."])
+            .args(LEGACY_EXCLUDES)
+            .current_dir(&worktree),
+        "candidate filtered checkout failed",
     )?;
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
@@ -320,7 +328,7 @@ pub fn publish(
             "conditional candidate cannot be published",
         ));
     }
-    let repo = session.repository_path()?;
+    let repo = session.target_repository_path()?;
     let worktree = candidate_root.join("worktree");
     verify_candidate_snapshot(&worktree, &prepared.candidate_snapshot)?;
     let current = git(&repo, &["rev-parse", &session.target_ref])?;
@@ -591,10 +599,16 @@ fn run_validation(
 }
 
 fn changed_paths(root: &Path) -> Result<BTreeSet<String>, ClewError> {
-    nul_paths(
-        root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )
+    let mut arguments = vec![
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        ".",
+    ];
+    arguments.extend_from_slice(&LEGACY_EXCLUDES);
+    nul_paths(root, &arguments)
 }
 
 fn staged_paths(root: &Path) -> Result<BTreeSet<String>, ClewError> {
@@ -825,9 +839,12 @@ fn safe_path(value: &str) -> bool {
         && value.len() <= 4096
         && !value.starts_with('/')
         && !value.contains('\0')
-        && !value
-            .split('/')
-            .any(|component| component.is_empty() || component == "." || component == "..")
+        && !value.split('/').any(|component| {
+            component.is_empty()
+                || component == "."
+                || component == ".."
+                || component == ".semantic-thread"
+        })
 }
 
 fn digest(value: &str) -> bool {
@@ -946,5 +963,69 @@ mod tests {
         let error = validate_plan_value(&plan).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidInput);
         assert!(error.message.contains("unified-diff"));
+    }
+
+    #[test]
+    fn legacy_state_is_neither_a_plan_target_nor_a_cleanliness_input() {
+        assert!(!safe_path(".semantic-thread/private"));
+        assert!(!safe_path("src/.semantic-thread/private"));
+
+        let repository = tempfile::tempdir().unwrap();
+        git_status(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(repository.path()),
+            "test repository init failed",
+        )
+        .unwrap();
+        fs::write(repository.path().join("README.md"), b"fixture\n").unwrap();
+        git_status(
+            Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(repository.path()),
+            "test repository add failed",
+        )
+        .unwrap();
+        git_status(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Codeclew Test",
+                    "-c",
+                    "user.email=codeclew@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "baseline",
+                ])
+                .current_dir(repository.path()),
+            "test repository commit failed",
+        )
+        .unwrap();
+
+        let root_legacy = repository.path().join(".semantic-thread");
+        let nested_legacy = repository.path().join("src/.semantic-thread");
+        fs::create_dir_all(&root_legacy).unwrap();
+        fs::create_dir_all(&nested_legacy).unwrap();
+        fs::write(root_legacy.join("private"), b"ignored").unwrap();
+        fs::write(nested_legacy.join("private"), b"ignored").unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&root_legacy, fs::Permissions::from_mode(0o000)).unwrap();
+            fs::set_permissions(&nested_legacy, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let clean = require_clean(repository.path());
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&root_legacy, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(&nested_legacy, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        clean.unwrap();
+
+        fs::write(repository.path().join("README.md"), b"changed\n").unwrap();
+        assert_eq!(
+            require_clean(repository.path()).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
     }
 }
