@@ -533,7 +533,20 @@ def locator_path(root: Path, locator: str) -> Path:
     return directory / (locator.removeprefix("sha256:") + ".json")
 
 
-def read_locator(path: Path, expected: str) -> str | None:
+def _runtime_capsule_directory(root: Path, key: object) -> Path | None:
+    if not valid_runtime_key(key):
+        return None
+    capsule = root / "runtimes" / str(key).removeprefix("sha256:")
+    try:
+        metadata = capsule.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        return None
+    return capsule
+
+
+def read_locator(path: Path, expected: str, root: Path | None = None) -> str | None:
     if not path.exists():
         return None
     metadata = path.lstat()
@@ -547,7 +560,12 @@ def read_locator(path: Path, expected: str) -> str | None:
         or not value["runtimeKey"].startswith("sha256:")
     ):
         raise BootstrapError("runtime locator authority mismatch")
-    return value["runtimeKey"]
+    key = value["runtimeKey"]
+    if not valid_runtime_key(key):
+        raise BootstrapError("runtime locator authority mismatch")
+    if root is not None and _runtime_capsule_directory(root, key) is None:
+        return None
+    return key
 
 
 def write_locator(path: Path, locator: str, runtime: str) -> None:
@@ -782,6 +800,8 @@ def read_checkpoint_candidate_key(path: Path, root: Path) -> str | None:
         return None
     capsule = root / "runtimes" / str(key).removeprefix("sha256:")
     if value.get("capsule") != str(capsule):
+        return None
+    if _runtime_capsule_directory(root, key) is None:
         return None
     return str(key)
 
@@ -1250,6 +1270,208 @@ def quarantine(root: Path, capsule: Path, reason: str) -> None:
         raise BootstrapError("unsafe runtime capsule could not be quarantined") from error
 
 
+def _open_gc_lock(locks_fd: int, name: str):
+    descriptor = os.open(
+        name,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=locks_fd,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise BootstrapError("runtime GC lock authority is unsafe")
+        os.fchmod(descriptor, 0o600)
+        return os.fdopen(descriptor, "a+b")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _remove_tree_at(parent_fd: int, name: str, expected: os.stat_result) -> bool:
+    try:
+        descriptor = os.open(name, _directory_flags(), dir_fd=parent_fd)
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return False
+    try:
+        observed = os.fstat(descriptor)
+        if (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino):
+            return False
+        os.fchmod(descriptor, 0o700)
+        with os.scandir(descriptor) as entries:
+            children = list(entries)
+        for entry in children:
+            metadata = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                if not _remove_tree_at(descriptor, entry.name, metadata):
+                    return False
+            else:
+                os.unlink(entry.name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+    os.rmdir(name, dir_fd=parent_fd)
+    return True
+
+
+def _cleanup_runtime_records(root: Path, runtime_key_value: str) -> None:
+    for relative, maximum in [
+        ("locators", 4096),
+        ("checkpoints", MAX_CHECKPOINT_BYTES),
+    ]:
+        directory = root / "runtimes" / relative
+        try:
+            descriptor = os.open(directory, _directory_flags())
+        except FileNotFoundError:
+            continue
+        try:
+            with os.scandir(descriptor) as entries:
+                records = list(entries)
+            for entry in records:
+                try:
+                    metadata = entry.stat(follow_symlinks=False)
+                    if (
+                        stat.S_ISLNK(metadata.st_mode)
+                        or not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_size > maximum
+                    ):
+                        continue
+                    record_fd = os.open(
+                        entry.name,
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=descriptor,
+                    )
+                    try:
+                        with os.fdopen(record_fd, "rb") as stream:
+                            value = json.load(stream)
+                    except (OSError, ValueError, TypeError):
+                        continue
+                    if isinstance(value, dict) and value.get("runtimeKey") == runtime_key_value:
+                        os.unlink(entry.name, dir_fd=descriptor)
+                except FileNotFoundError:
+                    continue
+        finally:
+            os.close(descriptor)
+
+
+def _session_runtime_roots(root: Path) -> set[str]:
+    directory = root / "sessions"
+    try:
+        sessions_fd = os.open(directory, _directory_flags())
+    except FileNotFoundError:
+        return set()
+    roots: set[str] = set()
+    try:
+        with os.scandir(sessions_fd) as entries:
+            sessions = list(entries)
+        for entry in sessions:
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                    continue
+                session_fd = os.open(entry.name, _directory_flags(), dir_fd=sessions_fd)
+                try:
+                    authority_fd = os.open(
+                        "authority.json",
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=session_fd,
+                    )
+                    try:
+                        authority_metadata = os.fstat(authority_fd)
+                        if (
+                            not stat.S_ISREG(authority_metadata.st_mode)
+                            or authority_metadata.st_uid != os.geteuid()
+                            or authority_metadata.st_size > MAX_MANIFEST_BYTES
+                        ):
+                            continue
+                        with os.fdopen(authority_fd, "rb") as stream:
+                            authority_fd = -1
+                            value = json.load(stream)
+                    finally:
+                        if authority_fd >= 0:
+                            os.close(authority_fd)
+                finally:
+                    os.close(session_fd)
+                if (
+                    isinstance(value, dict)
+                    and value.get("schema") == "codeclew-session/3.0"
+                    and value.get("sessionId") == entry.name
+                    and valid_runtime_key(value.get("runtimeKey"))
+                ):
+                    roots.add(str(value["runtimeKey"]).removeprefix("sha256:"))
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                continue
+        return roots
+    finally:
+        os.close(sessions_fd)
+
+
+def garbage_collect_runtime_capsules(
+    root: Path,
+    current_key: str,
+    *,
+    keep_newest: int = 2,
+) -> list[str]:
+    """Remove unreachable old capsules while every live runtime retains a lease."""
+    if not valid_runtime_key(current_key):
+        raise BootstrapError("runtime GC current key is invalid")
+    current_name = current_key.removeprefix("sha256:")
+    runtimes_fd = os.open(root / "runtimes", _directory_flags())
+    locks_fd = os.open(root / "locks", _directory_flags())
+    removed: list[str] = []
+    try:
+        candidates: list[tuple[int, str, os.stat_result]] = []
+        with os.scandir(runtimes_fd) as entries:
+            runtime_entries = list(entries)
+        for entry in runtime_entries:
+            key = "sha256:" + entry.name
+            if not valid_runtime_key(key):
+                continue
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                continue
+            candidates.append((metadata.st_mtime_ns, entry.name, metadata))
+        newest = sorted(
+            (candidate for candidate in candidates if candidate[1] != current_name),
+            key=lambda candidate: (candidate[0], candidate[1]),
+            reverse=True,
+        )[:max(0, keep_newest)]
+        retained = {
+            current_name,
+            *(candidate[1] for candidate in newest),
+            *_session_runtime_roots(root),
+        }
+        for _modified, name, metadata in candidates:
+            if name in retained:
+                continue
+            key = "sha256:" + name
+            try:
+                with _open_gc_lock(locks_fd, f"runtime-{name}.lock") as build_lock:
+                    try:
+                        fcntl.flock(build_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    with _open_gc_lock(locks_fd, f"runtime-{name}.lease") as lease:
+                        try:
+                            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            continue
+                        if _remove_tree_at(runtimes_fd, name, metadata):
+                            removed.append(key)
+                            try:
+                                _cleanup_runtime_records(root, key)
+                            except (OSError, BootstrapError, ValueError, TypeError):
+                                pass
+            except (OSError, BootstrapError):
+                continue
+        return removed
+    finally:
+        os.close(locks_fd)
+        os.close(runtimes_fd)
+
+
 def main() -> int:
     reset_audit_counters()
     if sys.version_info < (3, 11):
@@ -1281,20 +1503,19 @@ def main() -> int:
             if checkpoint is not None:
                 key = str(checkpoint["runtimeKey"])
                 capsule = Path(str(checkpoint["capsule"]))
-                if not warm_audit:
-                    lease_path = root / "locks" / (
-                        f"runtime-{key.removeprefix('sha256:')}.lease"
-                    )
-                    lease = lease_path.open("a+b")
-                    os.chmod(lease_path, 0o600)
-                    fcntl.flock(lease, fcntl.LOCK_SH)
+                lease_path = root / "locks" / (
+                    f"runtime-{key.removeprefix('sha256:')}.lease"
+                )
+                lease = lease_path.open("a+b")
+                os.chmod(lease_path, 0o600)
+                fcntl.flock(lease, fcntl.LOCK_SH)
     if checkpoint is None:
         inputs, development = source_manifest(source)
         mode = "DEVELOPMENT" if development else "RELEASE"
         fast_tools = fast_toolchain_locator_authority()
         locator = locator_key(mode, inputs, fast_tools)
         path_to_locator = locator_path(root, locator)
-        key = read_locator(path_to_locator, locator)
+        key = read_locator(path_to_locator, locator, root)
         tools = None
         if key is None:
             tools = toolchain_authority(source)
@@ -1327,18 +1548,20 @@ def main() -> int:
             write_checkpoint(
                 path_to_checkpoint, source, capsule, key, mode, inputs, fast_tools
             )
-            if not warm_audit:
-                lease_path = root / "locks" / (
-                    f"runtime-{key.removeprefix('sha256:')}.lease"
-                )
-                lease = lease_path.open("a+b")
-                os.chmod(lease_path, 0o600)
-                fcntl.flock(lease, fcntl.LOCK_SH)
-    if warm_audit:
-        print(canonical(warm_audit_payload(cold_toolchain_invoked, capsule_build_invoked)).decode())
-        return 0
+            lease_path = root / "locks" / (
+                f"runtime-{key.removeprefix('sha256:')}.lease"
+            )
+            lease = lease_path.open("a+b")
+            os.chmod(lease_path, 0o600)
+            fcntl.flock(lease, fcntl.LOCK_SH)
     if lease is None:
         raise BootstrapError("runtime lease authority is unavailable")
+    if checkpoint is None:
+        garbage_collect_runtime_capsules(root, key)
+    if warm_audit:
+        lease.close()
+        print(canonical(warm_audit_payload(cold_toolchain_invoked, capsule_build_invoked)).decode())
+        return 0
     runtime_fd = os.open(capsule, _directory_flags())
     os.set_inheritable(state_fd, True)
     os.set_inheritable(runtime_fd, True)

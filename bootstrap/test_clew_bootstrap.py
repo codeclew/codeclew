@@ -158,6 +158,11 @@ class BootstrapAuthorityTest(unittest.TestCase):
                         return_value=(state, state_descriptor),
                     ),
                     mock.patch.object(
+                        bootstrap,
+                        "garbage_collect_runtime_capsules",
+                        side_effect=AssertionError("checkpoint hit scanned runtime GC roots"),
+                    ),
+                    mock.patch.object(
                         sys,
                         "argv",
                         [
@@ -369,6 +374,110 @@ class BootstrapAuthorityTest(unittest.TestCase):
                     bootstrap.BootstrapError, "cold runtime build requires at least"
                 ):
                     bootstrap.require_cold_build_capacity(root)
+
+    def test_runtime_gc_retains_leases_and_two_newest_capsules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtimes = root / "runtimes"
+            locks = root / "locks"
+            locators = runtimes / "locators"
+            checkpoints = runtimes / "checkpoints"
+            for path in [locks, locators, checkpoints]:
+                path.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+            names = {
+                "current": "1" * 64,
+                "newest": "2" * 64,
+                "second_newest": "3" * 64,
+                "leased": "4" * 64,
+                "removable": "5" * 64,
+                "session": "8" * 64,
+            }
+            timestamps = {
+                "current": 1,
+                "newest": 5,
+                "second_newest": 4,
+                "leased": 3,
+                "removable": 2,
+                "session": 0,
+            }
+            for label, name in names.items():
+                capsule = runtimes / name
+                capsule.mkdir(mode=0o700)
+                os.utime(capsule, ns=(timestamps[label], timestamps[label]))
+                capsule.chmod(0o500)
+
+            outside = root / "outside"
+            outside.mkdir()
+            poison = outside / "poison"
+            poison.write_text("do not remove")
+            removable_capsule = runtimes / names["removable"]
+            removable_capsule.chmod(0o700)
+            removable_nested = removable_capsule / "nested"
+            removable_nested.mkdir()
+            (removable_nested / "artifact").write_text("derived")
+            (removable_nested / "external").symlink_to(poison)
+            removable_nested.chmod(0o500)
+            removable_capsule.chmod(0o500)
+            os.utime(
+                removable_capsule,
+                ns=(timestamps["removable"], timestamps["removable"]),
+            )
+            symlink_name = "6" * 64
+            (runtimes / symlink_name).symlink_to(outside, target_is_directory=True)
+
+            removable_key = "sha256:" + names["removable"]
+            for path in [locators / "old.json", checkpoints / "old.json"]:
+                path.write_bytes(bootstrap.canonical({"runtimeKey": removable_key}) + b"\n")
+                path.chmod(0o600)
+
+            session_id = "session:gc-root"
+            session = root / "sessions" / session_id
+            session.mkdir(mode=0o700, parents=True)
+            authority = session / "authority.json"
+            authority.write_bytes(bootstrap.canonical({
+                "schema": "codeclew-session/3.0",
+                "sessionId": session_id,
+                "runtimeKey": "sha256:" + names["session"],
+            }) + b"\n")
+            authority.chmod(0o600)
+
+            leased_path = locks / f"runtime-{names['leased']}.lease"
+            with leased_path.open("a+b") as leased:
+                fcntl.flock(leased, fcntl.LOCK_SH)
+                removed = bootstrap.garbage_collect_runtime_capsules(
+                    root, "sha256:" + names["current"]
+                )
+
+            self.assertEqual(removed, [removable_key])
+            for label in ["current", "newest", "second_newest", "leased", "session"]:
+                self.assertTrue((runtimes / names[label]).is_dir())
+            self.assertFalse((runtimes / names["removable"]).exists())
+            self.assertFalse((locators / "old.json").exists())
+            self.assertFalse((checkpoints / "old.json").exists())
+            self.assertTrue((runtimes / symlink_name).is_symlink())
+            self.assertEqual(poison.read_text(), "do not remove")
+
+            stale_key = "sha256:" + "7" * 64
+            stale_locator = locators / "stale.json"
+            stale_locator.write_bytes(bootstrap.canonical({
+                "schema": "codeclew-runtime-locator/2.0",
+                "locatorKey": "locator",
+                "runtimeKey": stale_key,
+            }) + b"\n")
+            self.assertIsNone(
+                bootstrap.read_locator(stale_locator, "locator", root)
+            )
+            stale_checkpoint = checkpoints / "stale.json"
+            stale_checkpoint.write_bytes(bootstrap.canonical({
+                "schema": "codeclew-runtime-checkpoint/3.0",
+                "runtimeKey": stale_key,
+                "capsule": str(runtimes / ("7" * 64)),
+            }) + b"\n")
+            stale_checkpoint.chmod(0o600)
+            self.assertIsNone(
+                bootstrap.read_checkpoint_candidate_key(stale_checkpoint, root)
+            )
 
 
 if __name__ == "__main__":
