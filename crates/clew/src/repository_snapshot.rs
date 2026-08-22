@@ -699,7 +699,7 @@ impl FdRoot {
                     return Err(mutated("repository file size changed during capture"));
                 }
                 Ok(RawWorktreeEntry::Regular {
-                    mode: u32::from(mode) & 0o777,
+                    mode: mode as u32 & 0o777,
                     bytes,
                 })
             }
@@ -731,7 +731,7 @@ impl FdRoot {
                 }
                 target.truncate(length as usize);
                 Ok(RawWorktreeEntry::Symlink {
-                    mode: u32::from(mode) & 0o777,
+                    mode: mode as u32 & 0o777,
                     target,
                 })
             }
