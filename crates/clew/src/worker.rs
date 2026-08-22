@@ -10,6 +10,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+#[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/worker_build_inputs.rs"));
 
 #[cfg(test)]
@@ -147,7 +149,7 @@ pub struct WorkerClient {
     pub capabilities: crate::proto::WorkerCapabilities,
     pub last_profile: RequestProfile,
     authority_session: Uuid,
-    trusted_distribution: Option<TrustedWorkerDistribution>,
+    trusted_distribution: TrustedWorkerDistribution,
     build_state_root: Option<PathBuf>,
     compiler_index_root: Option<ManagedDirectory>,
     build_namespace_digest: String,
@@ -1235,13 +1237,11 @@ impl VerifiedSourceSyntax {
 
 struct TrustedWorkerDistribution {
     workspace: PathBuf,
-    // Capsule distributions are already sealed, verified by the launcher and
-    // protected by the inherited runtime lease. Checkout-only test/development
-    // starts retain the older private-copy contour.
+    #[cfg(test)]
     _private_root: Option<tempfile::TempDir>,
-    sealed_runtime: bool,
     distribution_root: PathBuf,
     launcher: PathBuf,
+    #[cfg(test)]
     tree_manifest: BTreeMap<String, String>,
     tree_hash: String,
     build_input_digest: String,
@@ -1306,6 +1306,7 @@ impl WorkerVariant {
             .find(|variant| tried & variant.discovery_bit() == 0)
     }
 
+    #[cfg(test)]
     fn install_task(self) -> &'static str {
         match self {
             Self::Kotlin21 => ":workers:kotlin21:installDist",
@@ -1314,6 +1315,7 @@ impl WorkerVariant {
         }
     }
 
+    #[cfg(test)]
     fn distribution_relative(self) -> &'static str {
         match self {
             Self::Kotlin21 => "workers/kotlin21/build/install/kotlin21",
@@ -1338,6 +1340,7 @@ impl WorkerVariant {
         }
     }
 
+    #[cfg(test)]
     fn pinned_inputs(self) -> PinnedInputs {
         match self {
             Self::Kotlin21 => PinnedInputs {
@@ -1368,6 +1371,7 @@ impl WorkerVariant {
     }
 }
 
+#[cfg(test)]
 struct PinnedInputs {
     roots: &'static [&'static str],
     files: &'static [&'static str],
@@ -1490,29 +1494,7 @@ impl WorkerClient {
                 crate::canonical::hash_bytes(b"codeclew-non-product-worker-namespace/2.0")
             });
         let trusted_distribution = prepare_trusted_worker_distribution(workspace, variant)?;
-        let launcher = trusted_distribution
-            .as_ref()
-            .map(|trusted| trusted.launcher.clone())
-            .unwrap_or_else(|| worker_launcher(workspace, variant));
-        if trusted_distribution.is_none() && !launcher.is_file() {
-            let mut command = Command::new(workspace.join("gradlew"));
-            command
-                .args([variant.install_task(), "--no-daemon", "--quiet"])
-                .current_dir(workspace);
-            isolate_controller_authority(&mut command)?;
-            let output = command.output().map_err(|e| {
-                ClewError::new(
-                    ErrorCode::WorkerCrashed,
-                    format!("cannot build Kotlin worker: {}", e.kind()),
-                )
-            })?;
-            if !output.status.success() {
-                return Err(ClewError::new(
-                    ErrorCode::WorkerCrashed,
-                    "Kotlin worker build failed",
-                ));
-            }
-        }
+        let launcher = trusted_distribution.launcher.clone();
         let canonical_build_state = build_state_root
             .map(|root| root.canonicalize().map_err(internal))
             .transpose()?;
@@ -1924,12 +1906,7 @@ impl WorkerClient {
                 ));
             }
         };
-        let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "SOURCE_SYNTAX requires the pinned workspace worker distribution",
-            )
-        })?;
+        let trusted = &self.trusted_distribution;
         if trusted.workspace != workspace_root() {
             return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
@@ -1993,12 +1970,7 @@ impl WorkerClient {
         &self,
         syntax: &'a VerifiedSourceSyntax,
     ) -> Result<&'a Value, ClewError> {
-        let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "SOURCE_SYNTAX worker session is not trusted",
-            )
-        })?;
+        let trusted = &self.trusted_distribution;
         verify_trusted_distribution(trusted)?;
         let current_manifest_hash = validate_source_syntax_response(
             &syntax.repo,
@@ -2132,12 +2104,7 @@ impl WorkerClient {
         // OpenProject may discover and switch to the project's Kotlin worker
         // variant. Bind the semantic receipt to that selected distribution,
         // never to the bootstrap variant that happened to start the session.
-        let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "verified index facts require the pinned workspace worker distribution",
-            )
-        })?;
+        let trusted = &self.trusted_distribution;
         if trusted.workspace != workspace_root() {
             return Err(ClewError::new(
                 ErrorCode::WorkerProtocolMismatch,
@@ -2317,12 +2284,7 @@ impl WorkerClient {
         compilation: &str,
     ) -> Result<&'a Value, ClewError> {
         let source_root = source_root.canonicalize().map_err(internal)?;
-        let trusted = self.trusted_distribution.as_ref().ok_or_else(|| {
-            ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "worker session is not trusted",
-            )
-        })?;
+        let trusted = &self.trusted_distribution;
         verify_trusted_distribution(trusted)?;
         let seal = crate::canonical::hash(&serde_json::json!({
             "receiptId":facts.receipt_id,
@@ -2580,6 +2542,7 @@ fn read_worker_transport_blob(root: &Path, blob: &BlobRef) -> Result<Vec<u8>, Cl
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
     match variant {
         WorkerVariant::Kotlin21 => {
@@ -2595,67 +2558,80 @@ fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
 fn prepare_trusted_worker_distribution(
     workspace: &Path,
     variant: WorkerVariant,
-) -> Result<Option<TrustedWorkerDistribution>, ClewError> {
+) -> Result<TrustedWorkerDistribution, ClewError> {
     let canonical = workspace.canonicalize().map_err(internal)?;
-    if let Some(runtime) = RuntimeAuthority::from_environment()? {
-        if runtime.root != canonical {
+    let runtime = match RuntimeAuthority::from_environment()? {
+        Some(runtime) => runtime,
+        None => {
+            #[cfg(test)]
+            return prepare_checkout_worker_distribution_for_test(&canonical, variant);
+            #[cfg(not(test))]
             return Err(preparation_required(
-                "runtime workspace differs from the verified capsule root",
+                "sealed runtime capsule authority is required to start a Kotlin worker",
             ));
         }
-        let runtime_worker = runtime.worker(variant.runtime_name())?;
-        if runtime_worker.compiler_version != variant.compiler_version() {
-            return Err(preparation_required(
-                "runtime worker compiler identity differs from the selected variant",
-            ));
-        }
-        let source_distribution = runtime.verify_worker(variant.runtime_name())?;
-        let tree_manifest = runtime_worker_manifest(runtime_worker);
-        let tree_hash = hash_string_manifest(&tree_manifest);
-        if tree_hash != runtime_worker.tree_hash {
-            return Err(preparation_required(
-                "runtime worker manifest differs from runtime authority",
-            ));
-        }
-        let launcher = source_distribution
-            .join("bin")
-            .join(variant.launcher_name());
-        let plugin = source_distribution
-            .join("lib")
-            .join(variant.plugin_jar_name());
-        if !launcher.is_file() || !plugin.is_file() {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "runtime worker distribution is incomplete",
-            ));
-        }
-        return Ok(Some(TrustedWorkerDistribution {
-            workspace: canonical,
-            _private_root: None,
-            sealed_runtime: true,
-            distribution_root: source_distribution,
-            launcher,
-            tree_manifest,
-            tree_hash,
-            build_input_digest: runtime.runtime_key,
-            plugin_fingerprint: crate::canonical::hash_bytes(
-                &std::fs::read(plugin).map_err(internal)?,
-            ),
-        }));
+    };
+    if runtime.root != canonical {
+        return Err(preparation_required(
+            "runtime workspace differs from the verified capsule root",
+        ));
     }
+    let runtime_worker = runtime.worker(variant.runtime_name())?;
+    if runtime_worker.compiler_version != variant.compiler_version() {
+        return Err(preparation_required(
+            "runtime worker compiler identity differs from the selected variant",
+        ));
+    }
+    let source_distribution = runtime.verify_worker(variant.runtime_name())?;
+    let tree_manifest = runtime_worker_manifest(runtime_worker);
+    let tree_hash = hash_string_manifest(&tree_manifest);
+    if tree_hash != runtime_worker.tree_hash {
+        return Err(preparation_required(
+            "runtime worker manifest differs from runtime authority",
+        ));
+    }
+    let launcher = source_distribution
+        .join("bin")
+        .join(variant.launcher_name());
+    let plugin = source_distribution
+        .join("lib")
+        .join(variant.plugin_jar_name());
+    if !launcher.is_file() || !plugin.is_file() {
+        return Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "runtime worker distribution is incomplete",
+        ));
+    }
+    Ok(TrustedWorkerDistribution {
+        workspace: canonical,
+        #[cfg(test)]
+        _private_root: None,
+        distribution_root: source_distribution,
+        launcher,
+        #[cfg(test)]
+        tree_manifest,
+        tree_hash,
+        build_input_digest: runtime.runtime_key,
+        plugin_fingerprint: crate::canonical::hash_bytes(&std::fs::read(plugin).map_err(internal)?),
+    })
+}
+
+#[cfg(test)]
+fn prepare_checkout_worker_distribution_for_test(
+    canonical: &Path,
+    variant: WorkerVariant,
+) -> Result<TrustedWorkerDistribution, ClewError> {
     if canonical != workspace_root() {
-        return Ok(None);
+        return Err(preparation_required(
+            "test worker workspace differs from the checkout fixture root",
+        ));
     }
     let pinned = variant.pinned_inputs();
-    verify_pinned_build_inputs(&canonical, &pinned)?;
-    reject_unpinned_workspace_build_initialization(&canonical)?;
+    verify_pinned_build_inputs(canonical, &pinned)?;
+    reject_unpinned_workspace_build_initialization(canonical)?;
     let source_distribution = canonical.join(variant.distribution_relative());
-    if bootstrap_trusted_worker_distribution_if_missing(&canonical, variant, &source_distribution)?
-    {
-        // The build is not trusted merely because Gradle exited successfully.
-        // Recheck the exact source closure before comparing its output with the
-        // committed distribution manifest.
-        verify_pinned_build_inputs(&canonical, &pinned)?;
+    if bootstrap_trusted_worker_distribution_if_missing(canonical, variant, &source_distribution)? {
+        verify_pinned_build_inputs(canonical, &pinned)?;
     }
     verify_pinned_distribution(&source_distribution, &pinned)?;
     let private_root = tempfile::Builder::new()
@@ -2681,17 +2657,16 @@ fn prepare_trusted_worker_distribution(
             "rebuilt pinned worker distribution is incomplete",
         ));
     }
-    Ok(Some(TrustedWorkerDistribution {
-        workspace: canonical,
+    Ok(TrustedWorkerDistribution {
+        workspace: canonical.to_path_buf(),
         _private_root: Some(private_root),
-        sealed_runtime: false,
         distribution_root,
         launcher,
         tree_manifest,
         tree_hash,
         build_input_digest: pinned.digest.to_owned(),
         plugin_fingerprint: crate::canonical::hash_bytes(&std::fs::read(plugin).map_err(internal)?),
-    }))
+    })
 }
 
 fn runtime_worker_manifest(worker: &crate::runtime::RuntimeWorker) -> BTreeMap<String, String> {
@@ -2707,6 +2682,7 @@ fn runtime_worker_manifest(worker: &crate::runtime::RuntimeWorker) -> BTreeMap<S
         .collect()
 }
 
+#[cfg(test)]
 fn bootstrap_trusted_worker_distribution_if_missing(
     workspace: &Path,
     variant: WorkerVariant,
@@ -2720,6 +2696,7 @@ fn bootstrap_trusted_worker_distribution_if_missing(
     )
 }
 
+#[cfg(test)]
 fn bootstrap_trusted_worker_distribution_if_missing_with_environment(
     workspace: &Path,
     variant: WorkerVariant,
@@ -2778,6 +2755,7 @@ fn bootstrap_trusted_worker_distribution_if_missing_with_environment(
     Ok(true)
 }
 
+#[cfg(test)]
 fn require_safe_missing_distribution_path(
     workspace: &Path,
     distribution: &Path,
@@ -2803,6 +2781,7 @@ fn require_safe_missing_distribution_path(
     Ok(())
 }
 
+#[cfg(test)]
 fn verify_pinned_build_inputs(workspace: &Path, pinned: &PinnedInputs) -> Result<(), ClewError> {
     let actual = collect_regular_inputs(workspace, pinned.roots, pinned.files)?;
     let expected = pinned
@@ -2818,6 +2797,7 @@ fn verify_pinned_build_inputs(workspace: &Path, pinned: &PinnedInputs) -> Result
     Ok(())
 }
 
+#[cfg(test)]
 fn reject_unpinned_workspace_build_initialization(workspace: &Path) -> Result<(), ClewError> {
     if workspace.join("init.gradle").exists() || workspace.join("init.gradle.kts").exists() {
         return Err(preparation_required(
@@ -2827,6 +2807,7 @@ fn reject_unpinned_workspace_build_initialization(workspace: &Path) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 fn verify_pinned_distribution(root: &Path, pinned: &PinnedInputs) -> Result<(), ClewError> {
     let metadata = std::fs::symlink_metadata(root).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -2860,6 +2841,7 @@ fn preparation_required(message: &str) -> ClewError {
     ClewError::new(ErrorCode::WorkerPreparationRequired, message)
 }
 
+#[cfg(test)]
 fn collect_regular_inputs(
     workspace: &Path,
     roots: &[&str],
@@ -2906,6 +2888,7 @@ fn collect_regular_inputs(
     Ok(manifest)
 }
 
+#[cfg(test)]
 fn copy_regular_tree(source: &Path, target: &Path) -> Result<(), ClewError> {
     for entry in walkdir::WalkDir::new(source).follow_links(false) {
         let entry = entry.map_err(internal)?;
@@ -2936,6 +2919,7 @@ fn copy_regular_tree(source: &Path, target: &Path) -> Result<(), ClewError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn regular_tree_manifest(root: &Path) -> Result<BTreeMap<String, String>, ClewError> {
     let mut manifest = BTreeMap::new();
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
@@ -2987,6 +2971,7 @@ fn hash_string_manifest(manifest: &BTreeMap<String, String>) -> String {
     crate::canonical::hash_bytes(&bytes)
 }
 
+#[cfg(test)]
 fn hash_input_manifest(manifest: &BTreeMap<String, String>) -> String {
     let mut bytes = Vec::new();
     for (path, hash) in manifest {
@@ -2999,22 +2984,22 @@ fn hash_input_manifest(manifest: &BTreeMap<String, String>) -> String {
 }
 
 fn verify_trusted_distribution(trusted: &TrustedWorkerDistribution) -> Result<(), ClewError> {
-    if trusted.sealed_runtime {
-        let metadata = std::fs::symlink_metadata(&trusted.distribution_root).map_err(internal)?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "sealed runtime worker distribution lost its directory identity",
-            ));
-        }
-        return Ok(());
-    }
-    let actual = regular_tree_manifest(&trusted.distribution_root)?;
-    if actual != trusted.tree_manifest || hash_string_manifest(&actual) != trusted.tree_hash {
+    let metadata = std::fs::symlink_metadata(&trusted.distribution_root).map_err(internal)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
-            "private worker distribution changed after trusted launch",
+            "sealed runtime worker distribution lost its directory identity",
         ));
+    }
+    #[cfg(test)]
+    if trusted._private_root.is_some() {
+        let actual = regular_tree_manifest(&trusted.distribution_root)?;
+        if actual != trusted.tree_manifest || hash_string_manifest(&actual) != trusted.tree_hash {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "private worker distribution changed after trusted launch",
+            ));
+        }
     }
     Ok(())
 }
@@ -4714,7 +4699,7 @@ mod tests {
             true
         );
 
-        let trusted = worker.trusted_distribution.as_ref().unwrap();
+        let trusted = &worker.trusted_distribution;
         let private_launcher = trusted.launcher.clone();
         let launcher_bytes = std::fs::read(&private_launcher).unwrap();
         let launcher_permissions = std::fs::metadata(&private_launcher).unwrap().permissions();
