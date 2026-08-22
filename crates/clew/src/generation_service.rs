@@ -17,20 +17,22 @@ use crate::generation_v2::{
     finalize_generation,
 };
 use crate::incremental_v2::{
-    COMPLETENESS_VECTOR_SCHEMA, Certainty, CompletenessVector, Coverage, Support,
-    VerificationObligation,
+    BoundaryReceipt, COMPLETENESS_VECTOR_SCHEMA, Certainty, CompilerStoreKey, CompletenessVector,
+    Coverage, FileReceipt, FullAnalysisReason, INCREMENTAL_RECEIPT_SCHEMA, IncrementalPlan,
+    IncrementalReceipt, Support, VerificationObligation, plan_incremental,
 };
 use crate::kotlin_adapter_v2::{
     KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinCompilerLine,
-    KotlinGenerationDriver, analyze_project_native_index, semantic_scope_digest,
+    KotlinGenerationDriver, ProjectNativeKotlinAttempt, semantic_scope_digest,
 };
 use crate::query_v2::{
     QUERY_INDEX_SCHEMA, QueryIndexManifest, build_query_index, verify_index, verify_index_manifest,
 };
-use crate::repository_snapshot::{RepositoryInputSnapshot, SNAPSHOT_SCHEMA, capture};
+use crate::repository_snapshot::{RepositoryInputSnapshot, SNAPSHOT_SCHEMA, WorktreeKind, capture};
 use crate::runtime::RuntimeAuthority;
 use crate::session::{ModelCachePolicy, SessionAuthority};
 use crate::state::{StateAuthority, create_private_directory};
+use crate::worker::WorkerRequestCounters;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -46,6 +48,8 @@ use std::os::unix::fs::OpenOptionsExt;
 pub const READY_GENERATION_SCHEMA: &str = "codeclew-ready-generation/2.0";
 const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/2.0";
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
+const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
+const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/2.0";
 const MAX_BINDING_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +65,8 @@ pub struct ReadyGeneration {
     pub coverage: String,
     pub certainty: String,
     pub obligations: Vec<String>,
+    pub incremental: IncrementalExecutionEvidence,
+    pub incremental_receipt: CasObject,
     pub repository_snapshot: CasObject,
     pub derived_input_manifest: CasObject,
     pub generation: CasObject,
@@ -76,10 +82,40 @@ struct PreparedGenerationAuthority {
     compilation: String,
     compiler_version: String,
     adapter_digest: String,
-    analysis: CasObject,
     descriptor: CompilationDescriptor,
     derived_input_manifest: CasObject,
-    completeness: CompletenessVector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum IncrementalExecutionMode {
+    Full,
+    UnchangedHit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IncrementalExecutionEvidence {
+    pub schema: String,
+    pub planned: IncrementalPlan,
+    pub executed: IncrementalExecutionMode,
+    pub subset_analysis_supported: bool,
+    pub worker_requests: WorkerRequestCounters,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IncrementalHead {
+    schema: String,
+    compiler_store_key: String,
+    receipt: CasObject,
+    ready: CasObject,
+}
+
+struct LoadedIncrementalHead {
+    head: IncrementalHead,
+    receipt: IncrementalReceipt,
+    ready: ReadyGeneration,
 }
 
 pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGeneration, ClewError> {
@@ -99,6 +135,20 @@ pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGene
         )
     })?;
     let repository = state.repository(&repo)?;
+    let preparation_key =
+        project_model_key(&runtime.runtime_key, &snapshot_object, &session.compilation)?;
+    let _preparation_lock = GenerationLock::acquire(&state, &preparation_key)?;
+    if binding_path.exists() {
+        return load_ready(&store, &binding_path, session, false);
+    }
+    let compiler_namespace = compiler_store_key(&runtime, &session.compilation)?;
+    let live_attempt = ProjectNativeKotlinAttempt::open(
+        &state,
+        &store,
+        &snapshot,
+        &session.compilation,
+        digest_component(&compiler_namespace)?,
+    )?;
     let prepared = ensure_prepared_authority(
         &state,
         &store,
@@ -107,6 +157,7 @@ pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGene
         &runtime,
         &snapshot,
         &snapshot_object,
+        live_attempt.project_authority(),
     )?;
     let generation_key = final_generation_key(
         &runtime.runtime_key,
@@ -114,33 +165,68 @@ pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGene
         &snapshot_object,
         &session.compilation,
         &prepared.derived_input_manifest,
-        &prepared.completeness,
     )?;
     let _lock = GenerationLock::acquire(&state, &generation_key)?;
     if binding_path.exists() {
+        live_attempt.close_without_analysis()?;
         return load_ready(&store, &binding_path, session, false);
     }
     let cache_root = repository.root.join("generations");
     create_private_directory(&cache_root)?;
     let cache_path = cache_root.join(format!("{}.json", digest_component(&generation_key)?));
-    let ready =
-        if session.model_cache_policy != ModelCachePolicy::NonCacheable && cache_path.exists() {
-            load_ready(&store, &cache_path, session, false)?
-        } else {
-            let ready = build_ready(
-                &state,
-                &store,
-                session,
-                &runtime,
-                snapshot_object,
-                generation_key,
-                prepared,
-            )?;
-            if session.model_cache_policy != ModelCachePolicy::NonCacheable {
-                write_private_atomic(&state, &cache_path, &ready)?;
-            }
-            ready
-        };
+    let compiler_store = CompilerStoreKey::create(
+        compiler_line(&prepared.compiler_version)?.2,
+        prepared.adapter_digest.clone(),
+        &prepared.descriptor,
+    )?;
+    let head_path = incremental_head_path(&repository.root, &session.compilation)?;
+    let head_lock_key = canonical::hash(&json!({
+        "schema":"codeclew-incremental-head-lock/2.0",
+        "repositoryKey":session.repository_key,
+        "compilation":session.compilation,
+    }))
+    .map_err(internal)?;
+    let _head_lock = GenerationLock::acquire(&state, &head_lock_key)?;
+    let previous = load_incremental_head(&store, &head_path)?;
+    let (plan, unchanged_is_exact) = incremental_plan_for(
+        &store,
+        &snapshot,
+        &snapshot_object,
+        &prepared,
+        &compiler_store,
+        previous.as_ref(),
+    )?;
+    let ready = if unchanged_is_exact {
+        build_unchanged_ready(
+            &state,
+            &store,
+            session,
+            &runtime,
+            snapshot_object,
+            generation_key,
+            &prepared,
+            previous.as_ref().expect("exact unchanged head"),
+            plan,
+            live_attempt,
+        )?
+    } else {
+        build_ready(
+            &state,
+            &store,
+            session,
+            &runtime,
+            snapshot_object,
+            generation_key,
+            prepared,
+            compiler_store.clone(),
+            plan,
+            live_attempt,
+        )?
+    };
+    if session.model_cache_policy != ModelCachePolicy::NonCacheable {
+        write_private_atomic(&state, &cache_path, &ready)?;
+    }
+    publish_incremental_head(&state, &store, &head_path, &ready, &compiler_store)?;
     write_private_atomic(&state, &binding_path, &ready)?;
     Ok(ready)
 }
@@ -182,6 +268,7 @@ pub fn load_snapshot(
     Ok(snapshot)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_ready(
     state: &StateAuthority,
     store: &CasStore,
@@ -190,11 +277,16 @@ fn build_ready(
     snapshot_object: CasObject,
     generation_key: String,
     prepared: PreparedGenerationAuthority,
+    compiler_store: CompilerStoreKey,
+    planned: IncrementalPlan,
+    live_attempt: ProjectNativeKotlinAttempt,
 ) -> Result<ReadyGeneration, ClewError> {
-    let index = load_analysis(store, &prepared.analysis)?;
     let line = compiler_line(&prepared.compiler_version)?.1;
-    let driver = PreparedKotlinDriver {
-        index: Mutex::new(Some(index)),
+    let semantic_output = Arc::new(Mutex::new(None));
+    let driver = LiveKotlinDriver {
+        attempt: Mutex::new(Some(live_attempt)),
+        store: store.clone(),
+        output: Arc::clone(&semantic_output),
     };
     let adapter = KotlinAdapterV2::new(
         line,
@@ -244,6 +336,22 @@ fn build_ready(
         )?;
         let (_, query_index_object) =
             build_query_index(store, &generation, generation_object.clone())?;
+        let semantic = semantic_output
+            .lock()
+            .map_err(poisoned)?
+            .clone()
+            .ok_or_else(|| corrupt("semantic adapter produced no execution authority"))?;
+        let index = load_analysis(store, &semantic.analysis)?;
+        let scope_digest = semantic_scope_digest(&index)?;
+        let completeness = completeness_from_index(&index, &scope_digest)?;
+        let (incremental_receipt, incremental_receipt_object) = create_incremental_receipt(
+            store,
+            &index,
+            &compiler_store,
+            &generation,
+            completeness.clone(),
+        )?;
+        incremental_receipt.validate()?;
         let ready = ReadyGeneration {
             schema: READY_GENERATION_SCHEMA.into(),
             generation_key,
@@ -251,10 +359,18 @@ fn build_ready(
             base_revision: session.base_revision.clone(),
             compilation: session.compilation.clone(),
             compiler_version: prepared.compiler_version,
-            completeness: prepared.completeness.clone(),
-            coverage: coverage_label(&prepared.completeness).into(),
-            certainty: certainty_label(&prepared.completeness).into(),
-            obligations: obligation_codes(&prepared.completeness),
+            completeness: completeness.clone(),
+            coverage: coverage_label(&completeness).into(),
+            certainty: certainty_label(&completeness).into(),
+            obligations: obligation_codes(&completeness),
+            incremental: IncrementalExecutionEvidence {
+                schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
+                planned,
+                executed: IncrementalExecutionMode::Full,
+                subset_analysis_supported: false,
+                worker_requests: semantic.worker_requests,
+            },
+            incremental_receipt: incremental_receipt_object,
             repository_snapshot: snapshot_object,
             derived_input_manifest: prepared.derived_input_manifest,
             generation: generation_object,
@@ -275,6 +391,71 @@ fn build_ready(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_unchanged_ready(
+    state: &StateAuthority,
+    store: &CasStore,
+    session: &SessionAuthority,
+    runtime: &RuntimeAuthority,
+    snapshot_object: CasObject,
+    generation_key: String,
+    prepared: &PreparedGenerationAuthority,
+    previous: &LoadedIncrementalHead,
+    planned: IncrementalPlan,
+    live_attempt: ProjectNativeKotlinAttempt,
+) -> Result<ReadyGeneration, ClewError> {
+    if !matches!(planned, IncrementalPlan::UnchangedHit { .. }) {
+        return Err(corrupt("unchanged generation has a non-unchanged plan"));
+    }
+    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
+    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
+    journal.transition(
+        AttemptState::Modeled,
+        prepared.derived_input_manifest.digest.clone(),
+    )?;
+    journal.transition(
+        AttemptState::Analyzing,
+        "incremental UNCHANGED_HIT; IndexFiles skipped",
+    )?;
+    let counters = match live_attempt.close_without_analysis() {
+        Ok(counters) => counters,
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "unchanged worker close failed")?;
+            return Err(error);
+        }
+    };
+    if counters.open_project_requests != 1 || counters.index_files_requests != 0 {
+        journal.transition(
+            AttemptState::Failed,
+            "unchanged request counters are invalid",
+        )?;
+        return Err(corrupt(
+            "UNCHANGED_HIT executed an unexpected worker request contour",
+        ));
+    }
+    journal.transition(AttemptState::Finalizing, "reusing immutable generation")?;
+    let mut ready = previous.ready.clone();
+    ready.generation_key = generation_key;
+    ready.runtime_key = runtime.runtime_key.clone();
+    ready.base_revision = session.base_revision.clone();
+    ready.compilation = session.compilation.clone();
+    ready.compiler_version = prepared.compiler_version.clone();
+    ready.repository_snapshot = snapshot_object;
+    ready.derived_input_manifest = prepared.derived_input_manifest.clone();
+    ready.incremental = IncrementalExecutionEvidence {
+        schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
+        planned,
+        executed: IncrementalExecutionMode::UnchangedHit,
+        subset_analysis_supported: false,
+        worker_requests: counters,
+    };
+    ready.incremental_receipt = previous.head.receipt.clone();
+    verify_ready(store, &ready, session, true)?;
+    journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
+    Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ensure_prepared_authority(
     state: &StateAuthority,
     store: &CasStore,
@@ -283,73 +464,71 @@ fn ensure_prepared_authority(
     runtime: &RuntimeAuthority,
     snapshot: &RepositoryInputSnapshot,
     snapshot_object: &CasObject,
+    project: &Value,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
-    let model_key = canonical::hash(&json!({
-        "schema":"codeclew-project-native-model-key/2.0",
-        "runtimeKey":runtime.runtime_key,
-        "snapshot":snapshot_object,
-        "compilation":session.compilation,
-    }))
-    .map_err(internal)?;
-    let _lock = GenerationLock::acquire(state, &model_key)?;
+    let model_key = project_model_key(&runtime.runtime_key, snapshot_object, &session.compilation)?;
     let root = repository_root.join("generations/models");
     create_private_directory(&root)?;
     let path = root.join(format!("{}.json", digest_component(&model_key)?));
-    if session.model_cache_policy != ModelCachePolicy::NonCacheable && path.exists() {
-        return load_prepared_authority(
-            store,
-            &path,
-            runtime,
-            snapshot_object,
-            &session.compilation,
-        );
-    }
-    let prepared = prepare_authority(
-        state,
+    let current = prepare_authority(
         store,
         runtime,
         snapshot,
         snapshot_object.clone(),
         &session.compilation,
+        project,
     )?;
-    if session.model_cache_policy != ModelCachePolicy::NonCacheable {
-        write_canonical_atomic(state, &path, &prepared)?;
+    if session.model_cache_policy != ModelCachePolicy::NonCacheable && path.exists() {
+        let cached =
+            load_prepared_authority(store, &path, runtime, snapshot_object, &session.compilation)?;
+        if cached != current {
+            return Err(ClewError::new(
+                ErrorCode::ProjectModelChanged,
+                "cached build model differs from the exact live OpenProject authority",
+            ));
+        }
+        return Ok(cached);
     }
-    Ok(prepared)
+    if session.model_cache_policy != ModelCachePolicy::NonCacheable {
+        write_canonical_atomic(state, &path, &current)?;
+    }
+    Ok(current)
+}
+
+fn project_model_key(
+    runtime_key: &str,
+    snapshot: &CasObject,
+    compilation: &str,
+) -> Result<String, ClewError> {
+    canonical::hash(&json!({
+        "schema":"codeclew-project-native-model-key/2.0",
+        "runtimeKey":runtime_key,
+        "snapshot":snapshot,
+        "compilation":compilation,
+    }))
+    .map_err(internal)
 }
 
 fn prepare_authority(
-    state: &StateAuthority,
     store: &CasStore,
     runtime: &RuntimeAuthority,
     snapshot: &RepositoryInputSnapshot,
     snapshot_object: CasObject,
     compilation: &str,
+    project: &Value,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
-    let compiler_store_key = compiler_store_key(runtime, compilation)?;
-    let index = analyze_project_native_index(
-        state,
-        store,
-        snapshot,
-        compilation,
-        digest_component(&compiler_store_key)?,
-    )?;
-    let compiler_version = index
+    let compiler_version = project
         .get("compilerVersion")
         .and_then(Value::as_str)
-        .ok_or_else(|| corrupt("Kotlin generation has no compiler identity"))?
+        .ok_or_else(|| corrupt("OpenProject has no Kotlin compiler identity"))?
         .to_owned();
     let (worker_name, _, _) = compiler_line(&compiler_version)?;
     let worker = runtime.worker(worker_name)?;
     if worker.compiler_version != compiler_version {
         return Err(corrupt("runtime worker compiler identity changed"));
     }
-    let analysis = store.put(
-        MODEL_ANALYSIS_SCHEMA,
-        &canonical::bytes(&index).map_err(internal)?,
-    )?;
-    let scope_digest = semantic_scope_digest(&index)?;
-    let completeness = completeness_from_index(&index, &scope_digest)?;
+    let project_model_hash = required_digest(project, "projectModelHash")?;
+    let semantic_input_manifest_hash = required_digest(project, "semanticInputManifestHash")?;
     let toolchain = store.put(
         "codeclew-kotlin-toolchain-authority/2.0",
         &canonical::bytes(worker).map_err(internal)?,
@@ -365,8 +544,8 @@ fn prepare_authority(
             "snapshotId":snapshot.snapshot_id,
             "compilation":compilation,
             "compilerVersion":compiler_version,
-            "analysis":analysis,
-            "completeness":completeness,
+            "projectModelHash":project_model_hash,
+            "semanticInputManifestHash":semantic_input_manifest_hash,
         }))
         .map_err(internal)?,
     )?;
@@ -386,11 +565,7 @@ fn prepare_authority(
         dependency_compilation_ids: Vec::new(),
         operations: Vec::new(),
         origin: DescriptorOrigin::ProjectNative,
-        completeness: match completeness.coverage {
-            Coverage::Complete { .. } => DescriptorCompleteness::Complete,
-            Coverage::Partial { .. } => DescriptorCompleteness::Partial,
-            Coverage::Unknown => DescriptorCompleteness::Unknown,
-        },
+        completeness: DescriptorCompleteness::Unknown,
     };
     let provider = ProviderModel {
         handshake: ProviderHandshake {
@@ -414,10 +589,8 @@ fn prepare_authority(
         compilation: compilation.into(),
         compiler_version,
         adapter_digest: worker.tree_hash.clone(),
-        analysis,
         descriptor,
         derived_input_manifest,
-        completeness,
     };
     Ok(prepared)
 }
@@ -454,7 +627,6 @@ fn verify_prepared_authority(
     compilation: &str,
 ) -> Result<(), ClewError> {
     prepared.descriptor.validate()?;
-    prepared.completeness.validate()?;
     let (worker_name, _, _) = compiler_line(&prepared.compiler_version)?;
     let worker = runtime.worker(worker_name)?;
     if prepared.schema != PREPARED_AUTHORITY_SCHEMA
@@ -466,19 +638,9 @@ fn verify_prepared_authority(
         || prepared.descriptor.compilation_id != safe_compilation_id(compilation)
         || prepared.descriptor.source_roots.len() != 1
         || prepared.descriptor.source_roots[0].tree != *snapshot
-        || prepared.analysis.object_schema != MODEL_ANALYSIS_SCHEMA
+        || prepared.descriptor.completeness != DescriptorCompleteness::Unknown
     {
         return Err(corrupt("prepared generation authority is inconsistent"));
-    }
-    let index = load_analysis(store, &prepared.analysis)?;
-    if index.get("compilerVersion").and_then(Value::as_str)
-        != Some(prepared.compiler_version.as_str())
-    {
-        return Err(corrupt("prepared analysis compiler identity changed"));
-    }
-    let scope_digest = semantic_scope_digest(&index)?;
-    if completeness_from_index(&index, &scope_digest)? != prepared.completeness {
-        return Err(corrupt("prepared completeness authority changed"));
     }
     let limit = usize::try_from(prepared.derived_input_manifest.size)
         .map_err(|_| resource("derived input manifest exceeds host size"))?;
@@ -516,33 +678,70 @@ fn final_generation_key(
     snapshot: &CasObject,
     compilation: &str,
     derived_input_manifest: &CasObject,
-    completeness: &CompletenessVector,
 ) -> Result<String, ClewError> {
-    completeness.validate()?;
     canonical::hash(&json!({
-        "schema":"codeclew-generation-key/2.1",
+        "schema":"codeclew-generation-key/2.2",
         "runtimeKey":runtime_key,
         "baseRevision":base_revision,
         "snapshot":snapshot,
         "compilation":compilation,
         "derivedInputManifest":derived_input_manifest,
-        "completeness":completeness,
     }))
     .map_err(internal)
 }
 
-struct PreparedKotlinDriver {
-    index: Mutex<Option<Value>>,
+#[derive(Clone)]
+struct SemanticExecutionOutput {
+    analysis: CasObject,
+    worker_requests: WorkerRequestCounters,
 }
 
-impl KotlinGenerationDriver for PreparedKotlinDriver {
+struct LiveKotlinDriver {
+    attempt: Mutex<Option<ProjectNativeKotlinAttempt>>,
+    store: CasStore,
+    output: Arc<Mutex<Option<SemanticExecutionOutput>>>,
+}
+
+impl KotlinGenerationDriver for LiveKotlinDriver {
     fn analyze(&self, _request: &AnalyzeGenerationRequest) -> Result<Value, ClewError> {
-        self.index
+        let attempt = self
+            .attempt
             .lock()
             .map_err(poisoned)?
             .take()
-            .ok_or_else(|| corrupt("prepared Kotlin analysis was consumed more than once"))
+            .ok_or_else(|| corrupt("live Kotlin analysis was consumed more than once"))?;
+        let (index, _profile, worker_requests) = attempt.analyze()?;
+        let analysis = self.store.put(
+            MODEL_ANALYSIS_SCHEMA,
+            &canonical::bytes(&index).map_err(internal)?,
+        )?;
+        *self.output.lock().map_err(poisoned)? = Some(SemanticExecutionOutput {
+            analysis,
+            worker_requests,
+        });
+        Ok(index)
     }
+}
+
+fn required_digest(value: &Value, field: &str) -> Result<String, ClewError> {
+    let digest = value.get(field).and_then(Value::as_str).ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::StateCorrupt,
+            format!("OpenProject has no {field}"),
+        )
+    })?;
+    if digest.len() != 71
+        || !digest.starts_with("sha256:")
+        || !digest[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(ClewError::new(
+            ErrorCode::StateCorrupt,
+            format!("OpenProject {field} is not a digest"),
+        ));
+    }
+    Ok(digest.into())
 }
 
 struct CollectedAnalysisSink {
@@ -847,6 +1046,335 @@ fn compiler_store_key(runtime: &RuntimeAuthority, compilation: &str) -> Result<S
     .map_err(internal)
 }
 
+fn incremental_head_path(
+    repository_root: &Path,
+    compilation: &str,
+) -> Result<std::path::PathBuf, ClewError> {
+    let key = canonical::hash(&json!({
+        "schema":"codeclew-incremental-head-path/2.0",
+        "compilation":compilation,
+    }))
+    .map_err(internal)?;
+    Ok(repository_root
+        .join("incremental")
+        .join(format!("{}.json", digest_component(&key)?)))
+}
+
+fn incremental_plan_for(
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: &CasObject,
+    prepared: &PreparedGenerationAuthority,
+    compiler_store: &CompilerStoreKey,
+    previous: Option<&LoadedIncrementalHead>,
+) -> Result<(IncrementalPlan, bool), ClewError> {
+    let receipt_paths = previous
+        .map(|value| {
+            value
+                .receipt
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let current_files = current_file_digests(store, snapshot, &receipt_paths)?;
+    let plan = plan_incremental(
+        compiler_store,
+        previous.map(|value| &value.receipt),
+        &current_files,
+        true,
+    )?;
+    let exact = matches!(plan, IncrementalPlan::UnchangedHit { .. })
+        && previous.is_some_and(|value| {
+            value.ready.repository_snapshot == *snapshot_object
+                && value.ready.derived_input_manifest == prepared.derived_input_manifest
+        });
+    if matches!(plan, IncrementalPlan::UnchangedHit { .. }) && !exact {
+        return Ok((
+            IncrementalPlan::Full {
+                reason: FullAnalysisReason::UnknownInvalidation,
+            },
+            false,
+        ));
+    }
+    // The current worker protocol cannot analyze a proven subset. DELTA remains
+    // useful planning evidence, but execution is deliberately a full analysis.
+    Ok((plan, exact))
+}
+
+fn current_file_digests(
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    receipt_paths: &std::collections::BTreeSet<&str>,
+) -> Result<BTreeMap<String, String>, ClewError> {
+    let mut files = BTreeMap::new();
+    for entry in snapshot.index.iter().filter(|entry| {
+        entry.stage == 0
+            && (kotlin_source_path(&entry.path) || receipt_paths.contains(entry.path.as_str()))
+    }) {
+        files.insert(
+            entry.path.clone(),
+            source_content_digest(store, &entry.content)?,
+        );
+    }
+    for entry in &snapshot.worktree {
+        if !kotlin_source_path(&entry.path) && !receipt_paths.contains(entry.path.as_str()) {
+            continue;
+        }
+        match entry.kind {
+            WorktreeKind::Missing => {
+                files.remove(&entry.path);
+            }
+            WorktreeKind::Regular => {
+                let content = entry
+                    .content
+                    .as_ref()
+                    .ok_or_else(|| corrupt("regular worktree input has no content authority"))?;
+                files.insert(entry.path.clone(), source_content_digest(store, content)?);
+            }
+            WorktreeKind::Symlink => {
+                return Err(ClewError::new(
+                    ErrorCode::UnsupportedProjectConfiguration,
+                    "symlinked incremental inputs require full analysis",
+                ));
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn source_content_digest(store: &CasStore, object: &CasObject) -> Result<String, ClewError> {
+    let limit = usize::try_from(object.size)
+        .map_err(|_| resource("repository source input exceeds host size"))?;
+    let lease = store.read(object, limit)?;
+    Ok(canonical::hash_bytes(lease.bytes()))
+}
+
+fn kotlin_source_path(path: &str) -> bool {
+    path.ends_with(".kt")
+}
+
+pub(crate) fn create_incremental_receipt(
+    store: &CasStore,
+    index: &Value,
+    compiler_store: &CompilerStoreKey,
+    generation: &GenerationManifest,
+    completeness: CompletenessVector,
+) -> Result<(IncrementalReceipt, CasObject), ClewError> {
+    let files = index
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| corrupt("verified compiler index has no file manifest"))?;
+    let descriptors = index
+        .pointer("/declarationDescriptors/descriptors")
+        .and_then(Value::as_array)
+        .ok_or_else(|| corrupt("verified compiler index has no descriptor rows"))?;
+    let relations = index
+        .pointer("/declarationRelations/relations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| corrupt("verified compiler index has no relation rows"))?;
+
+    let mut aliases = BTreeMap::<String, String>::new();
+    let mut surfaces = BTreeMap::<String, Vec<Value>>::new();
+    for descriptor in descriptors {
+        let path = required_safe_path(descriptor, "file")?;
+        surfaces
+            .entry(path.clone())
+            .or_default()
+            .push(descriptor.clone());
+        for field in ["symbolIdentity", "compilerCallableId"] {
+            if let Some(symbol) = descriptor.get(field).and_then(Value::as_str) {
+                match aliases.insert(symbol.into(), path.clone()) {
+                    Some(previous) if previous != path => {
+                        return Err(corrupt("compiler symbol maps to multiple source files"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    for rows in surfaces.values_mut() {
+        rows.sort_by_key(|row| canonical::bytes(row).unwrap_or_default());
+    }
+
+    let mut dependencies = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut boundary_rows = BTreeMap::<(String, String), Vec<String>>::new();
+    for relation in relations {
+        let source = required_safe_path(relation, "file")?;
+        let Some(target_symbol) = relation.get("target").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(target) = aliases.get(target_symbol) else {
+            continue;
+        };
+        if target != &source {
+            dependencies
+                .entry(source.clone())
+                .or_default()
+                .insert(target.clone());
+            boundary_rows
+                .entry((source, target.clone()))
+                .or_default()
+                .push(canonical::hash(relation).map_err(internal)?);
+        }
+    }
+
+    let mut file_receipts = Vec::with_capacity(files.len());
+    for file in files {
+        let path = required_safe_path(file, "path")?;
+        let content_digest = required_digest(file, "contentHash")?;
+        let surface = surfaces.remove(&path).unwrap_or_default();
+        file_receipts.push(FileReceipt {
+            path: path.clone(),
+            content_digest,
+            exported_surface_digest: canonical::hash(&surface).map_err(internal)?,
+            dependencies: dependencies
+                .remove(&path)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        });
+    }
+    file_receipts.sort_by(|left, right| left.path.cmp(&right.path));
+    if file_receipts
+        .windows(2)
+        .any(|pair| pair[0].path == pair[1].path)
+    {
+        return Err(corrupt("verified compiler index has duplicate file paths"));
+    }
+    let mut boundaries = boundary_rows
+        .into_iter()
+        .map(|((source_path, target_path), mut rows)| {
+            rows.sort();
+            Ok(BoundaryReceipt {
+                source_path,
+                target_path,
+                boundary_digest: canonical::hash(&rows).map_err(internal)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    boundaries.sort_by(|left, right| {
+        (&left.source_path, &left.target_path).cmp(&(&right.source_path, &right.target_path))
+    });
+    let receipt = IncrementalReceipt {
+        schema: INCREMENTAL_RECEIPT_SCHEMA.into(),
+        compiler_store_key: compiler_store.key.clone(),
+        generation_id: generation.generation_id.clone(),
+        files: file_receipts,
+        boundaries,
+        completeness,
+    };
+    receipt.validate()?;
+    let object = store.put(
+        INCREMENTAL_RECEIPT_SCHEMA,
+        &canonical::bytes(&receipt).map_err(internal)?,
+    )?;
+    Ok((receipt, object))
+}
+
+fn required_safe_path(value: &Value, field: &str) -> Result<String, ClewError> {
+    let path = value.get(field).and_then(Value::as_str).ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::StateCorrupt,
+            format!("compiler index row has no {field}"),
+        )
+    })?;
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\0')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(corrupt("compiler index contains an unsafe source path"));
+    }
+    Ok(path.into())
+}
+
+fn publish_incremental_head(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    ready: &ReadyGeneration,
+    compiler_store: &CompilerStoreKey,
+) -> Result<(), ClewError> {
+    if let Some(parent) = path.parent() {
+        create_private_directory(parent)?;
+    }
+    let ready_object = store.put(
+        READY_GENERATION_SCHEMA,
+        &canonical::bytes(ready).map_err(internal)?,
+    )?;
+    let head = IncrementalHead {
+        schema: INCREMENTAL_HEAD_SCHEMA.into(),
+        compiler_store_key: compiler_store.key.clone(),
+        receipt: ready.incremental_receipt.clone(),
+        ready: ready_object,
+    };
+    write_canonical_atomic(state, path, &head)
+}
+
+fn load_incremental_head(
+    store: &CasStore,
+    path: &Path,
+) -> Result<Option<LoadedIncrementalHead>, ClewError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::symlink_metadata(path).map_err(io_error)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_BINDING_BYTES as u64
+    {
+        return Err(corrupt("incremental head binding is unsafe"));
+    }
+    let bytes = fs::read(path).map_err(io_error)?;
+    let head: IncrementalHead = serde_json::from_slice(&bytes)
+        .map_err(|_| corrupt("incremental head binding is invalid"))?;
+    if canonical::bytes(&head).map_err(internal)? != bytes
+        || head.schema != INCREMENTAL_HEAD_SCHEMA
+        || head.receipt.object_schema != INCREMENTAL_RECEIPT_SCHEMA
+        || head.ready.object_schema != READY_GENERATION_SCHEMA
+    {
+        return Err(corrupt("incremental head authority is invalid"));
+    }
+    let receipt: IncrementalReceipt = read_canonical_object(store, &head.receipt)?;
+    receipt.validate()?;
+    let ready: ReadyGeneration = read_canonical_object(store, &head.ready)?;
+    verify_ready_authority(store, &ready, true)?;
+    if head.compiler_store_key != receipt.compiler_store_key
+        || head.receipt != ready.incremental_receipt
+        || receipt.generation_id != load_generation(store, &ready.generation)?.generation_id
+    {
+        return Err(corrupt("incremental head objects are not mutually bound"));
+    }
+    Ok(Some(LoadedIncrementalHead {
+        head,
+        receipt,
+        ready,
+    }))
+}
+
+fn read_canonical_object<T: for<'de> Deserialize<'de> + Serialize>(
+    store: &CasStore,
+    object: &CasObject,
+) -> Result<T, ClewError> {
+    let limit =
+        usize::try_from(object.size).map_err(|_| resource("CAS object exceeds host size"))?;
+    let lease = store.read(object, limit)?;
+    let value = serde_json::from_slice(lease.bytes())
+        .map_err(|_| corrupt("CAS object payload is invalid"))?;
+    if canonical::bytes(&value).map_err(internal)? != lease.bytes() {
+        return Err(corrupt("CAS object payload is not canonical"));
+    }
+    Ok(value)
+}
+
+fn load_generation(store: &CasStore, object: &CasObject) -> Result<GenerationManifest, ClewError> {
+    read_canonical_object(store, object)
+}
+
 fn load_ready(
     store: &CasStore,
     path: &Path,
@@ -876,13 +1404,26 @@ fn verify_ready(
     session: &SessionAuthority,
     deep: bool,
 ) -> Result<(), ClewError> {
-    if ready.schema != READY_GENERATION_SCHEMA
-        || ready.runtime_key != session.runtime_key
+    if ready.runtime_key != session.runtime_key
         || ready.base_revision != session.base_revision
         || ready.compilation != session.compilation
+    {
+        return Err(corrupt("ready generation session authority is invalid"));
+    }
+    verify_ready_authority(store, ready, deep)
+}
+
+fn verify_ready_authority(
+    store: &CasStore,
+    ready: &ReadyGeneration,
+    deep: bool,
+) -> Result<(), ClewError> {
+    if ready.schema != READY_GENERATION_SCHEMA
         || ready.repository_snapshot.object_schema != SNAPSHOT_SCHEMA
         || ready.generation.object_schema != GENERATION_SCHEMA
         || ready.query_index.object_schema != QUERY_INDEX_SCHEMA
+        || ready.incremental.schema != INCREMENTAL_EVIDENCE_SCHEMA
+        || ready.incremental_receipt.object_schema != INCREMENTAL_RECEIPT_SCHEMA
         || ready.coverage != coverage_label(&ready.completeness)
         || ready.certainty != certainty_label(&ready.completeness)
         || ready.obligations != obligation_codes(&ready.completeness)
@@ -893,12 +1434,29 @@ fn verify_ready(
                 &ready.repository_snapshot,
                 &ready.compilation,
                 &ready.derived_input_manifest,
-                &ready.completeness,
             )?
     {
         return Err(corrupt("ready generation authority is invalid"));
     }
     ready.completeness.validate()?;
+    match ready.incremental.executed {
+        IncrementalExecutionMode::Full
+            if ready.incremental.worker_requests.open_project_requests != 1
+                || ready.incremental.worker_requests.index_files_requests == 0 =>
+        {
+            return Err(corrupt("full generation request counters are invalid"));
+        }
+        IncrementalExecutionMode::UnchangedHit
+            if !matches!(
+                ready.incremental.planned,
+                IncrementalPlan::UnchangedHit { .. }
+            ) || ready.incremental.worker_requests.open_project_requests != 1
+                || ready.incremental.worker_requests.index_files_requests != 0 =>
+        {
+            return Err(corrupt("unchanged generation request counters are invalid"));
+        }
+        _ => {}
+    }
     let _ = load_snapshot(store, ready)?;
     let derived_limit = usize::try_from(ready.derived_input_manifest.size)
         .map_err(|_| resource("derived input manifest exceeds host size"))?;
@@ -918,6 +1476,15 @@ fn verify_ready(
         .map_err(|_| corrupt("generation binding is invalid"))?;
     if generation.derived_input_manifest != ready.derived_input_manifest {
         return Err(corrupt("generation is bound to another derived authority"));
+    }
+    let receipt: IncrementalReceipt = read_canonical_object(store, &ready.incremental_receipt)?;
+    receipt.validate()?;
+    if receipt.generation_id != generation.generation_id
+        || receipt.completeness != ready.completeness
+    {
+        return Err(corrupt(
+            "incremental receipt is bound to another generation",
+        ));
     }
     if deep {
         generation.verify(store)?;
@@ -1037,6 +1604,8 @@ mod tests {
         ValidateCandidateResult,
     };
     use crate::derived_manifest::DERIVED_MANIFEST_SCHEMA;
+    use crate::generation_v2::GenerationKind;
+    use crate::incremental_v2::COMPILER_STORE_KEY_SCHEMA;
     use crate::runtime::{RuntimeMode, RuntimeWorker};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1289,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn final_generation_key_binds_derived_authority_and_completeness() {
+    fn final_generation_key_is_fixed_before_output_completeness() {
         let snapshot = CasObject {
             schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
             object_schema: SNAPSHOT_SCHEMA.into(),
@@ -1302,35 +1871,116 @@ mod tests {
             digest: format!("sha256:{}", "2".repeat(64)),
             size: 1,
         };
-        let complete =
-            CompletenessVector::verified_complete(format!("sha256:{}", "3".repeat(64))).unwrap();
         let first = final_generation_key(
             &format!("sha256:{}", "4".repeat(64)),
             &format!("sha256:{}", "5".repeat(64)),
             &snapshot,
             ":/main",
             &derived,
-            &complete,
         )
         .unwrap();
-        let mut changed = complete;
-        changed.certainty = Certainty::Unsure {
-            check_set: vec!["verify".into()],
+        let changed_completeness = CompletenessVector {
+            schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+            support: Support::Supported,
+            coverage: Coverage::Unknown,
+            certainty: Certainty::Unsure {
+                check_set: vec!["verify".into()],
+            },
+            obligations: vec![VerificationObligation {
+                code: "VERIFY".into(),
+                subject: vec!["scope".into()],
+                publication_blocking: true,
+            }],
         };
-        changed.obligations = vec![VerificationObligation {
-            code: "VERIFY".into(),
-            subject: vec!["scope".into()],
-            publication_blocking: true,
-        }];
+        changed_completeness.validate().unwrap();
         let second = final_generation_key(
             &format!("sha256:{}", "4".repeat(64)),
             &format!("sha256:{}", "5".repeat(64)),
             &snapshot,
             ":/main",
             &derived,
-            &changed,
         )
         .unwrap();
-        assert_ne!(first, second);
+        assert_eq!(first, second);
+
+        let mut changed_derived = derived;
+        changed_derived.digest = format!("sha256:{}", "6".repeat(64));
+        assert_ne!(
+            first,
+            final_generation_key(
+                &format!("sha256:{}", "4".repeat(64)),
+                &format!("sha256:{}", "5".repeat(64)),
+                &snapshot,
+                ":/main",
+                &changed_derived,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn compiler_index_receipt_is_per_file_cross_boundary_and_corruption_refuses() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+        let object = |schema: &str, character: char| CasObject {
+            schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+            object_schema: schema.into(),
+            digest: digest(character),
+            size: 1,
+        };
+        let compiler_store = CompilerStoreKey {
+            schema: COMPILER_STORE_KEY_SCHEMA.into(),
+            key: digest('a'),
+            adapter_id: "kotlin-2.4".into(),
+            adapter_digest: digest('b'),
+            language_uri: KOTLIN_LANGUAGE.into(),
+            toolchain: object("test/toolchain/1", 'c'),
+            canonical_options: object("test/options/1", 'd'),
+            classpath: vec![],
+            plugins: vec![],
+        };
+        let generation = GenerationManifest {
+            schema: GENERATION_SCHEMA.into(),
+            generation_id: digest('e'),
+            derived_input_manifest: object(DERIVED_MANIFEST_SCHEMA, 'f'),
+            parent_generation: None,
+            generation_kind: GenerationKind::Full,
+            attempts: vec![],
+            shards: vec![],
+            fact_count: 0,
+        };
+        let index = json!({
+            "files":[
+                {"path":"src/A.kt","contentHash":digest('1')},
+                {"path":"src/B.kt","contentHash":digest('2')}
+            ],
+            "declarationDescriptors":{"descriptors":[
+                {"file":"src/A.kt","symbolIdentity":"callable:p/A.call#jvm:()V","compilerCallableId":"p/A.call"},
+                {"file":"src/B.kt","symbolIdentity":"callable:p/B.read#jvm:()I","compilerCallableId":"p/B.read"}
+            ]},
+            "declarationRelations":{"relations":[
+                {"file":"src/A.kt","owner":"p/A.call","target":"p/B.read","kind":"CALLS"}
+            ]}
+        });
+        let completeness = CompletenessVector::verified_complete(digest('9')).unwrap();
+        let (receipt, reference) =
+            create_incremental_receipt(&store, &index, &compiler_store, &generation, completeness)
+                .unwrap();
+        assert_eq!(receipt.files[0].dependencies, vec!["src/B.kt"]);
+        assert_eq!(receipt.boundaries.len(), 1);
+        assert_eq!(receipt.boundaries[0].source_path, "src/A.kt");
+        assert_eq!(receipt.boundaries[0].target_path, "src/B.kt");
+
+        let hex = reference.digest.strip_prefix("sha256:").unwrap();
+        let path = state.objects_root().join(&hex[..2]).join(&hex[2..]);
+        std::fs::write(path, b"corrupt").unwrap();
+        assert_eq!(
+            read_canonical_object::<IncrementalReceipt>(&store, &reference)
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
     }
 }

@@ -12,7 +12,7 @@ use crate::generation_v2::GenerationManifest;
 use crate::incremental_v2::CompilerStoreKey;
 use crate::repository_snapshot::{RepositoryInputSnapshot, capture, materialize};
 use crate::state::{StateAuthority, create_private_directory};
-use crate::worker::{WorkerClient, workspace_root};
+use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
@@ -335,73 +335,158 @@ pub(crate) fn analyze_project_native_index(
     .map(|(index, _)| index)
 }
 
-fn analyze_project_native_index_profiled(
-    state: &StateAuthority,
-    store: &CasStore,
-    snapshot: &RepositoryInputSnapshot,
-    native_compilation: &str,
-    compiler_store_component: &str,
-) -> Result<(Value, Option<crate::worker::CompilerIndexProfile>), ClewError> {
-    if compiler_store_component.len() != 64
-        || !compiler_store_component
+pub(crate) struct ProjectNativeKotlinAttempt {
+    store: CasStore,
+    snapshot: RepositoryInputSnapshot,
+    _attempt_root: tempfile::TempDir,
+    repo: std::path::PathBuf,
+    derived_mounts: Vec<std::path::PathBuf>,
+    worker: Option<WorkerClient>,
+    request: Value,
+    project: Value,
+}
+
+impl ProjectNativeKotlinAttempt {
+    pub(crate) fn open(
+        state: &StateAuthority,
+        store: &CasStore,
+        snapshot: &RepositoryInputSnapshot,
+        native_compilation: &str,
+        compiler_store_component: &str,
+    ) -> Result<Self, ClewError> {
+        validate_compiler_store_component(compiler_store_component)?;
+        let attempt_root = tempfile::Builder::new()
+            .prefix("kotlin-generation-")
+            .tempdir_in(state.attempts_root())
+            .map_err(io_error)?;
+        let repo = attempt_root.path().join("repo");
+        materialize(snapshot, store, &repo)?;
+        let derived_mounts = mount_project_derived_state(attempt_root.path(), &repo, snapshot)?;
+        let compiler_store = state
+            .root()
+            .join("generations/compiler-store")
+            .join(compiler_store_component);
+        create_private_directory(&compiler_store)?;
+        let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
+        let compiler_store_namespace = format!("sha256:{compiler_store_component}");
+        let mut worker = WorkerClient::start_with_managed_states(
+            &workspace_root(),
+            None,
+            Some(&compiler_store),
+            &compiler_store_namespace,
+        )?;
+        let request = json!({
+            "repo":repo,
+            "compilation":native_compilation,
+            "syntaxOnly":false,
+        });
+        let project = worker.open_project_verified(&request)?;
+        Ok(Self {
+            store: store.clone(),
+            snapshot: snapshot.clone(),
+            _attempt_root: attempt_root,
+            repo,
+            derived_mounts,
+            worker: Some(worker),
+            request,
+            project,
+        })
+    }
+
+    pub(crate) fn project_authority(&self) -> &Value {
+        &self.project
+    }
+
+    pub(crate) fn analyze(
+        mut self,
+    ) -> Result<
+        (
+            Value,
+            Option<crate::worker::CompilerIndexProfile>,
+            WorkerRequestCounters,
+        ),
+        ClewError,
+    > {
+        let worker = self
+            .worker
+            .as_mut()
+            .ok_or_else(|| invalid("project-native worker is unavailable"))?;
+        let index = match worker.index_files_verified_after_project(&self.request, &self.project) {
+            Ok(verified) => worker.inspect_verified_index(&verified)?.clone(),
+            Err(error) if error.code == ErrorCode::IncompleteSemanticAnalysis => {
+                let files = self
+                    .snapshot
+                    .index
+                    .iter()
+                    .filter(|entry| entry.stage == 0 && entry.path.ends_with(".kt"))
+                    .map(|entry| entry.path.clone())
+                    .collect::<Vec<_>>();
+                if files.is_empty() {
+                    return Err(error);
+                }
+                let syntax = worker.index_files_source_syntax_verified(&json!({
+                    "repo":self.repo,
+                    "compilation":self.request["compilation"],
+                    "syntaxOnly":true,
+                    "files":files,
+                }))?;
+                let mut syntax = worker.inspect_verified_source_syntax(&syntax)?.clone();
+                normalize_source_syntax_fallback(&mut syntax, &error)?;
+                syntax
+            }
+            Err(error) => return Err(error),
+        };
+        let profile = worker.last_profile.compiler_index.clone();
+        let counters = self.finish()?;
+        Ok((index, profile, counters))
+    }
+
+    pub(crate) fn close_without_analysis(mut self) -> Result<WorkerRequestCounters, ClewError> {
+        self.finish()
+    }
+
+    fn finish(&mut self) -> Result<WorkerRequestCounters, ClewError> {
+        let worker = self
+            .worker
+            .take()
+            .ok_or_else(|| invalid("project-native worker was already closed"))?;
+        let counters = worker.request_counters();
+        let shutdown = worker.shutdown();
+        let unmount = unmount_project_derived_state(&self.repo, &self.derived_mounts);
+        let verification = verify_materialized_inputs(&self.repo, &self.snapshot, &self.store);
+        shutdown?;
+        unmount?;
+        verification?;
+        Ok(counters)
+    }
+}
+
+impl Drop for ProjectNativeKotlinAttempt {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.shutdown();
+        }
+        let _ = unmount_project_derived_state(&self.repo, &self.derived_mounts);
+    }
+}
+
+fn validate_compiler_store_component(value: &str) -> Result<(), ClewError> {
+    if value.len() != 64
+        || !value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     {
         return Err(invalid("compiler store component is invalid"));
     }
-    let attempt_root = tempfile::Builder::new()
-        .prefix("kotlin-generation-")
-        .tempdir_in(state.attempts_root())
-        .map_err(io_error)?;
-    let repo = attempt_root.path().join("repo");
-    materialize(snapshot, store, &repo)?;
-    let derived_mounts = mount_project_derived_state(attempt_root.path(), &repo, snapshot)?;
-    let compiler_store = state
-        .root()
-        .join("generations/compiler-store")
-        .join(compiler_store_component);
-    create_private_directory(&compiler_store)?;
-    let compiler_store = compiler_store.canonicalize().map_err(io_error)?;
-    let compiler_store_namespace = format!("sha256:{compiler_store_component}");
-    let mut worker = WorkerClient::start_with_managed_states(
-        &workspace_root(),
-        None,
-        Some(&compiler_store),
-        &compiler_store_namespace,
-    )?;
-    let request = json!({
-        "repo":repo,
-        "compilation":native_compilation,
-        "syntaxOnly":false,
-    });
-    let index = match worker.index_files_verified(&request) {
-        Ok(verified) => worker.inspect_verified_index(&verified)?.clone(),
-        Err(error) if error.code == ErrorCode::IncompleteSemanticAnalysis => {
-            let files = snapshot
-                .index
-                .iter()
-                .filter(|entry| entry.stage == 0 && entry.path.ends_with(".kt"))
-                .map(|entry| entry.path.clone())
-                .collect::<Vec<_>>();
-            if files.is_empty() {
-                return Err(error);
-            }
-            let syntax = worker.index_files_source_syntax_verified(&json!({
-                "repo":repo,
-                "compilation":native_compilation,
-                "syntaxOnly":true,
-                "files":files,
-            }))?;
-            let mut syntax = worker.inspect_verified_source_syntax(&syntax)?.clone();
-            normalize_source_syntax_fallback(&mut syntax, &error)?;
-            syntax
-        }
-        Err(error) => return Err(error),
-    };
-    let profile = worker.last_profile.compiler_index.clone();
-    worker.shutdown()?;
-    unmount_project_derived_state(&repo, &derived_mounts)?;
-    let (observed_snapshot, _) = capture(&repo, store)?;
+    Ok(())
+}
+
+fn verify_materialized_inputs(
+    repo: &std::path::Path,
+    snapshot: &RepositoryInputSnapshot,
+    store: &CasStore,
+) -> Result<(), ClewError> {
+    let (observed_snapshot, _) = capture(repo, store)?;
     let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
         && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
         && observed_snapshot.untracked_view_digest == snapshot.untracked_view_digest
@@ -419,9 +504,27 @@ fn analyze_project_native_index_profiled(
     if !unchanged_inputs {
         return Err(ClewError::new(
             ErrorCode::InputMutated,
-            "project-native model extraction modified sealed repository inputs",
+            "project-native analysis modified sealed repository inputs",
         ));
     }
+    Ok(())
+}
+
+fn analyze_project_native_index_profiled(
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    native_compilation: &str,
+    compiler_store_component: &str,
+) -> Result<(Value, Option<crate::worker::CompilerIndexProfile>), ClewError> {
+    let attempt = ProjectNativeKotlinAttempt::open(
+        state,
+        store,
+        snapshot,
+        native_compilation,
+        compiler_store_component,
+    )?;
+    let (index, profile, _) = attempt.analyze()?;
     Ok((index, profile))
 }
 
@@ -738,6 +841,8 @@ mod tests {
         ProviderHandshake, ProviderModel, SourceRootDescriptor,
     };
     use crate::derived_manifest::DerivedAnalysisInputManifest;
+    use crate::generation_v2::GenerationKind;
+    use crate::incremental_v2::{COMPILER_STORE_KEY_SCHEMA, CompletenessVector};
     use crate::repository_snapshot;
 
     #[derive(Clone)]
@@ -1074,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn k24_real_worker_reuses_managed_compiler_store() {
+    fn k24_real_worker_cold_then_product_unchanged_skips_index_files() {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
         let store = CasStore::open(&state).unwrap();
@@ -1082,9 +1187,10 @@ mod tests {
         let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
         let component = "a".repeat(64);
 
-        let (_, cold) =
-            analyze_project_native_index_profiled(&state, &store, &snapshot, ":/main", &component)
+        let cold_attempt =
+            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component)
                 .unwrap();
+        let (cold_index, cold, cold_requests) = cold_attempt.analyze().unwrap();
         let cold = cold.expect("cold compiler profile");
         assert_eq!(
             cold.status,
@@ -1092,17 +1198,64 @@ mod tests {
             "cold profiling: {cold:?}",
         );
         assert!(!cold.fallback_used, "cold profiling: {cold:?}");
+        assert_eq!(cold_requests.open_project_requests, 1);
+        assert_eq!(cold_requests.index_files_requests, 1);
 
-        let (_, warm) =
-            analyze_project_native_index_profiled(&state, &store, &snapshot, ":/main", &component)
+        let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+        let object = |schema: &str, character: char| CasObject {
+            schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+            object_schema: schema.into(),
+            digest: digest(character),
+            size: 1,
+        };
+        let compiler_store = CompilerStoreKey {
+            schema: COMPILER_STORE_KEY_SCHEMA.into(),
+            key: digest('1'),
+            adapter_id: "kotlin-2.4".into(),
+            adapter_digest: digest('2'),
+            language_uri: KOTLIN_LANGUAGE.into(),
+            toolchain: object("test/toolchain/1", '3'),
+            canonical_options: object("test/options/1", '4'),
+            classpath: vec![],
+            plugins: vec![],
+        };
+        let generation = GenerationManifest {
+            schema: crate::generation_v2::GENERATION_SCHEMA.into(),
+            generation_id: digest('5'),
+            derived_input_manifest: object(crate::derived_manifest::DERIVED_MANIFEST_SCHEMA, '6'),
+            parent_generation: None,
+            generation_kind: GenerationKind::Full,
+            attempts: vec![],
+            shards: vec![],
+            fact_count: 0,
+        };
+        let completeness =
+            CompletenessVector::verified_complete(semantic_scope_digest(&cold_index).unwrap())
                 .unwrap();
-        let warm = warm.expect("warm compiler profile");
+        let (_, receipt_object) = crate::generation_service::create_incremental_receipt(
+            &store,
+            &cold_index,
+            &compiler_store,
+            &generation,
+            completeness,
+        )
+        .unwrap();
+
+        // The generation service proves UNCHANGED from its sealed receipt
+        // after OpenProject and closes this same worker without IndexFiles.
+        let unchanged_attempt =
+            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component)
+                .unwrap();
+        let warm_requests = unchanged_attempt.close_without_analysis().unwrap();
+        assert_eq!(warm_requests.open_project_requests, 1);
+        assert_eq!(warm_requests.index_files_requests, 0);
+
+        let hex = receipt_object.digest.strip_prefix("sha256:").unwrap();
+        let receipt_path = state.objects_root().join(&hex[..2]).join(&hex[2..]);
+        std::fs::write(receipt_path, b"corrupt").unwrap();
         assert_eq!(
-            warm.status,
-            crate::worker::CompilerIndexStatus::UnchangedHit,
-            "warm profiling: {warm:?}",
+            store.read(&receipt_object, 1024 * 1024).unwrap_err().code,
+            ErrorCode::StateCorrupt
         );
-        assert!(!warm.fallback_used, "warm profiling: {warm:?}");
-        assert_eq!(warm.compiled_files, 0);
     }
 }

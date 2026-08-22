@@ -8,7 +8,7 @@ use crate::proto::{
 };
 use crate::runtime::RuntimeAuthority;
 use prost::Message;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -146,6 +146,7 @@ pub struct WorkerClient {
     transport_root: PathBuf,
     issued_index_facts: BTreeMap<Uuid, String>,
     issued_source_syntax: BTreeMap<Uuid, String>,
+    request_counters: WorkerRequestCounters,
 }
 
 const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -205,6 +206,13 @@ pub struct TrustedDistributionIdentity {
     pub tree_hash: String,
     pub build_input_digest: String,
     pub plugin_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerRequestCounters {
+    pub open_project_requests: u64,
+    pub index_files_requests: u64,
 }
 
 fn verified_index_failure_stage(error: &ClewError, default: &str) -> String {
@@ -1207,6 +1215,7 @@ impl WorkerClient {
             transport_root: canonical_transport_root,
             issued_index_facts: BTreeMap::new(),
             issued_source_syntax: BTreeMap::new(),
+            request_counters: WorkerRequestCounters::default(),
         })
     }
 
@@ -1214,13 +1223,14 @@ impl WorkerClient {
         if self.variant == variant {
             return Ok(());
         }
-        let replacement = Self::start_variant(
+        let mut replacement = Self::start_variant(
             &self.workspace,
             variant,
             self.build_state_root.as_deref(),
             self.compiler_index_root.as_deref(),
             Some(&self.build_namespace_digest),
         )?;
+        replacement.request_counters = self.request_counters;
         let previous = std::mem::replace(self, replacement);
         previous.shutdown()
     }
@@ -1235,6 +1245,19 @@ impl WorkerClient {
         payload: &Value,
         tried_discovery_variants: u8,
     ) -> Result<Value, ClewError> {
+        match kind {
+            RequestKind::OpenProject => {
+                self.request_counters.open_project_requests = self
+                    .request_counters
+                    .open_project_requests
+                    .saturating_add(1);
+            }
+            RequestKind::IndexFiles => {
+                self.request_counters.index_files_requests =
+                    self.request_counters.index_files_requests.saturating_add(1);
+            }
+            _ => {}
+        }
         if self.snapshot.is_none()
             && request_requires_project_snapshot(kind, payload)
             && payload.get("repo").and_then(Value::as_str).is_some()
@@ -1760,6 +1783,29 @@ impl WorkerClient {
             .map(|(_, facts)| facts)
     }
 
+    pub fn request_counters(&self) -> WorkerRequestCounters {
+        self.request_counters
+    }
+
+    /// Establish one exact live OpenProject authority without executing
+    /// semantic compiler indexing. The returned model is session-bound and is
+    /// accepted by `index_files_verified_after_project` only on this client.
+    pub fn open_project_verified(&mut self, payload: &Value) -> Result<Value, ClewError> {
+        let repo = payload.get("repo").and_then(Value::as_str).ok_or_else(|| {
+            ClewError::new(ErrorCode::InvalidInput, "verified project needs repo")
+        })?;
+        let repo = Path::new(repo).canonicalize().map_err(internal)?;
+        let requested_compilation = payload
+            .get("compilation")
+            .and_then(Value::as_str)
+            .unwrap_or(":/main")
+            .to_owned();
+        self.request(
+            RequestKind::OpenProject,
+            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
+        )
+    }
+
     /// Execute one live OpenProject followed by IndexFiles and return both the
     /// exact project authority and its sealed semantic facts. Callers that need
     /// the project model must use this combined contour instead of issuing a
@@ -1769,20 +1815,7 @@ impl WorkerClient {
         &mut self,
         payload: &Value,
     ) -> Result<(Value, VerifiedIndexFacts), ClewError> {
-        let repo = payload
-            .get("repo")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "verified index needs repo"))?;
-        let repo = Path::new(repo).canonicalize().map_err(internal)?;
-        let requested_compilation = payload
-            .get("compilation")
-            .and_then(Value::as_str)
-            .unwrap_or(":/main")
-            .to_owned();
-        let project = self.request(
-            RequestKind::OpenProject,
-            &serde_json::json!({"repo":repo,"compilation":requested_compilation}),
-        )?;
+        let project = self.open_project_verified(payload)?;
         let facts = self.index_files_verified_after_project(payload, &project)?;
         Ok((project, facts))
     }
