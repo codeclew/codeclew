@@ -158,6 +158,23 @@ pub struct WorkerClient {
 
 const MAX_WORKER_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_WORKER_RESPONSE_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+const SEALED_WORKER_JVM_OPTIONS: &str = "-Xms64m -Xmx1024m -XX:MaxMetaspaceSize=384m -XX:MaxDirectMemorySize=256m -XX:+ExitOnOutOfMemoryError";
+
+fn configure_sealed_worker_process(command: &mut Command, transport_root: &Path) {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // The Kotlin worker wraps native build tools whose diagnostics are
+        // neither bounded nor an evidence authority. Never forward them to
+        // the controller terminal. The typed protocol result is the only
+        // supported error boundary.
+        .stderr(Stdio::null())
+        // Generated Gradle application launchers apply KOTLIN_OPTS only to
+        // this JVM. Preserve the project's ambient JAVA_* variables for
+        // PROJECT_NATIVE children while bounding worker/model memory.
+        .env("KOTLIN_OPTS", SEALED_WORKER_JVM_OPTIONS)
+        .env("CODECLEW_WORKER_TRANSPORT_ROOT", transport_root);
+}
 
 /// Opaque `COMPILER_SEMANTIC` authority capability for one exact, live
 /// `IndexFiles` response.
@@ -1045,15 +1062,9 @@ impl WorkerClient {
             let output = command.output().map_err(|e| {
                 ClewError::new(
                     ErrorCode::WorkerCrashed,
-                    format!("cannot build Kotlin worker: {e}"),
+                    format!("cannot build Kotlin worker: {}", e.kind()),
                 )
             })?;
-            if !output.stdout.is_empty() {
-                eprint!("{}", String::from_utf8_lossy(&output.stdout));
-            }
-            if !output.stderr.is_empty() {
-                eprint!("{}", String::from_utf8_lossy(&output.stderr));
-            }
             if !output.status.success() {
                 return Err(ClewError::new(
                     ErrorCode::WorkerCrashed,
@@ -1092,11 +1103,7 @@ impl WorkerClient {
         }
         let mut command = Command::new(&launcher);
         isolate_controller_authority(&mut command)?;
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .env("CODECLEW_WORKER_TRANSPORT_ROOT", &canonical_transport_root);
+        configure_sealed_worker_process(&mut command, &canonical_transport_root);
         configure_worker_state_environment(
             &mut command,
             canonical_build_state.as_deref(),
@@ -1106,7 +1113,7 @@ impl WorkerClient {
         let mut child = command.spawn().map_err(|e| {
             ClewError::new(
                 ErrorCode::WorkerCrashed,
-                format!("cannot start {}: {e}", launcher.display()),
+                format!("cannot start sealed Kotlin worker: {}", e.kind()),
             )
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
@@ -3839,6 +3846,33 @@ mod tests {
         assert!(!message.contains('/'));
         assert!(!message.contains("HOME"));
         assert!(message.contains("explicit compilation"));
+    }
+
+    #[test]
+    fn sealed_worker_process_has_a_fixed_jvm_memory_authority() {
+        let mut command = Command::new("not-executed");
+        configure_sealed_worker_process(&mut command, Path::new("/private/transport"));
+        let environment = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            environment.get("KOTLIN_OPTS").and_then(Option::as_deref),
+            Some(SEALED_WORKER_JVM_OPTIONS),
+        );
+        assert_eq!(
+            environment
+                .get("CODECLEW_WORKER_TRANSPORT_ROOT")
+                .and_then(Option::as_deref),
+            Some("/private/transport"),
+        );
+        assert!(!environment.contains_key("JAVA_OPTS"));
+        assert!(SEALED_WORKER_JVM_OPTIONS.contains("-XX:+ExitOnOutOfMemoryError"));
     }
 
     #[test]
