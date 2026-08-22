@@ -193,6 +193,50 @@ try:
     gradle = materialized / "fixtures" / "kotlin-basic"
     maven = materialized / "fixtures" / "kotlin-maven"
     run([gradle / "gradlew", "--no-daemon", "--quiet", "compileKotlin"], gradle, 1200)
+    gradle_model_output = run_output(
+        [
+            gradle / "gradlew", "--no-daemon", "--quiet",
+            "-I", repository / "workers" / "kotlin" / "src" / "main" / "resources" / "semantic-thread-model.init.gradle",
+            "-Dsemantic.thread.compileTask=compileKotlin",
+            ":semanticThreadModel",
+        ],
+        gradle,
+        1200,
+        stdout_limit=8 * 1024 * 1024,
+    )
+    model_marker = b"__SEMANTIC_THREAD_MODEL__"
+    model_lines = [
+        line.removeprefix(model_marker)
+        for line in gradle_model_output.splitlines()
+        if line.startswith(model_marker)
+    ]
+    if len(model_lines) != 1:
+        raise SystemExit("provider Gradle model task did not return one model")
+    try:
+        gradle_model = json.loads(model_lines[0])
+    except json.JSONDecodeError as error:
+        raise SystemExit("provider Gradle model is not valid JSON") from error
+    classpath = gradle_model.get("classpath") if isinstance(gradle_model, dict) else None
+    coordinates = (
+        gradle_model.get("dependencyCoordinates")
+        if isinstance(gradle_model, dict)
+        else None
+    )
+    if (
+        not isinstance(classpath, list)
+        or not classpath
+        or any(
+            not isinstance(value, str)
+            or not pathlib.Path(value).is_absolute()
+            or ".." in pathlib.Path(value).parts
+            or not pathlib.Path(value).is_file()
+            for value in classpath
+        )
+        or not isinstance(coordinates, list)
+        or not coordinates
+        or not isinstance(gradle_model.get("compilerVersion"), str)
+    ):
+        raise SystemExit("provider Gradle selected resolution graph is incomplete")
     run([maven / "mvnw", "-q", "-DskipTests", "compile"], maven, 1200)
     model_output = work / "effective-pom.xml"
     classpath_output = work / "classpath.txt"

@@ -100,6 +100,35 @@ class StabilizationControlTest(unittest.TestCase):
         with self.assertRaisesRegex(control.ControlError, "blind retry refused"):
             control.run_check(self.plan, model, self.authority, "S3", "s3-trusted-seed")
 
+    def test_unverifiable_check_attempt_records_a_blind_retry_marker(self) -> None:
+        model = copy.deepcopy(self.model)
+        model["steps"]["S4"]["dependencies"] = []
+        attempts = 0
+
+        def reject(*_arguments):
+            nonlocal attempts
+            attempts += 1
+            raise control.ControlError("authority changed during execution")
+
+        with (
+            mock.patch.object(
+                control, "dynamic_authority_digest", return_value="sha256:" + "1" * 64
+            ),
+            mock.patch.object(
+                control, "evidence_digest", return_value="sha256:" + "2" * 64
+            ),
+            mock.patch.object(control, "verified_receipt", side_effect=reject),
+        ):
+            with self.assertRaisesRegex(control.ControlError, "authority changed"):
+                control.run_check(
+                    self.plan, model, self.authority, "S4", "s4-runtime-contracts"
+                )
+            with self.assertRaisesRegex(control.ControlError, "blind retry refused"):
+                control.run_check(
+                    self.plan, model, self.authority, "S4", "s4-runtime-contracts"
+                )
+        self.assertEqual(attempts, 1)
+
     def test_controller_validate_is_machine_readable(self) -> None:
         completed = subprocess.run(
             (sys.executable, "-I", "-S", str(ROOT / "scripts" / "stabilization_control.py"), "validate"),
@@ -331,8 +360,17 @@ class StabilizationControlTest(unittest.TestCase):
             tools = root / "tools"
             gradle = root / "gradle"
             cache_file = gradle / "caches" / "modules-2" / "files-2.1" / "artifact.jar"
+            selection_index = (
+                gradle
+                / "caches"
+                / "modules-2"
+                / "metadata-2.107"
+                / "module-artifact.bin"
+            )
+            volatile_lock = gradle / "caches" / "modules-2" / "modules-2.lock"
             tools.mkdir()
             cache_file.parent.mkdir(parents=True)
+            selection_index.parent.mkdir(parents=True)
             java = tools / "java"
             git = tools / "git"
             tar = tools / "tar"
@@ -343,6 +381,8 @@ class StabilizationControlTest(unittest.TestCase):
             os.chmod(git, 0o700)
             os.chmod(tar, 0o700)
             cache_file.write_bytes(b"first")
+            selection_index.write_bytes(b"first-index")
+            volatile_lock.write_bytes(b"first-lock")
 
             def which(name: str) -> str:
                 return str({"git": git, "java": java, "tar": tar}[name])
@@ -369,8 +409,14 @@ class StabilizationControlTest(unittest.TestCase):
                 mock.patch.object(control, "native_python_runtime_authority", return_value={}),
             ):
                 first = control.native_gradle_environment_digest()
+                volatile_lock.write_bytes(b"second-lock")
+                lock_only = control.native_gradle_environment_digest()
+                selection_index.write_bytes(b"second-index")
+                metadata_changed = control.native_gradle_environment_digest()
                 cache_file.write_bytes(b"second")
                 second = control.native_gradle_environment_digest()
+            self.assertEqual(first, lock_only)
+            self.assertNotEqual(first, metadata_changed)
             self.assertNotEqual(first, second)
 
     def test_gradle_effective_home_includes_jvm_property_override(self) -> None:

@@ -249,7 +249,11 @@ The controller binds provider checks to separate path-free native Gradle and
 Maven authorities. They select Java exactly as the launcher does (preferring
 `$JAVA_HOME/bin/java`), bind the stable JDK closure plus Git/tar/provider tool
 bytes, digest relevant environment values, and bind Gradle properties/init/
-wrapper/dependency metadata or Maven settings/toolchains/repository bytes. The
+wrapper, immutable POM/module/artifact content, and the binary indexes that map
+the selected resolution graph to those bytes; Maven binds settings/toolchains/
+repository bytes. Preparation executes and validates the same Gradle model
+resolution task before the evidence snapshot. Only Gradle locks, access
+journals, and GC markers are excluded as derived execution state. The
 Q2 gate forces Gradle daemon reuse off. Authorities are snapshotted before and
 after a gate; any seed, capsule, toolchain, configuration, or dependency-store
 change refuses the receipt.

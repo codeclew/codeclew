@@ -725,6 +725,7 @@ def native_tree_authority(
     max_bytes: int = 16 * 1024 * 1024 * 1024,
     require_owner: bool = True,
     excluded_directory_names: set[str] | None = None,
+    excluded_file_names: set[str] | None = None,
     excluded_suffixes: tuple[str, ...] = (),
 ) -> list[dict[str, object]]:
     if not root.is_absolute() or ".." in root.parts:
@@ -767,6 +768,8 @@ def native_tree_authority(
                         if stat.S_ISLNK(metadata.st_mode):
                             raise ControlError(f"{label} contains a symlinked directory")
                     for file_name in files:
+                        if excluded_file_names and file_name in excluded_file_names:
+                            continue
                         if excluded_suffixes and file_name.endswith(excluded_suffixes):
                             continue
                         yield current_path / file_name
@@ -1077,6 +1080,8 @@ def native_gradle_environment_digest(check: dict[str, object] | None = None) -> 
                 "wrapper/dists", "caches/modules-2",
             ],
             "native Gradle authority",
+            excluded_file_names={"gc.properties"},
+            excluded_suffixes=(".lock", ".lck"),
         )
         for gradle_home in gradle_effective_homes(java_user_home)
     ]
@@ -1984,14 +1989,26 @@ def run_check_lifecycle(
                     raise ControlError("dynamic check authority changed during receipt reuse")
                 return {"checkId": check_id, "reused": True, "status": "PASS"}
             raise ControlError("blind retry refused for the same failed evidence key")
-        receipt = verified_receipt(
-            plan,
-            authority,
-            check,
-            tier,
-            input_authority,
-            dynamic_authority,
-        )
+        try:
+            receipt = verified_receipt(
+                plan,
+                authority,
+                check,
+                tier,
+                input_authority,
+                dynamic_authority,
+            )
+        except BaseException:
+            failed = {
+                **authority,
+                "checkId": check_id,
+                "inputDigest": input_authority,
+                "schema": "codeclew-stabilization-check-attempt/1.0",
+                "status": "FAIL",
+            }
+            failed["attemptDigest"] = digest_bytes(canonical(failed))
+            atomic_private_write(path, canonical(failed) + b"\n")
+            raise
         atomic_private_write(path, canonical(receipt) + b"\n")
         return {"checkId": check_id, "reused": False, "status": receipt["status"]}
 
