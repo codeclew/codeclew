@@ -150,6 +150,8 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
             "--target-ref",
             "main",
             "--compilation",
+            ":z/main",
+            "--compilation",
             ":/main",
         ])
         .env("CODECLEW_STATE_ROOT_FD", "100")
@@ -182,7 +184,12 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
         String::from_utf8_lossy(&output.stdout)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema"], "codeclew-session-open/4.0");
     assert_eq!(value["status"], "OPEN");
+    assert_eq!(
+        value["session"]["compilations"],
+        serde_json::json!([":/main", ":z/main"])
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(!stdout.contains(repo.to_str().unwrap()));
     assert!(!stdout.contains("semantic-thread"));

@@ -91,11 +91,15 @@ struct SessionOpenArgs {
     #[arg(long)]
     target_ref: String,
     /// Exact build compilation authority (for example :/main or :app/main).
+    /// Repeat the option to select multiple compilations.
     /// Deliberately required: guessing the root compilation makes session
     /// admission succeed and defers a deterministic model error to context
     /// creation in multi-project builds.
+    #[arg(long, required = true)]
+    compilation: Vec<String>,
+    /// Explicit resource-aware generation concurrency; omitted means host-adaptive.
     #[arg(long)]
-    compilation: String,
+    generation_jobs: Option<usize>,
     #[arg(long, value_enum, default_value_t = ModelCachePolicyArg::NonCacheable)]
     model_cache: ModelCachePolicyArg,
     #[arg(long, requires = "model_cache")]
@@ -239,10 +243,11 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 &absolute(&args.repo)?,
                 &args.target_ref,
                 &args.compilation,
+                args.generation_jobs,
                 policy,
                 args.external_build_state.as_deref(),
             )?;
-            Ok(json!({"schema":"codeclew-session-open/3.0","status":"OPEN","session":session}))
+            Ok(json!({"schema":"codeclew-session-open/4.0","status":"OPEN","session":session}))
         }
         Command::Session {
             command: SessionCommand::Inspect(args),
@@ -250,7 +255,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let (session, _) = SessionAuthority::load(&args.session)?;
             let lifecycle = session.lifecycle()?;
             Ok(
-                json!({"schema":"codeclew-session-inspect/3.0","session":session,"lifecycle":lifecycle}),
+                json!({"schema":"codeclew-session-inspect/4.0","session":session,"lifecycle":lifecycle}),
             )
         }
         Command::Session {
@@ -488,6 +493,7 @@ fn cancellation_allowed(status: RunStatus) -> bool {
 }
 
 fn execute_task_run(run_id: &str) -> Result<Value, ClewError> {
+    clew::worker::install_task_run_process_tree_supervisor()?;
     let mut record = RunRecord::load(run_id)?;
     if record.status != RunStatus::Created {
         return task_run_status(run_id);
@@ -527,9 +533,11 @@ fn prepare_task_run(record: &mut RunRecord) -> Result<Value, ClewError> {
     let context = session.load_context(&record.context_id)?;
     let plan = session.load_plan(&record.plan_id)?;
     if context.evidence.get("schema").and_then(Value::as_str)
-        != Some("codeclew-bounded-context-evidence/2.0")
+        != Some(clew::context_v2::BOUNDED_CONTEXT_EVIDENCE_SCHEMA)
     {
-        return Err(invalid("task run requires bounded context v2"));
+        return Err(invalid(
+            "task run requires multi-compilation bounded context v3",
+        ));
     }
     let prepared =
         clew::task_run_v2::prepare(&session, &context, &plan, &record.candidate_root()?)?;
@@ -691,20 +699,62 @@ fn require_run_session(record: &RunRecord, session_id: &str) -> Result<(), ClewE
 }
 
 fn process_start_token(pid: u32) -> Result<Option<String>, ClewError> {
-    let output = std::process::Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(io_error)?;
-    if !output.status.success() {
-        return Ok(None);
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>();
+        let result = unsafe {
+            libc::proc_pidinfo(
+                pid as i32,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size as i32,
+            )
+        };
+        if result != size as i32 || info.pbi_pid != pid {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "{}:{}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        )))
     }
-    let token = String::from_utf8(output.stdout)
-        .map_err(|_| internal("process identity is not UTF-8"))?
-        .trim()
-        .to_owned();
-    Ok((!token.is_empty()).then_some(token))
+    #[cfg(target_os = "linux")]
+    {
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error(error)),
+        };
+        let fields = stat
+            .get(
+                stat.rfind(')')
+                    .ok_or_else(|| internal("invalid process stat"))?
+                    + 1..,
+            )
+            .ok_or_else(|| internal("invalid process stat"))?
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        Ok(fields.get(19).map(|start| (*start).to_owned()))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(io_error)?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let token = String::from_utf8(output.stdout)
+            .map_err(|_| internal("process identity is not UTF-8"))?
+            .trim()
+            .to_owned();
+        Ok((!token.is_empty()).then_some(token))
+    }
 }
 
 fn process_is_active(pid: u32, expected_start: &str) -> Result<bool, ClewError> {
@@ -738,7 +788,11 @@ fn terminate_verified_process_group(pid: u32, expected_start: &str) -> Result<()
         ));
     }
     signal_group(pid, libc::SIGTERM)?;
-    for _ in 0..40 {
+    // The supervisor handles TERM cooperatively: it closes worker-spawn
+    // admission, terminates every registered worker group in parallel, and
+    // exits. Its worker grace period is two seconds, so keep a bounded margin
+    // before the supervisor's own group is escalated to KILL.
+    for _ in 0..100 {
         if !process_is_active(pid as u32, expected_start)? {
             return Ok(());
         }
@@ -906,19 +960,29 @@ mod tests {
             ])
             .is_err()
         );
-        assert!(
-            Cli::try_parse_from([
-                "clew",
-                "session",
-                "open",
-                "--repo",
-                ".",
-                "--target-ref",
-                "main",
-                "--compilation",
-                ":workers:kotlin/main",
-            ])
-            .is_ok()
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "session",
+            "open",
+            "--repo",
+            ".",
+            "--target-ref",
+            "main",
+            "--compilation",
+            ":workers:kotlin/main",
+            "--compilation",
+            ":workers:kotlin23/main",
+        ])
+        .unwrap();
+        let Command::Session {
+            command: SessionCommand::Open(args),
+        } = parsed.command
+        else {
+            panic!("expected session open command");
+        };
+        assert_eq!(
+            args.compilation,
+            [":workers:kotlin/main", ":workers:kotlin23/main"]
         );
     }
 

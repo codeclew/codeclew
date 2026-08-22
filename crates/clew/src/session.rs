@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-pub const SESSION_SCHEMA: &str = "codeclew-session/3.0";
-pub const CONTEXT_SCHEMA: &str = "codeclew-context/2.0";
+pub const SESSION_SCHEMA: &str = "codeclew-session/4.0";
+pub const CONTEXT_SCHEMA: &str = "codeclew-context/3.0";
 pub const PLAN_SCHEMA: &str = "codeclew-plan/2.0";
 pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
 const RUN_LEDGER_SCHEMA: &str = "codeclew-task-run-ledger-entry/2.0";
@@ -25,7 +25,7 @@ const MAX_RUN_LEDGER_BYTES: u64 = 32 * 1024 * 1024;
 const SESSION_LIFECYCLE_SCHEMA: &str = "codeclew-session-lifecycle-entry/1.0";
 const SESSION_RUN_REFERENCE_SCHEMA: &str = "codeclew-session-run-reference/1.0";
 const MAX_SESSION_LIFECYCLE_BYTES: u64 = 1024 * 1024;
-const CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-context-evidence-object/2.0";
+const CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-context-evidence-object/3.0";
 const MAX_CONTEXT_EVIDENCE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CONTEXT_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
@@ -46,7 +46,8 @@ pub struct SessionAuthority {
     pub target_oid: String,
     pub runtime_key: String,
     pub runtime_mode: RuntimeMode,
-    pub compilation: String,
+    pub compilations: Vec<String>,
+    pub generation_jobs: Option<usize>,
     pub model_cache_policy: ModelCachePolicy,
     pub model_cache_authority: Option<String>,
     pub created_unix_ms: u128,
@@ -198,7 +199,8 @@ impl SessionAuthority {
     pub fn open(
         repo: &Path,
         target_ref: &str,
-        compilation: &str,
+        compilations: &[String],
+        generation_jobs: Option<usize>,
         model_cache_policy: ModelCachePolicy,
         external_build_state: Option<&Path>,
     ) -> Result<Self, ClewError> {
@@ -212,6 +214,10 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let repository = state.repository(&repo)?;
         let target_ref = qualify_ref(target_ref)?;
+        let compilations = canonical_compilations(compilations)?;
+        if !generation_jobs_are_valid(generation_jobs) {
+            return Err(invalid("generation jobs must be between 1 and 64"));
+        }
         let base_revision = git_output(&repo, &["rev-parse", "HEAD"])?;
         let target_oid = git_output(&repo, &["rev-parse", &target_ref])?;
         if target_oid != base_revision {
@@ -222,7 +228,7 @@ impl SessionAuthority {
         }
         let (model_cache_authority, external_build_state_path) = model_cache_authority(
             &repo,
-            compilation,
+            &compilations,
             model_cache_policy,
             runtime.mode,
             external_build_state,
@@ -237,7 +243,8 @@ impl SessionAuthority {
             target_oid,
             runtime_key: runtime.runtime_key,
             runtime_mode: runtime.mode,
-            compilation: compilation.into(),
+            compilations,
+            generation_jobs,
             model_cache_policy,
             model_cache_authority,
             created_unix_ms: unix_ms(),
@@ -278,6 +285,8 @@ impl SessionAuthority {
             read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
         if authority.schema != SESSION_SCHEMA
             || authority.session_id != session_id
+            || !compilations_are_canonical(&authority.compilations)
+            || !generation_jobs_are_valid(authority.generation_jobs)
             || authority.authority_digest != session_authority_digest(&authority)?
         {
             return Err(invalid("session authority identity is invalid"));
@@ -460,6 +469,7 @@ impl SessionAuthority {
         evidence: Value,
     ) -> Result<ContextObject, ClewError> {
         validate_context_request(&intent, &terms)?;
+        crate::context_v2::validate_context_payload(&projection, &evidence)?;
         terms.sort();
         terms.dedup();
         let evidence_bytes = canonical::bytes(&evidence).map_err(internal)?;
@@ -541,6 +551,7 @@ impl SessionAuthority {
         if canonical::bytes(&object.evidence).map_err(internal)? != lease.bytes() {
             return Err(invalid("context evidence CAS object is not canonical"));
         }
+        crate::context_v2::validate_context_payload(&object.projection, &object.evidence)?;
         Ok(object)
     }
 
@@ -1646,7 +1657,7 @@ fn sha256_digest(value: &str) -> bool {
 
 pub fn bounded_context_stdout(context: &ContextObject) -> Result<Value, ClewError> {
     let summary = json!({
-        "schema":"codeclew-context-result/1.0",
+        "schema":"codeclew-context-result/2.0",
         "sessionId":context.session_id,
         "contextId":context.context_id,
         "parentContextId":context.parent_context_id,
@@ -1937,7 +1948,7 @@ fn session_authority_digest(authority: &SessionAuthority) -> Result<String, Clew
 
 fn model_cache_authority(
     repository: &Path,
-    compilation: &str,
+    selected_compilations: &[String],
     policy: ModelCachePolicy,
     runtime_mode: RuntimeMode,
     external_build_state: Option<&Path>,
@@ -2014,10 +2025,12 @@ fn model_cache_authority(
             if values.is_empty()
                 || values.len() > 64
                 || !values.windows(2).all(|pair| pair[0] < pair[1])
-                || !values.contains(&compilation)
+                || selected_compilations
+                    .iter()
+                    .any(|compilation| !values.contains(&compilation.as_str()))
             {
                 return Err(invalid(
-                    "tracked model-cache manifest does not authorize this compilation",
+                    "tracked model-cache manifest does not authorize all selected compilations",
                 ));
             }
             let mut expected = canonical::bytes(&manifest).map_err(internal)?;
@@ -2116,6 +2129,60 @@ fn model_cache_authority(
     }
 }
 
+fn canonical_compilations(compilations: &[String]) -> Result<Vec<String>, ClewError> {
+    if compilations.is_empty() || compilations.len() > 64 {
+        return Err(invalid("session must select between 1 and 64 compilations"));
+    }
+    if compilations
+        .iter()
+        .any(|compilation| !valid_compilation(compilation))
+    {
+        return Err(invalid("session compilation authority is invalid"));
+    }
+    let mut canonical = compilations.to_vec();
+    canonical.sort();
+    canonical.dedup();
+    if canonical.len() != compilations.len() {
+        return Err(invalid("session compilation authority is duplicated"));
+    }
+    Ok(canonical)
+}
+
+fn compilations_are_canonical(compilations: &[String]) -> bool {
+    !compilations.is_empty()
+        && compilations.len() <= 64
+        && compilations
+            .iter()
+            .all(|compilation| valid_compilation(compilation))
+        && compilations.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn valid_compilation(compilation: &str) -> bool {
+    if compilation.len() > 256 || !compilation.starts_with(':') {
+        return false;
+    }
+    let Some((project, source_set)) = compilation.split_once('/') else {
+        return false;
+    };
+    if source_set.contains('/') || !safe_compilation_segment(source_set) {
+        return false;
+    }
+    let project = &project[1..];
+    project.is_empty() || project.split(':').all(safe_compilation_segment)
+}
+
+fn safe_compilation_segment(segment: &str) -> bool {
+    let mut bytes = segment.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn generation_jobs_are_valid(generation_jobs: Option<usize>) -> bool {
+    !generation_jobs.is_some_and(|jobs| jobs == 0 || jobs > 64)
+}
+
 fn invalid(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
 }
@@ -2148,7 +2215,8 @@ mod tests {
             target_oid: "1111111111111111111111111111111111111111".into(),
             runtime_key: format!("runtime:{digest}"),
             runtime_mode: RuntimeMode::Development,
-            compilation: ":/main".into(),
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
             created_unix_ms: 1,
@@ -2718,6 +2786,59 @@ mod tests {
     }
 
     #[test]
+    fn session_compilations_are_nonempty_bounded_and_canonical() {
+        assert!(canonical_compilations(&[]).is_err());
+        assert!(canonical_compilations(&[String::new()]).is_err());
+        assert!(canonical_compilations(&["x".repeat(257)]).is_err());
+        for invalid in [
+            "main",
+            "--offline",
+            ":main",
+            ":/",
+            ":../main",
+            ":app/../main",
+            ":app//main",
+            ":app:/main",
+            ":bad compilation/main",
+            ":-option/main",
+            ":app/-option",
+            ":app/main:other",
+        ] {
+            assert!(
+                canonical_compilations(&[invalid.into()]).is_err(),
+                "accepted invalid compilation {invalid}"
+            );
+        }
+        assert!(canonical_compilations(&vec![":/main".into(); 65]).is_err());
+        assert!(canonical_compilations(&[":/main".into(), ":/main".into()]).is_err());
+
+        let compilations = canonical_compilations(&[
+            ":z/main".into(),
+            ":/main".into(),
+            ":app:core/integrationTest".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            compilations,
+            [":/main", ":app:core/integrationTest", ":z/main"]
+        );
+        assert!(compilations_are_canonical(&compilations));
+        assert!(!compilations_are_canonical(&[
+            ":z/main".into(),
+            ":/main".into()
+        ]));
+    }
+
+    #[test]
+    fn session_generation_jobs_are_optional_and_bounded() {
+        assert!(generation_jobs_are_valid(None));
+        assert!(generation_jobs_are_valid(Some(1)));
+        assert!(generation_jobs_are_valid(Some(64)));
+        assert!(!generation_jobs_are_valid(Some(0)));
+        assert!(!generation_jobs_are_valid(Some(65)));
+    }
+
+    #[test]
     fn tracked_model_cache_requires_a_canonical_head_bound_manifest() {
         let temporary = tempfile::tempdir().unwrap();
         let repository = temporary.path().join("repository");
@@ -2765,7 +2886,7 @@ mod tests {
 
         let (authority, external) = model_cache_authority(
             &repository,
-            ":/main",
+            &[":/main".into(), ":/test".into()],
             ModelCachePolicy::TrackedManifest,
             RuntimeMode::Development,
             None,
@@ -2777,6 +2898,17 @@ mod tests {
         );
         assert_eq!(external, None);
 
+        assert!(
+            model_cache_authority(
+                &repository,
+                &[":/main".into(), ":missing/main".into()],
+                ModelCachePolicy::TrackedManifest,
+                RuntimeMode::Development,
+                None,
+            )
+            .is_err()
+        );
+
         fs::write(
             repository.join("codeclew.model-cache.json"),
             [bytes, b" \n".to_vec()].concat(),
@@ -2785,7 +2917,7 @@ mod tests {
         assert!(
             model_cache_authority(
                 &repository,
-                ":/main",
+                &[":/main".into()],
                 ModelCachePolicy::TrackedManifest,
                 RuntimeMode::Development,
                 None,
@@ -2800,7 +2932,7 @@ mod tests {
         assert!(
             model_cache_authority(
                 repository.path(),
-                ":/main",
+                &[":/main".into()],
                 ModelCachePolicy::NonCacheable,
                 RuntimeMode::Release,
                 Some(repository.path()),
@@ -2810,7 +2942,7 @@ mod tests {
         assert!(
             model_cache_authority(
                 repository.path(),
-                ":/main",
+                &[":/main".into()],
                 ModelCachePolicy::SealedExternal,
                 RuntimeMode::Development,
                 Some(repository.path()),

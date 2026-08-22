@@ -143,15 +143,6 @@ pub struct ProgressEvent {
     pub unix_millis: u128,
 }
 
-#[derive(Default)]
-pub struct NoopProgress;
-
-impl ProgressObserver for NoopProgress {
-    fn observe(&self, _event: &ProgressEvent) -> Result<(), ClewError> {
-        Ok(())
-    }
-}
-
 pub struct StderrProgress;
 
 impl ProgressObserver for StderrProgress {
@@ -912,6 +903,14 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct TestProgress;
+
+    impl ProgressObserver for TestProgress {
+        fn observe(&self, _event: &ProgressEvent) -> Result<(), ClewError> {
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct RecordedProgress {
         events: Mutex<Vec<ProgressEvent>>,
@@ -953,7 +952,7 @@ mod tests {
             total_memory_bytes: rss * 2,
             codeclew_memory_budget_bytes: rss,
         };
-        let mut scheduler = DagScheduler::new(resources, Arc::new(NoopProgress)).unwrap();
+        let mut scheduler = DagScheduler::new(resources, Arc::new(TestProgress)).unwrap();
         scheduler.resources = resources;
         scheduler
     }

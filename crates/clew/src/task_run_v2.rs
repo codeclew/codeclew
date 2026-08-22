@@ -25,7 +25,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const PLAN_V2_SCHEMA: &str = "codeclew-task-plan/2.0";
-pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/3.0";
+pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/4.0";
 const CANDIDATE_CHECKPOINT_SCHEMA: &str = "codeclew-candidate-checkpoint/3.0";
 const MAX_EDIT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_VALIDATION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -948,7 +948,7 @@ fn validate_prepared(
         || prepared.target_ref != session.target_ref
         || prepared.target_oid != session.target_oid
         || prepared.semantic_generation.object_schema
-            != crate::generation_service::READY_GENERATION_SCHEMA
+            != crate::generation_service::READY_GENERATION_SET_SCHEMA
         || !digest(&prepared.semantic_generation_key)
     {
         return Err(ClewError::new(
@@ -1585,6 +1585,60 @@ mod tests {
     }
 
     #[test]
+    fn prepared_candidate_refuses_single_generation_cas_authority() {
+        let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+        let session = SessionAuthority {
+            schema: crate::session::SESSION_SCHEMA.into(),
+            authority_digest: digest('a'),
+            session_id: format!("session:{}", uuid::Uuid::new_v4()),
+            repository_key: "a".repeat(64),
+            base_revision: "1".repeat(40),
+            target_ref: "refs/heads/main".into(),
+            target_oid: "1".repeat(40),
+            runtime_key: digest('b'),
+            runtime_mode: crate::runtime::RuntimeMode::Development,
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
+            model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            created_unix_ms: 1,
+        };
+        let mut prepared = PreparedCandidateV2 {
+            schema: PREPARED_V2_SCHEMA.into(),
+            session_id: session.session_id.clone(),
+            context_id: "context:test".into(),
+            plan_id: "plan:test".into(),
+            base_revision: session.base_revision.clone(),
+            target_ref: session.target_ref.clone(),
+            target_oid: session.target_oid.clone(),
+            candidate_commit: "2".repeat(40),
+            candidate_snapshot: CasObject {
+                schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+                object_schema: crate::repository_snapshot::SNAPSHOT_SCHEMA.into(),
+                digest: digest('c'),
+                size: 1,
+            },
+            semantic_generation: CasObject {
+                schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+                object_schema: crate::generation_service::READY_GENERATION_SET_SCHEMA.into(),
+                digest: digest('d'),
+                size: 1,
+            },
+            semantic_generation_key: digest('e'),
+            changed_files: vec!["A.kt".into()],
+            validation_evidence: Vec::new(),
+            publication_blocked: false,
+        };
+        validate_prepared(&session, &prepared).unwrap();
+        prepared.semantic_generation.object_schema =
+            crate::generation_service::READY_GENERATION_SCHEMA.into();
+        assert_eq!(
+            validate_prepared(&session, &prepared).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+    }
+
+    #[test]
     fn recovery_accepts_only_one_direct_candidate_commit() {
         let root = tempfile::tempdir().unwrap();
         let candidate_root = root.path().join("candidate");
@@ -1617,7 +1671,8 @@ mod tests {
             target_oid: "b".repeat(40),
             runtime_key: format!("sha256:{}", "c".repeat(64)),
             runtime_mode: crate::runtime::RuntimeMode::Development,
-            compilation: ":/main".into(),
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
             created_unix_ms: 1,

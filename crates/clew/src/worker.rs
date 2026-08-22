@@ -14,7 +14,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -162,9 +163,67 @@ pub(crate) struct WorkerCancellationHandle {
     authority: Arc<Mutex<WorkerProcessGroupAuthority>>,
 }
 
+static TASK_RUN_PROCESS_TREE_ENABLED: AtomicBool = AtomicBool::new(false);
+static TASK_RUN_CANCELLATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+static TASK_RUN_WORKER_SPAWN_GATE: Mutex<()> = Mutex::new(());
+static TASK_RUN_WORKER_REGISTRY: OnceLock<Mutex<BTreeMap<u64, WorkerCancellationHandle>>> =
+    OnceLock::new();
+static NEXT_TASK_RUN_WORKER_ID: AtomicU64 = AtomicU64::new(1);
+
+struct TaskRunWorkerSpawnPermit {
+    _gate: MutexGuard<'static, ()>,
+}
+
+fn task_run_worker_registry() -> &'static Mutex<BTreeMap<u64, WorkerCancellationHandle>> {
+    TASK_RUN_WORKER_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn task_run_worker_spawn_permit() -> Result<Option<TaskRunWorkerSpawnPermit>, ClewError> {
+    if !TASK_RUN_PROCESS_TREE_ENABLED.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let gate = TASK_RUN_WORKER_SPAWN_GATE.lock().map_err(|_| {
+        ClewError::new(
+            ErrorCode::Internal,
+            "task-run worker spawn authority is poisoned",
+        )
+    })?;
+    if TASK_RUN_CANCELLATION_REQUESTED.load(Ordering::Acquire) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "task-run cancellation is already in progress",
+        ));
+    }
+    Ok(Some(TaskRunWorkerSpawnPermit { _gate: gate }))
+}
+
+fn register_task_run_worker(
+    cancellation: &WorkerCancellationHandle,
+) -> Result<Option<u64>, ClewError> {
+    if !TASK_RUN_PROCESS_TREE_ENABLED.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let id = NEXT_TASK_RUN_WORKER_ID.fetch_add(1, Ordering::Relaxed);
+    task_run_worker_registry()
+        .lock()
+        .map_err(|_| ClewError::new(ErrorCode::Internal, "task-run worker registry is poisoned"))?
+        .insert(id, cancellation.clone());
+    Ok(Some(id))
+}
+
+fn unregister_task_run_worker(registration: &mut Option<u64>) {
+    if let Some(id) = registration.take()
+        && let Ok(mut workers) = task_run_worker_registry().lock()
+    {
+        workers.remove(&id);
+    }
+}
+
 struct WorkerProcessGroupAuthority {
     #[cfg(unix)]
     pgid: i32,
+    #[cfg(unix)]
+    leader_start_token: String,
     active: bool,
 }
 
@@ -177,7 +236,7 @@ impl WorkerCancellationHandle {
             return Ok(());
         }
         #[cfg(unix)]
-        terminate_worker_process_group(authority.pgid)?;
+        terminate_worker_process_group(authority.pgid, &authority.leader_start_token)?;
         authority.active = false;
         Ok(())
     }
@@ -186,10 +245,11 @@ impl WorkerCancellationHandle {
 struct OwnedWorkerProcess {
     child: Child,
     cancellation: WorkerCancellationHandle,
+    task_run_registration: Option<u64>,
 }
 
 impl OwnedWorkerProcess {
-    fn new(child: Child) -> Result<Self, ClewError> {
+    fn new(mut child: Child, register_with_task_run: bool) -> Result<Self, ClewError> {
         #[cfg(unix)]
         let pgid = i32::try_from(child.id())
             .ok()
@@ -197,15 +257,48 @@ impl OwnedWorkerProcess {
             .ok_or_else(|| {
                 ClewError::new(ErrorCode::WorkerCrashed, "worker process id is invalid")
             })?;
+        #[cfg(unix)]
+        let leader_start_token = match worker_process_start_token(child.id()) {
+            Ok(Some(start_token)) => start_token,
+            result => {
+                // `spawn()` already crossed the child-side process_group(0)
+                // boundary while the task-run spawn gate is held. Close that
+                // fresh authority before returning an admission error.
+                let _ = terminate_fresh_worker_process_group(pgid);
+                let _ = child.wait();
+                return Err(result.err().unwrap_or_else(|| {
+                    ClewError::new(
+                        ErrorCode::WorkerCrashed,
+                        "worker process identity disappeared during admission",
+                    )
+                }));
+            }
+        };
+        let cancellation = WorkerCancellationHandle {
+            authority: Arc::new(Mutex::new(WorkerProcessGroupAuthority {
+                #[cfg(unix)]
+                pgid,
+                #[cfg(unix)]
+                leader_start_token,
+                active: true,
+            })),
+        };
+        let task_run_registration = if register_with_task_run {
+            match register_task_run_worker(&cancellation) {
+                Ok(registration) => registration,
+                Err(error) => {
+                    let _ = cancellation.cancel();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         Ok(Self {
             child,
-            cancellation: WorkerCancellationHandle {
-                authority: Arc::new(Mutex::new(WorkerProcessGroupAuthority {
-                    #[cfg(unix)]
-                    pgid,
-                    active: true,
-                })),
-            },
+            cancellation,
+            task_run_registration,
         })
     }
 
@@ -219,6 +312,7 @@ impl OwnedWorkerProcess {
         // A successful protocol shutdown therefore still closes the complete
         // process-group authority before the runtime can release its lease.
         let _ = self.cancellation.cancel();
+        unregister_task_run_worker(&mut self.task_run_registration);
         Ok(status)
     }
 }
@@ -227,11 +321,93 @@ impl Drop for OwnedWorkerProcess {
     fn drop(&mut self) {
         let _ = self.cancellation.cancel();
         let _ = self.child.wait();
+        unregister_task_run_worker(&mut self.task_run_registration);
     }
 }
 
 #[cfg(unix)]
-fn terminate_worker_process_group(pgid: i32) -> Result<(), ClewError> {
+extern "C" fn task_run_termination_handler(_signal: libc::c_int) {
+    TASK_RUN_CANCELLATION_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Installs process-tree ownership for the detached task-run supervisor.
+///
+/// The signal handler only closes admission. A dedicated thread then takes the
+/// spawn gate, which proves that every worker that crossed `spawn()` is already
+/// registered, terminates all registered worker process groups, and exits the
+/// supervisor. Direct context commands never install this authority and retain
+/// independent per-worker cancellation.
+#[cfg(unix)]
+pub fn install_task_run_process_tree_supervisor() -> Result<(), ClewError> {
+    if TASK_RUN_PROCESS_TREE_ENABLED.swap(true, Ordering::AcqRel) {
+        return Err(ClewError::new(
+            ErrorCode::Internal,
+            "task-run process-tree supervisor is already installed",
+        ));
+    }
+    TASK_RUN_CANCELLATION_REQUESTED.store(false, Ordering::Release);
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    let mut previous_action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = task_run_termination_handler as usize;
+    action.sa_flags = 0;
+    unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+        if libc::sigaction(libc::SIGTERM, &action, &mut previous_action) != 0 {
+            TASK_RUN_PROCESS_TREE_ENABLED.store(false, Ordering::Release);
+            return Err(ClewError::new(
+                ErrorCode::Internal,
+                format!(
+                    "cannot install task-run termination authority: {}",
+                    std::io::Error::last_os_error().kind()
+                ),
+            ));
+        }
+    }
+    if let Err(error) = std::thread::Builder::new()
+        .name("clew-task-run-cancellation".to_owned())
+        .spawn(|| {
+            while !TASK_RUN_CANCELLATION_REQUESTED.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Holding the gate closes the only interval in which a worker has
+            // spawned into its own process group but is not yet registered.
+            let _gate = TASK_RUN_WORKER_SPAWN_GATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let workers = task_run_worker_registry()
+                .lock()
+                .map(|registry| registry.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            let _ = terminate_worker_process_groups(&workers);
+            unsafe { libc::_exit(128 + libc::SIGTERM) }
+        })
+    {
+        unsafe {
+            libc::sigaction(libc::SIGTERM, &previous_action, std::ptr::null_mut());
+        }
+        TASK_RUN_PROCESS_TREE_ENABLED.store(false, Ordering::Release);
+        return Err(ClewError::new(
+            ErrorCode::Internal,
+            format!(
+                "cannot start task-run cancellation authority: {}",
+                error.kind()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn install_task_run_process_tree_supervisor() -> Result<(), ClewError> {
+    Err(ClewError::new(
+        ErrorCode::UnsupportedProjectConfiguration,
+        "task-run process-tree supervision requires Unix",
+    ))
+}
+
+#[cfg(unix)]
+fn terminate_worker_process_group(pgid: i32, expected_start_token: &str) -> Result<(), ClewError> {
+    require_worker_group_identity(pgid, expected_start_token)?;
     signal_worker_process_group(pgid, libc::SIGTERM, false)?;
     for _ in 0..40 {
         if !worker_process_group_exists(pgid)? {
@@ -242,7 +418,142 @@ fn terminate_worker_process_group(pgid: i32) -> Result<(), ClewError> {
     // If the original group disappeared during the grace period and its id was
     // reused by another user, EPERM is a safe terminal observation: never
     // broaden cancellation beyond the process group we created.
+    require_worker_group_identity(pgid, expected_start_token)?;
     signal_worker_process_group(pgid, libc::SIGKILL, true)
+}
+
+#[cfg(unix)]
+fn terminate_fresh_worker_process_group(pgid: i32) -> Result<(), ClewError> {
+    signal_worker_process_group(pgid, libc::SIGTERM, false)?;
+    for _ in 0..40 {
+        if !worker_process_group_exists(pgid)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    signal_worker_process_group(pgid, libc::SIGKILL, true)
+}
+
+#[cfg(unix)]
+fn terminate_worker_process_groups(workers: &[WorkerCancellationHandle]) -> Result<(), ClewError> {
+    let mut authorities = Vec::new();
+    for worker in workers {
+        let mut authority = worker.authority.lock().map_err(|_| {
+            ClewError::new(ErrorCode::Internal, "worker process authority is poisoned")
+        })?;
+        if authority.active {
+            authority.active = false;
+            authorities.push((authority.pgid, authority.leader_start_token.clone()));
+        }
+    }
+    authorities.sort_unstable();
+    authorities.dedup();
+
+    let mut first_error = None;
+    for (pgid, start_token) in &authorities {
+        if let Err(error) = require_worker_group_identity(*pgid, start_token)
+            .and_then(|()| signal_worker_process_group(*pgid, libc::SIGTERM, false))
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    for _ in 0..40 {
+        let mut any_active = false;
+        for (pgid, _) in &authorities {
+            match worker_process_group_exists(*pgid) {
+                Ok(true) => any_active = true,
+                Ok(false) => {}
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        if !any_active {
+            return first_error.map_or(Ok(()), Err);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for (pgid, start_token) in authorities {
+        if let Err(error) = require_worker_group_identity(pgid, &start_token)
+            .and_then(|()| signal_worker_process_group(pgid, libc::SIGKILL, true))
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+#[cfg(unix)]
+fn require_worker_group_identity(pgid: i32, expected_start_token: &str) -> Result<(), ClewError> {
+    match worker_process_start_token(pgid as u32)? {
+        Some(start_token) if start_token == expected_start_token => Ok(()),
+        None => Ok(()),
+        Some(_) if !worker_process_group_exists(pgid)? => Ok(()),
+        Some(_) => Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "worker process-group identity changed before cancellation",
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn worker_process_start_token(pid: u32) -> Result<Option<String>, ClewError> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let result = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size as i32,
+        )
+    };
+    if result != size as i32 || info.pbi_pid != pid {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{}:{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    )))
+}
+
+#[cfg(target_os = "linux")]
+fn worker_process_start_token(pid: u32) -> Result<Option<String>, ClewError> {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(internal(error)),
+    };
+    let fields = stat
+        .get(
+            stat.rfind(')')
+                .ok_or_else(|| internal("invalid process stat"))?
+                + 1..,
+        )
+        .ok_or_else(|| internal("invalid process stat"))?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    Ok(fields.get(19).map(|start| (*start).to_owned()))
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+fn worker_process_start_token(pid: u32) -> Result<Option<String>, ClewError> {
+    let output = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(internal)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let token = String::from_utf8(output.stdout)
+        .map_err(|_| internal("worker process identity is not UTF-8"))?
+        .trim()
+        .to_owned();
+    Ok((!token.is_empty()).then_some(token))
 }
 
 #[cfg(unix)]
@@ -1242,6 +1553,7 @@ impl WorkerClient {
         );
         #[cfg(unix)]
         command.process_group(0);
+        let task_run_spawn_permit = task_run_worker_spawn_permit()?;
         let mut child = command.spawn().map_err(|e| {
             ClewError::new(
                 ErrorCode::WorkerCrashed,
@@ -1250,7 +1562,8 @@ impl WorkerClient {
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
-        let process = OwnedWorkerProcess::new(child)?;
+        let process = OwnedWorkerProcess::new(child, task_run_spawn_permit.is_some())?;
+        drop(task_run_spawn_permit);
         let hello = read_message(&mut stdout)?;
         let capabilities = match hello.payload {
             Some(worker_response::Payload::Capabilities(value)) => value,
@@ -3204,7 +3517,7 @@ mod tests {
             .process_group(0)
             .spawn()
             .unwrap();
-        let mut process = OwnedWorkerProcess::new(child).unwrap();
+        let mut process = OwnedWorkerProcess::new(child, false).unwrap();
         for _ in 0..40 {
             if descendant_file.is_file() {
                 break;
@@ -3234,6 +3547,127 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         panic!("worker descendant survived process-group cancellation");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_cancellation_refuses_a_changed_process_identity() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let error =
+            terminate_worker_process_group(child.id() as i32, "not-the-start-token").unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert!(child.try_wait().unwrap().is_none());
+        let start_token = worker_process_start_token(child.id()).unwrap().unwrap();
+        terminate_worker_process_group(child.id() as i32, &start_token).unwrap();
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_run_supervisor_cancels_separate_worker_group_and_descendant() {
+        use std::os::unix::process::CommandExt;
+
+        const CHILD_MODE: &str = "CODECLEW_PROCESS_TREE_TEST_CHILD";
+        const PID_FILE: &str = "CODECLEW_PROCESS_TREE_TEST_PID_FILE";
+        if std::env::var_os(CHILD_MODE).is_some() {
+            install_task_run_process_tree_supervisor().unwrap();
+            let pid_file = PathBuf::from(std::env::var_os(PID_FILE).unwrap());
+            let permit = task_run_worker_spawn_permit().unwrap().unwrap();
+            let child = Command::new("sh")
+                .args([
+                    "-c",
+                    "sleep 30 & descendant=$!; printf '%s %s\\n' \"$$\" \"$descendant\" > \"$1\"; wait",
+                    "codeclew-task-run-worker-test",
+                ])
+                .arg(&pid_file)
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            // Keep the worker in the exact spawn-before-registration interval.
+            // TERM must wait on the spawn gate; otherwise this separate PG
+            // would escape when the supervisor exits.
+            while !pid_file.is_file() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            let _worker = OwnedWorkerProcess::new(child, true).unwrap();
+            drop(permit);
+            loop {
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let pid_file = root.path().join("worker-tree.pid");
+        let mut unrelated = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut supervisor = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "worker::tests::task_run_supervisor_cancels_separate_worker_group_and_descendant",
+                "--nocapture",
+            ])
+            .env(CHILD_MODE, "1")
+            .env(PID_FILE, &pid_file)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        for _ in 0..200 {
+            if pid_file.is_file() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let pids = std::fs::read_to_string(&pid_file).unwrap();
+        let pids = pids
+            .split_whitespace()
+            .map(|value| value.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(pids.len(), 2);
+
+        assert_eq!(
+            unsafe { libc::kill(-(supervisor.id() as i32), libc::SIGTERM) },
+            0
+        );
+        for _ in 0..240 {
+            if supervisor.try_wait().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(supervisor.try_wait().unwrap().is_some());
+        for pid in pids {
+            let mut alive = true;
+            for _ in 0..120 {
+                let status = Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output()
+                    .unwrap();
+                if !status.status.success()
+                    || String::from_utf8_lossy(&status.stdout)
+                        .trim_start()
+                        .starts_with('Z')
+                {
+                    alive = false;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(!alive, "worker-tree process {pid} survived cancellation");
+        }
+        assert!(unrelated.try_wait().unwrap().is_none());
+        let unrelated_start = worker_process_start_token(unrelated.id()).unwrap().unwrap();
+        terminate_worker_process_group(unrelated.id() as i32, &unrelated_start).unwrap();
+        let _ = unrelated.wait();
     }
 
     fn valid_compiler_index_profiling() -> Value {

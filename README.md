@@ -54,10 +54,20 @@ copy their distributions.
 ./clew session gc --session session:...
 ```
 
-`--compilation` is mandatory and names the exact build compilation authority:
+`--compilation` is mandatory and names an exact build compilation authority:
 use `:/main` for a Kotlin root project or `:module/main` for a Gradle
-subproject. Codeclew never guesses a root compilation because that would defer
-a deterministic configuration error from session admission to context creation.
+subproject. Repeat the option to select up to 64 compilations. Session authority
+sorts and deduplicates the set and accepts only `:/sourceSet` or
+`:module[:nested]/sourceSet`; option-like and path-traversal values are rejected
+before any build tool starts. Codeclew never guesses a root compilation because
+that would defer a deterministic configuration error from session admission to
+context creation.
+
+Multi-compilation generation captures the repository snapshot once and admits
+independent compiler lanes from the detected CPU and memory budget. By default
+the lane count is host-adaptive and capped at 16. Reproducible measurements may
+pin it with `--generation-jobs N`; the selected job count is session authority
+and cannot exceed current admission.
 
 `task-run start` writes a durable `CREATED` record before detaching. Repeating
 the same request attaches to the same content-addressed run. Preparation may
@@ -125,6 +135,8 @@ and run; there is no confidence threshold or automatic promotion.
 ```bash
 ./scripts/verify.sh
 ./scripts/bta24-acceptance.sh
+./scripts/cold-multicore-gate.sh
+./scripts/multi-compilation-gate.sh
 ./scripts/demo.sh
 ./scripts/benchmark.sh
 ```

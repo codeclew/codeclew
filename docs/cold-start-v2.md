@@ -295,7 +295,7 @@ repository walks, shards no larger than 8 MiB, bounded queues, memory admission,
 no OOM, and progress silence below five seconds.
 
 Pinned multicore corpora include runtime Codeclew, at least twelve independent
-compilations, and one K24 monolith. On at least eight physical cores:
+compilations, and one K24 monolith. On at least four physical cores:
 
 - runtime multicore wall time is at most 0.65 of `jobs=1`;
 - multi-compilation generation is at most 0.60 of `jobs=1`;
@@ -303,20 +303,28 @@ compilations, and one K24 monolith. On at least eight physical cores:
 - the monolith publishes an Amdahl work/span report and proves exactly one
   sealed compiler stream instead of claiming a false parallel ratio.
 
-`scripts/cold-multicore-gate.sh` is the executable release gate. It uses a
-content-pinned corpus derived from Codeclew's Rust, Python, Kotlin, Gradle, and
-protocol sources, with CPU-bound SHA-256 work standing in for the deterministic
-hashing/canonicalization portion of cold generation. Three serial/parallel
-pairs are alternated to reduce order bias and the median ratios must satisfy the
-limits above on every supported multicore runner. The report is private,
-machine-readable evidence at
-`benchmarks/reports/cold-multicore-latest.json`; it records host authority so an
-eight-physical-core qualification can be distinguished from a lower-core CI
-smoke measurement. A host below that qualification emits the typed
-`SKIPPED_UNQUALIFIED_HOST` status and cannot set `releaseGatePassed`; CI may use
-that as a smoke result, never as evidence that the ratios passed. Toolchain
-cold-build timings remain product-level evidence and are not replaced by this
-scheduler gate.
+`scripts/cold-multicore-gate.sh` is the executable runtime-capsule release gate.
+It invokes the real `./clew --bootstrap-cold-build-evidence=serial|parallel`
+path in a fresh private `CODECLEW_HOME` for every measurement. Three
+serial/parallel pairs alternate execution order to reduce order bias. Every
+capsule must have the same runtime key, manifest digest, artifact hashes, and
+worker tree hashes; the median parallel/serial wall-time ratio must be at most
+0.65. The gate requires a clean source HEAD and runs all arms from one detached
+worktree at that exact revision, so concurrent shared-worktree edits cannot
+invalidate a long measurement. The private, path-free machine-readable report
+is written to
+`benchmarks/reports/cold-multicore-latest.json`. A host below four physical
+cores emits the typed `SKIPPED_UNQUALIFIED_HOST` status and cannot set
+`releaseGatePassed`; CI may use that only as a smoke result.
+
+`scripts/multi-compilation-gate.sh` is the separate product-generation gate. It
+uses the public `session open` and `context create` workflow against twelve
+independent Kotlin compilations, with the runtime primed outside the timed
+region. Three fresh serial/parallel repository and state pairs must produce
+identical repository snapshot, generation, and query-index CAS identities; the
+median parallel/serial wall-time ratio must be at most 0.60. Its path-free
+report is `benchmarks/reports/multi-compilation-latest.json`. Synthetic hashing
+or repeated sealed streams cannot satisfy either product gate.
 
 Warm gates remain:
 

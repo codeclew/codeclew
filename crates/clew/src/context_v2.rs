@@ -8,6 +8,7 @@ use crate::query_v2::{FactHit, QueryContext, expand, query};
 use crate::repository_snapshot::{RepositoryInputSnapshot, WorktreeKind};
 use crate::session::{ContextObject, SessionAuthority};
 use crate::state::StateAuthority;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,6 +16,109 @@ const MAX_EVIDENCE_FACTS: usize = 4096;
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SNIPPET_BYTES: usize = 16 * 1024;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
+pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-context/1.0";
+pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/3.0";
+pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/3.0";
+pub const BOUNDED_CONTEXT_PROJECTION_SCHEMA: &str = "codeclew-bounded-context-projection/3.0";
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompilationFactHit {
+    compilation: String,
+    fact: FactHit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AggregateQueryContext {
+    schema: String,
+    index_id: String,
+    requested_terms: Vec<String>,
+    unmatched_terms: Vec<String>,
+    facts: Vec<CompilationFactHit>,
+    query_shards_read: u32,
+    truncated: bool,
+}
+
+pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<(), ClewError> {
+    if projection.get("schema").and_then(Value::as_str) != Some(BOUNDED_CONTEXT_PROJECTION_SCHEMA)
+        || evidence.get("schema").and_then(Value::as_str) != Some(BOUNDED_CONTEXT_EVIDENCE_SCHEMA)
+        || evidence.pointer("/context/schema").and_then(Value::as_str)
+            != Some(BOUNDED_CONTEXT_SCHEMA)
+    {
+        return Err(invalid("multi-compilation context schema is invalid"));
+    }
+    let aggregate: AggregateQueryContext = serde_json::from_value(
+        evidence
+            .get("queryContext")
+            .cloned()
+            .ok_or_else(|| invalid("context has no aggregate query authority"))?,
+    )
+    .map_err(parse_error)?;
+    if aggregate.schema != AGGREGATE_QUERY_CONTEXT_SCHEMA {
+        return Err(invalid("aggregate query context schema is invalid"));
+    }
+    let queries: BTreeMap<String, QueryContext> = serde_json::from_value(
+        evidence
+            .get("queryContexts")
+            .cloned()
+            .ok_or_else(|| invalid("context has no per-compilation query authority"))?,
+    )
+    .map_err(parse_error)?;
+    let compilations = evidence
+        .pointer("/context/compilations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("context has no compilation authority"))?;
+    let compilation_set = compilations
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid("context compilation authority is invalid"))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if compilation_set.is_empty()
+        || compilation_set.len() != compilations.len()
+        || queries.keys().ne(compilation_set.iter())
+        || projection.get("compilations") != evidence.pointer("/context/compilations")
+        || queries.values().any(|query| {
+            query.schema != crate::query_v2::QUERY_CONTEXT_SCHEMA
+                || query.requested_terms != aggregate.requested_terms
+        })
+        || aggregate
+            .facts
+            .iter()
+            .any(|hit| !compilation_set.contains(&hit.compilation))
+    {
+        return Err(invalid(
+            "context compilation or query authority is inconsistent",
+        ));
+    }
+    let recomputed = merge_query_contexts(&queries, aggregate.facts.len().max(1))?;
+    if aggregate != recomputed {
+        return Err(invalid("aggregate query authority cannot be reproduced"));
+    }
+    for matches in [
+        evidence.pointer("/context/matches"),
+        projection.get("matches"),
+    ] {
+        if matches
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|value| {
+                value
+                    .get("compilation")
+                    .and_then(Value::as_str)
+                    .is_none_or(|compilation| !compilation_set.contains(compilation))
+            })
+        {
+            return Err(invalid("context fact has no compilation provenance"));
+        }
+    }
+    Ok(())
+}
 
 pub fn create(
     session: &SessionAuthority,
@@ -34,21 +138,33 @@ pub fn create(
     };
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
-    let index = load_query_index(&store, &ready)?;
     let fact_limit = max_roots.saturating_mul(16).min(MAX_EVIDENCE_FACTS);
-    let query_context = if let Some(parent) = parent {
-        let parent_query: QueryContext = serde_json::from_value(
-            parent
-                .evidence
-                .get("queryContext")
-                .cloned()
-                .ok_or_else(|| invalid("parent context has no query authority"))?,
-        )
-        .map_err(parse_error)?;
-        expand(&store, &index, &parent_query, terms, fact_limit)?
-    } else {
-        query(&store, &index, terms, fact_limit)?
-    };
+    let parent_queries = parent
+        .map(|parent| {
+            serde_json::from_value::<BTreeMap<String, QueryContext>>(
+                parent
+                    .evidence
+                    .get("queryContexts")
+                    .cloned()
+                    .ok_or_else(|| invalid("parent context has no compilation query authority"))?,
+            )
+            .map_err(parse_error)
+        })
+        .transpose()?;
+    let mut query_contexts = BTreeMap::new();
+    for compilation in &ready.compilations {
+        let index = load_query_index(&store, compilation)?;
+        let context = if let Some(parent_queries) = &parent_queries {
+            let parent_query = parent_queries
+                .get(&compilation.compilation)
+                .ok_or_else(|| invalid("parent context misses a selected compilation"))?;
+            expand(&store, &index, parent_query, terms, fact_limit)?
+        } else {
+            query(&store, &index, terms, fact_limit)?
+        };
+        query_contexts.insert(compilation.compilation.clone(), context);
+    }
+    let query_context = merge_query_contexts(&query_contexts, fact_limit)?;
     let snapshot = load_snapshot(&store, &ready)?;
     let evidence_facts = rank_fact_evidence(
         load_fact_evidence(&store, &query_context.facts)?,
@@ -100,17 +216,23 @@ pub fn create(
     };
     let certainty = if verified { "VERIFIED" } else { "UNSURE" };
     let context = json!({
-        "schema":"codeclew-bounded-context/2.0",
+        "schema":BOUNDED_CONTEXT_SCHEMA,
         "snapshot":{
             "baseRevision":session.base_revision,
             "snapshotId":snapshot.snapshot_id,
             "repositorySnapshot":ready.repository_snapshot,
-            "generation":ready.generation,
-            "queryIndex":ready.query_index,
+            "compilations":ready.compilations.iter().map(|compilation| json!({
+                "compilation":compilation.compilation,
+                "compilerVersion":compilation.compiler_version,
+                "generation":compilation.generation,
+                "queryIndex":compilation.query_index,
+            })).collect::<Vec<_>>(),
         },
         "task":{"intent":intent,"terms":query_context.requested_terms},
-        "compilation":session.compilation,
-        "compilerVersion":ready.compiler_version,
+        "compilations":session.compilations,
+        "compilerVersions":ready.compilations.iter().map(|compilation| {
+            (compilation.compilation.clone(), compilation.compiler_version.clone())
+        }).collect::<BTreeMap<_, _>>(),
         "generationAuthority":{
             "coverage":ready.coverage,
             "certainty":ready.certainty,
@@ -133,9 +255,10 @@ pub fn create(
     });
     let projection = bounded_projection(&context)?;
     let evidence = json!({
-        "schema":"codeclew-bounded-context-evidence/2.0",
+        "schema":BOUNDED_CONTEXT_EVIDENCE_SCHEMA,
         "context":context,
         "queryContext":query_context,
+        "queryContexts":query_contexts,
         "stdoutCompleteness":{
             "status":status,
             "certainty":certainty,
@@ -144,14 +267,82 @@ pub fn create(
     Ok((projection, evidence))
 }
 
-fn load_fact_evidence(store: &CasStore, facts: &[FactHit]) -> Result<Vec<Value>, ClewError> {
+fn merge_query_contexts(
+    contexts: &BTreeMap<String, QueryContext>,
+    fact_limit: usize,
+) -> Result<AggregateQueryContext, ClewError> {
+    let first = contexts
+        .values()
+        .next()
+        .ok_or_else(|| invalid("compilation query set is empty"))?;
+    if contexts
+        .values()
+        .any(|context| context.requested_terms != first.requested_terms)
+    {
+        return Err(invalid("compilation queries have different term authority"));
+    }
+    let mut facts = contexts
+        .iter()
+        .flat_map(|(compilation, context)| {
+            context
+                .facts
+                .iter()
+                .cloned()
+                .map(|fact| CompilationFactHit {
+                    compilation: compilation.clone(),
+                    fact,
+                })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let truncated = contexts.values().any(|context| context.truncated) || facts.len() > fact_limit;
+    facts.truncate(fact_limit);
+    let unmatched_terms = first
+        .requested_terms
+        .iter()
+        .filter(|term| {
+            contexts
+                .values()
+                .all(|context| context.unmatched_terms.contains(term))
+        })
+        .cloned()
+        .collect();
+    let query_shards_read = contexts.values().try_fold(0u32, |total, context| {
+        total
+            .checked_add(context.query_shards_read)
+            .ok_or_else(|| resource("aggregate query shard count overflow"))
+    })?;
+    Ok(AggregateQueryContext {
+        schema: AGGREGATE_QUERY_CONTEXT_SCHEMA.into(),
+        index_id: canonical::hash(
+            &contexts
+                .iter()
+                .map(|(compilation, context)| (compilation, &context.index_id))
+                .collect::<BTreeMap<_, _>>(),
+        )
+        .map_err(internal)?,
+        requested_terms: first.requested_terms.clone(),
+        unmatched_terms,
+        facts,
+        query_shards_read,
+        truncated,
+    })
+}
+
+fn load_fact_evidence(
+    store: &CasStore,
+    facts: &[CompilationFactHit],
+) -> Result<Vec<Value>, ClewError> {
     facts
         .iter()
-        .map(|fact| {
+        .map(|hit| {
+            let fact = &hit.fact;
             let limit = usize::try_from(fact.payload.size)
                 .map_err(|_| resource("fact payload exceeds host size"))?;
             if limit > MAX_PAYLOAD_BYTES {
                 return Ok(json!({
+                    "compilation":hit.compilation,
                     "factKey":fact.fact_key,
                     "domainUri":fact.domain_uri,
                     "payloadRef":fact.payload,
@@ -167,6 +358,7 @@ fn load_fact_evidence(store: &CasStore, facts: &[FactHit]) -> Result<Vec<Value>,
                 |_| json!({"opaquePayloadDigest":fact.payload.digest,"size":fact.payload.size}),
             );
             Ok(json!({
+                "compilation":hit.compilation,
                 "factKey":fact.fact_key,
                 "domainUri":fact.domain_uri,
                 "payloadRef":fact.payload,
@@ -359,11 +551,11 @@ fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usi
 
 fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
     let mut projection = json!({
-        "schema":"codeclew-bounded-context-projection/2.0",
+        "schema":BOUNDED_CONTEXT_PROJECTION_SCHEMA,
         "snapshot":context["snapshot"],
         "task":context["task"],
-        "compilation":context["compilation"],
-        "compilerVersion":context["compilerVersion"],
+        "compilations":context["compilations"],
+        "compilerVersions":context["compilerVersions"],
         "generationAuthority":context["generationAuthority"],
         "matches":[],
         "sources":[],
@@ -494,12 +686,96 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PAYLOAD_BYTES, load_fact_evidence, snippet, source_offset_hints};
+    use super::{
+        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, bounded_projection,
+        load_fact_evidence, merge_query_contexts, snippet, source_offset_hints,
+    };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
-    use crate::query_v2::FactHit;
+    use crate::query_v2::{FactHit, QUERY_CONTEXT_SCHEMA, QueryContext};
     use crate::state::StateAuthority;
     use serde_json::json;
+
+    #[test]
+    fn bounded_projection_preserves_multi_compilation_authority() {
+        let context = json!({
+            "snapshot":{"compilations":[]},
+            "task":{"intent":"inspect"},
+            "compilations":[":a/main",":b/main"],
+            "compilerVersions":{":a/main":"2.4.10",":b/main":"2.4.10"},
+            "generationAuthority":{},
+            "matches":[],
+            "sources":[],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+        let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["compilations"], context["compilations"]);
+        assert_eq!(projection["compilerVersions"], context["compilerVersions"]);
+        assert!(projection.get("compilation").is_none());
+        assert!(projection.get("compilerVersion").is_none());
+    }
+
+    #[test]
+    fn aggregate_query_retains_deterministic_compilation_provenance() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/fact/1", br#"{"name":"Shared"}"#).unwrap();
+        let fact = FactHit {
+            fact_key: "fact:shared".into(),
+            domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+            payload,
+        };
+        let query = |index_id: &str| QueryContext {
+            schema: QUERY_CONTEXT_SCHEMA.into(),
+            index_id: index_id.into(),
+            requested_terms: vec!["Shared".into()],
+            unmatched_terms: Vec::new(),
+            facts: vec![fact.clone()],
+            query_shards_read: 1,
+            truncated: false,
+        };
+        let contexts = std::collections::BTreeMap::from([
+            (":b/main".into(), query("index:b")),
+            (":a/main".into(), query("index:a")),
+        ]);
+        let aggregate = merge_query_contexts(&contexts, 16).unwrap();
+        assert_eq!(aggregate.schema, AGGREGATE_QUERY_CONTEXT_SCHEMA);
+        assert_eq!(aggregate.facts.len(), 2);
+        assert_eq!(aggregate.facts[0].compilation, ":a/main");
+        assert_eq!(aggregate.facts[1].compilation, ":b/main");
+        let evidence = load_fact_evidence(&store, &aggregate.facts).unwrap();
+        assert_eq!(evidence[0]["compilation"], ":a/main");
+        assert_eq!(evidence[1]["compilation"], ":b/main");
+        assert_eq!(evidence[0]["factKey"], evidence[1]["factKey"]);
+        let context = json!({
+            "schema":super::BOUNDED_CONTEXT_SCHEMA,
+            "snapshot":{},
+            "task":{},
+            "compilations":[":a/main",":b/main"],
+            "compilerVersions":{},
+            "generationAuthority":{},
+            "matches":evidence,
+            "sources":[],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+        let mut projection = bounded_projection(&context).unwrap();
+        let envelope = json!({
+            "schema":super::BOUNDED_CONTEXT_EVIDENCE_SCHEMA,
+            "context":context,
+            "queryContext":aggregate,
+            "queryContexts":contexts,
+            "stdoutCompleteness":{},
+        });
+        super::validate_context_payload(&projection, &envelope).unwrap();
+        projection["matches"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("compilation");
+        assert!(super::validate_context_payload(&projection, &envelope).is_err());
+    }
 
     #[test]
     fn declaration_range_beats_an_earlier_import_match() {
@@ -540,7 +816,15 @@ mod tests {
             domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
             payload,
         };
-        let evidence = load_fact_evidence(&store, &[fact]).unwrap();
+        let evidence = load_fact_evidence(
+            &store,
+            &[CompilationFactHit {
+                compilation: ":/main".into(),
+                fact,
+            }],
+        )
+        .unwrap();
+        assert_eq!(evidence[0]["compilation"], ":/main");
         assert_eq!(
             evidence[0]["payload"]["reason"],
             "PAYLOAD_EXCEEDS_CONTEXT_LIMIT"

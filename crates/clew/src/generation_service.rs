@@ -33,6 +33,7 @@ use crate::runtime::RuntimeAuthority;
 use crate::session::{ModelCachePolicy, SessionAuthority};
 use crate::state::StateAuthority;
 use crate::worker::WorkerRequestCounters;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -45,6 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::os::fd::AsRawFd;
 
 pub const READY_GENERATION_SCHEMA: &str = "codeclew-ready-generation/2.0";
+pub const READY_GENERATION_SET_SCHEMA: &str = "codeclew-ready-generation-set/1.0";
 const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/2.0";
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
@@ -70,6 +72,21 @@ pub struct ReadyGeneration {
     pub derived_input_manifest: CasObject,
     pub generation: CasObject,
     pub query_index: CasObject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadyGenerationSet {
+    pub schema: String,
+    pub generation_key: String,
+    pub runtime_key: String,
+    pub base_revision: String,
+    pub repository_snapshot: CasObject,
+    pub compilations: Vec<ReadyGeneration>,
+    pub completeness: CompletenessVector,
+    pub coverage: String,
+    pub certainty: String,
+    pub obligations: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,12 +158,49 @@ impl IncrementalHeadState {
     }
 }
 
-pub fn ensure_session_generation(session: &SessionAuthority) -> Result<ReadyGeneration, ClewError> {
+pub fn ensure_session_generation(
+    session: &SessionAuthority,
+) -> Result<ReadyGenerationSet, ClewError> {
     let state = StateAuthority::process_default()?;
     let session_root = state.session_root(&session.session_id)?;
     let binding_path = session_root.join("generation.json");
+    let store = CasStore::open(&state)?;
+    if state.private_file_exists(&binding_path)? {
+        return load_ready_set(&state, &store, &binding_path, session, false);
+    }
     let repo = session.repository_path()?;
-    ensure_generation(session, &repo, &binding_path, true)
+    let (snapshot, snapshot_object) = capture(&repo, &store)?;
+    let compilation_root = session_root.join("compilations");
+    state.directory_at(&compilation_root)?;
+    let pool = generation_pool(session)?;
+    let results = pool.install(|| {
+        session
+            .compilations
+            .par_iter()
+            .map(|compilation| {
+                let component = digest_component(
+                    &canonical::hash(&json!({
+                        "schema":"codeclew-session-compilation-binding/1.0",
+                        "compilation":compilation,
+                    }))
+                    .map_err(internal)?,
+                )?
+                .to_owned();
+                ensure_generation(
+                    session,
+                    compilation,
+                    &repo,
+                    &compilation_root.join(format!("{component}.json")),
+                    true,
+                    &snapshot,
+                    &snapshot_object,
+                )
+            })
+            .collect::<Result<Vec<_>, ClewError>>()
+    })?;
+    let ready = assemble_ready_set(session, snapshot_object, results)?;
+    write_ready_set(&state, &binding_path, &ready)?;
+    Ok(ready)
 }
 
 pub fn ensure_candidate_generation(
@@ -154,27 +208,99 @@ pub fn ensure_candidate_generation(
     repository: &Path,
     candidate_revision: &str,
     binding_path: &Path,
-) -> Result<ReadyGeneration, ClewError> {
+) -> Result<ReadyGenerationSet, ClewError> {
     if !git_oid(candidate_revision) {
         return Err(corrupt("candidate generation revision is invalid"));
     }
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
     let mut candidate = session.clone();
     candidate.base_revision = candidate_revision.into();
-    ensure_generation(&candidate, repository, binding_path, false)
+    if state.private_file_exists(binding_path)? {
+        return load_ready_set(&state, &store, binding_path, &candidate, false);
+    }
+    let (snapshot, snapshot_object) = capture(repository, &store)?;
+    let parent = binding_path
+        .parent()
+        .ok_or_else(|| corrupt("candidate generation binding has no parent"))?;
+    let pool = generation_pool(&candidate)?;
+    let results = pool.install(|| {
+        candidate
+            .compilations
+            .par_iter()
+            .map(|compilation| {
+                let component = digest_component(
+                    &canonical::hash(&json!({
+                        "schema":"codeclew-candidate-compilation-binding/1.0",
+                        "compilation":compilation,
+                    }))
+                    .map_err(internal)?,
+                )?
+                .to_owned();
+                ensure_generation(
+                    &candidate,
+                    compilation,
+                    repository,
+                    &parent.join(format!("staged-generation-{component}.json")),
+                    false,
+                    &snapshot,
+                    &snapshot_object,
+                )
+            })
+            .collect::<Result<Vec<_>, ClewError>>()
+    })?;
+    let ready = assemble_ready_set(&candidate, snapshot_object, results)?;
+    write_ready_set(&state, binding_path, &ready)?;
+    Ok(ready)
+}
+
+fn generation_pool(session: &SessionAuthority) -> Result<rayon::ThreadPool, ClewError> {
+    let resources = HostResources::detect()?;
+    let admitted = admitted_generation_jobs(resources, session.compilations.len());
+    let jobs = session.generation_jobs.unwrap_or(admitted);
+    if jobs > admitted {
+        return Err(ClewError::new(
+            ErrorCode::ResourceLimit,
+            "generation job count exceeds CPU or memory admission",
+        ));
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .thread_name(|index| format!("clew-generation-{index}"))
+        .build()
+        .map_err(|error| ClewError::new(ErrorCode::Internal, error.to_string()))
+}
+
+fn admitted_generation_jobs(resources: HostResources, compilation_count: usize) -> usize {
+    let memory_jobs = usize::try_from(
+        resources
+            .codeclew_memory_budget_bytes
+            .checked_div(2 * 1024 * 1024 * 1024)
+            .unwrap_or(0),
+    )
+    .unwrap_or(usize::MAX)
+    .max(1);
+    resources
+        .logical_cpu
+        .min(memory_jobs)
+        .min(compilation_count)
+        .clamp(1, 16)
 }
 
 fn ensure_generation(
     session: &SessionAuthority,
+    compilation: &str,
     repo: &Path,
     binding_path: &Path,
     publish_head: bool,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: &CasObject,
 ) -> Result<ReadyGeneration, ClewError> {
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     if state.private_file_exists(binding_path)? {
-        return load_ready(&state, &store, binding_path, session, false);
+        return load_ready(&state, &store, binding_path, session, compilation, false);
     }
-    let (snapshot, snapshot_object) = capture(repo, &store)?;
     let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
         ClewError::new(
             ErrorCode::WorkerPreparationRequired,
@@ -187,19 +313,18 @@ fn ensure_generation(
             "generation repository differs from session Git authority",
         ));
     }
-    let preparation_key =
-        project_model_key(&runtime.runtime_key, &snapshot_object, &session.compilation)?;
+    let preparation_key = project_model_key(&runtime.runtime_key, snapshot_object, compilation)?;
     let _preparation_lock = GenerationLock::acquire(&state, &preparation_key)?;
     if state.private_file_exists(binding_path)? {
-        return load_ready(&state, &store, binding_path, session, false);
+        return load_ready(&state, &store, binding_path, session, compilation, false);
     }
-    let compiler_namespace = compiler_store_key(&runtime, &session.compilation)?;
+    let compiler_namespace = compiler_store_key(&runtime, compilation)?;
     let external_build_state = session.external_build_state_path()?;
     let live_attempt = ProjectNativeKotlinAttempt::open(
         &state,
         &store,
-        &snapshot,
-        &session.compilation,
+        snapshot,
+        compilation,
         digest_component(&compiler_namespace)?,
         external_build_state.as_deref(),
     )?;
@@ -209,21 +334,22 @@ fn ensure_generation(
         &repository.root,
         session,
         &runtime,
-        &snapshot,
-        &snapshot_object,
+        snapshot,
+        snapshot_object,
+        compilation,
         live_attempt.project_authority(),
     )?;
     let generation_key = final_generation_key(
         &runtime.runtime_key,
         &session.base_revision,
-        &snapshot_object,
-        &session.compilation,
+        snapshot_object,
+        compilation,
         &prepared.derived_input_manifest,
     )?;
     let _lock = GenerationLock::acquire(&state, &generation_key)?;
     if state.private_file_exists(binding_path)? {
         live_attempt.close_without_analysis()?;
-        return load_ready(&state, &store, binding_path, session, false);
+        return load_ready(&state, &store, binding_path, session, compilation, false);
     }
     let cache_root = repository.root.join("generations");
     state.directory_at(&cache_root)?;
@@ -233,11 +359,11 @@ fn ensure_generation(
         prepared.adapter_digest.clone(),
         &prepared.descriptor,
     )?;
-    let head_path = incremental_head_path(&repository.root, &session.compilation)?;
+    let head_path = incremental_head_path(&repository.root, compilation)?;
     let head_lock_key = canonical::hash(&json!({
         "schema":"codeclew-incremental-head-lock/2.0",
         "repositoryKey":session.repository_key,
-        "compilation":session.compilation,
+        "compilation":compilation,
     }))
     .map_err(internal)?;
     let _head_lock = GenerationLock::acquire(&state, &head_lock_key)?;
@@ -247,8 +373,8 @@ fn ensure_generation(
         Some(forced) => forced,
         None => incremental_plan_for(
             &store,
-            &snapshot,
-            &snapshot_object,
+            snapshot,
+            snapshot_object,
             &prepared,
             &compiler_store,
             previous,
@@ -260,7 +386,7 @@ fn ensure_generation(
             &store,
             session,
             &runtime,
-            snapshot_object,
+            snapshot_object.clone(),
             generation_key,
             &prepared,
             previous.expect("exact unchanged head"),
@@ -273,7 +399,7 @@ fn ensure_generation(
             &store,
             session,
             &runtime,
-            snapshot_object,
+            snapshot_object.clone(),
             generation_key,
             prepared,
             compiler_store.clone(),
@@ -293,10 +419,10 @@ fn ensure_generation(
 
 pub fn store_ready_generation(
     store: &CasStore,
-    ready: &ReadyGeneration,
+    ready: &ReadyGenerationSet,
 ) -> Result<CasObject, ClewError> {
     store.put(
-        READY_GENERATION_SCHEMA,
+        READY_GENERATION_SET_SCHEMA,
         &canonical::bytes(ready).map_err(internal)?,
     )
 }
@@ -307,58 +433,64 @@ pub fn load_candidate_generation(
     session: &SessionAuthority,
     candidate_revision: &str,
     deep: bool,
-) -> Result<ReadyGeneration, ClewError> {
-    if object.object_schema != READY_GENERATION_SCHEMA {
+) -> Result<ReadyGenerationSet, ClewError> {
+    if object.object_schema != READY_GENERATION_SET_SCHEMA {
         return Err(corrupt("candidate generation CAS schema is invalid"));
     }
-    let ready: ReadyGeneration = read_canonical_object(store, object)?;
+    let ready: ReadyGenerationSet = read_canonical_object(store, object)?;
     let mut candidate = session.clone();
     candidate.base_revision = candidate_revision.into();
-    verify_ready(store, &ready, &candidate, deep)?;
+    verify_ready_set(store, &ready, &candidate, deep)?;
     Ok(ready)
 }
 
 pub fn publish_candidate_generation(
     session: &SessionAuthority,
-    ready: &ReadyGeneration,
+    ready: &ReadyGenerationSet,
 ) -> Result<(), ClewError> {
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let mut candidate = session.clone();
     candidate.base_revision = ready.base_revision.clone();
-    verify_ready(&store, ready, &candidate, true)?;
-    let receipt: IncrementalReceipt = read_canonical_object(&store, &ready.incremental_receipt)?;
-    receipt.validate()?;
+    verify_ready_set(&store, ready, &candidate, true)?;
     let repository = state.repository(&session.target_repository_path()?)?;
     if repository.key != session.repository_key {
         return Err(corrupt(
             "candidate generation publish repository authority changed",
         ));
     }
-    let head_path = incremental_head_path(&repository.root, &session.compilation)?;
-    let lock_key = canonical::hash(&json!({
-        "schema":"codeclew-incremental-head-lock/2.0",
-        "repositoryKey":session.repository_key,
-        "compilation":session.compilation,
-    }))
-    .map_err(internal)?;
-    let _lock = GenerationLock::acquire(&state, &lock_key)?;
-    publish_incremental_head(
-        &state,
-        &store,
-        &head_path,
-        ready,
-        &receipt.compiler_store_key,
-    )
+    for compilation in &ready.compilations {
+        let receipt: IncrementalReceipt =
+            read_canonical_object(&store, &compilation.incremental_receipt)?;
+        receipt.validate()?;
+        let head_path = incremental_head_path(&repository.root, &compilation.compilation)?;
+        let lock_key = canonical::hash(&json!({
+            "schema":"codeclew-incremental-head-lock/2.0",
+            "repositoryKey":session.repository_key,
+            "compilation":compilation.compilation,
+        }))
+        .map_err(internal)?;
+        let _lock = GenerationLock::acquire(&state, &lock_key)?;
+        publish_incremental_head(
+            &state,
+            &store,
+            &head_path,
+            compilation,
+            &receipt.compiler_store_key,
+        )?;
+    }
+    Ok(())
 }
 
-pub fn load_session_generation(session: &SessionAuthority) -> Result<ReadyGeneration, ClewError> {
+pub fn load_session_generation(
+    session: &SessionAuthority,
+) -> Result<ReadyGenerationSet, ClewError> {
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let path = state
         .session_root(&session.session_id)?
         .join("generation.json");
-    load_ready(&state, &store, &path, session, false)
+    load_ready_set(&state, &store, &path, session, false)
 }
 
 pub fn load_query_index(
@@ -376,7 +508,7 @@ pub fn load_query_index(
     Ok(index)
 }
 
-pub fn load_snapshot(
+fn load_compilation_snapshot(
     store: &CasStore,
     ready: &ReadyGeneration,
 ) -> Result<RepositoryInputSnapshot, ClewError> {
@@ -387,6 +519,22 @@ pub fn load_snapshot(
         .map_err(|_| corrupt("repository snapshot binding is invalid"))?;
     snapshot.verify()?;
     Ok(snapshot)
+}
+
+pub fn load_snapshot(
+    store: &CasStore,
+    ready: &ReadyGenerationSet,
+) -> Result<RepositoryInputSnapshot, ClewError> {
+    let first = ready
+        .compilations
+        .first()
+        .ok_or_else(|| corrupt("ready generation set is empty"))?;
+    if first.repository_snapshot != ready.repository_snapshot {
+        return Err(corrupt(
+            "ready generation set snapshot authority is inconsistent",
+        ));
+    }
+    load_compilation_snapshot(store, first)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -436,9 +584,14 @@ fn build_ready(
         derived_input_manifest: prepared.derived_input_manifest.clone(),
         parent_generation: None,
     };
-    let analysis = match HostResources::detect()
-        .and_then(|resources| execute_analysis_dag(state, Arc::new(registry), request, resources))
-    {
+    let analysis = match HostResources::detect().and_then(|resources| {
+        let jobs = if session.compilations.len() > 1 {
+            1
+        } else {
+            resources.logical_cpu.min(16)
+        };
+        execute_analysis_dag_with_jobs(state, Arc::new(registry), request, resources, jobs)
+    }) {
         Ok(analysis) => analysis,
         Err(error) => {
             journal.transition(AttemptState::Failed, "adapter DAG failed")?;
@@ -451,7 +604,7 @@ fn build_ready(
             store,
             prepared.derived_input_manifest.clone(),
             vec![AttemptAuthority {
-                compilation_id: safe_compilation_id(&session.compilation),
+                compilation_id: safe_compilation_id(&prepared.compilation),
                 capability: CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?,
                 completion: analysis.completion,
             }],
@@ -480,7 +633,7 @@ fn build_ready(
             generation_key,
             runtime_key: runtime.runtime_key.clone(),
             base_revision: session.base_revision.clone(),
-            compilation: session.compilation.clone(),
+            compilation: prepared.compilation.clone(),
             compiler_version: prepared.compiler_version,
             completeness: completeness.clone(),
             coverage: coverage_label(&completeness).into(),
@@ -493,7 +646,7 @@ fn build_ready(
             generation: generation_object,
             query_index: query_index_object,
         };
-        verify_ready(store, &ready, session, true)?;
+        verify_ready(store, &ready, session, &ready.compilation, true)?;
         Ok(ready)
     })();
     match result {
@@ -555,7 +708,7 @@ fn build_unchanged_ready(
     ready.generation_key = generation_key;
     ready.runtime_key = runtime.runtime_key.clone();
     ready.base_revision = session.base_revision.clone();
-    ready.compilation = session.compilation.clone();
+    ready.compilation = prepared.compilation.clone();
     ready.compiler_version = prepared.compiler_version.clone();
     ready.repository_snapshot = snapshot_object;
     ready.derived_input_manifest = prepared.derived_input_manifest.clone();
@@ -567,7 +720,7 @@ fn build_unchanged_ready(
         worker_requests: counters,
     };
     ready.incremental_receipt = previous.head.receipt.clone();
-    verify_ready(store, &ready, session, true)?;
+    verify_ready(store, &ready, session, &ready.compilation, true)?;
     journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
     Ok(ready)
 }
@@ -594,9 +747,10 @@ fn ensure_prepared_authority(
     runtime: &RuntimeAuthority,
     snapshot: &RepositoryInputSnapshot,
     snapshot_object: &CasObject,
+    compilation: &str,
     project: &Value,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
-    let model_key = project_model_key(&runtime.runtime_key, snapshot_object, &session.compilation)?;
+    let model_key = project_model_key(&runtime.runtime_key, snapshot_object, compilation)?;
     let root = repository_root.join("generations/models");
     state.directory_at(&root)?;
     let path = root.join(format!("{}.json", digest_component(&model_key)?));
@@ -605,20 +759,14 @@ fn ensure_prepared_authority(
         runtime,
         snapshot,
         snapshot_object.clone(),
-        &session.compilation,
+        compilation,
         project,
     )?;
     if session.model_cache_policy != ModelCachePolicy::NonCacheable
         && state.private_file_exists(&path)?
     {
-        let cached = load_prepared_authority(
-            state,
-            store,
-            &path,
-            runtime,
-            snapshot_object,
-            &session.compilation,
-        )?;
+        let cached =
+            load_prepared_authority(state, store, &path, runtime, snapshot_object, compilation)?;
         if cached != current {
             return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
@@ -901,16 +1049,6 @@ impl AnalysisSink for CollectedAnalysisSink {
 struct AnalysisDagResult {
     completion: AnalysisAttemptComplete,
     runs: Vec<FactRun>,
-}
-
-fn execute_analysis_dag(
-    state: &StateAuthority,
-    registry: Arc<AdapterRegistry>,
-    request: AnalyzeGenerationRequest,
-    resources: HostResources,
-) -> Result<AnalysisDagResult, ClewError> {
-    let jobs = resources.logical_cpu.min(16);
-    execute_analysis_dag_with_jobs(state, registry, request, resources, jobs)
 }
 
 fn execute_analysis_dag_with_jobs(
@@ -1533,11 +1671,193 @@ fn load_generation(store: &CasStore, object: &CasObject) -> Result<GenerationMan
     read_canonical_object(store, object)
 }
 
+fn ready_set_key(
+    runtime_key: &str,
+    base_revision: &str,
+    repository_snapshot: &CasObject,
+    compilations: &[ReadyGeneration],
+) -> Result<String, ClewError> {
+    canonical::hash(&json!({
+        "schema":"codeclew-ready-generation-set-key/1.0",
+        "runtimeKey":runtime_key,
+        "baseRevision":base_revision,
+        "repositorySnapshot":repository_snapshot,
+        "compilations":compilations.iter().map(|ready| json!({
+            "compilation":ready.compilation,
+            "generationKey":ready.generation_key,
+        })).collect::<Vec<_>>(),
+    }))
+    .map_err(internal)
+}
+
+fn assemble_ready_set(
+    session: &SessionAuthority,
+    repository_snapshot: CasObject,
+    mut compilations: Vec<ReadyGeneration>,
+) -> Result<ReadyGenerationSet, ClewError> {
+    compilations.sort_by(|left, right| left.compilation.cmp(&right.compilation));
+    let observed = compilations
+        .iter()
+        .map(|ready| ready.compilation.clone())
+        .collect::<Vec<_>>();
+    if observed != session.compilations
+        || compilations
+            .iter()
+            .any(|ready| ready.repository_snapshot != repository_snapshot)
+    {
+        return Err(corrupt(
+            "compilation generation set is incomplete or inconsistent",
+        ));
+    }
+    let completeness = aggregate_completeness(&compilations)?;
+    let generation_key = ready_set_key(
+        &session.runtime_key,
+        &session.base_revision,
+        &repository_snapshot,
+        &compilations,
+    )?;
+    let ready = ReadyGenerationSet {
+        schema: READY_GENERATION_SET_SCHEMA.into(),
+        generation_key,
+        runtime_key: session.runtime_key.clone(),
+        base_revision: session.base_revision.clone(),
+        repository_snapshot,
+        compilations,
+        coverage: coverage_label(&completeness).into(),
+        certainty: certainty_label(&completeness).into(),
+        obligations: obligation_codes(&completeness),
+        completeness,
+    };
+    verify_ready_set_authority(
+        &CasStore::open(&StateAuthority::process_default()?)?,
+        &ready,
+        false,
+    )?;
+    Ok(ready)
+}
+
+fn aggregate_completeness(
+    compilations: &[ReadyGeneration],
+) -> Result<CompletenessVector, ClewError> {
+    if compilations.is_empty() {
+        return Err(corrupt("ready generation set is empty"));
+    }
+    for compilation in compilations {
+        compilation.completeness.validate()?;
+    }
+    if compilations
+        .iter()
+        .all(|ready| ready.completeness.publishable())
+    {
+        let scopes = compilations
+            .iter()
+            .map(|ready| {
+                json!({
+                    "compilation":ready.compilation,
+                    "coverage":ready.completeness.coverage,
+                })
+            })
+            .collect::<Vec<_>>();
+        CompletenessVector::verified_complete(canonical::hash(&scopes).map_err(internal)?)
+    } else {
+        let mut values = compilations.iter().map(|ready| ready.completeness.clone());
+        let first = values
+            .next()
+            .ok_or_else(|| corrupt("ready generation set is empty"))?;
+        values.try_fold(first, |combined, value| combined.meet(&value))
+    }
+}
+
+fn load_ready_set(
+    state: &StateAuthority,
+    store: &CasStore,
+    path: &Path,
+    session: &SessionAuthority,
+    deep: bool,
+) -> Result<ReadyGenerationSet, ClewError> {
+    let bytes = state
+        .read_private_file(path, MAX_BINDING_BYTES)
+        .map_err(|_| corrupt("ready generation-set binding is unsafe"))?;
+    let ready: ReadyGenerationSet = serde_json::from_slice(&bytes)
+        .map_err(|_| corrupt("ready generation-set binding is invalid"))?;
+    if canonical::bytes(&ready).map_err(internal)? != bytes {
+        return Err(corrupt("ready generation-set binding is not canonical"));
+    }
+    verify_ready_set(store, &ready, session, deep)?;
+    Ok(ready)
+}
+
+fn verify_ready_set(
+    store: &CasStore,
+    ready: &ReadyGenerationSet,
+    session: &SessionAuthority,
+    deep: bool,
+) -> Result<(), ClewError> {
+    if ready.runtime_key != session.runtime_key
+        || ready.base_revision != session.base_revision
+        || ready
+            .compilations
+            .iter()
+            .map(|value| &value.compilation)
+            .ne(session.compilations.iter())
+    {
+        return Err(corrupt("ready generation set session authority is invalid"));
+    }
+    verify_ready_set_authority(store, ready, deep)
+}
+
+fn verify_ready_set_authority(
+    store: &CasStore,
+    ready: &ReadyGenerationSet,
+    deep: bool,
+) -> Result<(), ClewError> {
+    let aggregate = aggregate_completeness(&ready.compilations)?;
+    if ready.schema != READY_GENERATION_SET_SCHEMA
+        || ready.compilations.is_empty()
+        || ready.compilations.len() > 64
+        || !ready
+            .compilations
+            .windows(2)
+            .all(|pair| pair[0].compilation < pair[1].compilation)
+        || ready.compilations.iter().any(|compilation| {
+            compilation.runtime_key != ready.runtime_key
+                || compilation.base_revision != ready.base_revision
+                || compilation.repository_snapshot != ready.repository_snapshot
+        })
+        || ready.completeness != aggregate
+        || ready.coverage != coverage_label(&aggregate)
+        || ready.certainty != certainty_label(&aggregate)
+        || ready.obligations != obligation_codes(&aggregate)
+        || ready.generation_key
+            != ready_set_key(
+                &ready.runtime_key,
+                &ready.base_revision,
+                &ready.repository_snapshot,
+                &ready.compilations,
+            )?
+    {
+        return Err(corrupt("ready generation set authority is invalid"));
+    }
+    for compilation in &ready.compilations {
+        verify_ready_authority(store, compilation, deep)?;
+    }
+    Ok(())
+}
+
+fn write_ready_set(
+    state: &StateAuthority,
+    path: &Path,
+    ready: &ReadyGenerationSet,
+) -> Result<(), ClewError> {
+    write_canonical_atomic(state, path, ready)
+}
+
 fn load_ready(
     state: &StateAuthority,
     store: &CasStore,
     path: &Path,
     session: &SessionAuthority,
+    compilation: &str,
     deep: bool,
 ) -> Result<ReadyGeneration, ClewError> {
     let bytes = state
@@ -1548,7 +1868,7 @@ fn load_ready(
     if canonical::bytes(&ready).map_err(internal)? != bytes {
         return Err(corrupt("ready generation binding is not canonical"));
     }
-    verify_ready(store, &ready, session, deep)?;
+    verify_ready(store, &ready, session, compilation, deep)?;
     Ok(ready)
 }
 
@@ -1556,11 +1876,16 @@ fn verify_ready(
     store: &CasStore,
     ready: &ReadyGeneration,
     session: &SessionAuthority,
+    compilation: &str,
     deep: bool,
 ) -> Result<(), ClewError> {
     if ready.runtime_key != session.runtime_key
         || ready.base_revision != session.base_revision
-        || ready.compilation != session.compilation
+        || ready.compilation != compilation
+        || !session
+            .compilations
+            .iter()
+            .any(|value| value == compilation)
     {
         return Err(corrupt("ready generation session authority is invalid"));
     }
@@ -1611,7 +1936,7 @@ fn verify_ready_authority(
         }
         _ => {}
     }
-    let _ = load_snapshot(store, ready)?;
+    let _ = load_compilation_snapshot(store, ready)?;
     let derived_limit = usize::try_from(ready.derived_input_manifest.size)
         .map_err(|_| resource("derived input manifest exceeds host size"))?;
     let derived_lease = store.read(&ready.derived_input_manifest, derived_limit)?;
@@ -1863,6 +2188,118 @@ mod tests {
             origin: DescriptorOrigin::ProjectNative,
             completeness: DescriptorCompleteness::Complete,
         }
+    }
+
+    #[test]
+    fn generation_admission_is_bounded_by_cpu_memory_compilations_and_global_cap() {
+        let abundant = HostResources {
+            logical_cpu: 64,
+            total_memory_bytes: 128 * 1024 * 1024 * 1024,
+            codeclew_memory_budget_bytes: 96 * 1024 * 1024 * 1024,
+        };
+        assert_eq!(admitted_generation_jobs(abundant, 64), 16);
+        assert_eq!(admitted_generation_jobs(abundant, 3), 3);
+
+        let cpu_bound = HostResources {
+            logical_cpu: 4,
+            ..abundant
+        };
+        assert_eq!(admitted_generation_jobs(cpu_bound, 12), 4);
+
+        let memory_bound = HostResources {
+            codeclew_memory_budget_bytes: 5 * 1024 * 1024 * 1024,
+            ..abundant
+        };
+        assert_eq!(admitted_generation_jobs(memory_bound, 12), 2);
+
+        let constrained = HostResources {
+            logical_cpu: 1,
+            total_memory_bytes: 512 * 1024 * 1024,
+            codeclew_memory_budget_bytes: 0,
+        };
+        assert_eq!(admitted_generation_jobs(constrained, 12), 1);
+    }
+
+    #[test]
+    fn ready_generation_set_refuses_a_forged_completeness_upgrade() {
+        let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+        let object = |schema: &str, character: char| CasObject {
+            schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+            object_schema: schema.into(),
+            digest: digest(character),
+            size: 1,
+        };
+        let partial = CompletenessVector {
+            schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+            support: Support::Supported,
+            coverage: Coverage::Partial {
+                observed_scopes: vec![digest('1')],
+                boundaries: vec!["VERIFY_BOUNDARY".into()],
+            },
+            certainty: Certainty::Unsure {
+                check_set: vec!["VERIFY_BOUNDARY".into()],
+            },
+            obligations: vec![VerificationObligation {
+                code: "VERIFY_BOUNDARY".into(),
+                subject: vec![digest('1')],
+                publication_blocking: true,
+            }],
+        };
+        partial.validate().unwrap();
+        let snapshot = object(SNAPSHOT_SCHEMA, '2');
+        let component = ReadyGeneration {
+            schema: READY_GENERATION_SCHEMA.into(),
+            generation_key: digest('3'),
+            runtime_key: digest('4'),
+            base_revision: "1".repeat(40),
+            compilation: ":/main".into(),
+            compiler_version: "2.4.10".into(),
+            completeness: partial.clone(),
+            coverage: coverage_label(&partial).into(),
+            certainty: certainty_label(&partial).into(),
+            obligations: obligation_codes(&partial),
+            incremental: IncrementalExecutionEvidence {
+                schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
+                planned: IncrementalPlan::Full {
+                    reason: FullAnalysisReason::NoParent,
+                },
+                executed: IncrementalExecutionMode::Full,
+                subset_analysis_supported: false,
+                worker_requests: WorkerRequestCounters {
+                    open_project_requests: 1,
+                    index_files_requests: 1,
+                },
+            },
+            incremental_receipt: object(INCREMENTAL_RECEIPT_SCHEMA, '5'),
+            repository_snapshot: snapshot.clone(),
+            derived_input_manifest: object(DERIVED_MANIFEST_SCHEMA, '6'),
+            generation: object(GENERATION_SCHEMA, '7'),
+            query_index: object(QUERY_INDEX_SCHEMA, '8'),
+        };
+        let compilations = vec![component];
+        let forged = CompletenessVector::verified_complete(digest('9')).unwrap();
+        let ready = ReadyGenerationSet {
+            schema: READY_GENERATION_SET_SCHEMA.into(),
+            generation_key: ready_set_key(&digest('4'), &"1".repeat(40), &snapshot, &compilations)
+                .unwrap(),
+            runtime_key: digest('4'),
+            base_revision: "1".repeat(40),
+            repository_snapshot: snapshot,
+            compilations,
+            coverage: coverage_label(&forged).into(),
+            certainty: certainty_label(&forged).into(),
+            obligations: obligation_codes(&forged),
+            completeness: forged,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        assert_eq!(
+            verify_ready_set_authority(&store, &ready, false)
+                .unwrap_err()
+                .code,
+            ErrorCode::StateCorrupt
+        );
     }
 
     #[test]

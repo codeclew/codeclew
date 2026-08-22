@@ -8,9 +8,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace -- --test-threads=1
 python3 -I -S bootstrap/test_clew_bootstrap.py
+python3 -I -S scripts/test_gate_safety.py
 python3 -I -S scripts/build-trusted-worker-distributions.py --verify-only
 python3 -I -S scripts/check_repository_privacy.py
 ./scripts/cold-multicore-gate.sh >/dev/null
+./scripts/multi-compilation-gate.sh >/dev/null
 
 fixtures/kotlin-basic/gradlew -p fixtures/kotlin-basic test --no-daemon --quiet
 fixtures/kotlin-2-1/gradlew -p fixtures/kotlin-2-1 test --no-daemon --quiet
