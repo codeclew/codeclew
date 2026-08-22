@@ -971,9 +971,6 @@ def main() -> int:
     environment[STATE_ROOT_FD_ENV] = str(state_fd)
     environment[RUNTIME_ROOT_FD_ENV] = str(runtime_fd)
     environment[RUNTIME_LEASE_FD_ENV] = str(lease.fileno())
-    # Temporary non-authoritative compatibility locator for worker code that has not
-    # yet been converted to RuntimeAuthority. Core authority never reads this value.
-    environment["CODECLEW_RUNTIME_ROOT"] = str(capsule)
     os.execve(capsule / "bin/clew", [str(capsule / "bin/clew"), *command], environment)
     return 1
 

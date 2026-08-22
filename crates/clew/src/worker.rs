@@ -980,10 +980,6 @@ fn configure_worker_state_environment(
     }
 }
 
-fn build_state_root_from_environment_value(value: Option<OsString>) -> Option<PathBuf> {
-    value.filter(|value| !value.is_empty()).map(PathBuf::from)
-}
-
 fn validate_build_namespace_digest(value: &str) -> Result<String, ClewError> {
     if value.len() != 71
         || !value.starts_with("sha256:")
@@ -997,13 +993,6 @@ fn validate_build_namespace_digest(value: &str) -> Result<String, ClewError> {
         ));
     }
     Ok(value.to_owned())
-}
-
-/// Select the optional sealed build-state authority from the caller environment.
-/// An explicitly empty variable is equivalent to it being unset so CI wrappers
-/// can enable the project-native default without manufacturing an invalid path.
-pub fn inherited_build_state_root() -> Option<PathBuf> {
-    build_state_root_from_environment_value(std::env::var_os("CODECLEW_K1_BUILD_STATE_ROOT"))
 }
 
 impl WorkerClient {
@@ -1021,45 +1010,9 @@ impl WorkerClient {
             })
     }
 
+    #[cfg(test)]
     pub fn start(workspace: &Path) -> Result<Self, ClewError> {
-        let inherited_build_state = inherited_build_state_root();
-        Self::start_variant(
-            workspace,
-            WorkerVariant::Kotlin24,
-            inherited_build_state.as_deref(),
-            None,
-            None,
-        )
-    }
-
-    pub fn start_with_build_state(
-        workspace: &Path,
-        build_state_root: &Path,
-    ) -> Result<Self, ClewError> {
-        Self::start_variant(
-            workspace,
-            WorkerVariant::Kotlin24,
-            Some(build_state_root),
-            None,
-            None,
-        )
-    }
-
-    /// Start with distinct immutable build-input authority and mutable
-    /// compiler-owned derived state. The latter is never an input proof and
-    /// must be a private external directory.
-    pub fn start_with_states(
-        workspace: &Path,
-        build_state_root: Option<&Path>,
-        compiler_index_root: Option<&Path>,
-    ) -> Result<Self, ClewError> {
-        Self::start_variant(
-            workspace,
-            WorkerVariant::Kotlin24,
-            build_state_root,
-            compiler_index_root,
-            None,
-        )
+        Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None, None)
     }
 
     pub fn start_with_managed_states(
@@ -1075,13 +1028,6 @@ impl WorkerClient {
             compiler_index_root,
             Some(build_namespace_digest),
         )
-    }
-
-    /// Start in repository-local development mode without consulting ambient
-    /// build-state environment. This is intentionally distinct from `start`,
-    /// whose inherited environment behavior remains for legacy callers.
-    pub fn start_without_build_state(workspace: &Path) -> Result<Self, ClewError> {
-        Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None, None)
     }
 
     fn start_variant(
@@ -3316,16 +3262,31 @@ fn parse_worker_code(code: &str) -> ErrorCode {
 }
 
 pub fn workspace_root() -> PathBuf {
-    if let Some(root) = std::env::var_os("CODECLEW_RUNTIME_ROOT") {
-        let root = PathBuf::from(root);
-        return root
-            .canonicalize()
-            .expect("CODECLEW_RUNTIME_ROOT must be a real runtime capsule");
+    #[cfg(not(test))]
+    {
+        RuntimeAuthority::from_environment()
+            .expect("runtime descriptor authority must be valid")
+            .expect("runtime descriptor authority is required")
+            .root
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    #[cfg(test)]
+    {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .expect("git must resolve the test workspace root");
+        assert!(
+            output.status.success(),
+            "git must resolve the test workspace root"
+        );
+        PathBuf::from(
+            std::str::from_utf8(&output.stdout)
+                .expect("test workspace root must be UTF-8")
+                .trim(),
+        )
         .canonicalize()
-        .expect("workspace root")
+        .expect("test workspace root must be canonical")
+    }
 }
 
 #[cfg(test)]
@@ -3357,19 +3318,6 @@ mod tests {
             RequestKind::ApplyEdit,
             &json!({"syntaxOnly":true}),
         ));
-    }
-
-    #[test]
-    fn optional_build_state_environment_treats_empty_as_native() {
-        assert_eq!(build_state_root_from_environment_value(None), None);
-        assert_eq!(
-            build_state_root_from_environment_value(Some(OsString::new())),
-            None
-        );
-        assert_eq!(
-            build_state_root_from_environment_value(Some(OsString::from("/sealed/state"))),
-            Some(PathBuf::from("/sealed/state"))
-        );
     }
 
     fn valid_compiler_index_profiling() -> Value {

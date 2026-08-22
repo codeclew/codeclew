@@ -113,7 +113,6 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
             "main",
         ])
         .env("CODECLEW_HOME", &state)
-        .env("CODECLEW_RUNTIME_ROOT", &runtime)
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -152,7 +151,6 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
         .env("CODECLEW_STATE_ROOT_FD", "100")
         .env("CODECLEW_RUNTIME_ROOT_FD", "101")
         .env("CODECLEW_RUNTIME_LEASE_FD", "102")
-        .env("CODECLEW_RUNTIME_ROOT", &runtime)
         .stdin(Stdio::null());
     #[cfg(unix)]
     unsafe {
