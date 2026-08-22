@@ -1059,6 +1059,7 @@ mod tests {
             workers: BTreeMap::from([(
                 "kotlin24".into(),
                 RuntimeWorker {
+                    protocol: "semantic-thread.worker.v1".into(),
                     compiler_version: "2.4.10".into(),
                     distribution: "workers/kotlin24".into(),
                     tree_hash: format!("sha256:{}", "a".repeat(64)),

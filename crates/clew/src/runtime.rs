@@ -50,6 +50,7 @@ pub struct RuntimeArtifact {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeWorker {
+    pub protocol: String,
     pub compiler_version: String,
     pub distribution: String,
     pub tree_hash: String,
