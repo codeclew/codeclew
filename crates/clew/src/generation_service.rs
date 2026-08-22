@@ -232,10 +232,12 @@ pub fn ensure_session_generation(
         &compilation_root.join("workspace-profile.json"),
         session.compilations.len(),
         profile,
-        &session.base_revision,
-        &session.runtime_key,
-        &session.authority_digest,
-        &snapshot_object,
+        GenerationWorkspaceAuthority {
+            base_revision: &session.base_revision,
+            runtime_key: &session.runtime_key,
+            session_authority_digest: &session.authority_digest,
+            repository_snapshot: &snapshot_object,
+        },
     )?;
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(&state, &binding_path, &ready)?;
@@ -300,10 +302,12 @@ pub fn ensure_candidate_generation(
         &parent.join("staged-workspace-profile.json"),
         candidate.compilations.len(),
         profile,
-        &candidate.base_revision,
-        &candidate.runtime_key,
-        &candidate.authority_digest,
-        &snapshot_object,
+        GenerationWorkspaceAuthority {
+            base_revision: &candidate.base_revision,
+            runtime_key: &candidate.runtime_key,
+            session_authority_digest: &candidate.authority_digest,
+            repository_snapshot: &snapshot_object,
+        },
     )?;
     let ready = assemble_ready_set(&candidate, snapshot_object, results)?;
     write_ready_set(&state, binding_path, &ready)?;
@@ -357,22 +361,26 @@ fn finish_generation_workspace<T>(
     }
 }
 
+struct GenerationWorkspaceAuthority<'a> {
+    base_revision: &'a str,
+    runtime_key: &'a str,
+    session_authority_digest: &'a str,
+    repository_snapshot: &'a CasObject,
+}
+
 fn write_generation_workspace_evidence(
     state: &StateAuthority,
     path: &Path,
     compilation_count: usize,
     profile: ProjectNativeKotlinWorkspaceProfile,
-    base_revision: &str,
-    runtime_key: &str,
-    session_authority_digest: &str,
-    repository_snapshot: &CasObject,
+    authority: GenerationWorkspaceAuthority<'_>,
 ) -> Result<(), ClewError> {
     if compilation_count == 0
         || digest_component(&profile.workspace_set_authority_digest).is_err()
-        || digest_component(runtime_key).is_err()
-        || digest_component(session_authority_digest).is_err()
-        || base_revision.is_empty()
-        || repository_snapshot.object_schema != SNAPSHOT_SCHEMA
+        || digest_component(authority.runtime_key).is_err()
+        || digest_component(authority.session_authority_digest).is_err()
+        || authority.base_revision.is_empty()
+        || authority.repository_snapshot.object_schema != SNAPSHOT_SCHEMA
         || profile.materializations != 1
         || profile.derived_mount_sets != 1
         || profile.workspace_set_authorizations != 1
@@ -386,13 +394,13 @@ fn write_generation_workspace_evidence(
         path,
         &GenerationWorkspaceEvidence {
             schema: WORKSPACE_PROFILE_SCHEMA.into(),
-            base_revision: base_revision.into(),
+            base_revision: authority.base_revision.into(),
             compilation_count,
             materializations: profile.materializations,
             derived_mount_sets: profile.derived_mount_sets,
-            repository_snapshot: repository_snapshot.clone(),
-            runtime_key: runtime_key.into(),
-            session_authority_digest: session_authority_digest.into(),
+            repository_snapshot: authority.repository_snapshot.clone(),
+            runtime_key: authority.runtime_key.into(),
+            session_authority_digest: authority.session_authority_digest.into(),
             workspace_set_authority_digest: profile.workspace_set_authority_digest,
             workspace_set_authorizations: profile.workspace_set_authorizations,
             authorized_compilation_count: profile.authorized_compilation_count,
@@ -2662,10 +2670,12 @@ mod tests {
                 authorized_compilation_count: 12,
                 legacy_open_project_calls: 1,
             },
-            "base",
-            &format!("sha256:{}", "b".repeat(64)),
-            &format!("sha256:{}", "c".repeat(64)),
-            &repository_snapshot,
+            GenerationWorkspaceAuthority {
+                base_revision: "base",
+                runtime_key: &format!("sha256:{}", "b".repeat(64)),
+                session_authority_digest: &format!("sha256:{}", "c".repeat(64)),
+                repository_snapshot: &repository_snapshot,
+            },
         )
         .unwrap();
         let value: GenerationWorkspaceEvidence =
@@ -2696,10 +2706,12 @@ mod tests {
                 authorized_compilation_count: 12,
                 legacy_open_project_calls: 13,
             },
-            "base",
-            &format!("sha256:{}", "b".repeat(64)),
-            &format!("sha256:{}", "c".repeat(64)),
-            &repository_snapshot,
+            GenerationWorkspaceAuthority {
+                base_revision: "base",
+                runtime_key: &format!("sha256:{}", "b".repeat(64)),
+                session_authority_digest: &format!("sha256:{}", "c".repeat(64)),
+                repository_snapshot: &repository_snapshot,
+            },
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::StateCorrupt);

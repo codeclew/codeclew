@@ -19,6 +19,12 @@ and reuses it without running Cargo, Rustc, Gradle, or Maven. Workers execute
 directly from that sealed capsule under its shared lease; the warm path does not
 copy their distributions.
 
+The current supported product contour is deliberately narrower than the
+packaged research surface: Kotlin 2.4, Gradle, `PROJECT_NATIVE`, and one exact
+compilation. Maven, Kotlin 2.1/2.3, multiple compilations, Android/KMP and
+`EXTERNAL` are preview contours until they have their own publish acceptance
+tests.
+
 ## Workflow
 
 ```bash
@@ -125,30 +131,41 @@ manifest/seed, and both `--model-cache sealed-external` and
 ## Conditional evidence
 
 When evidence is useful but not deterministic, a conditional decision may carry
-explicit publication-blocking obligations. Such a run may compile, test, and
-index a candidate, but terminates as `VALIDATED_CONDITIONAL`. It cannot be
-published. After the obligations are discharged, create a new context, plan,
-and run; there is no confidence threshold or automatic promotion.
+explicit publication obligations. Such a run may compile, test, and index a
+candidate. If both context and candidate remain within the supported contour,
+it reaches `READY_TO_PUBLISH_CONDITIONAL`; incomplete or unsupported evidence
+still terminates as `VALIDATED_CONDITIONAL` and cannot be published.
+
+Conditional publication is fail-closed by default. The caller must pass
+`--allow-conditional` and acknowledge every qualified `approvalId` reported by
+`task-run status`. The durable approval binds the session, run, context evidence,
+plan, candidate commit and snapshot, exact changed files, bounded diff and
+successful validation evidence. The result is `PUBLISHED_CONDITIONAL` and its
+certainty remains `UNSURE`; acknowledgement never upgrades evidence to
+`VERIFIED`.
+
+```bash
+./clew task-run status --run run:...
+./clew session publish \
+  --session session:... \
+  --run run:... \
+  --allow-conditional \
+  --prepared-authority-digest sha256:... \
+  --acknowledge-obligation context:sha256:...
+```
 
 ## Verification
 
-Development verification follows the machine-readable stabilization plan in
-`docs/stabilization-plan.json`. Inspect the next admissible step with:
+Ordinary development and GitHub CI use the same repository-owned entrypoint:
 
 ```bash
-python3 -I -S scripts/stabilization_control.py status
+./scripts/ci-verify.sh
 ```
 
-Run only the check named by that status through the controller. The controller
-binds immutable receipts to the plan, verifier, command, relevant source bytes,
-environment, host qualification, and source revision. A functional failure
-cannot be retried against the same evidence key.
-
-Full verification, BTA24, cold/multi-compilation performance gates, and the
-warm benchmark refuse direct execution. They become admissible only at their
-declared stabilization steps. This keeps ordinary development on bounded
-static, unit, and component checks; expensive end-to-end evidence is produced
-once per unchanged authority rather than after every edit.
+The stabilization controller and its receipts remain optional research/release
+evidence. They do not gate product development or CI. Cold/multi-compilation
+performance, BTA24, self-hosting and agent comparisons are qualification work,
+not prerequisites for the supported Kotlin 2.4 publish path.
 
 The CLI writes canonical JSON to stdout and diagnostics to stderr. The system is
 fail-closed for stale authorities, ambiguous anchors, unsupported project

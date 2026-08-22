@@ -5,6 +5,7 @@ use crate::generation_service::{
     ensure_candidate_generation, load_candidate_generation, publish_candidate_generation,
     store_ready_generation,
 };
+use crate::incremental_v2::{Coverage, Support};
 use crate::process_isolation::isolate_controller_authority;
 use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
 use crate::session::{ContextObject, PlanObject, SessionAuthority};
@@ -15,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -25,10 +26,14 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const PLAN_V2_SCHEMA: &str = "codeclew-task-plan/2.0";
-pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/4.0";
+pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/5.0";
 const CANDIDATE_CHECKPOINT_SCHEMA: &str = "codeclew-candidate-checkpoint/3.0";
 const MAX_EDIT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_VALIDATION_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PUBLIC_DIFF_BYTES: usize = 64 * 1024;
+const MAX_DERIVED_OUTPUTS: usize = 16 * 1024;
+const MAX_DERIVED_PATH_BYTES: usize = 1024 * 1024;
+const MAX_DERIVED_CONTENT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -101,11 +106,65 @@ pub struct ValidationEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ObligationSource {
+    Context,
+    Candidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QualifiedObligation {
+    pub approval_id: String,
+    pub source: ObligationSource,
+    pub record_digest: String,
+    pub record: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CandidateDiff {
+    pub digest: String,
+    pub byte_size: usize,
+    pub over_limit: bool,
+    pub patch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DerivedOutput {
+    pub path: String,
+    pub content_digest: String,
+    pub byte_size: u64,
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConditionalPublicationApproval {
+    pub schema: String,
+    pub mode: String,
+    pub run_id: String,
+    pub request_digest: String,
+    pub session_authority_digest: String,
+    pub context_id: String,
+    pub context_evidence_digest: String,
+    pub plan_id: String,
+    pub obligations: Vec<QualifiedObligation>,
+    pub candidate_commit: String,
+    pub candidate_snapshot: CasObject,
+    pub changed_files: Vec<String>,
+    pub validation_evidence: Vec<ValidationEvidence>,
+    pub prepared_authority_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreparedCandidateV2 {
     pub schema: String,
     pub session_id: String,
     pub context_id: String,
+    pub context_evidence_digest: String,
     pub plan_id: String,
     pub base_revision: String,
     pub target_ref: String,
@@ -116,6 +175,11 @@ pub struct PreparedCandidateV2 {
     pub semantic_generation_key: String,
     pub changed_files: Vec<String>,
     pub validation_evidence: Vec<ValidationEvidence>,
+    pub qualified_obligations: Vec<QualifiedObligation>,
+    pub conditional_publish_eligible: bool,
+    pub diff: CandidateDiff,
+    pub derived_outputs: Vec<DerivedOutput>,
+    pub prepared_authority_digest: String,
     pub publication_blocked: bool,
 }
 
@@ -390,23 +454,49 @@ fn finish_preparation(
         &candidate_root.join("staged-generation.json"),
     )?;
     let semantic_generation = store_ready_generation(&store, &semantic)?;
-    let context_blocked = context
-        .evidence
-        .pointer("/context/completeness/status")
-        .and_then(Value::as_str)
-        != Some("COMPLETE_TASK")
-        || context
-            .evidence
-            .pointer("/context/verificationObligations")
-            .and_then(Value::as_array)
-            .is_some_and(|obligations| !obligations.is_empty());
-    let publication_blocked = context_blocked || !semantic.completeness.publishable();
+    let (qualified_obligations, context_strict, context_conditional) =
+        context_publication_authority(context)?;
+    let mut qualified_obligations = qualified_obligations;
+    qualified_obligations.extend(candidate_obligations(&semantic)?);
+    qualified_obligations.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+    if qualified_obligations
+        .windows(2)
+        .any(|pair| pair[0].approval_id == pair[1].approval_id)
+    {
+        return Err(invalid("conditional obligation authority is not unique"));
+    }
+    let candidate_strict = semantic.completeness.publishable();
+    let candidate_conditional = semantic.completeness.support == Support::Supported
+        && matches!(
+            semantic.completeness.coverage,
+            Coverage::Complete { .. } | Coverage::Partial { .. }
+        )
+        && semantic.certainty == "UNSURE"
+        && !semantic.completeness.obligations.is_empty();
+    let publication_blocked = !(context_strict && candidate_strict);
+    let conditional_publish_eligible = publication_blocked
+        && (context_conditional || context_strict)
+        && (candidate_conditional || candidate_strict)
+        && (context_conditional || candidate_conditional)
+        && !qualified_obligations.is_empty()
+        && checkpoint
+            .validation_evidence
+            .iter()
+            .all(|item| item.success);
     require_clean(&worktree)?;
     let (_, candidate_snapshot) = capture(&worktree, &store)?;
-    Ok(PreparedCandidateV2 {
+    let diff = candidate_diff(
+        &worktree,
+        &checkpoint.base_revision,
+        &checkpoint.candidate_commit,
+        &checkpoint.changed_files,
+    )?;
+    let derived_outputs = capture_derived_outputs(&worktree)?;
+    let mut prepared = PreparedCandidateV2 {
         schema: PREPARED_V2_SCHEMA.into(),
         session_id: session.session_id.clone(),
         context_id: context.context_id.clone(),
+        context_evidence_digest: context.evidence_digest.clone(),
         plan_id: plan_object.plan_id.clone(),
         base_revision: session.base_revision.clone(),
         target_ref: session.target_ref.clone(),
@@ -417,8 +507,15 @@ fn finish_preparation(
         semantic_generation_key: semantic.generation_key,
         changed_files: checkpoint.changed_files,
         validation_evidence: checkpoint.validation_evidence,
+        qualified_obligations,
+        conditional_publish_eligible,
+        diff,
+        derived_outputs,
+        prepared_authority_digest: String::new(),
         publication_blocked,
-    })
+    };
+    prepared.prepared_authority_digest = prepared_authority_digest(&prepared)?;
+    Ok(prepared)
 }
 
 pub fn recover_preparation(
@@ -603,16 +700,451 @@ fn planned_files(plan: &TaskPlanV2) -> BTreeSet<String> {
         .collect()
 }
 
+fn context_publication_authority(
+    context: &ContextObject,
+) -> Result<(Vec<QualifiedObligation>, bool, bool), ClewError> {
+    let evidence = context
+        .evidence
+        .get("context")
+        .ok_or_else(|| invalid("context publication evidence is missing"))?;
+    let completeness = evidence
+        .get("completeness")
+        .ok_or_else(|| invalid("context completeness is missing"))?;
+    let status = completeness
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("context completeness status is missing"))?;
+    let support = completeness.get("support").and_then(Value::as_str);
+    let coverage = completeness.get("coverage").and_then(Value::as_str);
+    let certainty = completeness.get("certainty").and_then(Value::as_str);
+    let obligations = evidence
+        .get("verificationObligations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("context obligation set is missing"))?;
+    let strict = status == "COMPLETE_TASK"
+        && support == Some("SUPPORTED")
+        && certainty == Some("VERIFIED")
+        && obligations.is_empty();
+    let conditional = status == "CONDITIONAL_TASK"
+        && support == Some("SUPPORTED")
+        && matches!(coverage, Some("QUERY_COMPLETE" | "PARTIAL"))
+        && certainty == Some("UNSURE")
+        && evidence
+            .get("matches")
+            .and_then(Value::as_array)
+            .is_some_and(|facts| !facts.is_empty())
+        && !obligations.is_empty();
+    let qualified = obligations
+        .iter()
+        .map(|record| qualify_obligation(ObligationSource::Context, record.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((qualified, strict, conditional))
+}
+
+fn candidate_obligations(
+    semantic: &crate::generation_service::ReadyGenerationSet,
+) -> Result<Vec<QualifiedObligation>, ClewError> {
+    semantic
+        .completeness
+        .obligations
+        .iter()
+        .map(|obligation| {
+            qualify_obligation(
+                ObligationSource::Candidate,
+                serde_json::to_value(obligation).map_err(internal)?,
+            )
+        })
+        .collect()
+}
+
+fn qualify_obligation(
+    source: ObligationSource,
+    record: Value,
+) -> Result<QualifiedObligation, ClewError> {
+    if !record.is_object() {
+        return Err(invalid("conditional obligation record is not an object"));
+    }
+    let record_digest = canonical::hash(&record).map_err(internal)?;
+    let prefix = match source {
+        ObligationSource::Context => "context",
+        ObligationSource::Candidate => "candidate",
+    };
+    Ok(QualifiedObligation {
+        approval_id: format!("{prefix}:{record_digest}"),
+        source,
+        record_digest,
+        record,
+    })
+}
+
+fn candidate_diff(
+    worktree: &Path,
+    base_revision: &str,
+    candidate_commit: &str,
+    changed_files: &[String],
+) -> Result<CandidateDiff, ClewError> {
+    let mut child = Command::new("git")
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=3",
+            base_revision,
+            candidate_commit,
+            "--",
+        ])
+        .args(changed_files)
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(io_error)?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| internal("candidate diff pipe is unavailable"))?;
+    let mut hasher = Sha256::new();
+    let mut prefix = Vec::with_capacity(MAX_PUBLIC_DIFF_BYTES.saturating_add(1));
+    let mut byte_size = 0usize;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = stdout.read(&mut buffer).map_err(io_error)?;
+        if read == 0 {
+            break;
+        }
+        byte_size = byte_size
+            .checked_add(read)
+            .ok_or_else(|| resource("candidate diff size overflow"))?;
+        hasher.update(&buffer[..read]);
+        if prefix.len() <= MAX_PUBLIC_DIFF_BYTES {
+            let remaining = MAX_PUBLIC_DIFF_BYTES
+                .saturating_add(1)
+                .saturating_sub(prefix.len());
+            prefix.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+    }
+    if !child.wait().map_err(io_error)?.success() {
+        return Err(invalid("candidate diff is unavailable"));
+    }
+    let digest = format!("sha256:{}", hex::encode(hasher.finalize()));
+    let over_limit = byte_size > MAX_PUBLIC_DIFF_BYTES;
+    let patch = if over_limit {
+        None
+    } else {
+        Some(String::from_utf8(prefix).map_err(|_| invalid("candidate diff is not valid UTF-8"))?)
+    };
+    Ok(CandidateDiff {
+        digest,
+        byte_size,
+        over_limit,
+        patch,
+    })
+}
+
+fn capture_derived_outputs(worktree: &Path) -> Result<Vec<DerivedOutput>, ClewError> {
+    let mut paths = git_other_paths(
+        worktree,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )?;
+    paths.extend(git_other_paths(
+        worktree,
+        &[
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+        ],
+    )?);
+    let path_bytes = paths.iter().try_fold(0usize, |total, path| {
+        total
+            .checked_add(path.len())
+            .ok_or_else(|| resource("candidate derived-output path size overflow"))
+    })?;
+    if paths.len() > MAX_DERIVED_OUTPUTS || path_bytes > MAX_DERIVED_PATH_BYTES {
+        return Err(resource(
+            "candidate derived-output inventory exceeds count or path limits",
+        ));
+    }
+    let mut outputs = Vec::with_capacity(paths.len());
+    let mut content_bytes = 0u64;
+    for path in paths {
+        let absolute = worktree.join(&path);
+        let metadata = fs::symlink_metadata(&absolute).map_err(io_error)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(invalid("candidate derived output is not a regular file"));
+        }
+        content_bytes = content_bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| resource("candidate derived-output size overflow"))?;
+        if content_bytes > MAX_DERIVED_CONTENT_BYTES {
+            return Err(resource(
+                "candidate derived-output content exceeds the hashing limit",
+            ));
+        }
+        let mut file = File::open(&absolute).map_err(io_error)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(io_error)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        outputs.push(DerivedOutput {
+            path,
+            content_digest: format!("sha256:{}", hex::encode(hasher.finalize())),
+            byte_size: metadata.len(),
+            executable: derived_output_executable(&metadata),
+        });
+    }
+    Ok(outputs)
+}
+
+fn git_other_paths(worktree: &Path, args: &[&str]) -> Result<BTreeSet<String>, ClewError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("candidate derived-output inventory is unavailable"));
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|row| !row.is_empty())
+        .map(|row| {
+            let path = std::str::from_utf8(row)
+                .map_err(|_| invalid("candidate derived-output path is not UTF-8"))?;
+            if !safe_path(path) || path == ".git" || path.starts_with(".git/") {
+                return Err(invalid("candidate derived-output path is unsafe"));
+            }
+            Ok(path.to_owned())
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn derived_output_executable(metadata: &fs::Metadata) -> bool {
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn derived_output_executable(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+pub fn remove_exact_derived_outputs(
+    worktree: &Path,
+    expected: &[DerivedOutput],
+) -> Result<(), ClewError> {
+    verify_exact_derived_outputs(worktree, expected)?;
+    let mut parents = BTreeSet::new();
+    for output in expected.iter().rev() {
+        let path = worktree.join(&output.path);
+        fs::remove_file(&path).map_err(io_error)?;
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            if directory == worktree {
+                break;
+            }
+            parents.insert(directory.to_path_buf());
+            parent = directory.parent();
+        }
+    }
+    let mut parents = parents.into_iter().collect::<Vec<_>>();
+    parents.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    for directory in parents {
+        match fs::remove_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    if !capture_derived_outputs(worktree)?.is_empty() {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "candidate derived-output cleanup is incomplete",
+        ));
+    }
+    Ok(())
+}
+
+pub fn verify_exact_derived_outputs(
+    worktree: &Path,
+    expected: &[DerivedOutput],
+) -> Result<(), ClewError> {
+    if capture_derived_outputs(worktree)? != expected {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "candidate derived outputs differ from prepared authority",
+        ));
+    }
+    Ok(())
+}
+
+pub fn verify_prepared_for_gc(
+    session: &SessionAuthority,
+    prepared: &PreparedCandidateV2,
+    worktree: &Path,
+) -> Result<(), ClewError> {
+    validate_prepared(session, prepared)?;
+    if git(worktree, &["rev-parse", "HEAD"])? != prepared.candidate_commit {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "published candidate HEAD differs from prepared authority",
+        ));
+    }
+    verify_candidate_snapshot(worktree, &prepared.candidate_snapshot)?;
+    verify_exact_derived_outputs(worktree, &prepared.derived_outputs)
+}
+
+fn prepared_authority_digest(prepared: &PreparedCandidateV2) -> Result<String, ClewError> {
+    let mut unsigned = prepared.clone();
+    unsigned.prepared_authority_digest.clear();
+    canonical::hash(&unsigned).map_err(internal)
+}
+
+pub fn public_candidate_status(prepared: &PreparedCandidateV2) -> Result<Value, ClewError> {
+    if prepared.prepared_authority_digest != prepared_authority_digest(prepared)? {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "prepared candidate digest is invalid",
+        ));
+    }
+    let obligations = prepared
+        .qualified_obligations
+        .iter()
+        .map(|item| {
+            json!({
+                "approvalId":item.approval_id,
+                "source":item.source,
+                "recordDigest":item.record_digest,
+                "record":item.record,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut value = json!({
+        "schema":"codeclew-public-candidate-status/1.0",
+        "candidateCommit":prepared.candidate_commit,
+        "changedFiles":prepared.changed_files,
+        "conditionalPublishEligible":prepared.conditional_publish_eligible,
+        "certainty":if prepared.publication_blocked { "UNSURE" } else { "VERIFIED" },
+        "diff":prepared.diff,
+        "preparedAuthorityDigest":prepared.prepared_authority_digest,
+        "qualifiedObligations":obligations,
+        "validationEvidence":prepared.validation_evidence,
+        "derivedOutputs":{
+            "count":prepared.derived_outputs.len(),
+            "treeDigest":canonical::hash(&prepared.derived_outputs).map_err(internal)?,
+        },
+    });
+    if canonical::bytes(&value).map_err(internal)?.len() > 64 * 1024 {
+        value["qualifiedObligations"] = Value::Array(
+            prepared
+                .qualified_obligations
+                .iter()
+                .map(|item| {
+                    json!({
+                        "approvalId":item.approval_id,
+                        "source":item.source,
+                        "recordDigest":item.record_digest,
+                    })
+                })
+                .collect(),
+        );
+        value["obligationRecordsOmitted"] = Value::Bool(true);
+    }
+    if canonical::bytes(&value).map_err(internal)?.len() > 64 * 1024 {
+        return Err(resource("public candidate status exceeds 64 KiB"));
+    }
+    Ok(value)
+}
+
+pub fn conditional_approval(
+    session: &SessionAuthority,
+    prepared: &PreparedCandidateV2,
+    run_id: &str,
+    request_digest: &str,
+    acknowledged: &[String],
+) -> Result<ConditionalPublicationApproval, ClewError> {
+    validate_prepared(session, prepared)?;
+    if !prepared.publication_blocked || !prepared.conditional_publish_eligible {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "candidate is not eligible for conditional publication",
+        ));
+    }
+    let mut observed = acknowledged.to_vec();
+    observed.sort();
+    if observed.is_empty() || observed.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(invalid(
+            "conditional acknowledgement set is empty or duplicated",
+        ));
+    }
+    let expected = prepared
+        .qualified_obligations
+        .iter()
+        .map(|item| item.approval_id.clone())
+        .collect::<Vec<_>>();
+    if observed != expected {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "conditional acknowledgement set differs from prepared obligations",
+        ));
+    }
+    if prepared.validation_evidence.is_empty()
+        || prepared
+            .validation_evidence
+            .iter()
+            .any(|item| !item.success)
+    {
+        return Err(ClewError::new(
+            ErrorCode::TestFailed,
+            "conditional publication requires successful validation evidence",
+        ));
+    }
+    Ok(ConditionalPublicationApproval {
+        schema: "codeclew-conditional-publication-approval/1.0".into(),
+        mode: "ACKNOWLEDGED_UNSURE".into(),
+        run_id: run_id.into(),
+        request_digest: request_digest.into(),
+        session_authority_digest: session.authority_digest.clone(),
+        context_id: prepared.context_id.clone(),
+        context_evidence_digest: prepared.context_evidence_digest.clone(),
+        plan_id: prepared.plan_id.clone(),
+        obligations: prepared.qualified_obligations.clone(),
+        candidate_commit: prepared.candidate_commit.clone(),
+        candidate_snapshot: prepared.candidate_snapshot.clone(),
+        changed_files: prepared.changed_files.clone(),
+        validation_evidence: prepared.validation_evidence.clone(),
+        prepared_authority_digest: prepared.prepared_authority_digest.clone(),
+    })
+}
+
 pub fn publish(
     session: &SessionAuthority,
     prepared: &PreparedCandidateV2,
     candidate_root: &Path,
+    approval: Option<&ConditionalPublicationApproval>,
 ) -> Result<Value, ClewError> {
     validate_prepared(session, prepared)?;
-    if prepared.publication_blocked {
+    if prepared.publication_blocked && approval.is_none() {
         return Err(ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
-            "conditional candidate cannot be published",
+            "conditional candidate requires explicit publication approval",
+        ));
+    }
+    if !prepared.publication_blocked && approval.is_some() {
+        return Err(invalid(
+            "strict candidate does not accept conditional publication approval",
         ));
     }
     let repo = session.target_repository_path()?;
@@ -631,14 +1163,24 @@ pub fn publish(
         &prepared.candidate_commit,
         true,
     )?;
-    if semantic.generation_key != prepared.semantic_generation_key
-        || !semantic.completeness.publishable()
-    {
+    if semantic.generation_key != prepared.semantic_generation_key {
         return Err(ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
-            "candidate semantic generation is not publication-ready",
+            "candidate semantic generation differs from prepared authority",
         ));
     }
+    let conditional = if let Some(approval) = approval {
+        validate_conditional_approval(session, prepared, approval)?;
+        true
+    } else {
+        if !semantic.completeness.publishable() {
+            return Err(ClewError::new(
+                ErrorCode::IncompleteSemanticAnalysis,
+                "candidate semantic generation is not publication-ready",
+            ));
+        }
+        false
+    };
     let current = git(&repo, &["rev-parse", &session.target_ref])?;
     if current == prepared.candidate_commit {
         synchronize_checked_out_target(&repo, prepared)?;
@@ -646,9 +1188,11 @@ pub fn publish(
         verify_published_worktrees(session, prepared, &repo, &inventory)?;
         return Ok(json!({
             "schema":"codeclew-publish-result/2.0",
-            "status":"PUBLISHED",
+            "status":if conditional { "PUBLISHED_CONDITIONAL" } else { "PUBLISHED" },
             "candidateCommit":prepared.candidate_commit,
             "recovered":true,
+            "certainty":if conditional { "UNSURE" } else { "VERIFIED" },
+            "conditionalApproval":approval,
         }));
     }
     if current != prepared.target_oid {
@@ -701,9 +1245,11 @@ pub fn publish(
     verify_published_worktrees(session, prepared, &repo, &inventory)?;
     Ok(json!({
         "schema":"codeclew-publish-result/2.0",
-        "status":"PUBLISHED",
+        "status":if conditional { "PUBLISHED_CONDITIONAL" } else { "PUBLISHED" },
         "candidateCommit":prepared.candidate_commit,
         "recovered":false,
+        "certainty":if conditional { "UNSURE" } else { "VERIFIED" },
+        "conditionalApproval":approval,
     }))
 }
 
@@ -921,8 +1467,9 @@ pub fn recover(
     session: &SessionAuthority,
     prepared: &PreparedCandidateV2,
     candidate_root: &Path,
+    approval: Option<&ConditionalPublicationApproval>,
 ) -> Result<Value, ClewError> {
-    publish(session, prepared, candidate_root)
+    publish(session, prepared, candidate_root, approval)
 }
 
 pub fn verify_candidate_snapshot(path: &Path, expected: &CasObject) -> Result<(), ClewError> {
@@ -950,10 +1497,80 @@ fn validate_prepared(
         || prepared.semantic_generation.object_schema
             != crate::generation_service::READY_GENERATION_SET_SCHEMA
         || !digest(&prepared.semantic_generation_key)
+        || !digest(&prepared.context_evidence_digest)
+        || prepared.prepared_authority_digest != prepared_authority_digest(prepared)?
+        || prepared.changed_files.is_empty()
+        || !prepared
+            .changed_files
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+        || prepared
+            .qualified_obligations
+            .windows(2)
+            .any(|pair| pair[0].approval_id >= pair[1].approval_id)
+        || prepared.qualified_obligations.iter().any(|item| {
+            !digest(&item.record_digest)
+                || canonical::hash(&item.record).ok().as_deref() != Some(&item.record_digest)
+                || item.approval_id
+                    != format!(
+                        "{}:{}",
+                        match item.source {
+                            ObligationSource::Context => "context",
+                            ObligationSource::Candidate => "candidate",
+                        },
+                        item.record_digest
+                    )
+        })
+        || !digest(&prepared.diff.digest)
+        || prepared.diff.over_limit == prepared.diff.patch.is_some()
+        || prepared.diff.patch.as_ref().is_some_and(|patch| {
+            patch.len() != prepared.diff.byte_size
+                || canonical::hash_bytes(patch.as_bytes()) != prepared.diff.digest
+        })
+        || prepared
+            .derived_outputs
+            .windows(2)
+            .any(|pair| pair[0].path >= pair[1].path)
+        || prepared.derived_outputs.iter().any(|output| {
+            !safe_path(&output.path)
+                || !digest(&output.content_digest)
+                || output.path == ".git"
+                || output.path.starts_with(".git/")
+        })
     {
         return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
             "prepared candidate authority differs from the session",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_conditional_approval(
+    session: &SessionAuthority,
+    prepared: &PreparedCandidateV2,
+    approval: &ConditionalPublicationApproval,
+) -> Result<(), ClewError> {
+    if !prepared.publication_blocked
+        || !prepared.conditional_publish_eligible
+        || approval.schema != "codeclew-conditional-publication-approval/1.0"
+        || approval.mode != "ACKNOWLEDGED_UNSURE"
+        || approval.session_authority_digest != session.authority_digest
+        || approval.context_id != prepared.context_id
+        || approval.context_evidence_digest != prepared.context_evidence_digest
+        || approval.plan_id != prepared.plan_id
+        || approval.obligations != prepared.qualified_obligations
+        || approval.candidate_commit != prepared.candidate_commit
+        || approval.candidate_snapshot != prepared.candidate_snapshot
+        || approval.changed_files != prepared.changed_files
+        || approval.validation_evidence != prepared.validation_evidence
+        || approval.prepared_authority_digest != prepared.prepared_authority_digest
+        || approval.run_id.is_empty()
+        || !digest(&approval.request_digest)
+    {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "conditional approval differs from prepared publication authority",
         ));
     }
     Ok(())
@@ -1607,6 +2224,7 @@ mod tests {
             schema: PREPARED_V2_SCHEMA.into(),
             session_id: session.session_id.clone(),
             context_id: "context:test".into(),
+            context_evidence_digest: digest('9'),
             plan_id: "plan:test".into(),
             base_revision: session.base_revision.clone(),
             target_ref: session.target_ref.clone(),
@@ -1627,8 +2245,19 @@ mod tests {
             semantic_generation_key: digest('e'),
             changed_files: vec!["A.kt".into()],
             validation_evidence: Vec::new(),
+            qualified_obligations: Vec::new(),
+            conditional_publish_eligible: false,
+            diff: CandidateDiff {
+                digest: canonical::hash_bytes(b""),
+                byte_size: 0,
+                over_limit: false,
+                patch: Some(String::new()),
+            },
+            derived_outputs: Vec::new(),
+            prepared_authority_digest: String::new(),
             publication_blocked: false,
         };
+        prepared.prepared_authority_digest = prepared_authority_digest(&prepared).unwrap();
         validate_prepared(&session, &prepared).unwrap();
         prepared.semantic_generation.object_schema =
             crate::generation_service::READY_GENERATION_SCHEMA.into();
@@ -1636,6 +2265,139 @@ mod tests {
             validate_prepared(&session, &prepared).unwrap_err().code,
             ErrorCode::PreconditionFailed
         );
+    }
+
+    #[test]
+    fn conditional_approval_is_exact_content_bound_and_tamper_evident() {
+        let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+        let session = SessionAuthority {
+            schema: crate::session::SESSION_SCHEMA.into(),
+            authority_digest: digest('a'),
+            session_id: format!("session:{}", uuid::Uuid::new_v4()),
+            repository_key: "a".repeat(64),
+            base_revision: "1".repeat(40),
+            target_ref: "refs/heads/main".into(),
+            target_oid: "1".repeat(40),
+            runtime_key: digest('b'),
+            runtime_mode: crate::runtime::RuntimeMode::Development,
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
+            model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            created_unix_ms: 1,
+        };
+        let obligation = qualify_obligation(
+            ObligationSource::Context,
+            json!({
+                "code":"VERIFY_QUERY_SELECTION",
+                "id":"verify-query-selection",
+                "publicationBlocking":true,
+                "requiredCheckSet":["confirm exact declarations and tests"],
+                "subject":["total"]
+            }),
+        )
+        .unwrap();
+        let mut prepared = PreparedCandidateV2 {
+            schema: PREPARED_V2_SCHEMA.into(),
+            session_id: session.session_id.clone(),
+            context_id: "context:test".into(),
+            context_evidence_digest: digest('9'),
+            plan_id: "plan:test".into(),
+            base_revision: session.base_revision.clone(),
+            target_ref: session.target_ref.clone(),
+            target_oid: session.target_oid.clone(),
+            candidate_commit: "2".repeat(40),
+            candidate_snapshot: CasObject {
+                schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+                object_schema: crate::repository_snapshot::SNAPSHOT_SCHEMA.into(),
+                digest: digest('c'),
+                size: 1,
+            },
+            semantic_generation: CasObject {
+                schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+                object_schema: crate::generation_service::READY_GENERATION_SET_SCHEMA.into(),
+                digest: digest('d'),
+                size: 1,
+            },
+            semantic_generation_key: digest('e'),
+            changed_files: vec!["src/A.kt".into()],
+            validation_evidence: vec![ValidationEvidence {
+                launcher: ValidationLauncher::Gradle,
+                args_digest: digest('f'),
+                output_digest: digest('8'),
+                success: true,
+            }],
+            qualified_obligations: vec![obligation.clone()],
+            conditional_publish_eligible: true,
+            diff: CandidateDiff {
+                digest: canonical::hash_bytes(b"patch"),
+                byte_size: 5,
+                over_limit: false,
+                patch: Some("patch".into()),
+            },
+            derived_outputs: Vec::new(),
+            prepared_authority_digest: String::new(),
+            publication_blocked: true,
+        };
+        prepared.prepared_authority_digest = prepared_authority_digest(&prepared).unwrap();
+
+        assert!(conditional_approval(&session, &prepared, "run:test", &digest('7'), &[],).is_err());
+        let approval = conditional_approval(
+            &session,
+            &prepared,
+            "run:test",
+            &digest('7'),
+            std::slice::from_ref(&obligation.approval_id),
+        )
+        .unwrap();
+        validate_conditional_approval(&session, &prepared, &approval).unwrap();
+
+        let mut tampered = approval.clone();
+        tampered.changed_files.push("src/Unexpected.kt".into());
+        assert!(validate_conditional_approval(&session, &prepared, &tampered).is_err());
+        assert!(
+            conditional_approval(
+                &session,
+                &prepared,
+                "run:test",
+                &digest('7'),
+                &[obligation.approval_id.clone(), obligation.approval_id],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn derived_output_cleanup_requires_an_exact_post_process_manifest() {
+        let repository = tempfile::tempdir().unwrap();
+        git_status(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(repository.path()),
+            "test init failed",
+        )
+        .unwrap();
+        fs::write(repository.path().join(".gitignore"), b"/build/\n").unwrap();
+        fs::write(repository.path().join("A.kt"), b"fun answer() = 42\n").unwrap();
+        git_status(
+            Command::new("git")
+                .args(["add", "."])
+                .current_dir(repository.path()),
+            "test add failed",
+        )
+        .unwrap();
+        commit_candidate(repository.path(), "plan:base").unwrap();
+        fs::create_dir(repository.path().join("build")).unwrap();
+        let output = repository.path().join("build/result.bin");
+        fs::write(&output, b"validated").unwrap();
+        let manifest = capture_derived_outputs(repository.path()).unwrap();
+        assert_eq!(manifest.len(), 1);
+
+        fs::write(&output, b"tampered").unwrap();
+        assert!(verify_exact_derived_outputs(repository.path(), &manifest).is_err());
+        fs::write(&output, b"validated").unwrap();
+        remove_exact_derived_outputs(repository.path(), &manifest).unwrap();
+        assert!(!repository.path().join("build").exists());
     }
 
     #[test]

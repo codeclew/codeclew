@@ -14,4 +14,4 @@ jobs:
         with: { components: rustfmt, clippy }
       - uses: Swatinem/rust-cache@v2
       - run: chmod +x gradlew fixtures/kotlin-basic/gradlew scripts/*.sh
-      - run: ./scripts/verify.sh
+      - run: ./scripts/ci-verify.sh

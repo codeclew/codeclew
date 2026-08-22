@@ -6,6 +6,7 @@ use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::StateAuthority;
 #[cfg(test)]
 use crate::state::create_private_directory;
+use crate::task_run_v2::ConditionalPublicationApproval;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fs::{self, File};
@@ -19,8 +20,8 @@ use walkdir::WalkDir;
 pub const SESSION_SCHEMA: &str = "codeclew-session/4.0";
 pub const CONTEXT_SCHEMA: &str = "codeclew-context/3.0";
 pub const PLAN_SCHEMA: &str = "codeclew-plan/2.0";
-pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
-const RUN_LEDGER_SCHEMA: &str = "codeclew-task-run-ledger-entry/2.0";
+pub const RUN_SCHEMA: &str = "codeclew-task-run/3.0";
+const RUN_LEDGER_SCHEMA: &str = "codeclew-task-run-ledger-entry/3.0";
 const MAX_RUN_LEDGER_BYTES: u64 = 32 * 1024 * 1024;
 const SESSION_LIFECYCLE_SCHEMA: &str = "codeclew-session-lifecycle-entry/1.0";
 const SESSION_RUN_REFERENCE_SCHEMA: &str = "codeclew-session-run-reference/1.0";
@@ -108,8 +109,10 @@ pub struct RunRecord {
     pub transaction_id: String,
     pub candidate_commit: Option<String>,
     pub candidate_snapshot: Option<CasObject>,
+    pub prepared_authority_digest: Option<String>,
     pub final_commit: Option<String>,
     pub publication_blocked: bool,
+    pub conditional_approval: Option<ConditionalPublicationApproval>,
     pub process_id: Option<u32>,
     pub process_start_token: Option<String>,
     pub failure: Option<Value>,
@@ -132,9 +135,11 @@ pub enum RunStatus {
     Created,
     Preparing,
     ReadyToPublish,
+    ReadyToPublishConditional,
     ValidatedConditional,
     Publishing,
     Published,
+    PublishedConditional,
     Failed,
     WorktreeRecoveryRequired,
     Cancelled,
@@ -897,6 +902,7 @@ fn run_status_is_active(status: RunStatus) -> bool {
         RunStatus::Created
             | RunStatus::Preparing
             | RunStatus::ReadyToPublish
+            | RunStatus::ReadyToPublishConditional
             | RunStatus::Publishing
             | RunStatus::WorktreeRecoveryRequired
     )
@@ -908,7 +914,12 @@ fn session_terminal_target_oid(
 ) -> Result<String, ClewError> {
     let mut published = runs
         .iter()
-        .filter(|run| run.status == RunStatus::Published)
+        .filter(|run| {
+            matches!(
+                run.status,
+                RunStatus::Published | RunStatus::PublishedConditional
+            )
+        })
         .map(|run| {
             run.final_commit
                 .clone()
@@ -1100,9 +1111,7 @@ fn garbage_collect_session_with_state(
             if entry == std::ffi::OsStr::new("worktree") {
                 continue;
             }
-            if entry == std::ffi::OsStr::new("staged-generation.json")
-                && candidate_directory.file_exists(&entry)?
-            {
+            if candidate_derived_state_name(&entry) && candidate_directory.file_exists(&entry)? {
                 continue;
             }
             return Err(ClewError::new(
@@ -1111,6 +1120,7 @@ fn garbage_collect_session_with_state(
             ));
         }
     }
+    let mut derived_output_cleanups = Vec::new();
     for run in &runs {
         let candidate_root = root
             .join("candidates")
@@ -1139,14 +1149,35 @@ fn garbage_collect_session_with_state(
         }
         let untracked = candidate_untracked_after_clean_tracked_check(&canonical)?;
         if !untracked.is_empty() {
-            return Err(ClewError::new(
-                ErrorCode::PreconditionFailed,
-                if force {
-                    "candidate is non-empty and has no exact Codeclew-owned derived-output receipt; --force cannot delete it"
-                } else {
-                    "candidate is non-empty; remove its untracked outputs before GC"
-                },
-            ));
+            if !matches!(
+                run.status,
+                RunStatus::Published | RunStatus::PublishedConditional
+            ) || run.final_commit.as_deref() != run.candidate_commit.as_deref()
+                || (run.status == RunStatus::PublishedConditional
+                    && run.conditional_approval.is_none())
+            {
+                return Err(ClewError::new(
+                    ErrorCode::PreconditionFailed,
+                    if force {
+                        "candidate is non-empty and has no exact Codeclew-owned derived-output receipt; --force cannot delete it"
+                    } else {
+                        "candidate is non-empty; remove its untracked outputs before GC"
+                    },
+                ));
+            }
+            let prepared: crate::task_run_v2::PreparedCandidateV2 = read_managed_json(
+                state,
+                &state.run_root(&run.run_id)?.join("prepared-v2.json"),
+                16 * 1024 * 1024,
+            )?;
+            if run.candidate_snapshot.as_ref() != Some(&prepared.candidate_snapshot) {
+                return Err(ClewError::new(
+                    ErrorCode::PreconditionFailed,
+                    "published run snapshot differs from prepared cleanup authority",
+                ));
+            }
+            crate::task_run_v2::verify_prepared_for_gc(authority, &prepared, &canonical)?;
+            derived_output_cleanups.push((canonical.clone(), prepared.derived_outputs));
         }
         removals.push(ManagedWorktreeRemoval {
             path: canonical,
@@ -1157,6 +1188,9 @@ fn garbage_collect_session_with_state(
         });
     }
 
+    for (worktree, expected) in &derived_output_cleanups {
+        crate::task_run_v2::remove_exact_derived_outputs(worktree, expected)?;
+    }
     for removal in removals {
         remove_managed_worktree(&target, &removal)?;
     }
@@ -1306,8 +1340,10 @@ fn cleanup_candidate_derived_state_with_authority(
     let relative = Path::new("candidates").join(id_component(&run.run_id, "run:")?);
     let session = state.directory_at(root)?;
     let candidate_directory = session.child(&relative)?;
-    if candidate_directory.file_exists(std::ffi::OsStr::new("staged-generation.json"))? {
-        candidate_directory.remove_file(std::ffi::OsStr::new("staged-generation.json"))?;
+    for entry in candidate_directory.entries()? {
+        if candidate_derived_state_name(&entry) && candidate_directory.file_exists(&entry)? {
+            candidate_directory.remove_file(&entry)?;
+        }
     }
     let unexpected = candidate_directory.entries()?;
     if unexpected.is_empty() {
@@ -1317,6 +1353,26 @@ fn cleanup_candidate_derived_state_with_authority(
         ErrorCode::PreconditionFailed,
         "candidate contains unknown state; GC refuses recursive deletion",
     ))
+}
+
+fn candidate_derived_state_name(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if matches!(
+        name,
+        "checkpoint-v2.json" | "staged-generation.json" | "staged-workspace-profile.json"
+    ) {
+        return true;
+    }
+    name.strip_prefix("staged-generation-")
+        .and_then(|value| value.strip_suffix(".json"))
+        .is_some_and(|component| {
+            component.len() == 64
+                && component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
 }
 
 fn cleanup_run_derived_state(state: &StateAuthority, run: &RunRecord) -> Result<(), ClewError> {
@@ -1356,8 +1412,10 @@ impl RunRecord {
             status: RunStatus::Created,
             candidate_commit: None,
             candidate_snapshot: None,
+            prepared_authority_digest: None,
             final_commit: None,
             publication_blocked: false,
+            conditional_approval: None,
             process_id: None,
             process_start_token: None,
             failure: None,
@@ -1604,8 +1662,12 @@ fn require_same_run_identity(left: &RunRecord, right: &RunRecord) -> Result<(), 
         || (left.candidate_commit.is_some() && left.candidate_commit != right.candidate_commit)
         || (left.candidate_snapshot.is_some()
             && left.candidate_snapshot != right.candidate_snapshot)
+        || (left.prepared_authority_digest.is_some()
+            && left.prepared_authority_digest != right.prepared_authority_digest)
         || (left.final_commit.is_some() && left.final_commit != right.final_commit)
         || (left.publication_blocked && !right.publication_blocked)
+        || (left.conditional_approval.is_some()
+            && left.conditional_approval != right.conditional_approval)
     {
         return Err(invalid("run ledger changed immutable authority"));
     }
@@ -1622,6 +1684,7 @@ fn run_transition_allowed(from: RunStatus, to: RunStatus) -> bool {
             ) | (
                 RunStatus::Preparing,
                 RunStatus::ReadyToPublish
+                    | RunStatus::ReadyToPublishConditional
                     | RunStatus::ValidatedConditional
                     | RunStatus::Failed
                     | RunStatus::WorktreeRecoveryRequired
@@ -1629,21 +1692,26 @@ fn run_transition_allowed(from: RunStatus, to: RunStatus) -> bool {
             ) | (
                 RunStatus::Failed | RunStatus::Cancelled,
                 RunStatus::Created | RunStatus::WorktreeRecoveryRequired
-            ) | (RunStatus::ReadyToPublish, RunStatus::Publishing)
-                | (
-                    RunStatus::Publishing,
-                    RunStatus::Published
-                        | RunStatus::ReadyToPublish
-                        | RunStatus::WorktreeRecoveryRequired
-                )
-                | (
-                    RunStatus::WorktreeRecoveryRequired,
-                    RunStatus::ReadyToPublish
-                        | RunStatus::ValidatedConditional
-                        | RunStatus::Published
-                        | RunStatus::Failed
-                        | RunStatus::WorktreeRecoveryRequired
-                )
+            ) | (
+                RunStatus::ReadyToPublish | RunStatus::ReadyToPublishConditional,
+                RunStatus::Publishing
+            ) | (
+                RunStatus::Publishing,
+                RunStatus::Published
+                    | RunStatus::PublishedConditional
+                    | RunStatus::ReadyToPublish
+                    | RunStatus::ReadyToPublishConditional
+                    | RunStatus::WorktreeRecoveryRequired
+            ) | (
+                RunStatus::WorktreeRecoveryRequired,
+                RunStatus::ReadyToPublish
+                    | RunStatus::ReadyToPublishConditional
+                    | RunStatus::ValidatedConditional
+                    | RunStatus::Published
+                    | RunStatus::PublishedConditional
+                    | RunStatus::Failed
+                    | RunStatus::WorktreeRecoveryRequired
+            )
         )
 }
 
@@ -2252,8 +2320,10 @@ mod tests {
             transaction_id: format!("tx:{digest}"),
             candidate_commit: None,
             candidate_snapshot: None,
+            prepared_authority_digest: None,
             final_commit: None,
             publication_blocked: false,
+            conditional_approval: None,
             process_id: None,
             process_start_token: None,
             failure: None,
@@ -2299,6 +2369,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(RunStatus::ValidatedConditional).unwrap(),
             "VALIDATED_CONDITIONAL"
+        );
+        assert_eq!(
+            serde_json::to_value(RunStatus::ReadyToPublishConditional).unwrap(),
+            "READY_TO_PUBLISH_CONDITIONAL"
+        );
+        assert_eq!(
+            serde_json::to_value(RunStatus::PublishedConditional).unwrap(),
+            "PUBLISHED_CONDITIONAL"
         );
     }
 

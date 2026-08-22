@@ -54,7 +54,7 @@ enum SessionCommand {
     Abort(SessionIdArgs),
     Relocate(SessionRelocateArgs),
     Gc(SessionGcArgs),
-    Publish(SessionRunArgs),
+    Publish(SessionPublishArgs),
     Recover(SessionRunArgs),
 }
 
@@ -118,6 +118,20 @@ struct SessionRunArgs {
     session: String,
     #[arg(long)]
     run: String,
+}
+
+#[derive(Args)]
+struct SessionPublishArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    run: String,
+    #[arg(long, requires = "prepared_authority_digest")]
+    allow_conditional: bool,
+    #[arg(long, requires = "allow_conditional")]
+    prepared_authority_digest: Option<String>,
+    #[arg(long = "acknowledge-obligation", requires = "allow_conditional")]
+    acknowledge_obligations: Vec<String>,
 }
 
 #[derive(Args)]
@@ -372,7 +386,13 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         } => cancel_task_run(&args.run),
         Command::Session {
             command: SessionCommand::Publish(args),
-        } => publish_task_run(&args.session, &args.run),
+        } => publish_task_run(
+            &args.session,
+            &args.run,
+            args.allow_conditional,
+            args.prepared_authority_digest.as_deref(),
+            &args.acknowledge_obligations,
+        ),
         Command::Session {
             command: SessionCommand::Recover(args),
         } => recover_task_run(&args.session, &args.run),
@@ -414,7 +434,20 @@ fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
 }
 
 fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
-    Ok(json!({"schema":"codeclew-task-run-status/2.0","run":RunRecord::load(run_id)?}))
+    let run = RunRecord::load(run_id)?;
+    let state = clew::state::StateAuthority::process_default()?;
+    let prepared_path = state.run_root(run_id)?.join("prepared-v2.json");
+    let candidate = if state.private_file_exists(&prepared_path)? {
+        let prepared = read_json::<clew::task_run_v2::PreparedCandidateV2>(
+            &state,
+            &prepared_path,
+            16 * 1024 * 1024,
+        )?;
+        Some(clew::task_run_v2::public_candidate_status(&prepared)?)
+    } else {
+        None
+    };
+    Ok(json!({"schema":"codeclew-task-run-status/3.0","run":run,"candidate":candidate}))
 }
 
 fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
@@ -427,8 +460,10 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
     if matches!(
         record.status,
         RunStatus::ReadyToPublish
+            | RunStatus::ReadyToPublishConditional
             | RunStatus::ValidatedConditional
             | RunStatus::Published
+            | RunStatus::PublishedConditional
             | RunStatus::Publishing
     ) {
         return task_run_status(run_id);
@@ -549,9 +584,12 @@ fn prepare_task_run(record: &mut RunRecord) -> Result<Value, ClewError> {
     let mut latest = RunRecord::load(&record.run_id)?;
     latest.candidate_commit = Some(prepared.candidate_commit.clone());
     latest.candidate_snapshot = Some(prepared.candidate_snapshot.clone());
+    latest.prepared_authority_digest = Some(prepared.prepared_authority_digest.clone());
     latest.publication_blocked = prepared.publication_blocked;
     latest.status = if latest.status == RunStatus::Cancelled {
         RunStatus::Cancelled
+    } else if prepared.conditional_publish_eligible {
+        RunStatus::ReadyToPublishConditional
     } else if prepared.publication_blocked {
         RunStatus::ValidatedConditional
     } else {
@@ -564,37 +602,94 @@ fn prepare_task_run(record: &mut RunRecord) -> Result<Value, ClewError> {
     Ok(json!({"schema":"codeclew-task-run-preparation/2.0","run":record,"candidate":prepared}))
 }
 
-fn publish_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> {
+fn publish_task_run(
+    session_id: &str,
+    run_id: &str,
+    allow_conditional: bool,
+    prepared_authority_digest: Option<&str>,
+    acknowledged: &[String],
+) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
-    if record.publication_blocked || record.status == RunStatus::ValidatedConditional {
-        return Err(ClewError::new(
-            ErrorCode::IncompleteSemanticAnalysis,
-            "conditional run cannot be published; create a new context, plan, and run",
-        ));
-    }
-    if record.status == RunStatus::Published {
-        return task_run_status(run_id);
-    }
-    if record.status != RunStatus::ReadyToPublish {
-        return Err(ClewError::new(
-            ErrorCode::PreconditionFailed,
-            "run is not ready to publish",
-        ));
-    }
     let state = clew::state::StateAuthority::process_default()?;
     let prepared: clew::task_run_v2::PreparedCandidateV2 = read_json(
         &state,
         &state.run_root(run_id)?.join("prepared-v2.json"),
         16 * 1024 * 1024,
     )?;
+    let requested_approval = if allow_conditional {
+        if prepared_authority_digest != Some(prepared.prepared_authority_digest.as_str()) {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "conditional publish digest differs from the reviewed prepared authority",
+            ));
+        }
+        Some(clew::task_run_v2::conditional_approval(
+            &session,
+            &prepared,
+            &record.run_id,
+            &record.request_digest,
+            acknowledged,
+        )?)
+    } else {
+        if !acknowledged.is_empty() || prepared_authority_digest.is_some() {
+            return Err(invalid(
+                "obligation acknowledgement requires --allow-conditional",
+            ));
+        }
+        None
+    };
+    require_record_prepared_authority(&record, &prepared)?;
+    if record.status == RunStatus::ValidatedConditional {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "run is conditional but not eligible for acknowledged publication",
+        ));
+    }
+    if record.status == RunStatus::ReadyToPublishConditional && requested_approval.is_none() {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "conditional run requires reviewed digest and explicit obligation acknowledgement",
+        ));
+    }
+    if matches!(
+        record.status,
+        RunStatus::Published | RunStatus::PublishedConditional
+    ) {
+        if record.conditional_approval != requested_approval {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "published run approval differs from the retry",
+            ));
+        }
+        return task_run_status(run_id);
+    }
+    if !matches!(
+        (record.status, requested_approval.is_some()),
+        (RunStatus::ReadyToPublish, false) | (RunStatus::ReadyToPublishConditional, true)
+    ) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run is not ready to publish",
+        ));
+    }
+    record.conditional_approval = requested_approval.clone();
     record.status = RunStatus::Publishing;
     record.save()?;
-    match clew::task_run_v2::publish(&session, &prepared, &record.candidate_root()?) {
+    match clew::task_run_v2::publish(
+        &session,
+        &prepared,
+        &record.candidate_root()?,
+        requested_approval.as_ref(),
+    ) {
         Ok(publication) => {
-            record.status = RunStatus::Published;
+            record.status = if requested_approval.is_some() {
+                RunStatus::PublishedConditional
+            } else {
+                RunStatus::Published
+            };
             record.final_commit = Some(prepared.candidate_commit.clone());
             record.failure = None;
             record.save()?;
@@ -604,6 +699,8 @@ fn publish_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
         Err(error) => {
             record.status = if error.code == ErrorCode::WorktreeRecoveryRequired {
                 RunStatus::WorktreeRecoveryRequired
+            } else if requested_approval.is_some() {
+                RunStatus::ReadyToPublishConditional
             } else {
                 RunStatus::ReadyToPublish
             };
@@ -619,7 +716,10 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
     session.require_open()?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
-    if record.status == RunStatus::Published {
+    if matches!(
+        record.status,
+        RunStatus::Published | RunStatus::PublishedConditional
+    ) {
         return task_run_status(run_id);
     }
     if !matches!(
@@ -634,7 +734,10 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
     let state = clew::state::StateAuthority::process_default()?;
     let run_root = state.run_root(run_id)?;
     let prepared_path = run_root.join("prepared-v2.json");
-    if !state.private_file_exists(&prepared_path)? {
+    let prepared_exists = state.private_file_exists(&prepared_path)?;
+    if record.status == RunStatus::WorktreeRecoveryRequired
+        && (!prepared_exists || record.prepared_authority_digest.is_none())
+    {
         let context = session.load_context(&record.context_id)?;
         let plan = session.load_plan(&record.plan_id)?;
         match clew::task_run_v2::recover_preparation(
@@ -650,8 +753,11 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
                 )?;
                 record.candidate_commit = Some(prepared.candidate_commit.clone());
                 record.candidate_snapshot = Some(prepared.candidate_snapshot.clone());
+                record.prepared_authority_digest = Some(prepared.prepared_authority_digest.clone());
                 record.publication_blocked = prepared.publication_blocked;
-                record.status = if prepared.publication_blocked {
+                record.status = if prepared.conditional_publish_eligible {
+                    RunStatus::ReadyToPublishConditional
+                } else if prepared.publication_blocked {
                     RunStatus::ValidatedConditional
                 } else {
                     RunStatus::ReadyToPublish
@@ -668,11 +774,27 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
             }
         }
     }
+    if !prepared_exists {
+        return Err(ClewError::new(
+            ErrorCode::WorktreeRecoveryRequired,
+            "publishing run lost its reviewed prepared authority",
+        ));
+    }
     let prepared: clew::task_run_v2::PreparedCandidateV2 =
         read_json(&state, &prepared_path, 16 * 1024 * 1024)?;
-    match clew::task_run_v2::recover(&session, &prepared, &record.candidate_root()?) {
+    require_record_prepared_authority(&record, &prepared)?;
+    match clew::task_run_v2::recover(
+        &session,
+        &prepared,
+        &record.candidate_root()?,
+        record.conditional_approval.as_ref(),
+    ) {
         Ok(recovery) => {
-            record.status = RunStatus::Published;
+            record.status = if record.conditional_approval.is_some() {
+                RunStatus::PublishedConditional
+            } else {
+                RunStatus::Published
+            };
             record.final_commit = Some(prepared.candidate_commit.clone());
             record.failure = None;
             record.save()?;
@@ -693,6 +815,37 @@ fn require_run_session(record: &RunRecord, session_id: &str) -> Result<(), ClewE
         return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
             "run belongs to another session",
+        ));
+    }
+    Ok(())
+}
+
+fn require_record_prepared_authority(
+    record: &RunRecord,
+    prepared: &clew::task_run_v2::PreparedCandidateV2,
+) -> Result<(), ClewError> {
+    if record.context_id != prepared.context_id
+        || record.plan_id != prepared.plan_id
+        || record.candidate_commit.as_deref() != Some(prepared.candidate_commit.as_str())
+        || record.candidate_snapshot.as_ref() != Some(&prepared.candidate_snapshot)
+        || record.prepared_authority_digest.as_deref()
+            != Some(prepared.prepared_authority_digest.as_str())
+        || record
+            .conditional_approval
+            .as_ref()
+            .is_some_and(|approval| {
+                approval.run_id != record.run_id
+                    || approval.request_digest != record.request_digest
+                    || approval.context_id != record.context_id
+                    || approval.plan_id != record.plan_id
+                    || approval.candidate_commit != prepared.candidate_commit
+                    || approval.candidate_snapshot != prepared.candidate_snapshot
+                    || approval.prepared_authority_digest != prepared.prepared_authority_digest
+            })
+    {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "prepared or conditional approval authority differs from immutable run authority",
         ));
     }
     Ok(())
@@ -941,6 +1094,41 @@ mod tests {
                 "--session",
                 "session:authority",
                 "--force",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn conditional_publish_requires_explicit_flag_and_qualified_obligation() {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "publish",
+                "--session",
+                "session:authority",
+                "--run",
+                "run:request",
+                "--acknowledge-obligation",
+                "context:sha256:authority",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "publish",
+                "--session",
+                "session:authority",
+                "--run",
+                "run:request",
+                "--allow-conditional",
+                "--prepared-authority-digest",
+                "sha256:authority",
+                "--acknowledge-obligation",
+                "context:sha256:authority",
             ])
             .is_ok()
         );

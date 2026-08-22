@@ -334,8 +334,14 @@ pub fn create(
         },
         "verificationObligations":obligations,
         "publicationPolicy":{
-            "mode":"STRICT",
-            "status":if verified { "READY" } else { "BLOCKED_UNTIL_DISCHARGED" },
+            "mode":if conditional { "EXPLICIT_CONDITIONAL" } else { "STRICT" },
+            "status":if verified {
+                "READY"
+            } else if conditional {
+                "REQUIRES_EXPLICIT_ACKNOWLEDGEMENT_AND_VALIDATION"
+            } else {
+                "BLOCKED_INCOMPLETE"
+            },
             "automaticPublication":verified,
         },
     });
