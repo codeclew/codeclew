@@ -62,6 +62,13 @@ and deterministic executable-bit-preserving materialization. S5 does not alter
 the launcher build route. S6 is the separate cutover that assembles a complete
 runtime capsule only from verified component objects and proves warm reuse.
 
+S6 DoD is a closed data-driven component registry, selective Cargo/Gradle
+execution for component misses, a capsule manifest bound to every component
+key, and a real RELEASE integration proof. That proof changes only bootstrap
+authority in an isolated committed clone, reuses the S3 component store, and
+must report all component hits, zero misses, zero build stages, and identical
+core/worker artifacts under a different runtime key.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional

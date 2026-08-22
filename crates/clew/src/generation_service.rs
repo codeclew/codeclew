@@ -2179,17 +2179,21 @@ mod tests {
     use crate::derived_manifest::DERIVED_MANIFEST_SCHEMA;
     use crate::generation_v2::GenerationKind;
     use crate::incremental_v2::COMPILER_STORE_KEY_SCHEMA;
-    use crate::runtime::{RuntimeMode, RuntimeWorker};
+    use crate::runtime::{RUNTIME_SCHEMA, RuntimeMode, RuntimeWorker};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn runtime(runtime_key: &str, binary_byte: u8) -> RuntimeAuthority {
         RuntimeAuthority {
-            schema: "codeclew-runtime-capsule/2.0".into(),
+            schema: RUNTIME_SCHEMA.into(),
             runtime_key: format!("sha256:{}", runtime_key.repeat(64)),
             mode: RuntimeMode::Release,
             manifest_digest: format!("sha256:{}", runtime_key.repeat(64)),
+            components: BTreeMap::from([(
+                "clew".into(),
+                format!("sha256:{}", runtime_key.repeat(64)),
+            )]),
             artifacts: BTreeMap::from([(
                 "clew".into(),
                 crate::runtime::RuntimeArtifact {

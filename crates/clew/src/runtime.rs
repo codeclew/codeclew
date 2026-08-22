@@ -17,7 +17,7 @@ use std::os::unix::ffi::OsStrExt;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/2.0";
+pub const RUNTIME_SCHEMA: &str = "codeclew-runtime-capsule/3.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +26,7 @@ pub struct RuntimeAuthority {
     pub runtime_key: String,
     pub mode: RuntimeMode,
     pub manifest_digest: String,
+    pub components: BTreeMap<String, String>,
     pub artifacts: BTreeMap<String, RuntimeArtifact>,
     pub workers: BTreeMap<String, RuntimeWorker>,
     #[serde(skip)]
@@ -116,6 +117,11 @@ impl RuntimeAuthority {
         if authority.schema != RUNTIME_SCHEMA
             || !is_digest(&authority.runtime_key)
             || authority.manifest_digest != expected_digest
+            || authority.components.is_empty()
+            || authority
+                .components
+                .iter()
+                .any(|(name, key)| !is_component_id(name) || !is_digest(key))
         {
             return Err(invalid("runtime manifest identity is invalid"));
         }
@@ -341,6 +347,14 @@ fn is_digest(value: &str) -> bool {
         && value[7..]
             .bytes()
             .all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
+}
+
+fn is_component_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|value| {
+            value.is_ascii_alphanumeric() || matches!(value, b'-' | b'_' | b'.' | b':')
+        })
 }
 
 fn invalid(message: &str) -> ClewError {

@@ -42,6 +42,7 @@ fn fd_runtime(root: &Path) -> std::path::PathBuf {
         "inputDigest":format!("sha256:{}", "2".repeat(64)),
         "platformAuthority":{"fixture":true},
         "toolchainAuthority":{"fixture":true},
+        "components":{"clew":format!("sha256:{}", "3".repeat(64))},
         "artifacts":{"clew":{
             "path":"bin/clew",
             "size":bytes.len(),

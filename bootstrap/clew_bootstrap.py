@@ -23,22 +23,18 @@ import time
 import uuid
 
 
-SCHEMA = "codeclew-runtime-capsule/2.0"
+SCHEMA = "codeclew-runtime-capsule/3.0"
 DOMAIN = b"codeclew-runtime/v2\0"
 COMPONENT_SCHEMA = "codeclew-runtime-component/1.0"
 COMPONENT_AUTHORITY_SCHEMA = "codeclew-runtime-component-authority/1.0"
 COMPONENT_DOMAIN = b"codeclew-runtime-component/v1\0"
+COMPONENT_REGISTRY_SCHEMA = "codeclew-runtime-component-registry/1.0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_NODES = 100_000
 MIN_COLD_BUILD_FREE_BYTES = 6 * 1024 * 1024 * 1024
 BUILD_TERMINATION_GRACE_SECONDS = 2.0
 BUILD_KILL_WAIT_SECONDS = 2.0
-WORKERS = {
-    "kotlin21": ("2.1.21", "workers/kotlin21/build/install/kotlin21", "workers/manifests/kotlin21.json"),
-    "kotlin23": ("2.3.0", "workers/kotlin23/build/install/kotlin23", "workers/manifests/kotlin23.json"),
-    "kotlin24": ("2.4.10", "workers/kotlin/build/install/kotlin", "workers/manifests/kotlin24.json"),
-}
 ROOT_FILES = {
     "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "build.gradle.kts",
     "settings.gradle.kts", "gradlew", "gradlew.bat", "clew",
@@ -352,7 +348,10 @@ def selected_source(relative: str) -> bool:
     if relative in ROOT_FILES:
         return True
     if relative.startswith("bootstrap/"):
-        return relative == "bootstrap/clew_bootstrap.py"
+        return relative in {
+            "bootstrap/clew_bootstrap.py",
+            "bootstrap/runtime_components.json",
+        }
     if relative.startswith("schemas/"):
         return True
     if relative.startswith("gradle/wrapper/"):
@@ -1071,6 +1070,189 @@ def _validate_component_value(value: object, depth: int = 0) -> None:
     raise BootstrapError("runtime component authority contains an unsupported value")
 
 
+def _registry_relative(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise BootstrapError(f"runtime component registry {label} is invalid")
+    path = Path(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
+        raise BootstrapError(f"runtime component registry {label} is invalid")
+    return value
+
+
+def load_component_registry(source: Path) -> dict[str, object]:
+    path = source / "bootstrap" / "runtime_components.json"
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size > MAX_MANIFEST_BYTES
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise BootstrapError("runtime component registry is unsafe")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            encoded = stream.read(MAX_MANIFEST_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        registry = json.loads(encoded)
+    except (ValueError, TypeError) as error:
+        raise BootstrapError("runtime component registry is invalid") from error
+    if (
+        not isinstance(registry, dict)
+        or set(registry) != {"components", "schema"}
+        or registry.get("schema") != COMPONENT_REGISTRY_SCHEMA
+        or encoded != canonical(registry) + b"\n"
+        or not isinstance(registry.get("components"), list)
+        or not registry["components"]
+    ):
+        raise BootstrapError("runtime component registry is not canonical and closed")
+    expected_fields = {
+        "buildContract",
+        "componentId",
+        "componentKind",
+        "inputFiles",
+        "inputRoots",
+        "optionalInputRoots",
+        "toolchainKeys",
+    }
+    component_ids = set()
+    runtime_names = set()
+    distributions = set()
+    core_count = 0
+    for component in registry["components"]:
+        if not isinstance(component, dict) or set(component) != expected_fields:
+            raise BootstrapError("runtime component registry row is invalid")
+        identifier = _component_identifier(component["componentId"], "id")
+        kind = _component_identifier(component["componentKind"], "kind")
+        if identifier in component_ids or kind not in {"core-binary", "language-adapter"}:
+            raise BootstrapError("runtime component registry identity is duplicated or unsupported")
+        component_ids.add(identifier)
+        for field in (
+            "inputFiles",
+            "inputRoots",
+            "optionalInputRoots",
+            "toolchainKeys",
+        ):
+            values = component[field]
+            if (
+                not isinstance(values, list)
+                or (field != "optionalInputRoots" and not values)
+                or not all(isinstance(value, str) and value for value in values)
+                or values != sorted(set(values))
+            ):
+                raise BootstrapError(f"runtime component registry {field} is invalid")
+        for value in [
+            *component["inputFiles"],
+            *component["inputRoots"],
+            *component["optionalInputRoots"],
+        ]:
+            _registry_relative(value, "input path")
+        for value in component["toolchainKeys"]:
+            _component_identifier(value, "toolchain key")
+        contract = component["buildContract"]
+        if not isinstance(contract, dict):
+            raise BootstrapError("runtime component registry build contract is invalid")
+        _validate_component_value(contract)
+        executor = contract.get("executor")
+        if kind == "core-binary":
+            core_count += 1
+            if set(contract) != {"artifactName", "binary", "executor", "package"} or executor != "CARGO":
+                raise BootstrapError("runtime core build contract is invalid")
+            for field in ("artifactName", "binary", "package"):
+                _component_identifier(contract.get(field), field)
+        else:
+            if set(contract) != {
+                "compilerVersion",
+                "distribution",
+                "executor",
+                "manifest",
+                "protocol",
+                "runtimeName",
+                "task",
+            } or executor != "GRADLE":
+                raise BootstrapError("runtime adapter build contract is invalid")
+            runtime_name = _component_identifier(contract.get("runtimeName"), "runtime name")
+            distribution = _registry_relative(contract.get("distribution"), "distribution")
+            _registry_relative(contract.get("manifest"), "manifest")
+            if (
+                runtime_name in runtime_names
+                or distribution in distributions
+                or contract.get("protocol") != "semantic-thread.worker.v1"
+                or not isinstance(contract.get("compilerVersion"), str)
+                or not contract["compilerVersion"]
+                or not isinstance(contract.get("task"), str)
+                or not contract["task"].startswith(":")
+            ):
+                raise BootstrapError("runtime adapter registry authority is invalid")
+            runtime_names.add(runtime_name)
+            distributions.add(distribution)
+    if core_count != 1:
+        raise BootstrapError("runtime component registry must contain exactly one core")
+    return registry
+
+
+def runtime_component_specs(
+    mode: str,
+    inputs: list[dict[str, object]],
+    tools: dict[str, object],
+    registry: dict[str, object],
+) -> list[dict[str, object]]:
+    by_path = {str(row["path"]): row for row in inputs}
+    requested_roots = {
+        root
+        for component in registry["components"]
+        for root in [
+            *component["inputRoots"],
+            *component["optionalInputRoots"],
+        ]
+    }
+    rows_by_root: dict[str, dict[str, dict[str, object]]] = {
+        root: {} for root in requested_roots
+    }
+    for relative, row in by_path.items():
+        parts = relative.split("/")
+        for index in range(1, len(parts)):
+            parent = "/".join(parts[:index])
+            if parent in rows_by_root:
+                rows_by_root[parent][relative] = row
+    specs = []
+    for component in registry["components"]:
+        selected: dict[str, dict[str, object]] = {}
+        for relative in component["inputFiles"]:
+            if relative not in by_path:
+                raise BootstrapError(
+                    f"runtime component input file is absent: {relative}"
+                )
+            selected[relative] = by_path[relative]
+        for root in component["inputRoots"]:
+            matches = rows_by_root[root]
+            if not matches:
+                raise BootstrapError(
+                    f"runtime component input root is empty: {root}"
+                )
+            selected.update(matches)
+        for root in component["optionalInputRoots"]:
+            selected.update(rows_by_root[root])
+        toolchain = {}
+        for key in component["toolchainKeys"]:
+            if key not in tools:
+                raise BootstrapError(
+                    f"runtime component toolchain authority is absent: {key}"
+                )
+            toolchain[key] = tools[key]
+        authority = component_authority(
+            mode,
+            component["componentKind"],
+            component["componentId"],
+            list(selected.values()),
+            toolchain,
+            component["buildContract"],
+        )
+        specs.append({**component, "authority": authority})
+    return specs
+
+
 def _component_file_rows(root: Path) -> list[dict[str, object]]:
     rows = []
     for path in sorted(root.rglob("*"), key=str):
@@ -1327,6 +1509,18 @@ def materialize_component(
     expected_authority: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     component, manifest = verify_component(root, key, expected_authority)
+    return _materialize_verified_component(
+        component, manifest, destination, verify_content=True
+    )
+
+
+def _materialize_verified_component(
+    component: Path,
+    manifest: dict[str, object],
+    destination: Path,
+    *,
+    verify_content: bool,
+) -> list[dict[str, object]]:
     if destination.exists() or destination.is_symlink():
         raise BootstrapError("runtime component materialization target already exists")
     destination.mkdir(mode=0o700, parents=True)
@@ -1337,8 +1531,20 @@ def materialize_component(
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.copyfile(component / "files" / relative, target, follow_symlinks=False)
         os.chmod(target, 0o700 if row["mode"] else 0o600)
-    if _component_file_rows(destination) != rows:
-        raise BootstrapError("runtime component materialization mismatch")
+    if verify_content:
+        if _component_file_rows(destination) != rows:
+            raise BootstrapError("runtime component materialization mismatch")
+    else:
+        for row in rows:
+            target = destination / str(row["path"])
+            metadata = target.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_size != row["size"]
+                or bool(metadata.st_mode & 0o111) != bool(row["mode"])
+            ):
+                raise BootstrapError("runtime component materialization metadata mismatch")
     return rows
 
 
@@ -1364,7 +1570,9 @@ def stage_inputs(
     verify_source_manifest(destination, rows, full_closure=False)
 
 
-def build_environment(stage: Path, root: Path) -> dict[str, str]:
+def build_environment(
+    stage: Path, root: Path, *, gradle_required: bool = True
+) -> dict[str, str]:
     environment = sanitized_environment()
     cargo_target = stage.parent / "cargo-target"
     cargo_target.mkdir(mode=0o700)
@@ -1384,10 +1592,11 @@ def build_environment(stage: Path, root: Path) -> dict[str, str]:
     ]
     environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(remaps)
     environment["GIT_TERMINAL_PROMPT"] = "0"
-    gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
-    for relative in ["init.gradle", "init.gradle.kts", "init.d"]:
-        if (gradle_home / relative).exists():
-            raise BootstrapError("Gradle init injection is unsupported for trusted capsule builds")
+    if gradle_required:
+        gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
+        for relative in ["init.gradle", "init.gradle.kts", "init.d"]:
+            if (gradle_home / relative).exists():
+                raise BootstrapError("Gradle init injection is unsupported for trusted capsule builds")
     return environment
 
 
@@ -1531,7 +1740,7 @@ def runtime_build_plan(
         "cargoWorkers": cargo_workers,
         "gradleWorkers": gradle_workers,
         "inputWorkers": min(8, cpu_count) if parallel else 1,
-        "packageWorkers": len(WORKERS) if parallel else 1,
+        "packageWorkers": min(8, cpu_count) if parallel else 1,
         "memoryBudgetBytes": memory_budget,
     }
 
@@ -1551,51 +1760,52 @@ def build_toolchains(
     stage: Path,
     environment: dict[str, str],
     plan: dict[str, object] | None = None,
+    *,
+    cargo_required: bool = True,
+    gradle_tasks: list[str] | None = None,
 ) -> dict[str, object]:
     plan = plan or runtime_build_plan(os.cpu_count() or 1, host_memory_bytes())
-    gradle = [
-        str(stage / "gradlew"),
-        ":workers:kotlin21:installDist",
-        ":workers:kotlin23:installDist",
-        ":workers:kotlin:installDist",
-        "--no-daemon",
-        *(["--parallel"] if plan["parallel"] else []),
-        "--no-build-cache" if plan["profile"] in {"SERIAL", "PARALLEL"} else "--build-cache",
-        f"--max-workers={plan['gradleWorkers']}",
-        "--quiet",
-    ]
-    cargo = [
-        "cargo", "build", "--locked", "--release", "-p", "clew",
-        "--bin", "clew", "--jobs", str(plan["cargoWorkers"]),
-    ]
+    gradle_tasks = sorted(set(gradle_tasks or []))
+    stages: list[tuple[str, list[str]]] = []
+    if gradle_tasks:
+        stages.append(("GRADLE_WORKERS", [
+            str(stage / "gradlew"),
+            *gradle_tasks,
+            "--no-daemon",
+            *(["--parallel"] if plan["parallel"] else []),
+            "--no-build-cache" if plan["profile"] in {"SERIAL", "PARALLEL"} else "--build-cache",
+            f"--max-workers={plan['gradleWorkers']}",
+            "--quiet",
+        ]))
+    if cargo_required:
+        stages.append(("CARGO_BINARIES", [
+            "cargo", "build", "--locked", "--release", "-p", "clew",
+            "--bin", "clew", "--jobs", str(plan["cargoWorkers"]),
+        ]))
     supervisor = BuildProcessSupervisor()
-    max_workers = 2 if plan["parallel"] else 1
+    max_workers = min(len(stages), 2) if plan["parallel"] else 1
+    if not stages:
+        return {**plan, "toolchainStages": []}
     with build_signal_scope(supervisor):
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 try:
-                    if plan["parallel"]:
+                    if plan["parallel"] and len(stages) > 1:
                         futures = [
                             executor.submit(
-                                run_build_stage, gradle, stage, environment,
-                                "GRADLE_WORKERS", supervisor,
-                            ),
-                            executor.submit(
-                                run_build_stage, cargo, stage, environment,
-                                "CARGO_BINARIES", supervisor,
-                            ),
+                                run_build_stage, arguments, stage, environment,
+                                name, supervisor,
+                            )
+                            for name, arguments in stages
                         ]
                         for future in futures:
                             future.result()
                     else:
-                        executor.submit(
-                            run_build_stage, gradle, stage, environment,
-                            "GRADLE_WORKERS", supervisor,
-                        ).result()
-                        executor.submit(
-                            run_build_stage, cargo, stage, environment,
-                            "CARGO_BINARIES", supervisor,
-                        ).result()
+                        for name, arguments in stages:
+                            executor.submit(
+                                run_build_stage, arguments, stage, environment,
+                                name, supervisor,
+                            ).result()
                 except BaseException:
                     # Cancel before ThreadPoolExecutor.__exit__ waits for the
                     # sibling stage, otherwise a failed Gradle task could leave
@@ -1605,29 +1815,7 @@ def build_toolchains(
         except BaseException:
             supervisor.cancel()
             raise
-    return plan
-
-
-def package_worker(
-    stage: Path,
-    capsule: Path,
-    mode: str,
-    item: tuple[str, tuple[str, str, str]],
-) -> tuple[str, dict[str, object]]:
-    name, (compiler, distribution, manifest) = item
-    source_distribution = stage / distribution
-    destination = capsule / distribution
-    shutil.copytree(source_distribution, destination, symlinks=False)
-    rows = file_rows(destination)
-    if mode == "RELEASE":
-        verify_release_worker(stage, manifest, rows)
-    return name, {
-        "compilerVersion": compiler,
-        "protocol": "semantic-thread.worker.v1",
-        "distribution": distribution,
-        "treeHash": tree_hash(rows),
-        "files": rows,
-    }
+    return {**plan, "toolchainStages": [name for name, _arguments in stages]}
 
 
 def seal_capsule(capsule: Path, *, seal_root: bool = True) -> None:
@@ -1702,39 +1890,156 @@ def build_capsule(
 ) -> Path:
     started = time.monotonic()
     plan = runtime_build_plan(os.cpu_count() or 1, host_memory_bytes(), build_profile)
+    registry = load_component_registry(source)
+    specs = runtime_component_specs(mode, inputs, tools, registry)
     temporary = Path(tempfile.mkdtemp(prefix="capsule-build-", dir=root / "tmp"))
     stage = temporary / "source"
     capsule = temporary / "capsule"
     try:
-        stage_inputs(source, stage, inputs, workers=int(plan["inputWorkers"]))
-        environment = build_environment(stage, root)
         build_cache_lock = root / "locks/build-cache.lock"
         with build_cache_lock.open("a+b") as lock:
             os.chmod(build_cache_lock, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
-            build_toolchains(stage, environment, plan)
-        verify_source_manifest(stage, inputs, full_closure=False)
-        (capsule / "bin").mkdir(mode=0o700, parents=True)
-        cargo_target = Path(environment["CARGO_TARGET_DIR"]) / "release"
-        for name in ["clew"]:
-            shutil.copy2(cargo_target / name, capsule / "bin" / name)
-            os.chmod(capsule / "bin" / name, 0o500)
-        progress("STAGE_STARTED", "PACKAGE_AND_HASH_WORKERS")
-        with ThreadPoolExecutor(max_workers=int(plan["packageWorkers"])) as executor:
-            packaged = executor.map(
-                lambda item: package_worker(stage, capsule, mode, item),
-                WORKERS.items(),
-            )
-            workers = dict(packaged)
-        progress("STAGE_COMPLETED", "PACKAGE_AND_HASH_WORKERS")
+            component_hits = []
+            missing_specs = []
+            verified_components: dict[
+                str, tuple[Path, dict[str, object]]
+            ] = {}
+            for spec in specs:
+                authority = spec["authority"]
+                try:
+                    verified_components[spec["componentId"]] = verify_component(
+                        root, authority["componentKey"], authority
+                    )
+                    component_hits.append(spec["componentId"])
+                except (FileNotFoundError, BootstrapError, OSError, ValueError, TypeError):
+                    missing_specs.append(spec)
+            build_result = {**plan, "toolchainStages": []}
+            if missing_specs:
+                stage_inputs(
+                    source, stage, inputs, workers=int(plan["inputWorkers"])
+                )
+                cargo_required = any(
+                    spec["buildContract"]["executor"] == "CARGO"
+                    for spec in missing_specs
+                )
+                gradle_tasks = [
+                    spec["buildContract"]["task"]
+                    for spec in missing_specs
+                    if spec["buildContract"]["executor"] == "GRADLE"
+                ]
+                environment = build_environment(
+                    stage, root, gradle_required=bool(gradle_tasks)
+                )
+                build_result = build_toolchains(
+                    stage,
+                    environment,
+                    plan,
+                    cargo_required=cargo_required,
+                    gradle_tasks=gradle_tasks,
+                )
+                verify_source_manifest(stage, inputs, full_closure=False)
+                outputs = temporary / "component-outputs"
+                outputs.mkdir(mode=0o700)
+                for spec in missing_specs:
+                    contract = spec["buildContract"]
+                    if contract["executor"] == "CARGO":
+                        output = outputs / spec["componentId"]
+                        output.mkdir(mode=0o700)
+                        source_binary = (
+                            Path(environment["CARGO_TARGET_DIR"])
+                            / "release"
+                            / contract["binary"]
+                        )
+                        target = output / contract["artifactName"]
+                        shutil.copy2(source_binary, target)
+                        os.chmod(target, 0o700)
+                    else:
+                        output = stage / contract["distribution"]
+                        if mode == "RELEASE":
+                            verify_release_worker(
+                                stage, contract["manifest"], file_rows(output)
+                            )
+                    publish_component(root, spec["authority"], output)
+                    verified_components[spec["componentId"]] = verify_component(
+                        root,
+                        spec["authority"]["componentKey"],
+                        spec["authority"],
+                    )
+
+            progress("STAGE_STARTED", "ASSEMBLE_VERIFIED_COMPONENTS")
+            core_specs = [
+                spec for spec in specs if spec["componentKind"] == "core-binary"
+            ]
+            adapter_specs = [
+                spec for spec in specs if spec["componentKind"] == "language-adapter"
+            ]
+            (capsule / "bin").mkdir(mode=0o700, parents=True)
+
+            def assemble(spec: dict[str, object]) -> None:
+                contract = spec["buildContract"]
+                destination = (
+                    capsule / "bin"
+                    if spec["componentKind"] == "core-binary"
+                    else capsule / contract["distribution"]
+                )
+                component, component_manifest = verified_components[
+                    spec["componentId"]
+                ]
+                _materialize_verified_component(
+                    component,
+                    component_manifest,
+                    destination,
+                    verify_content=False,
+                )
+
+            # The core target directory already exists because it is part of
+            # capsule layout; materialize it through a temporary sibling and
+            # atomically move each verified artifact into bin.
+            for spec in core_specs:
+                temporary_core = capsule / f".component-{spec['componentId']}"
+                component, component_manifest = verified_components[
+                    spec["componentId"]
+                ]
+                _materialize_verified_component(
+                    component,
+                    component_manifest,
+                    temporary_core,
+                    verify_content=False,
+                )
+                for artifact in temporary_core.iterdir():
+                    os.replace(artifact, capsule / "bin" / artifact.name)
+                temporary_core.rmdir()
+            with ThreadPoolExecutor(
+                max_workers=max(1, min(int(plan["packageWorkers"]), len(adapter_specs)))
+            ) as executor:
+                list(executor.map(assemble, adapter_specs))
+            progress("STAGE_COMPLETED", "ASSEMBLE_VERIFIED_COMPONENTS")
+
+        workers = {}
+        for spec in adapter_specs:
+            contract = spec["buildContract"]
+            rows = file_rows(capsule / contract["distribution"])
+            workers[contract["runtimeName"]] = {
+                "compilerVersion": contract["compilerVersion"],
+                "protocol": contract["protocol"],
+                "distribution": contract["distribution"],
+                "treeHash": tree_hash(rows),
+                "files": rows,
+            }
         verify_capsule_has_no_private_paths(
             capsule,
             [source, temporary, stage, root, Path.home()],
         )
         artifacts = {}
-        for name in ["clew"]:
+        for spec in core_specs:
+            name = spec["buildContract"]["artifactName"]
             path = capsule / "bin" / name
-            artifacts[name] = {"path": f"bin/{name}", "size": path.stat().st_size, "sha256": digest_file(path)}
+            artifacts[name] = {
+                "path": f"bin/{name}",
+                "size": path.stat().st_size,
+                "sha256": digest_file(path),
+            }
         manifest = {
             "schema": SCHEMA,
             "runtimeKey": key,
@@ -1748,6 +2053,10 @@ def build_capsule(
                 "jdk": tools["jdk"],
             },
             "artifacts": artifacts,
+            "components": {
+                spec["componentId"]: spec["authority"]["componentKey"]
+                for spec in specs
+            },
             "workers": workers,
         }
         manifest["manifestDigest"] = digest_bytes(canonical(manifest))
@@ -1758,7 +2067,6 @@ def build_capsule(
             inputs,
             expected_development=mode == "DEVELOPMENT",
         )
-        verify_capsule(capsule, key, require_sealed=False, require_ready=False)
         ready = capsule / "READY"
         ready.write_text(key + "\n")
         # macOS refuses to rename a directory whose own mode is 0500. Seal every
@@ -1766,9 +2074,9 @@ def build_capsule(
         # then seal that root before releasing the per-key lock.
         seal_capsule(capsule, seal_root=False)
         fsync_tree(capsule)
-        verify_capsule(capsule, key, require_sealed=False)
         destination = root / "runtimes" / key.removeprefix("sha256:")
         if destination.exists():
+            verify_capsule(destination, key)
             return destination
         os.rename(capsule, destination)
         try:
@@ -1785,7 +2093,11 @@ def build_capsule(
             raise BootstrapError("published capsule could not be sealed") from error
         if evidence is not None:
             evidence.update({
-                "buildPlan": plan,
+                "buildPlan": build_result,
+                "componentHits": sorted(component_hits),
+                "componentMisses": sorted(
+                    spec["componentId"] for spec in missing_specs
+                ),
                 "wallMillis": int((time.monotonic() - started) * 1000),
             })
         return destination
@@ -1806,12 +2118,20 @@ def verify_capsule(
     manifest = json.loads(manifest_path.read_bytes())
     expected = manifest.get("manifestDigest")
     manifest["manifestDigest"] = ""
+    components = manifest.get("components")
     if (
         manifest.get("schema") != SCHEMA
         or expected != digest_bytes(canonical(manifest))
         or manifest.get("runtimeKey") != key
         or not isinstance(manifest.get("platformAuthority"), dict)
         or not isinstance(manifest.get("toolchainAuthority"), dict)
+        or not isinstance(components, dict)
+        or not components
+        or any(
+            _component_identifier(name, "manifest id") != name
+            or not valid_runtime_key(component_key)
+            for name, component_key in components.items()
+        )
     ):
         raise BootstrapError("runtime manifest authority mismatch")
     manifest["manifestDigest"] = expected
@@ -2263,7 +2583,6 @@ def main() -> int:
                     build_profile=cold_evidence_profile or "AUTO",
                     evidence=cold_build_evidence if cold_evidence_profile is not None else None,
                 )
-            verify_capsule(capsule, key)
             write_locator(path_to_locator, locator, key)
             write_checkpoint(
                 path_to_checkpoint, source, capsule, key, mode, inputs, fast_tools

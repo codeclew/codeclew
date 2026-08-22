@@ -136,7 +136,9 @@ class BootstrapAuthorityTest(unittest.TestCase):
             mock.patch.object(bootstrap, "run_build_stage", side_effect=stage),
         ):
             with self.assertRaisesRegex(bootstrap.BootstrapError, "Gradle failed"):
-                bootstrap.build_toolchains(Path("/stage"), {})
+                bootstrap.build_toolchains(
+                    Path("/stage"), {}, gradle_tasks=[":adapter:installDist"]
+                )
         self.assertTrue(sibling_observed_cancel.is_set())
 
     def test_explicit_cold_build_profiles_control_all_parallelism(self) -> None:
@@ -151,7 +153,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
             (parallel["parallel"], parallel["cargoWorkers"], parallel["gradleWorkers"]),
             (True, 8, 8),
         )
-        self.assertEqual((parallel["inputWorkers"], parallel["packageWorkers"]), (8, 3))
+        self.assertEqual((parallel["inputWorkers"], parallel["packageWorkers"]), (8, 8))
         with self.assertRaisesRegex(bootstrap.BootstrapError, "cannot admit"):
             bootstrap.runtime_build_plan(1, 4 * 1024**3, "PARALLEL")
 
@@ -169,7 +171,9 @@ class BootstrapAuthorityTest(unittest.TestCase):
 
         serial = bootstrap.runtime_build_plan(8, 32 * 1024**3, "SERIAL")
         with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
-            bootstrap.build_toolchains(Path("/stage"), {}, serial)
+            bootstrap.build_toolchains(
+                Path("/stage"), {}, serial, gradle_tasks=[":adapter:installDist"]
+            )
         self.assertEqual([name for name, _ in observed], ["GRADLE_WORKERS", "CARGO_BINARIES"])
         gradle, cargo = (arguments for _, arguments in observed)
         self.assertNotIn("--parallel", gradle)
@@ -180,7 +184,9 @@ class BootstrapAuthorityTest(unittest.TestCase):
         observed.clear()
         parallel = bootstrap.runtime_build_plan(8, 32 * 1024**3, "PARALLEL")
         with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
-            bootstrap.build_toolchains(Path("/stage"), {}, parallel)
+            bootstrap.build_toolchains(
+                Path("/stage"), {}, parallel, gradle_tasks=[":adapter:installDist"]
+            )
         self.assertEqual({name for name, _ in observed}, {"GRADLE_WORKERS", "CARGO_BINARIES"})
         gradle = next(arguments for name, arguments in observed if name == "GRADLE_WORKERS")
         cargo = next(arguments for name, arguments in observed if name == "CARGO_BINARIES")
@@ -188,6 +194,38 @@ class BootstrapAuthorityTest(unittest.TestCase):
         self.assertIn("--no-build-cache", gradle)
         self.assertIn("--max-workers=4", gradle)
         self.assertEqual(cargo[-2:], ["--jobs", "4"])
+
+    def test_component_misses_start_only_the_required_toolchain(self) -> None:
+        observed: list[str] = []
+
+        def record(
+            _arguments: list[str],
+            _cwd: Path,
+            _environment: dict[str, str],
+            name: str,
+            _supervisor: bootstrap.BuildProcessSupervisor,
+        ) -> None:
+            observed.append(name)
+
+        plan = bootstrap.runtime_build_plan(8, 32 * 1024**3, "PARALLEL")
+        with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
+            result = bootstrap.build_toolchains(
+                Path("/stage"),
+                {},
+                plan,
+                cargo_required=False,
+                gradle_tasks=[":zeta:installDist"],
+            )
+        self.assertEqual(observed, ["GRADLE_WORKERS"])
+        self.assertEqual(result["toolchainStages"], ["GRADLE_WORKERS"])
+
+        observed.clear()
+        with mock.patch.object(bootstrap, "run_build_stage", side_effect=record):
+            result = bootstrap.build_toolchains(
+                Path("/stage"), {}, plan, cargo_required=True, gradle_tasks=[]
+            )
+        self.assertEqual(observed, ["CARGO_BINARIES"])
+        self.assertEqual(result["toolchainStages"], ["CARGO_BINARIES"])
 
     def test_concurrent_runtime_lock_admits_exactly_one_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -372,6 +410,223 @@ class BootstrapAuthorityTest(unittest.TestCase):
             self.assertEqual(results.count("published"), 1)
             self.assertEqual(results.count("reused"), 3)
             bootstrap.verify_component(root, authority["componentKey"], authority)
+
+    def test_runtime_component_registry_partitions_real_relevant_inputs(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        registry = bootstrap.load_component_registry(repository)
+        inputs, _development = bootstrap.source_manifest(repository)
+        tools = {
+            "jdk": {"digest": "sha256:" + "1" * 64},
+            "platform": {"digest": "sha256:" + "2" * 64},
+            "rust": {"digest": "sha256:" + "3" * 64},
+        }
+        first = bootstrap.runtime_component_specs(
+            "RELEASE", inputs, tools, registry
+        )
+        self.assertEqual(
+            [spec["componentId"] for spec in first],
+            ["clew", "kotlin21", "kotlin23", "kotlin24"],
+        )
+        unrelated = [dict(row) for row in inputs]
+        bootstrap_row = next(
+            row for row in unrelated if row["path"] == "bootstrap/clew_bootstrap.py"
+        )
+        bootstrap_row["sha256"] = "sha256:" + "4" * 64
+        second = bootstrap.runtime_component_specs(
+            "RELEASE", unrelated, tools, registry
+        )
+        self.assertEqual(
+            [spec["authority"]["componentKey"] for spec in first],
+            [spec["authority"]["componentKey"] for spec in second],
+        )
+
+        changed = [dict(row) for row in inputs]
+        kotlin23_row = next(
+            row
+            for row in changed
+            if str(row["path"]).startswith("workers/kotlin23/src/main/")
+        )
+        kotlin23_row["sha256"] = "sha256:" + "5" * 64
+        third = bootstrap.runtime_component_specs(
+            "RELEASE", changed, tools, registry
+        )
+        changed_ids = {
+            before["componentId"]
+            for before, after in zip(first, third, strict=True)
+            if before["authority"]["componentKey"]
+            != after["authority"]["componentKey"]
+        }
+        self.assertEqual(changed_ids, {"clew", "kotlin23"})
+
+    def test_component_registry_accepts_a_new_gradle_language_without_core_changes(self) -> None:
+        repository = MODULE_PATH.parent.parent
+        registry = bootstrap.load_component_registry(repository)
+        registry = json.loads(json.dumps(registry))
+        registry["components"].append({
+            "buildContract": {
+                "compilerVersion": "1.0",
+                "distribution": "adapters/zeta/build/install/zeta",
+                "executor": "GRADLE",
+                "manifest": "adapters/zeta/manifest.json",
+                "protocol": "semantic-thread.worker.v1",
+                "runtimeName": "zeta",
+                "task": ":adapters:zeta:installDist",
+            },
+            "componentId": "zeta",
+            "componentKind": "language-adapter",
+            "inputFiles": ["build.gradle.kts"],
+            "inputRoots": ["adapters/zeta/src/main"],
+            "optionalInputRoots": [],
+            "toolchainKeys": ["jdk", "platform"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "bootstrap").mkdir()
+            (source / "bootstrap/runtime_components.json").write_bytes(
+                bootstrap.canonical(registry) + b"\n"
+            )
+            loaded = bootstrap.load_component_registry(source)
+        self.assertEqual(loaded["components"][-1]["componentId"], "zeta")
+
+    def test_capsule_assembly_all_hit_runs_no_stage_or_toolchain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            source.mkdir()
+            for relative in [
+                "runtimes/components",
+                "locks",
+                "tmp",
+                "quarantine",
+            ]:
+                (root / relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+            core_output = root / "core-output"
+            core_output.mkdir()
+            core_binary = core_output / "clew"
+            core_binary.write_bytes(b"core")
+            core_binary.chmod(0o700)
+            adapter_output = root / "adapter-output"
+            (adapter_output / "bin").mkdir(parents=True)
+            adapter_binary = adapter_output / "bin/zeta"
+            adapter_binary.write_bytes(b"adapter")
+            adapter_binary.chmod(0o700)
+            input_row = {
+                "mode": 0,
+                "path": "input",
+                "sha256": "sha256:" + "1" * 64,
+                "size": 1,
+            }
+            core_authority = bootstrap.component_authority(
+                "RELEASE",
+                "core-binary",
+                "clew",
+                [input_row],
+                {"rust": "sha256:" + "2" * 64},
+                {"artifactName": "clew", "binary": "clew", "executor": "CARGO", "package": "clew"},
+            )
+            adapter_authority = bootstrap.component_authority(
+                "RELEASE",
+                "language-adapter",
+                "zeta",
+                [input_row],
+                {"compiler": "sha256:" + "3" * 64},
+                {
+                    "compilerVersion": "1.0",
+                    "distribution": "adapters/zeta",
+                    "executor": "GRADLE",
+                    "manifest": "manifests/zeta.json",
+                    "protocol": "semantic-thread.worker.v1",
+                    "runtimeName": "zeta",
+                    "task": ":zeta:installDist",
+                },
+            )
+            bootstrap.publish_component(root, core_authority, core_output)
+            bootstrap.publish_component(root, adapter_authority, adapter_output)
+            specs = [
+                {
+                    "authority": core_authority,
+                    "buildContract": {
+                        "artifactName": "clew",
+                        "binary": "clew",
+                        "executor": "CARGO",
+                        "package": "clew",
+                    },
+                    "componentId": "clew",
+                    "componentKind": "core-binary",
+                },
+                {
+                    "authority": adapter_authority,
+                    "buildContract": {
+                        "compilerVersion": "1.0",
+                        "distribution": "adapters/zeta",
+                        "executor": "GRADLE",
+                        "manifest": "manifests/zeta.json",
+                        "protocol": "semantic-thread.worker.v1",
+                        "runtimeName": "zeta",
+                        "task": ":zeta:installDist",
+                    },
+                    "componentId": "zeta",
+                    "componentKind": "language-adapter",
+                },
+            ]
+            plan = {
+                "cargoWorkers": 1,
+                "gradleWorkers": 1,
+                "inputWorkers": 1,
+                "memoryBudgetBytes": 1,
+                "packageWorkers": 2,
+                "parallel": True,
+                "profile": "AUTO",
+            }
+            evidence = {}
+            runtime_key = "sha256:" + "9" * 64
+            tools = {
+                "jdk": {},
+                "platform": {},
+                "python": {},
+                "rust": {},
+            }
+            with (
+                mock.patch.object(bootstrap, "runtime_build_plan", return_value=plan),
+                mock.patch.object(bootstrap, "load_component_registry", return_value={}),
+                mock.patch.object(bootstrap, "runtime_component_specs", return_value=specs),
+                mock.patch.object(bootstrap, "verify_source_manifest"),
+                mock.patch.object(
+                    bootstrap,
+                    "stage_inputs",
+                    side_effect=AssertionError("component hit staged source"),
+                ),
+                mock.patch.object(
+                    bootstrap,
+                    "build_environment",
+                    side_effect=AssertionError("component hit prepared a build environment"),
+                ),
+                mock.patch.object(
+                    bootstrap,
+                    "build_toolchains",
+                    side_effect=AssertionError("component hit started a toolchain"),
+                ),
+            ):
+                capsule = bootstrap.build_capsule(
+                    source,
+                    root,
+                    runtime_key,
+                    "RELEASE",
+                    [input_row],
+                    tools,
+                    evidence=evidence,
+                )
+            self.assertEqual(evidence["componentHits"], ["clew", "zeta"])
+            self.assertEqual(evidence["componentMisses"], [])
+            self.assertEqual(evidence["buildPlan"]["toolchainStages"], [])
+            manifest = bootstrap.verify_capsule(capsule, runtime_key)
+            self.assertEqual(
+                manifest["components"],
+                {
+                    "clew": core_authority["componentKey"],
+                    "zeta": adapter_authority["componentKey"],
+                },
+            )
 
     def test_selected_closure_excludes_root_and_nested_legacy_state(self) -> None:
         self.assertFalse(bootstrap.selected_source(".semantic-thread/private"))
