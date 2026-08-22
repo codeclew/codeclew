@@ -150,17 +150,36 @@ class BtaIncrementalBackend21 internal constructor(
             }
         }
         val sortedSources = snapshot.files.map(K2SourceFile21::file)
-        val compilation = compiler.compile(
-            BtaCompileRequest21(
-                request = request.copy(sources = sortedSources),
-                sources = sortedSources,
-                workingRoot = mutable,
-                factsOutput = factsOutput,
-                full = full,
-                modifiedSources = modified,
-                removedSources = removed,
-            ),
-        )
+        val compilation = try {
+            compiler.compile(
+                BtaCompileRequest21(
+                    request = request.copy(sources = sortedSources),
+                    sources = sortedSources,
+                    workingRoot = mutable,
+                    factsOutput = factsOutput,
+                    full = full,
+                    modifiedSources = modified,
+                    removedSources = removed,
+                ),
+            )
+        } catch (error: Exception) {
+            if (error is InterruptedException) Thread.currentThread().interrupt()
+            return failed21(
+                status,
+                started,
+                "K2_BACKEND_COMPILE_EXCEPTION",
+                totalFiles = snapshot.files.size,
+                recovered = recovery,
+            )
+        } catch (_: LinkageError) {
+            return failed21(
+                status,
+                started,
+                "K2_BACKEND_COMPILE_LINKAGE",
+                totalFiles = snapshot.files.size,
+                recovered = recovery,
+            )
+        }
         require(compilation.compilerMicros >= 0) { "negative compiler time" }
         require(compilation.compilerVersion == request.expectedCompilerVersion) {
             "compiler version changed during compilation"
