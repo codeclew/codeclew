@@ -318,7 +318,7 @@ locator_path = root / "current.json"
 locator = json.loads(read_private(locator_path, 0o600, 4096, "trusted seed locator"))
 epoch = locator.get("epoch")
 if (
-    locator.get("schema") != "codeclew-trusted-seed-locator/1.0"
+    locator.get("schema") != "codeclew-trusted-seed-locator/2.0"
     or not isinstance(epoch, str)
     or re.fullmatch(r"release-N-[0-9a-f]{40}", epoch) is None
     or pathlib.PurePath(epoch).name != epoch

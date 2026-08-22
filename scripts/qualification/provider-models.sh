@@ -110,7 +110,7 @@ def resolve_seed():
     locator = json.loads(locator_path.read_bytes())
     epoch = locator.get("epoch")
     if (
-        locator.get("schema") != "codeclew-trusted-seed-locator/1.0"
+        locator.get("schema") != "codeclew-trusted-seed-locator/2.0"
         or not isinstance(epoch, str)
         or re.fullmatch(r"release-N-[0-9a-f]{40}", epoch) is None
         or pathlib.PurePath(epoch).name != epoch

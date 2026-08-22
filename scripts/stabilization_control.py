@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,11 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).resolve().parent.parent
 PLAN_PATH = ROOT / "docs" / "stabilization-plan.json"
 VERIFIER = ROOT / "scripts" / "stabilization_verifier.py"
+CONTROLLER_AUTHORITY_SOURCES = (
+    "bootstrap/clew_bootstrap.py",
+    "scripts/stabilization_control.py",
+    "scripts/trusted_seed_gc.py",
+)
 PLAN_SCHEMA = "codeclew-stabilization-plan/2.0"
 _DYNAMIC_AUTHORITY_CACHE: dict[str, object] = {}
 
@@ -187,7 +193,11 @@ def validate_plan(plan: object) -> dict[str, object]:
             "step",
             "tier",
         }
-        allowed_check_keys = required_check_keys | {"dynamicAuthorities", "prepare"}
+        allowed_check_keys = required_check_keys | {
+            "dynamicAuthorities",
+            "postconditions",
+            "prepare",
+        }
         if (
             not isinstance(check, dict)
             or not required_check_keys.issubset(check)
@@ -212,6 +222,9 @@ def validate_plan(plan: object) -> dict[str, object]:
         dynamic_authorities = check.get("dynamicAuthorities", [])
         if not valid_dynamic_authorities(dynamic_authorities, check["environmentKeys"]):
             raise ControlError("invalid dynamic authority list")
+        postconditions = check.get("postconditions", [])
+        if not valid_dynamic_authorities(postconditions, check["environmentKeys"]):
+            raise ControlError("invalid postcondition authority list")
         if check["gate"] is not None and (not isinstance(check["gate"], str) or not check["gate"]):
             raise ControlError("invalid gate identifier")
         prepare = check.get("prepare")
@@ -265,12 +278,19 @@ def state_root() -> Path:
     return root
 
 
+def controller_source_digests() -> dict[str, str]:
+    return {
+        relative: digest_bytes((ROOT / relative).read_bytes())
+        for relative in CONTROLLER_AUTHORITY_SOURCES
+    }
+
+
 def authorities(plan: dict[str, object]) -> dict[str, str]:
     python_runtime_digest = digest_bytes(canonical(native_python_runtime_authority()))
     return {
         "controllerDigest": digest_bytes(canonical({
             "pythonRuntimeDigest": python_runtime_digest,
-            "sourceDigest": digest_bytes(Path(__file__).read_bytes()),
+            "sourceDigests": controller_source_digests(),
         })),
         "planDigest": digest_bytes(canonical(plan)),
         "verifierDigest": digest_bytes(canonical({
@@ -389,6 +409,15 @@ def dynamic_authority_digest(
             values[authority] = "MISSING"
         _DYNAMIC_AUTHORITY_CACHE[authority] = values[authority]
     return digest_bytes(canonical(values))
+
+
+def postcondition_authority_digest(
+    check: dict[str, object], *, refresh: bool = False
+) -> str:
+    return dynamic_authority_digest(
+        {"dynamicAuthorities": check.get("postconditions", [])},
+        refresh=refresh,
+    )
 
 
 def read_owned_file(
@@ -1399,91 +1428,23 @@ def trusted_seed_authority_digest() -> str:
     root = Path(configured) if configured else Path.home() / ".cache" / "codeclew-seeds"
     if not root.is_absolute() or ".." in root.parts:
         raise ControlError("trusted seed home must be normalized and absolute")
-    locator_path = root / "current.json"
-    try:
-        locator_bytes = read_owned_file(
-            locator_path, 4096, "trusted seed locator", expected_mode=0o600
-        )
-        locator = json.loads(locator_bytes)
-        epoch = locator.get("epoch") if isinstance(locator, dict) else None
-        if (
-            not isinstance(locator, dict)
-            or locator.get("schema") != "codeclew-trusted-seed-locator/1.0"
-            or not isinstance(epoch, str)
-            or len(epoch) != len("release-N-") + 40
-            or not epoch.startswith("release-N-")
-            or not all(character in "0123456789abcdef" for character in epoch[10:])
-            or Path(epoch).name != epoch
-        ):
-            raise ControlError("trusted seed locator authority is invalid")
-        epoch_root = root / epoch
-        parallel_root = epoch_root / "parallel-state"
-        state_root = parallel_root / "v2"
-        runtimes_root = state_root / "runtimes"
-        for path in (epoch_root, parallel_root, state_root, runtimes_root):
-            metadata = path.lstat()
-            if (
-                not stat.S_ISDIR(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or metadata.st_uid != os.geteuid()
-                or stat.S_IMODE(metadata.st_mode) != 0o700
-                or path.resolve(strict=True) != path
-            ):
-                raise ControlError("trusted seed state authority is unsafe")
-        seed_path = epoch_root / "seed.json"
-        seed_bytes = read_owned_file(
-            seed_path, 1024 * 1024, "trusted seed file", expected_mode=0o400
-        )
-        seed = json.loads(seed_bytes)
-        runtime_key = seed.get("runtimeKey") if isinstance(seed, dict) else None
-        unsigned_seed = dict(seed) if isinstance(seed, dict) else {}
-        expected_seed_digest = unsigned_seed.pop("seedDigest", None)
-        expected_seed_fields = {
-            "artifactHashes",
-            "buildEvidenceDigests",
-            "manifestDigest",
-            "mode",
-            "runtimeKey",
-            "schema",
-            "seedDigest",
-            "sourceRevision",
-            "sourceTree",
-            "stateEpoch",
-            "workerTreeHashes",
-        }
-        if (
-            not isinstance(seed, dict)
-            or set(seed) != expected_seed_fields
-            or seed.get("schema") != "codeclew-trusted-release-seed/1.0"
-            or seed.get("mode") != "RELEASE"
-            or expected_seed_digest != digest_bytes(canonical(unsigned_seed))
-            or locator.get("runtimeKey") != runtime_key
-            or locator.get("seedDigest") != seed.get("seedDigest")
-            or not isinstance(runtime_key, str)
-            or len(runtime_key) != 71
-            or not runtime_key.startswith("sha256:")
-            or not all(character in "0123456789abcdef" for character in runtime_key[7:])
-            or seed.get("sourceRevision") != git("rev-parse", "HEAD")
-            or seed.get("sourceTree") != git("rev-parse", "HEAD^{tree}")
-        ):
-            raise ControlError("trusted seed content authority is invalid")
-        capsule = runtimes_root / runtime_key[7:]
-        manifest_bytes, capsule_digest = trusted_capsule_authority(
-            capsule, runtime_key, seed
-        )
-    except FileNotFoundError as error:
-        raise ControlError("trusted seed authority is missing") from error
-    return digest_bytes(
-        canonical(
-            {
-                "locator": digest_bytes(locator_bytes),
-                "manifest": digest_bytes(manifest_bytes),
-                "capsule": capsule_digest,
-                "seed": digest_bytes(seed_bytes),
-            }
-        )
+    module_path = ROOT / "scripts" / "trusted_seed_gc.py"
+    specification = importlib.util.spec_from_file_location(
+        "_codeclew_seed_authority", module_path
     )
-
+    if specification is None or specification.loader is None:
+        raise ControlError("trusted seed authority verifier is unavailable")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    try:
+        specification.loader.exec_module(module)
+        return module.authority_digest(
+            str(root),
+            git("rev-parse", "HEAD"),
+            git("rev-parse", "HEAD^{tree}"),
+        )
+    except Exception as error:
+        raise ControlError("trusted seed authority is invalid") from error
 
 def evidence_digest(
     check: dict[str, object],
@@ -1601,6 +1562,12 @@ def valid_completion(
             check_id: check_authority_digest(model["checks"][check_id], authority)
             for check_id in model["steps"][step]["requiredChecks"]
         }
+        postconditions = {
+            check_id: postcondition_authority_digest(
+                model["checks"][check_id], refresh=True
+            )
+            for check_id in model["steps"][step]["requiredChecks"]
+        }
     except ControlError:
         return False
     return (
@@ -1608,6 +1575,7 @@ def valid_completion(
         and value.get("status") == "COMPLETE"
         and value.get("stepId") == step
         and value.get("checkAuthorities") == required
+        and value.get("postconditionAuthorities") == postconditions
         and has_valid_embedded_digest(value, "completionDigest")
         and all(value.get(key) == authority[key] for key in authority)
     )
@@ -1985,10 +1953,12 @@ def run_check_lifecycle(
                 and has_valid_embedded_digest(existing, "receiptDigest")
                 and all(existing.get(key) == authority[key] for key in authority)
             ):
-                if dynamic_authority_digest(check, refresh=True) != dynamic_authority:
-                    raise ControlError("dynamic check authority changed during receipt reuse")
-                return {"checkId": check_id, "reused": True, "status": "PASS"}
-            raise ControlError("blind retry refused for the same failed evidence key")
+                if not check.get("postconditions"):
+                    if dynamic_authority_digest(check, refresh=True) != dynamic_authority:
+                        raise ControlError("dynamic check authority changed during receipt reuse")
+                    return {"checkId": check_id, "reused": True, "status": "PASS"}
+            elif not check.get("postconditions"):
+                raise ControlError("blind retry refused for the same failed evidence key")
         try:
             receipt = verified_receipt(
                 plan,
@@ -1998,6 +1968,7 @@ def run_check_lifecycle(
                 input_authority,
                 dynamic_authority,
             )
+            postcondition_authority_digest(check, refresh=True)
         except BaseException:
             failed = {
                 **authority,
@@ -2020,10 +1991,14 @@ def seal_step(model: dict[str, object], authority: dict[str, str], step: str) ->
     receipt_digests = []
     check_authorities = {}
     dynamic_authorities = {}
+    postcondition_authorities = {}
     for check_id in model["steps"][step]["requiredChecks"]:
         check = model["checks"][check_id]
         dynamic = dynamic_authority_digest(check, refresh=True)
         dynamic_authorities[check_id] = dynamic
+        postcondition_authorities[check_id] = postcondition_authority_digest(
+            check, refresh=True
+        )
         evidence = evidence_digest(check, authority, dynamic_authority=dynamic)
         check_authorities[check_id] = check_authority_digest(
             check, authority, dynamic_authority=dynamic
@@ -2046,15 +2021,28 @@ def seal_step(model: dict[str, object], authority: dict[str, str], step: str) ->
             model["checks"][check_id], refresh=True
         ) != expected:
             raise ControlError("dynamic check authority changed while sealing step")
+    for check_id, expected in postcondition_authorities.items():
+        if postcondition_authority_digest(
+            model["checks"][check_id], refresh=True
+        ) != expected:
+            raise ControlError("check postcondition changed while sealing step")
     with exclusive_lock(authority, f"completion-{step}"):
         for check_id, expected in dynamic_authorities.items():
             if dynamic_authority_digest(
                 model["checks"][check_id], refresh=True
             ) != expected:
                 raise ControlError("dynamic check authority changed before completion write")
+        for check_id, expected in postcondition_authorities.items():
+            if postcondition_authority_digest(
+                model["checks"][check_id], refresh=True
+            ) != expected:
+                raise ControlError(
+                    "check postcondition changed before completion write"
+                )
         completion: dict[str, object] = {
             **authority,
             "checkAuthorities": check_authorities,
+            "postconditionAuthorities": postcondition_authorities,
             "receiptDigests": sorted(receipt_digests),
             "schema": "codeclew-stabilization-step-completion/1.0",
             "sourceRevision": git("rev-parse", "HEAD"),

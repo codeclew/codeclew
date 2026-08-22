@@ -18,6 +18,11 @@ import stabilization_control as control  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = ROOT / "docs" / "stabilization-plan.json"
 CONTROLLER = ROOT / "scripts" / "stabilization_control.py"
+CONTROLLER_AUTHORITY_SOURCES = (
+    "bootstrap/clew_bootstrap.py",
+    "scripts/stabilization_control.py",
+    "scripts/trusted_seed_gc.py",
+)
 SCHEMA = "codeclew-stabilization-receipt/1.0"
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -45,6 +50,13 @@ def require_digest(value: object, label: str) -> str:
     if not isinstance(value, str) or not DIGEST_RE.fullmatch(value):
         raise ValueError(f"{label} is not a SHA-256 authority")
     return value
+
+
+def controller_source_digests() -> dict[str, str]:
+    return {
+        relative: digest_bytes((ROOT / relative).read_bytes())
+        for relative in CONTROLLER_AUTHORITY_SOURCES
+    }
 
 
 def verify(request: object) -> dict[str, object]:
@@ -93,7 +105,7 @@ def verify(request: object) -> dict[str, object]:
     )
     controller_digest = digest_bytes(canonical({
         "pythonRuntimeDigest": python_runtime_digest,
-        "sourceDigest": digest_bytes(CONTROLLER.read_bytes()),
+        "sourceDigests": controller_source_digests(),
     }))
     verifier_digest = digest_bytes(canonical({
         "pythonRuntimeDigest": python_runtime_digest,

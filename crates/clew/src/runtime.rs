@@ -152,6 +152,7 @@ impl RuntimeAuthority {
             validate_lease_fd(lease_fd)?;
             let root = descriptor_path(runtime_fd)?;
             let authority = Self::load_root(root.clone())?;
+            validate_lease_binding(lease_fd, &root, &authority.runtime_key)?;
             let executable = std::env::current_exe()
                 .map_err(io_error)?
                 .canonicalize()
@@ -248,6 +249,43 @@ fn validate_lease_fd(fd: RawFd) -> Result<(), ClewError> {
     }
     if unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) } != 0 {
         return Err(invalid("runtime lease descriptor cannot be acquired"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_lease_binding(fd: RawFd, root: &Path, runtime_key: &str) -> Result<(), ClewError> {
+    let state = root
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| invalid("runtime root has no state authority"))?;
+    let digest = runtime_key
+        .strip_prefix("sha256:")
+        .ok_or_else(|| invalid("runtime key is invalid"))?;
+    let expected = state.join("locks").join(format!("runtime-{digest}.lease"));
+    let expected_file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&expected)
+        .map_err(io_error)?;
+    let metadata = expected_file.metadata().map_err(io_error)?;
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(invalid("runtime lease authority is unsafe"));
+    }
+    let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, status.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    let status = unsafe { status.assume_init() };
+    if status.st_dev != metadata.dev() as libc::dev_t
+        || status.st_ino != metadata.ino() as libc::ino_t
+    {
+        return Err(invalid(
+            "runtime lease descriptor does not match the runtime authority",
+        ));
     }
     Ok(())
 }
@@ -387,6 +425,8 @@ fn io_error(error: std::io::Error) -> ClewError {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn rejects_manifest_with_unbound_digest() {
@@ -408,6 +448,31 @@ mod tests {
         assert_eq!(
             tree_digest(&manifest),
             "sha256:6fd9755d0c290c62d1e09d5f6f13387c889754193b9ff8d30ff15b1e21b6ccdd"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_lease_fd_must_match_the_runtime_key() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("v2");
+        let digest = "1".repeat(64);
+        let runtime = state.join("runtimes").join(&digest);
+        let locks = state.join("locks");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&locks).unwrap();
+        let expected = locks.join(format!("runtime-{digest}.lease"));
+        let arbitrary = locks.join("arbitrary.lease");
+        FileForTest::write(&expected, b"");
+        FileForTest::write(&arbitrary, b"");
+        fs::set_permissions(&expected, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&arbitrary, fs::Permissions::from_mode(0o600)).unwrap();
+        let expected_file = fs::File::open(&expected).unwrap();
+        let arbitrary_file = fs::File::open(&arbitrary).unwrap();
+        let runtime_key = format!("sha256:{digest}");
+        assert!(validate_lease_binding(expected_file.as_raw_fd(), &runtime, &runtime_key).is_ok());
+        assert!(
+            validate_lease_binding(arbitrary_file.as_raw_fd(), &runtime, &runtime_key).is_err()
         );
     }
 

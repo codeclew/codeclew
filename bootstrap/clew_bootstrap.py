@@ -738,6 +738,53 @@ def write_locator(path: Path, locator: str, runtime: str) -> None:
     os.replace(temporary, path)
 
 
+def _trusted_seed_lifecycle(root: Path) -> object:
+    if (
+        not root.is_absolute()
+        or ".." in root.parts
+        or root.resolve(strict=True) != root
+    ):
+        raise BootstrapError("trusted seed lifecycle root is unsafe")
+    root_descriptor = os.open(root, _directory_flags())
+    try:
+        root_metadata = os.fstat(root_descriptor)
+        if (
+            not stat.S_ISDIR(root_metadata.st_mode)
+            or root_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(root_metadata.st_mode) != 0o700
+        ):
+            raise BootstrapError("trusted seed lifecycle root is unsafe")
+        locks_descriptor = os.open("locks", _directory_flags(), dir_fd=root_descriptor)
+    finally:
+        os.close(root_descriptor)
+    try:
+        locks_metadata = os.fstat(locks_descriptor)
+        if (
+            not stat.S_ISDIR(locks_metadata.st_mode)
+            or locks_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(locks_metadata.st_mode) != 0o700
+        ):
+            raise BootstrapError("trusted seed lifecycle locks are unsafe")
+        descriptor = os.open(
+            "lifecycle.lock",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=locks_descriptor,
+        )
+    finally:
+        os.close(locks_descriptor)
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise BootstrapError("trusted seed lifecycle lock is unsafe")
+    lifecycle = os.fdopen(descriptor, "rb")
+    fcntl.flock(lifecycle, fcntl.LOCK_SH)
+    return lifecycle
+
+
 def sealed_runtime_seed(source: Path) -> tuple[str, Path, object]:
     configured = os.environ.get("CODECLEW_RUNTIME_SEED")
     if configured is None:
@@ -746,8 +793,19 @@ def sealed_runtime_seed(source: Path) -> tuple[str, Path, object]:
     if (
         not seed_path.is_absolute()
         or ".." in seed_path.parts
-        or seed_path.resolve(strict=True) != seed_path
+        or seed_path.name != "seed.json"
+        or re.fullmatch(r"release-N-[0-9a-f]{40}", seed_path.parent.name) is None
     ):
+        raise BootstrapError("sealed runtime seed path is unsafe")
+    lifecycle = _trusted_seed_lifecycle(seed_path.parent.parent)
+    try:
+        return _sealed_runtime_seed_locked(source, seed_path)
+    finally:
+        lifecycle.close()
+
+
+def _sealed_runtime_seed_locked(source: Path, seed_path: Path) -> tuple[str, Path, object]:
+    if seed_path.resolve(strict=True) != seed_path:
         raise BootstrapError("sealed runtime seed path is unsafe")
     descriptor = os.open(
         seed_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)

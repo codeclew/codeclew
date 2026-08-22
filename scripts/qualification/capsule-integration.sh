@@ -8,6 +8,7 @@ umask 077
 CONTROL_HOME=${CODECLEW_CONTROL_HOME:-"$HOME/.cache/codeclew-control"}
 SEED_HOME=${CODECLEW_SEED_HOME:-"$HOME/.cache/codeclew-seeds"}
 REVISION=$(git rev-parse --verify HEAD)
+SOURCE_TREE=$(git rev-parse --verify HEAD^{tree})
 EVIDENCE_PARENT="$CONTROL_HOME/qualification/capsule-integration"
 EVIDENCE_ROOT="$EVIDENCE_PARENT/$REVISION"
 WORK="$CONTROL_HOME/tmp/capsule-integration-$REVISION"
@@ -15,40 +16,6 @@ mkdir -p "$EVIDENCE_PARENT" "$CONTROL_HOME/tmp"
 chmod 700 "$EVIDENCE_PARENT" "$CONTROL_HOME/tmp"
 mkdir "$EVIDENCE_ROOT" "$WORK"
 chmod 700 "$EVIDENCE_ROOT" "$WORK"
-
-SEED_STATE=$(python3 -I -S - "$SEED_HOME" "$REVISION" <<'PY'
-import json
-import hashlib
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-current = json.loads((root / "current.json").read_bytes())
-epoch = current.get("epoch")
-if (
-    current.get("schema") != "codeclew-trusted-seed-locator/1.0"
-    or not isinstance(epoch, str)
-    or pathlib.PurePath(epoch).name != epoch
-):
-    raise SystemExit("trusted seed locator is invalid")
-seed = json.loads((root / epoch / "seed.json").read_bytes())
-unsigned = dict(seed)
-expected_digest = unsigned.pop("seedDigest", None)
-actual_digest = "sha256:" + hashlib.sha256(
-    json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
-if (
-    seed.get("schema") != "codeclew-trusted-release-seed/1.0"
-    or seed.get("sourceRevision") != sys.argv[2]
-    or seed.get("mode") != "RELEASE"
-    or expected_digest != actual_digest
-    or current.get("seedDigest") != expected_digest
-    or current.get("runtimeKey") != seed.get("runtimeKey")
-):
-    raise SystemExit("trusted seed does not match the S6 checkpoint")
-print(root / epoch / "parallel-state")
-PY
-)
 
 if ! git clone --quiet --no-hardlinks "$ROOT" "$WORK/repo" \
   >"$EVIDENCE_ROOT/clone.stdout" 2>"$EVIDENCE_ROOT/clone.stderr"
@@ -71,7 +38,10 @@ git -C "$WORK/repo" \
   -c user.email='tests@codeclew.invalid' \
   commit -qm 'Component reuse authority probe'
 
-if ! CODECLEW_HOME="$SEED_STATE" \
+if ! python3 -I -S "$ROOT/scripts/trusted_seed_gc.py" \
+  --root "$SEED_HOME" --run-current-state parallel-state \
+  --expected-source-revision "$REVISION" \
+  --expected-source-tree "$SOURCE_TREE" -- \
   "$WORK/repo/clew" --bootstrap-cold-build-evidence=parallel \
   >"$EVIDENCE_ROOT/reuse.json" 2>"$EVIDENCE_ROOT/reuse.stderr"
 then

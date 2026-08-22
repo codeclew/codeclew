@@ -55,41 +55,110 @@ PY
 
 EPOCH="release-N-$SOURCE_REVISION"
 FINAL="$SEED_BASE/$EPOCH"
-if [ -f "$FINAL/seed.json" ]; then
-  CODECLEW_HOME="$FINAL/parallel-state" "$ROOT/clew" --bootstrap-warm-audit >"$FINAL/parallel-warm.json"
-  CODECLEW_HOME="$FINAL/serial-state" "$ROOT/clew" --bootstrap-warm-audit >"$FINAL/serial-warm.json"
-  python3 -I -S - "$FINAL" "$SOURCE_REVISION" "$SOURCE_TREE" <<'PY'
+
+publish_locator() {
+  if [ "$#" -eq 0 ]; then
+    python3 -I -S "$ROOT/scripts/trusted_seed_gc.py" \
+      --root "$SEED_BASE" --publish-epoch "$EPOCH" \
+      --expected-source-tree "$SOURCE_TREE"
+  else
+    python3 -I -S "$ROOT/scripts/trusted_seed_gc.py" \
+      --root "$SEED_BASE" --publish-epoch "$EPOCH" --candidate "$1" \
+      --expected-source-tree "$SOURCE_TREE"
+  fi
+}
+
+seed_gc() {
+  python3 -I -S "$ROOT/scripts/trusted_seed_gc.py" --root "$SEED_BASE" "$@" >&2
+}
+
+python3 -I -S "$ROOT/scripts/test_trusted_seed_gc.py"
+seed_gc --protect-epoch "$EPOCH"
+
+set +e
+EXISTING_QUALIFICATION=$(python3 -I -S "$ROOT/scripts/trusted_seed_gc.py" \
+  --root "$SEED_BASE" --validate-epoch "$EPOCH" \
+  --expected-source-tree "$SOURCE_TREE")
+EXISTING_STATUS=$?
+set -e
+if [ "$EXISTING_STATUS" -eq 0 ]; then
+  AUDIT=$(mktemp -d "$SEED_BASE/.audit.XXXXXX")
+  cleanup_existing() {
+    result=$?
+    trap - EXIT INT TERM
+    cleanup_status=0
+    python3 -I -S "$ROOT/scripts/bounded_gate_cleanup.py" \
+      --timeout-seconds 30 tree --path "$AUDIT" >/dev/null 2>&1 || cleanup_status=$?
+    if [ "$result" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+      result=$cleanup_status
+    fi
+    exit "$result"
+  }
+  trap cleanup_existing EXIT INT TERM
+  CODECLEW_HOME="$AUDIT/state" CODECLEW_RUNTIME_SEED="$FINAL/seed.json" \
+    "$ROOT/clew" --bootstrap-warm-audit >"$AUDIT/warm.json"
+  python3 -I -S - "$AUDIT/warm.json" <<'PY'
 import json
 import pathlib
-import stat
 import sys
 
-root = pathlib.Path(sys.argv[1])
-seed = json.loads((root / "seed.json").read_bytes())
+audit = json.loads(pathlib.Path(sys.argv[1]).read_bytes())
 if (
-    seed.get("schema") != "codeclew-trusted-release-seed/1.0"
-    or seed.get("sourceRevision") != sys.argv[2]
-    or seed.get("sourceTree") != sys.argv[3]
+    audit.get("status") != "PASSED"
+    or audit.get("counters", {}).get("processRuns") != 0
+    or audit.get("counters", {}).get("digestFileCalls") != 0
 ):
-    raise SystemExit("existing seed authority differs from the source checkpoint")
-for name in ("parallel-warm.json", "serial-warm.json"):
-    audit = json.loads((root / name).read_bytes())
-    if (
-        audit.get("status") != "PASSED"
-        or audit.get("counters", {}).get("processRuns") != 0
-        or audit.get("counters", {}).get("digestFileCalls") != 0
-    ):
-        raise SystemExit("existing seed capsule failed its warm audit")
-qualification = {
-    "runtimeKey": seed["runtimeKey"],
-    "schema": "codeclew-trusted-seed-qualification/1.0",
-    "seedDigest": seed["seedDigest"],
-    "status": "PASS",
-}
-(root / "qualification.json").write_text(json.dumps(qualification, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-os.chmod(root / "qualification.json", 0o400)
+    raise SystemExit("existing seed capsule failed its warm audit")
 PY
+  PUBLISHED_QUALIFICATION=$(publish_locator)
+  printf '%s\n' "$PUBLISHED_QUALIFICATION"
   exit 0
+fi
+if [ "$EXISTING_STATUS" -eq 2 ]; then
+  set +e
+  RECOVERED_QUALIFICATION=$(publish_locator)
+  RECOVERED_STATUS=$?
+  set -e
+  if [ "$RECOVERED_STATUS" -eq 0 ]; then
+    EXISTING_QUALIFICATION=$RECOVERED_QUALIFICATION
+    EXISTING_STATUS=0
+  fi
+fi
+if [ "$EXISTING_STATUS" -eq 0 ]; then
+  AUDIT=$(mktemp -d "$SEED_BASE/.audit.XXXXXX")
+  cleanup_existing() {
+    result=$?
+    trap - EXIT INT TERM
+    cleanup_status=0
+    python3 -I -S "$ROOT/scripts/bounded_gate_cleanup.py" \
+      --timeout-seconds 30 tree --path "$AUDIT" >/dev/null 2>&1 || cleanup_status=$?
+    if [ "$result" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+      result=$cleanup_status
+    fi
+    exit "$result"
+  }
+  trap cleanup_existing EXIT INT TERM
+  CODECLEW_HOME="$AUDIT/state" CODECLEW_RUNTIME_SEED="$FINAL/seed.json" \
+    "$ROOT/clew" --bootstrap-warm-audit >"$AUDIT/warm.json"
+  python3 -I -S - "$AUDIT/warm.json" <<'PY'
+import json
+import pathlib
+import sys
+
+audit = json.loads(pathlib.Path(sys.argv[1]).read_bytes())
+if (
+    audit.get("status") != "PASSED"
+    or audit.get("counters", {}).get("processRuns") != 0
+    or audit.get("counters", {}).get("digestFileCalls") != 0
+):
+    raise SystemExit("recovered seed capsule failed its warm audit")
+PY
+  printf '%s\n' "$EXISTING_QUALIFICATION"
+  exit 0
+fi
+if [ "$EXISTING_STATUS" -ne 3 ]; then
+  printf '%s\n' "$EXISTING_QUALIFICATION" >&2
+  exit "$EXISTING_STATUS"
 fi
 
 WORK=$(mktemp -d "$SEED_BASE/.candidate.XXXXXX")
@@ -190,28 +259,8 @@ qualification_path.write_text(
 os.chmod(qualification_path, 0o400)
 PY
 
-mv "$WORK" "$FINAL"
-chmod 700 "$FINAL"
-python3 -I -S - "$SEED_BASE" "$EPOCH" <<'PY'
-import json
-import os
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-seed = json.loads((root / sys.argv[2] / "seed.json").read_bytes())
-value = {
-    "epoch": sys.argv[2],
-    "runtimeKey": seed["runtimeKey"],
-    "schema": "codeclew-trusted-seed-locator/1.0",
-    "seedDigest": seed["seedDigest"],
-}
-temporary = root / ".current.json.tmp"
-temporary.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-os.chmod(temporary, 0o600)
-os.replace(temporary, root / "current.json")
-PY
+PUBLISHED_QUALIFICATION=$(publish_locator "${WORK##*/}")
 
 WORK=
 trap - EXIT INT TERM
-cat "$FINAL/qualification.json"
+printf '%s\n' "$PUBLISHED_QUALIFICATION"

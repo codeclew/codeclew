@@ -44,6 +44,7 @@ fn fd_runtime(root: &Path) -> std::path::PathBuf {
         "toolchainAuthority":{"fixture":true},
         "components":{"clew":format!("sha256:{}", "3".repeat(64))},
         "artifacts":{"clew":{
+            "mode":0o111,
             "path":"bin/clew",
             "size":bytes.len(),
             "sha256":canonical::hash_bytes(&bytes),
@@ -70,7 +71,8 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
     let temporary = tempfile::tempdir().unwrap();
     let repo = temporary.path().join("repository-with-private-name");
     let state = temporary.path().join("state");
-    let runtime = temporary.path().join("runtime");
+    let digest = "1".repeat(64);
+    let runtime = state.join("v2").join("runtimes").join(&digest);
     fs::create_dir(&repo).unwrap();
     fs::write(repo.join("README.md"), b"fixture\n").unwrap();
     run_git(&repo, &["init", "-q", "-b", "main"]);
@@ -91,7 +93,7 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
     let legacy = repo.join(".semantic-thread");
     fs::create_dir(&legacy).unwrap();
     fs::write(legacy.join("poison"), b"must not be observed").unwrap();
-    fs::create_dir_all(state.join("v2")).unwrap();
+    fs::create_dir_all(state.join("v2").join("locks")).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -128,7 +130,10 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
 
     let state_handle = File::open(state.join("v2")).unwrap();
     let runtime_handle = File::open(&runtime).unwrap();
-    let lease_path = temporary.path().join("runtime.lease");
+    let lease_path = state
+        .join("v2")
+        .join("locks")
+        .join(format!("runtime-{digest}.lease"));
     let lease_handle = OpenOptions::new()
         .create(true)
         .read(true)

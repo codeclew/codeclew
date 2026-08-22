@@ -673,6 +673,11 @@ class BootstrapAuthorityTest(unittest.TestCase):
             root = Path(directory).resolve()
             source = root / "source"
             source.mkdir(mode=0o700)
+            lifecycle_locks = root / "locks"
+            lifecycle_locks.mkdir(mode=0o700)
+            lifecycle_path = lifecycle_locks / "lifecycle.lock"
+            lifecycle_path.write_bytes(b"")
+            os.chmod(lifecycle_path, 0o600)
             epoch = root / ("release-N-" + "1" * 40)
             state = epoch / "parallel-state" / "v2"
             key = "sha256:" + "2" * 64
@@ -721,6 +726,12 @@ class BootstrapAuthorityTest(unittest.TestCase):
             lease_path = state / "locks" / f"runtime-{key[7:]}.lease"
 
             def verify_under_lease(_capsule, _key):
+                with lifecycle_path.open("rb") as lifecycle_contender:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(
+                            lifecycle_contender,
+                            fcntl.LOCK_EX | fcntl.LOCK_NB,
+                        )
                 with lease_path.open("a+b") as contender:
                     with self.assertRaises(BlockingIOError):
                         fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)

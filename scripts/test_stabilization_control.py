@@ -7,6 +7,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -92,13 +93,15 @@ class StabilizationControlTest(unittest.TestCase):
 
     def test_failed_evidence_key_cannot_be_retried_blindly(self) -> None:
         model = copy.deepcopy(self.model)
-        model["steps"]["S3"]["dependencies"] = []
-        check = model["checks"]["s3-trusted-seed"]
+        model["steps"]["S4"]["dependencies"] = []
+        check = model["checks"]["s4-runtime-contracts"]
         evidence = control.evidence_digest(check, self.authority)
-        path = control.receipt_path(self.authority, "s3-trusted-seed", evidence)
+        path = control.receipt_path(self.authority, "s4-runtime-contracts", evidence)
         control.atomic_private_write(path, control.canonical({"status": "FAIL"}) + b"\n")
         with self.assertRaisesRegex(control.ControlError, "blind retry refused"):
-            control.run_check(self.plan, model, self.authority, "S3", "s3-trusted-seed")
+            control.run_check(
+                self.plan, model, self.authority, "S4", "s4-runtime-contracts"
+            )
 
     def test_unverifiable_check_attempt_records_a_blind_retry_marker(self) -> None:
         model = copy.deepcopy(self.model)
@@ -160,6 +163,26 @@ class StabilizationControlTest(unittest.TestCase):
         self.assertNotEqual(first["verifierDigest"], second["verifierDigest"])
         self.assertEqual(first["planDigest"], second["planDigest"])
 
+    def test_controller_authority_closes_over_dynamic_sources(self) -> None:
+        source_digests = control.controller_source_digests()
+        self.assertEqual(
+            set(source_digests),
+            {
+                "bootstrap/clew_bootstrap.py",
+                "scripts/stabilization_control.py",
+                "scripts/trusted_seed_gc.py",
+            },
+        )
+        first = control.authorities(self.plan)
+        changed = dict(source_digests)
+        changed["scripts/trusted_seed_gc.py"] = "sha256:" + "f" * 64
+        with mock.patch.object(
+            control, "controller_source_digests", return_value=changed
+        ):
+            second = control.authorities(self.plan)
+        self.assertNotEqual(first["controllerDigest"], second["controllerDigest"])
+        self.assertEqual(first["planDigest"], second["planDigest"])
+
     def test_controller_rejects_a_different_path_python(self) -> None:
         other = Path("/usr/bin/python3")
         if not other.exists() or other.resolve() == Path(sys.executable).resolve():
@@ -196,6 +219,12 @@ class StabilizationControlTest(unittest.TestCase):
         completion = {
             **self.authority,
             "checkAuthorities": authorities,
+            "postconditionAuthorities": {
+                check_id: control.postcondition_authority_digest(
+                    self.model["checks"][check_id], refresh=True
+                )
+                for check_id in self.model["steps"][step]["requiredChecks"]
+            },
             "receiptDigests": [],
             "schema": "codeclew-stabilization-step-completion/1.0",
             "sourceRevision": control.git("rev-parse", "HEAD"),
@@ -234,6 +263,54 @@ class StabilizationControlTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotEqual(first_evidence, second_evidence)
 
+    def test_s3_completion_requires_live_trusted_seed_postcondition(self) -> None:
+        step = "S3"
+        seed = "sha256:" + "3" * 64
+        with mock.patch.object(
+            control, "trusted_seed_authority_digest", return_value=seed
+        ):
+            authorities = {
+                check_id: control.check_authority_digest(
+                    self.model["checks"][check_id], self.authority
+                )
+                for check_id in self.model["steps"][step]["requiredChecks"]
+            }
+            postconditions = {
+                check_id: control.postcondition_authority_digest(
+                    self.model["checks"][check_id], refresh=True
+                )
+                for check_id in self.model["steps"][step]["requiredChecks"]
+            }
+            completion = {
+                **self.authority,
+                "checkAuthorities": authorities,
+                "postconditionAuthorities": postconditions,
+                "receiptDigests": [],
+                "schema": "codeclew-stabilization-step-completion/1.0",
+                "sourceRevision": control.git("rev-parse", "HEAD"),
+                "status": "COMPLETE",
+                "stepId": step,
+            }
+            completion["completionDigest"] = control.digest_bytes(
+                control.canonical(completion)
+            )
+            control.atomic_private_write(
+                control.completion_path(self.authority, step),
+                control.canonical(completion) + b"\n",
+            )
+            self.assertTrue(
+                control.valid_completion(self.model, self.authority, step)
+            )
+        control._DYNAMIC_AUTHORITY_CACHE.clear()
+        with mock.patch.object(
+            control,
+            "trusted_seed_authority_digest",
+            side_effect=control.ControlError("missing trusted seed"),
+        ):
+            self.assertFalse(
+                control.valid_completion(self.model, self.authority, step)
+            )
+
     def test_trusted_seed_replacement_invalidates_q2_completion(self) -> None:
         step = "Q2"
         before = "sha256:" + "1" * 64
@@ -257,6 +334,12 @@ class StabilizationControlTest(unittest.TestCase):
             completion = {
                 **self.authority,
                 "checkAuthorities": authorities,
+                "postconditionAuthorities": {
+                    check_id: control.postcondition_authority_digest(
+                        self.model["checks"][check_id], refresh=True
+                    )
+                    for check_id in self.model["steps"][step]["requiredChecks"]
+                },
                 "receiptDigests": [],
                 "schema": "codeclew-stabilization-step-completion/1.0",
                 "sourceRevision": control.git("rev-parse", "HEAD"),
@@ -675,7 +758,12 @@ class StabilizationControlTest(unittest.TestCase):
     def test_trusted_seed_dynamic_authority_is_content_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            epoch = root / ("release-N-" + "1" * 40)
+            lifecycle_locks = root / "locks"
+            lifecycle_locks.mkdir(mode=0o700)
+            lifecycle = lifecycle_locks / "lifecycle.lock"
+            lifecycle.write_bytes(b"")
+            os.chmod(lifecycle, 0o600)
+            epoch = root / ("release-N-" + control.git("rev-parse", "HEAD"))
             runtime_key = "sha256:" + "2" * 64
             capsule = epoch / "parallel-state" / "v2" / "runtimes" / runtime_key[7:]
             capsule.mkdir(parents=True)
@@ -706,6 +794,7 @@ class StabilizationControlTest(unittest.TestCase):
                     }
                 },
                 "components": {"clew": "sha256:" + "3" * 64},
+                "inputDigest": "sha256:" + "8" * 64,
                 "manifestDigest": "",
                 "mode": "RELEASE",
                 "platformAuthority": {},
@@ -755,10 +844,30 @@ class StabilizationControlTest(unittest.TestCase):
             os.chmod(seed_path, 0o400)
             locator = {
                 "epoch": epoch.name,
+                "generation": 1,
+                "publicationDigest": "",
+                "rollback": None,
                 "runtimeKey": runtime_key,
-                "schema": "codeclew-trusted-seed-locator/1.0",
+                "schema": "codeclew-trusted-seed-locator/2.0",
                 "seedDigest": seed["seedDigest"],
             }
+            publication_unsigned = dict(locator)
+            publication_unsigned.pop("publicationDigest")
+            publication_unsigned["schema"] = (
+                "codeclew-trusted-seed-publication/1.0"
+            )
+            locator["publicationDigest"] = control.digest_bytes(
+                control.canonical(publication_unsigned)
+            )
+            publication = dict(locator)
+            publication["schema"] = "codeclew-trusted-seed-publication/1.0"
+            publication_path = epoch / "publication.json"
+            publication_path.write_text(
+                json.dumps(publication, sort_keys=True, separators=(",", ":"))
+                + "\n",
+                encoding="utf-8",
+            )
+            os.chmod(publication_path, 0o400)
             locator_path = root / "current.json"
             locator_path.write_text(
                 json.dumps(locator, sort_keys=True, separators=(",", ":")) + "\n",
@@ -774,12 +883,18 @@ class StabilizationControlTest(unittest.TestCase):
                 else:
                     os.chmod(path, 0o500 if metadata.st_mode & 0o111 else 0o400)
             os.chmod(capsule, 0o500)
+            serial_runtimes = epoch / "serial-state" / "v2" / "runtimes"
+            serial_runtimes.mkdir(parents=True)
+            os.chmod(epoch / "serial-state", 0o700)
+            os.chmod(epoch / "serial-state" / "v2", 0o700)
+            os.chmod(serial_runtimes, 0o700)
+            shutil.copytree(capsule, serial_runtimes / runtime_key[7:], copy_function=shutil.copy2)
             with mock.patch.dict(os.environ, {"CODECLEW_SEED_HOME": str(root)}):
                 first = control.trusted_seed_authority_digest()
                 os.chmod(core, 0o700)
                 core.write_bytes(b"CORE")
                 os.chmod(core, 0o500)
-                with self.assertRaisesRegex(control.ControlError, "artifact authority"):
+                with self.assertRaisesRegex(control.ControlError, "trusted seed authority"):
                     control.trusted_seed_authority_digest()
             self.assertTrue(first.startswith("sha256:"))
 
