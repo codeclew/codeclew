@@ -24,7 +24,8 @@ copy their distributions.
 ```bash
 ./clew session open \
   --repo /path/to/clean-kotlin-repository \
-  --target-ref main
+  --target-ref main \
+  --compilation :app/main
 
 ./clew context create \
   --session session:... \
@@ -52,6 +53,11 @@ copy their distributions.
 ./clew session close --session session:...
 ./clew session gc --session session:...
 ```
+
+`--compilation` is mandatory and names the exact build compilation authority:
+use `:/main` for a Kotlin root project or `:module/main` for a Gradle
+subproject. Codeclew never guesses a root compilation because that would defer
+a deterministic configuration error from session admission to context creation.
 
 `task-run start` writes a durable `CREATED` record before detaching. Repeating
 the same request attaches to the same content-addressed run. Preparation may

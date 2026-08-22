@@ -90,7 +90,11 @@ struct SessionOpenArgs {
     repo: PathBuf,
     #[arg(long)]
     target_ref: String,
-    #[arg(long, default_value = ":/main")]
+    /// Exact build compilation authority (for example :/main or :app/main).
+    /// Deliberately required: guessing the root compilation makes session
+    /// admission succeed and defers a deterministic model error to context
+    /// creation in multi-project builds.
+    #[arg(long)]
     compilation: String,
     #[arg(long, value_enum, default_value_t = ModelCachePolicyArg::NonCacheable)]
     model_cache: ModelCachePolicyArg,
@@ -883,6 +887,36 @@ mod tests {
                 "--session",
                 "session:authority",
                 "--force",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn session_open_requires_explicit_compilation_authority() {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--compilation",
+                ":workers:kotlin/main",
             ])
             .is_ok()
         );
