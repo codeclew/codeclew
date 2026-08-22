@@ -447,40 +447,53 @@ def invoke(check: dict[str, object], tier: dict[str, object], authority: dict[st
         capability = issue_capability(authority, check["gate"], tier["budgetSeconds"])
         environment["CODECLEW_PLAN_CAPABILITY"] = str(capability)
     started = time.monotonic_ns()
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        try:
-            process = subprocess.Popen(
-                check["command"],
-                cwd=ROOT,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                start_new_session=True,
-            )
-        except FileNotFoundError:
-            exit_code = 127
-        else:
+    try:
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             try:
-                exit_code = process.wait(timeout=tier["budgetSeconds"])
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-                exit_code = 124
-        duration = (time.monotonic_ns() - started) // 1_000_000
-        stdout_digest = file_digest(stdout)
-        stderr_digest = file_digest(stderr)
-    if capability is not None:
-        for candidate in (capability, capability.with_suffix(".used")):
-            try:
-                candidate.unlink()
+                process = subprocess.Popen(
+                    check["command"],
+                    cwd=ROOT,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    start_new_session=True,
+                )
             except FileNotFoundError:
-                pass
-    return exit_code, duration, stdout_digest, stderr_digest
+                exit_code = 127
+            else:
+                try:
+                    exit_code = process.wait(timeout=tier["budgetSeconds"])
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    exit_code = 124
+                except BaseException:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        process.wait(timeout=5)
+                    except (ProcessLookupError, subprocess.TimeoutExpired):
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.wait()
+                    raise
+            duration = (time.monotonic_ns() - started) // 1_000_000
+            stdout_digest = file_digest(stdout)
+            stderr_digest = file_digest(stderr)
+        return exit_code, duration, stdout_digest, stderr_digest
+    finally:
+        if capability is not None:
+            for candidate in (capability, capability.with_suffix(".used")):
+                try:
+                    candidate.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 def verified_receipt(plan: dict[str, object], authority: dict[str, str], check: dict[str, object], tier: dict[str, object], input_authority: str) -> dict[str, object]:

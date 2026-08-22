@@ -90,8 +90,10 @@ class StabilizationControlTest(unittest.TestCase):
     def test_failed_evidence_key_cannot_be_retried_blindly(self) -> None:
         model = copy.deepcopy(self.model)
         model["steps"]["S3"]["dependencies"] = []
-        first = control.run_check(self.plan, model, self.authority, "S3", "s3-trusted-seed")
-        self.assertEqual(first["status"], "FAIL")
+        check = model["checks"]["s3-trusted-seed"]
+        evidence = control.evidence_digest(check, self.authority)
+        path = control.receipt_path(self.authority, "s3-trusted-seed", evidence)
+        control.atomic_private_write(path, control.canonical({"status": "FAIL"}) + b"\n")
         with self.assertRaisesRegex(control.ControlError, "blind retry refused"):
             control.run_check(self.plan, model, self.authority, "S3", "s3-trusted-seed")
 
@@ -108,6 +110,16 @@ class StabilizationControlTest(unittest.TestCase):
         value = json.loads(completed.stdout)
         self.assertEqual(value["status"], "PASS")
         self.assertEqual(value["schema"], "codeclew-stabilization-plan-validation/1.0")
+
+    def test_timeout_reaps_the_owned_process_group(self) -> None:
+        check = {
+            "command": [sys.executable, "-I", "-S", "-c", "import time; time.sleep(30)"],
+            "gate": None,
+        }
+        tier = {"budgetSeconds": 1}
+        exit_code, duration, _stdout, _stderr = control.invoke(check, tier, self.authority)
+        self.assertEqual(exit_code, 124)
+        self.assertLess(duration, 7000)
 
 
 if __name__ == "__main__":

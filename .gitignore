@@ -21,3 +21,5 @@ preview.json
 /fixtures/open-project-protocol-*/
 # Codex desktop exports may contain user-provided or machine-local context.
 /Codex Image *.png
+# Repo-local scratch/render exports are private and never source authority.
+/tmp/
