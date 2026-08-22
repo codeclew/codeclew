@@ -48,6 +48,20 @@ security cleanup. `Q1-Q3` are the only pre-self-host expensive qualification
 chain. `H1-H2` prove final N-to-N+1 self-hosting before cutover. `R1-R5` finish
 mandatory self-hosting, hardening, BTA24, paired comparison, push, and CI.
 
+### S5 component CAS boundary
+
+S5 qualifies a generic immutable runtime-component store before production
+bootstrap uses it. Component identity is a closed digest of mode, component
+kind/id, relevant input rows, toolchain authority, and build contract. The
+component API contains no Kotlin variant enum: a synthetic `language:zeta`
+adapter must publish, verify, quarantine, and materialize without core changes.
+
+S5 DoD is exact relevant-input keying, RELEASE/DEVELOPMENT domain separation,
+one publication under concurrent processes, fail-closed corruption quarantine,
+and deterministic executable-bit-preserving materialization. S5 does not alter
+the launcher build route. S6 is the separate cutover that assembles a complete
+runtime capsule only from verified component objects and proves warm reuse.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional

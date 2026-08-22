@@ -219,6 +219,160 @@ class BootstrapAuthorityTest(unittest.TestCase):
     def test_corruption_quarantine_self_test(self) -> None:
         bootstrap.bootstrap_self_test()
 
+    def test_component_authority_is_closed_relevant_and_language_neutral(self) -> None:
+        core = {
+            "mode": 0,
+            "path": "crates/core/src/lib.rs",
+            "sha256": "sha256:" + "1" * 64,
+            "size": 3,
+        }
+        adapter = {
+            "mode": 0,
+            "path": "adapters/zeta/main.zeta",
+            "sha256": "sha256:" + "2" * 64,
+            "size": 5,
+        }
+        tools = {"compiler": "sha256:" + "3" * 64}
+        contract = {"entrypoint": "bin/zeta", "protocol": "adapter:v1"}
+        first = bootstrap.component_authority(
+            "RELEASE", "language-adapter", "language:zeta", [adapter, core], tools, contract
+        )
+        reordered = bootstrap.component_authority(
+            "RELEASE", "language-adapter", "language:zeta", [core, adapter], tools, contract
+        )
+        self.assertEqual(first, reordered)
+        development = bootstrap.component_authority(
+            "DEVELOPMENT", "language-adapter", "language:zeta", [core, adapter], tools, contract
+        )
+        self.assertNotEqual(first["componentKey"], development["componentKey"])
+
+        core_only = bootstrap.component_authority(
+            "RELEASE", "core-binary", "clew", [core], tools, {"entrypoint": "bin/clew"}
+        )
+        changed_adapter = dict(adapter)
+        changed_adapter["sha256"] = "sha256:" + "4" * 64
+        same_core = bootstrap.component_authority(
+            "RELEASE", "core-binary", "clew", [core], tools, {"entrypoint": "bin/clew"}
+        )
+        self.assertEqual(core_only, same_core)
+        self.assertNotEqual(
+            first["componentKey"],
+            bootstrap.component_authority(
+                "RELEASE",
+                "language-adapter",
+                "language:zeta",
+                [core, changed_adapter],
+                tools,
+                contract,
+            )["componentKey"],
+        )
+        with self.assertRaisesRegex(bootstrap.BootstrapError, "unsupported value"):
+            bootstrap.component_authority(
+                "RELEASE", "core-binary", "clew", [core], {"ratio": 0.5}, contract
+            )
+
+    def test_component_publish_verify_materialize_and_quarantine(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for relative in ["runtimes/components", "locks", "tmp", "quarantine"]:
+                (root / relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+            output = root / "output"
+            (output / "bin").mkdir(parents=True)
+            executable = output / "bin/zeta"
+            executable.write_bytes(b"executable")
+            executable.chmod(0o700)
+            (output / "metadata.json").write_bytes(b"{}\n")
+            authority = bootstrap.component_authority(
+                "RELEASE",
+                "language-adapter",
+                "language:zeta",
+                [{
+                    "mode": 0,
+                    "path": "adapters/zeta/main.zeta",
+                    "sha256": "sha256:" + "1" * 64,
+                    "size": 3,
+                }],
+                {"compiler": "sha256:" + "2" * 64},
+                {"entrypoint": "bin/zeta", "protocol": "adapter:v1"},
+            )
+            component, published = bootstrap.publish_component(root, authority, output)
+            self.assertTrue(published)
+            self.assertEqual(
+                bootstrap.verify_component(root, authority["componentKey"], authority)[0],
+                component,
+            )
+            materialized = root / "materialized"
+            rows = bootstrap.materialize_component(
+                root, authority["componentKey"], materialized, authority
+            )
+            self.assertEqual([row["path"] for row in rows], ["bin/zeta", "metadata.json"])
+            self.assertEqual(stat.S_IMODE((materialized / "bin/zeta").stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((materialized / "metadata.json").stat().st_mode), 0o600)
+
+            component.chmod(0o700)
+            (component / "files").chmod(0o700)
+            corrupted = component / "files/bin/zeta"
+            corrupted.chmod(0o700)
+            corrupted.write_bytes(b"corrupt")
+            rebuilt, republished = bootstrap.publish_component(root, authority, output)
+            self.assertTrue(republished)
+            self.assertEqual(rebuilt, component)
+            bootstrap.verify_component(root, authority["componentKey"], authority)
+            quarantined = [
+                path
+                for path in (root / "quarantine").iterdir()
+                if path.is_dir() and path.name.startswith("component-")
+            ]
+            self.assertEqual(len(quarantined), 1)
+            record = quarantined[0].with_suffix(".json")
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+
+    @unittest.skipUnless(hasattr(os, "fork"), "component singleflight requires POSIX")
+    def test_component_publish_is_process_singleflight(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for relative in ["runtimes/components", "locks", "tmp", "quarantine", "results"]:
+                (root / relative).mkdir(mode=0o700, parents=True, exist_ok=True)
+            output = root / "output"
+            output.mkdir()
+            (output / "core").write_bytes(b"core")
+            authority = bootstrap.component_authority(
+                "RELEASE",
+                "core-binary",
+                "clew",
+                [{
+                    "mode": 0,
+                    "path": "crates/clew/src/main.rs",
+                    "sha256": "sha256:" + "5" * 64,
+                    "size": 4,
+                }],
+                {"rustc": "sha256:" + "6" * 64},
+                {"entrypoint": "core"},
+            )
+            children = []
+            for index in range(4):
+                child = os.fork()
+                if child == 0:
+                    try:
+                        _component, published = bootstrap.publish_component(
+                            root, authority, output
+                        )
+                        (root / "results" / str(index)).write_text(
+                            "published" if published else "reused"
+                        )
+                        os._exit(0)
+                    except Exception:
+                        os._exit(1)
+                children.append(child)
+            statuses = [os.waitpid(child, 0)[1] for child in children]
+            self.assertTrue(
+                all(os.waitstatus_to_exitcode(value) == 0 for value in statuses)
+            )
+            results = sorted(path.read_text() for path in (root / "results").iterdir())
+            self.assertEqual(results.count("published"), 1)
+            self.assertEqual(results.count("reused"), 3)
+            bootstrap.verify_component(root, authority["componentKey"], authority)
+
     def test_selected_closure_excludes_root_and_nested_legacy_state(self) -> None:
         self.assertFalse(bootstrap.selected_source(".semantic-thread/private"))
         self.assertFalse(

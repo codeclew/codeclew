@@ -25,6 +25,9 @@ import uuid
 
 SCHEMA = "codeclew-runtime-capsule/2.0"
 DOMAIN = b"codeclew-runtime/v2\0"
+COMPONENT_SCHEMA = "codeclew-runtime-component/1.0"
+COMPONENT_AUTHORITY_SCHEMA = "codeclew-runtime-component-authority/1.0"
+COMPONENT_DOMAIN = b"codeclew-runtime-component/v1\0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_NODES = 100_000
@@ -534,6 +537,7 @@ def state_root() -> tuple[Path, int]:
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
         "objects", "objects/sha256", "objects/packs-v3", "generations", "attempts", "gc",
         "dependency-cache", "runtimes/locators", "runtimes/checkpoints",
+        "runtimes/components",
     ]:
         _ensure_private_descendant(root_fd, child)
     return root, root_fd
@@ -962,6 +966,380 @@ def runtime_key(mode: str, inputs: list[dict[str, object]], tools: dict[str, obj
     digest.update(b"\0")
     digest.update(canonical({"inputs": inputs, "toolchains": tools}))
     return "sha256:" + digest.hexdigest()
+
+
+def _component_identifier(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > 128
+        or any(
+            not (
+                character.isascii()
+                and (character.isalnum() or character in {"-", "_", ".", ":"})
+            )
+            for character in value
+        )
+    ):
+        raise BootstrapError(f"runtime component {label} is invalid")
+    return value
+
+
+def _component_input_rows(
+    inputs: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    normalized = []
+    observed = set()
+    for row in inputs:
+        if not isinstance(row, dict) or set(row) != {"mode", "path", "sha256", "size"}:
+            raise BootstrapError("runtime component input row is invalid")
+        relative = row["path"]
+        path = Path(relative) if isinstance(relative, str) else Path("")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or path.is_absolute()
+            or any(
+                not isinstance(component, str)
+                or component in {"", ".", ".."}
+                for component in relative.split("/")
+            )
+            or "\\" in relative
+            or relative in observed
+            or not isinstance(row["size"], int)
+            or isinstance(row["size"], bool)
+            or row["size"] < 0
+            or row["mode"] not in {0, 0o111}
+            or not valid_runtime_key(row["sha256"])
+        ):
+            raise BootstrapError("runtime component input row is invalid")
+        observed.add(relative)
+        normalized.append(dict(row))
+    if not normalized:
+        raise BootstrapError("runtime component input closure is empty")
+    normalized.sort(key=lambda row: str(row["path"]))
+    return normalized
+
+
+def component_authority(
+    mode: str,
+    component_kind: str,
+    component_id: str,
+    inputs: list[dict[str, object]],
+    toolchain_authority: dict[str, object],
+    build_contract: dict[str, object],
+) -> dict[str, object]:
+    if mode not in {"RELEASE", "DEVELOPMENT"}:
+        raise BootstrapError("runtime component mode is invalid")
+    kind = _component_identifier(component_kind, "kind")
+    identifier = _component_identifier(component_id, "id")
+    rows = _component_input_rows(inputs)
+    if not isinstance(toolchain_authority, dict) or not toolchain_authority:
+        raise BootstrapError("runtime component toolchain authority is invalid")
+    if not isinstance(build_contract, dict) or not build_contract:
+        raise BootstrapError("runtime component build contract is invalid")
+    _validate_component_value(toolchain_authority)
+    _validate_component_value(build_contract)
+    authority = {
+        "buildContractDigest": digest_bytes(canonical(build_contract)),
+        "componentId": identifier,
+        "componentKind": kind,
+        "inputDigest": digest_bytes(canonical({"inputs": rows})),
+        "mode": mode,
+        "schema": COMPONENT_AUTHORITY_SCHEMA,
+        "toolchainDigest": digest_bytes(canonical(toolchain_authority)),
+    }
+    authority["componentKey"] = digest_bytes(
+        COMPONENT_DOMAIN + canonical(authority)
+    )
+    return authority
+
+
+def _validate_component_value(value: object, depth: int = 0) -> None:
+    if depth > 32:
+        raise BootstrapError("runtime component authority is too deeply nested")
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_component_value(item, depth + 1)
+        return
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        for item in value.values():
+            _validate_component_value(item, depth + 1)
+        return
+    raise BootstrapError("runtime component authority contains an unsupported value")
+
+
+def _component_file_rows(root: Path) -> list[dict[str, object]]:
+    rows = []
+    for path in sorted(root.rglob("*"), key=str):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BootstrapError("runtime component contains a symlink")
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise BootstrapError("runtime component contains an unsupported entry")
+        rows.append({
+            "mode": 0o111 if metadata.st_mode & 0o111 else 0,
+            "path": path.relative_to(root).as_posix(),
+            "sha256": digest_file(path),
+            "size": metadata.st_size,
+        })
+    return rows
+
+
+def _component_tree_hash(rows: list[dict[str, object]]) -> str:
+    return digest_bytes(COMPONENT_DOMAIN + b"tree\0" + canonical({"files": rows}))
+
+
+def _component_path(root: Path, key: str) -> Path:
+    if not valid_runtime_key(key):
+        raise BootstrapError("runtime component key is invalid")
+    return root / "runtimes" / "components" / key.removeprefix("sha256:")
+
+
+def _read_component_manifest(path: Path) -> tuple[dict[str, object], bytes]:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_size > MAX_MANIFEST_BYTES
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+        ):
+            raise BootstrapError("runtime component manifest is unsafe")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            encoded = stream.read(MAX_MANIFEST_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(encoded)
+    except (ValueError, TypeError) as error:
+        raise BootstrapError("runtime component manifest is invalid") from error
+    if not isinstance(value, dict) or encoded != canonical(value) + b"\n":
+        raise BootstrapError("runtime component manifest is not canonical")
+    return value, encoded
+
+
+def verify_component(
+    root: Path,
+    key: str,
+    expected_authority: dict[str, object] | None = None,
+) -> tuple[Path, dict[str, object]]:
+    component = _component_path(root, key)
+    metadata = component.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BootstrapError("runtime component root is unsafe")
+    if {path.name for path in component.iterdir()} != {"READY", "component.json", "files"}:
+        raise BootstrapError("runtime component root closure mismatch")
+    files_root = component / "files"
+    files_metadata = files_root.lstat()
+    if stat.S_ISLNK(files_metadata.st_mode) or not stat.S_ISDIR(files_metadata.st_mode):
+        raise BootstrapError("runtime component files root is unsafe")
+    manifest, _encoded = _read_component_manifest(component / "component.json")
+    expected_digest = manifest.get("manifestDigest")
+    unsigned = dict(manifest)
+    unsigned["manifestDigest"] = ""
+    required = {
+        "buildContractDigest",
+        "componentId",
+        "componentKey",
+        "componentKind",
+        "files",
+        "inputDigest",
+        "manifestDigest",
+        "mode",
+        "schema",
+        "toolchainDigest",
+        "treeHash",
+    }
+    if (
+        set(manifest) != required
+        or manifest.get("schema") != COMPONENT_SCHEMA
+        or manifest.get("componentKey") != key
+        or manifest.get("mode") not in {"RELEASE", "DEVELOPMENT"}
+        or not valid_runtime_key(expected_digest)
+        or digest_bytes(canonical(unsigned)) != expected_digest
+    ):
+        raise BootstrapError("runtime component manifest authority mismatch")
+    if expected_authority is not None:
+        for field in (
+            "buildContractDigest",
+            "componentId",
+            "componentKey",
+            "componentKind",
+            "inputDigest",
+            "mode",
+            "toolchainDigest",
+        ):
+            if manifest.get(field) != expected_authority.get(field):
+                raise BootstrapError("runtime component expected authority mismatch")
+    rows = _component_file_rows(files_root)
+    if manifest.get("files") != rows or manifest.get("treeHash") != _component_tree_hash(rows):
+        raise BootstrapError("runtime component output closure mismatch")
+    for row in rows:
+        metadata = (files_root / str(row["path"])).lstat()
+        expected_mode = 0o500 if row["mode"] else 0o400
+        if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != expected_mode:
+            raise BootstrapError("runtime component output mode is unsafe")
+    ready = component / "READY"
+    ready_metadata = ready.lstat()
+    if (
+        stat.S_ISLNK(ready_metadata.st_mode)
+        or not stat.S_ISREG(ready_metadata.st_mode)
+        or stat.S_IMODE(ready_metadata.st_mode) != 0o400
+        or ready.read_bytes() != (key + "\n").encode()
+    ):
+        raise BootstrapError("runtime component is not ready")
+    verify_sealed_capsule(component)
+    return component, manifest
+
+
+def _quarantine_component(root: Path, component: Path, reason: str) -> None:
+    expected_parent = root / "runtimes" / "components"
+    if component.parent != expected_parent or not valid_runtime_key(
+        "sha256:" + component.name
+    ):
+        raise BootstrapError("unsafe runtime component quarantine target")
+    destination = root / "quarantine" / (
+        f"component-{component.name}-{uuid.uuid4().hex}"
+    )
+    metadata = component.lstat()
+    if not stat.S_ISLNK(metadata.st_mode):
+        os.chmod(component, 0o700)
+    os.replace(component, destination)
+    record = destination.with_suffix(".json")
+    descriptor = os.open(record, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(canonical({
+                "componentKey": "sha256:" + component.name,
+                "reason": reason,
+                "schema": "codeclew-runtime-component-quarantine/1.0",
+            }) + b"\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def publish_component(
+    root: Path,
+    authority: dict[str, object],
+    output: Path,
+) -> tuple[Path, bool]:
+    key = authority.get("componentKey")
+    authority_fields = {
+        "buildContractDigest",
+        "componentId",
+        "componentKey",
+        "componentKind",
+        "inputDigest",
+        "mode",
+        "schema",
+        "toolchainDigest",
+    }
+    if set(authority) != authority_fields or authority.get("schema") != COMPONENT_AUTHORITY_SCHEMA:
+        raise BootstrapError("runtime component publication authority is invalid")
+    _component_identifier(authority.get("componentKind"), "kind")
+    _component_identifier(authority.get("componentId"), "id")
+    if authority.get("mode") not in {"RELEASE", "DEVELOPMENT"} or any(
+        not valid_runtime_key(authority.get(field))
+        for field in ("buildContractDigest", "componentKey", "inputDigest", "toolchainDigest")
+    ):
+        raise BootstrapError("runtime component publication authority is invalid")
+    # The authority itself is already content-addressed. Recompute its key from
+    # the closed digest-only projection so callers cannot substitute an ID.
+    unsigned_authority = {
+        field: authority[field]
+        for field in (
+            "buildContractDigest",
+            "componentId",
+            "componentKind",
+            "inputDigest",
+            "mode",
+            "schema",
+            "toolchainDigest",
+        )
+    }
+    if key != digest_bytes(COMPONENT_DOMAIN + canonical(unsigned_authority)):
+        raise BootstrapError("runtime component key differs from its authority")
+    destination = _component_path(root, key)
+    lock_path = root / "locks" / f"component-{key.removeprefix('sha256:')}.lock"
+    with lock_path.open("a+b") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if destination.exists() or destination.is_symlink():
+            try:
+                component, _manifest = verify_component(root, key, authority)
+                return component, False
+            except (BootstrapError, OSError, ValueError, TypeError) as error:
+                _quarantine_component(root, destination, type(error).__name__)
+        temporary = Path(tempfile.mkdtemp(prefix="component-build-", dir=root / "tmp"))
+        staged = temporary / "component"
+        files_root = staged / "files"
+        try:
+            source_rows = _component_file_rows(output)
+            if not source_rows:
+                raise BootstrapError("runtime component output closure is empty")
+            files_root.mkdir(mode=0o700, parents=True)
+            for row in source_rows:
+                relative = Path(str(row["path"]))
+                target = files_root / relative
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                shutil.copyfile(output / relative, target, follow_symlinks=False)
+                os.chmod(target, 0o700 if row["mode"] else 0o600)
+            rows = _component_file_rows(files_root)
+            if rows != source_rows:
+                raise BootstrapError("runtime component changed while it was copied")
+            manifest = {
+                **unsigned_authority,
+                "componentKey": key,
+                "files": rows,
+                "manifestDigest": "",
+                "schema": COMPONENT_SCHEMA,
+                "treeHash": _component_tree_hash(rows),
+            }
+            manifest["manifestDigest"] = digest_bytes(canonical(manifest))
+            (staged / "component.json").write_bytes(canonical(manifest) + b"\n")
+            (staged / "READY").write_text(key + "\n")
+            seal_capsule(staged, seal_root=False)
+            fsync_tree(staged)
+            os.rename(staged, destination)
+            os.chmod(destination, 0o500)
+            fsync_tree(destination)
+            component, _manifest = verify_component(root, key, authority)
+            return component, True
+        finally:
+            discard_private_tree(temporary)
+
+
+def materialize_component(
+    root: Path,
+    key: str,
+    destination: Path,
+    expected_authority: dict[str, object] | None = None,
+) -> list[dict[str, object]]:
+    component, manifest = verify_component(root, key, expected_authority)
+    if destination.exists() or destination.is_symlink():
+        raise BootstrapError("runtime component materialization target already exists")
+    destination.mkdir(mode=0o700, parents=True)
+    rows = manifest["files"]
+    for row in rows:
+        relative = Path(str(row["path"]))
+        target = destination / relative
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        shutil.copyfile(component / "files" / relative, target, follow_symlinks=False)
+        os.chmod(target, 0o700 if row["mode"] else 0o600)
+    if _component_file_rows(destination) != rows:
+        raise BootstrapError("runtime component materialization mismatch")
+    return rows
 
 
 def stage_inputs(
