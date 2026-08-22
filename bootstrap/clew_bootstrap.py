@@ -23,6 +23,8 @@ import uuid
 SCHEMA = "codeclew-runtime-capsule/2.0"
 DOMAIN = b"codeclew-runtime/v2\0"
 MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
+MAX_CHECKPOINT_NODES = 100_000
 MIN_COLD_BUILD_FREE_BYTES = 6 * 1024 * 1024 * 1024
 WORKERS = {
     "kotlin21": ("2.1.21", "workers/kotlin21/build/install/kotlin21", "workers/manifests/kotlin21.json"),
@@ -45,6 +47,14 @@ STATE_ROOT_FD_ENV = "CODECLEW_STATE_ROOT_FD"
 RUNTIME_ROOT_FD_ENV = "CODECLEW_RUNTIME_ROOT_FD"
 RUNTIME_LEASE_FD_ENV = "CODECLEW_RUNTIME_LEASE_FD"
 
+_AUDIT_COUNTERS = {
+    "processRuns": 0,
+    "digestFileCalls": 0,
+    "metadataChecks": 0,
+    "checkpointHits": 0,
+    "checkpointMisses": 0,
+}
+
 
 class BootstrapError(RuntimeError):
     pass
@@ -58,7 +68,15 @@ def digest_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def valid_runtime_key(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    digest = value.removeprefix("sha256:")
+    return len(digest) == 64 and all(character in "0123456789abcdef" for character in digest)
+
+
 def digest_file(path: Path) -> str:
+    _AUDIT_COUNTERS["digestFileCalls"] += 1
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
@@ -67,6 +85,7 @@ def digest_file(path: Path) -> str:
 
 
 def run(arguments: list[str], cwd: Path, environment: dict[str, str] | None = None) -> bytes:
+    _AUDIT_COUNTERS["processRuns"] += 1
     completed = subprocess.run(
         arguments,
         cwd=cwd,
@@ -88,6 +107,56 @@ def progress(event: str, stage: str, **values: object) -> None:
         "stage": stage,
         **values,
     }).decode(), file=sys.stderr, flush=True)
+
+
+def reset_audit_counters() -> None:
+    for name in _AUDIT_COUNTERS:
+        _AUDIT_COUNTERS[name] = 0
+
+
+def _metadata_identity(path: Path) -> dict[str, object]:
+    _AUDIT_COUNTERS["metadataChecks"] += 1
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"path": str(path), "exists": False}
+    return {
+        "path": str(path),
+        "exists": True,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "size": metadata.st_size,
+        "mode": metadata.st_mode,
+        "modifiedNs": metadata.st_mtime_ns,
+        "changedNs": metadata.st_ctime_ns,
+    }
+
+
+def _metadata_matches(row: dict[str, object]) -> bool:
+    path_value = row.get("path")
+    if not isinstance(path_value, str) or not Path(path_value).is_absolute():
+        return False
+    return _metadata_identity(Path(path_value)) == row
+
+
+def _environment_checkpoint() -> dict[str, object]:
+    return {
+        "PATH": os.environ.get("PATH"),
+        "JAVA_HOME": os.environ.get("JAVA_HOME"),
+        "HOME": os.environ.get("HOME"),
+        "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME"),
+        "GIT_CONFIG_GLOBAL": os.environ.get("GIT_CONFIG_GLOBAL"),
+        "GIT_CONFIG_SYSTEM": os.environ.get("GIT_CONFIG_SYSTEM"),
+        "MACOSX_DEPLOYMENT_TARGET": os.environ.get("MACOSX_DEPLOYMENT_TARGET"),
+        "pythonExecutable": str(Path(sys.executable).resolve(strict=True)),
+        "pythonVersion": platform.python_version(),
+        "platform": [
+            platform.system(),
+            platform.release(),
+            platform.machine(),
+            list(platform.libc_ver()),
+        ],
+    }
 
 
 def run_build_stage(
@@ -315,7 +384,7 @@ def state_root() -> tuple[Path, int]:
     for child in [
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
         "objects", "objects/sha256", "objects/packs-v3", "generations", "attempts", "gc",
-        "dependency-cache", "runtimes/locators",
+        "dependency-cache", "runtimes/locators", "runtimes/checkpoints",
     ]:
         _ensure_private_descendant(root_fd, child)
     return root, root_fd
@@ -435,6 +504,7 @@ def fast_toolchain_locator_authority() -> dict[str, object]:
         },
         "executables": resolved,
         "jdkRelease": {
+            "path": str(release),
             "device": release_metadata.st_dev,
             "inode": release_metadata.st_ino,
             "size": release_metadata.st_size,
@@ -495,6 +565,225 @@ def write_locator(path: Path, locator: str, runtime: str) -> None:
     finally:
         os.close(descriptor)
     os.replace(temporary, path)
+
+
+def checkpoint_path(root: Path, source: Path) -> Path:
+    metadata = source.lstat()
+    identity = canonical({
+        "path": str(source),
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+    })
+    name = hashlib.sha256(DOMAIN + b"checkpoint\0" + identity).hexdigest() + ".json"
+    return root / "runtimes" / "checkpoints" / name
+
+
+def _runtime_discovery_directories(source: Path) -> list[Path]:
+    directories = {source}
+    roots = [
+        source / ".cargo",
+        source / "bootstrap",
+        source / "schemas",
+        source / "gradle" / "wrapper",
+        source / "crates",
+        source / "workers",
+    ]
+    for root in roots:
+        if not root.is_dir() or root.is_symlink():
+            continue
+        directories.add(root)
+        for current, names, _files in os.walk(root, followlinks=False):
+            current_path = Path(current)
+            names[:] = [
+                name for name in names
+                if name != ".semantic-thread"
+                and name != "target"
+                and not (
+                    current_path.is_relative_to(source / "crates")
+                    and name in {"tests", "examples"}
+                )
+            ]
+            directories.add(current_path)
+    return sorted(directories, key=str)
+
+
+def _git_control_paths(source: Path) -> list[Path]:
+    git_directory = Path(
+        run(["git", "rev-parse", "--absolute-git-dir"], source).decode().strip()
+    )
+    common_value = run(["git", "rev-parse", "--git-common-dir"], source).decode().strip()
+    common_directory = Path(common_value)
+    if not common_directory.is_absolute():
+        common_directory = (source / common_directory).resolve(strict=False)
+    paths = {source / ".git", git_directory, common_directory}
+    for directory in {git_directory, common_directory}:
+        for relative in [
+            "HEAD", "index", "commondir", "packed-refs", "config", "config.worktree",
+            "shallow", "info", "info/exclude", "refs",
+        ]:
+            paths.add(directory / relative)
+        refs = directory / "refs"
+        if refs.is_dir() and not refs.is_symlink():
+            for current, names, files in os.walk(refs, followlinks=False):
+                current_path = Path(current)
+                paths.add(current_path)
+                paths.update(current_path / name for name in names)
+                paths.update(current_path / name for name in files)
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    xdg = Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config")))
+    candidates = [
+        home / ".gitconfig",
+        xdg / "git" / "config",
+        Path("/etc/gitconfig"),
+    ]
+    for name in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]:
+        if os.environ.get(name):
+            candidates.append(Path(os.environ[name]))
+    paths.update(candidate for candidate in candidates if candidate.is_absolute())
+    return sorted(paths, key=str)
+
+
+def _toolchain_checkpoint_paths(fast_tools: dict[str, object]) -> list[Path]:
+    paths = [
+        Path(str(fast_tools["python"]["path"])),
+        Path(str(fast_tools["jdkRelease"]["path"])),
+    ]
+    paths.extend(Path(str(value["path"])) for value in fast_tools["executables"].values())
+    java = Path(str(fast_tools["executables"]["java"]["path"]))
+    paths.append(java.parent.parent / "lib" / "modules")
+    return sorted(set(paths), key=str)
+
+
+def write_checkpoint(
+    path: Path,
+    source: Path,
+    capsule: Path,
+    key: str,
+    mode: str,
+    inputs: list[dict[str, object]],
+    fast_tools: dict[str, object],
+) -> None:
+    discovery_directories = _runtime_discovery_directories(source)
+    source_paths = set(discovery_directories)
+    source_paths.update(directory / ".gitignore" for directory in discovery_directories)
+    for row in inputs:
+        value = source / str(row["path"])
+        source_paths.add(value)
+        parent = value.parent
+        while parent != source and parent.is_relative_to(source):
+            source_paths.add(parent)
+            parent = parent.parent
+    source_paths.update(_git_control_paths(source))
+    source_paths.update(_toolchain_checkpoint_paths(fast_tools))
+    rust_sysroot = Path(
+        run(["rustc", "--print", "sysroot"], source, sanitized_environment())
+        .decode()
+        .strip()
+    )
+    if not rust_sysroot.is_absolute():
+        raise BootstrapError("Rust sysroot authority is not absolute")
+    source_paths.update([rust_sysroot / "bin" / "rustc", rust_sysroot / "bin" / "cargo"])
+    capsule_paths = [capsule, *capsule.rglob("*")]
+    payload = {
+        "schema": "codeclew-runtime-checkpoint/3.0",
+        "source": _metadata_identity(source),
+        "environment": _environment_checkpoint(),
+        "runtimeKey": key,
+        "mode": mode,
+        "inputs": inputs,
+        "capsule": str(capsule),
+        "sourceNodes": [_metadata_identity(value) for value in sorted(source_paths, key=str)],
+        "capsuleNodes": [_metadata_identity(value) for value in sorted(capsule_paths, key=str)],
+    }
+    encoded = canonical(payload) + b"\n"
+    if len(encoded) > MAX_CHECKPOINT_BYTES:
+        raise BootstrapError("runtime metadata checkpoint exceeds its bounded size")
+    temporary = path.parent / f".checkpoint-{uuid.uuid4().hex}"
+    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, path)
+    os.chmod(path, 0o600)
+
+
+def read_valid_checkpoint(path: Path, source: Path, root: Path) -> dict[str, object] | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        _AUDIT_COUNTERS["checkpointMisses"] += 1
+        return None
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_size > MAX_CHECKPOINT_BYTES
+    ):
+        raise BootstrapError("runtime metadata checkpoint is unsafe")
+    try:
+        value = json.loads(path.read_bytes())
+    except (OSError, ValueError, TypeError):
+        _AUDIT_COUNTERS["checkpointMisses"] += 1
+        return None
+    source_nodes = value.get("sourceNodes")
+    capsule_nodes = value.get("capsuleNodes")
+    key = value.get("runtimeKey")
+    if not valid_runtime_key(key):
+        _AUDIT_COUNTERS["checkpointMisses"] += 1
+        return None
+    capsule = root / "runtimes" / str(key).removeprefix("sha256:")
+    valid_shape = (
+        value.get("schema") == "codeclew-runtime-checkpoint/3.0"
+        and value.get("environment") == _environment_checkpoint()
+        and value.get("capsule") == str(capsule)
+        and isinstance(value.get("inputs"), list)
+        and value.get("mode") in {"RELEASE", "DEVELOPMENT"}
+        and isinstance(source_nodes, list)
+        and isinstance(capsule_nodes, list)
+        and 0 < len(source_nodes) <= MAX_CHECKPOINT_NODES
+        and 0 < len(capsule_nodes) <= MAX_CHECKPOINT_NODES
+        and all(isinstance(row, dict) for row in source_nodes)
+        and all(isinstance(row, dict) for row in capsule_nodes)
+        and value.get("source") == _metadata_identity(source)
+    )
+    if valid_shape and all(_metadata_matches(row) for row in [*source_nodes, *capsule_nodes]):
+        _AUDIT_COUNTERS["checkpointHits"] += 1
+        return value
+    _AUDIT_COUNTERS["checkpointMisses"] += 1
+    return None
+
+
+def read_checkpoint_candidate_key(path: Path, root: Path) -> str | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_size > MAX_CHECKPOINT_BYTES
+    ):
+        raise BootstrapError("runtime metadata checkpoint is unsafe")
+    try:
+        value = json.loads(path.read_bytes())
+    except (OSError, ValueError, TypeError):
+        return None
+    if value.get("schema") != "codeclew-runtime-checkpoint/3.0":
+        return None
+    key = value.get("runtimeKey")
+    if not valid_runtime_key(key):
+        return None
+    capsule = root / "runtimes" / str(key).removeprefix("sha256:")
+    if value.get("capsule") != str(capsule):
+        return None
+    return str(key)
 
 
 def runtime_key(mode: str, inputs: list[dict[str, object]], tools: dict[str, object]) -> str:
@@ -606,6 +895,7 @@ def warm_audit_payload(toolchain_invoked: bool, capsule_build_invoked: bool) -> 
         "status": "PASSED" if not toolchain_invoked and not capsule_build_invoked else "COLD_MISS",
         "coldToolchainInvoked": toolchain_invoked,
         "capsuleBuildInvoked": capsule_build_invoked,
+        "counters": dict(_AUDIT_COUNTERS),
         "forbiddenWarmProcesses": ["cargo", "rustc", "gradle", "maven"],
     }
 
@@ -885,6 +1175,39 @@ def verify_capsule(
         rows = file_rows(distribution)
         if rows != worker["files"] or tree_hash(rows) != worker["treeHash"]:
             raise BootstrapError("runtime worker authority mismatch")
+    expected_files = {"runtime.json"}
+    expected_files.update(
+        str(value["path"]) for value in manifest.get("artifacts", {}).values()
+    )
+    for worker in manifest.get("workers", {}).values():
+        distribution = Path(str(worker["distribution"]))
+        expected_files.update(
+            (distribution / str(row["path"])).as_posix()
+            for row in worker["files"]
+        )
+    if require_ready:
+        expected_files.add("READY")
+    observed_files = {
+        value.relative_to(path).as_posix()
+        for value in path.rglob("*")
+        if value.is_file() and not value.is_symlink()
+    }
+    if observed_files != expected_files:
+        raise BootstrapError("runtime capsule closure mismatch")
+    expected_directories = {"."}
+    for relative in expected_files:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_directories.add(parent.as_posix())
+            parent = parent.parent
+    observed_directories = {"."}
+    observed_directories.update(
+        value.relative_to(path).as_posix()
+        for value in path.rglob("*")
+        if value.is_dir() and not value.is_symlink()
+    )
+    if observed_directories != expected_directories:
+        raise BootstrapError("runtime capsule directory closure mismatch")
     if require_ready:
         ready = path / "READY"
         if not ready.is_file() or ready.is_symlink() or ready.read_text() != key + "\n":
@@ -928,6 +1251,7 @@ def quarantine(root: Path, capsule: Path, reason: str) -> None:
 
 
 def main() -> int:
+    reset_audit_counters()
     if sys.version_info < (3, 11):
         raise BootstrapError("Codeclew requires Python 3.11 or newer")
     parser = argparse.ArgumentParser(add_help=False)
@@ -940,47 +1264,81 @@ def main() -> int:
     warm_audit = command == ["--bootstrap-warm-audit"]
     source = known.source_root.resolve(strict=True)
     root, state_fd = state_root()
-    inputs, development = source_manifest(source)
-    mode = "DEVELOPMENT" if development else "RELEASE"
-    fast_tools = fast_toolchain_locator_authority()
-    locator = locator_key(mode, inputs, fast_tools)
-    path_to_locator = locator_path(root, locator)
-    key = read_locator(path_to_locator, locator)
-    tools = None
-    if key is None:
-        tools = toolchain_authority(source)
-        key = runtime_key(mode, inputs, tools)
-    cold_toolchain_invoked = tools is not None
+    path_to_checkpoint = checkpoint_path(root, source)
+    checkpoint_key = read_checkpoint_candidate_key(path_to_checkpoint, root)
+    checkpoint = None
+    lease = None
+    cold_toolchain_invoked = False
     capsule_build_invoked = False
-    capsule = root / "runtimes" / key.removeprefix("sha256:")
-    lock_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lock"
-    with lock_path.open("a+b") as lock:
-        os.chmod(lock_path, 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if capsule.exists():
-            try:
-                verify_capsule(capsule, key)
-            except Exception as error:
-                quarantine(root, capsule, type(error).__name__)
-        if not capsule.exists():
-            require_cold_build_capacity(root)
-            if tools is None:
-                tools = toolchain_authority(source)
-                cold_toolchain_invoked = True
-                rebuilt_key = runtime_key(mode, inputs, tools)
-                if rebuilt_key != key:
-                    raise BootstrapError("runtime locator disagrees with cold toolchain authority")
-            capsule_build_invoked = True
-            capsule = build_capsule(source, root, key, mode, inputs, tools)
-        verify_capsule(capsule, key)
-        write_locator(path_to_locator, locator, key)
+    if checkpoint_key is not None:
+        checkpoint_lock = root / "locks" / (
+            f"runtime-{checkpoint_key.removeprefix('sha256:')}.lock"
+        )
+        with checkpoint_lock.open("a+b") as lock:
+            os.chmod(checkpoint_lock, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            checkpoint = read_valid_checkpoint(path_to_checkpoint, source, root)
+            if checkpoint is not None:
+                key = str(checkpoint["runtimeKey"])
+                capsule = Path(str(checkpoint["capsule"]))
+                if not warm_audit:
+                    lease_path = root / "locks" / (
+                        f"runtime-{key.removeprefix('sha256:')}.lease"
+                    )
+                    lease = lease_path.open("a+b")
+                    os.chmod(lease_path, 0o600)
+                    fcntl.flock(lease, fcntl.LOCK_SH)
+    if checkpoint is None:
+        inputs, development = source_manifest(source)
+        mode = "DEVELOPMENT" if development else "RELEASE"
+        fast_tools = fast_toolchain_locator_authority()
+        locator = locator_key(mode, inputs, fast_tools)
+        path_to_locator = locator_path(root, locator)
+        key = read_locator(path_to_locator, locator)
+        tools = None
+        if key is None:
+            tools = toolchain_authority(source)
+            key = runtime_key(mode, inputs, tools)
+        capsule = root / "runtimes" / key.removeprefix("sha256:")
+        cold_toolchain_invoked = tools is not None
+        lock_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lock"
+        with lock_path.open("a+b") as lock:
+            os.chmod(lock_path, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if capsule.exists():
+                try:
+                    verify_capsule(capsule, key)
+                except Exception as error:
+                    quarantine(root, capsule, type(error).__name__)
+            if not capsule.exists():
+                require_cold_build_capacity(root)
+                if tools is None:
+                    tools = toolchain_authority(source)
+                    cold_toolchain_invoked = True
+                    rebuilt_key = runtime_key(mode, inputs, tools)
+                    if rebuilt_key != key:
+                        raise BootstrapError(
+                            "runtime locator disagrees with cold toolchain authority"
+                        )
+                capsule_build_invoked = True
+                capsule = build_capsule(source, root, key, mode, inputs, tools)
+            verify_capsule(capsule, key)
+            write_locator(path_to_locator, locator, key)
+            write_checkpoint(
+                path_to_checkpoint, source, capsule, key, mode, inputs, fast_tools
+            )
+            if not warm_audit:
+                lease_path = root / "locks" / (
+                    f"runtime-{key.removeprefix('sha256:')}.lease"
+                )
+                lease = lease_path.open("a+b")
+                os.chmod(lease_path, 0o600)
+                fcntl.flock(lease, fcntl.LOCK_SH)
     if warm_audit:
         print(canonical(warm_audit_payload(cold_toolchain_invoked, capsule_build_invoked)).decode())
         return 0
-    lease_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lease"
-    lease = lease_path.open("a+b")
-    os.chmod(lease_path, 0o600)
-    fcntl.flock(lease, fcntl.LOCK_SH)
+    if lease is None:
+        raise BootstrapError("runtime lease authority is unavailable")
     runtime_fd = os.open(capsule, _directory_flags())
     os.set_inheritable(state_fd, True)
     os.set_inheritable(runtime_fd, True)

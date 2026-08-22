@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import fcntl
+import io
+import json
 import os
 from pathlib import Path
 import stat
 import subprocess
 import tempfile
 import unittest
+import sys
 from unittest import mock
 
 
@@ -70,6 +74,208 @@ class BootstrapAuthorityTest(unittest.TestCase):
         ):
             authority = bootstrap.fast_toolchain_locator_authority()
         self.assertEqual(set(authority["executables"]), {"cargo", "java", "rustc"})
+
+    def test_metadata_checkpoint_warm_path_never_runs_or_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            state = root / "state"
+            capsule = state / "runtimes" / ("1" * 64)
+            checkpoint_directory = state / "runtimes" / "checkpoints"
+            source.mkdir()
+            capsule.mkdir(parents=True)
+            checkpoint_directory.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            (source / "Cargo.toml").write_text("[workspace]\n")
+            subprocess.run(["git", "add", "Cargo.toml"], cwd=source, check=True)
+            artifact = capsule / "clew"
+            artifact.write_bytes(b"capsule")
+            source_file = source / "Cargo.toml"
+            source_metadata = source_file.stat()
+            inputs = [{
+                "path": "Cargo.toml",
+                "size": source_metadata.st_size,
+                "mode": source_metadata.st_mode & 0o111,
+                "sha256": "sha256:" + "0" * 64,
+            }]
+            executable = Path(os.sys.executable).resolve()
+            fast_tools = {
+                "python": {"path": str(executable)},
+                "executables": {
+                    "cargo": {"path": str(executable)},
+                    "java": {"path": str(executable)},
+                    "rustc": {"path": str(executable)},
+                },
+                "jdkRelease": {"path": str(executable)},
+            }
+            path = bootstrap.checkpoint_path(state, source)
+            bootstrap.write_checkpoint(
+                path,
+                source,
+                capsule,
+                "sha256:" + "1" * 64,
+                "RELEASE",
+                inputs,
+                fast_tools,
+            )
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            bootstrap.reset_audit_counters()
+            with (
+                mock.patch.object(
+                    bootstrap,
+                    "digest_file",
+                    side_effect=AssertionError("warm checkpoint hashed bytes"),
+                ),
+                mock.patch.object(
+                    bootstrap,
+                    "run",
+                    side_effect=AssertionError("warm checkpoint ran a process"),
+                ),
+            ):
+                value = bootstrap.read_valid_checkpoint(path, source, state)
+            self.assertIsNotNone(value)
+            self.assertEqual(bootstrap._AUDIT_COUNTERS["processRuns"], 0)
+            self.assertEqual(bootstrap._AUDIT_COUNTERS["digestFileCalls"], 0)
+            self.assertGreater(bootstrap._AUDIT_COUNTERS["metadataChecks"], 0)
+            (state / "locks").mkdir()
+            state_descriptor = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+            output = io.StringIO()
+            try:
+                with (
+                    mock.patch.object(
+                        bootstrap,
+                        "digest_file",
+                        side_effect=AssertionError("warm main hashed bytes"),
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "run",
+                        side_effect=AssertionError("warm main ran a process"),
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "state_root",
+                        return_value=(state, state_descriptor),
+                    ),
+                    mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "clew_bootstrap.py",
+                            "--source-root",
+                            str(source),
+                            "--bootstrap-warm-audit",
+                        ],
+                    ),
+                    contextlib.redirect_stdout(output),
+                ):
+                    self.assertEqual(bootstrap.main(), 0)
+            finally:
+                os.close(state_descriptor)
+            audit = json.loads(output.getvalue())
+            self.assertEqual(audit["status"], "PASSED")
+            self.assertEqual(audit["counters"]["processRuns"], 0)
+            self.assertEqual(audit["counters"]["digestFileCalls"], 0)
+            self.assertGreaterEqual(audit["counters"]["checkpointHits"], 1)
+            malformed = json.loads(path.read_bytes())
+            malformed["runtimeKey"] = "sha256:../../outside"
+            malformed["capsule"] = str(root / "outside")
+            path.write_bytes(bootstrap.canonical(malformed) + b"\n")
+            os.chmod(path, 0o600)
+            with mock.patch.object(
+                bootstrap,
+                "_metadata_matches",
+                side_effect=AssertionError("malformed key reached metadata paths"),
+            ):
+                self.assertIsNone(
+                    bootstrap.read_valid_checkpoint(path, source, state)
+                )
+            self.assertIsNone(bootstrap.read_checkpoint_candidate_key(path, state))
+
+    def test_metadata_checkpoint_invalidates_source_and_capsule_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            state = root / "state"
+            capsule = state / "runtimes" / ("2" * 64)
+            (state / "runtimes" / "checkpoints").mkdir(parents=True)
+            source.mkdir()
+            capsule.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            source_file = source / "Cargo.toml"
+            source_file.write_text("[workspace]\n")
+            subprocess.run(["git", "add", "Cargo.toml"], cwd=source, check=True)
+            artifact = capsule / "clew"
+            artifact.write_bytes(b"capsule")
+            executable = Path(os.sys.executable).resolve()
+            fast_tools = {
+                "python": {"path": str(executable)},
+                "executables": {
+                    "cargo": {"path": str(executable)},
+                    "java": {"path": str(executable)},
+                    "rustc": {"path": str(executable)},
+                },
+                "jdkRelease": {"path": str(executable)},
+            }
+            inputs = [{
+                "path": "Cargo.toml",
+                "size": source_file.stat().st_size,
+                "mode": 0,
+                "sha256": "sha256:" + "0" * 64,
+            }]
+            path = bootstrap.checkpoint_path(state, source)
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "DEVELOPMENT", inputs, fast_tools,
+            )
+            source_file.write_text("[workspace]\nmembers=[]\n")
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "DEVELOPMENT", inputs, fast_tools,
+            )
+            subprocess.run(["git", "add", "Cargo.toml"], cwd=source, check=True)
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "DEVELOPMENT", inputs, fast_tools,
+            )
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Codeclew Tests",
+                    "-c", "user.email=tests@codeclew.invalid",
+                    "commit", "-qm", "clean transition",
+                ],
+                cwd=source,
+                check=True,
+            )
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "RELEASE", inputs, fast_tools,
+            )
+            added = source / "crates" / "new" / "src" / "lib.rs"
+            added.parent.mkdir(parents=True)
+            added.write_text("pub fn added() {}\n")
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "DEVELOPMENT", inputs, fast_tools,
+            )
+            added.unlink()
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "DEVELOPMENT", inputs, fast_tools,
+            )
+            artifact.write_bytes(b"corrupt")
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
+            bootstrap.write_checkpoint(
+                path, source, capsule, "sha256:" + "2" * 64,
+                "DEVELOPMENT", inputs, fast_tools,
+            )
+            (capsule / "unexpected").write_bytes(b"extra")
+            self.assertIsNone(bootstrap.read_valid_checkpoint(path, source, state))
 
     def test_manifest_rechecks_full_closure_without_reading_legacy_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
