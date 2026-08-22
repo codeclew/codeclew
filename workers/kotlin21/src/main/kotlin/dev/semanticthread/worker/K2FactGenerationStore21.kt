@@ -212,9 +212,8 @@ internal class K2FactGenerationStore21 private constructor(
             val facts = mergedFacts.toSortedMap().values.flatten().sortedBy(::canonicalK2Json21)
             val graphDigest = graphDigest21(facts)
             val manifest = buildJsonObject {
-                put("schema", "codeclew-k2-index-manifest/0.1")
+                put("schema", "codeclew-k2-index-manifest/0.2")
                 put("backend", "K2_FACT_GENERATION_STORE_21")
-                put("repo", repo.toString())
                 put("compilation", compilation)
                 put("compilerVersion", compilerVersion)
                 put("configDigest", configDigest)
@@ -251,12 +250,11 @@ internal class K2FactGenerationStore21 private constructor(
         val manifestDigest = pointer.substring(0, 64)
         val manifest = readSealedJson21(child21("generations/$manifestDigest.json"), manifestDigest)
         require(manifest.keys == setOf(
-            "schema", "backend", "repo", "compilation", "compilerVersion", "configDigest",
+            "schema", "backend", "compilation", "compilerVersion", "configDigest",
             "sourceSetDigest", "graphDigest", "files",
         ))
-        require(string21(manifest, "schema") == "codeclew-k2-index-manifest/0.1")
+        require(string21(manifest, "schema") == "codeclew-k2-index-manifest/0.2")
         require(string21(manifest, "backend") == "K2_FACT_GENERATION_STORE_21")
-        require(string21(manifest, "repo") == repo.toString())
         require(string21(manifest, "compilation") == compilation)
         require(string21(manifest, "compilerVersion") == compilerVersion)
         require(string21(manifest, "configDigest") == configDigest)
