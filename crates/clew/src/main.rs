@@ -339,13 +339,11 @@ fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
         .stderr(Stdio::from(stderr));
     #[cfg(unix)]
     command.process_group(0);
-    let child = command.spawn().map_err(io_error)?;
-    let mut latest = RunRecord::load(run_id)?;
-    if latest.status == RunStatus::Created {
-        latest.process_id = Some(child.id());
-        latest.process_start_token = process_start_token(child.id())?;
-        latest.save()?;
-    }
+    // The child owns the CREATED -> PREPARING transition and records its own
+    // process identity in the same ledger event. A parent-side PID update would
+    // race that transition and turn one deterministic run into two stale CAS
+    // writers.
+    command.spawn().map_err(io_error)?;
     Ok(())
 }
 
