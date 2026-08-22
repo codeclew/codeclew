@@ -216,6 +216,11 @@ immutable generation and query-index objects, a 64-KiB-bounded context result,
 successful session close plus managed GC. Evidence contains only digests,
 bounded timings, versions, statuses, and path-free authority.
 
+Native launcher/provider diagnostics may use stderr, but the gate bounds that
+channel and never persists it; a successful command is authorized by its exit
+status and typed JSON stdout. This prevents harmless build-tool diagnostics
+from becoming a false functional failure without allowing them into evidence.
+
 Q1 DoD is one successful native Gradle compile and one successful native Maven
 compile, one model/generation context for each provider through `./clew`, one
 shared trusted runtime key, exact warm counters with no subprocess or input

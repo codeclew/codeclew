@@ -171,8 +171,12 @@ def run_json(arguments, *, environment, timeout, stage):
         timeout=timeout,
         stage=stage,
     )
-    if stderr.strip():
-        raise GateFailure(f"{stage} wrote unexpected stderr")
+    # The launcher and native provider are allowed to emit bounded diagnostics
+    # on stderr. They are deliberately not persisted because build tools may
+    # mention private ambient paths. Typed stdout plus the exit status remains
+    # the public command authority.
+    if len(stderr) > 1024 * 1024 or b"\0" in stderr:
+        raise GateFailure(f"{stage} returned invalid diagnostics")
     try:
         value = json.loads(stdout)
     except (UnicodeDecodeError, json.JSONDecodeError):
