@@ -24,7 +24,7 @@ path = pathlib.Path(sys.argv[1])
 path.write_text(json.dumps({
     "accepted": False,
     "releaseGatePassed": False,
-    "schema": "codeclew-real-multi-compilation-gate/1.0",
+    "schema": "codeclew-real-multi-compilation-gate/2.0",
     "status": "FAILED_INCOMPLETE",
 }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
@@ -206,7 +206,7 @@ print(json.dumps({
         "totalMemoryBytes": int(sys.argv[3]),
     },
     "releaseGatePassed": False,
-    "schema": "codeclew-real-multi-compilation-gate/1.0",
+    "schema": "codeclew-real-multi-compilation-gate/2.0",
     "status": "SKIPPED_UNQUALIFIED_HOST",
     "thresholds": {"medianParallelRatioMax": 0.60},
 }, sort_keys=True, separators=(",", ":")))
@@ -319,6 +319,7 @@ print(identifier)
         "$SOURCE/clew" "$session_id" "$profile" "$pair" >"$output" <<'PY'
 import json
 import os
+import pathlib
 import subprocess
 import sys
 import time
@@ -347,11 +348,20 @@ try:
     context = json.loads(completed.stdout)
 except (UnicodeDecodeError, json.JSONDecodeError):
     raise SystemExit("multi-compilation context create returned invalid JSON")
+profile_paths = list(
+    pathlib.Path(os.environ["CODECLEW_HOME"])
+    .joinpath("v2", "sessions")
+    .glob("*/compilations/workspace-profile.json")
+)
+if len(profile_paths) != 1:
+    raise SystemExit("multi-compilation run has no unique workspace profile")
+workspace_profile = json.loads(profile_paths[0].read_text(encoding="utf-8"))
 print(json.dumps({
     "context": context,
     "elapsedMillis": round(elapsed_millis, 3),
     "pair": int(pair),
     "profile": profile,
+    "workspaceProfile": workspace_profile,
 }, sort_keys=True, separators=(",", ":")))
 PY
 }
@@ -467,6 +477,7 @@ def normalized_snapshot(result):
 
 
 baseline = None
+baseline_workspace_profile = None
 ratios = []
 trials = []
 for pair, order in orders.items():
@@ -481,11 +492,32 @@ for pair, order in orders.items():
         if not isinstance(elapsed, (int, float)) or elapsed <= 0:
             raise SystemExit("trial elapsed time is invalid")
         semantic = normalized_snapshot(result)
+        workspace_profile = result.get("workspaceProfile")
+        if (
+            not isinstance(workspace_profile, dict)
+            or workspace_profile.get("schema")
+            != "codeclew-project-native-workspace-profile/1.0"
+            or workspace_profile.get("compilationCount") != 12
+            or workspace_profile.get("materializations") != 1
+            or workspace_profile.get("derivedMountSets") != 1
+            or not isinstance(workspace_profile.get("openProjectCalls"), int)
+            or workspace_profile["openProjectCalls"] < 1
+            or workspace_profile["openProjectCalls"] > 12
+        ):
+            raise SystemExit("multi-compilation workspace profile is invalid")
         if baseline is None:
             baseline = semantic
         elif semantic != baseline:
             raise SystemExit("serial and parallel semantic compilation outputs differ")
-        measured[profile] = {"elapsedMillis": elapsed, "semanticDigest": digest(semantic)}
+        if baseline_workspace_profile is None:
+            baseline_workspace_profile = workspace_profile
+        elif workspace_profile != baseline_workspace_profile:
+            raise SystemExit("serial and parallel workspace request contours differ")
+        measured[profile] = {
+            "elapsedMillis": elapsed,
+            "semanticDigest": digest(semantic),
+            "workspaceProfile": workspace_profile,
+        }
     ratio = measured["PARALLEL"]["elapsedMillis"] / measured["SERIAL"]["elapsedMillis"]
     ratios.append(ratio)
     trials.append({
@@ -498,7 +530,14 @@ for pair, order in orders.items():
 
 median_ratio = statistics.median(ratios)
 threshold = 0.60
-passed = median_ratio <= threshold
+model_request_limit = 1
+model_contour_passed = baseline_workspace_profile["openProjectCalls"] <= model_request_limit
+passed = median_ratio <= threshold and model_contour_passed
+status = (
+    "FAILED_MODEL_REQUEST_CONTOUR"
+    if not model_contour_passed
+    else "PASSED" if passed else "FAILED_PARALLEL_RATIO"
+)
 report = {
     "accepted": passed,
     "measurements": {
@@ -514,12 +553,13 @@ report = {
         "totalMemoryBytes": total_memory_bytes,
     },
     "releaseGatePassed": passed,
-    "schema": "codeclew-real-multi-compilation-gate/1.0",
+    "schema": "codeclew-real-multi-compilation-gate/2.0",
     "scope": {
         "compilationCount": 12,
         "fixture": "kotlin-multi-12",
         "publicWorkflow": ["session open", "context create"],
         "runtimePrimedBeforeTiming": True,
+        "workspaceProfile": baseline_workspace_profile,
     },
     "semanticIdentity": {
         "baseRevision": baseline["baseRevision"],
@@ -529,8 +569,11 @@ report = {
         "snapshotId": baseline["snapshotId"],
     },
     "sourceRevision": source_revision,
-    "status": "PASSED" if passed else "FAILED_PARALLEL_RATIO",
-    "thresholds": {"medianParallelRatioMax": threshold},
+    "status": status,
+    "thresholds": {
+        "maxProjectModelCalls": model_request_limit,
+        "medianParallelRatioMax": threshold,
+    },
 }
 print(json.dumps(report, sort_keys=True, separators=(",", ":")))
 PY
@@ -541,10 +584,10 @@ import pathlib
 import sys
 
 value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if value.get("schema") != "codeclew-real-multi-compilation-gate/1.0":
+if value.get("schema") != "codeclew-real-multi-compilation-gate/2.0":
     raise SystemExit("multi-compilation gate returned an unexpected schema")
 status = value.get("status")
-if status not in {"PASSED", "FAILED_PARALLEL_RATIO"}:
+if status not in {"PASSED", "FAILED_PARALLEL_RATIO", "FAILED_MODEL_REQUEST_CONTOUR"}:
     raise SystemExit("multi-compilation gate did not complete")
 if (status == "PASSED") != (value.get("releaseGatePassed") is True):
     raise SystemExit("multi-compilation release gate status is inconsistent")
@@ -556,6 +599,6 @@ chmod 600 "$REPORT"
 FINISHED=1
 cat "$REPORT"
 if [ "$FINAL_STATUS" != PASSED ]; then
-    echo "real multi-compilation median parallel ratio exceeds 0.60" >&2
+    echo "real multi-compilation gate failed ratio or shared-model request contour" >&2
     exit 1
 fi

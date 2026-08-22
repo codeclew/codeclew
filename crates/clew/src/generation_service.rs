@@ -23,7 +23,8 @@ use crate::incremental_v2::{
 };
 use crate::kotlin_adapter_v2::{
     KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinCompilerLine,
-    KotlinGenerationDriver, ProjectNativeKotlinAttempt, semantic_scope_digest,
+    KotlinGenerationDriver, ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace,
+    ProjectNativeKotlinWorkspaceProfile, semantic_scope_digest,
 };
 use crate::query_v2::{
     QUERY_INDEX_SCHEMA, QueryIndexManifest, build_query_index, verify_index, verify_index_manifest,
@@ -51,7 +52,18 @@ const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
 const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/2.0";
+const WORKSPACE_PROFILE_SCHEMA: &str = "codeclew-project-native-workspace-profile/1.0";
 const MAX_BINDING_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GenerationWorkspaceEvidence {
+    schema: String,
+    compilation_count: usize,
+    materializations: u64,
+    derived_mount_sets: u64,
+    open_project_calls: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -173,6 +185,19 @@ pub fn ensure_session_generation(
     let compilation_root = session_root.join("compilations");
     state.directory_at(&compilation_root)?;
     let pool = generation_pool(session)?;
+    let workspace = ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot)?;
+    // Only the immutable repository materialization and derived mounts are
+    // shared. Until Kotlin exposes OpenProjectSet, every compilation below
+    // still performs one OpenProject and retains that call in its own request
+    // counters/evidence.
+    let lane = GenerationLaneContext {
+        session,
+        repo: &repo,
+        publish_head: true,
+        snapshot: &snapshot,
+        snapshot_object: &snapshot_object,
+        workspace: &workspace,
+    };
     let results = pool.install(|| {
         session
             .compilations
@@ -187,17 +212,20 @@ pub fn ensure_session_generation(
                 )?
                 .to_owned();
                 ensure_generation(
-                    session,
+                    &lane,
                     compilation,
-                    &repo,
                     &compilation_root.join(format!("{component}.json")),
-                    true,
-                    &snapshot,
-                    &snapshot_object,
                 )
             })
             .collect::<Result<Vec<_>, ClewError>>()
-    })?;
+    });
+    let (results, profile) = finish_generation_workspace(results, workspace)?;
+    write_generation_workspace_evidence(
+        &state,
+        &compilation_root.join("workspace-profile.json"),
+        session.compilations.len(),
+        profile,
+    )?;
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(&state, &binding_path, &ready)?;
     Ok(ready)
@@ -224,6 +252,17 @@ pub fn ensure_candidate_generation(
         .parent()
         .ok_or_else(|| corrupt("candidate generation binding has no parent"))?;
     let pool = generation_pool(&candidate)?;
+    let workspace = ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot)?;
+    // This is one shared filesystem authority, not one project-model call.
+    // Each component preserves its independent OpenProject counter.
+    let lane = GenerationLaneContext {
+        session: &candidate,
+        repo: repository,
+        publish_head: false,
+        snapshot: &snapshot,
+        snapshot_object: &snapshot_object,
+        workspace: &workspace,
+    };
     let results = pool.install(|| {
         candidate
             .compilations
@@ -238,17 +277,20 @@ pub fn ensure_candidate_generation(
                 )?
                 .to_owned();
                 ensure_generation(
-                    &candidate,
+                    &lane,
                     compilation,
-                    repository,
                     &parent.join(format!("staged-generation-{component}.json")),
-                    false,
-                    &snapshot,
-                    &snapshot_object,
                 )
             })
             .collect::<Result<Vec<_>, ClewError>>()
-    })?;
+    });
+    let (results, profile) = finish_generation_workspace(results, workspace)?;
+    write_generation_workspace_evidence(
+        &state,
+        &parent.join("staged-workspace-profile.json"),
+        candidate.compilations.len(),
+        profile,
+    )?;
     let ready = assemble_ready_set(&candidate, snapshot_object, results)?;
     write_ready_set(&state, binding_path, &ready)?;
     Ok(ready)
@@ -287,15 +329,68 @@ fn admitted_generation_jobs(resources: HostResources, compilation_count: usize) 
         .clamp(1, 16)
 }
 
-fn ensure_generation(
-    session: &SessionAuthority,
-    compilation: &str,
-    repo: &Path,
-    binding_path: &Path,
+fn finish_generation_workspace<T>(
+    results: Result<T, ClewError>,
+    workspace: ProjectNativeKotlinWorkspace,
+) -> Result<(T, ProjectNativeKotlinWorkspaceProfile), ClewError> {
+    let workspace_result = workspace.finish();
+    match results {
+        Ok(results) => Ok((results, workspace_result?)),
+        Err(error) => {
+            let _ = workspace_result;
+            Err(error)
+        }
+    }
+}
+
+fn write_generation_workspace_evidence(
+    state: &StateAuthority,
+    path: &Path,
+    compilation_count: usize,
+    profile: ProjectNativeKotlinWorkspaceProfile,
+) -> Result<(), ClewError> {
+    if compilation_count == 0
+        || profile.materializations != 1
+        || profile.derived_mount_sets != 1
+        || profile.open_project_calls > compilation_count as u64
+    {
+        return Err(corrupt("project-native workspace profile is inconsistent"));
+    }
+    write_canonical_atomic(
+        state,
+        path,
+        &GenerationWorkspaceEvidence {
+            schema: WORKSPACE_PROFILE_SCHEMA.into(),
+            compilation_count,
+            materializations: profile.materializations,
+            derived_mount_sets: profile.derived_mount_sets,
+            open_project_calls: profile.open_project_calls,
+        },
+    )
+}
+
+struct GenerationLaneContext<'a> {
+    session: &'a SessionAuthority,
+    repo: &'a Path,
     publish_head: bool,
-    snapshot: &RepositoryInputSnapshot,
-    snapshot_object: &CasObject,
+    snapshot: &'a RepositoryInputSnapshot,
+    snapshot_object: &'a CasObject,
+    workspace: &'a ProjectNativeKotlinWorkspace,
+}
+
+fn ensure_generation(
+    lane: &GenerationLaneContext<'_>,
+    compilation: &str,
+    binding_path: &Path,
 ) -> Result<ReadyGeneration, ClewError> {
+    let GenerationLaneContext {
+        session,
+        repo,
+        publish_head,
+        snapshot,
+        snapshot_object,
+        workspace,
+    } = *lane;
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     if state.private_file_exists(binding_path)? {
@@ -320,10 +415,8 @@ fn ensure_generation(
     }
     let compiler_namespace = compiler_store_key(&runtime, compilation)?;
     let external_build_state = session.external_build_state_path()?;
-    let live_attempt = ProjectNativeKotlinAttempt::open(
+    let live_attempt = workspace.open_compilation(
         &state,
-        &store,
-        snapshot,
         compilation,
         digest_component(&compiler_namespace)?,
         external_build_state.as_deref(),
@@ -2511,6 +2604,43 @@ mod tests {
         assert_eq!(evidence.executed, IncrementalExecutionMode::Full);
         assert!(!evidence.subset_analysis_supported);
         assert_eq!(evidence.worker_requests, requests);
+    }
+
+    #[test]
+    fn workspace_profile_is_private_canonical_and_rejects_impossible_counts() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let path = state.root().join("sessions/test/workspace-profile.json");
+        write_generation_workspace_evidence(
+            &state,
+            &path,
+            12,
+            ProjectNativeKotlinWorkspaceProfile {
+                materializations: 1,
+                derived_mount_sets: 1,
+                open_project_calls: 1,
+            },
+        )
+        .unwrap();
+        let value: GenerationWorkspaceEvidence =
+            serde_json::from_slice(&state.read_private_file(&path, MAX_BINDING_BYTES).unwrap())
+                .unwrap();
+        assert_eq!(value.schema, WORKSPACE_PROFILE_SCHEMA);
+        assert_eq!(value.compilation_count, 12);
+        assert_eq!(value.open_project_calls, 1);
+
+        let error = write_generation_workspace_evidence(
+            &state,
+            &path,
+            12,
+            ProjectNativeKotlinWorkspaceProfile {
+                materializations: 2,
+                derived_mount_sets: 1,
+                open_project_calls: 13,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StateCorrupt);
     }
 
     #[test]

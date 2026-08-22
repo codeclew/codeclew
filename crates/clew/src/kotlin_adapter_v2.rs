@@ -6,14 +6,16 @@ use crate::adapter_v2::{
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
-use crate::repository_snapshot::{RepositoryInputSnapshot, capture, materialize};
+use crate::repository_snapshot::{
+    RepositoryInputSnapshot, capture, capture_ignoring_derived_mounts, materialize,
+};
 use crate::state::{ManagedTemporaryDirectory, StateAuthority, create_private_directory};
 use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -190,10 +192,27 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
     }
 }
 
-pub(crate) struct ProjectNativeKotlinAttempt {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ProjectNativeKotlinWorkspaceProfile {
+    pub(crate) materializations: u64,
+    pub(crate) derived_mount_sets: u64,
+    pub(crate) open_project_calls: u64,
+}
+
+pub(crate) struct ProjectNativeKotlinWorkspace {
     store: CasStore,
     snapshot: RepositoryInputSnapshot,
     _attempt_root: ManagedTemporaryDirectory,
+    repo: std::path::PathBuf,
+    derived_mounts: Vec<std::path::PathBuf>,
+    preparation_profile: ProjectNativeKotlinWorkspaceProfile,
+    model_extraction_gate: Mutex<()>,
+    open_project_calls: AtomicU64,
+}
+
+pub(crate) struct ProjectNativeKotlinAttempt {
+    store: CasStore,
+    snapshot: RepositoryInputSnapshot,
     repo: std::path::PathBuf,
     derived_mounts: Vec<std::path::PathBuf>,
     worker: Option<WorkerClient>,
@@ -201,23 +220,47 @@ pub(crate) struct ProjectNativeKotlinAttempt {
     project: Value,
 }
 
-impl ProjectNativeKotlinAttempt {
-    pub(crate) fn open(
+impl ProjectNativeKotlinWorkspace {
+    pub(crate) fn prepare(
         state: &StateAuthority,
         store: &CasStore,
         snapshot: &RepositoryInputSnapshot,
+    ) -> Result<Self, ClewError> {
+        let attempt_root = state
+            .directory(std::path::Path::new("attempts"))?
+            .temporary_child("kotlin-generation-set")?;
+        let attempt_path = attempt_root.directory().resolved_path()?;
+        let repo = attempt_path.join("repo");
+        let mut preparation_profile = ProjectNativeKotlinWorkspaceProfile::default();
+        materialize(snapshot, store, &repo)?;
+        preparation_profile.materializations += 1;
+        let derived_mounts = mount_project_derived_state(&attempt_path, &repo, snapshot)?;
+        preparation_profile.derived_mount_sets += 1;
+        Ok(Self {
+            store: store.clone(),
+            snapshot: snapshot.clone(),
+            _attempt_root: attempt_root,
+            repo,
+            derived_mounts,
+            preparation_profile,
+            model_extraction_gate: Mutex::new(()),
+            open_project_calls: AtomicU64::new(0),
+        })
+    }
+
+    pub(crate) fn open_compilation(
+        &self,
+        state: &StateAuthority,
         native_compilation: &str,
         compiler_store_component: &str,
         build_state_root: Option<&std::path::Path>,
-    ) -> Result<Self, ClewError> {
+    ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
-        let attempt_root = state
-            .directory(std::path::Path::new("attempts"))?
-            .temporary_child("kotlin-generation")?;
-        let attempt_path = attempt_root.directory().resolved_path()?;
-        let repo = attempt_path.join("repo");
-        materialize(snapshot, store, &repo)?;
-        let derived_mounts = mount_project_derived_state(&attempt_path, &repo, snapshot)?;
+        // Gradle and Maven model extraction share the same derived mounts.
+        // Until the worker protocol has OpenProjectSet, serialize this unsafe
+        // build-tool phase while allowing the independent compiler lanes to
+        // continue concurrently after OpenProject returns.
+        let _model_extraction = self.model_extraction_gate.lock().map_err(poisoned)?;
         let compiler_store = state
             .directory(std::path::Path::new("generations/compiler-store"))?
             .child(std::path::Path::new(compiler_store_component))?;
@@ -229,23 +272,59 @@ impl ProjectNativeKotlinAttempt {
             &compiler_store_namespace,
         )?;
         let request = json!({
-            "repo":repo,
+            "repo":self.repo,
             "compilation":native_compilation,
             "syntaxOnly":false,
         });
         let project = worker.open_project_verified(&request)?;
-        Ok(Self {
-            store: store.clone(),
-            snapshot: snapshot.clone(),
-            _attempt_root: attempt_root,
-            repo,
-            derived_mounts,
+        self.open_project_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(ProjectNativeKotlinAttempt {
+            store: self.store.clone(),
+            snapshot: self.snapshot.clone(),
+            repo: self.repo.clone(),
+            derived_mounts: self.derived_mounts.clone(),
             worker: Some(worker),
             request,
             project,
         })
     }
 
+    #[cfg(test)]
+    fn profile(&self) -> ProjectNativeKotlinWorkspaceProfile {
+        self.current_profile()
+    }
+
+    fn current_profile(&self) -> ProjectNativeKotlinWorkspaceProfile {
+        ProjectNativeKotlinWorkspaceProfile {
+            open_project_calls: self.open_project_calls.load(Ordering::Acquire),
+            ..self.preparation_profile
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Result<ProjectNativeKotlinWorkspaceProfile, ClewError> {
+        let unmount = unmount_project_derived_state(&self.repo, &self.derived_mounts);
+        if unmount.is_ok() {
+            self.derived_mounts.clear();
+        }
+        let verification = verify_materialized_inputs(
+            &self.repo,
+            &self.snapshot,
+            &self.store,
+            &self.derived_mounts,
+        );
+        unmount?;
+        verification?;
+        Ok(self.current_profile())
+    }
+}
+
+impl Drop for ProjectNativeKotlinWorkspace {
+    fn drop(&mut self) {
+        let _ = unmount_project_derived_state(&self.repo, &self.derived_mounts);
+    }
+}
+
+impl ProjectNativeKotlinAttempt {
     pub(crate) fn project_authority(&self) -> &Value {
         &self.project
     }
@@ -312,10 +391,13 @@ impl ProjectNativeKotlinAttempt {
             .ok_or_else(|| invalid("project-native worker was already closed"))?;
         let counters = worker.request_counters();
         let shutdown = worker.shutdown();
-        let unmount = unmount_project_derived_state(&self.repo, &self.derived_mounts);
-        let verification = verify_materialized_inputs(&self.repo, &self.snapshot, &self.store);
+        let verification = verify_materialized_inputs(
+            &self.repo,
+            &self.snapshot,
+            &self.store,
+            &self.derived_mounts,
+        );
         shutdown?;
-        unmount?;
         verification?;
         Ok(counters)
     }
@@ -326,7 +408,6 @@ impl Drop for ProjectNativeKotlinAttempt {
         if let Some(worker) = self.worker.take() {
             let _ = worker.shutdown();
         }
-        let _ = unmount_project_derived_state(&self.repo, &self.derived_mounts);
     }
 }
 
@@ -345,8 +426,13 @@ fn verify_materialized_inputs(
     repo: &std::path::Path,
     snapshot: &RepositoryInputSnapshot,
     store: &CasStore,
+    derived_mounts: &[std::path::PathBuf],
 ) -> Result<(), ClewError> {
-    let (observed_snapshot, _) = capture(repo, store)?;
+    let (observed_snapshot, _) = if derived_mounts.is_empty() {
+        capture(repo, store)?
+    } else {
+        capture_ignoring_derived_mounts(repo, store, derived_mounts)?
+    };
     let unchanged_inputs = observed_snapshot.staged_view_digest == snapshot.staged_view_digest
         && observed_snapshot.cached_view_digest == snapshot.cached_view_digest
         && observed_snapshot.untracked_view_digest == snapshot.untracked_view_digest
@@ -1003,10 +1089,13 @@ mod tests {
         WorkerRequestCounters,
     ) {
         let (snapshot, _) = repository_snapshot::capture(fixture, store).unwrap();
-        let attempt =
-            ProjectNativeKotlinAttempt::open(state, store, &snapshot, ":/main", component, None)
-                .unwrap();
+        let workspace = ProjectNativeKotlinWorkspace::prepare(state, store, &snapshot).unwrap();
+        let attempt = workspace
+            .open_compilation(state, ":/main", component, None)
+            .unwrap();
         let (index, profile, requests) = attempt.analyze().unwrap();
+        let workspace_profile = workspace.finish().unwrap();
+        assert_eq!(workspace_profile.open_project_calls, 1);
         (index, profile.expect("K24 compiler profile"), requests)
     }
 
@@ -1039,6 +1128,41 @@ mod tests {
     }
 
     #[test]
+    fn generation_set_workspace_materializes_and_mounts_one_shared_repository() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let fixture = workspace_root().join("fixtures/kotlin-basic");
+        let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+
+        let workspace = ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot).unwrap();
+        assert_eq!(
+            workspace.profile(),
+            ProjectNativeKotlinWorkspaceProfile {
+                materializations: 1,
+                derived_mount_sets: 1,
+                open_project_calls: 0,
+            }
+        );
+        assert!(
+            std::fs::symlink_metadata(workspace.repo.join(".gradle"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(workspace.repo.join("build"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let profile = workspace.finish().unwrap();
+        assert_eq!(profile.materializations, 1);
+        assert_eq!(profile.derived_mount_sets, 1);
+        assert_eq!(profile.open_project_calls, 0);
+    }
+
+    #[test]
     fn k24_real_worker_cold_then_product_unchanged_skips_index_files() {
         let _workspace_worker_guard = crate::worker::workspace_worker_test_lock();
         let root = tempfile::tempdir().unwrap();
@@ -1063,9 +1187,11 @@ mod tests {
         std::fs::create_dir(state_path.join("attempts")).unwrap();
         std::fs::create_dir_all(state_path.join("generations/compiler-store")).unwrap();
 
-        let cold_attempt =
-            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component, None)
-                .unwrap();
+        let generation_workspace =
+            ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot).unwrap();
+        let cold_attempt = generation_workspace
+            .open_compilation(&state, ":/main", &component, None)
+            .unwrap();
         let (cold_index, cold, cold_requests) = cold_attempt.analyze().unwrap();
         let cold = cold.expect("cold compiler profile");
         assert_eq!(
@@ -1131,10 +1257,14 @@ mod tests {
 
         // The generation service proves UNCHANGED from its sealed receipt
         // after OpenProject and closes this same worker without IndexFiles.
-        let unchanged_attempt =
-            ProjectNativeKotlinAttempt::open(&state, &store, &snapshot, ":/main", &component, None)
-                .unwrap();
+        let unchanged_attempt = generation_workspace
+            .open_compilation(&state, ":/main", &component, None)
+            .unwrap();
         let warm_requests = unchanged_attempt.close_without_analysis().unwrap();
+        let workspace_profile = generation_workspace.finish().unwrap();
+        assert_eq!(workspace_profile.materializations, 1);
+        assert_eq!(workspace_profile.derived_mount_sets, 1);
+        assert_eq!(workspace_profile.open_project_calls, 2);
         assert_eq!(warm_requests.open_project_requests, 1);
         assert_eq!(warm_requests.index_files_requests, 0);
 

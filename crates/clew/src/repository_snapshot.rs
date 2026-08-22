@@ -97,16 +97,37 @@ pub fn capture(
     repo: &Path,
     store: &CasStore,
 ) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
-    capture_with_hook(repo, store, |_| Ok(()))
+    capture_with_hook(repo, store, &[], |_| Ok(()))
+}
+
+pub(crate) fn capture_ignoring_derived_mounts(
+    repo: &Path,
+    store: &CasStore,
+    derived_mounts: &[std::path::PathBuf],
+) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
+    let mut excludes = derived_mounts
+        .iter()
+        .map(|path| {
+            let value = path
+                .to_str()
+                .ok_or_else(|| invalid("derived mount path is not UTF-8"))?;
+            validate_path(value)?;
+            Ok(format!(":(top,literal,exclude){value}"))
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    excludes.sort();
+    excludes.dedup();
+    capture_with_hook(repo, store, &excludes, |_| Ok(()))
 }
 
 fn capture_with_hook(
     repo: &Path,
     store: &CasStore,
+    additional_excludes: &[String],
     mut between_reads: impl FnMut(&str) -> Result<(), ClewError>,
 ) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
     let repo = repo.canonicalize().map_err(io_error)?;
-    let before = git_views(&repo)?;
+    let before = git_views(&repo, additional_excludes)?;
     let raw_index = parse_index(&before.staged)?;
     let cached = parse_paths(&before.cached)?;
     let untracked = parse_paths(&before.untracked)?;
@@ -159,7 +180,7 @@ fn capture_with_hook(
             content,
         });
     }
-    let after = git_views(&repo)?;
+    let after = git_views(&repo, additional_excludes)?;
     if before != after {
         return Err(mutated(
             "Git repository views changed while the snapshot was captured",
@@ -393,18 +414,27 @@ fn verify_snapshot(snapshot: &RepositoryInputSnapshot) -> Result<(), ClewError> 
     Ok(())
 }
 
-fn git_views(repo: &Path) -> Result<GitViews, ClewError> {
+fn git_views(repo: &Path, additional_excludes: &[String]) -> Result<GitViews, ClewError> {
     Ok(GitViews {
-        staged: git_ls_files(repo, &["--stage"])?,
-        cached: git_ls_files(repo, &["--cached"])?,
-        untracked: git_ls_files(repo, &["--others", "--exclude-standard"])?,
+        staged: git_ls_files(repo, &["--stage"], additional_excludes)?,
+        cached: git_ls_files(repo, &["--cached"], additional_excludes)?,
+        untracked: git_ls_files(
+            repo,
+            &["--others", "--exclude-standard"],
+            additional_excludes,
+        )?,
     })
 }
 
-fn git_ls_files(repo: &Path, options: &[&str]) -> Result<Vec<u8>, ClewError> {
+fn git_ls_files(
+    repo: &Path,
+    options: &[&str],
+    additional_excludes: &[String],
+) -> Result<Vec<u8>, ClewError> {
     let mut command = Command::new("git");
     command.arg("ls-files").args(options).arg("-z").arg("--");
     command.args(LEGACY_EXCLUDES);
+    command.args(additional_excludes);
     let output = command
         .current_dir(repo)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -930,7 +960,7 @@ mod tests {
     fn concurrent_file_mutation_is_typed_and_never_published() {
         let (repo, _state, store) = fixture();
         let path = repo.path().join("src/main.zeta");
-        let error = capture_with_hook(repo.path(), &store, |relative| {
+        let error = capture_with_hook(repo.path(), &store, &[], |relative| {
             if relative == "src/main.zeta" {
                 fs::write(&path, b"changed\n").map_err(io_error)?;
             }
