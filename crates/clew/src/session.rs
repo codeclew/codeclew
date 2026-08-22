@@ -6,7 +6,8 @@ use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::{StateAuthority, create_private_directory};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,10 +17,12 @@ use walkdir::WalkDir;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-pub const SESSION_SCHEMA: &str = "codeclew-session/1.0";
+pub const SESSION_SCHEMA: &str = "codeclew-session/2.0";
 pub const CONTEXT_SCHEMA: &str = "codeclew-context/1.0";
 pub const PLAN_SCHEMA: &str = "codeclew-plan/1.0";
 pub const RUN_SCHEMA: &str = "codeclew-task-run/2.0";
+const RUN_LEDGER_SCHEMA: &str = "codeclew-task-run-ledger-entry/2.0";
+const MAX_RUN_LEDGER_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_CONTEXT_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_PLAN_BYTES: usize = 1024 * 1024;
 pub const MAX_PLAN_OPERATIONS: usize = 256;
@@ -31,6 +34,7 @@ pub const MAX_WRITE_SET_BYTES: usize = 256 * 1024;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionAuthority {
     pub schema: String,
+    pub authority_digest: String,
     pub session_id: String,
     pub repository_key: String,
     pub base_revision: String,
@@ -57,6 +61,7 @@ pub struct ContextObject {
     pub schema: String,
     pub context_id: String,
     pub session_id: String,
+    pub session_authority_digest: String,
     pub parent_context_id: Option<String>,
     pub intent: String,
     pub terms: Vec<String>,
@@ -71,6 +76,7 @@ pub struct PlanObject {
     pub schema: String,
     pub plan_id: String,
     pub session_id: String,
+    pub session_authority_digest: String,
     pub context_id: String,
     pub context_digest: String,
     pub base_revision: String,
@@ -88,6 +94,8 @@ pub struct RunRecord {
     pub context_id: String,
     pub plan_id: String,
     pub request_digest: String,
+    pub sequence: u64,
+    pub ledger_head: String,
     pub status: RunStatus,
     pub transaction_id: String,
     pub candidate_commit: Option<String>,
@@ -98,6 +106,16 @@ pub struct RunRecord {
     pub process_start_token: Option<String>,
     pub failure: Option<Value>,
     pub updated_unix_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RunLedgerEntry {
+    schema: String,
+    sequence: u64,
+    previous_event_hash: Option<String>,
+    record: RunRecord,
+    event_hash: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,8 +165,9 @@ impl SessionAuthority {
                 "session target ref must identify the checked-out base revision",
             ));
         }
-        let authority = Self {
+        let mut authority = Self {
             schema: SESSION_SCHEMA.into(),
+            authority_digest: String::new(),
             session_id: format!("session:{}", Uuid::new_v4()),
             repository_key: repository.key,
             base_revision,
@@ -160,6 +179,7 @@ impl SessionAuthority {
             model_cache_policy,
             created_unix_ms: unix_ms(),
         };
+        authority.authority_digest = session_authority_digest(&authority)?;
         let root = state.session_root(&authority.session_id)?;
         for child in ["objects/sha256", "contexts", "plans", "candidates"] {
             create_private_directory(&root.join(child))?;
@@ -187,7 +207,10 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(session_id)?;
         let authority: Self = read_json_limited(&root.join("authority.json"), MAX_PLAN_BYTES)?;
-        if authority.schema != SESSION_SCHEMA || authority.session_id != session_id {
+        if authority.schema != SESSION_SCHEMA
+            || authority.session_id != session_id
+            || authority.authority_digest != session_authority_digest(&authority)?
+        {
             return Err(invalid("session authority identity is invalid"));
         }
         let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
@@ -263,6 +286,7 @@ impl SessionAuthority {
         let binding = json!({
             "schema": CONTEXT_SCHEMA,
             "sessionId": self.session_id,
+            "sessionAuthorityDigest":self.authority_digest,
             "parentContextId": parent_context_id,
             "intent": intent,
             "terms": terms,
@@ -273,6 +297,7 @@ impl SessionAuthority {
             schema: CONTEXT_SCHEMA.into(),
             context_id,
             session_id: self.session_id.clone(),
+            session_authority_digest: self.authority_digest.clone(),
             parent_context_id,
             intent,
             terms,
@@ -300,6 +325,7 @@ impl SessionAuthority {
         if object.schema != CONTEXT_SCHEMA
             || object.context_id != context_id
             || object.session_id != self.session_id
+            || object.session_authority_digest != self.authority_digest
             || canonical::hash(&object.evidence).map_err(internal)? != object.evidence_digest
         {
             return Err(invalid("context authority is invalid"));
@@ -319,6 +345,7 @@ impl SessionAuthority {
         let binding = json!({
             "schema":PLAN_SCHEMA,
             "sessionId":self.session_id,
+            "sessionAuthorityDigest":self.authority_digest,
             "contextId":context_id,
             "contextDigest":context_digest,
             "baseRevision":self.base_revision,
@@ -331,6 +358,7 @@ impl SessionAuthority {
             schema: PLAN_SCHEMA.into(),
             plan_id,
             session_id: self.session_id.clone(),
+            session_authority_digest: self.authority_digest.clone(),
             context_id: context_id.into(),
             context_digest,
             base_revision: self.base_revision.clone(),
@@ -358,6 +386,7 @@ impl SessionAuthority {
         if object.schema != PLAN_SCHEMA
             || object.plan_id != plan_id
             || object.session_id != self.session_id
+            || object.session_authority_digest != self.authority_digest
             || object.base_revision != self.base_revision
             || object.runtime_key != self.runtime_key
         {
@@ -378,6 +407,7 @@ impl SessionAuthority {
         let request = json!({
             "schema":"codeclew-task-run-request/1.0",
             "sessionId":self.session_id,
+            "sessionAuthorityDigest":self.authority_digest,
             "contextId":context_id,
             "planId":plan_id,
             "baseRevision":self.base_revision,
@@ -412,6 +442,8 @@ impl RunRecord {
             context_id: context_id.into(),
             plan_id: plan_id.into(),
             request_digest,
+            sequence: 0,
+            ledger_head: String::new(),
             status: RunStatus::Created,
             candidate_commit: None,
             candidate_snapshot: None,
@@ -427,38 +459,30 @@ impl RunRecord {
     pub fn load(run_id: &str) -> Result<Self, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.run_root(run_id)?;
-        let record: Self = read_json_limited(&root.join("record.json"), MAX_PLAN_BYTES)?;
-        if record.schema != RUN_SCHEMA || record.run_id != run_id {
-            return Err(invalid("run record identity is invalid"));
-        }
-        Ok(record)
+        let _lock = RunLedgerLock::acquire(&root)?;
+        load_run_projection(&state, &root, run_id)
     }
 
     pub fn save(&mut self) -> Result<(), ClewError> {
-        self.updated_unix_ms = unix_ms();
         let state = StateAuthority::process_default()?;
         let root = state.run_root(&self.run_id)?;
-        state.write_private_atomic(
-            &root.join("record.json"),
-            &canonical::bytes(self).map_err(internal)?,
-        )
+        save_run_transition(&state, &root, self)
     }
 
     pub fn create_once(&self) -> Result<bool, ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.run_root(&self.run_id)?;
-        let path = root.join("record.json");
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = match options.open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
-            Err(error) => return Err(io_error(error)),
-        };
-        serde_json::to_writer(&mut file, self).map_err(parse_error)?;
-        file.sync_all().map_err(io_error)?;
+        let _lock = RunLedgerLock::acquire(&root)?;
+        if root.join("ledger.jsonl").exists() || root.join("record.json").exists() {
+            let _ = load_run_projection(&state, &root, &self.run_id)?;
+            return Ok(false);
+        }
+        if self.sequence != 0 || !self.ledger_head.is_empty() || self.status != RunStatus::Created {
+            return Err(invalid("initial run ledger record is invalid"));
+        }
+        let mut initial = self.clone();
+        initial.updated_unix_ms = unix_ms();
+        append_run_entry(&state, &root, &mut initial, None)?;
         Ok(true)
     }
 
@@ -470,6 +494,243 @@ impl RunRecord {
         create_private_directory(&root)?;
         Ok(root)
     }
+}
+
+fn save_run_transition(
+    state: &StateAuthority,
+    root: &Path,
+    record: &mut RunRecord,
+) -> Result<(), ClewError> {
+    let _lock = RunLedgerLock::acquire(root)?;
+    let current = load_run_projection(state, root, &record.run_id)?;
+    if record.sequence != current.sequence || record.ledger_head != current.ledger_head {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run ledger changed concurrently; reload the run before retrying",
+        ));
+    }
+    require_same_run_identity(&current, record)?;
+    if !run_transition_allowed(current.status, record.status) {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "run state transition is not allowed",
+        ));
+    }
+    record.sequence = current
+        .sequence
+        .checked_add(1)
+        .ok_or_else(|| internal("run ledger sequence overflow"))?;
+    record.updated_unix_ms = unix_ms();
+    append_run_entry(state, root, record, Some(current.ledger_head))
+}
+
+struct RunLedgerLock(File);
+
+impl RunLedgerLock {
+    fn acquire(root: &Path) -> Result<Self, ClewError> {
+        let path = root.join("ledger.lock");
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path).map_err(io_error)?;
+        #[cfg(unix)]
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        Ok(Self(file))
+    }
+}
+
+impl Drop for RunLedgerLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        unsafe {
+            libc::flock(std::os::fd::AsRawFd::as_raw_fd(&self.0), libc::LOCK_UN);
+        }
+    }
+}
+
+fn append_run_entry(
+    state: &StateAuthority,
+    root: &Path,
+    record: &mut RunRecord,
+    previous_event_hash: Option<String>,
+) -> Result<(), ClewError> {
+    if previous_event_hash
+        .as_deref()
+        .is_some_and(|value| !sha256_digest(value))
+    {
+        return Err(invalid("run ledger predecessor is invalid"));
+    }
+    record.ledger_head.clear();
+    let mut entry = RunLedgerEntry {
+        schema: RUN_LEDGER_SCHEMA.into(),
+        sequence: record.sequence,
+        previous_event_hash,
+        record: record.clone(),
+        event_hash: String::new(),
+    };
+    entry.event_hash = run_event_hash(&entry)?;
+    let mut bytes = canonical::bytes(&entry).map_err(internal)?;
+    bytes.push(b'\n');
+    let path = root.join("ledger.jsonl");
+    let existing = fs::symlink_metadata(&path).ok();
+    if existing.as_ref().is_some_and(|metadata| {
+        metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len().saturating_add(bytes.len() as u64) > MAX_RUN_LEDGER_BYTES
+    }) {
+        return Err(invalid("run ledger is unsafe or exceeds its limit"));
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut ledger = options.open(path).map_err(io_error)?;
+    ledger.write_all(&bytes).map_err(io_error)?;
+    ledger.sync_all().map_err(io_error)?;
+    record.ledger_head = entry.event_hash;
+    state.write_private_atomic(
+        &root.join("record.json"),
+        &canonical::bytes(record).map_err(internal)?,
+    )
+}
+
+fn load_run_projection(
+    state: &StateAuthority,
+    root: &Path,
+    expected_run_id: &str,
+) -> Result<RunRecord, ClewError> {
+    let path = root.join("ledger.jsonl");
+    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > MAX_RUN_LEDGER_BYTES
+    {
+        return Err(invalid("run ledger is missing or unsafe"));
+    }
+    let bytes = fs::read(&path).map_err(io_error)?;
+    if bytes.len() as u64 != metadata.len() || bytes.last() != Some(&b'\n') {
+        return Err(invalid("run ledger changed while reading"));
+    }
+    let mut previous = None::<RunLedgerEntry>;
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let entry: RunLedgerEntry =
+            serde_json::from_slice(line).map_err(|_| invalid("run ledger entry is invalid"))?;
+        if canonical::bytes(&entry).map_err(internal)? != line
+            || entry.schema != RUN_LEDGER_SCHEMA
+            || entry.record.schema != RUN_SCHEMA
+            || entry.record.run_id != expected_run_id
+            || entry.sequence != entry.record.sequence
+            || !entry.record.ledger_head.is_empty()
+            || !sha256_digest(&entry.event_hash)
+            || entry.event_hash != run_event_hash(&entry)?
+        {
+            return Err(invalid("run ledger authority is invalid"));
+        }
+        match &previous {
+            None => {
+                if entry.sequence != 0
+                    || entry.previous_event_hash.is_some()
+                    || entry.record.status != RunStatus::Created
+                {
+                    return Err(invalid("run ledger genesis is invalid"));
+                }
+            }
+            Some(prior) => {
+                if entry.sequence != prior.sequence.saturating_add(1)
+                    || entry.previous_event_hash.as_deref() != Some(prior.event_hash.as_str())
+                {
+                    return Err(invalid("run ledger chain is discontinuous"));
+                }
+                require_same_run_identity(&prior.record, &entry.record)?;
+                if !run_transition_allowed(prior.record.status, entry.record.status) {
+                    return Err(invalid("run ledger contains an invalid transition"));
+                }
+            }
+        }
+        previous = Some(entry);
+    }
+    let last = previous.ok_or_else(|| invalid("run ledger is empty"))?;
+    let mut projected = last.record;
+    projected.ledger_head = last.event_hash;
+    let projection_path = root.join("record.json");
+    let projection_matches = read_json_limited::<RunRecord>(&projection_path, MAX_PLAN_BYTES)
+        .is_ok_and(|record| canonical::bytes(&record).ok() == canonical::bytes(&projected).ok());
+    if !projection_matches {
+        state.write_private_atomic(
+            &projection_path,
+            &canonical::bytes(&projected).map_err(internal)?,
+        )?;
+    }
+    Ok(projected)
+}
+
+fn run_event_hash(entry: &RunLedgerEntry) -> Result<String, ClewError> {
+    let mut unsigned = entry.clone();
+    unsigned.event_hash.clear();
+    canonical::hash(&unsigned).map_err(internal)
+}
+
+fn require_same_run_identity(left: &RunRecord, right: &RunRecord) -> Result<(), ClewError> {
+    if left.schema != right.schema
+        || left.transaction_id != right.transaction_id
+        || left.run_id != right.run_id
+        || left.session_id != right.session_id
+        || left.context_id != right.context_id
+        || left.plan_id != right.plan_id
+        || left.request_digest != right.request_digest
+        || (left.candidate_commit.is_some() && left.candidate_commit != right.candidate_commit)
+        || (left.candidate_snapshot.is_some()
+            && left.candidate_snapshot != right.candidate_snapshot)
+        || (left.final_commit.is_some() && left.final_commit != right.final_commit)
+        || (left.publication_blocked && !right.publication_blocked)
+    {
+        return Err(invalid("run ledger changed immutable authority"));
+    }
+    Ok(())
+}
+
+fn run_transition_allowed(from: RunStatus, to: RunStatus) -> bool {
+    from == to
+        || matches!(
+            (from, to),
+            (
+                RunStatus::Created,
+                RunStatus::Preparing | RunStatus::Cancelled
+            ) | (
+                RunStatus::Preparing,
+                RunStatus::ReadyToPublish
+                    | RunStatus::ValidatedConditional
+                    | RunStatus::Failed
+                    | RunStatus::WorktreeRecoveryRequired
+                    | RunStatus::Cancelled
+            ) | (RunStatus::Failed | RunStatus::Cancelled, RunStatus::Created)
+                | (RunStatus::ReadyToPublish, RunStatus::Publishing)
+                | (
+                    RunStatus::Publishing,
+                    RunStatus::Published
+                        | RunStatus::ReadyToPublish
+                        | RunStatus::WorktreeRecoveryRequired
+                )
+                | (
+                    RunStatus::WorktreeRecoveryRequired,
+                    RunStatus::Published | RunStatus::WorktreeRecoveryRequired
+                )
+        )
+}
+
+fn sha256_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 pub fn bounded_context_stdout(context: &ContextObject) -> Result<Value, ClewError> {
@@ -715,6 +976,12 @@ fn unix_ms() -> u128 {
         .as_millis()
 }
 
+fn session_authority_digest(authority: &SessionAuthority) -> Result<String, ClewError> {
+    let mut unsigned = authority.clone();
+    unsigned.authority_digest.clear();
+    canonical::hash(&unsigned).map_err(internal)
+}
+
 fn invalid(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
 }
@@ -734,6 +1001,39 @@ fn io_error(error: std::io::Error) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_run() -> RunRecord {
+        let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        RunRecord {
+            schema: RUN_SCHEMA.into(),
+            run_id: format!("run:{digest}"),
+            session_id: format!("session:{digest}"),
+            context_id: format!("context:{digest}"),
+            plan_id: format!("plan:{digest}"),
+            request_digest: format!("sha256:{digest}"),
+            sequence: 0,
+            ledger_head: String::new(),
+            status: RunStatus::Created,
+            transaction_id: format!("tx:{digest}"),
+            candidate_commit: None,
+            candidate_snapshot: None,
+            final_commit: None,
+            publication_blocked: false,
+            process_id: None,
+            process_start_token: None,
+            failure: None,
+            updated_unix_ms: 1,
+        }
+    }
+
+    fn initialized_run() -> (tempfile::TempDir, StateAuthority, PathBuf, RunRecord) {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let mut run = test_run();
+        let root = state.run_root(&run.run_id).unwrap();
+        append_run_entry(&state, &root, &mut run, None).unwrap();
+        (temporary, state, root, run)
+    }
 
     #[test]
     fn rejects_oversized_plan_shapes() {
@@ -768,6 +1068,65 @@ mod tests {
             transaction_id(request_digest).unwrap(),
             "tx:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn run_projection_is_recovered_from_the_authoritative_ledger() {
+        let (_temporary, state, root, mut run) = initialized_run();
+        run.status = RunStatus::Preparing;
+        save_run_transition(&state, &root, &mut run).unwrap();
+        fs::write(root.join("record.json"), b"corrupt projection").unwrap();
+
+        let recovered = load_run_projection(&state, &root, &run.run_id).unwrap();
+
+        assert_eq!(recovered.status, RunStatus::Preparing);
+        assert_eq!(recovered.sequence, 1);
+        assert_eq!(recovered.ledger_head, run.ledger_head);
+        let projection: RunRecord =
+            read_json_limited(&root.join("record.json"), MAX_PLAN_BYTES).unwrap();
+        assert_eq!(projection.ledger_head, recovered.ledger_head);
+    }
+
+    #[test]
+    fn stale_run_writer_is_rejected_by_sequence_and_ledger_head_cas() {
+        let (_temporary, state, root, run) = initialized_run();
+        let mut first = run.clone();
+        let mut stale = run;
+        first.status = RunStatus::Preparing;
+        save_run_transition(&state, &root, &mut first).unwrap();
+        stale.status = RunStatus::Cancelled;
+
+        let error = save_run_transition(&state, &root, &mut stale).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+    }
+
+    #[test]
+    fn invalid_terminal_run_transition_is_rejected() {
+        let (_temporary, state, root, mut run) = initialized_run();
+        run.status = RunStatus::Published;
+
+        let error = save_run_transition(&state, &root, &mut run).unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert_eq!(
+            load_run_projection(&state, &root, &run.run_id)
+                .unwrap()
+                .status,
+            RunStatus::Created
+        );
+    }
+
+    #[test]
+    fn tampered_run_ledger_fails_closed() {
+        let (_temporary, state, root, run) = initialized_run();
+        let ledger_path = root.join("ledger.jsonl");
+        let mut bytes = fs::read(&ledger_path).unwrap();
+        let offset = bytes.iter().position(|byte| *byte == b'{').unwrap();
+        bytes[offset] = b'[';
+        fs::write(ledger_path, bytes).unwrap();
+
+        assert!(load_run_projection(&state, &root, &run.run_id).is_err());
     }
 
     #[test]
