@@ -146,8 +146,23 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 os.close(descriptor)
             (parent / "real").mkdir()
             (parent / "link").symlink_to(parent / "real", target_is_directory=True)
-            with self.assertRaises(OSError):
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "physical normalized CODECLEW_HOME"
+            ):
                 bootstrap._open_private_tree(parent / "link/child")
+
+    def test_cold_build_capacity_fails_before_build_tools_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with mock.patch.object(
+                bootstrap.shutil,
+                "disk_usage",
+                return_value=mock.Mock(free=bootstrap.MIN_COLD_BUILD_FREE_BYTES - 1),
+            ):
+                with self.assertRaisesRegex(
+                    bootstrap.BootstrapError, "cold runtime build requires at least"
+                ):
+                    bootstrap.require_cold_build_capacity(root)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ import uuid
 SCHEMA = "codeclew-runtime-capsule/2.0"
 DOMAIN = b"codeclew-runtime/v2\0"
 MAX_MANIFEST_BYTES = 1024 * 1024
+MIN_COLD_BUILD_FREE_BYTES = 6 * 1024 * 1024 * 1024
 WORKERS = {
     "kotlin21": ("2.1.21", "workers/kotlin21/build/install/kotlin21", "workers/manifests/kotlin21.json"),
     "kotlin23": ("2.3.0", "workers/kotlin23/build/install/kotlin23", "workers/manifests/kotlin23.json"),
@@ -244,6 +245,11 @@ def _open_private_tree(path: Path) -> int:
             except FileNotFoundError:
                 os.mkdir(component, mode=0o700, dir_fd=descriptor)
                 child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            except NotADirectoryError as error:
+                raise BootstrapError(
+                    "Codeclew state root contains a symlink or non-directory ancestor; "
+                    "use a physical normalized CODECLEW_HOME path"
+                ) from error
             metadata = os.fstat(child)
             leaf = index == len(parts) - 1
             if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid not in {0, os.geteuid()}:
@@ -313,6 +319,17 @@ def state_root() -> tuple[Path, int]:
     ]:
         _ensure_private_descendant(root_fd, child)
     return root, root_fd
+
+
+def require_cold_build_capacity(root: Path) -> None:
+    free = shutil.disk_usage(root).free
+    if free < MIN_COLD_BUILD_FREE_BYTES:
+        required_gib = MIN_COLD_BUILD_FREE_BYTES // (1024 * 1024 * 1024)
+        available_mib = free // (1024 * 1024)
+        raise BootstrapError(
+            f"cold runtime build requires at least {required_gib} GiB free "
+            f"on the CODECLEW_HOME volume; available={available_mib} MiB"
+        )
 
 
 def sanitized_environment() -> dict[str, str]:
@@ -946,6 +963,7 @@ def main() -> int:
             except Exception as error:
                 quarantine(root, capsule, type(error).__name__)
         if not capsule.exists():
+            require_cold_build_capacity(root)
             if tools is None:
                 tools = toolchain_authority(source)
                 cold_toolchain_invoked = True

@@ -6,6 +6,7 @@ cd "$ROOT"
 mkdir -p benchmarks/reports
 
 BENCH_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-benchmark.XXXXXX")
+BENCH_ROOT=$(CDPATH= cd -- "$BENCH_ROOT" && pwd -P)
 trap 'rm -rf "$BENCH_ROOT"' EXIT INT TERM
 mkdir "$BENCH_ROOT/repository"
 git archive HEAD fixtures/kotlin-basic |
