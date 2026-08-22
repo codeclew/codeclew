@@ -1029,6 +1029,7 @@ mod tests {
 
     #[test]
     fn k24_real_worker_cold_then_product_unchanged_skips_index_files() {
+        let _workspace_worker_guard = crate::worker::workspace_worker_test_lock();
         let root = tempfile::tempdir().unwrap();
         let state_path = root.path().join("v2");
         let moved_state_path = root.path().join("v2-open-inode");

@@ -19,6 +19,14 @@ use uuid::Uuid;
 
 include!(concat!(env!("OUT_DIR"), "/worker_build_inputs.rs"));
 
+#[cfg(test)]
+pub(crate) fn workspace_worker_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompilerIndexBackend {
@@ -3920,6 +3928,8 @@ mod tests {
     #[test]
     fn embedded_worker_distribution_rejects_workspace_and_private_tree_mutation() {
         use std::os::unix::fs::PermissionsExt;
+
+        let _workspace_worker_guard = workspace_worker_test_lock();
 
         struct RestoreFile {
             path: PathBuf,
