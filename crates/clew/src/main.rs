@@ -536,7 +536,7 @@ fn prepare_task_run(record: &mut RunRecord) -> Result<Value, ClewError> {
         != Some(clew::context_v2::BOUNDED_CONTEXT_EVIDENCE_SCHEMA)
     {
         return Err(invalid(
-            "task run requires multi-compilation bounded context v3",
+            "task run requires the current multi-compilation bounded context",
         ));
     }
     let prepared =

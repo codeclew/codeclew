@@ -135,6 +135,35 @@ DoD is bounded deterministic stdout, multi-window source coverage, immutable
 full evidence, cheap parent expansion semantics, exact provenance, and tamper
 refusal under component tests without a product E2E.
 
+### S10 transaction recovery boundary
+
+S10 qualifies the detached Rust task-run supervisor and append-only run ledger.
+`task-run start` derives deterministic run and transaction identities from the
+session/context/plan authority and persists `CREATED` before spawning a new
+process group. Repeating start returns the same run. Status reads only durable
+state; resume either safely discards a proven pre-commit derived candidate,
+returns the run to `CREATED`, or classifies a committed candidate as
+`WORKTREE_RECOVERY_REQUIRED`.
+
+Preparation, publication, and recovery are separate operations. Candidate
+checkpoint, commit, snapshot, validation evidence, and semantic generation are
+mutually bound. Once a candidate commit exists it is never automatically
+discarded. Publication is fast-forward/CAS only, hooks-disabled and
+noninteractive; a moved target or dirty checked-out worktree fails closed. If
+the ref moved to the candidate but index/worktree synchronization did not
+finish, recovery resumes forward and never uses `reset --hard`.
+
+Cancellation is permitted only for `CREATED/PREPARING`, verifies PID start
+identity, terminates the owned process group, and leaves a durable terminal
+ledger event. Ledger projections are reconstructible; stale writers, invalid
+transitions, tampering, replaced state roots, extra candidate commits, and
+unknown worktree inventory all fail closed.
+
+S10 DoD is deterministic idempotent admission, durable detached execution,
+verified process-tree cancellation, recoverable preparation/publication,
+append-only ledger CAS, no rollback after candidate OID, and component tests
+only. Real publication remains deferred to Q3.
+
 ## Stop rules
 
 Stop the current step and every dependent step on the first functional
