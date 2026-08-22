@@ -23,6 +23,119 @@ SPEC.loader.exec_module(bootstrap)
 
 
 class BootstrapAuthorityTest(unittest.TestCase):
+    def test_build_group_shutdown_escalates_after_one_shared_deadline(self) -> None:
+        first = mock.Mock(pid=101)
+        second = mock.Mock(pid=202)
+        with (
+            mock.patch.object(bootstrap.os, "killpg") as killpg,
+            mock.patch.object(
+                bootstrap,
+                "_process_group_exists",
+                side_effect=lambda process_group: process_group == 202,
+            ),
+        ):
+            bootstrap._terminate_process_groups(
+                [first, second], grace_seconds=0, kill_wait_seconds=0
+            )
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                mock.call(101, bootstrap.signal.SIGTERM),
+                mock.call(202, bootstrap.signal.SIGTERM),
+                mock.call(202, bootstrap.signal.SIGKILL),
+            ],
+        )
+        first.wait.assert_called_once_with(timeout=0)
+        second.wait.assert_called_once_with(timeout=0)
+
+    def test_build_stage_exception_cancels_its_registered_process_group(self) -> None:
+        process = mock.Mock(pid=303)
+        process.poll.side_effect = RuntimeError("poll failed")
+        supervisor = bootstrap.BuildProcessSupervisor()
+        with (
+            mock.patch.object(bootstrap.subprocess, "Popen", return_value=process) as popen,
+            mock.patch.object(bootstrap, "_terminate_process_groups") as terminate,
+            mock.patch.object(bootstrap, "progress"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "poll failed"):
+                bootstrap.run_build_stage(
+                    ["build-tool"], Path("/"), {}, "TEST_STAGE", supervisor
+                )
+        self.assertTrue(supervisor.cancelled())
+        terminate.assert_called_once_with([process])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_pre_cancelled_build_never_spawns_a_process(self) -> None:
+        supervisor = bootstrap.BuildProcessSupervisor()
+        supervisor.request_cancel()
+        with mock.patch.object(
+            bootstrap.subprocess,
+            "Popen",
+            side_effect=AssertionError("cancelled stage spawned a process"),
+        ):
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "cancelled"):
+                bootstrap.run_build_stage(
+                    ["build-tool"], Path("/"), {}, "TEST_STAGE", supervisor
+                )
+
+    def test_process_registered_after_cancel_is_stopped_immediately(self) -> None:
+        supervisor = bootstrap.BuildProcessSupervisor()
+        supervisor.request_cancel()
+        process = mock.Mock(pid=404)
+        with mock.patch.object(bootstrap, "_terminate_process_groups") as terminate:
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "cancelled"):
+                supervisor.register(process)
+        terminate.assert_called_once_with([process])
+
+    def test_build_signal_requests_cancellation_and_restores_handler(self) -> None:
+        supervisor = bootstrap.BuildProcessSupervisor()
+        previous = bootstrap.signal.getsignal(bootstrap.signal.SIGTERM)
+        with self.assertRaises(bootstrap.BootstrapInterrupted) as raised:
+            with bootstrap.build_signal_scope(supervisor):
+                handler = bootstrap.signal.getsignal(bootstrap.signal.SIGTERM)
+                self.assertTrue(callable(handler))
+                handler(bootstrap.signal.SIGTERM, None)
+        self.assertEqual(raised.exception.signum, bootstrap.signal.SIGTERM)
+        self.assertTrue(supervisor.cancelled())
+        self.assertIs(bootstrap.signal.getsignal(bootstrap.signal.SIGTERM), previous)
+
+    def test_parallel_stage_failure_cancels_sibling_before_executor_wait(self) -> None:
+        sibling_started = bootstrap.threading.Event()
+        sibling_observed_cancel = bootstrap.threading.Event()
+
+        def stage(
+            _arguments: list[str],
+            _cwd: Path,
+            _environment: dict[str, str],
+            name: str,
+            supervisor: bootstrap.BuildProcessSupervisor,
+        ) -> None:
+            if name == "CARGO_BINARIES":
+                sibling_started.set()
+                self.assertTrue(supervisor._cancelled.wait(timeout=1))
+                sibling_observed_cancel.set()
+                return
+            self.assertTrue(sibling_started.wait(timeout=1))
+            raise bootstrap.BootstrapError("Gradle failed")
+
+        with (
+            mock.patch.object(
+                bootstrap,
+                "runtime_build_plan",
+                return_value={
+                    "parallel": True,
+                    "cargoWorkers": 2,
+                    "gradleWorkers": 2,
+                    "memoryBudgetBytes": 8 * 1024**3,
+                },
+            ),
+            mock.patch.object(bootstrap, "host_memory_bytes", return_value=16 * 1024**3),
+            mock.patch.object(bootstrap, "run_build_stage", side_effect=stage),
+        ):
+            with self.assertRaisesRegex(bootstrap.BootstrapError, "Gradle failed"):
+                bootstrap.build_toolchains(Path("/stage"), {})
+        self.assertTrue(sibling_observed_cancel.is_set())
+
     def test_concurrent_runtime_lock_admits_exactly_one_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

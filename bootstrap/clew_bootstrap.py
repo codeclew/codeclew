@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
@@ -12,10 +13,12 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -26,6 +29,8 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_NODES = 100_000
 MIN_COLD_BUILD_FREE_BYTES = 6 * 1024 * 1024 * 1024
+BUILD_TERMINATION_GRACE_SECONDS = 2.0
+BUILD_KILL_WAIT_SECONDS = 2.0
 WORKERS = {
     "kotlin21": ("2.1.21", "workers/kotlin21/build/install/kotlin21", "workers/manifests/kotlin21.json"),
     "kotlin23": ("2.3.0", "workers/kotlin23/build/install/kotlin23", "workers/manifests/kotlin23.json"),
@@ -58,6 +63,132 @@ _AUDIT_COUNTERS = {
 
 class BootstrapError(RuntimeError):
     pass
+
+
+class BootstrapInterrupted(BootstrapError):
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(f"capsule build interrupted by signal {signum}")
+
+
+def _process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _signal_process_groups(processes: list[subprocess.Popen[bytes]], signum: int) -> None:
+    for process in processes:
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
+
+def _terminate_process_groups(
+    processes: list[subprocess.Popen[bytes]],
+    *,
+    grace_seconds: float = BUILD_TERMINATION_GRACE_SECONDS,
+    kill_wait_seconds: float = BUILD_KILL_WAIT_SECONDS,
+) -> None:
+    """Boundedly stop complete build process groups, including surviving children."""
+    process_groups = sorted({process.pid for process in processes})
+    if not process_groups:
+        return
+    _signal_process_groups(processes, signal.SIGTERM)
+    grace_deadline = time.monotonic() + max(0.0, grace_seconds)
+    survivors = process_groups
+    while survivors and time.monotonic() < grace_deadline:
+        for process in processes:
+            process.poll()
+        survivors = [group for group in survivors if _process_group_exists(group)]
+        if survivors:
+            time.sleep(min(0.05, max(0.0, grace_deadline - time.monotonic())))
+    survivors = [group for group in survivors if _process_group_exists(group)]
+    for process_group in survivors:
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    kill_deadline = time.monotonic() + max(0.0, kill_wait_seconds)
+    while survivors and time.monotonic() < kill_deadline:
+        for process in processes:
+            process.poll()
+        survivors = [group for group in survivors if _process_group_exists(group)]
+        if survivors:
+            time.sleep(min(0.05, max(0.0, kill_deadline - time.monotonic())))
+    # Reap group leaders without extending the bounded group-shutdown deadline.
+    for process in processes:
+        try:
+            process.wait(timeout=0)
+        except (subprocess.TimeoutExpired, ChildProcessError):
+            pass
+
+
+class BuildProcessSupervisor:
+    """Own every cold-build process group until it exits or is cancelled."""
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._processes: dict[int, subprocess.Popen[bytes]] = {}
+        self._termination_started: set[int] = set()
+
+    def request_cancel(self) -> None:
+        self._cancelled.set()
+
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def register(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            self._processes[process.pid] = process
+            cancelled = self._cancelled.is_set()
+        if cancelled:
+            self.cancel()
+            raise BootstrapError("capsule build was cancelled")
+
+    def unregister(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            self._processes.pop(process.pid, None)
+
+    def cancel(self) -> None:
+        self.request_cancel()
+        with self._lock:
+            processes = [
+                process for process_id, process in self._processes.items()
+                if process_id not in self._termination_started
+            ]
+            self._termination_started.update(process.pid for process in processes)
+        _terminate_process_groups(processes)
+
+
+@contextlib.contextmanager
+def build_signal_scope(supervisor: BuildProcessSupervisor):
+    """Translate process cancellation signals while preserving prior handlers."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {}
+
+    def interrupt(signum: int, _frame: object) -> None:
+        # Popen runs in worker threads, so a signal cannot land between fork and
+        # registration on the Python signal-handling thread.
+        supervisor.request_cancel()
+        raise BootstrapInterrupted(signum)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupt)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def canonical(value: object) -> bytes:
@@ -164,37 +295,52 @@ def run_build_stage(
     cwd: Path,
     environment: dict[str, str],
     stage: str,
+    supervisor: BuildProcessSupervisor | None = None,
 ) -> None:
+    supervisor = supervisor or BuildProcessSupervisor()
+    if supervisor.cancelled():
+        raise BootstrapError("capsule build was cancelled")
     progress("STAGE_STARTED", stage)
     started = time.monotonic()
-    process = subprocess.Popen(
-        arguments,
-        cwd=cwd,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=None,
-        start_new_session=True,
-    )
-    next_heartbeat = started + 5
-    while True:
-        return_code = process.poll()
-        if return_code is not None:
-            break
-        now = time.monotonic()
-        if now >= next_heartbeat:
-            progress(
-                "HEARTBEAT",
-                stage,
-                durationMillis=int((now - started) * 1000),
-            )
-            next_heartbeat = now + 5
-        time.sleep(0.25)
-    duration = int((time.monotonic() - started) * 1000)
-    if return_code != 0:
-        progress("STAGE_FAILED", stage, durationMillis=duration, exitCode=return_code)
-        raise BootstrapError(f"capsule build stage failed ({return_code}): {stage}")
-    progress("STAGE_COMPLETED", stage, durationMillis=duration)
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            arguments,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=None,
+            start_new_session=True,
+        )
+        supervisor.register(process)
+        next_heartbeat = started + 5
+        while True:
+            if supervisor.cancelled():
+                raise BootstrapError("capsule build was cancelled")
+            return_code = process.poll()
+            if return_code is not None:
+                break
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                progress(
+                    "HEARTBEAT",
+                    stage,
+                    durationMillis=int((now - started) * 1000),
+                )
+                next_heartbeat = now + 5
+            time.sleep(0.25)
+        duration = int((time.monotonic() - started) * 1000)
+        if return_code != 0:
+            progress("STAGE_FAILED", stage, durationMillis=duration, exitCode=return_code)
+            raise BootstrapError(f"capsule build stage failed ({return_code}): {stage}")
+        progress("STAGE_COMPLETED", stage, durationMillis=duration)
+    except BaseException:
+        supervisor.cancel()
+        raise
+    finally:
+        if process is not None:
+            supervisor.unregister(process)
 
 
 def selected_source(relative: str) -> bool:
@@ -979,17 +1125,43 @@ def build_toolchains(stage: Path, environment: dict[str, str]) -> dict[str, obje
         "cargo", "build", "--locked", "--release", "-p", "clew",
         "--bin", "clew", "--bin", "semanticd", "--jobs", str(plan["cargoWorkers"]),
     ]
-    if plan["parallel"]:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(run_build_stage, gradle, stage, environment, "GRADLE_WORKERS"),
-                executor.submit(run_build_stage, cargo, stage, environment, "CARGO_BINARIES"),
-            ]
-            for future in futures:
-                future.result()
-    else:
-        run_build_stage(gradle, stage, environment, "GRADLE_WORKERS")
-        run_build_stage(cargo, stage, environment, "CARGO_BINARIES")
+    supervisor = BuildProcessSupervisor()
+    max_workers = 2 if plan["parallel"] else 1
+    with build_signal_scope(supervisor):
+        try:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                try:
+                    if plan["parallel"]:
+                        futures = [
+                            executor.submit(
+                                run_build_stage, gradle, stage, environment,
+                                "GRADLE_WORKERS", supervisor,
+                            ),
+                            executor.submit(
+                                run_build_stage, cargo, stage, environment,
+                                "CARGO_BINARIES", supervisor,
+                            ),
+                        ]
+                        for future in futures:
+                            future.result()
+                    else:
+                        executor.submit(
+                            run_build_stage, gradle, stage, environment,
+                            "GRADLE_WORKERS", supervisor,
+                        ).result()
+                        executor.submit(
+                            run_build_stage, cargo, stage, environment,
+                            "CARGO_BINARIES", supervisor,
+                        ).result()
+                except BaseException:
+                    # Cancel before ThreadPoolExecutor.__exit__ waits for the
+                    # sibling stage, otherwise a failed Gradle task could leave
+                    # Cargo running until its natural completion (or vice versa).
+                    supervisor.cancel()
+                    raise
+        except BaseException:
+            supervisor.cancel()
+            raise
     return plan
 
 
@@ -1639,6 +1811,12 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except BootstrapInterrupted as error:
+        print(canonical({
+            "schema": "codeclew-bootstrap-error/1.0",
+            "error": str(error),
+        }).decode(), file=sys.stderr)
+        raise SystemExit(128 + error.signum)
     except BootstrapError as error:
         print(canonical({"schema": "codeclew-bootstrap-error/1.0", "error": str(error)}).decode(), file=sys.stderr)
         raise SystemExit(7)
