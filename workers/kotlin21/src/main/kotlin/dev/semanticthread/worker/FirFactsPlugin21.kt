@@ -126,7 +126,7 @@ private class FirFactsCheckersExtension(
                         buildJsonObject {
                             put("recordType", "FIR_FILE_RECEIPT")
                             put("schema", "fir-file-receipt/0.1")
-                            put("file", context.containingFilePath ?: return)
+                            put("file", context.containingFilePath ?: declaration.sourceFile?.path ?: return)
                         },
                     )
                 }
