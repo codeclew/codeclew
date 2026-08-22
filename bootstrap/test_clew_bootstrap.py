@@ -544,6 +544,16 @@ class BootstrapAuthorityTest(unittest.TestCase):
             self.assertEqual(Path(environment["CARGO_TARGET_DIR"]), root / "cargo-target")
             self.assertEqual(environment["CARGO_INCREMENTAL"], "0")
             self.assertNotIn("RUSTFLAGS", environment)
+            remaps = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+            self.assertEqual(
+                remaps[:3],
+                [
+                    f"--remap-path-prefix={Path.home()}=/codeclew/home",
+                    f"--remap-path-prefix={root}=/codeclew/build",
+                    f"--remap-path-prefix={stage}=/codeclew/source",
+                ],
+            )
+            self.assertEqual(remaps[3:], [])
             self.assertNotIn(
                 "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", environment
             )

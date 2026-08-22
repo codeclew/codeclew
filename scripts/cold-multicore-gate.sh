@@ -253,6 +253,7 @@ identity_fields = (
     "workerTreeHashes",
 )
 baseline_identity = None
+identity_mismatches = []
 trials = []
 ratios = []
 for pair, order in orders.items():
@@ -262,7 +263,15 @@ for pair, order in orders.items():
         if baseline_identity is None:
             baseline_identity = identity
         elif identity != baseline_identity:
-            raise SystemExit("serial and parallel cold capsules are not byte-identical")
+            identity_mismatches.append({
+                "differingFields": sorted(
+                    field for field in identity_fields
+                    if identity.get(field) != baseline_identity.get(field)
+                ),
+                "observed": identity,
+                "pair": pair,
+                "profile": value["buildPlan"]["profile"],
+            })
     serial_millis = measured["SERIAL"]["wallMillis"]
     parallel_millis = measured["PARALLEL"]["wallMillis"]
     ratio = parallel_millis / serial_millis
@@ -283,10 +292,16 @@ for pair, order in orders.items():
 
 median_ratio = statistics.median(ratios)
 threshold = 0.65
-passed = median_ratio <= threshold
+passed = median_ratio <= threshold and not identity_mismatches
+status = (
+    "FAILED_NONDETERMINISTIC_CAPSULE"
+    if identity_mismatches
+    else "PASSED" if passed else "FAILED_RUNTIME_RATIO"
+)
 report = {
     "accepted": passed,
     "identity": baseline_identity,
+    "identityMismatches": identity_mismatches,
     "measurements": {
         "medianRatio": round(median_ratio, 6),
         "pairs": trials,
@@ -302,16 +317,18 @@ report = {
         "runtimeCapsuleColdBuildPassed": passed,
     },
     "sourceRevision": source_revision,
-    "status": "PASSED" if passed else "FAILED_RUNTIME_RATIO",
+    "status": status,
     "thresholds": {"runtimeMedianRatioMax": threshold},
 }
 print(json.dumps(report, sort_keys=True, separators=(",", ":")))
-if not passed:
-    raise SystemExit("real cold runtime median ratio exceeds 0.65")
 PY
 fi
 
-python3 -I -S - "$TEMPORARY" <<'PY'
+mv -f -- "$TEMPORARY" "$REPORT"
+chmod 600 "$REPORT"
+FINISHED=1
+
+python3 -I -S - "$REPORT" <<'PY'
 import json
 import pathlib
 import sys
@@ -335,7 +352,4 @@ if status == "PASSED":
     if scope.get("multiCompilationGenerationPassed") is not False:
         raise SystemExit("runtime gate falsely claimed multi-compilation evidence")
 PY
-mv -f -- "$TEMPORARY" "$REPORT"
-chmod 600 "$REPORT"
-FINISHED=1
 cat "$REPORT"

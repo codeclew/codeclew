@@ -992,6 +992,19 @@ def build_environment(stage: Path, root: Path) -> dict[str, str]:
     cargo_target.mkdir(mode=0o700)
     environment["CARGO_TARGET_DIR"] = str(cargo_target)
     environment["CARGO_INCREMENTAL"] = "0"
+    # Rust embeds source/OUT_DIR paths in panic locations and uses them when
+    # deriving the Mach-O UUID.  Every capsule build has a private random
+    # directory, so release artifacts are reproducible only when those paths
+    # are mapped into a stable, non-personal namespace.  Use the encoded form
+    # so whitespace in a local path cannot change argument tokenization.
+    # rustc applies the last matching prefix, therefore order mappings from
+    # broadest to most specific.
+    remaps = [
+        f"--remap-path-prefix={Path.home()}=/codeclew/home",
+        f"--remap-path-prefix={stage.parent}=/codeclew/build",
+        f"--remap-path-prefix={stage}=/codeclew/source",
+    ]
+    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(remaps)
     environment["GIT_TERMINAL_PROMPT"] = "0"
     gradle_home = Path(environment.get("GRADLE_USER_HOME", str(Path.home() / ".gradle")))
     for relative in ["init.gradle", "init.gradle.kts", "init.d"]:

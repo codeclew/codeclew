@@ -1626,15 +1626,6 @@ impl WorkerClient {
     }
 
     fn request(&mut self, kind: RequestKind, payload: &Value) -> Result<Value, ClewError> {
-        self.request_with_discovery_variants(kind, payload, 0)
-    }
-
-    fn request_with_discovery_variants(
-        &mut self,
-        kind: RequestKind,
-        payload: &Value,
-        tried_discovery_variants: u8,
-    ) -> Result<Value, ClewError> {
         match kind {
             RequestKind::OpenProject => {
                 self.request_counters.open_project_requests = self
@@ -1648,6 +1639,15 @@ impl WorkerClient {
             }
             _ => {}
         }
+        self.request_with_discovery_variants(kind, payload, 0)
+    }
+
+    fn request_with_discovery_variants(
+        &mut self,
+        kind: RequestKind,
+        payload: &Value,
+        tried_discovery_variants: u8,
+    ) -> Result<Value, ClewError> {
         let request_id = self.next_id;
         self.next_id += 1;
         let request_serialization_started = Instant::now();
@@ -4504,6 +4504,65 @@ mod tests {
         tried |= third.discovery_bit();
         assert!(WorkerVariant::next_untried_for_abi_discovery(tried).is_none());
     }
+
+    #[test]
+    fn kotlin_21_and_23_discovery_count_one_logical_open_project_request() {
+        let _workspace_worker_guard = workspace_worker_test_lock();
+        let workspace = workspace_root();
+        let source = workspace.join("fixtures/kotlin-basic");
+
+        for (version, expected_variant) in [
+            ("2.1.21", WorkerVariant::Kotlin21),
+            ("2.3.0", WorkerVariant::Kotlin23),
+        ] {
+            let temporary = tempfile::Builder::new()
+                .prefix("logical-open-project-counter-")
+                .tempdir_in(workspace.join("fixtures"))
+                .unwrap();
+            for entry in WalkDir::new(&source).into_iter().map(Result::unwrap) {
+                let relative = entry.path().strip_prefix(&source).unwrap();
+                if relative.components().any(|part| {
+                    matches!(
+                        part.as_os_str().to_str(),
+                        Some(".gradle" | ".semantic-thread" | "build")
+                    )
+                }) {
+                    continue;
+                }
+                let destination = temporary.path().join(relative);
+                if entry.file_type().is_dir() {
+                    std::fs::create_dir_all(&destination).unwrap();
+                } else {
+                    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                    std::fs::copy(entry.path(), destination).unwrap();
+                }
+            }
+            let build_file = temporary.path().join("build.gradle.kts");
+            let build = std::fs::read_to_string(&build_file)
+                .unwrap()
+                .replace("2.4.10", version);
+            std::fs::write(build_file, build).unwrap();
+
+            let mut worker = WorkerClient::start(&workspace).unwrap();
+            let project = worker
+                .request(
+                    RequestKind::OpenProject,
+                    &json!({"repo":temporary.path(),"compilation":":/main"}),
+                )
+                .unwrap();
+            assert_eq!(project["declaredCompilerVersion"], version);
+            assert_eq!(worker.variant, expected_variant);
+            assert_eq!(
+                worker.request_counters(),
+                WorkerRequestCounters {
+                    open_project_requests: 1,
+                    index_files_requests: 0,
+                }
+            );
+            worker.shutdown().unwrap();
+        }
+    }
+
     fn relation_normalization_facts(relations: Vec<Value>) -> Value {
         let mut relations = relations;
         relations.sort_by_key(|row| crate::canonical::bytes(row).unwrap());
