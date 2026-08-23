@@ -272,11 +272,15 @@ pub fn expand(
 }
 
 fn fair_fact_selection(matches_by_term: &[Vec<FactHit>], limit: usize) -> Vec<FactHit> {
+    let diversified = matches_by_term
+        .iter()
+        .map(|matches| diversify_fact_families(matches))
+        .collect::<Vec<_>>();
     let mut selected = BTreeSet::new();
-    let mut cursors = vec![0usize; matches_by_term.len()];
+    let mut cursors = vec![0usize; diversified.len()];
     while selected.len() < limit {
         let mut progressed = false;
-        for (term_matches, cursor) in matches_by_term.iter().zip(&mut cursors) {
+        for (term_matches, cursor) in diversified.iter().zip(&mut cursors) {
             while *cursor < term_matches.len() {
                 let fact = term_matches[*cursor].clone();
                 *cursor += 1;
@@ -294,6 +298,39 @@ fn fair_fact_selection(matches_by_term: &[Vec<FactHit>], limit: usize) -> Vec<Fa
         }
     }
     selected.into_iter().collect()
+}
+
+fn diversify_fact_families(matches: &[FactHit]) -> Vec<FactHit> {
+    // Adapters that end opaque fact keys with a canonical digest get fair
+    // representation across their stable key prefixes. Other keys fall back
+    // to one deterministic family per full key, preserving prior behavior.
+    let mut families = BTreeMap::<String, BTreeSet<FactHit>>::new();
+    for fact in matches {
+        families
+            .entry(semantic_fact_key(&fact.fact_key))
+            .or_default()
+            .insert(fact.clone());
+    }
+    let families = families
+        .into_values()
+        .map(BTreeSet::into_iter)
+        .map(Iterator::collect::<Vec<_>>)
+        .collect::<Vec<_>>();
+    let mut diversified = Vec::with_capacity(matches.len());
+    let mut round = 0usize;
+    loop {
+        let before = diversified.len();
+        for family in &families {
+            if let Some(fact) = family.get(round) {
+                diversified.push(fact.clone());
+            }
+        }
+        if diversified.len() == before {
+            break;
+        }
+        round += 1;
+    }
+    diversified
 }
 
 pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), ClewError> {
@@ -900,6 +937,58 @@ mod tests {
                 .any(|fact| fact.fact_key.starts_with("a:alpha:"))
         );
         assert!(expanded.facts.iter().any(|fact| fact.fact_key == "z:beta"));
+    }
+
+    #[test]
+    fn query_budget_is_shared_across_fact_families_within_one_term() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"fact").unwrap();
+        let mut matches = (0..100)
+            .map(|index| FactHit {
+                fact_key: format!("semantic:boundary:{index:064x}"),
+                domain_uri: CapabilityUri::parse("analysis:semantic").unwrap(),
+                payload: payload.clone(),
+            })
+            .collect::<Vec<_>>();
+        matches.push(FactHit {
+            fact_key: format!("semantic:descriptor:{:064x}", 200),
+            domain_uri: CapabilityUri::parse("analysis:semantic").unwrap(),
+            payload: payload.clone(),
+        });
+        matches.push(FactHit {
+            fact_key: format!("semantic:relation:{:064x}", 300),
+            domain_uri: CapabilityUri::parse("analysis:semantic").unwrap(),
+            payload,
+        });
+
+        let selected = fair_fact_selection(&[matches.clone()], 3);
+        assert_eq!(selected.len(), 3);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|fact| semantic_fact_key(&fact.fact_key))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "semantic:boundary".to_owned(),
+                "semantic:descriptor".to_owned(),
+                "semantic:relation".to_owned(),
+            ])
+        );
+        let two = fair_fact_selection(&[matches.clone()], 2);
+        assert_eq!(
+            two.iter()
+                .map(|fact| semantic_fact_key(&fact.fact_key))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "semantic:boundary".to_owned(),
+                "semantic:descriptor".to_owned(),
+            ])
+        );
+        let one = fair_fact_selection(&[matches.clone()], 1);
+        matches.reverse();
+        assert_eq!(one, fair_fact_selection(&[matches], 1));
     }
 
     #[test]
