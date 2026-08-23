@@ -7,6 +7,7 @@
 benchmarks/reports/
 benchmarks/kotlin-real-repository/k1/corpus.json
 docs/experiments/evidence/
+docs/pilot/results/
 docs/research/codeclew/source-manifest.json
 evidence/graphs/
 *.tmp

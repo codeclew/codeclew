@@ -31,6 +31,25 @@ def check_gate(relative: str, *, inline_tree_cleanup: bool) -> None:
 
 
 def main() -> None:
+    qualification = (ROOT / ".github/workflows/qualification.yml").read_text(
+        encoding="utf-8"
+    )
+    pilot_qualification = (
+        ROOT / "scripts/qualification/pilot-readiness.sh"
+    ).read_text(encoding="utf-8")
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    ci_verify = (ROOT / "scripts/ci-verify.sh").read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in qualification and "schedule:" in qualification
+    assert "pull_request" not in qualification and "push:" not in qualification
+    assert "ubuntu-latest" in qualification and "macos-latest" in qualification
+    assert qualification.count("pilot-readiness.sh") == 2
+    assert pilot_qualification.count("--bootstrap-warm-audit") == 1
+    assert 'counters.get("processRuns") != 0' in pilot_qualification
+    assert 'counters.get("digestFileCalls") != 0' in pilot_qualification
+    assert "--reuse-primed-runtime" in pilot_qualification
+    assert ci.count("./scripts/ci-verify.sh") == 1
+    assert ci_verify.count("scripts/usability-smoke.py") == 1
+    assert "scripts/pilot.py" not in ci and "scripts/pilot.py" not in ci_verify
     check_gate("scripts/multi-compilation-gate.sh", inline_tree_cleanup=False)
     multi = (ROOT / "scripts/multi-compilation-gate.sh").read_text(encoding="utf-8")
     cold = (ROOT / "scripts/cold-multicore-gate.sh").read_text(encoding="utf-8")

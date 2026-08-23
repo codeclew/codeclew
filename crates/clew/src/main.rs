@@ -25,6 +25,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Change {
+        #[command(subcommand)]
+        command: ChangeCommand,
+    },
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -44,6 +48,15 @@ enum Command {
     },
     #[command(name = "__task-run-execute", hide = true)]
     InternalTaskRunExecute(InternalTaskRunArgs),
+}
+
+#[derive(Subcommand)]
+enum ChangeCommand {
+    Open(ChangeOpenArgs),
+    Prepare(ChangePrepareArgs),
+    Status(RunIdArgs),
+    Publish(SessionPublishArgs),
+    Recover(SessionRunArgs),
 }
 
 #[derive(Subcommand)]
@@ -104,6 +117,28 @@ struct SessionOpenArgs {
     model_cache: ModelCachePolicyArg,
     #[arg(long, requires = "model_cache")]
     external_build_state: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct ChangeOpenArgs {
+    #[command(flatten)]
+    session: SessionOpenArgs,
+    #[arg(long)]
+    intent: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long, default_value_t = 2)]
+    max_roots: usize,
+}
+
+#[derive(Args)]
+struct ChangePrepareArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    context: String,
+    #[arg(long)]
+    plan: PathBuf,
 }
 
 #[derive(Args)]
@@ -245,22 +280,37 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     match cli.command {
+        Command::Change {
+            command: ChangeCommand::Open(args),
+        } => change_open(args),
+        Command::Change {
+            command: ChangeCommand::Prepare(args),
+        } => change_prepare(args),
+        Command::Change {
+            command: ChangeCommand::Status(args),
+        } => with_schema("codeclew-change-status/1.0", task_run_status(&args.run)?),
+        Command::Change {
+            command: ChangeCommand::Publish(args),
+        } => with_schema(
+            "codeclew-change-publish/1.0",
+            publish_task_run(
+                &args.session,
+                &args.run,
+                args.allow_conditional,
+                args.prepared_authority_digest.as_deref(),
+                &args.acknowledge_obligations,
+            )?,
+        ),
+        Command::Change {
+            command: ChangeCommand::Recover(args),
+        } => with_schema(
+            "codeclew-change-recover/1.0",
+            recover_task_run(&args.session, &args.run)?,
+        ),
         Command::Session {
             command: SessionCommand::Open(args),
         } => {
-            let policy = match args.model_cache {
-                ModelCachePolicyArg::NonCacheable => ModelCachePolicy::NonCacheable,
-                ModelCachePolicyArg::TrackedManifest => ModelCachePolicy::TrackedManifest,
-                ModelCachePolicyArg::SealedExternal => ModelCachePolicy::SealedExternal,
-            };
-            let session = SessionAuthority::open(
-                &absolute(&args.repo)?,
-                &args.target_ref,
-                &args.compilation,
-                args.generation_jobs,
-                policy,
-                args.external_build_state.as_deref(),
-            )?;
+            let session = open_session(&args)?;
             Ok(json!({"schema":"codeclew-session-open/4.0","status":"OPEN","session":session}))
         }
         Command::Session {
@@ -307,22 +357,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ContextCommand::Create(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
-            validate_context_request(&args.intent, &args.terms)?;
-            session.require_open()?;
-            let (projection, evidence) = clew::context_v2::create(
-                &session,
-                &args.intent,
-                &args.terms,
-                args.max_roots,
-                None,
-            )?;
-            bounded_context_stdout(&session.store_context(
-                None,
-                args.intent,
-                args.terms,
-                projection,
-                evidence,
-            )?)
+            create_context(&session, args.intent, args.terms, args.max_roots)
         }
         Command::Context {
             command: ContextCommand::Expand(args),
@@ -398,6 +433,102 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         } => recover_task_run(&args.session, &args.run),
         Command::InternalTaskRunExecute(args) => execute_task_run(&args.run),
     }
+}
+
+fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
+    let policy = match args.model_cache {
+        ModelCachePolicyArg::NonCacheable => ModelCachePolicy::NonCacheable,
+        ModelCachePolicyArg::TrackedManifest => ModelCachePolicy::TrackedManifest,
+        ModelCachePolicyArg::SealedExternal => ModelCachePolicy::SealedExternal,
+    };
+    SessionAuthority::open(
+        &absolute(&args.repo)?,
+        &args.target_ref,
+        &args.compilation,
+        args.generation_jobs,
+        policy,
+        args.external_build_state.as_deref(),
+    )
+}
+
+fn create_context(
+    session: &SessionAuthority,
+    intent: String,
+    terms: Vec<String>,
+    max_roots: usize,
+) -> Result<Value, ClewError> {
+    validate_context_request(&intent, &terms)?;
+    session.require_open()?;
+    let (projection, evidence) =
+        clew::context_v2::create(session, &intent, &terms, max_roots, None)?;
+    bounded_context_stdout(&session.store_context(None, intent, terms, projection, evidence)?)
+}
+
+fn change_open(args: ChangeOpenArgs) -> Result<Value, ClewError> {
+    let session = open_session(&args.session)?;
+    match create_context(&session, args.intent, args.terms, args.max_roots) {
+        Ok(context) => Ok(json!({
+            "schema":"codeclew-change-open/1.0",
+            "status":"OPEN",
+            "session":session,
+            "context":context,
+        })),
+        Err(error) => Err(change_open_failure(error, &session.session_id, || {
+            session.abort()?;
+            session.gc(false)?;
+            Ok(())
+        })),
+    }
+}
+
+fn change_open_failure(
+    original: ClewError,
+    session_id: &str,
+    cleanup: impl FnOnce() -> Result<(), ClewError>,
+) -> ClewError {
+    match cleanup() {
+        Ok(()) => original,
+        Err(cleanup_error) => ClewError::new(
+            ErrorCode::TransactionRecoveryRequired,
+            format!(
+                "change open failed and session cleanup requires recovery: {:?}",
+                cleanup_error.code
+            ),
+        )
+        .with_transaction(session_id),
+    }
+}
+
+fn change_prepare(args: ChangePrepareArgs) -> Result<Value, ClewError> {
+    let (session, _) = SessionAuthority::load(&args.session)?;
+    session.require_open()?;
+    let metadata = std::fs::symlink_metadata(&args.plan).map_err(io_error)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() as usize > clew::session::MAX_PLAN_BYTES
+    {
+        return Err(invalid("plan is missing, unsafe, or exceeds 1 MiB"));
+    }
+    let plan =
+        session.validate_plan(&args.context, &std::fs::read(&args.plan).map_err(io_error)?)?;
+    let status = start_task_run(&args.session, &args.context, &plan.plan_id)?;
+    Ok(json!({
+        "schema":"codeclew-change-prepare/1.0",
+        "status":"STARTED",
+        "sessionId":args.session,
+        "contextId":args.context,
+        "planId":plan.plan_id,
+        "run":status.get("run").cloned().unwrap_or(Value::Null),
+        "candidate":status.get("candidate").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+fn with_schema(schema: &str, mut value: Value) -> Result<Value, ClewError> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| internal("command result is not an object"))?;
+    object.insert("schema".into(), Value::String(schema.into()));
+    Ok(value)
 }
 
 fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<Value, ClewError> {
@@ -1038,6 +1169,110 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());
         }
+    }
+
+    #[test]
+    fn change_facade_requires_explicit_authorities() {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "change",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--compilation",
+                ":/main",
+                "--intent",
+                "change total",
+                "--term",
+                "total",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "change",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--compilation",
+                ":/main",
+                "--intent",
+                "change total",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "change",
+                "prepare",
+                "--session",
+                "session:authority",
+                "--context",
+                "context:authority",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn change_publish_preserves_conditional_approval_binding() {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "change",
+                "publish",
+                "--session",
+                "session:authority",
+                "--run",
+                "run:request",
+                "--acknowledge-obligation",
+                "context:sha256:authority",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "change",
+                "publish",
+                "--session",
+                "session:authority",
+                "--run",
+                "run:request",
+                "--allow-conditional",
+                "--prepared-authority-digest",
+                "sha256:authority",
+                "--acknowledge-obligation",
+                "context:sha256:authority",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn change_open_failure_is_compensated_or_session_bound() {
+        let original = ClewError::new(ErrorCode::SymbolNotFound, "missing symbol");
+        let compensated = change_open_failure(original.clone(), "session:authority", || Ok(()));
+        assert_eq!(compensated.code, original.code);
+        assert_eq!(compensated.message, original.message);
+        assert_eq!(compensated.transaction_id, None);
+
+        let recovery = change_open_failure(original, "session:authority", || {
+            Err(ClewError::new(ErrorCode::StateCorrupt, "cleanup failed"))
+        });
+        assert_eq!(recovery.code, ErrorCode::TransactionRecoveryRequired);
+        assert_eq!(
+            recovery.transaction_id.as_deref(),
+            Some("session:authority")
+        );
+        assert!(recovery.retryable);
     }
 
     #[test]

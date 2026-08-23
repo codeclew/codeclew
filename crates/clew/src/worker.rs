@@ -1250,16 +1250,12 @@ struct TrustedWorkerDistribution {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerVariant {
-    Kotlin21,
-    Kotlin23,
     Kotlin24,
 }
 
 impl WorkerVariant {
     fn runtime_name(self) -> &'static str {
         match self {
-            Self::Kotlin21 => "kotlin21",
-            Self::Kotlin23 => "kotlin23",
             Self::Kotlin24 => "kotlin24",
         }
     }
@@ -1272,13 +1268,11 @@ impl WorkerVariant {
             .join(".")
             .as_str()
         {
-            "2.1" => Ok(Self::Kotlin21),
-            "2.3" => Ok(Self::Kotlin23),
             "2.4" => Ok(Self::Kotlin24),
             _ => Err(ClewError::new(
                 ErrorCode::UnsupportedProjectConfiguration,
                 format!(
-                    "unsupported Kotlin compiler {version}; supported compiler lines are 2.1, 2.3, and 2.4"
+                    "unsupported Kotlin compiler {version}; the supported compiler line is 2.4"
                 ),
             )),
         }
@@ -1286,22 +1280,18 @@ impl WorkerVariant {
 
     fn compiler_version(self) -> &'static str {
         match self {
-            Self::Kotlin21 => "2.1.21",
-            Self::Kotlin23 => "2.3.0",
             Self::Kotlin24 => "2.4.10",
         }
     }
 
     fn discovery_bit(self) -> u8 {
         match self {
-            Self::Kotlin21 => 1 << 0,
-            Self::Kotlin23 => 1 << 1,
-            Self::Kotlin24 => 1 << 2,
+            Self::Kotlin24 => 1,
         }
     }
 
     fn next_untried_for_abi_discovery(tried: u8) -> Option<Self> {
-        [Self::Kotlin24, Self::Kotlin23, Self::Kotlin21]
+        [Self::Kotlin24]
             .into_iter()
             .find(|variant| tried & variant.discovery_bit() == 0)
     }
@@ -1309,8 +1299,6 @@ impl WorkerVariant {
     #[cfg(test)]
     fn install_task(self) -> &'static str {
         match self {
-            Self::Kotlin21 => ":workers:kotlin21:installDist",
-            Self::Kotlin23 => ":workers:kotlin23:installDist",
             Self::Kotlin24 => ":workers:kotlin:installDist",
         }
     }
@@ -1318,24 +1306,18 @@ impl WorkerVariant {
     #[cfg(test)]
     fn distribution_relative(self) -> &'static str {
         match self {
-            Self::Kotlin21 => "workers/kotlin21/build/install/kotlin21",
-            Self::Kotlin23 => "workers/kotlin23/build/install/kotlin23",
             Self::Kotlin24 => "workers/kotlin/build/install/kotlin",
         }
     }
 
     fn launcher_name(self) -> &'static str {
         match self {
-            Self::Kotlin21 => "kotlin21",
-            Self::Kotlin23 => "kotlin23",
             Self::Kotlin24 => "kotlin",
         }
     }
 
     fn plugin_jar_name(self) -> &'static str {
         match self {
-            Self::Kotlin21 => "kotlin21-0.1.0.jar",
-            Self::Kotlin23 => "kotlin23-0.1.0.jar",
             Self::Kotlin24 => "kotlin-0.1.0.jar",
         }
     }
@@ -1343,22 +1325,6 @@ impl WorkerVariant {
     #[cfg(test)]
     fn pinned_inputs(self) -> PinnedInputs {
         match self {
-            Self::Kotlin21 => PinnedInputs {
-                roots: PINNED_KOTLIN21_INPUT_ROOTS,
-                files: PINNED_KOTLIN21_INPUT_FILES,
-                entries: PINNED_KOTLIN21_INPUTS,
-                digest: PINNED_KOTLIN21_INPUT_DIGEST,
-                outputs: PINNED_KOTLIN21_OUTPUTS,
-                output_digest: PINNED_KOTLIN21_OUTPUT_DIGEST,
-            },
-            Self::Kotlin23 => PinnedInputs {
-                roots: PINNED_KOTLIN23_INPUT_ROOTS,
-                files: PINNED_KOTLIN23_INPUT_FILES,
-                entries: PINNED_KOTLIN23_INPUTS,
-                digest: PINNED_KOTLIN23_INPUT_DIGEST,
-                outputs: PINNED_KOTLIN23_OUTPUTS,
-                output_digest: PINNED_KOTLIN23_OUTPUT_DIGEST,
-            },
             Self::Kotlin24 => PinnedInputs {
                 roots: PINNED_KOTLIN24_INPUT_ROOTS,
                 files: PINNED_KOTLIN24_INPUT_FILES,
@@ -2545,12 +2511,6 @@ fn read_worker_transport_blob(root: &Path, blob: &BlobRef) -> Result<Vec<u8>, Cl
 #[cfg(test)]
 fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
     match variant {
-        WorkerVariant::Kotlin21 => {
-            workspace.join("workers/kotlin21/build/install/kotlin21/bin/kotlin21")
-        }
-        WorkerVariant::Kotlin23 => {
-            workspace.join("workers/kotlin23/build/install/kotlin23/bin/kotlin23")
-        }
         WorkerVariant::Kotlin24 => workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin"),
     }
 }
@@ -4490,77 +4450,24 @@ mod tests {
     }
 
     #[test]
-    fn compiler_plugin_abi_discovery_visits_each_supported_variant_once() {
+    fn compiler_plugin_abi_discovery_is_kotlin_24_only() {
         let mut tried = 0;
         let first = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
         assert_eq!(first, WorkerVariant::Kotlin24);
         tried |= first.discovery_bit();
-
-        let second = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
-        assert_eq!(second, WorkerVariant::Kotlin23);
-        tried |= second.discovery_bit();
-
-        let third = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
-        assert_eq!(third, WorkerVariant::Kotlin21);
-        tried |= third.discovery_bit();
         assert!(WorkerVariant::next_untried_for_abi_discovery(tried).is_none());
     }
 
     #[test]
-    fn kotlin_21_and_23_discovery_count_one_logical_open_project_request() {
-        let _workspace_worker_guard = workspace_worker_test_lock();
-        let workspace = workspace_root();
-        let source = workspace.join("fixtures/kotlin-basic");
-
-        for (version, expected_variant) in [
-            ("2.1.21", WorkerVariant::Kotlin21),
-            ("2.3.0", WorkerVariant::Kotlin23),
-        ] {
-            let temporary = tempfile::Builder::new()
-                .prefix("logical-open-project-counter-")
-                .tempdir_in(workspace.join("fixtures"))
-                .unwrap();
-            for entry in WalkDir::new(&source).into_iter().map(Result::unwrap) {
-                let relative = entry.path().strip_prefix(&source).unwrap();
-                if relative.components().any(|part| {
-                    matches!(
-                        part.as_os_str().to_str(),
-                        Some(".gradle" | ".semantic-thread" | "build")
-                    )
-                }) {
-                    continue;
-                }
-                let destination = temporary.path().join(relative);
-                if entry.file_type().is_dir() {
-                    std::fs::create_dir_all(&destination).unwrap();
-                } else {
-                    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
-                    std::fs::copy(entry.path(), destination).unwrap();
-                }
-            }
-            let build_file = temporary.path().join("build.gradle.kts");
-            let build = std::fs::read_to_string(&build_file)
-                .unwrap()
-                .replace("2.4.10", version);
-            std::fs::write(build_file, build).unwrap();
-
-            let mut worker = WorkerClient::start(&workspace).unwrap();
-            let project = worker
-                .request(
-                    RequestKind::OpenProject,
-                    &json!({"repo":temporary.path(),"compilation":":/main"}),
-                )
-                .unwrap();
-            assert_eq!(project["declaredCompilerVersion"], version);
-            assert_eq!(worker.variant, expected_variant);
-            assert_eq!(
-                worker.request_counters(),
-                WorkerRequestCounters {
-                    open_project_requests: 1,
-                    index_files_requests: 0,
-                }
-            );
-            worker.shutdown().unwrap();
+    fn project_compiler_admission_rejects_preview_lines() {
+        assert_eq!(
+            WorkerVariant::for_project("2.4.10").unwrap(),
+            WorkerVariant::Kotlin24
+        );
+        for version in ["2.1.21", "2.3.0", "1.9.25"] {
+            let error = WorkerVariant::for_project(version).unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+            assert!(error.message.contains("supported compiler line is 2.4"));
         }
     }
 

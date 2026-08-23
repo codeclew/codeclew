@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -21,12 +22,15 @@ FORBIDDEN_TOKEN_SHA256 = {
 FORBIDDEN_PATH_PREFIXES = (
     "benchmarks/reports/",
     "docs/experiments/evidence/",
+    "docs/pilot/results/",
     "evidence/graphs/",
 )
 FORBIDDEN_EXACT_PATHS = {
     "benchmarks/kotlin-real-repository/k1/corpus.json",
     "docs/research/codeclew/source-manifest.json",
 }
+PILOT_CASE_TEMPLATE = "docs/pilot/case-template.json"
+PILOT_CASE_TEMPLATE_SHA256 = "69490291d07699ecf142d8fe0cc601581c010c63f2e72d7e501aff88c1635da2"
 TOKEN_RE = re.compile(br"[A-Za-z0-9]+")
 HOME_PATH_RE = re.compile(br"/Users/[A-Za-z0-9._-]+")
 EMAIL_RE = re.compile(br"[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
@@ -53,8 +57,21 @@ def path_rules(path: str) -> list[str]:
     return findings
 
 
-def blob_rules(data: bytes) -> list[str]:
+def blob_rules(data: bytes, path: str | None = None) -> list[str]:
     findings: set[str] = set()
+    try:
+        parsed = json.loads(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        parsed = None
+    is_pilot_case = (
+        isinstance(parsed, dict)
+        and parsed.get("schema") == "codeclew-pilot-case/1.0"
+    )
+    if is_pilot_case and (
+        path != PILOT_CASE_TEMPLATE
+        or hashlib.sha256(data).hexdigest() != PILOT_CASE_TEMPLATE_SHA256
+    ):
+        findings.add("filled-pilot-case")
     if HOME_PATH_RE.search(data):
         findings.add("personal-home-path")
     for token in TOKEN_RE.findall(data):
@@ -137,7 +154,7 @@ def check_entries(entries: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
     for _oid, path in materialized:
         findings.extend((path, rule) for rule in path_rules(path))
     for path, data in read_blobs(materialized):
-        findings.extend((path, rule) for rule in blob_rules(data))
+        findings.extend((path, rule) for rule in blob_rules(data, path))
     return sorted(set(findings))
 
 
@@ -173,6 +190,10 @@ def self_test() -> None:
     assert "forbidden-identity" in blob_rules(b"lada" + b"digit")
     assert "non-placeholder-email" in blob_rules(b"dev@" + b"example.com")
     assert path_rules("evidence/graphs/private.json")
+    assert path_rules("docs/pilot/results/forced.json")
+    pilot_case = b'{"schema": "codeclew-pilot-case/1.0"}\n'
+    assert "filled-pilot-case" in blob_rules(pilot_case, "private-case.json")
+    assert "filled-pilot-case" in blob_rules(pilot_case, PILOT_CASE_TEMPLATE)
 
 
 def main() -> int:

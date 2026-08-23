@@ -13,52 +13,49 @@ The only supported executable entrypoint is `./clew`.
 - the Rust toolchain pinned by `rust-toolchain.toml`
 - Maven on `PATH` only for Maven projects without `./mvnw`
 
-Kotlin workers for 2.1.21, 2.3.0, and 2.4.10 are packaged into an immutable
-runtime capsule. A cold start may build the capsule. A warm invocation verifies
-and reuses it without running Cargo, Rustc, Gradle, or Maven. Workers execute
-directly from that sealed capsule under its shared lease; the warm path does not
-copy their distributions.
+The Kotlin 2.4.10 worker is packaged into an immutable runtime capsule. A cold
+start may build the capsule. A warm invocation verifies and reuses it without
+running Cargo, Rustc, Gradle, or Maven. The worker executes directly from that
+sealed capsule under its shared lease; the warm path does not copy its
+distribution.
 
 The current supported product contour is deliberately narrower than the
-packaged research surface: Kotlin 2.4, Gradle, `PROJECT_NATIVE`, and one exact
+source-level research surface: Kotlin 2.4, Gradle, `PROJECT_NATIVE`, and one exact
 compilation. Maven, Kotlin 2.1/2.3, multiple compilations, Android/KMP and
 `EXTERNAL` are preview contours until they have their own publish acceptance
 tests.
 
+This revision is pilot-ready, not general availability. Team use follows the
+[Kotlin 2.4 pilot runbook](docs/pilot/README.md); a signed prebuilt release is a
+separate decision after 20 recorded in-contour cases meet its numerical gate.
+
 ## Workflow
 
 ```bash
-./clew session open \
+./clew change open \
   --repo /path/to/clean-kotlin-repository \
   --target-ref main \
-  --compilation :app/main
-
-./clew context create \
-  --session session:... \
+  --compilation :app/main \
   --intent 'describe the requested change' \
   --term ImportantSymbol \
   --term ImportantBehavior
 
-./clew context expand \
-  --session session:... \
-  --from context:sha256:... \
-  --term MissingCaller
-
-./clew plan validate \
+./clew change prepare \
   --session session:... \
   --context context:sha256:... \
   --plan edit-plan.json
 
-./clew task-run start \
-  --session session:... \
-  --context context:sha256:... \
-  --plan plan:sha256:...
-
-./clew task-run status --run run:...
-./clew session publish --session session:... --run run:...
+./clew change status --run run:...
+./clew change publish --session session:... --run run:...
 ./clew session close --session session:...
 ./clew session gc --session session:...
 ```
+
+`change open` atomically returns the session and its bounded initial context.
+`change prepare` validates the immutable plan and idempotently starts its
+isolated candidate run. The low-level `session`, `context`, `plan`, and
+`task-run` commands remain an advanced protocol for expansion, cancellation,
+relocation, and diagnostics; they are not required for the happy path.
 
 `--compilation` is mandatory and names an exact build compilation authority:
 use `:/main` for a Kotlin root project or `:module/main` for a Gradle
@@ -75,14 +72,14 @@ the lane count is host-adaptive and capped at 16. Reproducible measurements may
 pin it with `--generation-jobs N`; the selected job count is session authority
 and cannot exceed current admission.
 
-`task-run start` writes a durable `CREATED` record before detaching. Repeating
+`change prepare` writes a durable `CREATED` record before detaching. Repeating
 the same request attaches to the same content-addressed run. Preparation may
 compile, test, and build a staged repository index, but it never changes the
-session's target ref. Only `session publish` may fast-forward the ref.
+session's target ref. Only `change publish` may fast-forward the ref.
 
-Interrupted pre-commit work can be continued with `task-run resume`. A committed
-candidate is never reset automatically: use `session recover` with its session
-and run IDs to reconcile it. `session close` requires no live or unresolved run;
+Interrupted pre-commit work can be continued with the advanced `task-run
+resume`. A committed candidate is never reset automatically: use `change
+recover` with its session and run IDs to reconcile it. `session close` requires no live or unresolved run;
 `session abort` is the explicit cancellation terminal. If the repository moved,
 use `session relocate --session ... --repo ...`. GC deletes only worktrees proven
 to be Codeclew-owned and refuses every non-empty candidate without an exact
@@ -138,15 +135,15 @@ still terminates as `VALIDATED_CONDITIONAL` and cannot be published.
 
 Conditional publication is fail-closed by default. The caller must pass
 `--allow-conditional` and acknowledge every qualified `approvalId` reported by
-`task-run status`. The durable approval binds the session, run, context evidence,
+`change status`. The durable approval binds the session, run, context evidence,
 plan, candidate commit and snapshot, exact changed files, bounded diff and
 successful validation evidence. The result is `PUBLISHED_CONDITIONAL` and its
 certainty remains `UNSURE`; acknowledgement never upgrades evidence to
 `VERIFIED`.
 
 ```bash
-./clew task-run status --run run:...
-./clew session publish \
+./clew change status --run run:...
+./clew change publish \
   --session session:... \
   --run run:... \
   --allow-conditional \

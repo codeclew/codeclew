@@ -746,7 +746,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
         )
         self.assertEqual(
             [spec["componentId"] for spec in first],
-            ["clew", "kotlin21", "kotlin23", "kotlin24"],
+            ["clew", "kotlin24"],
         )
         unrelated = [dict(row) for row in inputs]
         bootstrap_row = next(
@@ -761,23 +761,30 @@ class BootstrapAuthorityTest(unittest.TestCase):
             [spec["authority"]["componentKey"] for spec in second],
         )
 
+        self.assertFalse(
+            any(
+                str(row["path"]).startswith("workers/kotlin23/")
+                for row in inputs
+            )
+        )
+
         changed = [dict(row) for row in inputs]
-        kotlin23_row = next(
+        kotlin24_row = next(
             row
             for row in changed
-            if str(row["path"]).startswith("workers/kotlin23/src/main/")
+            if str(row["path"]).endswith(
+                "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt"
+            )
         )
-        kotlin23_row["sha256"] = "sha256:" + "5" * 64
-        third = bootstrap.runtime_component_specs(
-            "RELEASE", changed, tools, registry
-        )
+        kotlin24_row["sha256"] = "sha256:" + "6" * 64
+        third = bootstrap.runtime_component_specs("RELEASE", changed, tools, registry)
         changed_ids = {
             before["componentId"]
             for before, after in zip(first, third, strict=True)
             if before["authority"]["componentKey"]
             != after["authority"]["componentKey"]
         }
-        self.assertEqual(changed_ids, {"clew", "kotlin23"})
+        self.assertEqual(changed_ids, {"kotlin24"})
 
     def test_component_registry_accepts_a_new_gradle_language_without_core_changes(self) -> None:
         repository = MODULE_PATH.parent.parent

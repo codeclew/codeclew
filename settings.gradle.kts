@@ -1,6 +1,6 @@
 pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
 dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { mavenCentral() } }
 rootProject.name = "semantic-thread"
-include(":workers:kotlin")
-include(":workers:kotlin21")
-include(":workers:kotlin23")
+listOf("kotlin", "kotlin21", "kotlin23").forEach { worker ->
+    if (file("workers/$worker").isDirectory) include(":workers:$worker")
+}

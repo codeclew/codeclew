@@ -62,7 +62,7 @@ current = json.loads((seed_home / "current.json").read_bytes())
 seed = json.loads((seed_home / current["epoch"] / "seed.json").read_bytes())
 reuse_bytes = (evidence_root / "reuse.json").read_bytes()
 reuse = json.loads(reuse_bytes)
-expected_components = ["clew", "kotlin21", "kotlin23", "kotlin24"]
+expected_components = ["clew", "kotlin24"]
 if (
     reuse.get("schema") != "codeclew-real-cold-build-evidence/1.0"
     or reuse.get("status") != "MEASURED"

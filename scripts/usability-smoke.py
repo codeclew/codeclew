@@ -141,7 +141,7 @@ def main() -> int:
         )
         _, opened = clew(
             [
-                "session",
+                "change",
                 "open",
                 "--repo",
                 str(repository),
@@ -149,19 +149,6 @@ def main() -> int:
                 "main",
                 "--compilation",
                 ":/main",
-            ],
-            environment=environment,
-        )
-        session = str(opened["session"]["sessionId"])
-        runtime_mode = str(opened["session"]["runtimeMode"])
-        assert runtime_mode in {"DEVELOPMENT", "RELEASE"}
-
-        _, context = clew(
-            [
-                "context",
-                "create",
-                "--session",
-                session,
                 "--intent",
                 "define the zero-base total result and add its exact test",
                 "--term",
@@ -171,6 +158,11 @@ def main() -> int:
             ],
             environment=environment,
         )
+        session = str(opened["session"]["sessionId"])
+        runtime_mode = str(opened["session"]["runtimeMode"])
+        assert runtime_mode in {"DEVELOPMENT", "RELEASE"}
+        context = opened["context"]
+        assert isinstance(context, dict)
         context_id = str(context["contextId"])
         completeness = context["completeness"]
         assert isinstance(completeness, dict)
@@ -218,10 +210,10 @@ def main() -> int:
             json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        _, validated = clew(
+        _, first_start = clew(
             [
-                "plan",
-                "validate",
+                "change",
+                "prepare",
                 "--session",
                 session,
                 "--context",
@@ -231,40 +223,28 @@ def main() -> int:
             ],
             environment=environment,
         )
-        plan_id = str(validated["planId"])
-        _, first_start = clew(
-            [
-                "task-run",
-                "start",
-                "--session",
-                session,
-                "--context",
-                context_id,
-                "--plan",
-                plan_id,
-            ],
-            environment=environment,
-        )
+        plan_id = str(first_start["planId"])
         run = str(first_start["run"]["runId"])
         _, second_start = clew(
             [
-                "task-run",
-                "start",
+                "change",
+                "prepare",
                 "--session",
                 session,
                 "--context",
                 context_id,
                 "--plan",
-                plan_id,
+                str(plan_path),
             ],
             environment=environment,
         )
+        assert second_start["planId"] == plan_id
         assert second_start["run"]["runId"] == run
 
         deadline = time.monotonic() + 180
         status: dict[str, object]
         while True:
-            _, status = clew(["task-run", "status", "--run", run], environment=environment)
+            _, status = clew(["change", "status", "--run", run], environment=environment)
             run_status = str(status["run"]["status"])
             if run_status in TERMINAL:
                 break
@@ -286,14 +266,14 @@ def main() -> int:
         assert_private_output(status, [repository, state])
 
         refused, refused_value = clew(
-            ["session", "publish", "--session", session, "--run", run],
+            ["change", "publish", "--session", session, "--run", run],
             environment=environment,
             check=False,
         )
         assert refused.returncode != 0
         assert refused_value["error"]["code"] == "INCOMPLETE_SEMANTIC_ANALYSIS"
         publish_arguments = [
-            "session",
+            "change",
             "publish",
             "--session",
             session,
