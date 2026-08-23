@@ -5,7 +5,8 @@ umask 077
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
-TEST_TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-ci.XXXXXX")
+CI_TMP_BASE=$(python3 -I -S -c 'import os, pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')
+TEST_TMP_ROOT=$(mktemp -d "$CI_TMP_BASE/.codeclew-ci.XXXXXX")
 chmod 700 "$TEST_TMP_ROOT"
 trap 'rm -rf -- "$TEST_TMP_ROOT"' EXIT HUP INT TERM
 TMPDIR=$TEST_TMP_ROOT
