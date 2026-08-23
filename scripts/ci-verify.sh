@@ -5,6 +5,12 @@ umask 077
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
+TEST_TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-ci.XXXXXX")
+chmod 700 "$TEST_TMP_ROOT"
+trap 'rm -rf -- "$TEST_TMP_ROOT"' EXIT HUP INT TERM
+TMPDIR=$TEST_TMP_ROOT
+export TMPDIR
+
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
