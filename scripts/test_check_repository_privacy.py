@@ -38,11 +38,24 @@ class RepositoryPrivacyTest(unittest.TestCase):
             "filled-pilot-case",
             privacy.blob_rules(pretty, "pretty-private-case.json"),
         )
-        changed = template.replace(b'"outcome":"PASSED"', b'"outcome":"FAILED"')
+        changed = template.replace(
+            b'"outcome":"RECORDER_OUTPUT_REQUIRED"', b'"outcome":"FAILED"'
+        )
         self.assertIn(
             "filled-pilot-case",
             privacy.blob_rules(changed, privacy.PILOT_CASE_TEMPLATE),
         )
+        for schema in [
+            "codeclew-pilot-attestation-key/1.0",
+            "codeclew-pilot-case-set/1.0",
+            "codeclew-pilot-release-decision/1.0",
+            "codeclew-pilot-source-snapshot/1.0",
+        ]:
+            evidence = (f'{{"schema":"{schema}"}}\n').encode()
+            self.assertIn(
+                "filled-pilot-case",
+                privacy.blob_rules(evidence, "arbitrary.json"),
+            )
 
 
 if __name__ == "__main__":

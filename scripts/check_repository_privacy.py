@@ -30,9 +30,16 @@ FORBIDDEN_EXACT_PATHS = {
     "docs/research/codeclew/source-manifest.json",
 }
 PILOT_CASE_TEMPLATE = "docs/pilot/case-template.json"
-PILOT_CASE_TEMPLATE_SHA256 = "69490291d07699ecf142d8fe0cc601581c010c63f2e72d7e501aff88c1635da2"
+PILOT_CASE_TEMPLATE_SHA256 = "c5a004f7fd6c7c544fd6346188944f3aec2df7d509d7aa185b1a83c0df20b0e1"
+PILOT_EVIDENCE_SCHEMAS = {
+    "codeclew-pilot-attestation-key/1.0",
+    "codeclew-pilot-case/1.0",
+    "codeclew-pilot-case-set/1.0",
+    "codeclew-pilot-release-decision/1.0",
+    "codeclew-pilot-source-snapshot/1.0",
+}
 TOKEN_RE = re.compile(br"[A-Za-z0-9]+")
-HOME_PATH_RE = re.compile(br"/Users/[A-Za-z0-9._-]+")
+HOME_PATH_RE = re.compile(br"/(?:Users|home)/[A-Za-z0-9._-]+")
 EMAIL_RE = re.compile(br"[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})", re.IGNORECASE)
 SECRET_PATTERNS = (
     ("private-key", re.compile(br"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
@@ -63,14 +70,13 @@ def blob_rules(data: bytes, path: str | None = None) -> list[str]:
         parsed = json.loads(data)
     except (json.JSONDecodeError, UnicodeDecodeError):
         parsed = None
-    is_pilot_case = (
-        isinstance(parsed, dict)
-        and parsed.get("schema") == "codeclew-pilot-case/1.0"
+    pilot_schema = parsed.get("schema") if isinstance(parsed, dict) else None
+    exact_template = (
+        pilot_schema == "codeclew-pilot-case/1.0"
+        and path == PILOT_CASE_TEMPLATE
+        and hashlib.sha256(data).hexdigest() == PILOT_CASE_TEMPLATE_SHA256
     )
-    if is_pilot_case and (
-        path != PILOT_CASE_TEMPLATE
-        or hashlib.sha256(data).hexdigest() != PILOT_CASE_TEMPLATE_SHA256
-    ):
+    if pilot_schema in PILOT_EVIDENCE_SCHEMAS and not exact_template:
         findings.add("filled-pilot-case")
     if HOME_PATH_RE.search(data):
         findings.add("personal-home-path")
@@ -187,6 +193,7 @@ def check_local_identity() -> list[tuple[str, str]]:
 def self_test() -> None:
     assert not blob_rules(b"path=/workspace/user email=dev@example.invalid")
     assert "personal-home-path" in blob_rules(b"/Users/" + b"private-user/project")
+    assert "personal-home-path" in blob_rules(b"/home/" + b"private-user/project")
     assert "forbidden-identity" in blob_rules(b"lada" + b"digit")
     assert "non-placeholder-email" in blob_rules(b"dev@" + b"example.com")
     assert path_rules("evidence/graphs/private.json")
@@ -194,6 +201,9 @@ def self_test() -> None:
     pilot_case = b'{"schema": "codeclew-pilot-case/1.0"}\n'
     assert "filled-pilot-case" in blob_rules(pilot_case, "private-case.json")
     assert "filled-pilot-case" in blob_rules(pilot_case, PILOT_CASE_TEMPLATE)
+    assert "filled-pilot-case" in blob_rules(
+        b'{"schema":"codeclew-pilot-case-set/1.0"}\n', "private-set.json"
+    )
 
 
 def main() -> int:

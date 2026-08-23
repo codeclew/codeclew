@@ -12,6 +12,9 @@ trap 'rm -rf -- "$TEST_TMP_ROOT"' EXIT HUP INT TERM
 TMPDIR=$TEST_TMP_ROOT
 export TMPDIR
 
+python3 -I -S scripts/test_pilot_case_record.py
+python3 -I -S scripts/test_pilot_release_gate.py
+python3 -I -S scripts/test_check_repository_privacy.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
