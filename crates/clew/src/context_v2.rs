@@ -257,7 +257,7 @@ pub fn create(
         load_fact_evidence(&store, &query_context.facts)?,
         selection_terms,
         max_roots.saturating_mul(4),
-    );
+    )?;
     let paths = evidence_facts
         .iter()
         .flat_map(|fact| paths_in_payload(&fact["payload"]))
@@ -802,19 +802,52 @@ fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
     Ok(projection)
 }
 
-fn rank_fact_evidence(mut facts: Vec<Value>, terms: &[String], limit: usize) -> Vec<Value> {
+fn rank_fact_evidence(
+    facts: Vec<Value>,
+    terms: &[String],
+    limit: usize,
+) -> Result<Vec<Value>, ClewError> {
     let lowered = terms
         .iter()
         .map(|term| term.to_lowercase())
         .collect::<Vec<_>>();
-    facts.sort_by(|left, right| {
-        let score = |value: &Value| fact_score(&value["payload"], &lowered, None, 0);
-        score(right)
-            .cmp(&score(left))
-            .then_with(|| left["factKey"].as_str().cmp(&right["factKey"].as_str()))
-    });
-    facts.truncate(limit.max(1));
-    facts
+    let mut lanes = BTreeMap::<String, Vec<Value>>::new();
+    for fact in facts {
+        let compilation = fact
+            .get("compilation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("ranked context fact has no compilation provenance"))?;
+        lanes.entry(compilation.to_owned()).or_default().push(fact);
+    }
+    for facts in lanes.values_mut() {
+        facts.sort_by(|left, right| {
+            let score = |value: &Value| fact_score(&value["payload"], &lowered, None, 0);
+            score(right)
+                .cmp(&score(left))
+                .then_with(|| left["factKey"].as_str().cmp(&right["factKey"].as_str()))
+        });
+    }
+    let lanes = lanes.into_values().collect::<Vec<_>>();
+    let mut ranked = Vec::new();
+    let mut cursors = vec![0usize; lanes.len()];
+    let limit = limit.max(1);
+    while ranked.len() < limit {
+        let mut progressed = false;
+        for (facts, cursor) in lanes.iter().zip(&mut cursors) {
+            if let Some(fact) = facts.get(*cursor) {
+                ranked.push(fact.clone());
+                *cursor += 1;
+                progressed = true;
+            }
+            if ranked.len() == limit {
+                break;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    Ok(ranked)
 }
 
 fn fact_score(value: &Value, terms: &[String], key: Option<&str>, depth: usize) -> usize {
@@ -910,7 +943,7 @@ mod tests {
     use super::{
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES,
         PROJECTION_TARGET_BYTES, bounded_projection, load_fact_evidence, merge_query_contexts,
-        source_offset_hints, source_windows, validate_source_rows,
+        rank_fact_evidence, source_offset_hints, source_windows, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -1151,6 +1184,91 @@ mod tests {
             query("index:main", vec![aggregate.facts[0].fact.clone()], true),
         )]);
         assert!(merge_query_contexts(&lane_truncated, 16).unwrap().truncated);
+    }
+
+    #[test]
+    fn ranked_evidence_budget_is_shared_across_compilations() {
+        let main = (0..32)
+            .map(|index| {
+                json!({
+                    "compilation":":a/main",
+                    "factKey":format!("main:{index:02}"),
+                    "payload":{
+                        "symbolIdentity":"Target",
+                        "ownerIdentity":"Target",
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let test = json!({
+            "compilation":":z/test",
+            "factKey":"test:00",
+            "payload":{"name":"Target"},
+        });
+        let mut combined = main.clone();
+        combined.push(test.clone());
+        let ranked = rank_fact_evidence(combined, &["Target".into()], 2).unwrap();
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0]["compilation"], ":a/main");
+        assert_eq!(ranked[1]["compilation"], ":z/test");
+
+        let single = rank_fact_evidence(
+            vec![
+                json!({
+                    "compilation":":a/main",
+                    "factKey":"a-low",
+                    "payload":{"name":"Target"},
+                }),
+                json!({
+                    "compilation":":a/main",
+                    "factKey":"z-high",
+                    "payload":{
+                        "symbolIdentity":"Target",
+                        "ownerIdentity":"Target",
+                    },
+                }),
+            ],
+            &["Target".into()],
+            2,
+        )
+        .unwrap();
+        assert_eq!(single[0]["factKey"], "z-high");
+        assert_eq!(single[1]["factKey"], "a-low");
+
+        let shared_payload = json!({"symbolIdentity":"Target"});
+        let three = rank_fact_evidence(
+            vec![
+                json!({"compilation":":z/test","factKey":"same","payload":shared_payload.clone()}),
+                json!({"compilation":":a/main","factKey":"same","payload":shared_payload.clone()}),
+                json!({"compilation":":m/integration","factKey":"same","payload":shared_payload}),
+            ],
+            &["Target".into()],
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            three
+                .iter()
+                .map(|fact| fact["compilation"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![":a/main", ":m/integration", ":z/test"]
+        );
+        assert!(
+            rank_fact_evidence(
+                vec![json!({"factKey":"missing","payload":{}})],
+                &["Target".into()],
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            rank_fact_evidence(
+                vec![json!({"compilation":1,"factKey":"invalid","payload":{}})],
+                &["Target".into()],
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
