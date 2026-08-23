@@ -258,10 +258,7 @@ pub fn create(
         selection_terms,
         max_roots.saturating_mul(4),
     )?;
-    let paths = evidence_facts
-        .iter()
-        .flat_map(|fact| paths_in_payload(&fact["payload"]))
-        .collect::<BTreeSet<_>>();
+    let paths = ordered_paths_in_evidence(&evidence_facts);
     let source_hints = source_offset_hints(&evidence_facts, selection_terms);
     let sources = load_source_snippets(&store, &snapshot, &paths, selection_terms, &source_hints)?;
     let verified = ready.certainty == "VERIFIED"
@@ -510,6 +507,19 @@ fn paths_in_payload(payload: &Value) -> Vec<String> {
     paths.into_iter().collect()
 }
 
+fn ordered_paths_in_evidence(facts: &[Value]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut paths = Vec::new();
+    for fact in facts {
+        for path in paths_in_payload(&fact["payload"]) {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
 fn collect_paths(value: &Value, key: Option<&str>, output: &mut BTreeSet<String>, depth: usize) {
     if depth > 32 {
         return;
@@ -542,7 +552,7 @@ fn collect_paths(value: &Value, key: Option<&str>, output: &mut BTreeSet<String>
 fn load_source_snippets(
     store: &CasStore,
     snapshot: &RepositoryInputSnapshot,
-    paths: &BTreeSet<String>,
+    paths: &[String],
     terms: &[String],
     source_hints: &BTreeMap<String, BTreeSet<usize>>,
 ) -> Result<Vec<Value>, ClewError> {
@@ -943,7 +953,8 @@ mod tests {
     use super::{
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES,
         PROJECTION_TARGET_BYTES, bounded_projection, load_fact_evidence, merge_query_contexts,
-        rank_fact_evidence, source_offset_hints, source_windows, validate_source_rows,
+        ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints, source_windows,
+        validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -1041,6 +1052,62 @@ mod tests {
         assert_eq!(projection["truncated"], true);
         assert_eq!(projection["matches"].as_array().unwrap().len(), 1);
         assert_eq!(projection["matches"][0]["factKey"], "small");
+        assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
+    }
+
+    #[test]
+    fn source_projection_preserves_ranked_evidence_path_order() {
+        let facts = vec![
+            json!({"payload":{"file":"src/main/MainA.kt"}}),
+            json!({"payload":{"file":"src/test/TestZ.kt","path":"../unsafe"}}),
+            json!({"payload":{"file":"src/main/MainB.kt","duplicate":"src/main/MainA.kt"}}),
+            json!({"payload":{"file":"src/main/MainA.kt"}}),
+        ];
+        let paths = ordered_paths_in_evidence(&facts);
+        assert_eq!(
+            paths,
+            vec![
+                "src/main/MainA.kt",
+                "src/test/TestZ.kt",
+                "src/main/MainB.kt",
+            ]
+        );
+        assert_eq!(ordered_paths_in_evidence(&facts), paths);
+
+        let source = |file: &str, bytes: usize| {
+            json!({
+                "fileId":file,
+                "contentRef":{},
+                "text":"x".repeat(bytes),
+                "windows":[],
+            })
+        };
+        let context = json!({
+            "snapshot":{},
+            "task":{},
+            "compilations":[":main",":test"],
+            "compilerVersions":{},
+            "generationAuthority":{},
+            "sources":[
+                source("src/main/MainA.kt", 30 * 1024),
+                source("src/test/TestZ.kt", 1024),
+                source("src/main/MainB.kt", 30 * 1024),
+            ],
+            "matches":[],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+        let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["truncated"], true);
+        assert_eq!(
+            projection["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|source| source["fileId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["src/main/MainA.kt", "src/test/TestZ.kt"]
+        );
         assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
     }
 
