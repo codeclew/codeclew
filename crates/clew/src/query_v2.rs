@@ -552,7 +552,10 @@ fn verify_shard(
 }
 
 fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, ClewError> {
-    let mut values = BTreeSet::from([fact.fact_key.clone(), fact.domain_uri.as_str().to_owned()]);
+    let mut values = BTreeSet::from([
+        semantic_fact_key(&fact.fact_key),
+        fact.domain_uri.as_str().to_owned(),
+    ]);
     let limit = usize::try_from(fact.payload.size)
         .map_err(|_| ClewError::new(ErrorCode::ResourceLimit, "fact payload exceeds host size"))?;
     let lease = store.read(&fact.payload, limit)?;
@@ -575,7 +578,9 @@ fn collect_json_strings(
     }
     match value {
         Value::String(value) => {
-            output.insert(value.clone());
+            if !is_canonical_digest(value) {
+                output.insert(value.clone());
+            }
         }
         Value::Array(values) => {
             for value in values {
@@ -615,6 +620,29 @@ fn normalize_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String>
         }
     }
     terms.into_iter().collect()
+}
+
+fn semantic_fact_key(value: &str) -> String {
+    let Some((prefix, suffix)) = value.rsplit_once(':') else {
+        return value.to_owned();
+    };
+    if suffix.len() == 64
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        prefix.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn is_canonical_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn bucket(term: &str) -> String {
@@ -838,6 +866,55 @@ mod tests {
             strings,
             BTreeSet::from(["Target".to_owned(), "declaration".to_owned()])
         );
+    }
+
+    #[test]
+    fn canonical_authority_digests_do_not_expand_semantic_term_cardinality() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let first = "a".repeat(64);
+        let second = "b".repeat(64);
+        let facts = [
+            FactRecord {
+                fact_key: format!("kotlin:descriptor:{first}"),
+                domain_uri: CapabilityUri::parse("analysis:kotlin-semantic-facts").unwrap(),
+                payload: store
+                    .put(
+                        "test/payload/1",
+                        format!(r#"{{"name":"sha256","rawRowHash":"sha256:{first}"}}"#).as_bytes(),
+                    )
+                    .unwrap(),
+            },
+            FactRecord {
+                fact_key: format!("kotlin:descriptor:{second}"),
+                domain_uri: CapabilityUri::parse("analysis:kotlin-semantic-facts").unwrap(),
+                payload: store
+                    .put(
+                        "test/payload/1",
+                        format!(r#"{{"name":"sha256","rawRowHash":"sha256:{second}"}}"#).as_bytes(),
+                    )
+                    .unwrap(),
+            },
+        ];
+
+        let terms = facts
+            .iter()
+            .flat_map(|fact| terms_for_fact(&store, fact).unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            terms,
+            BTreeSet::from([
+                "analysis".to_owned(),
+                "descriptor".to_owned(),
+                "facts".to_owned(),
+                "kotlin".to_owned(),
+                "semantic".to_owned(),
+                "sha256".to_owned(),
+            ])
+        );
+        assert!(!terms.contains(&first));
+        assert!(!terms.contains(&second));
     }
 
     #[test]
