@@ -57,6 +57,14 @@ isolated candidate run. The low-level `session`, `context`, `plan`, and
 `task-run` commands remain an advanced protocol for expansion, cancellation,
 relocation, and diagnostics; they are not required for the happy path.
 
+Terms may be exact identities or natural identifier components. The query
+index retains the full identifier and language-neutral camel-case/snake-case
+aliases, so `Maven` can discover `MavenProjectModel` without changing the exact
+request authority. Component discovery remains `UNSURE` until exact semantic
+evidence is selected and its reported obligations are checked. Prefer a few
+distinctive terms over broad words such as `model` or `test`, which may produce
+an intentionally truncated conditional context.
+
 `--compilation` is mandatory and names an exact build compilation authority:
 use `:/main` for a Kotlin root project or `:module/main` for a Gradle
 subproject. Repeat the option to select up to 64 compilations. Session authority
