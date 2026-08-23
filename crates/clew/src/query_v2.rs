@@ -16,6 +16,10 @@ pub const QUERY_CONTEXT_SCHEMA: &str = "codeclew-query-context/2.0";
 pub const MAX_QUERY_SHARD_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_QUERY_TERMS: usize = 256;
 pub const MAX_CONTEXT_FACTS: usize = 4096;
+/// Payload bytes recursively inspected for derived query metadata. Larger
+/// payloads remain authoritative CAS evidence, but adapters must expose their
+/// searchable contents as granular facts.
+pub const MAX_QUERY_METADATA_PAYLOAD_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -556,6 +560,9 @@ fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, Cl
         semantic_fact_key(&fact.fact_key),
         fact.domain_uri.as_str().to_owned(),
     ]);
+    if fact.payload.size > MAX_QUERY_METADATA_PAYLOAD_BYTES {
+        return Ok(normalize_terms(values.iter().map(String::as_str)));
+    }
     let limit = usize::try_from(fact.payload.size)
         .map_err(|_| ClewError::new(ErrorCode::ResourceLimit, "fact payload exceeds host size"))?;
     let lease = store.read(&fact.payload, limit)?;
@@ -915,6 +922,125 @@ mod tests {
         );
         assert!(!terms.contains(&first));
         assert!(!terms.contains(&second));
+    }
+
+    #[test]
+    fn oversized_payloads_require_granular_query_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let exact_prefix = br#"{"name":"BoundarySymbol","padding":""#;
+        let suffix = br#""}"#;
+        let padding = MAX_QUERY_METADATA_PAYLOAD_BYTES as usize - exact_prefix.len() - suffix.len();
+        let mut exact_bytes = exact_prefix.to_vec();
+        exact_bytes.extend(std::iter::repeat_n(b'x', padding));
+        exact_bytes.extend_from_slice(suffix);
+        assert_eq!(exact_bytes.len(), MAX_QUERY_METADATA_PAYLOAD_BYTES as usize);
+        let exact = FactRecord {
+            fact_key: "symbol:boundary".into(),
+            domain_uri: CapabilityUri::parse("analysis:semantic").unwrap(),
+            payload: store.put("test/payload/1", &exact_bytes).unwrap(),
+        };
+        assert!(
+            terms_for_fact(&store, &exact)
+                .unwrap()
+                .contains(&"boundarysymbol".to_owned())
+        );
+
+        let oversized_json = serde_json::json!({
+            "declarations": [{
+                "name": "UniqueNestedSymbol",
+                "padding": "x".repeat(MAX_QUERY_METADATA_PAYLOAD_BYTES as usize)
+            }]
+        });
+        let oversized = FactRecord {
+            fact_key: "file:monolith".into(),
+            domain_uri: CapabilityUri::parse("analysis:semantic").unwrap(),
+            payload: store
+                .put(
+                    "test/payload/1",
+                    &serde_json::to_vec(&oversized_json).unwrap(),
+                )
+                .unwrap(),
+        };
+        let oversized_terms = terms_for_fact(&store, &oversized).unwrap();
+        assert_eq!(
+            oversized_terms,
+            vec![
+                "analysis".to_owned(),
+                "file".to_owned(),
+                "monolith".to_owned(),
+                "semantic".to_owned(),
+            ]
+        );
+
+        let alternate_oversized = FactRecord {
+            payload: store
+                .put(
+                    "test/payload/1",
+                    &serde_json::to_vec(&serde_json::json!({
+                        "different": vec!["CompletelyDifferent"; 10_000]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap(),
+            ..oversized.clone()
+        };
+        assert!(alternate_oversized.payload.size > MAX_QUERY_METADATA_PAYLOAD_BYTES);
+        assert_eq!(
+            terms_for_fact(&store, &alternate_oversized).unwrap(),
+            oversized_terms
+        );
+
+        let granular = FactRecord {
+            fact_key: "symbol:unique".into(),
+            domain_uri: CapabilityUri::parse("analysis:semantic").unwrap(),
+            payload: store
+                .put(
+                    "test/payload/1",
+                    br#"{"name":"UniqueNestedSymbol","path":"src/Unique.kt"}"#,
+                )
+                .unwrap(),
+        };
+        assert!(
+            !terms_for_fact(&store, &oversized)
+                .unwrap()
+                .contains(&"uniquenestedsymbol".to_owned())
+        );
+        assert!(
+            terms_for_fact(&store, &granular)
+                .unwrap()
+                .contains(&"uniquenestedsymbol".to_owned())
+        );
+
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        writer.push(&oversized).unwrap();
+        writer.push(&granular).unwrap();
+        let attempt = AttemptAuthority {
+            compilation_id: "main".into(),
+            capability: CapabilityUri::parse("analysis:semantic").unwrap(),
+            completion: AnalysisAttemptComplete {
+                scope_digest: format!("sha256:{}", "c".repeat(64)),
+                completeness_receipt: receipt,
+                fact_count: 2,
+            },
+        };
+        let (generation, generation_object) = finalize_generation(
+            &store,
+            derived,
+            vec![attempt],
+            vec![writer.finish().unwrap()],
+        )
+        .unwrap();
+        let (index, _) = build_query_index(&store, &generation, generation_object).unwrap();
+        let symbol = query(&store, &index, &["UniqueNestedSymbol".into()], 10).unwrap();
+        assert_eq!(symbol.facts.len(), 1);
+        assert_eq!(symbol.facts[0].fact_key, "symbol:unique");
+        let category = query(&store, &index, &["monolith".into()], 10).unwrap();
+        assert_eq!(category.facts.len(), 1);
+        assert_eq!(category.facts[0].fact_key, "file:monolith");
     }
 
     #[test]

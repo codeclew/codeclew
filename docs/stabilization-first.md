@@ -131,6 +131,13 @@ envelope remains at or below 64 KiB. Oversized fact payloads become bounded
 opaque references; compilation provenance, completeness, publication-blocking
 obligations, and content references remain explicit.
 
+The derived query index recursively inspects at most 64 KiB of any individual
+fact payload. A larger payload remains authoritative CAS evidence and is
+discoverable by its semantic fact key and domain, but contributes no nested
+search terms. Adapters must therefore emit separate granular facts for symbols
+and relations contained in monolithic payloads; otherwise retrieval reports
+honest missing evidence instead of implying semantic completeness.
+
 One authorized source row exists per `fileId`. A row may contain up to four
 ordered, non-overlapping source windows with an aggregate 32-KiB text budget.
 Exact compiler identity/range facts win over earlier textual import matches;
