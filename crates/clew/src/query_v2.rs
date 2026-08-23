@@ -561,7 +561,7 @@ fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, Cl
         fact.domain_uri.as_str().to_owned(),
     ]);
     if fact.payload.size > MAX_QUERY_METADATA_PAYLOAD_BYTES {
-        return Ok(normalize_terms(values.iter().map(String::as_str)));
+        return Ok(normalize_index_terms(values.iter().map(String::as_str)));
     }
     let limit = usize::try_from(fact.payload.size)
         .map_err(|_| ClewError::new(ErrorCode::ResourceLimit, "fact payload exceeds host size"))?;
@@ -569,7 +569,7 @@ fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, Cl
     if let Ok(value) = serde_json::from_slice::<Value>(lease.bytes()) {
         collect_json_strings(&value, &mut values, 0)?;
     }
-    Ok(normalize_terms(values.iter().map(String::as_str)))
+    Ok(normalize_index_terms(values.iter().map(String::as_str)))
 }
 
 fn collect_json_strings(
@@ -627,6 +627,78 @@ fn normalize_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String>
         }
     }
     terms.into_iter().collect()
+}
+
+fn normalize_index_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let values = values.into_iter().collect::<Vec<_>>();
+    let mut terms = normalize_terms(values.iter().copied())
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    for value in values {
+        collect_identifier_aliases(value, &mut terms);
+    }
+    terms.into_iter().collect()
+}
+
+fn collect_identifier_aliases(value: &str, output: &mut BTreeSet<String>) {
+    let mut token = String::new();
+    let mut overflowed = false;
+    let flush = |token: &mut String, overflowed: &mut bool, output: &mut BTreeSet<String>| {
+        if !*overflowed {
+            split_identifier(token, output);
+        }
+        token.clear();
+        *overflowed = false;
+    };
+    for character in value.chars() {
+        if character.is_alphanumeric() || character == '_' {
+            if !overflowed {
+                token.push(character);
+                if token.len() > 256 {
+                    token.clear();
+                    overflowed = true;
+                }
+            }
+        } else {
+            flush(&mut token, &mut overflowed, output);
+        }
+    }
+    flush(&mut token, &mut overflowed, output);
+}
+
+fn split_identifier(token: &str, output: &mut BTreeSet<String>) {
+    for component in token.split('_') {
+        if component.is_empty() {
+            continue;
+        }
+        let characters = component.chars().collect::<Vec<_>>();
+        let mut start = 0usize;
+        for index in 1..characters.len() {
+            let previous = characters[index - 1];
+            let current = characters[index];
+            let next = characters.get(index + 1).copied();
+            let boundary = current.is_uppercase()
+                && (previous.is_lowercase()
+                    || previous.is_numeric()
+                    || (previous.is_uppercase() && next.is_some_and(char::is_lowercase)));
+            if boundary {
+                insert_identifier_alias(&characters[start..index], output);
+                start = index;
+            }
+        }
+        insert_identifier_alias(&characters[start..], output);
+    }
+}
+
+fn insert_identifier_alias(characters: &[char], output: &mut BTreeSet<String>) {
+    let alias = characters
+        .iter()
+        .copied()
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    if alias.len() >= 2 && alias.len() <= 256 {
+        output.insert(alias);
+    }
 }
 
 fn semantic_fact_key(value: &str) -> String {
@@ -1041,6 +1113,87 @@ mod tests {
         let category = query(&store, &index, &["monolith".into()], 10).unwrap();
         assert_eq!(category.facts.len(), 1);
         assert_eq!(category.facts[0].fact_key, "file:monolith");
+    }
+
+    #[test]
+    fn index_identifier_aliases_enable_natural_queries_without_expanding_query_terms() {
+        assert_eq!(
+            normalize_terms(["MavenProjectModel"]),
+            vec!["mavenprojectmodel"]
+        );
+        assert_eq!(
+            normalize_index_terms(["MavenProjectModel", "XMLHttpRequest", "load_project_state"]),
+            vec![
+                "http",
+                "load",
+                "load_project_state",
+                "maven",
+                "mavenprojectmodel",
+                "model",
+                "project",
+                "request",
+                "state",
+                "xml",
+                "xmlhttprequest",
+            ]
+        );
+        assert!(!normalize_index_terms(["A_b"]).contains(&"a".to_owned()));
+
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let relevant = FactRecord {
+            fact_key: "a:symbol:relevant".into(),
+            domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+            payload: store
+                .put(
+                    "test/payload/1",
+                    br#"{"name":"MavenProjectModel","operation":"load_project_state"}"#,
+                )
+                .unwrap(),
+        };
+        let noise = FactRecord {
+            fact_key: "b:symbol:noise".into(),
+            domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+            payload: store
+                .put("test/payload/1", br#"{"name":"UnrelatedProject"}"#)
+                .unwrap(),
+        };
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        writer.push(&relevant).unwrap();
+        writer.push(&noise).unwrap();
+        let attempt = AttemptAuthority {
+            compilation_id: "main".into(),
+            capability: CapabilityUri::parse("analysis:symbol").unwrap(),
+            completion: AnalysisAttemptComplete {
+                scope_digest: format!("sha256:{}", "d".repeat(64)),
+                completeness_receipt: receipt,
+                fact_count: 2,
+            },
+        };
+        let (generation, generation_object) = finalize_generation(
+            &store,
+            derived,
+            vec![attempt],
+            vec![writer.finish().unwrap()],
+        )
+        .unwrap();
+        let (index, _) = build_query_index(&store, &generation, generation_object).unwrap();
+        for term in ["Maven", "Project", "load", "state", "MavenProjectModel"] {
+            let result = query(&store, &index, &[term.into()], 10).unwrap();
+            assert!(
+                result
+                    .facts
+                    .iter()
+                    .any(|fact| fact.fact_key == "a:symbol:relevant"),
+                "natural term {term} must find the identifier fact"
+            );
+        }
+        let focused = query(&store, &index, &["Maven".into(), "Project".into()], 1).unwrap();
+        assert_eq!(focused.facts.len(), 1);
+        assert_eq!(focused.facts[0].fact_key, "a:symbol:relevant");
     }
 
     #[test]
