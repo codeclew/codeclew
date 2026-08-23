@@ -19,6 +19,11 @@ cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
 cargo test --locked -p clew --bin clew 'tests::' -- --test-threads=1
 python3 -I -S bootstrap/test_clew_bootstrap.py
+GIT_CONFIG_COUNT=2 \
+GIT_CONFIG_KEY_0=user.name \
+GIT_CONFIG_VALUE_0='Codeclew Maintainers' \
+GIT_CONFIG_KEY_1=user.email \
+GIT_CONFIG_VALUE_1='maintainers@codeclew.invalid' \
 python3 -I -S scripts/check_repository_privacy.py --pre-commit
 python3 -I -S scripts/usability-smoke.py
 
