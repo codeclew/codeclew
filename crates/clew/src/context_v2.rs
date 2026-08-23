@@ -252,17 +252,18 @@ pub fn create(
     }
     let query_context = merge_query_contexts(&query_contexts, fact_limit)?;
     let snapshot = load_snapshot(&store, &ready)?;
+    let selection_terms = &query_context.requested_terms;
     let evidence_facts = rank_fact_evidence(
         load_fact_evidence(&store, &query_context.facts)?,
-        terms,
+        selection_terms,
         max_roots.saturating_mul(4),
     );
     let paths = evidence_facts
         .iter()
         .flat_map(|fact| paths_in_payload(&fact["payload"]))
         .collect::<BTreeSet<_>>();
-    let source_hints = source_offset_hints(&evidence_facts, terms);
-    let sources = load_source_snippets(&store, &snapshot, &paths, terms, &source_hints)?;
+    let source_hints = source_offset_hints(&evidence_facts, selection_terms);
+    let sources = load_source_snippets(&store, &snapshot, &paths, selection_terms, &source_hints)?;
     let verified = ready.certainty == "VERIFIED"
         && !query_context.truncated
         && query_context.unmatched_terms.is_empty()
@@ -729,22 +730,31 @@ fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
         "sources":[],
         "completeness":context["completeness"],
         "verificationObligations":context["verificationObligations"],
+        "truncated":false,
     });
+    let mut projected_bytes = canonical::bytes(&projection).map_err(internal)?.len();
     for key in ["sources", "matches"] {
         for value in context[key].as_array().into_iter().flatten() {
+            let item_bytes = canonical::bytes(value).map_err(internal)?.len();
+            let separator_bytes =
+                usize::from(!projection[key].as_array().expect("known array").is_empty());
+            let candidate_bytes = projected_bytes
+                .checked_add(item_bytes)
+                .and_then(|size| size.checked_add(separator_bytes))
+                .ok_or_else(|| resource("bounded projection size overflow"))?;
+            if candidate_bytes > PROJECTION_TARGET_BYTES {
+                projection["truncated"] = Value::Bool(true);
+                continue;
+            }
             projection[key]
                 .as_array_mut()
                 .expect("known array")
                 .push(value.clone());
-            if canonical::bytes(&projection).map_err(internal)?.len() > PROJECTION_TARGET_BYTES {
-                projection[key].as_array_mut().expect("known array").pop();
-                projection["truncated"] = Value::Bool(true);
-                break;
-            }
+            projected_bytes = candidate_bytes;
         }
     }
-    if projection.get("truncated").is_none() {
-        projection["truncated"] = Value::Bool(false);
+    if canonical::bytes(&projection).map_err(internal)?.len() > PROJECTION_TARGET_BYTES {
+        return Err(resource("bounded projection exceeds its output limit"));
     }
     Ok(projection)
 }
@@ -925,6 +935,36 @@ mod tests {
         let projection = bounded_projection(&context).unwrap();
         assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
         assert_eq!(projection["truncated"], true);
+    }
+
+    #[test]
+    fn oversized_match_does_not_starve_later_bounded_evidence() {
+        let mut matches = (0..64)
+            .map(|index| {
+                json!({
+                    "factKey":format!("large-{index:02}"),
+                    "payload":"x".repeat(PROJECTION_TARGET_BYTES),
+                })
+            })
+            .collect::<Vec<_>>();
+        matches.push(json!({"factKey":"small","payload":{"name":"Target"}}));
+        let context = json!({
+            "snapshot":{},
+            "task":{},
+            "compilations":[":/main"],
+            "compilerVersions":{},
+            "generationAuthority":{},
+            "sources":[],
+            "matches":matches,
+            "completeness":{},
+            "verificationObligations":[],
+        });
+
+        let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["truncated"], true);
+        assert_eq!(projection["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(projection["matches"][0]["factKey"], "small");
+        assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
     }
 
     #[test]

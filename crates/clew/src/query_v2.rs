@@ -202,7 +202,7 @@ pub fn query(
     if requested_terms.is_empty() {
         return Err(invalid("query has no normalized terms"));
     }
-    let mut matched = BTreeSet::new();
+    let mut matched_by_term = Vec::with_capacity(requested_terms.len());
     let mut unmatched = Vec::new();
     let mut shards_read = BTreeSet::<String>::new();
     for term in &requested_terms {
@@ -212,7 +212,7 @@ pub fn query(
                 && reference.first_term.as_str() <= term.as_str()
                 && term.as_str() <= reference.last_term.as_str()
         });
-        let mut found = false;
+        let mut term_matches = BTreeSet::new();
         for reference in references {
             let lease = store.read(&reference.object, MAX_QUERY_SHARD_BYTES)?;
             shards_read.insert(reference.object.digest.clone());
@@ -220,16 +220,22 @@ pub fn query(
                 .map_err(|_| corrupt("query shard is not a closed object"))?;
             verify_shard(reference, &shard, lease.bytes())?;
             if let Ok(position) = shard.postings.binary_search_by(|row| row.term.cmp(term)) {
-                found = true;
-                matched.extend(shard.postings[position].facts.iter().cloned());
+                term_matches.extend(shard.postings[position].facts.iter().cloned());
             }
         }
-        if !found {
+        if term_matches.is_empty() {
             unmatched.push(term.clone());
         }
+        matched_by_term.push(term_matches.into_iter().collect::<Vec<_>>());
     }
-    let truncated = matched.len() > limit;
-    let facts = matched.into_iter().take(limit).collect();
+    let unique_match_count = matched_by_term
+        .iter()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .len();
+    let facts = fair_fact_selection(&matched_by_term, limit);
+    let truncated = unique_match_count > facts.len();
     Ok(QueryContext {
         schema: QUERY_CONTEXT_SCHEMA.into(),
         index_id: index.index_id.clone(),
@@ -251,38 +257,39 @@ pub fn expand(
     if parent.schema != QUERY_CONTEXT_SCHEMA || parent.index_id != index.index_id {
         return Err(invalid("parent context is not bound to the query index"));
     }
-    let additional = normalize_terms(additional_terms.iter().map(String::as_str))
-        .into_iter()
-        .filter(|term| !parent.requested_terms.contains(term))
-        .collect::<Vec<_>>();
-    if additional.is_empty() {
-        return Ok(parent.clone());
-    }
-    let delta = query(store, index, &additional, max_facts)?;
     let mut requested_terms = parent.requested_terms.clone();
-    requested_terms.extend(delta.requested_terms);
+    requested_terms.extend(normalize_terms(additional_terms.iter().map(String::as_str)));
     requested_terms.sort();
     requested_terms.dedup();
-    let mut unmatched_terms = parent.unmatched_terms.clone();
-    unmatched_terms.extend(delta.unmatched_terms);
-    unmatched_terms.sort();
-    unmatched_terms.dedup();
-    let mut facts = parent.facts.clone();
-    facts.extend(delta.facts);
-    facts.sort();
-    facts.dedup();
-    let limit = max_facts.min(MAX_CONTEXT_FACTS);
-    let truncated = parent.truncated || delta.truncated || facts.len() > limit;
-    facts.truncate(limit);
-    Ok(QueryContext {
-        schema: QUERY_CONTEXT_SCHEMA.into(),
-        index_id: index.index_id.clone(),
-        requested_terms,
-        unmatched_terms,
-        facts,
-        query_shards_read: delta.query_shards_read,
-        truncated,
-    })
+    if requested_terms == parent.requested_terms {
+        return Ok(parent.clone());
+    }
+    query(store, index, &requested_terms, max_facts)
+}
+
+fn fair_fact_selection(matches_by_term: &[Vec<FactHit>], limit: usize) -> Vec<FactHit> {
+    let mut selected = BTreeSet::new();
+    let mut cursors = vec![0usize; matches_by_term.len()];
+    while selected.len() < limit {
+        let mut progressed = false;
+        for (term_matches, cursor) in matches_by_term.iter().zip(&mut cursors) {
+            while *cursor < term_matches.len() {
+                let fact = term_matches[*cursor].clone();
+                *cursor += 1;
+                if selected.insert(fact) {
+                    progressed = true;
+                    break;
+                }
+            }
+            if selected.len() == limit {
+                break;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    selected.into_iter().collect()
 }
 
 pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), ClewError> {
@@ -712,6 +719,80 @@ mod tests {
             first.shards.len()
         );
         assert!(first.shards.len() <= 256);
+    }
+
+    #[test]
+    fn query_budget_is_shared_fairly_across_requested_terms_and_expansion() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let alpha_payload = store
+            .put(
+                "test/payload/1",
+                br#"{"name":"Alpha","path":"src/Alpha.kt"}"#,
+            )
+            .unwrap();
+        let beta_payload = store
+            .put("test/payload/1", br#"{"name":"Beta","path":"src/Beta.kt"}"#)
+            .unwrap();
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        for index in 0..16 {
+            writer
+                .push(&FactRecord {
+                    fact_key: format!("a:alpha:{index:02}"),
+                    domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                    payload: alpha_payload.clone(),
+                })
+                .unwrap();
+        }
+        writer
+            .push(&FactRecord {
+                fact_key: "z:beta".into(),
+                domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                payload: beta_payload,
+            })
+            .unwrap();
+        let attempt = AttemptAuthority {
+            compilation_id: "main".into(),
+            capability: CapabilityUri::parse("analysis:symbol").unwrap(),
+            completion: AnalysisAttemptComplete {
+                scope_digest: format!("sha256:{}", "b".repeat(64)),
+                completeness_receipt: receipt,
+                fact_count: 17,
+            },
+        };
+        let (generation, generation_object) = finalize_generation(
+            &store,
+            derived,
+            vec![attempt],
+            vec![writer.finish().unwrap()],
+        )
+        .unwrap();
+        let (index, _) = build_query_index(&store, &generation, generation_object).unwrap();
+
+        let result = query(&store, &index, &["Alpha".into(), "Beta".into()], 2).unwrap();
+        assert_eq!(result.facts.len(), 2);
+        assert!(
+            result
+                .facts
+                .iter()
+                .any(|fact| fact.fact_key.starts_with("a:alpha:"))
+        );
+        assert!(result.facts.iter().any(|fact| fact.fact_key == "z:beta"));
+        assert!(result.truncated);
+
+        let alpha = query(&store, &index, &["Alpha".into()], 2).unwrap();
+        let expanded = expand(&store, &index, &alpha, &["Beta".into()], 2).unwrap();
+        assert_eq!(expanded.requested_terms, vec!["alpha", "beta"]);
+        assert!(
+            expanded
+                .facts
+                .iter()
+                .any(|fact| fact.fact_key.starts_with("a:alpha:"))
+        );
+        assert!(expanded.facts.iter().any(|fact| fact.fact_key == "z:beta"));
     }
 
     #[test]
