@@ -374,7 +374,7 @@ fn merge_query_contexts(
     {
         return Err(invalid("compilation queries have different term authority"));
     }
-    let mut facts = contexts
+    let all_facts = contexts
         .iter()
         .flat_map(|(compilation, context)| {
             context
@@ -386,11 +386,26 @@ fn merge_query_contexts(
                     fact,
                 })
         })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let lanes = contexts
+        .iter()
+        .map(|(compilation, context)| {
+            context
+                .facts
+                .iter()
+                .cloned()
+                .map(|fact| CompilationFactHit {
+                    compilation: compilation.clone(),
+                    fact,
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        })
         .collect::<Vec<_>>();
-    let truncated = contexts.values().any(|context| context.truncated) || facts.len() > fact_limit;
-    facts.truncate(fact_limit);
+    let facts = fair_compilation_selection(&lanes, fact_limit);
+    let truncated =
+        contexts.values().any(|context| context.truncated) || all_facts.len() > facts.len();
     let unmatched_terms = first
         .requested_terms
         .iter()
@@ -421,6 +436,34 @@ fn merge_query_contexts(
         query_shards_read,
         truncated,
     })
+}
+
+fn fair_compilation_selection(
+    facts_by_compilation: &[Vec<CompilationFactHit>],
+    limit: usize,
+) -> Vec<CompilationFactHit> {
+    let mut selected = BTreeSet::new();
+    let mut cursors = vec![0usize; facts_by_compilation.len()];
+    while selected.len() < limit {
+        let mut progressed = false;
+        for (facts, cursor) in facts_by_compilation.iter().zip(&mut cursors) {
+            while *cursor < facts.len() {
+                let fact = facts[*cursor].clone();
+                *cursor += 1;
+                if selected.insert(fact) {
+                    progressed = true;
+                    break;
+                }
+            }
+            if selected.len() == limit {
+                break;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    selected.into_iter().collect()
 }
 
 fn load_fact_evidence(
@@ -874,6 +917,7 @@ mod tests {
     use crate::query_v2::{FactHit, QUERY_CONTEXT_SCHEMA, QueryContext};
     use crate::state::StateAuthority;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn bounded_projection_preserves_multi_compilation_authority() {
@@ -1026,6 +1070,87 @@ mod tests {
             .unwrap()
             .remove("compilation");
         assert!(super::validate_context_payload(&projection, &envelope).is_err());
+    }
+
+    #[test]
+    fn aggregate_query_budget_is_shared_across_compilations() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/fact/1", br#"{"name":"Shared"}"#).unwrap();
+        let main_facts = (0..32)
+            .map(|index| FactHit {
+                fact_key: format!("fact:main:{index:02}"),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload: payload.clone(),
+            })
+            .collect::<Vec<_>>();
+        let shared = main_facts[0].clone();
+        let query = |index_id: &str, facts: Vec<FactHit>, truncated: bool| QueryContext {
+            schema: QUERY_CONTEXT_SCHEMA.into(),
+            index_id: index_id.into(),
+            requested_terms: vec!["shared".into()],
+            unmatched_terms: if facts.is_empty() {
+                vec!["shared".into()]
+            } else {
+                Vec::new()
+            },
+            facts,
+            query_shards_read: 1,
+            truncated,
+        };
+        let contexts = BTreeMap::from([
+            (
+                ":z/test".into(),
+                query("index:test", vec![shared.clone()], false),
+            ),
+            (
+                ":a/main".into(),
+                query("index:main", main_facts.clone(), false),
+            ),
+            (":m/empty".into(), query("index:empty", Vec::new(), false)),
+        ]);
+        let aggregate = merge_query_contexts(&contexts, 2).unwrap();
+        assert_eq!(aggregate.facts.len(), 2);
+        assert_eq!(aggregate.facts[0].compilation, ":a/main");
+        assert_eq!(aggregate.facts[1].compilation, ":z/test");
+        assert_eq!(aggregate.facts[0].fact, aggregate.facts[1].fact);
+        assert!(aggregate.truncated);
+        assert!(aggregate.unmatched_terms.is_empty());
+        assert_eq!(
+            aggregate,
+            merge_query_contexts(&contexts, aggregate.facts.len()).unwrap()
+        );
+
+        let three_lanes = BTreeMap::from([
+            (
+                ":z/test".into(),
+                query("index:test", vec![shared.clone()], false),
+            ),
+            (":a/main".into(), query("index:main", main_facts, false)),
+            (
+                ":m/integration".into(),
+                query("index:integration", vec![shared], false),
+            ),
+        ]);
+        let aggregate = merge_query_contexts(&three_lanes, 3).unwrap();
+        assert_eq!(
+            aggregate
+                .facts
+                .iter()
+                .map(|hit| hit.compilation.as_str())
+                .collect::<Vec<_>>(),
+            vec![":a/main", ":m/integration", ":z/test"]
+        );
+        let one = merge_query_contexts(&three_lanes, 1).unwrap();
+        assert_eq!(one.facts.len(), 1);
+        assert_eq!(one.facts[0].compilation, ":a/main");
+
+        let lane_truncated = BTreeMap::from([(
+            ":a/main".into(),
+            query("index:main", vec![aggregate.facts[0].fact.clone()], true),
+        )]);
+        assert!(merge_query_contexts(&lane_truncated, 16).unwrap().truncated);
     }
 
     #[test]
