@@ -27,6 +27,7 @@ const MAX_TOTAL_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DECLARATIONS: usize = 65_536;
 const MAX_NESTING: usize = 64;
 const MAX_FACT_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_FACT_BATCH_INPUT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BOUNDARIES: usize = 4096;
 
 pub fn rust_adapter_digest() -> Result<String, ClewError> {
@@ -177,27 +178,34 @@ impl LanguageAdapter for RustAdapterV2 {
 pub fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord>, ClewError> {
     validate_index(index)?;
     let capability = CapabilityUri::parse(RUST_SYNTAX_FACTS_CAPABILITY)?;
-    let mut rows = vec![json!({
-        "schema":FACT_SCHEMA,
-        "kind":"cargo-target",
-        "package":index["package"],
-        "targetKind":index["targetKind"],
-        "targetName":index["targetName"],
-        "sourcePath":index["sourcePath"],
-        "cargoVersion":index["cargoVersion"],
-        "rustcVersion":index["rustcVersion"],
-        "resolution":"CARGO_MODEL_EXACT",
-    })];
-    for file in index["files"].as_array().expect("validated files") {
-        rows.push(json!({
+    let mut batch = PreparedFactBatch::default();
+    batch.push(
+        json!({
             "schema":FACT_SCHEMA,
-            "kind":"source-file",
-            "path":file["path"],
-            "contentHash":file["contentHash"],
+            "kind":"cargo-target",
             "package":index["package"],
+            "targetKind":index["targetKind"],
             "targetName":index["targetName"],
-            "resolution":"SOURCE_MEMBERSHIP_EXACT",
-        }));
+            "sourcePath":index["sourcePath"],
+            "cargoVersion":index["cargoVersion"],
+            "rustcVersion":index["rustcVersion"],
+            "resolution":"CARGO_MODEL_EXACT",
+        }),
+        MAX_FACT_BATCH_INPUT_BYTES,
+    )?;
+    for file in index["files"].as_array().expect("validated files") {
+        batch.push(
+            json!({
+                "schema":FACT_SCHEMA,
+                "kind":"source-file",
+                "path":file["path"],
+                "contentHash":file["contentHash"],
+                "package":index["package"],
+                "targetName":index["targetName"],
+                "resolution":"SOURCE_MEMBERSHIP_EXACT",
+            }),
+            MAX_FACT_BATCH_INPUT_BYTES,
+        )?;
     }
     for descriptor in index["declarationDescriptors"]["descriptors"]
         .as_array()
@@ -210,39 +218,69 @@ pub fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord
         row.as_object_mut()
             .expect("validated descriptor object")
             .insert("kind".into(), Value::String("declaration".into()));
-        rows.push(row);
+        batch.push(row, MAX_FACT_BATCH_INPUT_BYTES)?;
     }
     for boundary in index["boundaries"]
         .as_array()
         .expect("validated boundaries")
     {
-        rows.push(json!({
-            "schema":FACT_SCHEMA,
-            "kind":"analysis-boundary",
-            "code":boundary["code"],
-            "file":boundary.get("file").cloned().unwrap_or(Value::Null),
-            "subject":boundary.get("subject").cloned().unwrap_or(Value::Null),
-            "resolution":"UNKNOWN",
-        }));
+        batch.push(
+            json!({
+                "schema":FACT_SCHEMA,
+                "kind":"analysis-boundary",
+                "code":boundary["code"],
+                "file":boundary.get("file").cloned().unwrap_or(Value::Null),
+                "subject":boundary.get("subject").cloned().unwrap_or(Value::Null),
+                "resolution":"UNKNOWN",
+            }),
+            MAX_FACT_BATCH_INPUT_BYTES,
+        )?;
     }
-    let mut facts = rows
+    let (fact_keys, inputs): (Vec<_>, Vec<_>) = batch
+        .prepared
         .into_iter()
-        .map(|payload| {
-            let bytes = canonical::bytes(&payload).map_err(internal)?;
-            if bytes.len() > MAX_FACT_PAYLOAD_BYTES {
-                return Err(resource("Rust syntax fact exceeds its payload budget"));
-            }
-            let digest = canonical::hash_bytes(&bytes);
-            let object = store.put(FACT_SCHEMA, &bytes)?;
-            Ok(FactRecord {
-                fact_key: format!("rust-syntax:{digest}"),
-                domain_uri: capability.clone(),
-                payload: object,
-            })
+        .map(|(fact_key, bytes)| (fact_key, (FACT_SCHEMA.into(), bytes)))
+        .unzip();
+    let objects = store.put_batch(inputs)?;
+    let mut facts = fact_keys
+        .into_iter()
+        .zip(objects)
+        .map(|(fact_key, payload)| FactRecord {
+            fact_key,
+            domain_uri: capability.clone(),
+            payload,
         })
-        .collect::<Result<Vec<_>, ClewError>>()?;
+        .collect::<Vec<_>>();
     facts.sort_by(|left, right| left.fact_key.cmp(&right.fact_key));
     Ok(facts)
+}
+
+#[derive(Default)]
+struct PreparedFactBatch {
+    prepared: Vec<(String, Vec<u8>)>,
+    input_bytes: usize,
+}
+
+impl PreparedFactBatch {
+    fn push(&mut self, payload: Value, input_limit: usize) -> Result<(), ClewError> {
+        let bytes = canonical::bytes(&payload).map_err(internal)?;
+        if bytes.len() > MAX_FACT_PAYLOAD_BYTES {
+            return Err(resource("Rust syntax fact exceeds its payload budget"));
+        }
+        let next = self
+            .input_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| resource("Rust syntax fact batch size overflow"))?;
+        if next > input_limit {
+            return Err(resource(
+                "Rust syntax fact batch exceeds its input byte budget",
+            ));
+        }
+        let digest = canonical::hash_bytes(&bytes);
+        self.prepared.push((format!("rust-syntax:{digest}"), bytes));
+        self.input_bytes = next;
+        Ok(())
+    }
 }
 
 fn validate_index(index: &Value) -> Result<(), ClewError> {
@@ -905,7 +943,10 @@ fn poisoned<T>(error: std::sync::PoisonError<T>) -> ClewError {
 
 #[cfg(test)]
 mod tests {
-    use super::{RUST_INDEX_SCHEMA, RustSyntaxAuthority, build_syntax_index, translate_facts};
+    use super::{
+        PreparedFactBatch, RUST_INDEX_SCHEMA, RustSyntaxAuthority, build_syntax_index,
+        translate_facts,
+    };
     use crate::cas::CasStore;
     use crate::repository_snapshot;
     use crate::state::StateAuthority;
@@ -944,12 +985,39 @@ mod tests {
         let second = translate_facts(&store, &index).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.len(), 2);
+        assert_eq!(
+            regular_file_count(&temporary.path().join("v2/objects/sha256")),
+            0
+        );
+        assert_eq!(
+            fs::read_dir(temporary.path().join("v2/objects/packs-v3"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().extension() == Some(std::ffi::OsStr::new("pack")))
+                .count(),
+            1
+        );
         for fact in first {
             let lease = store.read(&fact.payload, 4096).unwrap();
             let text = std::str::from_utf8(lease.bytes()).unwrap();
             assert!(!text.contains("/Users/"));
             assert!(!text.contains("file://"));
         }
+    }
+
+    #[test]
+    fn fact_batch_input_limit_rejects_before_append() {
+        let first = json!({"schema":"test/fact/1","name":"first"});
+        let second = json!({"schema":"test/fact/1","name":"second"});
+        let exact = crate::canonical::bytes(&first).unwrap().len();
+        let mut batch = PreparedFactBatch::default();
+        batch.push(first, exact).unwrap();
+        assert_eq!(batch.input_bytes, exact);
+        assert_eq!(batch.prepared.len(), 1);
+        let retained = batch.prepared.clone();
+        assert!(batch.push(second, exact).is_err());
+        assert_eq!(batch.input_bytes, exact);
+        assert_eq!(batch.prepared, retained);
     }
 
     #[test]
@@ -1006,7 +1074,13 @@ mod tests {
         assert!(boundary_codes.contains(&"RUST_CFG_NOT_EVALUATED"));
         assert!(boundary_codes.contains(&"RUST_MACRO_ITEM_NOT_EXPANDED"));
 
+        let loose_before =
+            regular_file_count(&temporary.path().join("syntax-state-v2/objects/sha256"));
         let facts = translate_facts(&store, &first).unwrap();
+        assert_eq!(
+            regular_file_count(&temporary.path().join("syntax-state-v2/objects/sha256")),
+            loose_before
+        );
         assert!(facts.len() > 6);
         for fact in facts {
             let lease = store.read(&fact.payload, 64 * 1024).unwrap();
@@ -1131,5 +1205,19 @@ mod tests {
             cargo_version: "cargo 1.92.0",
             rustc_version: "rustc 1.92.0",
         }
+    }
+
+    fn regular_file_count(root: &std::path::Path) -> usize {
+        fs::read_dir(root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| {
+                if entry.file_type().unwrap().is_dir() {
+                    regular_file_count(&entry.path())
+                } else {
+                    usize::from(entry.file_type().unwrap().is_file())
+                }
+            })
+            .sum()
     }
 }
