@@ -129,10 +129,13 @@ in private `0600` locator files and are never emitted in stdout or evidence.
 `PROJECT_NATIVE` uses the project's wrapper and ordinary user build
 environment. Model caching is `NON_CACHEABLE` unless the session explicitly
 selects a tracked `codeclew.model-cache.json` or sealed external authority.
-The sealed external contour remains fail-closed. With `NON_CACHEABLE`, context
-creation within an open session reuses its immutable generation, but a new
-session may repeat project model and compiler analysis. Cross-session warm
-generation reuse is therefore not yet a product claim.
+The sealed external contour remains fail-closed. Within an open session,
+context creation reuses its immutable generation. For every new `NON_CACHEABLE`
+session, Codeclew extracts and compares the live project model; it reuses a
+previous generation only when the repository snapshot, derived model manifest,
+and compiler-store authority are all exact matches. The worker still opens the
+project, but skips `IndexFiles`. Any mismatch returns to the fail-closed
+full/delta planner.
 
 A tracked cache manifest must exactly match `HEAD`, be canonical JSON plus one
 newline, and explicitly list the authorized compilations:

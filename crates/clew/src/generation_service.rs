@@ -1477,6 +1477,23 @@ fn incremental_plan_for(
     compiler_store: &CompilerStoreKey,
     previous: Option<&LoadedIncrementalHead>,
 ) -> Result<(IncrementalPlan, bool), ClewError> {
+    if let Some(previous) = previous.filter(|previous| {
+        exact_generation_authority(
+            &previous.ready.repository_snapshot,
+            &previous.ready.derived_input_manifest,
+            &previous.receipt.compiler_store_key,
+            snapshot_object,
+            &prepared.derived_input_manifest,
+            &compiler_store.key,
+        )
+    }) {
+        return Ok((
+            IncrementalPlan::UnchangedHit {
+                parent_generation_id: previous.receipt.generation_id.clone(),
+            },
+            true,
+        ));
+    }
     let receipt_paths = previous
         .map(|value| {
             value
@@ -1510,6 +1527,19 @@ fn incremental_plan_for(
     // The current worker protocol cannot analyze a proven subset. DELTA remains
     // useful planning evidence, but execution is deliberately a full analysis.
     Ok((plan, exact))
+}
+
+fn exact_generation_authority(
+    previous_snapshot: &CasObject,
+    previous_derived_input_manifest: &CasObject,
+    previous_compiler_store_key: &str,
+    current_snapshot: &CasObject,
+    current_derived_input_manifest: &CasObject,
+    current_compiler_store_key: &str,
+) -> bool {
+    previous_snapshot == current_snapshot
+        && previous_derived_input_manifest == current_derived_input_manifest
+        && previous_compiler_store_key == current_compiler_store_key
 }
 
 fn current_file_digests(
@@ -2246,6 +2276,47 @@ mod tests {
             let error = compiler_line(version).unwrap_err();
             assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
         }
+    }
+
+    #[test]
+    fn exact_generation_authority_requires_every_match() {
+        let digest = |character: char| format!("sha256:{}", character.to_string().repeat(64));
+        let object = |schema: &str, character: char| CasObject {
+            schema: crate::cas::CAS_OBJECT_SCHEMA.into(),
+            object_schema: schema.into(),
+            digest: digest(character),
+            size: 1,
+        };
+        let snapshot = object(SNAPSHOT_SCHEMA, '1');
+        let derived = object(DERIVED_MANIFEST_SCHEMA, '2');
+        let store_key = digest('3');
+        assert!(exact_generation_authority(
+            &snapshot, &derived, &store_key, &snapshot, &derived, &store_key,
+        ));
+        assert!(!exact_generation_authority(
+            &snapshot,
+            &derived,
+            &store_key,
+            &object(SNAPSHOT_SCHEMA, '4'),
+            &derived,
+            &store_key,
+        ));
+        assert!(!exact_generation_authority(
+            &snapshot,
+            &derived,
+            &store_key,
+            &snapshot,
+            &object(DERIVED_MANIFEST_SCHEMA, '5'),
+            &store_key,
+        ));
+        assert!(!exact_generation_authority(
+            &snapshot,
+            &derived,
+            &store_key,
+            &snapshot,
+            &derived,
+            &digest('6'),
+        ));
     }
 
     fn runtime(runtime_key: &str, binary_byte: u8) -> RuntimeAuthority {
