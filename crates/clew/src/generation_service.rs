@@ -32,8 +32,8 @@ use crate::query_v2::{
 use crate::repository_snapshot::{RepositoryInputSnapshot, SNAPSHOT_SCHEMA, WorktreeKind, capture};
 use crate::runtime::RuntimeAuthority;
 use crate::rust_adapter_v2::{
-    RUST_INDEX_SCHEMA, RUST_LANGUAGE, RUST_SYNTAX_FACTS_CAPABILITY, RustAdapterV2,
-    rust_adapter_digest, rust_scope_digest,
+    RUST_LANGUAGE, RUST_SYNTAX_FACTS_CAPABILITY, RustAdapterV2, RustSyntaxAuthority,
+    build_syntax_index, rust_adapter_digest, rust_scope_digest,
 };
 use crate::rust_project_model::{CargoProjectModel, CargoTargetModel, extract_cargo_model};
 use crate::session::{ModelCachePolicy, SessionAuthority, SessionLanguage};
@@ -511,35 +511,20 @@ fn rust_model_index(
     target: &CargoTargetModel,
     compilation_id: &str,
 ) -> Result<Value, ClewError> {
-    let source = snapshot
-        .index
-        .iter()
-        .find(|entry| entry.stage == 0 && entry.path == target.source_path)
-        .ok_or_else(|| corrupt("Cargo target source is absent from the repository snapshot"))?;
-    let files = vec![json!({
-        "path":target.source_path,
-        "contentHash":source_content_digest(store, &source.content)?,
-    })];
-    Ok(json!({
-        "schema":RUST_INDEX_SCHEMA,
-        "compilation":compilation_id,
-        "modelDigest":model.model_digest,
-        "package":target.selector.package,
-        "targetKind":target.selector.target_kind,
-        "targetName":target.selector.target_name,
-        "sourcePath":target.source_path,
-        "cargoVersion":model.cargo_version,
-        "rustcVersion":model.rustc_version,
-        "analysisCoverage":"PARTIAL",
-        "analysisCertainty":"UNSURE",
-        "files":files,
-        "declarationDescriptors":{"coverage":"PARTIAL","descriptors":[]},
-        "declarationRelations":{"coverage":"PARTIAL","relations":[]},
-        "boundaries":[
-            {"code":"RUST_SYNTAX_DECLARATIONS_NOT_INDEXED","resolution":"UNKNOWN"},
-            {"code":"RUST_CFG_AND_MACRO_EXPANSION_NOT_EVALUATED","resolution":"UNKNOWN"},
-        ],
-    }))
+    build_syntax_index(
+        store,
+        snapshot,
+        &RustSyntaxAuthority {
+            compilation_id,
+            model_digest: &model.model_digest,
+            package: &target.selector.package,
+            target_kind: &target.selector.target_kind,
+            target_name: &target.selector.target_name,
+            source_path: &target.source_path,
+            cargo_version: &model.cargo_version,
+            rustc_version: &model.rustc_version,
+        },
+    )
 }
 
 fn rust_syntax_completeness(scope_digest: &str) -> Result<CompletenessVector, ClewError> {

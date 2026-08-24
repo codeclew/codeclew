@@ -6,10 +6,13 @@ use crate::adapter_v2::{
 use crate::canonical;
 use crate::cas::CasStore;
 use crate::error::{ClewError, ErrorCode};
+use crate::repository_snapshot::{RepositoryInputSnapshot, WorktreeKind};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use syn::spanned::Spanned;
 
 pub const RUST_LANGUAGE: &str = "language:rust";
 pub const RUST_SYNTAX_FACTS_CAPABILITY: &str = "analysis:rust-syntax-facts";
@@ -17,6 +20,14 @@ pub const RUST_INDEX_SCHEMA: &str = "codeclew-rust-syntax-index/1.0";
 const FACT_SCHEMA: &str = "codeclew-rust-syntax-fact/1.0";
 const RECEIPT_SCHEMA: &str = "codeclew-rust-syntax-completeness/1.0";
 const ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-rust-syntax-adapter/1.0";
+const PARSER_AUTHORITY: &str = "syn-2.0.119/full+proc-macro2-1.0.107/span-locations";
+const MAX_SOURCE_FILES: usize = 512;
+const MAX_SOURCE_FILE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TOTAL_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_DECLARATIONS: usize = 65_536;
+const MAX_NESTING: usize = 64;
+const MAX_FACT_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_BOUNDARIES: usize = 4096;
 
 pub fn rust_adapter_digest() -> Result<String, ClewError> {
     canonical::hash(&json!({
@@ -24,6 +35,7 @@ pub fn rust_adapter_digest() -> Result<String, ClewError> {
         "indexSchema":RUST_INDEX_SCHEMA,
         "factSchema":FACT_SCHEMA,
         "capability":RUST_SYNTAX_FACTS_CAPABILITY,
+        "parserAuthority":PARSER_AUTHORITY,
     }))
     .map_err(internal)
 }
@@ -35,6 +47,8 @@ pub fn rust_scope_digest(index: &Value) -> Result<String, ClewError> {
         "compilation":index["compilation"],
         "modelDigest":index["modelDigest"],
         "files":index["files"],
+        "declarationDescriptors":index["declarationDescriptors"],
+        "boundaries":index["boundaries"],
     }))
     .map_err(internal)
 }
@@ -185,10 +199,39 @@ pub fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord
             "resolution":"SOURCE_MEMBERSHIP_EXACT",
         }));
     }
+    for descriptor in index["declarationDescriptors"]["descriptors"]
+        .as_array()
+        .expect("validated descriptors")
+    {
+        let mut row = descriptor.clone();
+        row.as_object_mut()
+            .expect("validated descriptor object")
+            .insert("schema".into(), Value::String(FACT_SCHEMA.into()));
+        row.as_object_mut()
+            .expect("validated descriptor object")
+            .insert("kind".into(), Value::String("declaration".into()));
+        rows.push(row);
+    }
+    for boundary in index["boundaries"]
+        .as_array()
+        .expect("validated boundaries")
+    {
+        rows.push(json!({
+            "schema":FACT_SCHEMA,
+            "kind":"analysis-boundary",
+            "code":boundary["code"],
+            "file":boundary.get("file").cloned().unwrap_or(Value::Null),
+            "subject":boundary.get("subject").cloned().unwrap_or(Value::Null),
+            "resolution":"UNKNOWN",
+        }));
+    }
     let mut facts = rows
         .into_iter()
         .map(|payload| {
             let bytes = canonical::bytes(&payload).map_err(internal)?;
+            if bytes.len() > MAX_FACT_PAYLOAD_BYTES {
+                return Err(resource("Rust syntax fact exceeds its payload budget"));
+            }
             let digest = canonical::hash_bytes(&bytes);
             let object = store.put(FACT_SCHEMA, &bytes)?;
             Ok(FactRecord {
@@ -207,9 +250,30 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
         .get("files")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("Rust syntax index has no file manifest"))?;
+    let descriptors = index
+        .pointer("/declarationDescriptors/descriptors")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("Rust syntax index has no declaration descriptors"))?;
+    let relations = index
+        .pointer("/declarationRelations/relations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("Rust syntax index has no relation boundary"))?;
+    let boundaries = index
+        .get("boundaries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("Rust syntax index has no analysis boundaries"))?;
     if index.get("schema").and_then(Value::as_str) != Some(RUST_INDEX_SCHEMA)
         || index.get("analysisCoverage").and_then(Value::as_str) != Some("PARTIAL")
         || index.get("analysisCertainty").and_then(Value::as_str) != Some("UNSURE")
+        || index.get("parserAuthority").and_then(Value::as_str) != Some(PARSER_AUTHORITY)
+        || index
+            .pointer("/declarationDescriptors/coverage")
+            .and_then(Value::as_str)
+            != Some("PARTIAL")
+        || index
+            .pointer("/declarationRelations/coverage")
+            .and_then(Value::as_str)
+            != Some("PARTIAL")
         || files.is_empty()
         || files.len() > 4096
         || files.iter().any(|file| {
@@ -224,6 +288,42 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
         || files
             .windows(2)
             .any(|pair| pair[0]["path"].as_str() >= pair[1]["path"].as_str())
+        || descriptors.len() > MAX_DECLARATIONS
+        || descriptors.iter().any(|descriptor| {
+            descriptor
+                .get("symbolIdentity")
+                .and_then(Value::as_str)
+                .is_none()
+                || descriptor.get("name").and_then(Value::as_str).is_none()
+                || descriptor
+                    .get("declarationKind")
+                    .and_then(Value::as_str)
+                    .is_none()
+                || descriptor
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .is_none_or(|path| !safe_path(path) || !path.ends_with(".rs"))
+                || descriptor.get("resolution").and_then(Value::as_str) != Some("SYNTAX_EXACT")
+                || descriptor
+                    .get("rangeStart")
+                    .and_then(Value::as_u64)
+                    .is_none()
+                || descriptor.get("rangeEnd").and_then(Value::as_u64).is_none()
+                || descriptor["rangeStart"].as_u64() > descriptor["rangeEnd"].as_u64()
+        })
+        || descriptors
+            .windows(2)
+            .any(|pair| pair[0]["symbolIdentity"].as_str() >= pair[1]["symbolIdentity"].as_str())
+        || !relations.is_empty()
+        || boundaries.len() > MAX_BOUNDARIES
+        || boundaries.iter().any(|boundary| {
+            boundary.get("code").and_then(Value::as_str).is_none()
+                || boundary.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
+                || boundary
+                    .get("file")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| !safe_path(path) || !path.ends_with(".rs"))
+        })
         || [
             "compilation",
             "modelDigest",
@@ -245,6 +345,518 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
         return Err(invalid("Rust syntax index authority is invalid"));
     }
     Ok(())
+}
+
+pub struct RustSyntaxAuthority<'a> {
+    pub compilation_id: &'a str,
+    pub model_digest: &'a str,
+    pub package: &'a str,
+    pub target_kind: &'a str,
+    pub target_name: &'a str,
+    pub source_path: &'a str,
+    pub cargo_version: &'a str,
+    pub rustc_version: &'a str,
+}
+
+pub fn build_syntax_index(
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    authority: &RustSyntaxAuthority<'_>,
+) -> Result<Value, ClewError> {
+    snapshot.verify()?;
+    let sources = effective_sources(snapshot)?;
+    if !sources.contains_key(authority.source_path) {
+        return Err(invalid(
+            "Cargo target source is absent from the repository snapshot",
+        ));
+    }
+    let mut queue = VecDeque::from([(
+        authority.source_path.to_owned(),
+        root_module_dir(authority.source_path)?,
+    )]);
+    let mut visited = BTreeSet::new();
+    let mut files = BTreeMap::new();
+    let mut descriptors = BTreeMap::new();
+    let mut boundaries = BTreeSet::new();
+    let mut total_bytes = 0usize;
+    while let Some((path, module_dir)) = queue.pop_front() {
+        if visited.contains(&path) {
+            continue;
+        }
+        if visited.len() >= MAX_SOURCE_FILES {
+            boundary(&mut boundaries, "RUST_SOURCE_FILE_LIMIT", None, None);
+            break;
+        }
+        visited.insert(path.clone());
+        let object = sources
+            .get(&path)
+            .ok_or_else(|| invalid("selected Rust module disappeared from its snapshot"))?;
+        let size = usize::try_from(object.size)
+            .map_err(|_| resource("Rust source input exceeds host size"))?;
+        if size > MAX_SOURCE_FILE_BYTES {
+            boundary(
+                &mut boundaries,
+                "RUST_SOURCE_FILE_TOO_LARGE",
+                Some(&path),
+                None,
+            );
+            continue;
+        }
+        if total_bytes.saturating_add(size) > MAX_TOTAL_SOURCE_BYTES {
+            boundary(
+                &mut boundaries,
+                "RUST_TOTAL_SOURCE_LIMIT",
+                Some(&path),
+                None,
+            );
+            break;
+        }
+        let lease = store.read(object, MAX_SOURCE_FILE_BYTES)?;
+        let bytes = lease.bytes();
+        total_bytes += bytes.len();
+        let content_hash = canonical::hash_bytes(bytes);
+        files.insert(
+            path.clone(),
+            json!({"path":path,"contentHash":content_hash}),
+        );
+        let source = match std::str::from_utf8(bytes) {
+            Ok(source) => source,
+            Err(_) => {
+                boundary(&mut boundaries, "RUST_SOURCE_NOT_UTF8", Some(&path), None);
+                continue;
+            }
+        };
+        let syntax = match syn::parse_file(source) {
+            Ok(syntax) => syntax,
+            Err(_) => {
+                boundary(&mut boundaries, "RUST_PARSE_FAILED", Some(&path), None);
+                continue;
+            }
+        };
+        let line_starts = line_starts(source);
+        let mut context = SyntaxContext {
+            path: &path,
+            source,
+            line_starts: &line_starts,
+            sources: &sources,
+            descriptors: &mut descriptors,
+            boundaries: &mut boundaries,
+            queue: &mut queue,
+        };
+        visit_items(&syntax.items, &module_dir, 0, &mut context)?;
+    }
+    let index = json!({
+        "schema":RUST_INDEX_SCHEMA,
+        "compilation":authority.compilation_id,
+        "modelDigest":authority.model_digest,
+        "package":authority.package,
+        "targetKind":authority.target_kind,
+        "targetName":authority.target_name,
+        "sourcePath":authority.source_path,
+        "cargoVersion":authority.cargo_version,
+        "rustcVersion":authority.rustc_version,
+        "parserAuthority":PARSER_AUTHORITY,
+        "analysisCoverage":"PARTIAL",
+        "analysisCertainty":"UNSURE",
+        "files":files.into_values().collect::<Vec<_>>(),
+        "declarationDescriptors":{
+            "coverage":"PARTIAL",
+            "descriptors":descriptors.into_values().collect::<Vec<_>>()
+        },
+        "declarationRelations":{"coverage":"PARTIAL","relations":[]},
+        "boundaries":boundaries
+            .into_iter()
+            .map(|encoded| serde_json::from_str::<Value>(&encoded).expect("canonical boundary"))
+            .collect::<Vec<_>>(),
+    });
+    validate_index(&index)?;
+    Ok(index)
+}
+
+fn effective_sources(
+    snapshot: &RepositoryInputSnapshot,
+) -> Result<BTreeMap<String, crate::cas::CasObject>, ClewError> {
+    let mut sources = snapshot
+        .index
+        .iter()
+        .filter(|entry| entry.stage == 0 && entry.path.ends_with(".rs"))
+        .map(|entry| (entry.path.clone(), entry.content.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for entry in snapshot
+        .worktree
+        .iter()
+        .filter(|entry| entry.path.ends_with(".rs"))
+    {
+        match entry.kind {
+            WorktreeKind::Missing => {
+                sources.remove(&entry.path);
+            }
+            WorktreeKind::Regular => {
+                let content = entry
+                    .content
+                    .clone()
+                    .ok_or_else(|| invalid("regular Rust snapshot input has no content"))?;
+                sources.insert(entry.path.clone(), content);
+            }
+            WorktreeKind::Symlink => {
+                sources.remove(&entry.path);
+            }
+        }
+    }
+    Ok(sources)
+}
+
+struct SyntaxContext<'a> {
+    path: &'a str,
+    source: &'a str,
+    line_starts: &'a [usize],
+    sources: &'a BTreeMap<String, crate::cas::CasObject>,
+    descriptors: &'a mut BTreeMap<String, Value>,
+    boundaries: &'a mut BTreeSet<String>,
+    queue: &'a mut VecDeque<(String, String)>,
+}
+
+fn visit_items(
+    items: &[syn::Item],
+    module_dir: &str,
+    depth: usize,
+    context: &mut SyntaxContext<'_>,
+) -> Result<(), ClewError> {
+    if depth > MAX_NESTING {
+        boundary(
+            context.boundaries,
+            "RUST_NESTING_LIMIT",
+            Some(context.path),
+            None,
+        );
+        return Ok(());
+    }
+    for item in items {
+        if context.descriptors.len() >= MAX_DECLARATIONS {
+            boundary(context.boundaries, "RUST_DECLARATION_LIMIT", None, None);
+            return Ok(());
+        }
+        match item {
+            syn::Item::Fn(value) => {
+                add_declaration("function", &value.sig.ident, value, &value.attrs, context)?
+            }
+            syn::Item::Struct(value) => {
+                add_declaration("struct", &value.ident, value, &value.attrs, context)?
+            }
+            syn::Item::Enum(value) => {
+                add_declaration("enum", &value.ident, value, &value.attrs, context)?
+            }
+            syn::Item::Trait(value) => {
+                add_declaration("trait", &value.ident, value, &value.attrs, context)?;
+                for member in &value.items {
+                    if let syn::TraitItem::Fn(method) = member {
+                        add_declaration(
+                            "trait-method",
+                            &method.sig.ident,
+                            method,
+                            &method.attrs,
+                            context,
+                        )?;
+                    }
+                }
+            }
+            syn::Item::Type(value) => {
+                add_declaration("type-alias", &value.ident, value, &value.attrs, context)?
+            }
+            syn::Item::Const(value) => {
+                add_declaration("const", &value.ident, value, &value.attrs, context)?
+            }
+            syn::Item::Static(value) => {
+                add_declaration("static", &value.ident, value, &value.attrs, context)?
+            }
+            syn::Item::Impl(value) => {
+                note_attributes(&value.attrs, context, "impl");
+                for member in &value.items {
+                    if let syn::ImplItem::Fn(method) = member {
+                        add_declaration(
+                            "impl-method",
+                            &method.sig.ident,
+                            method,
+                            &method.attrs,
+                            context,
+                        )?;
+                    }
+                }
+            }
+            syn::Item::Mod(value) => {
+                add_declaration("module", &value.ident, value, &value.attrs, context)?;
+                if let Some((_, nested)) = &value.content {
+                    let nested_dir = join_path(module_dir, &value.ident.to_string())?;
+                    visit_items(nested, &nested_dir, depth + 1, context)?;
+                } else {
+                    resolve_external_module(value, module_dir, context)?;
+                }
+            }
+            syn::Item::Macro(_) => boundary(
+                context.boundaries,
+                "RUST_MACRO_ITEM_NOT_EXPANDED",
+                Some(context.path),
+                None,
+            ),
+            _ => note_attributes(item_attrs(item), context, "item"),
+        }
+    }
+    Ok(())
+}
+
+fn add_declaration(
+    kind: &str,
+    ident: &syn::Ident,
+    spanned: &impl Spanned,
+    attrs: &[syn::Attribute],
+    context: &mut SyntaxContext<'_>,
+) -> Result<(), ClewError> {
+    note_attributes(attrs, context, ident.to_string().as_str());
+    let span = spanned.span();
+    let start = offset(context.source, context.line_starts, span.start())?;
+    let end = offset(context.source, context.line_starts, span.end())?;
+    let name = ident.to_string();
+    let identity = format!(
+        "rust-syntax:{}#{}:{}@{}-{}",
+        context.path, kind, name, start, end
+    );
+    context.descriptors.insert(
+        identity.clone(),
+        json!({
+            "symbolIdentity":identity,
+            "name":name,
+            "declarationKind":kind,
+            "file":context.path,
+            "rangeStart":start,
+            "rangeEnd":end,
+            "startLine":span.start().line,
+            "endLine":span.end().line,
+        "cfgStatus":if has_any_attribute(attrs, &["cfg", "cfg_attr"]) { "UNKNOWN" } else { "UNCONDITIONAL" },
+            "resolution":"SYNTAX_EXACT",
+        }),
+    );
+    Ok(())
+}
+
+fn resolve_external_module(
+    module: &syn::ItemMod,
+    module_dir: &str,
+    context: &mut SyntaxContext<'_>,
+) -> Result<(), ClewError> {
+    let name = module.ident.to_string();
+    if has_attribute(&module.attrs, "path") {
+        boundary(
+            context.boundaries,
+            "RUST_CUSTOM_MODULE_PATH",
+            Some(context.path),
+            Some(&name),
+        );
+        return Ok(());
+    }
+    if has_attribute(&module.attrs, "cfg") {
+        boundary(
+            context.boundaries,
+            "RUST_CFG_MODULE_NOT_EXPANDED",
+            Some(context.path),
+            Some(&name),
+        );
+        return Ok(());
+    }
+    if has_attribute(&module.attrs, "cfg_attr") {
+        boundary(
+            context.boundaries,
+            "RUST_CFG_ATTR_MODULE_NOT_EXPANDED",
+            Some(context.path),
+            Some(&name),
+        );
+        return Ok(());
+    }
+    let flat = join_path(module_dir, &format!("{name}.rs"))?;
+    let nested = join_path(module_dir, &format!("{name}/mod.rs"))?;
+    let matches = [flat, nested]
+        .into_iter()
+        .filter(|candidate| context.sources.contains_key(candidate))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [selected] => context
+            .queue
+            .push_back((selected.clone(), join_path(module_dir, &name)?)),
+        [] => boundary(
+            context.boundaries,
+            "RUST_MODULE_SOURCE_MISSING",
+            Some(context.path),
+            Some(&name),
+        ),
+        _ => boundary(
+            context.boundaries,
+            "RUST_MODULE_SOURCE_AMBIGUOUS",
+            Some(context.path),
+            Some(&name),
+        ),
+    }
+    Ok(())
+}
+
+fn note_attributes(attrs: &[syn::Attribute], context: &mut SyntaxContext<'_>, subject: &str) {
+    if has_attribute(attrs, "cfg") {
+        boundary(
+            context.boundaries,
+            "RUST_CFG_NOT_EVALUATED",
+            Some(context.path),
+            Some(subject),
+        );
+    }
+    if has_attribute(attrs, "cfg_attr") {
+        boundary(
+            context.boundaries,
+            "RUST_CFG_ATTR_NOT_EVALUATED",
+            Some(context.path),
+            Some(subject),
+        );
+    }
+    if has_attribute(attrs, "derive") {
+        boundary(
+            context.boundaries,
+            "RUST_DERIVE_NOT_EXPANDED",
+            Some(context.path),
+            Some(subject),
+        );
+    }
+    if attrs.iter().any(|attribute| {
+        !BUILTIN_ATTRIBUTES
+            .iter()
+            .any(|name| attribute.path().is_ident(name))
+    }) {
+        boundary(
+            context.boundaries,
+            "RUST_ATTRIBUTE_MACRO_UNKNOWN",
+            Some(context.path),
+            Some(subject),
+        );
+    }
+}
+
+fn has_attribute(attrs: &[syn::Attribute], name: &str) -> bool {
+    attrs
+        .iter()
+        .any(|attribute| attribute.path().is_ident(name))
+}
+
+fn has_any_attribute(attrs: &[syn::Attribute], names: &[&str]) -> bool {
+    names.iter().any(|name| has_attribute(attrs, name))
+}
+
+const BUILTIN_ATTRIBUTES: &[&str] = &[
+    "cfg",
+    "cfg_attr",
+    "derive",
+    "doc",
+    "allow",
+    "warn",
+    "deny",
+    "forbid",
+    "inline",
+    "must_use",
+    "deprecated",
+    "repr",
+    "non_exhaustive",
+    "path",
+    "test",
+];
+
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::ExternCrate(v) => &v.attrs,
+        syn::Item::ForeignMod(v) => &v.attrs,
+        syn::Item::Macro(v) => &v.attrs,
+        syn::Item::TraitAlias(v) => &v.attrs,
+        syn::Item::Union(v) => &v.attrs,
+        syn::Item::Use(v) => &v.attrs,
+        _ => &[],
+    }
+}
+
+fn line_starts(source: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
+        )
+        .collect()
+}
+
+fn offset(
+    source: &str,
+    starts: &[usize],
+    location: proc_macro2::LineColumn,
+) -> Result<usize, ClewError> {
+    let line = location
+        .line
+        .checked_sub(1)
+        .ok_or_else(|| invalid("Rust parser returned an invalid line"))?;
+    let start = *starts
+        .get(line)
+        .ok_or_else(|| invalid("Rust parser span escaped its source"))?;
+    let offset = start.saturating_add(location.column);
+    if offset > source.len() || !source.is_char_boundary(offset) {
+        return Err(invalid("Rust parser span escaped its source"));
+    }
+    Ok(offset)
+}
+
+fn root_module_dir(source_path: &str) -> Result<String, ClewError> {
+    let parent = Path::new(source_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    relative_path(parent)
+}
+
+fn join_path(base: &str, suffix: &str) -> Result<String, ClewError> {
+    relative_path(&PathBuf::from(base).join(suffix))
+}
+
+fn relative_path(path: &Path) -> Result<String, ClewError> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| invalid("Rust module path is not UTF-8"))?;
+    if text.is_empty() {
+        Ok(String::new())
+    } else if safe_path(text) {
+        Ok(text.replace('\\', "/"))
+    } else {
+        Err(invalid("Rust module path is outside the repository"))
+    }
+}
+
+fn boundary(
+    boundaries: &mut BTreeSet<String>,
+    code: &str,
+    file: Option<&str>,
+    subject: Option<&str>,
+) {
+    let value = json!({"code":code,"file":file,"subject":subject,"resolution":"UNKNOWN"});
+    let encoded =
+        String::from_utf8(canonical::bytes(&value).expect("static boundary is canonical"))
+            .expect("canonical JSON is UTF-8");
+    if boundaries.contains(&encoded) {
+        return;
+    }
+    if boundaries.len() < MAX_BOUNDARIES - 1 {
+        boundaries.insert(encoded);
+    } else {
+        let limit = json!({
+            "code":"RUST_BOUNDARY_LIMIT",
+            "file":Value::Null,
+            "subject":Value::Null,
+            "resolution":"UNKNOWN"
+        });
+        boundaries.insert(
+            String::from_utf8(canonical::bytes(&limit).expect("static boundary is canonical"))
+                .expect("canonical JSON is UTF-8"),
+        );
+    }
 }
 
 fn safe_path(path: &str) -> bool {
@@ -293,10 +905,13 @@ fn poisoned<T>(error: std::sync::PoisonError<T>) -> ClewError {
 
 #[cfg(test)]
 mod tests {
-    use super::{RUST_INDEX_SCHEMA, translate_facts};
+    use super::{RUST_INDEX_SCHEMA, RustSyntaxAuthority, build_syntax_index, translate_facts};
     use crate::cas::CasStore;
+    use crate::repository_snapshot;
     use crate::state::StateAuthority;
     use serde_json::json;
+    use std::fs;
+    use std::process::Command;
 
     fn digest(character: char) -> String {
         format!("sha256:{}", character.to_string().repeat(64))
@@ -317,6 +932,7 @@ mod tests {
             "sourcePath":"src/lib.rs",
             "cargoVersion":"cargo 1.92.0",
             "rustcVersion":"rustc 1.92.0",
+            "parserAuthority":super::PARSER_AUTHORITY,
             "analysisCoverage":"PARTIAL",
             "analysisCertainty":"UNSURE",
             "files":[{"path":"src/lib.rs","contentHash":digest('2')}],
@@ -333,6 +949,187 @@ mod tests {
             let text = std::str::from_utf8(lease.bytes()).unwrap();
             assert!(!text.contains("/Users/"));
             assert!(!text.contains("file://"));
+        }
+    }
+
+    #[test]
+    fn syntax_index_follows_only_unambiguous_modules_and_emits_no_relations() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().join("repo");
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(
+            repo.join("src/lib.rs"),
+            "mod helper;\npub fn format_message() {}\nmacro_rules! generated { () => {} }\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join("src/helper.rs"),
+            "#[derive(Debug)]\npub struct Formatter;\nimpl Formatter { pub fn format_message(&self) {} }\n#[cfg(test)] pub fn conditional() {}\n",
+        )
+        .unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "."]);
+        let state = StateAuthority::open(temporary.path().join("syntax-state-v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let (snapshot, _) = repository_snapshot::capture(&repo, &store).unwrap();
+        let first = build_syntax_index(&store, &snapshot, &syntax_authority(&digest('1'))).unwrap();
+        let second =
+            build_syntax_index(&store, &snapshot, &syntax_authority(&digest('1'))).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first["files"].as_array().unwrap().len(), 2);
+        let descriptors = first["declarationDescriptors"]["descriptors"]
+            .as_array()
+            .unwrap();
+        assert!(descriptors.iter().any(|row| {
+            row["name"] == "format_message"
+                && row["file"] == "src/lib.rs"
+                && row["resolution"] == "SYNTAX_EXACT"
+        }));
+        assert!(
+            descriptors
+                .iter()
+                .any(|row| { row["name"] == "format_message" && row["file"] == "src/helper.rs" })
+        );
+        assert!(
+            first["declarationRelations"]["relations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let boundary_codes = first["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["code"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(boundary_codes.contains(&"RUST_DERIVE_NOT_EXPANDED"));
+        assert!(boundary_codes.contains(&"RUST_CFG_NOT_EVALUATED"));
+        assert!(boundary_codes.contains(&"RUST_MACRO_ITEM_NOT_EXPANDED"));
+
+        let facts = translate_facts(&store, &first).unwrap();
+        assert!(facts.len() > 6);
+        for fact in facts {
+            let lease = store.read(&fact.payload, 64 * 1024).unwrap();
+            assert!(lease.bytes().len() <= 64 * 1024);
+            let text = std::str::from_utf8(lease.bytes()).unwrap();
+            assert!(!text.contains("/Users/"));
+            assert!(!text.contains("/private/"));
+            assert!(!text.contains("\"target\":"));
+        }
+    }
+
+    #[test]
+    fn ambiguous_external_module_is_a_boundary_not_an_expansion() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().join("repo");
+        fs::create_dir_all(repo.join("src/helper")).unwrap();
+        fs::write(repo.join("src/lib.rs"), "mod helper;\n").unwrap();
+        fs::write(repo.join("src/helper.rs"), "pub fn flat() {}\n").unwrap();
+        fs::write(repo.join("src/helper/mod.rs"), "pub fn nested() {}\n").unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "."]);
+        let state = StateAuthority::open(temporary.path().join("ambiguity-state-v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let (snapshot, _) = repository_snapshot::capture(&repo, &store).unwrap();
+        let index = build_syntax_index(&store, &snapshot, &syntax_authority(&digest('1'))).unwrap();
+        assert_eq!(index["files"].as_array().unwrap().len(), 1);
+        assert!(
+            index["boundaries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| { row["code"] == "RUST_MODULE_SOURCE_AMBIGUOUS" })
+        );
+        assert!(
+            index["declarationRelations"]["relations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cfg_attr_module_and_namespaced_builtin_names_fail_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().join("repo");
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(
+            repo.join("src/lib.rs"),
+            "#[cfg_attr(feature = \"alternate\", path = \"alternate.rs\")]\nmod selected;\n#[my::cfg]\npub fn namespaced_attribute() {}\n",
+        )
+        .unwrap();
+        fs::write(repo.join("src/selected.rs"), "pub fn default_child() {}\n").unwrap();
+        fs::write(
+            repo.join("src/alternate.rs"),
+            "pub fn alternate_child() {}\n",
+        )
+        .unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "."]);
+        let state = StateAuthority::open(temporary.path().join("cfg-state-v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let (snapshot, _) = repository_snapshot::capture(&repo, &store).unwrap();
+        let index = build_syntax_index(&store, &snapshot, &syntax_authority(&digest('1'))).unwrap();
+        assert_eq!(index["files"].as_array().unwrap().len(), 1);
+        let names = index["declarationDescriptors"]["descriptors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"default_child"));
+        assert!(!names.contains(&"alternate_child"));
+        assert!(
+            index["declarationDescriptors"]["descriptors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["name"] == "selected" && row["cfgStatus"] == "UNKNOWN")
+        );
+        let boundaries = index["boundaries"].as_array().unwrap();
+        assert!(
+            boundaries
+                .iter()
+                .any(|row| { row["code"] == "RUST_CFG_ATTR_MODULE_NOT_EXPANDED" })
+        );
+        assert!(
+            boundaries
+                .iter()
+                .any(|row| { row["code"] == "RUST_CFG_ATTR_NOT_EVALUATED" })
+        );
+        assert!(boundaries.iter().any(|row| {
+            row["code"] == "RUST_ATTRIBUTE_MACRO_UNKNOWN"
+                && row["subject"] == "namespaced_attribute"
+        }));
+        assert!(
+            index["declarationRelations"]["relations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn git(repo: &std::path::Path, arguments: &[&str]) {
+        assert!(
+            Command::new("git")
+                .args(arguments)
+                .current_dir(repo)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    fn syntax_authority(model_digest: &str) -> RustSyntaxAuthority<'_> {
+        RustSyntaxAuthority {
+            compilation_id: "cargo-Cargo.toml-demo-lib-demo",
+            model_digest,
+            package: "demo",
+            target_kind: "lib",
+            target_name: "demo",
+            source_path: "src/lib.rs",
+            cargo_version: "cargo 1.92.0",
+            rustc_version: "rustc 1.92.0",
         }
     }
 }

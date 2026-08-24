@@ -18,6 +18,8 @@ rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+syn = { version = "2.0", features = ["full"] }
 tempfile = "3.23"
 thiserror = "2.0"
 uuid = { version = "1.19", features = ["v4", "serde"] }

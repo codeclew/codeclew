@@ -29,15 +29,18 @@ mutation or publish claim. Kotlin 2.1, multiple compilations, Android/KMP and
 `EXTERNAL` remain unqualified contours until they have their own acceptance
 tests.
 
-Rust has a separate read-only preview contour. Open it with `--language rust`
+Rust has a separate read-only syntax preview contour. Open it with `--language rust`
 and an exact target selector such as
 `cargo:crates/clew/Cargo.toml#clew#lib#clew`. The repository must have a regular
 root `Cargo.lock`; live `cargo metadata --no-deps` authority and all paths are
-normalized before entering CAS or stdout. The current first slice exposes exact
-Cargo target/source membership as `PARTIAL/UNSURE`. Task preparation and
-publication are rejected in both the CLI and transaction layer until Rust
-declarations, name resolution, cfg/macros, compilation, and tests receive their
-own mutation acceptance.
+normalized before entering CAS or stdout. The preview follows only unambiguous
+snapshot-backed `mod name;` files from the selected target and exposes bounded
+declaration occurrences with exact syntax ranges. It deliberately emits no
+resolved references or call edges: cfg, derive/procedural macros, custom module
+paths, parse failures, ambiguity, and resource caps remain explicit boundaries,
+so the generation is `PARTIAL/UNSURE`. Task preparation and publication are
+rejected in both the CLI and transaction layer until compiler name resolution,
+cfg/macros, compilation, and tests receive their own mutation acceptance.
 
 This revision is pilot-ready, not general availability. Team use follows the
 [Kotlin 2.4 pilot runbook](docs/pilot/README.md); a signed prebuilt release is a
