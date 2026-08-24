@@ -26,6 +26,13 @@ use crate::kotlin_adapter_v2::{
     KotlinGenerationDriver, ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace,
     ProjectNativeKotlinWorkspaceProfile, kotlin_adapter_digest, semantic_scope_digest,
 };
+use crate::python_adapter_v2::{
+    PYTHON_LANGUAGE, PYTHON_SYNTAX_FACTS_CAPABILITY, PythonAdapterV2, PythonSyntaxAuthority,
+    build_syntax_index as build_python_syntax_index, python_adapter_digest, python_scope_digest,
+};
+use crate::python_project_model::{
+    PYTHON_GRAMMAR_AUTHORITY, PYTHON_MODEL_SCHEMA, PythonProjectModel,
+};
 use crate::query_v2::{
     QUERY_INDEX_SCHEMA, QueryIndexManifest, build_query_index, verify_index, verify_index_manifest,
 };
@@ -56,7 +63,7 @@ pub const READY_GENERATION_SET_SCHEMA: &str = "codeclew-ready-generation-set/1.0
 const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/2.0";
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
-const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/2.0";
+const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/3.0";
 const WORKSPACE_PROFILE_SCHEMA: &str = "codeclew-project-native-workspace-profile/3.0";
 const MAX_BINDING_BYTES: usize = 4 * 1024 * 1024;
 
@@ -133,12 +140,20 @@ pub enum IncrementalExecutionMode {
     UnchangedHit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AnalysisExecutionAuthority {
+    CompilerWorker,
+    InProcessSyntax,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IncrementalExecutionEvidence {
     pub schema: String,
     pub planned: IncrementalPlan,
     pub executed: IncrementalExecutionMode,
+    pub analysis_execution_authority: AnalysisExecutionAuthority,
     pub subset_analysis_supported: bool,
     pub worker_requests: WorkerRequestCounters,
 }
@@ -192,21 +207,39 @@ pub fn ensure_session_generation(
     if state.private_file_exists(&binding_path)? {
         return load_ready_set(&state, &store, &binding_path, session, false);
     }
-    let repo = session.repository_path()?;
-    let (snapshot, snapshot_object) = capture(&repo, &store)?;
-    let compilation_root = session_root.join("compilations");
-    state.directory_at(&compilation_root)?;
-    if session.language == SessionLanguage::Rust {
-        return ensure_rust_generation_set(
+    if session.language == SessionLanguage::Python {
+        let (snapshot, snapshot_object) = session.python_source_snapshot(&store)?;
+        let compilation_root = session_root.join("compilations");
+        state.directory_at(&compilation_root)?;
+        return ensure_python_generation_set(
             session,
             &state,
             &store,
-            &repo,
             &snapshot,
             snapshot_object,
             &compilation_root,
             &binding_path,
         );
+    }
+    let repo = session.repository_path()?;
+    let (snapshot, snapshot_object) = capture(&repo, &store)?;
+    let compilation_root = session_root.join("compilations");
+    state.directory_at(&compilation_root)?;
+    match session.language {
+        SessionLanguage::Rust => {
+            return ensure_rust_generation_set(
+                session,
+                &state,
+                &store,
+                &repo,
+                &snapshot,
+                snapshot_object,
+                &compilation_root,
+                &binding_path,
+            );
+        }
+        SessionLanguage::Python => unreachable!("Python generation returned above"),
+        SessionLanguage::Kotlin => {}
     }
     let pool = generation_pool(session)?;
     let workspace =
@@ -315,6 +348,281 @@ fn ensure_rust_generation_set(
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(state, binding_path, &ready)?;
     Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_python_generation_set(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: CasObject,
+    compilation_root: &Path,
+    binding_path: &Path,
+) -> Result<ReadyGenerationSet, ClewError> {
+    let model = PythonProjectModel::create(&session.compilations)?;
+    let model_object = store.put(
+        PYTHON_MODEL_SCHEMA,
+        &canonical::bytes(&model).map_err(internal)?,
+    )?;
+    let mut results = Vec::with_capacity(session.compilations.len());
+    for compilation in &session.compilations {
+        let component = digest_component(
+            &canonical::hash(&json!({
+                "schema":"codeclew-session-python-compilation-binding/1.0",
+                "compilation":compilation,
+            }))
+            .map_err(internal)?,
+        )?
+        .to_owned();
+        let selector = model
+            .selectors
+            .iter()
+            .find(|selector| selector.canonical() == *compilation)
+            .ok_or_else(|| corrupt("Python model misses a selected source scope"))?;
+        results.push(ensure_python_generation(
+            session,
+            state,
+            store,
+            snapshot,
+            &snapshot_object,
+            &model,
+            &model_object,
+            selector,
+            compilation,
+            &compilation_root.join(format!("{component}.json")),
+        )?);
+    }
+    let ready = assemble_ready_set(session, snapshot_object, results)?;
+    write_ready_set(state, binding_path, &ready)?;
+    Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_python_generation(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: &CasObject,
+    model: &PythonProjectModel,
+    model_object: &CasObject,
+    selector: &crate::python_project_model::PythonCompilationSelector,
+    compilation: &str,
+    binding_path: &Path,
+) -> Result<ReadyGeneration, ClewError> {
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerPreparationRequired,
+            "generation service must run through ./clew",
+        )
+    })?;
+    let toolchain = store.put(
+        "codeclew-python-grammar-authority/1.0",
+        &canonical::bytes(&json!({
+            "schema":"codeclew-python-grammar-authority/1.0",
+            "grammarAuthority":PYTHON_GRAMMAR_AUTHORITY,
+            "adapterProtocol":"python-syntax-1",
+        }))
+        .map_err(internal)?,
+    )?;
+    let options = store.put(
+        "codeclew-python-source-scope/1.0",
+        &canonical::bytes(selector).map_err(internal)?,
+    )?;
+    let descriptor = CompilationDescriptor {
+        schema: COMPILATION_SCHEMA.into(),
+        compilation_id: safe_compilation_id(compilation),
+        language_uri: LanguageUri::parse(PYTHON_LANGUAGE)?,
+        source_roots: vec![SourceRootDescriptor {
+            logical_name: "project".into(),
+            tree: snapshot_object.clone(),
+        }],
+        generated_source_roots: Vec::new(),
+        classpath: Vec::new(),
+        toolchain,
+        plugins: Vec::new(),
+        canonical_options: options,
+        dependency_compilation_ids: Vec::new(),
+        operations: Vec::new(),
+        origin: DescriptorOrigin::ProjectNative,
+        completeness: DescriptorCompleteness::Unknown,
+    };
+    let provider = ProviderModel {
+        handshake: ProviderHandshake {
+            protocol: PROVIDER_PROTOCOL.into(),
+            provider_id: "project-native-python-syntax".into(),
+            provider_digest: model.model_digest.clone(),
+            build_system_uris: vec!["build:python-syntax".into()],
+        },
+        build_model: BuildModel {
+            provider_id: "project-native-python-syntax".into(),
+            model: model_object.clone(),
+            compilations: vec![descriptor.clone()],
+        },
+    };
+    let (_, derived_input_manifest) =
+        DerivedAnalysisInputManifest::create(store, snapshot_object.clone(), vec![provider])?;
+    let generation_key = final_generation_key(
+        &runtime.runtime_key,
+        &session.base_revision,
+        snapshot_object,
+        compilation,
+        &derived_input_manifest,
+    )?;
+    let _lock = GenerationLock::acquire(state, &generation_key)?;
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let adapter_digest = python_adapter_digest()?;
+    let compiler_store =
+        CompilerStoreKey::create("python-syntax-1", adapter_digest.clone(), &descriptor)?;
+    let index = build_python_syntax_index(
+        store,
+        snapshot,
+        &PythonSyntaxAuthority {
+            compilation_id: &descriptor.compilation_id,
+            model_digest: &model.model_digest,
+            selector,
+        },
+    )?;
+    let adapter = PythonAdapterV2::new(
+        adapter_digest,
+        descriptor.toolchain.digest.clone(),
+        store.clone(),
+        index.clone(),
+    )?;
+    let mut registry = AdapterRegistry::default();
+    registry.register_adapter(Arc::new(adapter))?;
+    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
+    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
+    journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
+    journal.transition(AttemptState::Analyzing, "Python syntax adapter DAG started")?;
+    let request = AnalyzeGenerationRequest {
+        schema: ANALYSIS_REQUEST_SCHEMA.into(),
+        attempt_id: journal.attempt().attempt_id.clone(),
+        generation_key: generation_key.clone(),
+        capability: CapabilityUri::parse(PYTHON_SYNTAX_FACTS_CAPABILITY)?,
+        compilation: descriptor,
+        derived_input_manifest: derived_input_manifest.clone(),
+        parent_generation: None,
+    };
+    let analysis = match HostResources::detect().and_then(|resources| {
+        execute_analysis_dag_with_jobs(state, Arc::new(registry), request, resources, 1)
+    }) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "Python adapter DAG failed")?;
+            return Err(error);
+        }
+    };
+    journal.transition(
+        AttemptState::Finalizing,
+        "Python deterministic merge started",
+    )?;
+    let result = (|| {
+        let (generation, generation_object) = finalize_generation(
+            store,
+            derived_input_manifest.clone(),
+            vec![AttemptAuthority {
+                compilation_id: safe_compilation_id(compilation),
+                capability: CapabilityUri::parse(PYTHON_SYNTAX_FACTS_CAPABILITY)?,
+                completion: analysis.completion,
+            }],
+            analysis.runs,
+        )?;
+        let (_, query_index) = build_query_index(store, &generation, generation_object.clone())?;
+        let scope_digest = python_scope_digest(&index)?;
+        let completeness = python_syntax_completeness(&scope_digest)?;
+        let (_, incremental_receipt) = create_incremental_receipt(
+            store,
+            &index,
+            &compiler_store,
+            &generation,
+            completeness.clone(),
+        )?;
+        let ready = ReadyGeneration {
+            schema: READY_GENERATION_SCHEMA.into(),
+            generation_key,
+            runtime_key: runtime.runtime_key.clone(),
+            base_revision: session.base_revision.clone(),
+            compilation: compilation.into(),
+            compiler_version: PYTHON_GRAMMAR_AUTHORITY.into(),
+            completeness: completeness.clone(),
+            coverage: coverage_label(&completeness).into(),
+            certainty: certainty_label(&completeness).into(),
+            obligations: obligation_codes(&completeness),
+            incremental: full_execution_evidence(
+                IncrementalPlan::Full {
+                    reason: FullAnalysisReason::NoParent,
+                },
+                WorkerRequestCounters {
+                    open_project_requests: 0,
+                    index_files_requests: 0,
+                },
+                AnalysisExecutionAuthority::InProcessSyntax,
+            ),
+            incremental_receipt,
+            repository_snapshot: snapshot_object.clone(),
+            derived_input_manifest,
+            generation: generation_object,
+            query_index,
+        };
+        verify_ready(store, &ready, session, compilation, true)?;
+        Ok(ready)
+    })();
+    match result {
+        Ok(ready) => {
+            journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
+            write_private_atomic(state, binding_path, &ready)?;
+            Ok(ready)
+        }
+        Err(error) => {
+            journal.transition(
+                AttemptState::Failed,
+                "Python generation finalization failed",
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn python_syntax_completeness(scope_digest: &str) -> Result<CompletenessVector, ClewError> {
+    let completeness = CompletenessVector {
+        schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+        support: Support::Supported,
+        coverage: Coverage::Partial {
+            observed_scopes: vec![scope_digest.into()],
+            boundaries: vec![
+                "PYTHON_DYNAMIC_SEMANTICS_UNMODELED".into(),
+                "PYTHON_IMPORT_RUNTIME_UNMODELED".into(),
+                "PYTHON_SYNTAX_ONLY".into(),
+            ],
+        },
+        certainty: Certainty::Unsure {
+            check_set: vec![
+                "python-runtime-imports-and-types".into(),
+                "python-runtime-tests".into(),
+            ],
+        },
+        obligations: vec![
+            VerificationObligation {
+                code: "VERIFY_DECORATORS_METACLAS_AND_DYNAMIC_EXECUTION".into(),
+                subject: vec![scope_digest.into()],
+                publication_blocking: true,
+            },
+            VerificationObligation {
+                code: "VERIFY_PYTHON_RUNTIME_IMPORTS_AND_TYPES".into(),
+                subject: vec![scope_digest.into()],
+                publication_blocking: true,
+            },
+        ],
+    };
+    completeness.validate()?;
+    Ok(completeness)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -473,9 +781,10 @@ fn ensure_rust_generation(
                     reason: FullAnalysisReason::NoParent,
                 },
                 WorkerRequestCounters {
-                    open_project_requests: 1,
-                    index_files_requests: 1,
+                    open_project_requests: 0,
+                    index_files_requests: 0,
                 },
+                AnalysisExecutionAuthority::InProcessSyntax,
             ),
             incremental_receipt,
             repository_snapshot: snapshot_object.clone(),
@@ -575,10 +884,10 @@ pub fn ensure_candidate_generation(
         return load_ready_set(&state, &store, binding_path, &candidate, false);
     }
     let (snapshot, snapshot_object) = capture(repository, &store)?;
-    if session.language == SessionLanguage::Rust {
+    if session.language != SessionLanguage::Kotlin {
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
-            "Rust candidate generation is disabled until mutation validation is qualified",
+            "candidate generation is disabled for read-only language contours",
         ));
     }
     let parent = binding_path
@@ -1092,7 +1401,11 @@ fn build_ready(
             coverage: coverage_label(&completeness).into(),
             certainty: certainty_label(&completeness).into(),
             obligations: obligation_codes(&completeness),
-            incremental: full_execution_evidence(planned, semantic.worker_requests),
+            incremental: full_execution_evidence(
+                planned,
+                semantic.worker_requests,
+                AnalysisExecutionAuthority::CompilerWorker,
+            ),
             incremental_receipt: incremental_receipt_object,
             repository_snapshot: snapshot_object,
             derived_input_manifest: prepared.derived_input_manifest,
@@ -1169,6 +1482,7 @@ fn build_unchanged_ready(
         schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
         planned,
         executed: IncrementalExecutionMode::UnchangedHit,
+        analysis_execution_authority: AnalysisExecutionAuthority::CompilerWorker,
         subset_analysis_supported: false,
         worker_requests: counters,
     };
@@ -1181,11 +1495,13 @@ fn build_unchanged_ready(
 fn full_execution_evidence(
     planned: IncrementalPlan,
     worker_requests: WorkerRequestCounters,
+    analysis_execution_authority: AnalysisExecutionAuthority,
 ) -> IncrementalExecutionEvidence {
     IncrementalExecutionEvidence {
         schema: INCREMENTAL_EVIDENCE_SCHEMA.into(),
         planned,
         executed: IncrementalExecutionMode::Full,
+        analysis_execution_authority,
         subset_analysis_supported: false,
         worker_requests,
     }
@@ -2409,18 +2725,33 @@ fn verify_ready_authority(
         return Err(corrupt("ready generation authority is invalid"));
     }
     ready.completeness.validate()?;
-    match ready.incremental.executed {
-        IncrementalExecutionMode::Full
+    match (
+        ready.incremental.executed.clone(),
+        ready.incremental.analysis_execution_authority,
+    ) {
+        (IncrementalExecutionMode::Full, AnalysisExecutionAuthority::CompilerWorker)
             if ready.incremental.worker_requests.open_project_requests != 1
                 || ready.incremental.worker_requests.index_files_requests == 0 =>
         {
-            return Err(corrupt("full generation request counters are invalid"));
+            return Err(corrupt(
+                "full compiler generation request counters are invalid",
+            ));
         }
-        IncrementalExecutionMode::UnchangedHit
-            if !matches!(
-                ready.incremental.planned,
-                IncrementalPlan::UnchangedHit { .. }
-            ) || ready.incremental.worker_requests.open_project_requests != 1
+        (IncrementalExecutionMode::Full, AnalysisExecutionAuthority::InProcessSyntax)
+            if ready.incremental.worker_requests.open_project_requests != 0
+                || ready.incremental.worker_requests.index_files_requests != 0 =>
+        {
+            return Err(corrupt(
+                "in-process generation request counters are invalid",
+            ));
+        }
+        (IncrementalExecutionMode::UnchangedHit, authority)
+            if authority != AnalysisExecutionAuthority::CompilerWorker
+                || !matches!(
+                    ready.incremental.planned,
+                    IncrementalPlan::UnchangedHit { .. }
+                )
+                || ready.incremental.worker_requests.open_project_requests != 1
                 || ready.incremental.worker_requests.index_files_requests != 0 =>
         {
             return Err(corrupt("unchanged generation request counters are invalid"));
@@ -2817,6 +3148,7 @@ mod tests {
                     reason: FullAnalysisReason::NoParent,
                 },
                 executed: IncrementalExecutionMode::Full,
+                analysis_execution_authority: AnalysisExecutionAuthority::CompilerWorker,
                 subset_analysis_supported: false,
                 worker_requests: WorkerRequestCounters {
                     open_project_requests: 1,
@@ -3058,7 +3390,11 @@ mod tests {
             index_files_requests: 1,
         };
 
-        let evidence = full_execution_evidence(planned.clone(), requests);
+        let evidence = full_execution_evidence(
+            planned.clone(),
+            requests,
+            AnalysisExecutionAuthority::CompilerWorker,
+        );
 
         assert_eq!(evidence.planned, planned);
         assert_eq!(evidence.executed, IncrementalExecutionMode::Full);

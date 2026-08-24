@@ -525,6 +525,7 @@ pub fn recover_preparation(
     plan_object: &PlanObject,
     candidate_root: &Path,
 ) -> Result<PreparedCandidateV2, ClewError> {
+    require_mutation_language(session.language)?;
     let mut checkpoint = if candidate_root.join("checkpoint-v2.json").exists() {
         load_candidate_checkpoint(candidate_root)?
     } else {
@@ -1256,10 +1257,10 @@ pub fn publish(
 }
 
 fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError> {
-    if language == SessionLanguage::Rust {
+    if language != SessionLanguage::Kotlin {
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
-            "Rust mutation is disabled until the managed validation contour is qualified",
+            "mutation is supported only for Kotlin sessions with a qualified validation contour",
         ));
     }
     Ok(())
@@ -2043,10 +2044,12 @@ mod tests {
     }
 
     #[test]
-    fn transaction_layer_refuses_rust_mutation_authority() {
+    fn transaction_layer_refuses_non_kotlin_mutation_authority() {
         assert!(require_mutation_language(SessionLanguage::Kotlin).is_ok());
-        let error = require_mutation_language(SessionLanguage::Rust).unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+        for language in [SessionLanguage::Python, SessionLanguage::Rust] {
+            let error = require_mutation_language(language).unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+        }
     }
 
     #[test]

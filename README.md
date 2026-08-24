@@ -42,6 +42,31 @@ so the generation is `PARTIAL/UNSURE`. Task preparation and publication are
 rejected in both the CLI and transaction layer until compiler name resolution,
 cfg/macros, compilation, and tests receive their own mutation acceptance.
 
+Python has a generic read-only syntax preview contour. It parses only selected
+tracked UTF-8 `.py` blobs directly from the immutable session base commit with
+the pinned in-process Tree-sitter grammar. It creates no source checkout and
+does not start Python, import project modules, activate a virtualenv, install
+dependencies, run Git hooks/filters/fsmonitor, or read unrelated blobs such as
+`.env`. The target index and dirty, deleted or untracked worktree state are
+outside the session authority. Select an explicit import root and source root,
+for example:
+
+```bash
+./clew session open \
+  --repo /path/to/python-repository \
+  --target-ref refs/heads/main \
+  --language python \
+  --compilation 'python:.#src'
+```
+
+The source root must equal the import root or be its descendant. The preview
+returns bounded source, declaration, import, decorator-name and syntactic
+call-name facts with exact ranges. It never claims runtime import, type, call,
+decorator or framework resolution, so its authority is always
+`PARTIAL/UNSURE`. Python task preparation and publication are rejected before
+candidate creation; verify the reported obligations with the project's normal
+tests before relying on dynamic behavior.
+
 This revision is pilot-ready, not general availability. Team use follows the
 [Kotlin 2.4 pilot runbook](docs/pilot/README.md); a signed prebuilt release is a
 separate decision after 20 recorded in-contour cases meet its numerical gate.
@@ -90,9 +115,10 @@ class, callable, or file identity before treating the context as complete. This
 keeps generic vocabulary from turning the bounded routing index into a second
 copy of the repository fact store.
 
-`--compilation` is mandatory and names an exact build compilation authority:
-use `:/main` for a Kotlin root project or `:module/main` for a Gradle
-subproject. Repeat the option to select up to 64 compilations. Session authority
+`--compilation` is mandatory and names an exact analysis authority: use
+`:/main` for a Kotlin root project, `:module/main` for a Gradle subproject, or
+`python:<import-root>#<source-root>` for Python syntax analysis. Repeat the
+option to select up to 64 compilations. Session authority
 sorts and deduplicates the set and accepts only `:/sourceSet` or
 `:module[:nested]/sourceSet`; option-like and path-traversal values are rejected
 before any build tool starts. Codeclew never guesses a root compilation because

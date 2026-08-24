@@ -1,0 +1,5 @@
+[package]
+name = "python-poison"
+version = "0.0.0"
+edition = "2024"
+build = "poison.rs"

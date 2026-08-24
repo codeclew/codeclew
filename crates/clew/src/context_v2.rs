@@ -84,7 +84,7 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
         .pointer("/context/language")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("context has no language authority"))?;
-    if !matches!(language, "language:kotlin" | "language:rust")
+    if !supported_context_language(language)
         || compilation_set.is_empty()
         || compilation_set.len() != compilations.len()
         || queries.keys().ne(compilation_set.iter())
@@ -136,6 +136,13 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             .ok_or_else(|| invalid("projection has no source authority"))?,
     )?;
     Ok(())
+}
+
+fn supported_context_language(language: &str) -> bool {
+    matches!(
+        language,
+        "language:kotlin" | "language:python" | "language:rust"
+    )
 }
 
 fn validate_source_rows(value: &Value) -> Result<(), ClewError> {
@@ -284,7 +291,7 @@ pub fn create(
             "id":obligation,
             "code":"UNSURE_GENERATION_AUTHORITY",
             "subject":query_context.requested_terms,
-            "requiredCheckSet":["restore successful compiler-semantic analysis before publication"],
+            "requiredCheckSet":["perform the named runtime or semantic verification before publication"],
             "publicationBlocking":true,
         }))
         .collect::<Vec<_>>();
@@ -991,6 +998,33 @@ mod tests {
         assert_eq!(projection["compilerVersions"], context["compilerVersions"]);
         assert!(projection.get("compilation").is_none());
         assert!(projection.get("compilerVersion").is_none());
+    }
+
+    #[test]
+    fn bounded_projection_preserves_python_authority() {
+        let context = json!({
+            "language":"language:python",
+            "snapshot":{"compilations":[]},
+            "task":{"intent":"inspect"},
+            "compilations":["python:.#backend"],
+            "compilerVersions":{"python:.#backend":"tree-sitter-python-0.25.0"},
+            "generationAuthority":{},
+            "matches":[],
+            "sources":[],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+        let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["language"], "language:python");
+        assert_eq!(projection["compilations"], context["compilations"]);
+    }
+
+    #[test]
+    fn context_language_allowlist_is_explicit() {
+        assert!(super::supported_context_language("language:kotlin"));
+        assert!(super::supported_context_language("language:python"));
+        assert!(super::supported_context_language("language:rust"));
+        assert!(!super::supported_context_language("language:unknown"));
     }
 
     #[test]

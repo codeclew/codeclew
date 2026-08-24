@@ -100,6 +100,7 @@ enum ModelCachePolicyArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SessionLanguageArg {
     Kotlin,
+    Python,
     Rust,
 }
 
@@ -455,6 +456,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
         &args.target_ref,
         match args.language {
             SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
+            SessionLanguageArg::Python => SessionLanguage::Python,
             SessionLanguageArg::Rust => SessionLanguage::Rust,
         },
         &args.compilation,
@@ -598,6 +600,7 @@ fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
 fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
     let mut record = RunRecord::load(run_id)?;
     let (session, _) = SessionAuthority::load(&record.session_id)?;
+    require_mutation_language(session.language)?;
     // Admission stays locked until the inactive run is either classified as
     // recovery-required or durably returned to CREATED and handed to the
     // supervisor. close/abort use the same session -> run lock order.
@@ -858,10 +861,10 @@ fn publish_task_run(
 }
 
 fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError> {
-    if language == SessionLanguage::Rust {
+    if language != SessionLanguage::Kotlin {
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
-            "Rust support is read-only until mutation validation is explicitly qualified",
+            "mutation is supported only for Kotlin sessions with a qualified validation contour",
         ));
     }
     Ok(())
@@ -870,6 +873,7 @@ fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError>
 fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
+    require_mutation_language(session.language)?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
     if matches!(
@@ -1197,10 +1201,12 @@ mod tests {
     }
 
     #[test]
-    fn rust_is_hard_read_only_before_mutation_qualification() {
+    fn non_kotlin_languages_are_hard_read_only_before_mutation_qualification() {
         assert!(require_mutation_language(SessionLanguage::Kotlin).is_ok());
-        let error = require_mutation_language(SessionLanguage::Rust).unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+        for language in [SessionLanguage::Python, SessionLanguage::Rust] {
+            let error = require_mutation_language(language).unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+        }
     }
 
     #[test]
@@ -1444,6 +1450,22 @@ mod tests {
             [":workers:kotlin/main", ":workers:kotlin23/main"]
         );
         assert!(matches!(args.language, SessionLanguageArg::Kotlin));
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--language",
+                "python",
+                "--compilation",
+                "python:.#backend",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "clew",

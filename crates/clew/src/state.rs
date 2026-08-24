@@ -1130,11 +1130,46 @@ fn repository_key(repo: &Path) -> Result<String, ClewError> {
 }
 
 fn git(repo: &Path, arguments: &[&str]) -> Result<String, ClewError> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
+        .args([
+            "--no-replace-objects",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "protocol.file.allow=never",
+        ])
         .args(arguments)
         .current_dir(repo)
-        .output()
-        .map_err(io_error)?;
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "");
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_REPLACE_REF_BASE",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command.output().map_err(io_error)?;
     if !output.status.success() {
         return Err(invalid("repository identity is unavailable"));
     }

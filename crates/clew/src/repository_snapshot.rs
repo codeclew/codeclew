@@ -78,12 +78,22 @@ struct GitViews {
     untracked: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RawIndexEntry {
     path: String,
     mode: u32,
     stage: u8,
     oid: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TrackedScopeLimits {
+    pub max_files: usize,
+    pub max_file_bytes: usize,
+    pub max_total_bytes: usize,
+    pub max_tree_entries: usize,
+    pub max_tree_bytes: usize,
+    pub max_tree_path_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +108,262 @@ pub fn capture(
     store: &CasStore,
 ) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
     capture_with_hook(repo, store, &[], |_| Ok(()))
+}
+
+/// Captures selected blobs directly from one exact commit without creating a
+/// checkout or consulting worktree/index state. Git plumbing runs with hooks,
+/// fsmonitor, replacement refs and ambient Git authority disabled.
+pub(crate) fn capture_commit_scope(
+    repo: &Path,
+    revision: &str,
+    source_roots: &[String],
+    store: &CasStore,
+    accepts: impl Fn(&str) -> bool,
+    limits: TrackedScopeLimits,
+) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
+    validate_oid(revision)?;
+    if source_roots.is_empty() {
+        return Err(invalid("selected source-root set is empty"));
+    }
+    let repo = repo.canonicalize().map_err(io_error)?;
+    let mut command = isolated_git_command(&repo);
+    command.args(["ls-tree", "-r", "-z", "--full-tree", revision]);
+    if !source_roots.iter().any(|root| root == ".") {
+        command.arg("--").args(
+            source_roots
+                .iter()
+                .map(|root| format!(":(top,literal){root}")),
+        );
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(io_error)?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| internal("Git tree stdout is unavailable"))?;
+    let selected = match parse_tree_stream(BufReader::new(stdout), &accepts, limits) {
+        Ok(selected) => selected,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    if !child.wait().map_err(io_error)?.success() {
+        return Err(invalid("selected base-revision tree is unavailable"));
+    }
+    let snapshot = build_scoped_snapshot(&repo, store, &selected, limits)?;
+    publish_snapshot(store, snapshot)
+}
+
+fn build_scoped_snapshot(
+    repo: &Path,
+    store: &CasStore,
+    selected: &[RawIndexEntry],
+    limits: TrackedScopeLimits,
+) -> Result<RepositoryInputSnapshot, ClewError> {
+    validate_tracked_scope(selected, limits)?;
+    let metadata = read_git_blob_metadata(repo, selected.iter().map(|entry| entry.oid.as_str()))?;
+    let mut total_bytes = 0usize;
+    for entry in selected {
+        let (kind, size) = metadata
+            .get(&entry.oid)
+            .ok_or_else(|| corrupt_input("selected Git object metadata is unavailable"))?;
+        if kind != "blob" {
+            return Err(invalid("selected Python source is not a Git blob"));
+        }
+        let size = usize::try_from(*size)
+            .map_err(|_| resource("selected Python source exceeds host size"))?;
+        if size > limits.max_file_bytes {
+            return Err(resource("selected Python source exceeds its byte budget"));
+        }
+        total_bytes = total_bytes
+            .checked_add(size)
+            .ok_or_else(|| resource("selected Python source byte count overflow"))?;
+    }
+    if total_bytes > limits.max_total_bytes {
+        return Err(resource(
+            "selected Python source set exceeds its byte budget",
+        ));
+    }
+
+    let regular = selected
+        .iter()
+        .filter(|entry| matches!(entry.mode, 0o100644 | 0o100755))
+        .map(|entry| entry.oid.as_str());
+    let blobs = read_git_blobs(repo, regular)?;
+    let mut index = Vec::with_capacity(selected.len());
+    for entry in selected {
+        let content = if entry.mode == 0o120000 {
+            store.put(
+                "codeclew-repository-input-symlink-boundary/1.0",
+                &canonical::bytes(&serde_json::json!({
+                    "kind":"SYMLINK_BOUNDARY",
+                    "gitOid":entry.oid,
+                }))
+                .map_err(internal)?,
+            )?
+        } else {
+            let bytes = blobs
+                .get(&entry.oid)
+                .ok_or_else(|| corrupt_input("selected Git blob was not returned by cat-file"))?;
+            store.put(BLOB_SCHEMA, bytes)?
+        };
+        index.push(IndexEntry {
+            path: entry.path.clone(),
+            mode: entry.mode,
+            stage: entry.stage,
+            git_oid: entry.oid.clone(),
+            content,
+        });
+    }
+
+    let selected_view = canonical::bytes(&selected).map_err(internal)?;
+    let empty_view = canonical::bytes(&Vec::<String>::new()).map_err(internal)?;
+    let mut snapshot = RepositoryInputSnapshot {
+        schema: SNAPSHOT_SCHEMA.into(),
+        snapshot_id: String::new(),
+        staged_view_digest: canonical::hash_bytes(&selected_view),
+        cached_view_digest: canonical::hash_bytes(&selected_view),
+        untracked_view_digest: canonical::hash_bytes(&empty_view),
+        index,
+        worktree: Vec::new(),
+    };
+    snapshot.snapshot_id = canonical::hash(&snapshot).map_err(internal)?;
+    Ok(snapshot)
+}
+
+fn publish_snapshot(
+    store: &CasStore,
+    snapshot: RepositoryInputSnapshot,
+) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
+    let bytes = canonical::bytes(&snapshot).map_err(internal)?;
+    let object = store.put(SNAPSHOT_SCHEMA, &bytes)?;
+    Ok((snapshot, object))
+}
+
+fn parse_tree_stream(
+    mut reader: impl BufRead,
+    accepts: &impl Fn(&str) -> bool,
+    limits: TrackedScopeLimits,
+) -> Result<Vec<RawIndexEntry>, ClewError> {
+    if limits.max_files == 0
+        || limits.max_tree_entries == 0
+        || limits.max_tree_bytes == 0
+        || limits.max_tree_path_bytes == 0
+    {
+        return Err(resource("selected Git tree budget is empty"));
+    }
+    let max_row_bytes = limits
+        .max_tree_path_bytes
+        .checked_add(128)
+        .ok_or_else(|| resource("selected Git tree row budget overflow"))?;
+    let mut entries = Vec::new();
+    let mut tree_entries = 0usize;
+    let mut tree_bytes = 0usize;
+    loop {
+        let mut row = Vec::new();
+        reader
+            .by_ref()
+            .take((max_row_bytes + 1) as u64)
+            .read_until(0, &mut row)
+            .map_err(io_error)?;
+        if row.is_empty() {
+            break;
+        }
+        if row.last() != Some(&0) || row.len() > max_row_bytes {
+            return Err(resource("selected Git tree row exceeds its byte budget"));
+        }
+        tree_entries = tree_entries
+            .checked_add(1)
+            .ok_or_else(|| resource("selected Git tree entry count overflow"))?;
+        tree_bytes = tree_bytes
+            .checked_add(row.len())
+            .ok_or_else(|| resource("selected Git tree byte count overflow"))?;
+        if tree_entries > limits.max_tree_entries || tree_bytes > limits.max_tree_bytes {
+            return Err(resource("selected Git tree enumeration exceeds its budget"));
+        }
+        row.pop();
+        let tab = row
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or_else(|| invalid("Git tree row has no path separator"))?;
+        let raw_path = &row[tab + 1..];
+        if !raw_python_path(raw_path) {
+            continue;
+        }
+        if raw_path.len() > limits.max_tree_path_bytes {
+            return Err(resource("selected Python path exceeds its byte budget"));
+        }
+        let path = std::str::from_utf8(raw_path)
+            .map_err(|_| invalid("selected Python path is not UTF-8"))?
+            .to_owned();
+        validate_path(&path)?;
+        if !accepts(&path) {
+            continue;
+        }
+        let header = std::str::from_utf8(&row[..tab])
+            .map_err(|_| invalid("Git tree header is not UTF-8"))?;
+        let mut fields = header.split(' ');
+        let mode = u32::from_str_radix(fields.next().unwrap_or(""), 8)
+            .map_err(|_| invalid("Git tree mode is invalid"))?;
+        let kind = fields.next().unwrap_or("");
+        let oid = fields.next().unwrap_or("").to_owned();
+        if fields.next().is_some() || kind != "blob" {
+            return Err(invalid("selected Git tree object is unsupported"));
+        }
+        validate_oid(&oid)?;
+        entries.push(RawIndexEntry {
+            path,
+            mode,
+            stage: 0,
+            oid,
+        });
+        if entries.len() > limits.max_files {
+            return Err(resource(
+                "selected Python source file count exceeds its budget",
+            ));
+        }
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    if entries.windows(2).any(|pair| pair[0].path == pair[1].path) {
+        return Err(invalid("selected Git tree contains duplicate paths"));
+    }
+    Ok(entries)
+}
+
+fn raw_python_path(path: &[u8]) -> bool {
+    path.ends_with(b".py")
+        && !path
+            .split(|byte| *byte == b'/')
+            .any(|component| component == b".semantic-thread")
+}
+
+fn validate_tracked_scope(
+    entries: &[RawIndexEntry],
+    limits: TrackedScopeLimits,
+) -> Result<(), ClewError> {
+    if entries.len() > limits.max_files {
+        return Err(resource(
+            "selected Python source file count exceeds its budget",
+        ));
+    }
+    for entry in entries {
+        if entry.stage != 0 {
+            return Err(invalid(
+                "selected Python source has an unmerged Git index entry",
+            ));
+        }
+        if !matches!(entry.mode, 0o100644 | 0o100755 | 0o120000) {
+            return Err(invalid(
+                "selected Python source has an unsupported Git mode",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn capture_ignoring_derived_mounts(
@@ -533,20 +799,62 @@ fn validate_oid(oid: &str) -> Result<(), ClewError> {
     Ok(())
 }
 
+pub(crate) fn isolated_git_command(repo: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .args([
+            "--no-replace-objects",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+        ])
+        .current_dir(repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .args([
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "protocol.file.allow=never",
+        ]);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_REPLACE_REF_BASE",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
 fn read_git_blobs<'a>(
     repo: &Path,
     oids: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, Vec<u8>>, ClewError> {
     let unique = oids.map(str::to_owned).collect::<BTreeSet<_>>();
-    let mut child = Command::new("git")
+    let mut command = isolated_git_command(repo);
+    command
         .args(["cat-file", "--batch"])
-        .current_dir(repo)
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(io_error)?;
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(io_error)?;
     let mut stdin = child
         .stdin
         .take()
@@ -598,6 +906,58 @@ fn read_git_blobs<'a>(
         return Err(corrupt_input("cat-file batch failed"));
     }
     Ok(blobs)
+}
+
+fn read_git_blob_metadata<'a>(
+    repo: &Path,
+    oids: impl Iterator<Item = &'a str>,
+) -> Result<BTreeMap<String, (String, u64)>, ClewError> {
+    let unique = oids.map(str::to_owned).collect::<BTreeSet<_>>();
+    if unique.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut command = isolated_git_command(repo);
+    command
+        .args([
+            "cat-file",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().map_err(io_error)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| internal("cat-file metadata stdin is unavailable"))?;
+    for oid in &unique {
+        stdin.write_all(oid.as_bytes()).map_err(io_error)?;
+        stdin.write_all(b"\n").map_err(io_error)?;
+    }
+    drop(stdin);
+    let output = child.wait_with_output().map_err(io_error)?;
+    if !output.status.success() {
+        return Err(corrupt_input("cat-file metadata batch failed"));
+    }
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| corrupt_input("cat-file metadata is not UTF-8"))?;
+    let mut metadata = BTreeMap::new();
+    for (requested, row) in unique.iter().zip(text.lines()) {
+        let fields = row.split(' ').collect::<Vec<_>>();
+        if fields.len() != 3 || fields[0] != requested {
+            return Err(corrupt_input(
+                "cat-file returned unexpected selected object metadata",
+            ));
+        }
+        let size = fields[2]
+            .parse::<u64>()
+            .map_err(|_| corrupt_input("cat-file returned an invalid selected object size"))?;
+        metadata.insert(requested.clone(), (fields[1].into(), size));
+    }
+    if metadata.len() != unique.len() {
+        return Err(corrupt_input("cat-file omitted selected object metadata"));
+    }
+    Ok(metadata)
 }
 
 struct FdRoot {
@@ -862,6 +1222,10 @@ fn mutated(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InputMutated, message)
 }
 
+fn resource(message: &str) -> ClewError {
+    ClewError::new(ErrorCode::ResourceLimit, message)
+}
+
 fn internal(error: impl std::fmt::Display) -> ClewError {
     ClewError::new(ErrorCode::Internal, error.to_string())
 }
@@ -974,6 +1338,328 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::InputMutated);
+    }
+
+    #[test]
+    fn commit_scope_reads_only_selected_blobs_and_ignores_worktree_state() {
+        let (repo, _state, store) = fixture();
+        fs::write(repo.path().join("src/main.py"), b"def selected(): pass\n").unwrap();
+        fs::write(repo.path().join("private.env"), vec![b's'; 4096]).unwrap();
+        Command::new("git")
+            .args(["add", "src/main.py", "private.env"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "python scope"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let gitlink_oid = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let gitlink_oid = String::from_utf8(gitlink_oid).unwrap();
+        Command::new("git")
+            .args([
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{},vendor.py", gitlink_oid.trim()),
+            ])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "unrelated gitlink"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        fs::write(repo.path().join("untracked-secret.env"), vec![b'u'; 4096]).unwrap();
+        let revision = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let revision = String::from_utf8(revision).unwrap();
+
+        let (snapshot, _) = capture_commit_scope(
+            repo.path(),
+            revision.trim(),
+            &[".".into()],
+            &store,
+            |path| path == "src/main.py",
+            TrackedScopeLimits {
+                max_files: 1,
+                max_file_bytes: 128,
+                max_total_bytes: 128,
+                max_tree_entries: 16,
+                max_tree_bytes: 4096,
+                max_tree_path_bytes: 512,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.index.len(), 1);
+        assert_eq!(snapshot.index[0].path, "src/main.py");
+        assert!(snapshot.worktree.is_empty());
+        assert!(
+            store
+                .read(&snapshot.index[0].content, 128)
+                .unwrap()
+                .bytes()
+                .starts_with(b"def selected")
+        );
+    }
+
+    #[test]
+    fn commit_scope_rejects_selected_blob_size_before_capture() {
+        let (repo, _state, store) = fixture();
+        fs::write(repo.path().join("src/main.py"), b"def selected(): pass\n").unwrap();
+        Command::new("git")
+            .args(["add", "src/main.py"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "oversized Python source"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let revision = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let revision = String::from_utf8(revision).unwrap();
+        let error = capture_commit_scope(
+            repo.path(),
+            revision.trim(),
+            &["src".into()],
+            &store,
+            |path| path.ends_with(".py"),
+            TrackedScopeLimits {
+                max_files: 1,
+                max_file_bytes: 4,
+                max_total_bytes: 4,
+                max_tree_entries: 16,
+                max_tree_bytes: 4096,
+                max_tree_path_bytes: 512,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+    }
+
+    #[test]
+    fn commit_scope_treats_roots_literally_and_ignores_unrelated_raw_paths() {
+        let (repo, _state, store) = fixture();
+        fs::create_dir_all(repo.path().join("literal*root")).unwrap();
+        fs::write(
+            repo.path().join("literal*root/main.py"),
+            b"def selected(): pass\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "literal*root/main.py"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "literal Python root"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let first_revision = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let first_revision = String::from_utf8(first_revision).unwrap();
+        let limits = TrackedScopeLimits {
+            max_files: 1,
+            max_file_bytes: 128,
+            max_total_bytes: 128,
+            max_tree_entries: 16,
+            max_tree_bytes: 4096,
+            max_tree_path_bytes: 512,
+        };
+        let (before, before_object) = capture_commit_scope(
+            repo.path(),
+            first_revision.trim(),
+            &["literal*root".into()],
+            &store,
+            |path| path == "literal*root/main.py",
+            limits,
+        )
+        .unwrap();
+
+        fs::create_dir_all(repo.path().join("literalXroot")).unwrap();
+        fs::write(
+            repo.path().join("literalXroot/unselected.py"),
+            b"raise RuntimeError\n",
+        )
+        .unwrap();
+        fs::create_dir_all(repo.path().join("literal*root/.semantic-thread")).unwrap();
+        fs::write(
+            repo.path().join("literal*root/.semantic-thread/private.py"),
+            b"SECRET = True\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["add", "-f", "."])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "unrelated raw paths"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let second_revision = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let second_revision = String::from_utf8(second_revision).unwrap();
+        let (after, after_object) = capture_commit_scope(
+            repo.path(),
+            second_revision.trim(),
+            &["literal*root".into()],
+            &store,
+            |path| path == "literal*root/main.py",
+            limits,
+        )
+        .unwrap();
+
+        assert_eq!(before, after);
+        assert_eq!(before_object, after_object);
+    }
+
+    #[test]
+    fn tree_parser_ignores_legacy_and_unrelated_non_utf8_paths() {
+        let oid = "0".repeat(40);
+        let mut rows = format!("100644 blob {oid}\tliteral*root/main.py\0").into_bytes();
+        rows.extend(format!("100644 blob {oid}\tliteral*root/").as_bytes());
+        rows.extend([0xff, b'.', b'b', b'i', b'n', 0]);
+        rows.extend(
+            format!("100644 blob {oid}\tliteral*root/.semantic-thread/private.py\0").as_bytes(),
+        );
+        let selected = parse_tree_stream(
+            std::io::Cursor::new(rows),
+            &|path| path == "literal*root/main.py",
+            TrackedScopeLimits {
+                max_files: 1,
+                max_file_bytes: 128,
+                max_total_bytes: 128,
+                max_tree_entries: 3,
+                max_tree_bytes: 4096,
+                max_tree_path_bytes: 512,
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].path, "literal*root/main.py");
+    }
+
+    #[test]
+    fn commit_scope_bounds_unrelated_tree_enumeration() {
+        let (repo, _state, store) = fixture();
+        fs::write(repo.path().join("a.txt"), b"a\n").unwrap();
+        fs::write(repo.path().join("b.txt"), b"b\n").unwrap();
+        Command::new("git")
+            .args(["add", "a.txt", "b.txt"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "unrelated tree rows"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let revision = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let revision = String::from_utf8(revision).unwrap();
+        let error = capture_commit_scope(
+            repo.path(),
+            revision.trim(),
+            &[".".into()],
+            &store,
+            |path| path.ends_with(".py"),
+            TrackedScopeLimits {
+                max_files: 1,
+                max_file_bytes: 128,
+                max_total_bytes: 128,
+                max_tree_entries: 1,
+                max_tree_bytes: 4096,
+                max_tree_path_bytes: 512,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_scope_never_lazy_fetches_a_missing_selected_blob() {
+        let (repo, _state, store) = fixture();
+        fs::write(repo.path().join("src/main.py"), b"def selected(): pass\n").unwrap();
+        Command::new("git")
+            .args(["add", "src/main.py"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "promised Python blob"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let revision = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let revision = String::from_utf8(revision).unwrap();
+        let oid = git_command(repo.path(), &["rev-parse", "HEAD:src/main.py"], None).unwrap();
+        let oid = String::from_utf8(oid).unwrap();
+        let oid = oid.trim();
+
+        let helper = repo.path().join("lazy-fetch-helper");
+        let marker = repo.path().join("lazy-fetch-ran");
+        fs::write(
+            &helper,
+            b"#!/bin/sh\n: > \"${0%/*}/lazy-fetch-ran\"\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        for arguments in [
+            vec!["config", "extensions.partialClone", "origin"],
+            vec!["config", "remote.origin.promisor", "true"],
+            vec!["config", "protocol.ext.allow", "always"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(arguments)
+                    .current_dir(repo.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        assert!(
+            Command::new("git")
+                .args([
+                    "config",
+                    "remote.origin.url",
+                    &format!("ext::{}", helper.display())
+                ])
+                .current_dir(repo.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::remove_file(
+            repo.path()
+                .join(".git/objects")
+                .join(&oid[..2])
+                .join(&oid[2..]),
+        )
+        .unwrap();
+
+        let error = capture_commit_scope(
+            repo.path(),
+            revision.trim(),
+            &["src".into()],
+            &store,
+            |path| path == "src/main.py",
+            TrackedScopeLimits {
+                max_files: 1,
+                max_file_bytes: 128,
+                max_total_bytes: 128,
+                max_tree_entries: 16,
+                max_tree_bytes: 4096,
+                max_tree_path_bytes: 512,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StateCorrupt);
+        assert!(!marker.exists());
     }
 
     #[test]

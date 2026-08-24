@@ -1,7 +1,16 @@
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
-use crate::repository_snapshot::LEGACY_EXCLUDES;
+use crate::python_adapter_v2::{
+    MAX_SOURCE_FILE_BYTES as MAX_PYTHON_SOURCE_FILE_BYTES,
+    MAX_SOURCE_FILES as MAX_PYTHON_SOURCE_FILES,
+    MAX_TOTAL_SOURCE_BYTES as MAX_PYTHON_TOTAL_SOURCE_BYTES,
+};
+use crate::python_project_model::PythonCompilationSelector;
+use crate::repository_snapshot::{
+    LEGACY_EXCLUDES, RepositoryInputSnapshot, SNAPSHOT_SCHEMA, TrackedScopeLimits,
+    capture_commit_scope, isolated_git_command,
+};
 use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::StateAuthority;
 #[cfg(test)]
@@ -59,6 +68,7 @@ pub struct SessionAuthority {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionLanguage {
     Kotlin,
+    Python,
     Rust,
 }
 
@@ -66,6 +76,7 @@ impl SessionLanguage {
     pub fn uri(self) -> &'static str {
         match self {
             Self::Kotlin => "language:kotlin",
+            Self::Python => "language:python",
             Self::Rust => "language:rust",
         }
     }
@@ -207,6 +218,18 @@ struct RepositoryLocator {
     external_build_state_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PythonSourceBinding {
+    schema: String,
+    session_id: String,
+    session_authority_digest: String,
+    base_revision: String,
+    snapshot: CasObject,
+}
+
+const PYTHON_SOURCE_BINDING_SCHEMA: &str = "codeclew-python-session-source/1.0";
+
 fn validate_locator(locator: &RepositoryLocator) -> Result<(), ClewError> {
     if locator.schema != "codeclew-repository-locator/3.0"
         || !locator.target_repository_path.is_absolute()
@@ -238,17 +261,27 @@ impl SessionAuthority {
         let repository = state.repository(&repo)?;
         let target_ref = qualify_ref(target_ref)?;
         let compilations = canonical_compilations(language, compilations)?;
-        if language == SessionLanguage::Rust && model_cache_policy != ModelCachePolicy::NonCacheable
-        {
+        if !model_cache_policy_is_valid(language, model_cache_policy) {
             return Err(invalid(
-                "Rust sessions currently require NON_CACHEABLE live Cargo authority",
+                "read-only language sessions require NON_CACHEABLE live source authority",
             ));
         }
         if !generation_jobs_are_valid(generation_jobs) {
             return Err(invalid("generation jobs must be between 1 and 64"));
         }
-        let base_revision = git_output(&repo, &["rev-parse", "HEAD"])?;
-        let target_oid = git_output(&repo, &["rev-parse", &target_ref])?;
+        let base_revision = if language == SessionLanguage::Python {
+            isolated_git_output(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?
+        } else {
+            git_output(&repo, &["rev-parse", "HEAD"])?
+        };
+        let target_oid = if language == SessionLanguage::Python {
+            isolated_git_output(
+                &repo,
+                &["rev-parse", "--verify", &format!("{target_ref}^{{commit}}")],
+            )?
+        } else {
+            git_output(&repo, &["rev-parse", &target_ref])?
+        };
         if target_oid != base_revision {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
@@ -286,13 +319,52 @@ impl SessionAuthority {
         for child in ["objects/sha256", "contexts", "plans", "candidates", "runs"] {
             session_directory.child(Path::new(child))?;
         }
-        let source_repository_path = root.join("source");
-        create_filtered_detached_worktree(
-            &repo,
-            &source_repository_path,
-            &authority.base_revision,
-        )?;
-        seal_source_worktree(&source_repository_path)?;
+        let source_repository_path = if language == SessionLanguage::Python {
+            let selectors = authority
+                .compilations
+                .iter()
+                .map(|value| PythonCompilationSelector::parse(value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let source_roots = selectors
+                .iter()
+                .map(|selector| selector.source_root.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let store = CasStore::open(&state)?;
+            let (_, snapshot) = capture_commit_scope(
+                &repo,
+                &authority.base_revision,
+                &source_roots,
+                &store,
+                |path| selectors.iter().any(|selector| selector.contains(path)),
+                TrackedScopeLimits {
+                    max_files: MAX_PYTHON_SOURCE_FILES,
+                    max_file_bytes: MAX_PYTHON_SOURCE_FILE_BYTES,
+                    max_total_bytes: MAX_PYTHON_TOTAL_SOURCE_BYTES,
+                    max_tree_entries: 262_144,
+                    max_tree_bytes: 64 * 1024 * 1024,
+                    max_tree_path_bytes: 4096,
+                },
+            )?;
+            write_managed_json_create_new(
+                &state,
+                &root.join("python-source.json"),
+                &PythonSourceBinding {
+                    schema: PYTHON_SOURCE_BINDING_SCHEMA.into(),
+                    session_id: authority.session_id.clone(),
+                    session_authority_digest: authority.authority_digest.clone(),
+                    base_revision: authority.base_revision.clone(),
+                    snapshot,
+                },
+            )?;
+            repo.clone()
+        } else {
+            let source = root.join("source");
+            create_filtered_detached_worktree(&repo, &source, &authority.base_revision)?;
+            seal_source_worktree(&source)?;
+            source
+        };
         write_managed_json_create_new(&state, &root.join("authority.json"), &authority)?;
         write_managed_json_create_new(
             &state,
@@ -398,6 +470,33 @@ impl SessionAuthority {
         let locator: RepositoryLocator =
             read_managed_json(&state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
         validate_locator(&locator)?;
+        if self.language == SessionLanguage::Python {
+            let old_target = locator
+                .target_repository_path
+                .canonicalize()
+                .map_err(io_error)?;
+            let old_source = locator
+                .source_repository_path
+                .canonicalize()
+                .map_err(io_error)?;
+            if old_source != old_target || state.repository(&old_target)?.key != self.repository_key
+            {
+                return Err(invalid(
+                    "Python session locator is invalid during relocation",
+                ));
+            }
+            state.write_private_atomic(
+                &root.join("locator.json"),
+                &canonical::bytes(&RepositoryLocator {
+                    schema: locator.schema,
+                    target_repository_path: repository.clone(),
+                    source_repository_path: repository,
+                    external_build_state_path: locator.external_build_state_path,
+                })
+                .map_err(internal)?,
+            )?;
+            return Ok(lifecycle);
+        }
         let source = locator
             .source_repository_path
             .canonicalize()
@@ -429,6 +528,12 @@ impl SessionAuthority {
     }
 
     pub fn repository_path(&self) -> Result<PathBuf, ClewError> {
+        if self.language == SessionLanguage::Python {
+            return Err(ClewError::new(
+                ErrorCode::UnsupportedLanguage,
+                "Python sessions have no materialized source worktree",
+            ));
+        }
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let locator: RepositoryLocator =
@@ -450,6 +555,42 @@ impl SessionAuthority {
             ));
         }
         Ok(path)
+    }
+
+    pub(crate) fn python_source_snapshot(
+        &self,
+        store: &CasStore,
+    ) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
+        if self.language != SessionLanguage::Python {
+            return Err(invalid("Python source authority requires a Python session"));
+        }
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let binding: PythonSourceBinding =
+            read_managed_json(&state, &root.join("python-source.json"), MAX_PLAN_BYTES)?;
+        if binding.schema != PYTHON_SOURCE_BINDING_SCHEMA
+            || binding.session_id != self.session_id
+            || binding.session_authority_digest != self.authority_digest
+            || binding.base_revision != self.base_revision
+            || binding.snapshot.object_schema != SNAPSHOT_SCHEMA
+        {
+            return Err(invalid("Python session source binding is invalid"));
+        }
+        let limit = usize::try_from(binding.snapshot.size)
+            .map_err(|_| invalid("Python session snapshot exceeds host size"))?;
+        if limit > 16 * 1024 * 1024 {
+            return Err(invalid(
+                "Python session snapshot exceeds its metadata budget",
+            ));
+        }
+        let lease = store.read(&binding.snapshot, limit)?;
+        let snapshot: RepositoryInputSnapshot = serde_json::from_slice(lease.bytes())
+            .map_err(|_| invalid("Python session snapshot is invalid"))?;
+        if canonical::bytes(&snapshot).map_err(internal)? != lease.bytes() {
+            return Err(invalid("Python session snapshot is not canonical"));
+        }
+        snapshot.verify()?;
+        Ok((snapshot, binding.snapshot))
     }
 
     pub fn target_repository_path(&self) -> Result<PathBuf, ClewError> {
@@ -2026,6 +2167,23 @@ fn git_output(repo: &Path, arguments: &[&str]) -> Result<String, ClewError> {
         .map_err(|_| invalid("Git authority is not UTF-8"))
 }
 
+fn isolated_git_output(repo: &Path, arguments: &[&str]) -> Result<String, ClewError> {
+    let mut command = isolated_git_command(repo);
+    let output = command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("isolated Git authority is unavailable"));
+    }
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().into())
+        .map_err(|_| invalid("isolated Git authority is not UTF-8"))
+}
+
 fn unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2244,6 +2402,10 @@ fn canonical_compilations(
     Ok(canonical)
 }
 
+fn model_cache_policy_is_valid(language: SessionLanguage, policy: ModelCachePolicy) -> bool {
+    language == SessionLanguage::Kotlin || policy == ModelCachePolicy::NonCacheable
+}
+
 fn compilations_are_canonical(language: SessionLanguage, compilations: &[String]) -> bool {
     !compilations.is_empty()
         && compilations.len() <= 64
@@ -2254,8 +2416,15 @@ fn compilations_are_canonical(language: SessionLanguage, compilations: &[String]
 }
 
 fn valid_compilation(language: SessionLanguage, compilation: &str) -> bool {
-    if language == SessionLanguage::Rust {
-        return crate::rust_project_model::RustCompilationSelector::parse(compilation).is_ok();
+    match language {
+        SessionLanguage::Rust => {
+            return crate::rust_project_model::RustCompilationSelector::parse(compilation).is_ok();
+        }
+        SessionLanguage::Python => {
+            return crate::python_project_model::PythonCompilationSelector::parse(compilation)
+                .is_ok();
+        }
+        SessionLanguage::Kotlin => {}
     }
     if compilation.len() > 256 || !compilation.starts_with(':') {
         return false;
@@ -2948,6 +3117,14 @@ mod tests {
             [selector]
         );
         assert!(canonical_compilations(rust, &[":/main".into()]).is_err());
+
+        let python = SessionLanguage::Python;
+        let selector = "python:.#backend".to_owned();
+        assert_eq!(
+            canonical_compilations(python, std::slice::from_ref(&selector)).unwrap(),
+            [selector]
+        );
+        assert!(canonical_compilations(python, &[":/main".into()]).is_err());
     }
 
     #[test]
@@ -2957,6 +3134,28 @@ mod tests {
         assert!(generation_jobs_are_valid(Some(64)));
         assert!(!generation_jobs_are_valid(Some(0)));
         assert!(!generation_jobs_are_valid(Some(65)));
+    }
+
+    #[test]
+    fn read_only_languages_accept_only_non_cacheable_model_authority() {
+        for language in [SessionLanguage::Python, SessionLanguage::Rust] {
+            assert!(model_cache_policy_is_valid(
+                language,
+                ModelCachePolicy::NonCacheable
+            ));
+            assert!(!model_cache_policy_is_valid(
+                language,
+                ModelCachePolicy::TrackedManifest
+            ));
+            assert!(!model_cache_policy_is_valid(
+                language,
+                ModelCachePolicy::SealedExternal
+            ));
+        }
+        assert!(model_cache_policy_is_valid(
+            SessionLanguage::Kotlin,
+            ModelCachePolicy::TrackedManifest
+        ));
     }
 
     #[test]
