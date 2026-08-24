@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -17,7 +18,9 @@ use std::os::fd::AsRawFd;
 const CAS_DOMAIN: &[u8] = b"codeclew-cas/v2\0";
 pub const CAS_OBJECT_SCHEMA: &str = "codeclew-cas-object/2.0";
 const CAS_PACK_SCHEMA: &str = "codeclew-cas-pack/3.0";
+const PACK_VERIFICATION_SCHEMA: &str = "codeclew-cas-pack-verification/1.0";
 const MAX_PACK_INDEX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PACK_VERIFICATION_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -39,6 +42,21 @@ struct PackEntry {
 struct PackLocation {
     data_name: String,
     entry: PackEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PackVerificationReceipt {
+    schema: String,
+    manifest_digest: String,
+    data_sha256: String,
+    data_size: u64,
+    device: u64,
+    inode: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +93,8 @@ pub struct CasStore {
     locks: ManagedDirectory,
     quarantine: ManagedDirectory,
     pack_catalog: Arc<RwLock<BTreeMap<String, PackLocation>>>,
+    #[cfg(test)]
+    full_pack_verifications: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl CasStore {
@@ -85,6 +105,8 @@ impl CasStore {
             locks: authority.directory(Path::new("locks"))?,
             quarantine: authority.directory(Path::new("quarantine"))?,
             pack_catalog: Arc::new(RwLock::new(BTreeMap::new())),
+            #[cfg(test)]
+            full_pack_verifications: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         store.refresh_pack_catalog()?;
         Ok(store)
@@ -264,7 +286,7 @@ impl CasStore {
             }
             (true, false) => {
                 let _ = self.packs.remove_file(OsStr::new(&temporary));
-                self.verify_pack_data(&data_name, &manifest)?;
+                self.verify_pack_data(&data_name, component, &manifest_digest, &manifest)?;
                 self.packs.atomic_write(OsStr::new(&index_name), &bytes)?;
             }
             (false, true) => {
@@ -402,11 +424,17 @@ impl CasStore {
         if end != manifest.data_size {
             return Err(corrupt("CAS pack object ranges do not cover pack data"));
         }
-        self.verify_pack_data(data_name, &manifest)?;
+        self.verify_pack_data(data_name, component, &manifest_digest, &manifest)?;
         Ok(manifest)
     }
 
-    fn verify_pack_data(&self, data_name: &str, manifest: &PackManifest) -> Result<(), ClewError> {
+    fn verify_pack_data(
+        &self,
+        data_name: &str,
+        component: &str,
+        manifest_digest: &str,
+        manifest: &PackManifest,
+    ) -> Result<(), ClewError> {
         let mut data_file = self
             .packs
             .open_file(OsStr::new(data_name))
@@ -415,6 +443,21 @@ impl CasStore {
         if data_metadata.len() != manifest.data_size {
             return Err(corrupt("CAS pack data size differs from its manifest"));
         }
+        let receipt = pack_verification_receipt(manifest_digest, manifest, &data_metadata);
+        let receipt_name = format!("{component}.verified");
+        if self.packs.file_exists(OsStr::new(&receipt_name))?
+            && let Ok(bytes) = self
+                .packs
+                .read_file(OsStr::new(&receipt_name), MAX_PACK_VERIFICATION_BYTES)
+            && let Ok(cached) = serde_json::from_slice::<PackVerificationReceipt>(&bytes)
+            && canonical::bytes(&cached).ok().as_deref() == Some(bytes.as_slice())
+            && cached == receipt
+        {
+            return Ok(());
+        }
+        #[cfg(test)]
+        self.full_pack_verifications
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut digest = Sha256::new();
         let mut buffer = vec![0u8; 1024 * 1024];
         loop {
@@ -428,6 +471,18 @@ impl CasStore {
         if actual != manifest.data_sha256 {
             return Err(corrupt("CAS pack data digest differs from its manifest"));
         }
+        if pack_verification_receipt(
+            manifest_digest,
+            manifest,
+            &data_file.metadata().map_err(io_error)?,
+        ) != receipt
+        {
+            return Err(corrupt("CAS pack data changed during verification"));
+        }
+        self.packs.atomic_write(
+            OsStr::new(&receipt_name),
+            &canonical::bytes(&receipt).map_err(internal)?,
+        )?;
         Ok(())
     }
 
@@ -535,6 +590,25 @@ fn add_pack_to_catalog(
         }
     }
     Ok(())
+}
+
+fn pack_verification_receipt(
+    manifest_digest: &str,
+    manifest: &PackManifest,
+    metadata: &std::fs::Metadata,
+) -> PackVerificationReceipt {
+    PackVerificationReceipt {
+        schema: PACK_VERIFICATION_SCHEMA.into(),
+        manifest_digest: manifest_digest.into(),
+        data_sha256: manifest.data_sha256.clone(),
+        data_size: metadata.len(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -710,6 +784,36 @@ mod tests {
             b"durable payload"
         );
         assert!(!loose.exists());
+    }
+
+    #[test]
+    fn unchanged_pack_reopen_uses_metadata_bound_verification_receipt() {
+        let (root, store) = store();
+        let object = store
+            .put_batch(vec![(
+                "test/verified-pack/1".into(),
+                vec![b'x'; 4 * 1024 * 1024],
+            )])
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            store
+                .full_pack_verifications
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let reopened =
+            CasStore::open(&StateAuthority::open(root.path().join("v2")).unwrap()).unwrap();
+        assert_eq!(
+            reopened
+                .full_pack_verifications
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            reopened.read(&object, 4 * 1024 * 1024).unwrap().bytes(),
+            vec![b'x'; 4 * 1024 * 1024]
+        );
     }
 
     #[test]
