@@ -1,0 +1,13 @@
+[package]
+name = "rust-mixed-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-mixed-fixture"
+path = "src/main.rs"
+
+[workspace]

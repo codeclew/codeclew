@@ -13,6 +13,8 @@ pub mod process_isolation;
 pub mod query_v2;
 pub mod repository_snapshot;
 pub mod runtime;
+pub mod rust_adapter_v2;
+pub mod rust_project_model;
 pub(crate) mod semantic_validation;
 pub mod session;
 pub mod state;

@@ -147,6 +147,8 @@ def main() -> int:
                 str(repository),
                 "--target-ref",
                 "main",
+                "--language",
+                "kotlin",
                 "--compilation",
                 ":/main",
                 "--intent",

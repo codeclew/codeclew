@@ -17,7 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-pub const SESSION_SCHEMA: &str = "codeclew-session/4.0";
+pub const SESSION_SCHEMA: &str = "codeclew-session/5.0";
 pub const CONTEXT_SCHEMA: &str = "codeclew-context/3.0";
 pub const PLAN_SCHEMA: &str = "codeclew-plan/2.0";
 pub const RUN_SCHEMA: &str = "codeclew-task-run/3.0";
@@ -47,11 +47,28 @@ pub struct SessionAuthority {
     pub target_oid: String,
     pub runtime_key: String,
     pub runtime_mode: RuntimeMode,
+    pub language: SessionLanguage,
     pub compilations: Vec<String>,
     pub generation_jobs: Option<usize>,
     pub model_cache_policy: ModelCachePolicy,
     pub model_cache_authority: Option<String>,
     pub created_unix_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SessionLanguage {
+    Kotlin,
+    Rust,
+}
+
+impl SessionLanguage {
+    pub fn uri(self) -> &'static str {
+        match self {
+            Self::Kotlin => "language:kotlin",
+            Self::Rust => "language:rust",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +221,7 @@ impl SessionAuthority {
     pub fn open(
         repo: &Path,
         target_ref: &str,
+        language: SessionLanguage,
         compilations: &[String],
         generation_jobs: Option<usize>,
         model_cache_policy: ModelCachePolicy,
@@ -219,7 +237,13 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let repository = state.repository(&repo)?;
         let target_ref = qualify_ref(target_ref)?;
-        let compilations = canonical_compilations(compilations)?;
+        let compilations = canonical_compilations(language, compilations)?;
+        if language == SessionLanguage::Rust && model_cache_policy != ModelCachePolicy::NonCacheable
+        {
+            return Err(invalid(
+                "Rust sessions currently require NON_CACHEABLE live Cargo authority",
+            ));
+        }
         if !generation_jobs_are_valid(generation_jobs) {
             return Err(invalid("generation jobs must be between 1 and 64"));
         }
@@ -248,6 +272,7 @@ impl SessionAuthority {
             target_oid,
             runtime_key: runtime.runtime_key,
             runtime_mode: runtime.mode,
+            language,
             compilations,
             generation_jobs,
             model_cache_policy,
@@ -290,7 +315,7 @@ impl SessionAuthority {
             read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
         if authority.schema != SESSION_SCHEMA
             || authority.session_id != session_id
-            || !compilations_are_canonical(&authority.compilations)
+            || !compilations_are_canonical(authority.language, &authority.compilations)
             || !generation_jobs_are_valid(authority.generation_jobs)
             || authority.authority_digest != session_authority_digest(&authority)?
         {
@@ -2197,13 +2222,16 @@ fn model_cache_authority(
     }
 }
 
-fn canonical_compilations(compilations: &[String]) -> Result<Vec<String>, ClewError> {
+fn canonical_compilations(
+    language: SessionLanguage,
+    compilations: &[String],
+) -> Result<Vec<String>, ClewError> {
     if compilations.is_empty() || compilations.len() > 64 {
         return Err(invalid("session must select between 1 and 64 compilations"));
     }
     if compilations
         .iter()
-        .any(|compilation| !valid_compilation(compilation))
+        .any(|compilation| !valid_compilation(language, compilation))
     {
         return Err(invalid("session compilation authority is invalid"));
     }
@@ -2216,16 +2244,19 @@ fn canonical_compilations(compilations: &[String]) -> Result<Vec<String>, ClewEr
     Ok(canonical)
 }
 
-fn compilations_are_canonical(compilations: &[String]) -> bool {
+fn compilations_are_canonical(language: SessionLanguage, compilations: &[String]) -> bool {
     !compilations.is_empty()
         && compilations.len() <= 64
         && compilations
             .iter()
-            .all(|compilation| valid_compilation(compilation))
+            .all(|compilation| valid_compilation(language, compilation))
         && compilations.windows(2).all(|pair| pair[0] < pair[1])
 }
 
-fn valid_compilation(compilation: &str) -> bool {
+fn valid_compilation(language: SessionLanguage, compilation: &str) -> bool {
+    if language == SessionLanguage::Rust {
+        return crate::rust_project_model::RustCompilationSelector::parse(compilation).is_ok();
+    }
     if compilation.len() > 256 || !compilation.starts_with(':') {
         return false;
     }
@@ -2283,6 +2314,7 @@ mod tests {
             target_oid: "1111111111111111111111111111111111111111".into(),
             runtime_key: format!("runtime:{digest}"),
             runtime_mode: RuntimeMode::Development,
+            language: SessionLanguage::Kotlin,
             compilations: vec![":/main".into()],
             generation_jobs: None,
             model_cache_policy: ModelCachePolicy::NonCacheable,
@@ -2865,9 +2897,10 @@ mod tests {
 
     #[test]
     fn session_compilations_are_nonempty_bounded_and_canonical() {
-        assert!(canonical_compilations(&[]).is_err());
-        assert!(canonical_compilations(&[String::new()]).is_err());
-        assert!(canonical_compilations(&["x".repeat(257)]).is_err());
+        let kotlin = SessionLanguage::Kotlin;
+        assert!(canonical_compilations(kotlin, &[]).is_err());
+        assert!(canonical_compilations(kotlin, &[String::new()]).is_err());
+        assert!(canonical_compilations(kotlin, &["x".repeat(257)]).is_err());
         for invalid in [
             "main",
             "--offline",
@@ -2883,28 +2916,38 @@ mod tests {
             ":app/main:other",
         ] {
             assert!(
-                canonical_compilations(&[invalid.into()]).is_err(),
+                canonical_compilations(kotlin, &[invalid.into()]).is_err(),
                 "accepted invalid compilation {invalid}"
             );
         }
-        assert!(canonical_compilations(&vec![":/main".into(); 65]).is_err());
-        assert!(canonical_compilations(&[":/main".into(), ":/main".into()]).is_err());
+        assert!(canonical_compilations(kotlin, &vec![":/main".into(); 65]).is_err());
+        assert!(canonical_compilations(kotlin, &[":/main".into(), ":/main".into()]).is_err());
 
-        let compilations = canonical_compilations(&[
-            ":z/main".into(),
-            ":/main".into(),
-            ":app:core/integrationTest".into(),
-        ])
+        let compilations = canonical_compilations(
+            kotlin,
+            &[
+                ":z/main".into(),
+                ":/main".into(),
+                ":app:core/integrationTest".into(),
+            ],
+        )
         .unwrap();
         assert_eq!(
             compilations,
             [":/main", ":app:core/integrationTest", ":z/main"]
         );
-        assert!(compilations_are_canonical(&compilations));
-        assert!(!compilations_are_canonical(&[
-            ":z/main".into(),
-            ":/main".into()
-        ]));
+        assert!(compilations_are_canonical(kotlin, &compilations));
+        assert!(!compilations_are_canonical(
+            kotlin,
+            &[":z/main".into(), ":/main".into()]
+        ));
+        let rust = SessionLanguage::Rust;
+        let selector = "cargo:crates/clew/Cargo.toml#clew#lib#clew".to_owned();
+        assert_eq!(
+            canonical_compilations(rust, std::slice::from_ref(&selector)).unwrap(),
+            [selector]
+        );
+        assert!(canonical_compilations(rust, &[":/main".into()]).is_err());
     }
 
     #[test]

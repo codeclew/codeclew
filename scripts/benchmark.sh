@@ -80,6 +80,7 @@ session, cold_session, _ = invoke([
     "session", "open",
     "--repo", str(repository),
     "--target-ref", "main",
+    "--language", "kotlin",
     "--compilation", ":/main",
 ])
 session_id = session["session"]["sessionId"]
@@ -119,6 +120,7 @@ for _ in range(20):
         "session", "open",
         "--repo", str(repository),
         "--target-ref", "main",
+        "--language", "kotlin",
         "--compilation", ":/main",
     ])
     sessions.append(elapsed)

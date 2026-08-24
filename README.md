@@ -1,4 +1,4 @@
-# Codeclew — managed semantic changes for Kotlin
+# Codeclew — managed semantic context and changes
 
 Codeclew builds bounded compiler-backed context, validates an edit plan in an
 isolated candidate worktree, and publishes the resulting commit explicitly.
@@ -11,6 +11,7 @@ The only supported executable entrypoint is `./clew`.
 - Git
 - JDK 21
 - the Rust toolchain pinned by `rust-toolchain.toml`
+- Cargo on `PATH` for Rust repositories
 - Maven on `PATH` only for Maven projects without `./mvnw`
 
 The exact Kotlin 2.3.0 and 2.4.10 workers are packaged into an immutable runtime
@@ -28,6 +29,16 @@ mutation or publish claim. Kotlin 2.1, multiple compilations, Android/KMP and
 `EXTERNAL` remain unqualified contours until they have their own acceptance
 tests.
 
+Rust has a separate read-only preview contour. Open it with `--language rust`
+and an exact target selector such as
+`cargo:crates/clew/Cargo.toml#clew#lib#clew`. The repository must have a regular
+root `Cargo.lock`; live `cargo metadata --no-deps` authority and all paths are
+normalized before entering CAS or stdout. The current first slice exposes exact
+Cargo target/source membership as `PARTIAL/UNSURE`. Task preparation and
+publication are rejected in both the CLI and transaction layer until Rust
+declarations, name resolution, cfg/macros, compilation, and tests receive their
+own mutation acceptance.
+
 This revision is pilot-ready, not general availability. Team use follows the
 [Kotlin 2.4 pilot runbook](docs/pilot/README.md); a signed prebuilt release is a
 separate decision after 20 recorded in-contour cases meet its numerical gate.
@@ -38,6 +49,7 @@ separate decision after 20 recorded in-contour cases meet its numerical gate.
 ./clew change open \
   --repo /path/to/clean-kotlin-repository \
   --target-ref main \
+  --language kotlin \
   --compilation :app/main \
   --intent 'describe the requested change' \
   --term ImportantSymbol \

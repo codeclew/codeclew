@@ -19,7 +19,7 @@ failure.
 
 1. Create and check out a feature branch. Commit or remove every local change;
    Codeclew publication must never target a shared or dirty branch.
-2. Run `./clew change open --repo ... --target-ref ... --compilation ...
+2. Run `./clew change open --repo ... --target-ref ... --language kotlin --compilation ...
    --intent ... --term ...`. Keep the returned `sessionId` and `contextId`.
 3. Review the bounded context. If required evidence is missing, use the
    advanced `context expand` command and create a new plan against that context.

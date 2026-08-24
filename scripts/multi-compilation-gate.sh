@@ -449,7 +449,7 @@ run_trial() {
     FAILURE_STAGE="TRIAL_${pair}_${profile}_MATERIALIZATION"
     materialize_repository "$repository"
 
-    set -- session open --repo "$repository" --target-ref main
+    set -- session open --repo "$repository" --target-ref main --language kotlin
     module=0
     while [ "$module" -lt 12 ]; do
         compilation=$(printf ':module%02d/main' "$module")

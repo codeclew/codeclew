@@ -31,7 +31,12 @@ use crate::query_v2::{
 };
 use crate::repository_snapshot::{RepositoryInputSnapshot, SNAPSHOT_SCHEMA, WorktreeKind, capture};
 use crate::runtime::RuntimeAuthority;
-use crate::session::{ModelCachePolicy, SessionAuthority};
+use crate::rust_adapter_v2::{
+    RUST_INDEX_SCHEMA, RUST_LANGUAGE, RUST_SYNTAX_FACTS_CAPABILITY, RustAdapterV2,
+    rust_adapter_digest, rust_scope_digest,
+};
+use crate::rust_project_model::{CargoProjectModel, CargoTargetModel, extract_cargo_model};
+use crate::session::{ModelCachePolicy, SessionAuthority, SessionLanguage};
 use crate::state::StateAuthority;
 use crate::worker::WorkerRequestCounters;
 use rayon::prelude::*;
@@ -191,6 +196,18 @@ pub fn ensure_session_generation(
     let (snapshot, snapshot_object) = capture(&repo, &store)?;
     let compilation_root = session_root.join("compilations");
     state.directory_at(&compilation_root)?;
+    if session.language == SessionLanguage::Rust {
+        return ensure_rust_generation_set(
+            session,
+            &state,
+            &store,
+            &repo,
+            &snapshot,
+            snapshot_object,
+            &compilation_root,
+            &binding_path,
+        );
+    }
     let pool = generation_pool(session)?;
     let workspace =
         ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &session.compilations)?;
@@ -244,6 +261,318 @@ pub fn ensure_session_generation(
     Ok(ready)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ensure_rust_generation_set(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    repo: &Path,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: CasObject,
+    compilation_root: &Path,
+    binding_path: &Path,
+) -> Result<ReadyGenerationSet, ClewError> {
+    let model = extract_cargo_model(repo, &session.compilations)?;
+    let (_, observed_snapshot) = capture(repo, store)?;
+    if observed_snapshot != snapshot_object {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            "Cargo model extraction changed the sealed repository input",
+        ));
+    }
+    let model_object = store.put(
+        crate::rust_project_model::CARGO_MODEL_SCHEMA,
+        &canonical::bytes(&model).map_err(internal)?,
+    )?;
+    let mut results = Vec::with_capacity(session.compilations.len());
+    for compilation in &session.compilations {
+        let component = digest_component(
+            &canonical::hash(&json!({
+                "schema":"codeclew-session-rust-compilation-binding/1.0",
+                "compilation":compilation,
+            }))
+            .map_err(internal)?,
+        )?
+        .to_owned();
+        let target = model
+            .targets
+            .iter()
+            .find(|target| target.selector.canonical() == *compilation)
+            .ok_or_else(|| corrupt("Cargo model misses a selected Rust target"))?;
+        results.push(ensure_rust_generation(
+            session,
+            state,
+            store,
+            snapshot,
+            &snapshot_object,
+            &model,
+            &model_object,
+            target,
+            compilation,
+            &compilation_root.join(format!("{component}.json")),
+        )?);
+    }
+    let ready = assemble_ready_set(session, snapshot_object, results)?;
+    write_ready_set(state, binding_path, &ready)?;
+    Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_rust_generation(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: &CasObject,
+    model: &CargoProjectModel,
+    model_object: &CasObject,
+    target: &CargoTargetModel,
+    compilation: &str,
+    binding_path: &Path,
+) -> Result<ReadyGeneration, ClewError> {
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerPreparationRequired,
+            "generation service must run through ./clew",
+        )
+    })?;
+    let toolchain = store.put(
+        "codeclew-rust-toolchain-authority/1.0",
+        &canonical::bytes(&json!({
+            "schema":"codeclew-rust-toolchain-authority/1.0",
+            "cargoVersion":model.cargo_version,
+            "rustcVersion":model.rustc_version,
+        }))
+        .map_err(internal)?,
+    )?;
+    let options = store.put(
+        "codeclew-cargo-target-options/1.0",
+        &canonical::bytes(&target).map_err(internal)?,
+    )?;
+    let descriptor = CompilationDescriptor {
+        schema: COMPILATION_SCHEMA.into(),
+        compilation_id: safe_compilation_id(compilation),
+        language_uri: LanguageUri::parse(RUST_LANGUAGE)?,
+        source_roots: vec![SourceRootDescriptor {
+            logical_name: "project".into(),
+            tree: snapshot_object.clone(),
+        }],
+        generated_source_roots: Vec::new(),
+        classpath: Vec::new(),
+        toolchain,
+        plugins: Vec::new(),
+        canonical_options: options,
+        dependency_compilation_ids: Vec::new(),
+        operations: Vec::new(),
+        origin: DescriptorOrigin::ProjectNative,
+        completeness: DescriptorCompleteness::Unknown,
+    };
+    let provider = ProviderModel {
+        handshake: ProviderHandshake {
+            protocol: PROVIDER_PROTOCOL.into(),
+            provider_id: "project-native-cargo".into(),
+            provider_digest: model.model_digest.clone(),
+            build_system_uris: vec!["build:cargo".into()],
+        },
+        build_model: BuildModel {
+            provider_id: "project-native-cargo".into(),
+            model: model_object.clone(),
+            compilations: vec![descriptor.clone()],
+        },
+    };
+    let (_, derived_input_manifest) =
+        DerivedAnalysisInputManifest::create(store, snapshot_object.clone(), vec![provider])?;
+    let generation_key = final_generation_key(
+        &runtime.runtime_key,
+        &session.base_revision,
+        snapshot_object,
+        compilation,
+        &derived_input_manifest,
+    )?;
+    let _lock = GenerationLock::acquire(state, &generation_key)?;
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let adapter_digest = rust_adapter_digest()?;
+    let compiler_store =
+        CompilerStoreKey::create("rust-syntax-1", adapter_digest.clone(), &descriptor)?;
+    let index = rust_model_index(store, snapshot, model, target, &descriptor.compilation_id)?;
+    let adapter = RustAdapterV2::new(
+        adapter_digest,
+        descriptor.toolchain.digest.clone(),
+        store.clone(),
+        index.clone(),
+    )?;
+    let mut registry = AdapterRegistry::default();
+    registry.register_adapter(Arc::new(adapter))?;
+    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
+    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
+    journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
+    journal.transition(AttemptState::Analyzing, "Rust syntax adapter DAG started")?;
+    let request = AnalyzeGenerationRequest {
+        schema: ANALYSIS_REQUEST_SCHEMA.into(),
+        attempt_id: journal.attempt().attempt_id.clone(),
+        generation_key: generation_key.clone(),
+        capability: CapabilityUri::parse(RUST_SYNTAX_FACTS_CAPABILITY)?,
+        compilation: descriptor,
+        derived_input_manifest: derived_input_manifest.clone(),
+        parent_generation: None,
+    };
+    let analysis = match HostResources::detect().and_then(|resources| {
+        execute_analysis_dag_with_jobs(state, Arc::new(registry), request, resources, 1)
+    }) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "Rust adapter DAG failed")?;
+            return Err(error);
+        }
+    };
+    journal.transition(AttemptState::Finalizing, "Rust deterministic merge started")?;
+    let result = (|| {
+        let (generation, generation_object) = finalize_generation(
+            store,
+            derived_input_manifest.clone(),
+            vec![AttemptAuthority {
+                compilation_id: safe_compilation_id(compilation),
+                capability: CapabilityUri::parse(RUST_SYNTAX_FACTS_CAPABILITY)?,
+                completion: analysis.completion,
+            }],
+            analysis.runs,
+        )?;
+        let (_, query_index) = build_query_index(store, &generation, generation_object.clone())?;
+        let scope_digest = rust_scope_digest(&index)?;
+        let completeness = rust_syntax_completeness(&scope_digest)?;
+        let (_, incremental_receipt) = create_incremental_receipt(
+            store,
+            &index,
+            &compiler_store,
+            &generation,
+            completeness.clone(),
+        )?;
+        let ready = ReadyGeneration {
+            schema: READY_GENERATION_SCHEMA.into(),
+            generation_key,
+            runtime_key: runtime.runtime_key.clone(),
+            base_revision: session.base_revision.clone(),
+            compilation: compilation.into(),
+            compiler_version: model
+                .rustc_version
+                .lines()
+                .next()
+                .unwrap_or("rustc-unknown")
+                .into(),
+            completeness: completeness.clone(),
+            coverage: coverage_label(&completeness).into(),
+            certainty: certainty_label(&completeness).into(),
+            obligations: obligation_codes(&completeness),
+            incremental: full_execution_evidence(
+                IncrementalPlan::Full {
+                    reason: FullAnalysisReason::NoParent,
+                },
+                WorkerRequestCounters {
+                    open_project_requests: 1,
+                    index_files_requests: 1,
+                },
+            ),
+            incremental_receipt,
+            repository_snapshot: snapshot_object.clone(),
+            derived_input_manifest,
+            generation: generation_object,
+            query_index,
+        };
+        verify_ready(store, &ready, session, compilation, true)?;
+        Ok(ready)
+    })();
+    match result {
+        Ok(ready) => {
+            journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
+            let head_path = incremental_head_path(
+                &state.repository(&session.repository_path()?)?.root,
+                compilation,
+            )?;
+            publish_incremental_head(state, store, &head_path, &ready, &compiler_store.key)?;
+            write_private_atomic(state, binding_path, &ready)?;
+            Ok(ready)
+        }
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "Rust generation finalization failed")?;
+            Err(error)
+        }
+    }
+}
+
+fn rust_model_index(
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    model: &CargoProjectModel,
+    target: &CargoTargetModel,
+    compilation_id: &str,
+) -> Result<Value, ClewError> {
+    let source = snapshot
+        .index
+        .iter()
+        .find(|entry| entry.stage == 0 && entry.path == target.source_path)
+        .ok_or_else(|| corrupt("Cargo target source is absent from the repository snapshot"))?;
+    let files = vec![json!({
+        "path":target.source_path,
+        "contentHash":source_content_digest(store, &source.content)?,
+    })];
+    Ok(json!({
+        "schema":RUST_INDEX_SCHEMA,
+        "compilation":compilation_id,
+        "modelDigest":model.model_digest,
+        "package":target.selector.package,
+        "targetKind":target.selector.target_kind,
+        "targetName":target.selector.target_name,
+        "sourcePath":target.source_path,
+        "cargoVersion":model.cargo_version,
+        "rustcVersion":model.rustc_version,
+        "analysisCoverage":"PARTIAL",
+        "analysisCertainty":"UNSURE",
+        "files":files,
+        "declarationDescriptors":{"coverage":"PARTIAL","descriptors":[]},
+        "declarationRelations":{"coverage":"PARTIAL","relations":[]},
+        "boundaries":[
+            {"code":"RUST_SYNTAX_DECLARATIONS_NOT_INDEXED","resolution":"UNKNOWN"},
+            {"code":"RUST_CFG_AND_MACRO_EXPANSION_NOT_EVALUATED","resolution":"UNKNOWN"},
+        ],
+    }))
+}
+
+fn rust_syntax_completeness(scope_digest: &str) -> Result<CompletenessVector, ClewError> {
+    let completeness = CompletenessVector {
+        schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+        support: Support::Supported,
+        coverage: Coverage::Partial {
+            observed_scopes: vec![scope_digest.into()],
+            boundaries: vec![
+                "RUST_CFG_AND_MACRO_UNKNOWN".into(),
+                "RUST_SYNTAX_ONLY".into(),
+            ],
+        },
+        certainty: Certainty::Unsure {
+            check_set: vec!["cargo-check".into(), "rust-name-resolution".into()],
+        },
+        obligations: vec![
+            VerificationObligation {
+                code: "VERIFY_CFG_AND_MACRO_EXPANSION".into(),
+                subject: vec![scope_digest.into()],
+                publication_blocking: true,
+            },
+            VerificationObligation {
+                code: "VERIFY_RUST_NAME_RESOLUTION".into(),
+                subject: vec![scope_digest.into()],
+                publication_blocking: true,
+            },
+        ],
+    };
+    completeness.validate()?;
+    Ok(completeness)
+}
+
 pub fn ensure_candidate_generation(
     session: &SessionAuthority,
     repository: &Path,
@@ -261,6 +590,12 @@ pub fn ensure_candidate_generation(
         return load_ready_set(&state, &store, binding_path, &candidate, false);
     }
     let (snapshot, snapshot_object) = capture(repository, &store)?;
+    if session.language == SessionLanguage::Rust {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "Rust candidate generation is disabled until mutation validation is qualified",
+        ));
+    }
     let parent = binding_path
         .parent()
         .ok_or_else(|| corrupt("candidate generation binding has no parent"))?;

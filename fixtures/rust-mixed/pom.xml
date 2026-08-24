@@ -1,0 +1,3 @@
+<project>
+  <!-- Inert mixed-repository marker: Maven must never run for a Rust session. -->
+</project>

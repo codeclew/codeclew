@@ -114,6 +114,8 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
             repo.to_str().unwrap(),
             "--target-ref",
             "main",
+            "--language",
+            "kotlin",
             "--compilation",
             ":/main",
         ])
@@ -155,6 +157,8 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
             repo.to_str().unwrap(),
             "--target-ref",
             "main",
+            "--language",
+            "kotlin",
             "--compilation",
             ":z/main",
             "--compilation",

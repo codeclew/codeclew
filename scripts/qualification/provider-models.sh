@@ -316,6 +316,7 @@ def qualify_provider(name, path, native_command, term, environment):
                 "session", "open", "--json",
                 "--repo", path,
                 "--target-ref", "main",
+                "--language", "kotlin",
                 "--compilation", ":/main",
             ],
             environment=environment,

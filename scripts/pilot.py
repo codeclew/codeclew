@@ -251,6 +251,8 @@ def _run_case(
             str(repository),
             "--target-ref",
             "main",
+            "--language",
+            "kotlin",
             "--compilation",
             ":/main",
             "--intent",

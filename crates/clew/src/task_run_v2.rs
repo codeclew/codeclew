@@ -8,7 +8,7 @@ use crate::generation_service::{
 use crate::incremental_v2::{Coverage, Support};
 use crate::process_isolation::isolate_controller_authority;
 use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
-use crate::session::{ContextObject, PlanObject, SessionAuthority};
+use crate::session::{ContextObject, PlanObject, SessionAuthority, SessionLanguage};
 use crate::state::{StateAuthority, create_private_directory};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -298,6 +298,7 @@ pub fn prepare(
     plan_object: &PlanObject,
     candidate_root: &Path,
 ) -> Result<PreparedCandidateV2, ClewError> {
+    require_mutation_language(session.language)?;
     let plan = validate_plan_value(&plan_object.plan)?;
     if context.session_id != session.session_id
         || plan_object.context_id != context.context_id
@@ -1135,6 +1136,7 @@ pub fn publish(
     candidate_root: &Path,
     approval: Option<&ConditionalPublicationApproval>,
 ) -> Result<Value, ClewError> {
+    require_mutation_language(session.language)?;
     validate_prepared(session, prepared)?;
     if prepared.publication_blocked && approval.is_none() {
         return Err(ClewError::new(
@@ -1251,6 +1253,16 @@ pub fn publish(
         "certainty":if conditional { "UNSURE" } else { "VERIFIED" },
         "conditionalApproval":approval,
     }))
+}
+
+fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError> {
+    if language == SessionLanguage::Rust {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "Rust mutation is disabled until the managed validation contour is qualified",
+        ));
+    }
+    Ok(())
 }
 
 fn publication_recovery_error(error: ClewError) -> ClewError {
@@ -2031,6 +2043,13 @@ mod tests {
     }
 
     #[test]
+    fn transaction_layer_refuses_rust_mutation_authority() {
+        assert!(require_mutation_language(SessionLanguage::Kotlin).is_ok());
+        let error = require_mutation_language(SessionLanguage::Rust).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+    }
+
+    #[test]
     fn closed_plan_rejects_duplicate_files_and_unsafe_validation_state() {
         let duplicate = json!({
             "schema":PLAN_V2_SCHEMA,
@@ -2214,6 +2233,7 @@ mod tests {
             target_oid: "1".repeat(40),
             runtime_key: digest('b'),
             runtime_mode: crate::runtime::RuntimeMode::Development,
+            language: crate::session::SessionLanguage::Kotlin,
             compilations: vec![":/main".into()],
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
@@ -2280,6 +2300,7 @@ mod tests {
             target_oid: "1".repeat(40),
             runtime_key: digest('b'),
             runtime_mode: crate::runtime::RuntimeMode::Development,
+            language: crate::session::SessionLanguage::Kotlin,
             compilations: vec![":/main".into()],
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
@@ -2433,6 +2454,7 @@ mod tests {
             target_oid: "b".repeat(40),
             runtime_key: format!("sha256:{}", "c".repeat(64)),
             runtime_mode: crate::runtime::RuntimeMode::Development,
+            language: crate::session::SessionLanguage::Kotlin,
             compilations: vec![":/main".into()],
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,

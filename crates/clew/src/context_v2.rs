@@ -80,10 +80,16 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
                 .ok_or_else(|| invalid("context compilation authority is invalid"))
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
-    if compilation_set.is_empty()
+    let language = evidence
+        .pointer("/context/language")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("context has no language authority"))?;
+    if !matches!(language, "language:kotlin" | "language:rust")
+        || compilation_set.is_empty()
         || compilation_set.len() != compilations.len()
         || queries.keys().ne(compilation_set.iter())
         || projection.get("compilations") != evidence.pointer("/context/compilations")
+        || projection.get("language").and_then(Value::as_str) != Some(language)
         || queries.values().any(|query| {
             query.schema != crate::query_v2::QUERY_CONTEXT_SCHEMA
                 || query.requested_terms != aggregate.requested_terms
@@ -301,6 +307,7 @@ pub fn create(
     let certainty = if verified { "VERIFIED" } else { "UNSURE" };
     let context = json!({
         "schema":BOUNDED_CONTEXT_SCHEMA,
+        "language":session.language.uri(),
         "snapshot":{
             "baseRevision":session.base_revision,
             "snapshotId":snapshot.snapshot_id,
@@ -774,6 +781,7 @@ fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usi
 fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
     let mut projection = json!({
         "schema":BOUNDED_CONTEXT_PROJECTION_SCHEMA,
+        "language":context["language"],
         "snapshot":context["snapshot"],
         "task":context["task"],
         "compilations":context["compilations"],
@@ -966,6 +974,7 @@ mod tests {
     #[test]
     fn bounded_projection_preserves_multi_compilation_authority() {
         let context = json!({
+            "language":"language:rust",
             "snapshot":{"compilations":[]},
             "task":{"intent":"inspect"},
             "compilations":[":a/main",":b/main"],
@@ -977,6 +986,7 @@ mod tests {
             "verificationObligations":[],
         });
         let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["language"], "language:rust");
         assert_eq!(projection["compilations"], context["compilations"]);
         assert_eq!(projection["compilerVersions"], context["compilerVersions"]);
         assert!(projection.get("compilation").is_none());
@@ -1146,6 +1156,7 @@ mod tests {
         assert_eq!(evidence[0]["factKey"], evidence[1]["factKey"]);
         let context = json!({
             "schema":super::BOUNDED_CONTEXT_SCHEMA,
+            "language":"language:kotlin",
             "snapshot":{},
             "task":{},
             "compilations":[":a/main",":b/main"],

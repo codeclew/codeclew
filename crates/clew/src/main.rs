@@ -2,8 +2,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::session::{
-    ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, bounded_context_stdout,
-    validate_context_request,
+    ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, SessionLanguage,
+    bounded_context_stdout, validate_context_request,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -97,12 +97,21 @@ enum ModelCachePolicyArg {
     SealedExternal,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SessionLanguageArg {
+    Kotlin,
+    Rust,
+}
+
 #[derive(Args)]
 struct SessionOpenArgs {
     #[arg(long)]
     repo: PathBuf,
     #[arg(long)]
     target_ref: String,
+    /// Exact language authority. Required for mixed-language repositories.
+    #[arg(long, value_enum)]
+    language: SessionLanguageArg,
     /// Exact build compilation authority (for example :/main or :app/main).
     /// Repeat the option to select multiple compilations.
     /// Deliberately required: guessing the root compilation makes session
@@ -444,6 +453,10 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
     SessionAuthority::open(
         &absolute(&args.repo)?,
         &args.target_ref,
+        match args.language {
+            SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
+            SessionLanguageArg::Rust => SessionLanguage::Rust,
+        },
         &args.compilation,
         args.generation_jobs,
         policy,
@@ -533,6 +546,7 @@ fn with_schema(schema: &str, mut value: Value) -> Result<Value, ClewError> {
 
 fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
+    require_mutation_language(session.language)?;
     let record = RunRecord::created(&session, context_id, plan_id)?;
     if !record.create_once()? {
         return task_run_status(&record.run_id);
@@ -742,6 +756,7 @@ fn publish_task_run(
 ) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
+    require_mutation_language(session.language)?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
     let state = clew::state::StateAuthority::process_default()?;
@@ -840,6 +855,16 @@ fn publish_task_run(
             Err(error)
         }
     }
+}
+
+fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError> {
+    if language == SessionLanguage::Rust {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "Rust support is read-only until mutation validation is explicitly qualified",
+        ));
+    }
+    Ok(())
 }
 
 fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> {
@@ -1172,6 +1197,13 @@ mod tests {
     }
 
     #[test]
+    fn rust_is_hard_read_only_before_mutation_qualification() {
+        assert!(require_mutation_language(SessionLanguage::Kotlin).is_ok());
+        let error = require_mutation_language(SessionLanguage::Rust).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+    }
+
+    #[test]
     fn change_facade_requires_explicit_authorities() {
         assert!(
             Cli::try_parse_from([
@@ -1182,6 +1214,8 @@ mod tests {
                 ".",
                 "--target-ref",
                 "main",
+                "--language",
+                "kotlin",
                 "--compilation",
                 ":/main",
                 "--intent",
@@ -1370,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn session_open_requires_explicit_compilation_authority() {
+    fn session_open_requires_explicit_language_and_compilation_authority() {
         assert!(
             Cli::try_parse_from([
                 "clew",
@@ -1391,6 +1425,8 @@ mod tests {
             ".",
             "--target-ref",
             "main",
+            "--language",
+            "kotlin",
             "--compilation",
             ":workers:kotlin/main",
             "--compilation",
@@ -1406,6 +1442,23 @@ mod tests {
         assert_eq!(
             args.compilation,
             [":workers:kotlin/main", ":workers:kotlin23/main"]
+        );
+        assert!(matches!(args.language, SessionLanguageArg::Kotlin));
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--language",
+                "rust",
+                "--compilation",
+                "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+            ])
+            .is_ok()
         );
     }
 
