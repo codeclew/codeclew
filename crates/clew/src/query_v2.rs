@@ -10,12 +10,16 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/2.0";
+pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/3.0";
 pub const QUERY_SHARD_SCHEMA: &str = "codeclew-query-shard/2.0";
 pub const QUERY_CONTEXT_SCHEMA: &str = "codeclew-query-context/2.0";
 pub const MAX_QUERY_SHARD_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_QUERY_TERMS: usize = 256;
 pub const MAX_CONTEXT_FACTS: usize = 4096;
+/// One term must remain a bounded routing hint rather than a repository-wide
+/// inverted-index dump. Overflows stay explicitly represented in the manifest
+/// so query results cannot pretend that the retained prefix is complete.
+pub const MAX_QUERY_FACTS_PER_TERM: usize = 1024;
 /// Payload bytes recursively inspected for derived query metadata. Larger
 /// payloads remain authoritative CAS evidence, but adapters must expose their
 /// searchable contents as granular facts.
@@ -30,6 +34,7 @@ pub struct QueryIndexManifest {
     pub shards: Vec<QueryShardReference>,
     pub term_count: u64,
     pub posting_count: u64,
+    pub overflow_terms: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +137,7 @@ pub fn build_query_index(
         return Err(invalid("generation produced no queryable terms"));
     }
 
+    let (postings, overflow_terms) = bound_postings(postings);
     let term_count = postings.len() as u64;
     let posting_count = postings.values().map(|facts| facts.len() as u64).sum();
     let mut buckets = BTreeMap::<String, Vec<TermPosting>>::new();
@@ -182,6 +188,7 @@ pub fn build_query_index(
         shards: references,
         term_count,
         posting_count,
+        overflow_terms,
     };
     manifest.index_id = canonical::hash(&manifest).map_err(internal)?;
     let object = store.put(
@@ -239,7 +246,10 @@ pub fn query(
         .collect::<BTreeSet<_>>()
         .len();
     let facts = fair_fact_selection(&matched_by_term, limit);
-    let truncated = unique_match_count > facts.len();
+    let truncated = unique_match_count > facts.len()
+        || requested_terms
+            .iter()
+            .any(|term| index.overflow_terms.contains(term));
     Ok(QueryContext {
         schema: QUERY_CONTEXT_SCHEMA.into(),
         index_id: index.index_id.clone(),
@@ -339,6 +349,7 @@ pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), 
     let mut terms = BTreeSet::new();
     let mut last_fact_by_term = BTreeMap::<String, FactHit>::new();
     let mut postings = 0u64;
+    let mut postings_by_term = BTreeMap::<String, u64>::new();
     for reference in &index.shards {
         let order = (
             reference.bucket.as_str(),
@@ -362,6 +373,8 @@ pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), 
             }
             terms.insert(posting.term.clone());
             postings += posting.facts.len() as u64;
+            *postings_by_term.entry(posting.term.clone()).or_default() +=
+                posting.facts.len() as u64;
             last_fact_by_term.insert(
                 posting.term.clone(),
                 posting.facts.last().expect("verified non-empty").clone(),
@@ -369,7 +382,12 @@ pub fn verify_index(store: &CasStore, index: &QueryIndexManifest) -> Result<(), 
         }
         previous = Some(order);
     }
-    if terms.len() as u64 != index.term_count || postings != index.posting_count {
+    if terms.len() as u64 != index.term_count
+        || postings != index.posting_count
+        || index.overflow_terms.iter().any(|term| {
+            postings_by_term.get(term).copied() != Some(MAX_QUERY_FACTS_PER_TERM as u64)
+        })
+    {
         return Err(corrupt("query index counts are incomplete"));
     }
     Ok(())
@@ -387,6 +405,9 @@ pub fn verify_index_manifest(
         || index.shards.is_empty()
         || index.term_count == 0
         || index.posting_count == 0
+        || index.overflow_terms.iter().any(|term| {
+            term.is_empty() || normalize_terms(std::iter::once(term.as_str())) != [term.clone()]
+        })
     {
         return Err(corrupt("query index identity is invalid"));
     }
@@ -415,6 +436,23 @@ pub fn verify_index_manifest(
         previous = Some(order);
     }
     Ok(())
+}
+
+fn bound_postings(
+    mut postings: BTreeMap<String, BTreeSet<FactHit>>,
+) -> (BTreeMap<String, BTreeSet<FactHit>>, BTreeSet<String>) {
+    let mut overflow_terms = BTreeSet::new();
+    for (term, facts) in &mut postings {
+        if facts.len() > MAX_QUERY_FACTS_PER_TERM {
+            *facts = facts
+                .iter()
+                .take(MAX_QUERY_FACTS_PER_TERM)
+                .cloned()
+                .collect();
+            overflow_terms.insert(term.clone());
+        }
+    }
+    (postings, overflow_terms)
 }
 
 #[cfg(test)]
@@ -1012,6 +1050,7 @@ mod tests {
             shards: vec![],
             term_count: 0,
             posting_count: 0,
+            overflow_terms: BTreeSet::new(),
         };
         assert_eq!(
             expand(&store, &index, &parent, &["beta".into()], 10)
@@ -1349,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn high_fanout_term_is_split_without_dropping_fact_references() {
+    fn high_fanout_term_is_bounded_and_reported_as_truncated() {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
         let store = CasStore::open(&state).unwrap();
@@ -1361,20 +1400,18 @@ mod tests {
                 payload: payload.clone(),
             })
             .collect::<Vec<_>>();
+        let (bounded, overflow_terms) = bound_postings(BTreeMap::from([(
+            "popular".to_owned(),
+            facts.iter().cloned().collect(),
+        )]));
+        let retained = bounded["popular"].iter().cloned().collect::<Vec<_>>();
         let posting = TermPosting {
             term: "popular".into(),
-            facts: facts.clone(),
+            facts: retained.clone(),
         };
         let posting_bucket = bucket("popular");
-        assert!(
-            canonical::bytes(&shard(&posting_bucket, 0, std::slice::from_ref(&posting)))
-                .unwrap()
-                .len()
-                > MAX_QUERY_SHARD_BYTES
-        );
         let mut references = Vec::new();
         publish_bucket(&store, &posting_bucket, vec![posting], &mut references).unwrap();
-        assert!(references.len() > 1);
         assert!(
             references
                 .windows(2)
@@ -1391,16 +1428,21 @@ mod tests {
                 shard.postings.into_iter().flat_map(|posting| posting.facts)
             })
             .collect::<Vec<_>>();
-        assert_eq!(recovered, facts);
+        assert_eq!(recovered, retained);
+        assert_eq!(recovered.len(), MAX_QUERY_FACTS_PER_TERM);
         let mut index = QueryIndexManifest {
             schema: QUERY_INDEX_SCHEMA.into(),
             index_id: String::new(),
             generation: store.put(GENERATION_SCHEMA, b"generation").unwrap(),
             shards: references,
             term_count: 1,
-            posting_count: facts.len() as u64,
+            posting_count: retained.len() as u64,
+            overflow_terms,
         };
         index.index_id = canonical::hash(&index).unwrap();
         verify_index(&store, &index).unwrap();
+        let result = query(&store, &index, &["popular".into()], MAX_CONTEXT_FACTS).unwrap();
+        assert_eq!(result.facts.len(), MAX_QUERY_FACTS_PER_TERM);
+        assert!(result.truncated);
     }
 }

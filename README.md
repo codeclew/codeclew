@@ -83,6 +83,13 @@ evidence is selected and its reported obligations are checked. Prefer a few
 distinctive terms over broad words such as `model` or `test`, which may produce
 an intentionally truncated conditional context.
 
+Each normalized term retains at most 1024 deterministic fact references in the
+query index. A term with greater fan-out is recorded as overflow authority and
+every result that uses it reports `truncated=true`; refine that request with a
+class, callable, or file identity before treating the context as complete. This
+keeps generic vocabulary from turning the bounded routing index into a second
+copy of the repository fact store.
+
 `--compilation` is mandatory and names an exact build compilation authority:
 use `:/main` for a Kotlin root project or `:module/main` for a Gradle
 subproject. Repeat the option to select up to 64 compilations. Session authority
