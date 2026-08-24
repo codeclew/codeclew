@@ -24,7 +24,7 @@ use crate::incremental_v2::{
 use crate::kotlin_adapter_v2::{
     KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinCompilerLine,
     KotlinGenerationDriver, ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace,
-    ProjectNativeKotlinWorkspaceProfile, semantic_scope_digest,
+    ProjectNativeKotlinWorkspaceProfile, kotlin_adapter_digest, semantic_scope_digest,
 };
 use crate::query_v2::{
     QUERY_INDEX_SCHEMA, QueryIndexManifest, build_query_index, verify_index, verify_index_manifest,
@@ -1007,7 +1007,7 @@ fn prepare_authority(
         repository_snapshot: snapshot_object.clone(),
         compilation: compilation.into(),
         compiler_version,
-        adapter_digest: worker.tree_hash.clone(),
+        adapter_digest: kotlin_adapter_digest(&worker.tree_hash)?,
         descriptor,
         derived_input_manifest,
     };
@@ -1048,7 +1048,7 @@ fn verify_prepared_authority(
         || prepared.runtime_key != runtime.runtime_key
         || prepared.repository_snapshot != *snapshot
         || prepared.compilation != compilation
-        || prepared.adapter_digest != worker.tree_hash
+        || prepared.adapter_digest != kotlin_adapter_digest(&worker.tree_hash)?
         || prepared.descriptor.language_uri.as_str() != KOTLIN_LANGUAGE
         || prepared.descriptor.compilation_id != safe_compilation_id(compilation)
         || prepared.descriptor.source_roots.len() != 1
@@ -1436,15 +1436,9 @@ fn obligation_codes(completeness: &CompletenessVector) -> Vec<String> {
 fn compiler_line(
     compiler_version: &str,
 ) -> Result<(&'static str, KotlinCompilerLine, &'static str), ClewError> {
-    match compiler_version
-        .split('.')
-        .take(2)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        ["2", "1"] => Ok(("kotlin21", KotlinCompilerLine::K21, "kotlin-2.1")),
-        ["2", "3"] => Ok(("kotlin23", KotlinCompilerLine::K23, "kotlin-2.3")),
-        ["2", "4"] => Ok(("kotlin24", KotlinCompilerLine::K24, "kotlin-2.4")),
+    match compiler_version {
+        "2.3.0" => Ok(("kotlin23", KotlinCompilerLine::K23, "kotlin-2.3")),
+        "2.4.10" => Ok(("kotlin24", KotlinCompilerLine::K24, "kotlin-2.4")),
         _ => Err(ClewError::new(
             ErrorCode::UnsupportedProjectConfiguration,
             "project Kotlin compiler line is unsupported",
@@ -1590,7 +1584,8 @@ pub(crate) fn create_incremental_receipt(
         .and_then(Value::as_array)
         .ok_or_else(|| corrupt("verified compiler index has no relation rows"))?;
 
-    let mut aliases = BTreeMap::<String, String>::new();
+    let mut symbol_identities = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut callable_aliases = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
     let mut surfaces = BTreeMap::<String, Vec<Value>>::new();
     for descriptor in descriptors {
         let path = required_safe_path(descriptor, "file")?;
@@ -1598,15 +1593,17 @@ pub(crate) fn create_incremental_receipt(
             .entry(path.clone())
             .or_default()
             .push(descriptor.clone());
-        for field in ["symbolIdentity", "compilerCallableId"] {
-            if let Some(symbol) = descriptor.get(field).and_then(Value::as_str) {
-                match aliases.insert(symbol.into(), path.clone()) {
-                    Some(previous) if previous != path => {
-                        return Err(corrupt("compiler symbol maps to multiple source files"));
-                    }
-                    _ => {}
-                }
-            }
+        if let Some(identity) = descriptor.get("symbolIdentity").and_then(Value::as_str) {
+            symbol_identities
+                .entry(identity.into())
+                .or_default()
+                .insert(path.clone());
+        }
+        if let Some(callable) = descriptor.get("compilerCallableId").and_then(Value::as_str) {
+            callable_aliases
+                .entry(callable.into())
+                .or_default()
+                .insert(path.clone());
         }
     }
     for rows in surfaces.values_mut() {
@@ -1620,18 +1617,29 @@ pub(crate) fn create_incremental_receipt(
         let Some(target_symbol) = relation.get("target").and_then(Value::as_str) else {
             continue;
         };
-        let Some(target) = aliases.get(target_symbol) else {
+        let Some(targets) = symbol_identities
+            .get(target_symbol)
+            .or_else(|| callable_aliases.get(target_symbol))
+        else {
             continue;
         };
-        if target != &source {
+        let Some(relation_digest) = targets
+            .iter()
+            .any(|target| target != &source)
+            .then(|| canonical::hash(relation).map_err(internal))
+            .transpose()?
+        else {
+            continue;
+        };
+        for target in targets.iter().filter(|target| *target != &source) {
             dependencies
                 .entry(source.clone())
                 .or_default()
                 .insert(target.clone());
             boundary_rows
-                .entry((source, target.clone()))
+                .entry((source.clone(), target.clone()))
                 .or_default()
-                .push(canonical::hash(relation).map_err(internal)?);
+                .push(relation_digest.clone());
         }
     }
 
@@ -2224,6 +2232,22 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    #[test]
+    fn compiler_line_admission_is_exact() {
+        assert_eq!(
+            compiler_line("2.3.0").unwrap(),
+            ("kotlin23", KotlinCompilerLine::K23, "kotlin-2.3")
+        );
+        assert_eq!(
+            compiler_line("2.4.10").unwrap(),
+            ("kotlin24", KotlinCompilerLine::K24, "kotlin-2.4")
+        );
+        for version in ["2.1.21", "2.3.10", "2.3.20", "2.4.0", "1.9.25"] {
+            let error = compiler_line(version).unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        }
+    }
+
     fn runtime(runtime_key: &str, binary_byte: u8) -> RuntimeAuthority {
         RuntimeAuthority {
             schema: RUNTIME_SCHEMA.into(),
@@ -2777,24 +2801,88 @@ mod tests {
         let index = json!({
             "files":[
                 {"path":"src/A.kt","contentHash":digest('1')},
-                {"path":"src/B.kt","contentHash":digest('2')}
+                {"path":"src/B.kt","contentHash":digest('2')},
+                {"path":"src/C.kt","contentHash":digest('3')}
             ],
             "declarationDescriptors":{"descriptors":[
-                {"file":"src/A.kt","symbolIdentity":"callable:p/A.call#jvm:()V","compilerCallableId":"p/A.call"},
-                {"file":"src/B.kt","symbolIdentity":"callable:p/B.read#jvm:()I","compilerCallableId":"p/B.read"}
+                {"file":"src/A.kt","symbolIdentity":"callable:p/shared.read#jvm:()V","compilerCallableId":"p/shared.read"},
+                {"file":"src/B.kt","symbolIdentity":"callable:p/shared.read#jvm:()I","compilerCallableId":"p/shared.read"},
+                {"file":"src/C.kt","symbolIdentity":"callable:p/shared.read#jvm:()S","compilerCallableId":"p/shared.read"}
             ]},
             "declarationRelations":{"relations":[
-                {"file":"src/A.kt","owner":"p/A.call","target":"p/B.read","kind":"CALLS"}
+                {"file":"src/A.kt","owner":"p/A.call","target":"p/shared.read","kind":"CALLS"}
             ]}
         });
         let completeness = CompletenessVector::verified_complete(digest('9')).unwrap();
         let (receipt, reference) =
             create_incremental_receipt(&store, &index, &compiler_store, &generation, completeness)
                 .unwrap();
-        assert_eq!(receipt.files[0].dependencies, vec!["src/B.kt"]);
-        assert_eq!(receipt.boundaries.len(), 1);
+        assert_eq!(receipt.files[0].dependencies, vec!["src/B.kt", "src/C.kt"]);
+        assert_eq!(receipt.boundaries.len(), 2);
         assert_eq!(receipt.boundaries[0].source_path, "src/A.kt");
         assert_eq!(receipt.boundaries[0].target_path, "src/B.kt");
+        assert_eq!(receipt.boundaries[1].source_path, "src/A.kt");
+        assert_eq!(receipt.boundaries[1].target_path, "src/C.kt");
+
+        let mut exact_identity = index.clone();
+        exact_identity["declarationRelations"]["relations"][0]["target"] =
+            Value::String("callable:p/shared.read#jvm:()I".into());
+        let (exact_receipt, _) = create_incremental_receipt(
+            &store,
+            &exact_identity,
+            &compiler_store,
+            &generation,
+            CompletenessVector::verified_complete(digest('7')).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(exact_receipt.files[0].dependencies, vec!["src/B.kt"]);
+        assert_eq!(exact_receipt.boundaries.len(), 1);
+        assert_eq!(exact_receipt.boundaries[0].target_path, "src/B.kt");
+
+        let mut reordered = index.clone();
+        reordered["declarationDescriptors"]["descriptors"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let (_, reordered_reference) = create_incremental_receipt(
+            &store,
+            &reordered,
+            &compiler_store,
+            &generation,
+            CompletenessVector::verified_complete(digest('9')).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reordered_reference.digest, reference.digest);
+
+        let mut duplicate_identity = exact_identity.clone();
+        duplicate_identity["declarationDescriptors"]["descriptors"][2]["symbolIdentity"] =
+            duplicate_identity["declarationDescriptors"]["descriptors"][1]["symbolIdentity"]
+                .clone();
+        let (duplicate_receipt, _) = create_incremental_receipt(
+            &store,
+            &duplicate_identity,
+            &compiler_store,
+            &generation,
+            CompletenessVector::verified_complete(digest('8')).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            duplicate_receipt.files[0].dependencies,
+            vec!["src/B.kt", "src/C.kt"]
+        );
+
+        let mut namespace_collision = exact_identity.clone();
+        namespace_collision["declarationDescriptors"]["descriptors"][2]["compilerCallableId"] =
+            Value::String("callable:p/shared.read#jvm:()I".into());
+        let (collision_receipt, _) = create_incremental_receipt(
+            &store,
+            &namespace_collision,
+            &compiler_store,
+            &generation,
+            CompletenessVector::verified_complete(digest('6')).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(collision_receipt.files[0].dependencies, vec!["src/B.kt"]);
 
         let hex = reference.digest.strip_prefix("sha256:").unwrap();
         let path = state.objects_root().join(&hex[..2]).join(&hex[2..]);

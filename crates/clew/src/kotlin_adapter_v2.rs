@@ -14,6 +14,7 @@ use crate::worker::{WorkerClient, WorkerRequestCounters, workspace_root};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -22,7 +23,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
-const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/2.0";
+const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0";
+const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.2";
 const RECEIPT_SCHEMA: &str = "codeclew-completeness-receipt/2.0";
 const WORKSPACE_SET_AUTHORIZATION_SCHEMA: &str = "codeclew-kotlin-workspace-set-authorization/1.0";
 
@@ -49,6 +51,16 @@ impl KotlinCompilerLine {
             Self::K24 => "kotlin-2.4",
         }
     }
+}
+
+pub(crate) fn kotlin_adapter_digest(worker_tree_hash: &str) -> Result<String, ClewError> {
+    require_digest(worker_tree_hash)?;
+    canonical::hash(&json!({
+        "schema": TRANSLATION_AUTHORITY_SCHEMA,
+        "workerTreeHash": worker_tree_hash,
+        "factPayloadSchema": FACT_PAYLOAD_SCHEMA,
+    }))
+    .map_err(internal)
 }
 
 pub trait KotlinGenerationDriver: Send + Sync {
@@ -667,7 +679,12 @@ pub(crate) fn translate_facts(
                 )
             })?;
         for row in rows {
-            push_fact(&capability, category, row, &mut pending)?;
+            if category == "file" {
+                let normalized = normalize_file_fact(row)?;
+                push_fact(&capability, category, &normalized, &mut pending)?;
+            } else {
+                push_fact(&capability, category, row, &mut pending)?;
+            }
         }
     }
     let payloads = store.put_batch(
@@ -696,6 +713,179 @@ pub(crate) fn translate_facts(
         ));
     }
     Ok(facts)
+}
+
+fn normalize_file_fact(row: &Value) -> Result<Value, ClewError> {
+    let relative = row
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| safe_relative_source_path(path))
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "Kotlin file fact has no safe repository-relative path",
+            )
+        })?
+        .to_owned();
+    let mut normalized = row.clone();
+    normalize_operational_paths(&mut normalized, &relative, 0)?;
+    let object = normalized.as_object_mut().ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "Kotlin file fact is not an object",
+        )
+    })?;
+    let semantic_facts = object
+        .remove("semanticFacts")
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let semantic_fact_count = semantic_facts
+        .as_array()
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "Kotlin file semantic facts are not an array",
+            )
+        })?
+        .len();
+    if object
+        .insert(
+            "semanticFactCount".into(),
+            Value::from(u64::try_from(semantic_fact_count).map_err(internal)?),
+        )
+        .is_some()
+        || object
+            .insert(
+                "semanticFactsDigest".into(),
+                Value::String(canonical::hash(&semantic_facts).map_err(internal)?),
+            )
+            .is_some()
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "Kotlin file fact contains reserved semantic summary fields",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalize_operational_paths(
+    value: &mut Value,
+    outer_relative: &str,
+    depth: usize,
+) -> Result<(), ClewError> {
+    if depth > 64 {
+        return Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "Kotlin file fact path structure is too deeply nested",
+        ));
+    }
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                normalize_operational_paths(value, outer_relative, depth + 1)?;
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                let lowercase_key = key.to_ascii_lowercase();
+                if let Some(observed) = value.as_str().and_then(|text| {
+                    if operational_path_key(key, &lowercase_key) {
+                        Some(Ok(text))
+                    } else if operational_uri_key(&lowercase_key)
+                        && text
+                            .get(..5)
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+                    {
+                        Some(file_uri_path(text))
+                    } else {
+                        None
+                    }
+                }) {
+                    let observed = observed?;
+                    *value = Value::String(normalize_operational_path(observed, outer_relative)?);
+                }
+                normalize_operational_paths(value, outer_relative, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn operational_path_key(key: &str, lowercase_key: &str) -> bool {
+    matches!(
+        lowercase_key,
+        "file" | "fileid" | "path" | "normalizedrelativepath" | "relativepath" | "sourcepath"
+    ) || field_suffix(key, "path")
+        || field_suffix(key, "file")
+}
+
+fn operational_uri_key(lowercase_key: &str) -> bool {
+    matches!(lowercase_key, "uri" | "fileuri" | "sourceuri") || lowercase_key.ends_with("uri")
+}
+
+fn field_suffix(key: &str, suffix: &str) -> bool {
+    let Some(prefix) = key.get(..key.len().saturating_sub(suffix.len())) else {
+        return false;
+    };
+    let Some(tail) = key.get(prefix.len()..) else {
+        return false;
+    };
+    tail.eq_ignore_ascii_case(suffix)
+        && (prefix.ends_with('_')
+            || prefix.ends_with('-')
+            || tail.as_bytes().first().is_some_and(u8::is_ascii_uppercase))
+}
+
+fn file_uri_path(uri: &str) -> Result<&str, ClewError> {
+    let path = if uri
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+    {
+        &uri[7..]
+    } else {
+        &uri[5..]
+    };
+    if uri
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+        && !path.starts_with('/')
+    {
+        return Err(ClewError::new(
+            ErrorCode::WorkerProtocolMismatch,
+            "Kotlin file fact contains a file URI authority",
+        ));
+    }
+    Ok(path)
+}
+
+fn normalize_operational_path(path: &str, outer_relative: &str) -> Result<String, ClewError> {
+    let observed = Path::new(path);
+    if observed.is_absolute() {
+        if !observed.ends_with(Path::new(outer_relative)) {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "Kotlin file fact contains an out-of-scope operational path",
+            ));
+        }
+        Ok(outer_relative.to_owned())
+    } else {
+        if !safe_relative_source_path(path) {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "Kotlin file fact contains an unsafe relative path",
+            ));
+        }
+        Ok(path.to_owned())
+    }
+}
+
+fn safe_relative_source_path(path: &str) -> bool {
+    !path.is_empty()
+        && !Path::new(path).is_absolute()
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 struct PendingFact {
@@ -843,6 +1033,137 @@ mod tests {
                 "declarationRelations":{"coverage":"COMPLETE_SUPPORTED_SUBSET","relations":[],"boundaries":[]},
             }))
         }
+    }
+
+    #[test]
+    fn file_facts_replace_private_operational_paths_with_repository_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let private_file = "/private/codeclew/attempt/repo/src/Main.kt";
+        let index = json!({
+            "compilation":":/main",
+            "compilerVersion":"2.3.0",
+            "projectModelHash":format!("sha256:{}", "1".repeat(64)),
+            "classpathHash":format!("sha256:{}", "2".repeat(64)),
+            "compilerOptionsHash":format!("sha256:{}", "3".repeat(64)),
+            "semanticInputManifestHash":format!("sha256:{}", "4".repeat(64)),
+            "files":[{
+                "path":"src/Main.kt",
+                "normalizedRelativePath":"src/Main.kt",
+                "declarations":[{
+                    "sourceOrigin":{
+                        "file":private_file,
+                        "fileUri":format!("file://{private_file}"),
+                        "relatedFile":"src/Other.kt",
+                        "relatedUri":"file:src/Other.kt",
+                        "semanticUri":"symbol:kotlin/Main",
+                        "rangeStart":0,
+                        "rangeEnd":4
+                    }
+                }],
+                "semanticFacts":[{
+                    "file":private_file,
+                    "kind":"FirCall",
+                    "start":0,
+                    "end":4,
+                    "details":{
+                        "sourcePath":private_file,
+                        "nested":[{"generatedFile":private_file}]
+                    }
+                }]
+            }],
+            "declarationDescriptors":{"descriptors":[],"boundaries":[]},
+            "declarationRelations":{"relations":[],"boundaries":[]},
+        });
+        let facts = translate_facts(&store, &index).unwrap();
+        let file = facts
+            .iter()
+            .find(|fact| fact.fact_key.starts_with("kotlin:file:"))
+            .unwrap();
+        let lease = store.read(&file.payload, 4096).unwrap();
+        let payload: Value = serde_json::from_slice(lease.bytes()).unwrap();
+        assert_eq!(payload["path"], "src/Main.kt");
+        assert_eq!(
+            payload["declarations"][0]["sourceOrigin"]["file"],
+            "src/Main.kt"
+        );
+        assert_eq!(
+            payload["declarations"][0]["sourceOrigin"]["fileUri"],
+            "src/Main.kt"
+        );
+        assert_eq!(
+            payload["declarations"][0]["sourceOrigin"]["relatedFile"],
+            "src/Other.kt"
+        );
+        assert_eq!(
+            payload["declarations"][0]["sourceOrigin"]["relatedUri"],
+            "src/Other.kt"
+        );
+        assert_eq!(
+            payload["declarations"][0]["sourceOrigin"]["semanticUri"],
+            "symbol:kotlin/Main"
+        );
+        assert!(payload.get("semanticFacts").is_none());
+        assert_eq!(payload["semanticFactCount"], 1);
+        assert_eq!(
+            payload["semanticFactsDigest"],
+            canonical::hash(&json!([{
+                "file":"src/Main.kt",
+                "kind":"FirCall",
+                "start":0,
+                "end":4,
+                "details":{
+                    "sourcePath":"src/Main.kt",
+                    "nested":[{"generatedFile":"src/Main.kt"}]
+                }
+            }]))
+            .unwrap()
+        );
+        for fact in &facts {
+            let lease = store.read(&fact.payload, 4096).unwrap();
+            let bytes = String::from_utf8_lossy(lease.bytes());
+            assert!(!bytes.contains("/private/"));
+            assert!(!bytes.contains("/Users/"));
+        }
+
+        let mut mismatched = index.clone();
+        mismatched["files"][0]["semanticFacts"][0]["file"] =
+            Value::String("/private/codeclew/attempt/repo/src/Other.kt".into());
+        assert_eq!(
+            translate_facts(&store, &mismatched).unwrap_err().code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        let mut mismatched_uri = index.clone();
+        mismatched_uri["files"][0]["declarations"][0]["sourceOrigin"]["fileUri"] =
+            Value::String("file:///private/codeclew/attempt/repo/src/Other.kt".into());
+        assert_eq!(
+            translate_facts(&store, &mismatched_uri).unwrap_err().code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+
+        let mut unsafe_relative_uri = index;
+        unsafe_relative_uri["files"][0]["declarations"][0]["sourceOrigin"]["fileUri"] =
+            Value::String("file:../Other.kt".into());
+        assert_eq!(
+            translate_facts(&store, &unsafe_relative_uri)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn adapter_digest_binds_worker_and_translation_contract() {
+        let worker = format!("sha256:{}", "a".repeat(64));
+        let first = kotlin_adapter_digest(&worker).unwrap();
+        assert_eq!(first, kotlin_adapter_digest(&worker).unwrap());
+        assert_ne!(first, worker);
+        assert_ne!(
+            first,
+            kotlin_adapter_digest(&format!("sha256:{}", "b".repeat(64))).unwrap()
+        );
     }
 
     fn request(store: &CasStore, toolchain: CasObject) -> AnalyzeGenerationRequest {

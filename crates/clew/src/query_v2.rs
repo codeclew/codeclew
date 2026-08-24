@@ -1286,6 +1286,69 @@ mod tests {
     }
 
     #[test]
+    fn file_summary_does_not_starve_a_distinctive_descriptor() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let file_summary = FactRecord {
+            fact_key: "a:kotlin:file:large".into(),
+            domain_uri: CapabilityUri::parse("analysis:kotlin-semantic-facts").unwrap(),
+            payload: store
+                .put(
+                    "codeclew-kotlin-semantic-fact/3.0",
+                    br#"{"path":"src/Large.kt","semanticFactCount":100000,"semanticFactsDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+                )
+                .unwrap(),
+        };
+        let descriptor = FactRecord {
+            fact_key: "b:kotlin:descriptor:useful".into(),
+            domain_uri: CapabilityUri::parse("analysis:kotlin-semantic-facts").unwrap(),
+            payload: store
+                .put(
+                    "codeclew-kotlin-semantic-fact/3.0",
+                    br#"{"compilerCallableId":"pkg/UsefulDescriptor.find","symbolIdentity":"callable:pkg/UsefulDescriptor.find"}"#,
+                )
+                .unwrap(),
+        };
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        writer.push(&file_summary).unwrap();
+        writer.push(&descriptor).unwrap();
+        let attempt = AttemptAuthority {
+            compilation_id: "main".into(),
+            capability: CapabilityUri::parse("analysis:kotlin-semantic-facts").unwrap(),
+            completion: AnalysisAttemptComplete {
+                scope_digest: format!("sha256:{}", "e".repeat(64)),
+                completeness_receipt: receipt,
+                fact_count: 2,
+            },
+        };
+        let (generation, generation_object) = finalize_generation(
+            &store,
+            derived,
+            vec![attempt],
+            vec![writer.finish().unwrap()],
+        )
+        .unwrap();
+        let (index, _) = build_query_index(&store, &generation, generation_object).unwrap();
+
+        let result = query(&store, &index, &["UsefulDescriptor".into()], 1).unwrap();
+        assert_eq!(result.facts.len(), 1);
+        assert_eq!(result.facts[0].fact_key, descriptor.fact_key);
+        assert!(!result.truncated);
+        let payload = store.read(&result.facts[0].payload, 4096).unwrap();
+        let text = String::from_utf8_lossy(payload.bytes());
+        assert!(text.contains("UsefulDescriptor"));
+        assert!(!text.contains("semanticFacts"));
+        assert!(!text.contains("OpaqueSiblingMarker"));
+
+        let dropped = query(&store, &index, &["OpaqueSiblingMarker".into()], 1).unwrap();
+        assert!(dropped.facts.is_empty());
+        assert!(!dropped.truncated);
+    }
+
+    #[test]
     fn high_fanout_term_is_split_without_dropping_fact_references() {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();

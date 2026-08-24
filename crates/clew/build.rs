@@ -25,23 +25,37 @@ fn generate_worker_input_manifests() {
         "gradle/wrapper/gradle-wrapper.properties",
         "schemas/worker.proto",
     ];
-    let variants = [(
-        "KOTLIN24",
-        "kotlin24",
-        ":workers:kotlin:installDist",
-        "workers/manifests/kotlin24.json",
-        vec![common_roots[0]],
-        common_files
-            .iter()
-            .copied()
-            .chain([
-                "workers/kotlin/build.gradle.kts",
-                "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/BtaIncrementalBackend21.kt",
-                "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/K2CanonicalFactSet21.kt",
-                "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/K2FactGenerationStore21.kt",
-            ])
-            .collect::<Vec<_>>(),
-    )];
+    let variants = [
+        (
+            "KOTLIN23",
+            "kotlin23",
+            ":workers:kotlin23:installDist",
+            "workers/manifests/kotlin23.json",
+            vec![common_roots[0], "workers/kotlin23/src/main"],
+            common_files
+                .iter()
+                .copied()
+                .chain(["workers/kotlin23/build.gradle.kts"])
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "KOTLIN24",
+            "kotlin24",
+            ":workers:kotlin:installDist",
+            "workers/manifests/kotlin24.json",
+            vec![common_roots[0]],
+            common_files
+                .iter()
+                .copied()
+                .chain([
+                    "workers/kotlin/build.gradle.kts",
+                    "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/BtaIncrementalBackend21.kt",
+                    "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/K2CanonicalFactSet21.kt",
+                    "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/K2FactGenerationStore21.kt",
+                ])
+                .collect::<Vec<_>>(),
+        ),
+    ];
     let mut generated = String::new();
     for (name, variant, install_task, output_manifest, roots, files) in variants {
         let entries = collect_inputs(&repo, &roots, &files);

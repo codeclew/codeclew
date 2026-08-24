@@ -13,16 +13,19 @@ The only supported executable entrypoint is `./clew`.
 - the Rust toolchain pinned by `rust-toolchain.toml`
 - Maven on `PATH` only for Maven projects without `./mvnw`
 
-The Kotlin 2.4.10 worker is packaged into an immutable runtime capsule. A cold
-start may build the capsule. A warm invocation verifies and reuses it without
-running Cargo, Rustc, Gradle, or Maven. The worker executes directly from that
-sealed capsule under its shared lease; the warm path does not copy its
-distribution.
+The exact Kotlin 2.3.0 and 2.4.10 workers are packaged into an immutable runtime
+capsule. A cold runtime start may build the capsule. A warm runtime invocation
+verifies and reuses it without running Cargo, Rustc, Gradle, or Maven. The
+workers execute directly from that sealed capsule under its shared lease; the
+runtime warm path does not copy their distributions. Project analysis may still
+invoke the project wrapper under the model-cache policy described below.
 
 The current supported product contour is deliberately narrower than the
-source-level research surface: Kotlin 2.4, Gradle, `PROJECT_NATIVE`, and one exact
-compilation. Maven, Kotlin 2.1/2.3, multiple compilations, Android/KMP and
-`EXTERNAL` are preview contours until they have their own publish acceptance
+source-level research surface: Kotlin 2.4.10, Gradle, `PROJECT_NATIVE`, and one
+exact compilation. Exact Kotlin 2.3.0 with Maven is qualified as a read-only
+compiler-backed context preview: it has real-project context acceptance, but no
+mutation or publish claim. Kotlin 2.1, multiple compilations, Android/KMP and
+`EXTERNAL` remain unqualified contours until they have their own acceptance
 tests.
 
 This revision is pilot-ready, not general availability. Team use follows the
@@ -97,6 +100,13 @@ Context stdout is bounded to 64 KiB. It contains the edit-ready projection and
 content IDs; full evidence remains in private managed state. Plans are bounded
 to 1 MiB, 256 operations, 256 files, and a 256 KiB expected write set.
 
+Opaque per-file `semanticFacts` arrays are normalized before hashing and
+replaced in public/query file facts by a fact count and digest. Other normalized
+file metadata and declarations remain present, while granular compiler
+descriptors and relations remain queryable. This prevents private operational
+paths and oversized opaque payloads from dominating context selection; recall
+inside the omitted array is deliberately not claimed.
+
 ## State and build authority
 
 All mutable Codeclew state lives under private `CODECLEW_HOME` (by default the
@@ -119,7 +129,10 @@ in private `0600` locator files and are never emitted in stdout or evidence.
 `PROJECT_NATIVE` uses the project's wrapper and ordinary user build
 environment. Model caching is `NON_CACHEABLE` unless the session explicitly
 selects a tracked `codeclew.model-cache.json` or sealed external authority.
-The sealed external contour remains fail-closed.
+The sealed external contour remains fail-closed. With `NON_CACHEABLE`, context
+creation within an open session reuses its immutable generation, but a new
+session may repeat project model and compiler analysis. Cross-session warm
+generation reuse is therefore not yet a product claim.
 
 A tracked cache manifest must exactly match `HEAD`, be canonical JSON plus one
 newline, and explicitly list the authorized compilations:
@@ -170,7 +183,10 @@ Ordinary development and GitHub CI use the same repository-owned entrypoint:
 The stabilization controller and its receipts remain optional research/release
 evidence. They do not gate product development or CI. Cold/multi-compilation
 performance, BTA24, self-hosting and agent comparisons are qualification work,
-not prerequisites for the supported Kotlin 2.4 publish path.
+not prerequisites for the supported Kotlin 2.4 publish path. Kotlin 2.3.0
+qualification covers exact worker admission, capsule identity, privacy-safe
+fact translation, incremental receipt construction, and read-only context on a
+representative Maven repository; it does not extend the publish contour.
 
 The CLI writes canonical JSON to stdout and diagnostics to stderr. The system is
 fail-closed for stale authorities, ambiguous anchors, unsupported project
