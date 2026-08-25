@@ -22,6 +22,14 @@ pub mod session;
 pub mod state;
 pub mod task_run_v2;
 pub mod text_authority;
+pub mod thread;
+pub mod thread_callables;
+pub mod thread_callables_service;
+pub mod thread_change_set;
+pub mod thread_change_set_service;
+pub mod thread_context;
+pub mod thread_impact;
+pub mod thread_impact_service;
 pub mod worker;
 
 pub mod proto {

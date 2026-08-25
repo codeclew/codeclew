@@ -1,0 +1,54 @@
+{
+  "schema": "codeclew-thread-contract-corpus-gate/1.0",
+  "frozenAt": "2026-08-25",
+  "selectionAuthority": {
+    "kind": "PINNED_LOCAL_CANONICAL_HTTP_TOPOLOGY",
+    "ruleId": "LOCAL_REQUIRED_HTTP_EDGES_PLUS_TWO_FIXED_VARIANTS_V1",
+    "privateCorpusDigest": "sha256:1c4674063e95c66c99129b5a3ac79cba1520e4cf352c80f1e51b805446e02042",
+    "taskCount": 10
+  },
+  "thresholds": {
+    "exactComparableMin": 4,
+    "usableMin": 6,
+    "distinctServicePairsMin": 3
+  },
+  "services": [
+    {"serviceAlias": "service-01", "revisionAuthority": "sha256:7818194ee41c2b6829f23be4804194460e0ecb2b5d509a290a1f211924e2a260"},
+    {"serviceAlias": "service-02", "revisionAuthority": "sha256:135cd611471560581009fdcc3257bc2575ede0505d5e684ff5de1f7c2903bbe0"},
+    {"serviceAlias": "service-03", "revisionAuthority": "sha256:ae5ae3c2261e5a1e307f6889c7de4ff24df0e98ae9b7f4cf1dab394b9ada2fb1"},
+    {"serviceAlias": "service-04", "revisionAuthority": "sha256:b5910ed26f89c4bc8c49daa2849de8e51e1544ec440198e813ab0750f0e8d755"},
+    {"serviceAlias": "service-05", "revisionAuthority": "sha256:3277d0cf71b4926a96703b187dbc0ceb968cfd4897f15a53cc4246b0fc2e8f28"},
+    {"serviceAlias": "service-06", "revisionAuthority": "sha256:f627934ec7bc8ae2e6d9ba7b4b2ae659439733ba8d6ef809d3bd5d9dedc26edc"},
+    {"serviceAlias": "service-07", "revisionAuthority": "sha256:9e5e604c0d10eeddf2988d219bf32b947eba9ef5f0b968fcc56dd16fc3364fab"},
+    {"serviceAlias": "service-08", "revisionAuthority": "sha256:32abd7b6e34cc304a145e49c69bbb2cb51105a569f88f337498e00c0ab94fba9"},
+    {"serviceAlias": "service-09", "revisionAuthority": "sha256:3c7df95781a44c85c32f065285d41278306398c816ad47c13136781e65a6f09a"},
+    {"serviceAlias": "service-10", "revisionAuthority": "sha256:509d583dd54054c51772a5af2fd3b7a83187ac6f6aa99f17b6a156b3384fa7fe"},
+    {"serviceAlias": "service-11", "revisionAuthority": "sha256:1bcda7e9a2834da93a12cdd5a25a5adedede5a104b2a9113f511312c2a52653b"}
+  ],
+  "tasks": [
+    {"taskId": "task-01", "pairId": "pair-01", "provider": "service-01", "consumer": "service-02", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-02", "pairId": "pair-02", "provider": "service-04", "consumer": "service-01", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-03", "pairId": "pair-03", "provider": "service-04", "consumer": "service-02", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-04", "pairId": "pair-04", "provider": "service-04", "consumer": "service-03", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-05", "pairId": "pair-05", "provider": "service-05", "consumer": "service-08", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-06", "pairId": "pair-06", "provider": "service-06", "consumer": "service-07", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-07", "pairId": "pair-07", "provider": "service-08", "consumer": "service-09", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-08", "pairId": "pair-08", "provider": "service-10", "consumer": "service-11", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_CONTRACT_CHANGE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-09", "pairId": "pair-01", "provider": "service-01", "consumer": "service-02", "protocol": "HTTP_OPENAPI_3_X", "scenario": "CONSUMER_REQUEST_SHAPE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"},
+    {"taskId": "task-10", "pairId": "pair-05", "provider": "service-05", "consumer": "service-08", "protocol": "HTTP_OPENAPI_3_X", "scenario": "PROVIDER_RESPONSE_SHAPE", "providerOpenApiArtifacts": 0, "consumerOpenApiArtifacts": 0, "explicitDependencySeed": true, "classification": "NOT_USABLE_FOR_V1", "rationaleCode": "MISSING_TRACKED_PROVIDER_OR_CONSUMER_OPENAPI_AUTHORITY"}
+  ],
+  "summary": {
+    "exactComparable": 0,
+    "declaredNavigable": 0,
+    "notUsableForV1": 10,
+    "distinctServicePairs": 8,
+    "result": "STOP_PROFILE_SELECTION"
+  },
+  "benchmarkSeals": null,
+  "privacy": {
+    "absolutePaths": false,
+    "repositoryNames": false,
+    "contractBodies": false,
+    "credentials": false
+  }
+}

@@ -10,8 +10,8 @@ pub fn bytes<T: Serialize>(input: &T) -> anyhow::Result<Vec<u8>> {
     Ok(serde_json::to_vec(&value(input)?)?)
 }
 
-pub fn pretty<T: Serialize>(input: &T) -> anyhow::Result<String> {
-    Ok(serde_json::to_string_pretty(&value(input)?)?)
+pub fn compact<T: Serialize>(input: &T) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&value(input)?)?)
 }
 
 pub fn hash<T: Serialize>(input: &T) -> anyhow::Result<String> {

@@ -694,6 +694,7 @@ impl SessionAuthority {
     }
 
     pub fn load_context(&self, context_id: &str) -> Result<ContextObject, ClewError> {
+        reject_thread_context_for_mutation(context_id)?;
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let mut object: ContextObject = read_managed_json(
@@ -727,6 +728,7 @@ impl SessionAuthority {
     }
 
     pub fn validate_plan(&self, context_id: &str, source: &[u8]) -> Result<PlanObject, ClewError> {
+        reject_thread_context_for_mutation(context_id)?;
         if source.len() > MAX_PLAN_BYTES {
             return Err(invalid("plan exceeds the 1 MiB limit"));
         }
@@ -777,6 +779,7 @@ impl SessionAuthority {
     }
 
     pub fn load_plan(&self, plan_id: &str) -> Result<PlanObject, ClewError> {
+        reject_thread_coverage_for_mutation(plan_id)?;
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let object: PlanObject = read_managed_json(
@@ -805,6 +808,8 @@ impl SessionAuthority {
         context_id: &str,
         plan_id: &str,
     ) -> Result<(String, String), ClewError> {
+        reject_thread_coverage_for_mutation(plan_id)?;
+        reject_thread_context_for_mutation(context_id)?;
         self.require_open()?;
         let request = json!({
             "schema":"codeclew-task-run-request/1.0",
@@ -1559,6 +1564,8 @@ impl RunRecord {
         context_id: &str,
         plan_id: &str,
     ) -> Result<Self, ClewError> {
+        reject_thread_coverage_for_mutation(plan_id)?;
+        reject_thread_context_for_mutation(context_id)?;
         let plan = session.load_plan(plan_id)?;
         if plan.context_id != context_id {
             return Err(invalid("plan is not bound to the requested context"));
@@ -1590,6 +1597,7 @@ impl RunRecord {
     }
 
     pub fn load(run_id: &str) -> Result<Self, ClewError> {
+        reject_thread_coverage_for_mutation(run_id)?;
         let state = StateAuthority::process_default()?;
         let root = state.run_root(run_id)?;
         let _lock = RunLedgerLock::acquire(&state, &root)?;
@@ -1642,6 +1650,27 @@ impl RunRecord {
         session.child(&Path::new("candidates").join(id_component(&self.run_id, "run:")?))?;
         Ok(root)
     }
+}
+
+fn reject_thread_context_for_mutation(context_id: &str) -> Result<(), ClewError> {
+    reject_thread_coverage_for_mutation(context_id)?;
+    if context_id.starts_with("thread-context:") {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "thread contexts are read-only analysis evidence and cannot authorize mutation",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_thread_coverage_for_mutation(value: &str) -> Result<(), ClewError> {
+    if value.starts_with("thread-coverage:") {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "thread coverage is read-only analysis evidence and cannot authorize mutation",
+        ));
+    }
+    Ok(())
 }
 
 fn save_run_transition(
@@ -1903,13 +1932,19 @@ pub fn bounded_context_stdout(context: &ContextObject) -> Result<Value, ClewErro
         "publicationPolicy":context.evidence.pointer("/context/publicationPolicy"),
     });
     let bytes = canonical::bytes(&summary).map_err(internal)?;
-    if bytes.len() > MAX_CONTEXT_STDOUT_BYTES {
+    validate_context_stdout_bytes(&bytes)?;
+    Ok(summary)
+}
+
+fn validate_context_stdout_bytes(bytes: &[u8]) -> Result<(), ClewError> {
+    // main emits canonical compact JSON followed by println!'s LF.
+    if bytes.len().saturating_add(1) > MAX_CONTEXT_STDOUT_BYTES {
         return Err(ClewError::new(
             ErrorCode::SliceBudgetExceeded,
             "context stdout exceeds 64 KiB",
         ));
     }
-    Ok(summary)
+    Ok(())
 }
 
 fn validate_plan_shape(plan: &Value) -> Result<(), ClewError> {
@@ -2470,6 +2505,17 @@ fn io_error(error: std::io::Error) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_stdout_limit_includes_the_trailing_newline() {
+        let at_limit = canonical::bytes(&json!("x".repeat(MAX_CONTEXT_STDOUT_BYTES - 3))).unwrap();
+        let over_limit =
+            canonical::bytes(&json!("x".repeat(MAX_CONTEXT_STDOUT_BYTES - 2))).unwrap();
+        assert_eq!(at_limit.len() + 1, MAX_CONTEXT_STDOUT_BYTES);
+        assert_eq!(over_limit.len() + 1, MAX_CONTEXT_STDOUT_BYTES + 1);
+        validate_context_stdout_bytes(&at_limit).unwrap();
+        assert!(validate_context_stdout_bytes(&over_limit).is_err());
+    }
 
     fn test_session() -> SessionAuthority {
         let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -3409,5 +3455,18 @@ mod tests {
                 .unwrap()
                 .success()
         );
+    }
+
+    #[test]
+    fn thread_coverage_ids_cannot_enter_mutation_identity_namespaces() {
+        let coverage = "thread-coverage:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert_eq!(
+            reject_thread_coverage_for_mutation(coverage)
+                .unwrap_err()
+                .code,
+            ErrorCode::PreconditionFailed
+        );
+        assert!(reject_thread_context_for_mutation(coverage).is_err());
+        assert!(RunRecord::load(coverage).is_err());
     }
 }

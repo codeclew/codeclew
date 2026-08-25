@@ -1,0 +1,71 @@
+{
+  "schema": "codeclew-thread-kotlin-impact-acceptance/1.0",
+  "status": "PASS",
+  "profile": "KOTLIN_DESCRIPTOR_NAVIGATION_V1",
+  "authority": {
+    "runtimeMode": "DEVELOPMENT",
+    "runtimeDigest": "sha256:b5b654cf505fc494b6d4c5b3f91df1fabf18440a0d3d099ed30f972aca0a9a54",
+    "factSetDigest": "sha256:ffe9120f192fa665eab5192c278d4bda534a67f7219f430fa5b8a3474c5bad25",
+    "impactDigest": "sha256:982499b21118a1d249f79815b8f0fbfb7f4cf14e7239f1945bf91ec0c3f378fb",
+    "bindingDigest": "sha256:5f71a41ec3089cf28f6f0d50b1e45c35eecb42fae86e4369656253e804812fdc"
+  },
+  "fixture": {
+    "repositoryCount": 2,
+    "memberCount": 2,
+    "compilationCount": 2,
+    "compilerVersion": "2.4.10",
+    "independentLocalGitRepositories": true,
+    "coordinateOrPathIncluded": false
+  },
+  "impactResult": {
+    "subjectKind": "CALLABLE_FAMILY",
+    "shapeStatus": "UNSURE",
+    "certainty": "UNSURE",
+    "relationshipAuthority": "DECLARED_TOPOLOGY",
+    "providerObserved": true,
+    "consumerObserved": true,
+    "projectedDeclarationCount": 2,
+    "findingCount": 8,
+    "obligationCount": 16,
+    "sourceWindowCount": 4,
+    "findingsTruncated": false,
+    "sourceWindowsTruncated": false,
+    "httpClaimCount": 0,
+    "compatibilityClaimCount": 0
+  },
+  "warmAcceptance": {
+    "impactRunMillis": [
+      1416,
+      1398
+    ],
+    "impactRunCount": 2,
+    "maximumImpactRunMillis": 1416,
+    "identityStable": true,
+    "emptyToolPath": true,
+    "prohibitedProcessCount": 0,
+    "stdoutBytes": 13808,
+    "stdoutLimitBytes": 65536,
+    "stdoutForbiddenMatchCount": 0
+  },
+  "retention": {
+    "threadGarbageCollected": true,
+    "memberSessionsGarbageCollected": 2,
+    "rootDigestBefore": "sha256:c8ab4741ff8afa45558f11e1ddbd0816d7e78e5d45ad7401c0204aedde72c6da",
+    "rootDigestAfter": "sha256:c8ab4741ff8afa45558f11e1ddbd0816d7e78e5d45ad7401c0204aedde72c6da",
+    "closureDigestBefore": "sha256:eda51a4a16ff926fa9e3cbb96207bee250b4a9c8e4c37465cbd2d19918c71940",
+    "closureDigestAfter": "sha256:eda51a4a16ff926fa9e3cbb96207bee250b4a9c8e4c37465cbd2d19918c71940",
+    "declaredObjectCount": 12,
+    "reachableObjectCount": 567,
+    "reachableBytes": 10233566,
+    "retainedLoadVerified": true
+  },
+  "verification": {
+    "exactLimitAndLimitPlusOneCoverage": true,
+    "coreFocusedTests": 15,
+    "managedServiceTests": 8,
+    "atomicRaceAndTamperCoverage": true,
+    "clippyAllTargets": "PASS",
+    "diffCheck": "PASS",
+    "independentReview": "PASS"
+  }
+}

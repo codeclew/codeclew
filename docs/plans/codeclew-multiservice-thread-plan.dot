@@ -1,0 +1,77 @@
+digraph codeclew_multiservice_thread {
+  graph [
+    rankdir=TB,
+    bgcolor="#FFFFFF",
+    fontname="Helvetica",
+    nodesep=0.45,
+    ranksep=0.75,
+    pad=0.25
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=10,
+    color="#284B63",
+    fillcolor="#F4F8FB",
+    fontcolor="#102A43",
+    margin="0.14,0.09"
+  ];
+  edge [
+    color="#486581",
+    fontname="Helvetica",
+    fontsize=9,
+    fontcolor="#334E68",
+    arrowsize=0.75
+  ];
+
+  S0 [label="S0 — Federated evidence thread\nBind 2-8 exact local analysis units\nand return one bounded context"];
+  G1O [
+    shape=diamond,
+    label="G1O — OpenAPI fit gate\n0/10 usable: STOP_PROFILE_SELECTION",
+    fillcolor="#FFF5F5",
+    color="#C53030"
+  ];
+  H1 [
+    shape=diamond,
+    label="H1 — Human reselection\nKotlin descriptors chosen",
+    fillcolor="#FFF7E6",
+    color="#B7791F"
+  ];
+  G1K [
+    shape=diamond,
+    label="G1K — K2 readiness gate\nPrime 11 pinned units and freeze\ndescriptor benchmark authority",
+    fillcolor="#FFF7E6",
+    color="#B7791F"
+  ];
+  S1K [label="S1K — Kotlin callable fact set\nClosed K2 declaration/use/boundary facts\nand dedicated bounded index"];
+  S2K [label="S2K — Descriptor dependency impact\nExact projected shapes + declared/UNSURE\ncross-repository relationships"];
+  S3K [label="S3K — Conditional coverage validation\nCompare before/after projected shapes\nand catch omitted obligations"];
+  S4K [label="S4K — Pilot and adoption gate\nDefault vs Codeclew on frozen tasks;\nqualify only measured Kotlin contour"];
+  STOP [
+    shape=octagon,
+    label="STOP_PROFILE_SELECTION\nReturn readiness evidence;\ndo not start S1K",
+    fillcolor="#FFF5F5",
+    color="#C53030"
+  ];
+
+  S0 -> G1O [label="working federated slice"];
+  G1O -> H1 [label="STOP + human decision", color="#B7791F", fontcolor="#B7791F"];
+  H1 -> G1K [label="selected conditional profile"];
+  G1K -> S1K [label="PASS"];
+  G1K -> STOP [label="FAIL", color="#C53030", fontcolor="#C53030"];
+  S1K -> S2K [label="callable fact set"];
+  S2K -> S3K [label="bounded impact evidence"];
+  S3K -> S4K [label="conditional workflow"];
+
+  DEFERRED [
+    label="Recorded secondary backlog — not scheduled\nExternal artifact ownership / Spring HTTP\nOpenAPI / Protobuf / AsyncAPI / JSON Schema\nGrouped prepare / coordinated publish",
+    style="rounded,dashed",
+    fillcolor="#FFFFFF",
+    color="#A0AEC0"
+  ];
+
+  { rank=same; S4K; DEFERRED; }
+  S4K -> DEFERRED [style=dashed, label="only after evidence", constraint=false];
+  STOP -> DEFERRED [style=dashed, label="new human decision", constraint=false, color="#C53030", fontcolor="#C53030"];
+}

@@ -274,15 +274,7 @@ pub fn create(
     let paths = ordered_paths_in_evidence(&evidence_facts);
     let source_hints = source_offset_hints(&evidence_facts, selection_terms);
     let sources = load_source_snippets(&store, &snapshot, &paths, selection_terms, &source_hints)?;
-    let verified = ready.certainty == "VERIFIED"
-        && !query_context.truncated
-        && query_context.unmatched_terms.is_empty()
-        && !evidence_facts.is_empty()
-        && query_context.requested_terms.iter().all(|term| {
-            evidence_facts
-                .iter()
-                .any(|fact| exact_identity_match(&fact["payload"], term, None, 0))
-        });
+    let verified = query_selection_verified(&ready.certainty, &query_context, &evidence_facts);
     let conditional = !verified && !query_context.facts.is_empty();
     let mut obligations = ready
         .obligations
@@ -369,6 +361,28 @@ pub fn create(
         },
     });
     Ok((projection, evidence))
+}
+
+fn query_selection_verified(
+    generation_certainty: &str,
+    query_context: &AggregateQueryContext,
+    evidence_facts: &[Value],
+) -> bool {
+    if generation_certainty != "VERIFIED"
+        || query_context.truncated
+        || !query_context.unmatched_terms.is_empty()
+        || evidence_facts.is_empty()
+    {
+        return false;
+    }
+    let exact_identities = evidence_facts
+        .iter()
+        .flat_map(|fact| exact_identity_terms(&fact["payload"]))
+        .collect::<BTreeSet<_>>();
+    query_context
+        .requested_terms
+        .iter()
+        .all(|term| exact_identities.contains(term))
 }
 
 fn merge_query_contexts(
@@ -519,6 +533,14 @@ fn paths_in_payload(payload: &Value) -> Vec<String> {
     let mut paths = BTreeSet::new();
     collect_paths(payload, None, &mut paths, 0);
     paths.into_iter().collect()
+}
+
+/// Return the normalized repository-relative source identities carried by one
+/// selected fact payload.  Thread composition uses this narrow seam to retain
+/// exact compilation provenance for source windows without exposing the
+/// context implementation's ranking or snapshot internals.
+pub(crate) fn fact_source_paths(payload: &Value) -> Vec<String> {
+    paths_in_payload(payload)
 }
 
 fn ordered_paths_in_evidence(facts: &[Value]) -> Vec<String> {
@@ -801,7 +823,11 @@ fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
         "truncated":false,
     });
     let mut projected_bytes = canonical::bytes(&projection).map_err(internal)?.len();
-    for key in ["sources", "matches"] {
+    // Structured semantic facts are the primary navigation authority. Large
+    // source snippets are useful supporting evidence, but must not consume the
+    // bounded projection before any fact that identifies why the source was
+    // selected can be returned.
+    for key in ["matches", "sources"] {
         for value in context[key].as_array().into_iter().flatten() {
             let item_bytes = canonical::bytes(value).map_err(internal)?.len();
             let separator_bytes =
@@ -845,12 +871,26 @@ fn rank_fact_evidence(
         lanes.entry(compilation.to_owned()).or_default().push(fact);
     }
     for facts in lanes.values_mut() {
-        facts.sort_by(|left, right| {
-            let score = |value: &Value| fact_score(&value["payload"], &lowered, None, 0);
-            score(right)
-                .cmp(&score(left))
-                .then_with(|| left["factKey"].as_str().cmp(&right["factKey"].as_str()))
+        let mut decorated = std::mem::take(facts)
+            .into_iter()
+            .map(|fact| {
+                let identities = exact_identity_terms(&fact["payload"]);
+                let exact_coverage = lowered
+                    .iter()
+                    .filter(|term| identities.contains(term.as_str()))
+                    .count();
+                let score = fact_score(&fact["payload"], &lowered, None, 0);
+                (exact_coverage, score, fact)
+            })
+            .collect::<Vec<_>>();
+        decorated.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| left.2["factKey"].as_str().cmp(&right.2["factKey"].as_str()))
         });
+        *facts = decorated.into_iter().map(|(_, _, fact)| fact).collect();
     }
     let lanes = lanes.into_values().collect::<Vec<_>>();
     let mut ranked = Vec::new();
@@ -882,7 +922,7 @@ fn fact_score(value: &Value, terms: &[String], key: Option<&str>, depth: usize) 
     match value {
         Value::String(value) => {
             let value = value.to_lowercase();
-            let weight = match key {
+            let weight: usize = match key {
                 Some(
                     "symbolIdentity" | "compilerCallableId" | "compilerClassId" | "ownerIdentity",
                 ) => 16,
@@ -891,21 +931,67 @@ fn fact_score(value: &Value, terms: &[String], key: Option<&str>, depth: usize) 
                 Some("sourceSet" | "module" | "provider" | "schema") => 0,
                 _ => 1,
             };
-            weight
-                * terms
+            weight.saturating_mul(
+                terms
                     .iter()
                     .filter(|term| value.contains(term.as_str()))
-                    .count()
+                    .count(),
+            )
         }
-        Value::Array(values) => values
-            .iter()
-            .map(|value| fact_score(value, terms, key, depth + 1))
-            .sum(),
-        Value::Object(values) => values
-            .iter()
-            .map(|(key, value)| fact_score(value, terms, Some(key), depth + 1))
-            .sum(),
+        Value::Array(values) => values.iter().fold(0usize, |total, value| {
+            total.saturating_add(fact_score(value, terms, key, depth + 1))
+        }),
+        Value::Object(values) => values.iter().fold(0usize, |total, (key, value)| {
+            total.saturating_add(fact_score(value, terms, Some(key), depth + 1))
+        }),
         _ => 0,
+    }
+}
+
+fn exact_identity_terms(value: &Value) -> BTreeSet<String> {
+    let mut output = BTreeSet::new();
+    collect_exact_identity_terms(value, None, 0, &mut output);
+    output
+}
+
+fn collect_exact_identity_terms(
+    value: &Value,
+    key: Option<&str>,
+    depth: usize,
+    output: &mut BTreeSet<String>,
+) {
+    if depth > 32 {
+        return;
+    }
+    match value {
+        Value::String(value)
+            if key.is_some_and(|key| {
+                matches!(
+                    key,
+                    "symbolIdentity" | "compilerCallableId" | "compilerClassId" | "ownerIdentity"
+                )
+            }) =>
+        {
+            output.extend(
+                value
+                    .split(|character: char| {
+                        matches!(character, '/' | '.' | '#' | ':' | '(' | ')' | ';' | '@')
+                    })
+                    .filter(|component| !component.is_empty())
+                    .map(|component| component.chars().flat_map(char::to_lowercase).collect()),
+            );
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_exact_identity_terms(value, key, depth + 1, output);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                collect_exact_identity_terms(value, Some(key), depth + 1, output);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -924,9 +1010,14 @@ fn exact_identity_match(value: &Value, term: &str, key: Option<&str>, depth: usi
         {
             value
                 .split(|character: char| {
-                    matches!(character, '/' | '.' | '#' | ':' | '(' | ')' | ';')
+                    matches!(character, '/' | '.' | '#' | ':' | '(' | ')' | ';' | '@')
                 })
-                .any(|component| component.eq_ignore_ascii_case(term))
+                .any(|component| {
+                    component
+                        .chars()
+                        .flat_map(char::to_lowercase)
+                        .eq(term.chars())
+                })
         }
         Value::Array(values) => values
             .iter()
@@ -1097,6 +1188,144 @@ mod tests {
         assert_eq!(projection["matches"].as_array().unwrap().len(), 1);
         assert_eq!(projection["matches"][0]["factKey"], "small");
         assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
+    }
+
+    #[test]
+    fn large_source_does_not_starve_structured_match_authority() {
+        let mut context = json!({
+            "snapshot":{},
+            "task":{},
+            "compilations":[":/main"],
+            "compilerVersions":{},
+            "generationAuthority":{},
+            "sources":[{"fileId":"src/Large.kt","text":"x".repeat(42 * 1024)}],
+            "matches":[{
+                "factKey":"kotlin:descriptor:authority",
+                "payload":{"name":"Target","shape":"y".repeat(16 * 1024)},
+            }],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+
+        let matches = context["matches"].take();
+        let source_only = bounded_projection(&context).unwrap();
+        assert_eq!(source_only["truncated"], false);
+        assert_eq!(source_only["sources"].as_array().unwrap().len(), 1);
+
+        context["matches"] = matches;
+        let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["truncated"], true);
+        assert_eq!(projection["matches"].as_array().unwrap().len(), 1);
+        assert!(projection["sources"].as_array().unwrap().is_empty());
+        assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
+    }
+
+    #[test]
+    fn large_aggregate_fact_does_not_starve_exact_identity_navigation() {
+        let mut aggregate = json!({
+            "compilation":":/main",
+            "factKey":"generic:file:aggregate",
+            "payload":{
+                "name":vec!["Target"; 256],
+                "padding":"",
+            },
+        });
+        let descriptor = json!({
+            "compilation":":/main",
+            "factKey":"generic:descriptor:exact",
+            "payload":{
+                "symbolIdentity":"python-syntax:src/sample.py#function:Target@10-20",
+                "shape":"x".repeat(512),
+            },
+        });
+        let mut context = json!({
+            "snapshot":{},
+            "task":{},
+            "compilations":[":/main"],
+            "compilerVersions":{},
+            "generationAuthority":{},
+            "sources":[],
+            "matches":[aggregate.clone()],
+            "completeness":{},
+            "verificationObligations":[],
+        });
+        let initial_size = crate::canonical::bytes(&bounded_projection(&context).unwrap())
+            .unwrap()
+            .len();
+        let padding = PROJECTION_TARGET_BYTES
+            .checked_sub(initial_size + 64)
+            .expect("aggregate fixture must leave a narrow stdout remainder");
+        aggregate["payload"]["padding"] = json!("x".repeat(padding));
+        context["matches"] = json!([aggregate.clone()]);
+        let aggregate_only = bounded_projection(&context).unwrap();
+        assert_eq!(aggregate_only["truncated"], false);
+        assert_eq!(aggregate_only["matches"].as_array().unwrap().len(), 1);
+
+        let ranked =
+            rank_fact_evidence(vec![aggregate, descriptor.clone()], &["Target".into()], 2).unwrap();
+        assert_eq!(ranked[0]["factKey"], descriptor["factKey"]);
+        context["matches"] = json!(ranked);
+        let projection = bounded_projection(&context).unwrap();
+        assert_eq!(projection["truncated"], true);
+        assert_eq!(projection["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(projection["matches"][0]["factKey"], descriptor["factKey"]);
+        assert!(crate::canonical::bytes(&projection).unwrap().len() <= PROJECTION_TARGET_BYTES);
+    }
+
+    #[test]
+    fn semantic_identity_grammars_and_unicode_share_query_normalization() {
+        for identity in [
+            "python-syntax:src/sample.py#function:work@10-20",
+            "rust-syntax:src/lib.rs#function:work@30-40",
+            "kotlin:sample/Класс@50-60",
+        ] {
+            let term = if identity.contains("Класс") {
+                "класс"
+            } else {
+                "work"
+            };
+            assert!(super::exact_identity_match(
+                &json!({"symbolIdentity":identity}),
+                term,
+                None,
+                0,
+            ));
+        }
+        assert!(!super::exact_identity_match(
+            &json!({"symbolIdentity":"rust-syntax:src/lib.rs#function:worker@30-40"}),
+            "work",
+            None,
+            0,
+        ));
+    }
+
+    #[test]
+    fn exact_identity_navigation_never_upgrades_unsure_generation_authority() {
+        let query = super::AggregateQueryContext {
+            schema: AGGREGATE_QUERY_CONTEXT_SCHEMA.into(),
+            index_id: "sha256:index".into(),
+            requested_terms: vec!["work".into()],
+            unmatched_terms: Vec::new(),
+            facts: Vec::new(),
+            query_shards_read: 1,
+            truncated: false,
+        };
+        let evidence = vec![json!({
+            "payload":{
+                "symbolIdentity":"rust-syntax:src/lib.rs#function:work@30-40",
+            },
+        })];
+        assert!(!super::query_selection_verified(
+            "UNSURE", &query, &evidence
+        ));
+        assert!(super::query_selection_verified(
+            "VERIFIED", &query, &evidence
+        ));
+        let mut truncated = query;
+        truncated.truncated = true;
+        assert!(!super::query_selection_verified(
+            "VERIFIED", &truncated, &evidence,
+        ));
     }
 
     #[test]
@@ -1346,6 +1575,26 @@ mod tests {
         .unwrap();
         assert_eq!(single[0]["factKey"], "z-high");
         assert_eq!(single[1]["factKey"], "a-low");
+
+        let no_identity = rank_fact_evidence(
+            vec![
+                json!({
+                    "compilation":":a/main",
+                    "factKey":"a-low",
+                    "payload":{"name":"Target"},
+                }),
+                json!({
+                    "compilation":":a/main",
+                    "factKey":"z-high",
+                    "payload":{"name":["Target", "Target"]},
+                }),
+            ],
+            &["Target".into()],
+            2,
+        )
+        .unwrap();
+        assert_eq!(no_identity[0]["factKey"], "z-high");
+        assert_eq!(no_identity[1]["factKey"], "a-low");
 
         let shared_payload = json!({"symbolIdentity":"Target"});
         let three = rank_fact_evidence(

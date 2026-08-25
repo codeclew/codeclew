@@ -1,0 +1,71 @@
+{
+  "schema": "codeclew-thread-kotlin-callables-acceptance/1.0",
+  "status": "PASS",
+  "profile": "KOTLIN_DESCRIPTOR_NAVIGATION_V1",
+  "authority": {
+    "runtimeMode": "DEVELOPMENT",
+    "runtimeDigest": "sha256:1c1374c361ad78f46593bf787d94d7923819d037fb905ef7ab794dd1f6d7ba4c",
+    "factSetDigest": "sha256:f7e091307df3f84f0be00daf9f46176db848ac18b5f86bc8bb2cb46238de1e52",
+    "bindingDigest": "sha256:b902831f5240d3a7a20dc6bbdf96a481c0b21f6e861c2168b32c376010d04a2f"
+  },
+  "fixture": {
+    "repositoryCount": 2,
+    "memberCount": 2,
+    "compilationCount": 2,
+    "compilerVersion": "2.4.10",
+    "independentLocalGitRepositories": true,
+    "packageCoordinateOrPathIncluded": false
+  },
+  "semanticResult": {
+    "coverage": "PARTIAL",
+    "certainty": "UNSURE",
+    "relationshipAuthority": "DECLARED_TOPOLOGY",
+    "visitedInputFacts": 1086,
+    "visitedInputPayloadBytes": 888068,
+    "declarations": 176,
+    "exactDeclarations": 176,
+    "uses": 512,
+    "exactUses": 0,
+    "boundaries": 392,
+    "totalFacts": 1080,
+    "obligationCount": 392
+  },
+  "warmAcceptance": {
+    "threadContextMillis": 8509,
+    "callableRunMillis": [
+      14946,
+      14203,
+      20493
+    ],
+    "callableRunCount": 3,
+    "concurrentRunCount": 2,
+    "maximumCallableRunMillis": 20493,
+    "identityStable": true,
+    "emptyToolPath": true,
+    "prohibitedProcessCount": 0,
+    "generationAuthorityRevalidated": true,
+    "stdoutBytes": 2879,
+    "stdoutLimitBytes": 65536,
+    "stdoutForbiddenMatchCount": 0
+  },
+  "retention": {
+    "threadGarbageCollected": true,
+    "memberSessionsGarbageCollected": 2,
+    "rootDigestBefore": "sha256:a2fdb353c5914da9b5f97dfee5d369465d2ce665e42af96683c78ff17ac72902",
+    "rootDigestAfter": "sha256:a2fdb353c5914da9b5f97dfee5d369465d2ce665e42af96683c78ff17ac72902",
+    "closureDigestBefore": "sha256:10c6778938015b2667f8b1ca8e37baeb55b5ffef5b38453653da5dd905bdc006",
+    "closureDigestAfter": "sha256:10c6778938015b2667f8b1ca8e37baeb55b5ffef5b38453653da5dd905bdc006",
+    "declaredObjectCount": 548,
+    "reachableObjectCount": 566,
+    "reachableBytes": 10201021,
+    "retainedLoadVerified": true
+  },
+  "verification": {
+    "frozenLimitAndLimitPlusOneCoverage": true,
+    "callableFocusedTests": 24,
+    "semanticValidatorTests": 10,
+    "clippyAllTargets": "PASS",
+    "diffCheck": "PASS",
+    "independentReview": "PASS"
+  }
+}

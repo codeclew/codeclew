@@ -95,6 +95,958 @@ fn is_canonical_sha256(value: &str) -> bool {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum KotlinSemanticPayloadKind {
+    DeclarationDescriptor,
+    DeclarationRelation,
+    DeclarationDescriptorBoundary,
+    DeclarationRelationBoundary,
+}
+
+fn payload_invalid(message: impl Into<String>) -> ClewError {
+    ClewError::new(ErrorCode::InvalidInput, message)
+}
+
+fn payload_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, ClewError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| payload_invalid(format!("semantic payload has no nonempty {field}")))
+}
+
+fn closed_payload(value: &Value, allowed: &[&str], label: &str) -> Result<(), ClewError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| payload_invalid(format!("{label} is not an object")))?;
+    if object
+        .keys()
+        .any(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(payload_invalid(format!(
+            "{label} has a field outside its exact contract"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_payload_location(value: &Value, label: &str) -> Result<(), ClewError> {
+    let file = payload_string(value, "file")?;
+    let path = Path::new(file);
+    if path.is_absolute()
+        || path.components().any(|part| {
+            !matches!(
+                part,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(payload_invalid(format!(
+            "{label} source path is not repository-contained"
+        )));
+    }
+    let start = value
+        .get("start")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| payload_invalid(format!("{label} has no source start")))?;
+    let end = value
+        .get("end")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| payload_invalid(format!("{label} has no source end")))?;
+    if start < 0 || end < start {
+        return Err(payload_invalid(format!(
+            "{label} has an invalid source range"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedJvmMethodDescriptor {
+    returns_void: bool,
+}
+
+struct JvmMethodDescriptorParser<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl JvmMethodDescriptorParser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.offset).copied()
+    }
+
+    fn field_type(&mut self) -> Result<(), ClewError> {
+        let mut dimensions = 0_u16;
+        while self.peek() == Some(b'[') {
+            dimensions += 1;
+            if dimensions > 255 {
+                return Err(payload_invalid(
+                    "JVM method descriptor array has more than 255 dimensions",
+                ));
+            }
+            self.offset += 1;
+        }
+        match self.peek() {
+            Some(b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z') => {
+                self.offset += 1;
+                Ok(())
+            }
+            Some(b'L') => self.object_type(),
+            Some(b'V') if dimensions > 0 => Err(payload_invalid(
+                "JVM method descriptor array component cannot be void",
+            )),
+            Some(b'V') => Err(payload_invalid(
+                "JVM method descriptor parameter cannot be void",
+            )),
+            Some(_) => Err(payload_invalid(
+                "JVM method descriptor contains an unknown field type",
+            )),
+            None => Err(payload_invalid(
+                "JVM method descriptor has an incomplete field type",
+            )),
+        }
+    }
+
+    fn object_type(&mut self) -> Result<(), ClewError> {
+        self.offset += 1;
+        let mut segment_length = 0_usize;
+        loop {
+            let byte = self.peek().ok_or_else(|| {
+                payload_invalid("JVM method descriptor has an unterminated object type")
+            })?;
+            match byte {
+                b';' if segment_length > 0 => {
+                    self.offset += 1;
+                    return Ok(());
+                }
+                b';' | b'/' if segment_length == 0 => {
+                    return Err(payload_invalid(
+                        "JVM method descriptor object type has an empty name segment",
+                    ));
+                }
+                b'/' => {
+                    self.offset += 1;
+                    segment_length = 0;
+                }
+                b'.' | b'[' | b'(' | b')' | 0..=31 | 127 => {
+                    return Err(payload_invalid(
+                        "JVM method descriptor object type has an invalid class name",
+                    ));
+                }
+                _ => {
+                    self.offset += 1;
+                    segment_length += 1;
+                }
+            }
+        }
+    }
+}
+
+fn parse_jvm_method_descriptor(descriptor: &str) -> Result<ParsedJvmMethodDescriptor, ClewError> {
+    let mut parser = JvmMethodDescriptorParser {
+        bytes: descriptor.as_bytes(),
+        offset: 0,
+    };
+    if parser.peek() != Some(b'(') {
+        return Err(payload_invalid(
+            "JVM method descriptor has no opening parameter delimiter",
+        ));
+    }
+    parser.offset += 1;
+    loop {
+        match parser.peek() {
+            Some(b')') => {
+                parser.offset += 1;
+                break;
+            }
+            Some(_) => parser.field_type()?,
+            None => {
+                return Err(payload_invalid(
+                    "JVM method descriptor has no closing parameter delimiter",
+                ));
+            }
+        }
+    }
+    let returns_void = if parser.peek() == Some(b'V') {
+        parser.offset += 1;
+        true
+    } else {
+        parser.field_type()?;
+        false
+    };
+    if parser.offset != parser.bytes.len() {
+        return Err(payload_invalid("JVM method descriptor has trailing bytes"));
+    }
+    Ok(ParsedJvmMethodDescriptor { returns_void })
+}
+
+pub(crate) fn validate_jvm_method_descriptor(descriptor: &str) -> Result<(), ClewError> {
+    parse_jvm_method_descriptor(descriptor).map(|_| ())
+}
+
+fn validate_jvm_function_signature(signature: &str) -> Result<(), ClewError> {
+    if signature.starts_with('(') {
+        return validate_jvm_method_descriptor(signature);
+    }
+    let delimiter = signature
+        .find('(')
+        .ok_or_else(|| payload_invalid("JVM function signature has no method descriptor"))?;
+    let (name, descriptor) = signature.split_at(delimiter);
+    if name.is_empty()
+        || name
+            .bytes()
+            .any(|byte| matches!(byte, b'.' | b';' | b'[' | b'/' | b'<' | b'>' | 0..=31 | 127))
+    {
+        return Err(payload_invalid(
+            "JVM function signature has an invalid method name",
+        ));
+    }
+    validate_jvm_method_descriptor(descriptor)
+}
+
+fn validate_raw_compiler_identity(identity: &str, label: &str) -> Result<(), ClewError> {
+    if identity.is_empty()
+        || identity.chars().any(char::is_control)
+        || identity.starts_with('/')
+        || identity
+            .chars()
+            .any(|character| matches!(character, ':' | '\\' | '@'))
+        || identity
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
+        || identity.contains("#jvm:")
+        || identity.contains("<unknown>")
+        || identity.contains("<unresolved>")
+        || identity == "UNKNOWN"
+        || [
+            "callable:",
+            "constructor:",
+            "property:",
+            "class:",
+            "package:",
+        ]
+        .iter()
+        .any(|prefix| identity.starts_with(prefix))
+    {
+        return Err(payload_invalid(format!(
+            "{label} is not a raw K2 compiler identity"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_relation_endpoint(identity: &str, label: &str) -> Result<(), ClewError> {
+    if let Some(tagged) = identity.strip_prefix("callable:") {
+        let (callable, signature) = tagged.split_once("#jvm:").ok_or_else(|| {
+            payload_invalid(format!("{label} callable symbol has no JVM signature"))
+        })?;
+        validate_raw_compiler_identity(callable, label)?;
+        return validate_jvm_function_signature(signature);
+    }
+    if let Some(tagged) = identity.strip_prefix("constructor:") {
+        let (callable, descriptor) = tagged.split_once("#jvm:").ok_or_else(|| {
+            payload_invalid(format!("{label} constructor symbol has no JVM descriptor"))
+        })?;
+        validate_raw_compiler_identity(callable, label)?;
+        if !parse_jvm_method_descriptor(descriptor)?.returns_void {
+            return Err(payload_invalid(format!(
+                "{label} constructor descriptor does not return void"
+            )));
+        }
+        return Ok(());
+    }
+    for prefix in ["property:", "class:", "package:"] {
+        if let Some(raw) = identity.strip_prefix(prefix) {
+            return validate_raw_compiler_identity(raw, label);
+        }
+    }
+    validate_raw_compiler_identity(identity, label)
+}
+
+pub(crate) fn validate_kotlin_full_symbol_identity(identity: &str) -> Result<(), ClewError> {
+    if identity.contains("://") || identity.contains('\\') || identity.contains('@') {
+        return Err(payload_invalid(
+            "Kotlin full symbol identity contains URL or credential syntax",
+        ));
+    }
+    if !["callable:", "constructor:", "property:", "class:"]
+        .iter()
+        .any(|prefix| identity.starts_with(prefix))
+    {
+        return Err(payload_invalid(
+            "Kotlin full symbol identity has no supported declaration tag",
+        ));
+    }
+    validate_relation_endpoint(identity, "Kotlin full symbol identity")
+}
+
+fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static str>, ClewError> {
+    let mut allowed = vec![
+        "schema",
+        "file",
+        "start",
+        "end",
+        "symbolIdentity",
+        "declarationKind",
+        "ownerIdentity",
+        "containment",
+        "resolution",
+        "provider",
+        "module",
+        "sourceSet",
+        "sourceProvenance",
+        "compilerAuthority",
+    ];
+    if partial {
+        allowed.extend(["attributeCoverage", "sourceRowHash"]);
+    } else {
+        allowed.extend([
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "typeParameters",
+        ]);
+    }
+    match kind {
+        "FUNCTION" => {
+            allowed.push("compilerCallableId");
+            if !partial {
+                allowed.extend([
+                    "isOverride",
+                    "returnType",
+                    "returnNullable",
+                    "parameterTypes",
+                    "receiverType",
+                ]);
+            }
+        }
+        "CONSTRUCTOR" => {
+            allowed.extend(["compilerCallableId", "compilerClassId", "jvmDescriptor"]);
+            if !partial {
+                allowed.extend(["isPrimary", "parameterTypes"]);
+            }
+        }
+        "PROPERTY" | "MUTABLE_PROPERTY" => {
+            allowed.push("compilerCallableId");
+            if !partial {
+                allowed.extend(["isOverride", "declaredType", "declaredNullable"]);
+            }
+        }
+        "CLASS" => allowed.push("compilerClassId"),
+        _ => return Err(payload_invalid("unknown declaration descriptor kind")),
+    }
+    Ok(allowed)
+}
+
+pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), ClewError> {
+    if value.get("schema").and_then(Value::as_str) != Some("declaration-descriptor/0.1")
+        || value.get("resolution").and_then(Value::as_str) != Some("PROVEN")
+        || value.get("provider").and_then(Value::as_str) != Some("K2_FIR")
+        || value.get("sourceProvenance").and_then(Value::as_str)
+            != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+        || value.get("compilerAuthority").and_then(Value::as_str) != Some("fir-facts-extractor/0.6")
+    {
+        return Err(payload_invalid(
+            "malformed or non-authoritative declaration descriptor",
+        ));
+    }
+    validate_payload_location(value, "declaration descriptor")?;
+    for field in ["symbolIdentity", "ownerIdentity", "module", "sourceSet"] {
+        payload_string(value, field)?;
+    }
+    if !value.get("containment").is_some_and(Value::is_array) {
+        return Err(payload_invalid(
+            "declaration descriptor has no containment array",
+        ));
+    }
+    let kind = payload_string(value, "declarationKind")?;
+    let partial = value.get("attributeCoverage").is_some() || value.get("sourceRowHash").is_some();
+    closed_payload(
+        value,
+        &descriptor_allowed_fields(kind, partial)?,
+        "declaration descriptor",
+    )?;
+    if partial {
+        let source_row_hash = payload_string(value, "sourceRowHash")?;
+        if value.get("attributeCoverage").and_then(Value::as_str) != Some("PARTIAL")
+            || !is_canonical_sha256(source_row_hash)
+        {
+            return Err(payload_invalid(
+                "partial declaration descriptor has invalid core authority",
+            ));
+        }
+    }
+    match kind {
+        "FUNCTION" => {
+            let callable = payload_string(value, "compilerCallableId")?;
+            validate_raw_compiler_identity(callable, "function compilerCallableId")?;
+            let prefix = format!("callable:{callable}#jvm:");
+            let signature = payload_string(value, "symbolIdentity")?
+                .strip_prefix(&prefix)
+                .ok_or_else(|| payload_invalid("function symbol identity is inconsistent"))?;
+            validate_jvm_function_signature(signature)?;
+        }
+        "CONSTRUCTOR" => {
+            let callable = payload_string(value, "compilerCallableId")?;
+            let class = payload_string(value, "compilerClassId")?;
+            let descriptor = payload_string(value, "jvmDescriptor")?;
+            validate_raw_compiler_identity(callable, "constructor compilerCallableId")?;
+            validate_raw_compiler_identity(class, "constructor compilerClassId")?;
+            if !parse_jvm_method_descriptor(descriptor)?.returns_void
+                || payload_string(value, "symbolIdentity")?
+                    != format!("constructor:{callable}#jvm:{descriptor}")
+                || payload_string(value, "ownerIdentity")? != format!("class:{class}")
+            {
+                return Err(payload_invalid(
+                    "constructor compiler/JVM identity is inconsistent",
+                ));
+            }
+        }
+        "PROPERTY" | "MUTABLE_PROPERTY" => {
+            let callable = payload_string(value, "compilerCallableId")?;
+            validate_raw_compiler_identity(callable, "property compilerCallableId")?;
+            if payload_string(value, "symbolIdentity")? != format!("property:{callable}") {
+                return Err(payload_invalid(
+                    "property compiler identity is inconsistent",
+                ));
+            }
+        }
+        "CLASS" => {
+            let class = payload_string(value, "compilerClassId")?;
+            validate_raw_compiler_identity(class, "class compilerClassId")?;
+            if payload_string(value, "symbolIdentity")? != format!("class:{class}") {
+                return Err(payload_invalid("class compiler identity is inconsistent"));
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn relation_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static str>, ClewError> {
+    let mut allowed = vec![
+        "schema",
+        "file",
+        "start",
+        "end",
+        "kind",
+        "owner",
+        "target",
+        "resolution",
+        "provider",
+        "cfgNodeIds",
+        "sourceProvenance",
+        "orderProvenance",
+    ];
+    if partial {
+        allowed.extend(["attributeCoverage", "sourceRowHash"]);
+        return Ok(allowed);
+    }
+    match kind {
+        "OVERRIDES" => allowed.extend([
+            "sourceReturnType",
+            "baseReturnType",
+            "sourceParameterTypes",
+            "baseParameterTypes",
+        ]),
+        "CALLS" | "CONSTRUCTS" => allowed.extend([
+            "resultType",
+            "receiverType",
+            "argumentToParameter",
+            "orderKey",
+        ]),
+        "REFERENCES" => allowed.extend(["resultType", "receiverType"]),
+        // K2 emits an empty argument map and order key for a resolved property read.
+        "READS" => allowed.extend([
+            "resultType",
+            "receiverType",
+            "argumentToParameter",
+            "orderKey",
+        ]),
+        "WRITES" | "INITIALIZES" => allowed.extend(["valueType", "targetType", "orderKey"]),
+        "NULL_COALESCES" => allowed.extend([
+            "sourceTarget",
+            "fallbackTarget",
+            "sourceOccurrence",
+            "fallbackOccurrence",
+            "mergedOccurrence",
+            "branchProvenance",
+            "orderKey",
+        ]),
+        "RETURNS_VALUE_FROM" => allowed.extend([
+            "sourceKind",
+            "sourceOccurrence",
+            "returnOccurrence",
+            "resultOccurrence",
+            "resultType",
+            "resultNullable",
+            "valueProvenance",
+            "cfgProvenance",
+            "evaluationCount",
+            "orderKey",
+        ]),
+        _ => return Err(payload_invalid("unknown declaration relation kind")),
+    }
+    Ok(allowed)
+}
+
+fn validate_argument_payloads(value: &Value) -> Result<(), ClewError> {
+    let Some(arguments) = value.get("argumentToParameter") else {
+        return Ok(());
+    };
+    let arguments = arguments
+        .as_array()
+        .ok_or_else(|| payload_invalid("declaration relation argument mapping is not an array"))?;
+    for argument in arguments {
+        closed_payload(
+            argument,
+            &[
+                "argumentStart",
+                "argumentType",
+                "parameter",
+                "parameterIndex",
+                "parameterType",
+            ],
+            "declaration relation argument mapping",
+        )?;
+        if argument
+            .get("argumentStart")
+            .and_then(Value::as_i64)
+            .is_none_or(|start| start < 0)
+            || argument
+                .get("parameterIndex")
+                .and_then(Value::as_u64)
+                .is_none()
+            || payload_string(argument, "parameterType").is_err()
+        {
+            return Err(payload_invalid(
+                "declaration relation argument mapping has an invalid endpoint payload",
+            ));
+        }
+        for field in ["argumentType", "parameter"] {
+            if argument
+                .get(field)
+                .is_some_and(|field| field.as_str().is_none_or(str::is_empty))
+            {
+                return Err(payload_invalid(
+                    "declaration relation argument mapping has a malformed optional field",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_declaration_relation_fact(value: &Value) -> Result<(), ClewError> {
+    if value.get("schema").and_then(Value::as_str) != Some("declaration-relation/0.1")
+        || value.get("resolution").and_then(Value::as_str) != Some("PROVEN")
+        || value.get("provider").and_then(Value::as_str) != Some("K2_FIR")
+        || value.get("sourceProvenance").and_then(Value::as_str)
+            != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+        || !matches!(
+            value.get("orderProvenance").and_then(Value::as_str),
+            Some("K2_FIR_CFG" | "FIR_SOURCE_RANGE" | "UNKNOWN")
+        )
+    {
+        return Err(payload_invalid(
+            "malformed or non-authoritative declaration relation",
+        ));
+    }
+    validate_payload_location(value, "declaration relation")?;
+    let owner = payload_string(value, "owner")?;
+    let target = payload_string(value, "target")?;
+    validate_relation_endpoint(owner, "declaration relation owner")?;
+    validate_relation_endpoint(target, "declaration relation target")?;
+    if !value.get("cfgNodeIds").is_some_and(Value::is_array) {
+        return Err(payload_invalid(
+            "declaration relation has no CFG node array",
+        ));
+    }
+    let kind = payload_string(value, "kind")?;
+    let partial = value.get("attributeCoverage").is_some() || value.get("sourceRowHash").is_some();
+    closed_payload(
+        value,
+        &relation_allowed_fields(kind, partial)?,
+        "declaration relation",
+    )?;
+    if partial {
+        let source_row_hash = payload_string(value, "sourceRowHash")?;
+        if !matches!(kind, "CALLS" | "CONSTRUCTS")
+            || value.get("attributeCoverage").and_then(Value::as_str) != Some("PARTIAL")
+            || !is_canonical_sha256(source_row_hash)
+        {
+            return Err(payload_invalid(
+                "partial declaration relation is outside the retained topology contract",
+            ));
+        }
+    }
+    if kind == "NULL_COALESCES" {
+        for field in ["sourceTarget", "fallbackTarget"] {
+            validate_relation_endpoint(payload_string(value, field)?, field)?;
+        }
+    }
+    validate_argument_payloads(value)
+}
+
+fn validate_optional_boundary_location(value: &Value, label: &str) -> Result<(), ClewError> {
+    if value.get("file").is_some() {
+        let file = payload_string(value, "file")?;
+        let path = Path::new(file);
+        if path.is_absolute()
+            || path.components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(payload_invalid(format!(
+                "{label} source path is not repository-contained"
+            )));
+        }
+    }
+    match (value.get("start"), value.get("end")) {
+        (None, None) => {}
+        (Some(start), Some(end)) => {
+            let start = start
+                .as_i64()
+                .ok_or_else(|| payload_invalid(format!("{label} start is not an integer")))?;
+            let end = end
+                .as_i64()
+                .ok_or_else(|| payload_invalid(format!("{label} end is not an integer")))?;
+            if start < 0 || end < start || value.get("file").is_none() {
+                return Err(payload_invalid(format!(
+                    "{label} has an invalid source range"
+                )));
+            }
+        }
+        _ => {
+            return Err(payload_invalid(format!(
+                "{label} has only one source range endpoint"
+            )));
+        }
+    }
+    if value.get("sourceProvenance").is_some()
+        && value.get("sourceProvenance").and_then(Value::as_str)
+            != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+    {
+        return Err(payload_invalid(format!(
+            "{label} source provenance is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_optional_hashes(value: &Value, fields: &[&str], label: &str) -> Result<(), ClewError> {
+    for field in fields {
+        if let Some(hash) = value.get(*field)
+            && hash.as_str().is_none_or(|hash| !is_canonical_sha256(hash))
+        {
+            return Err(payload_invalid(format!(
+                "{label} {field} is not a canonical SHA-256 identity"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_declaration_descriptor_boundary(value: &Value) -> Result<(), ClewError> {
+    closed_payload(
+        value,
+        &[
+            "schema",
+            "file",
+            "start",
+            "end",
+            "symbolIdentity",
+            "stage",
+            "code",
+            "resolution",
+            "provider",
+            "module",
+            "sourceSet",
+            "sourceProvenance",
+            "compilerAuthority",
+            "rawRowHash",
+            "retainedDescriptorHash",
+        ],
+        "declaration descriptor boundary",
+    )?;
+    if value.get("schema").and_then(Value::as_str) != Some("declaration-descriptor-boundary/0.1")
+        || value.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
+        || !matches!(
+            value.get("provider").and_then(Value::as_str),
+            Some("K2_FIR" | "COMPILER_DESCRIPTOR_NORMALIZER" | "WORKER")
+        )
+        || !matches!(
+            value.get("stage").and_then(Value::as_str),
+            Some("DECLARATION" | "CONSTRUCTOR_DECLARATION" | "NORMALIZE" | "ANALYSIS")
+        )
+        || !matches!(
+            value.get("code").and_then(Value::as_str),
+            Some(
+                "GENERATED_OR_NO_SOURCE"
+                    | "LOCAL_DECLARATION_UNSUPPORTED"
+                    | "LOCAL_GENERATED_OR_NO_SOURCE"
+                    | "UNRESOLVED_DESCRIPTOR_BOUNDARY"
+                    | "NO_COMPILER_CALLABLE_ID"
+                    | "LOCAL_CONSTRUCTOR_UNSUPPORTED"
+                    | "UNRESOLVED_CONSTRUCTOR_DESCRIPTOR"
+                    | "INCOMPLETE_COMPILER_DESCRIPTOR"
+                    | "MALFORMED_COMPILER_FACT_ROW"
+                    | "INVALID_DESCRIPTOR_SOURCE_PATH"
+                    | "INVALID_DESCRIPTOR_IDENTITY"
+                    | "UNKNOWN_DECLARATION_KIND"
+                    | "UNKNOWN_VISIBILITY"
+                    | "UNKNOWN_EFFECTIVE_VISIBILITY"
+                    | "UNKNOWN_MODALITY"
+                    | "DESCRIPTOR_SOURCE_NOT_IN_COMPILATION"
+                    | "INVALID_DESCRIPTOR_SOURCE_RANGE"
+                    | "UNRESOLVED_DESCRIPTOR_TYPE"
+                    | "SYNTAX_ONLY"
+            )
+        )
+        || payload_string(value, "module").is_err()
+        || payload_string(value, "sourceSet").is_err()
+        || value.get("compilerAuthority").and_then(Value::as_str) != Some("fir-facts-extractor/0.6")
+    {
+        return Err(payload_invalid(
+            "malformed declaration descriptor Unknown boundary",
+        ));
+    }
+    validate_optional_boundary_location(value, "declaration descriptor boundary")?;
+    validate_optional_hashes(
+        value,
+        &["rawRowHash", "retainedDescriptorHash"],
+        "declaration descriptor boundary",
+    )?;
+    let compiler_normalized =
+        value.get("provider").and_then(Value::as_str) == Some("COMPILER_DESCRIPTOR_NORMALIZER");
+    if compiler_normalized && value.get("rawRowHash").is_none() {
+        return Err(payload_invalid(
+            "normalized descriptor boundary has no raw row authority",
+        ));
+    }
+    if value.get("retainedDescriptorHash").is_some()
+        && (!compiler_normalized
+            || value.get("stage").and_then(Value::as_str) != Some("NORMALIZE")
+            || !matches!(
+                value.get("code").and_then(Value::as_str),
+                Some(
+                    "UNKNOWN_VISIBILITY"
+                        | "UNKNOWN_EFFECTIVE_VISIBILITY"
+                        | "UNKNOWN_MODALITY"
+                        | "UNRESOLVED_DESCRIPTOR_TYPE"
+                )
+            ))
+    {
+        return Err(payload_invalid(
+            "retained descriptor link is outside the partial-core contract",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_declaration_relation_boundary(value: &Value) -> Result<(), ClewError> {
+    closed_payload(
+        value,
+        &[
+            "schema",
+            "file",
+            "start",
+            "end",
+            "owner",
+            "target",
+            "relationKind",
+            "stage",
+            "code",
+            "resolution",
+            "provider",
+            "sourceProvenance",
+            "rawRowHash",
+            "rawRowsHash",
+            "affectedRowCount",
+            "retainedRelationHash",
+            "ownerIdentityHash",
+            "rootFirKindHash",
+            "nestedResolvedOccurrenceCount",
+            "nestedResolvedOccurrenceKindHashes",
+        ],
+        "declaration relation boundary",
+    )?;
+    if value.get("schema").and_then(Value::as_str) != Some("declaration-relation-boundary/0.1")
+        || value.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
+        || !matches!(
+            value.get("provider").and_then(Value::as_str),
+            Some(
+                "K2_FIR"
+                    | "K2_FIR_CFG"
+                    | "COMPILER_RELATION_NORMALIZER"
+                    | "CODECLEW_RELATION_NORMALIZER"
+                    | "WORKER"
+            )
+        )
+        || payload_string(value, "stage").is_err()
+        || payload_string(value, "code").is_err()
+    {
+        return Err(payload_invalid(
+            "malformed declaration relation Unknown boundary",
+        ));
+    }
+    validate_optional_boundary_location(value, "declaration relation boundary")?;
+    for field in ["owner", "target", "relationKind"] {
+        if value
+            .get(field)
+            .is_some_and(|field| field.as_str().is_none_or(str::is_empty))
+        {
+            return Err(payload_invalid(format!(
+                "declaration relation boundary {field} is malformed"
+            )));
+        }
+    }
+    validate_optional_hashes(
+        value,
+        &[
+            "rawRowHash",
+            "rawRowsHash",
+            "retainedRelationHash",
+            "ownerIdentityHash",
+            "rootFirKindHash",
+        ],
+        "declaration relation boundary",
+    )?;
+    if let Some(hashes) = value.get("nestedResolvedOccurrenceKindHashes") {
+        let hashes = hashes.as_array().ok_or_else(|| {
+            payload_invalid("return-value boundary occurrence hashes are not an array")
+        })?;
+        if hashes
+            .iter()
+            .any(|hash| hash.as_str().is_none_or(|hash| !is_canonical_sha256(hash)))
+        {
+            return Err(payload_invalid(
+                "return-value boundary occurrence hash is malformed",
+            ));
+        }
+    }
+    if value
+        .get("nestedResolvedOccurrenceCount")
+        .is_some_and(|count| count.as_u64().is_none())
+        || value
+            .get("affectedRowCount")
+            .is_some_and(|count| count.as_u64().is_none())
+    {
+        return Err(payload_invalid(
+            "declaration relation boundary count is malformed",
+        ));
+    }
+    let provider = payload_string(value, "provider")?;
+    let stage = payload_string(value, "stage")?;
+    let code = payload_string(value, "code")?;
+    if matches!(
+        provider,
+        "COMPILER_RELATION_NORMALIZER" | "CODECLEW_RELATION_NORMALIZER"
+    ) {
+        let (hash_field, valid_code) = if provider == "COMPILER_RELATION_NORMALIZER" {
+            (
+                "rawRowHash",
+                matches!(
+                    code,
+                    "INCOMPLETE_COMPILER_RELATION"
+                        | "MALFORMED_COMPILER_FACT_ROW"
+                        | "INVALID_RELATION_SOURCE_PATH"
+                        | "INVALID_RELATION_IDENTITY"
+                        | "UNKNOWN_RELATION_KIND"
+                        | "REFERENCE_TO_QUARANTINED_DESCRIPTOR"
+                        | "RELATION_SOURCE_NOT_IN_COMPILATION"
+                        | "INVALID_RELATION_SOURCE_RANGE"
+                        | "UNRESOLVED_RELATION_TYPE"
+                ),
+            )
+        } else {
+            (
+                "rawRowsHash",
+                matches!(
+                    code,
+                    "ARGUMENT_MAPPING_UNAVAILABLE"
+                        | "NULL_COALESCING_FLOW_UNAVAILABLE"
+                        | "RETURN_VALUE_FLOW_UNAVAILABLE"
+                ),
+            )
+        };
+        if !valid_code
+            || value.get(hash_field).is_none()
+            || (hash_field == "rawRowsHash"
+                && value
+                    .get("affectedRowCount")
+                    .and_then(Value::as_u64)
+                    .is_none_or(|count| count == 0))
+        {
+            return Err(payload_invalid(
+                "normalized declaration relation boundary is incomplete",
+            ));
+        }
+    }
+    if value.get("retainedRelationHash").is_some()
+        && (provider != "COMPILER_RELATION_NORMALIZER"
+            || stage != "NORMALIZE"
+            || code != "UNRESOLVED_RELATION_TYPE")
+    {
+        return Err(payload_invalid(
+            "retained relation link is outside the partial-core contract",
+        ));
+    }
+    if stage == "RETURN_VALUE"
+        && !matches!(
+            code,
+            "IMPLICIT_RETURN_UNSUPPORTED"
+                | "IMPLICIT_OR_MISSING_RETURN_SOURCE"
+                | "UNRESOLVED_RETURN_OWNER"
+                | "LOCAL_OR_GENERATED_RETURN_OWNER"
+                | "RETURN_TARGET_IDENTITY_MISMATCH"
+                | "NON_LINEAR_OR_MULTIPLE_RETURN_FLOW"
+                | "RETURN_VALUE_NOT_DIRECT_RESOLVED_READ_OR_CALL"
+                | "MULTIPLE_OR_AMBIGUOUS_RETURN_VALUE_OCCURRENCES"
+                | "LOCAL_GENERATED_OR_UNRESOLVED_RETURN_VALUE"
+                | "MISSING_RETURN_CFG"
+                | "AMBIGUOUS_RETURN_CFG_NODE"
+                | "RETURN_VALUE_CFG_PROOF_UNAVAILABLE"
+        )
+    {
+        return Err(payload_invalid("unknown typed return-value boundary code"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_kotlin_semantic_payload(
+    value: &Value,
+) -> Result<KotlinSemanticPayloadKind, ClewError> {
+    match value.get("schema").and_then(Value::as_str) {
+        Some("declaration-descriptor/0.1") => {
+            validate_declaration_descriptor_fact(value)?;
+            Ok(KotlinSemanticPayloadKind::DeclarationDescriptor)
+        }
+        Some("declaration-relation/0.1") => {
+            validate_declaration_relation_fact(value)?;
+            Ok(KotlinSemanticPayloadKind::DeclarationRelation)
+        }
+        Some("declaration-descriptor-boundary/0.1") => {
+            validate_declaration_descriptor_boundary(value)?;
+            Ok(KotlinSemanticPayloadKind::DeclarationDescriptorBoundary)
+        }
+        Some("declaration-relation-boundary/0.1") => {
+            validate_declaration_relation_boundary(value)?;
+            Ok(KotlinSemanticPayloadKind::DeclarationRelationBoundary)
+        }
+        Some(_) => Err(payload_invalid(
+            "unsupported Kotlin semantic payload schema",
+        )),
+        None => Err(payload_invalid("Kotlin semantic payload has no schema")),
+    }
+}
+
 pub(crate) fn validate_declaration_relation_snapshot(
     facts: &Value,
 ) -> Result<DeclarationRelationSnapshot, ClewError> {
@@ -498,6 +1450,13 @@ pub(crate) fn validate_declaration_relation_snapshot(
     canonical_rows(relations, "rows")?;
     let mut partial_relations = BTreeMap::new();
     for relation in relations {
+        if validate_kotlin_semantic_payload(relation)?
+            != KotlinSemanticPayloadKind::DeclarationRelation
+        {
+            return Err(invalid(
+                "declaration relation row has the wrong payload kind",
+            ));
+        }
         if relation.get("schema").and_then(Value::as_str) != Some("declaration-relation/0.1")
             || relation.get("resolution").and_then(Value::as_str) != Some("PROVEN")
             || relation.get("provider").and_then(Value::as_str) != Some("K2_FIR")
@@ -772,6 +1731,13 @@ pub(crate) fn validate_declaration_relation_snapshot(
     canonical_rows(boundaries, "boundaries")?;
     let mut paired_partial_relations = BTreeSet::new();
     for boundary in boundaries {
+        if validate_kotlin_semantic_payload(boundary)?
+            != KotlinSemanticPayloadKind::DeclarationRelationBoundary
+        {
+            return Err(invalid(
+                "declaration relation boundary has the wrong payload kind",
+            ));
+        }
         if boundary.get("schema").and_then(Value::as_str)
             != Some("declaration-relation-boundary/0.1")
             || boundary.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
@@ -1282,6 +2248,13 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
     canonical_rows(descriptors, "rows")?;
     let mut partial_descriptors = BTreeMap::new();
     for descriptor in descriptors {
+        if validate_kotlin_semantic_payload(descriptor)?
+            != KotlinSemanticPayloadKind::DeclarationDescriptor
+        {
+            return Err(invalid(
+                "declaration descriptor row has the wrong payload kind",
+            ));
+        }
         if descriptor.get("schema").and_then(Value::as_str) != Some("declaration-descriptor/0.1")
             || descriptor.get("resolution").and_then(Value::as_str) != Some("PROVEN")
             || descriptor.get("provider").and_then(Value::as_str) != Some("K2_FIR")
@@ -1489,6 +2462,13 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
     canonical_rows(boundaries, "boundaries")?;
     let mut paired_partial_descriptors = BTreeSet::new();
     for boundary in boundaries {
+        if validate_kotlin_semantic_payload(boundary)?
+            != KotlinSemanticPayloadKind::DeclarationDescriptorBoundary
+        {
+            return Err(invalid(
+                "declaration descriptor boundary has the wrong payload kind",
+            ));
+        }
         if boundary.get("schema").and_then(Value::as_str)
             != Some("declaration-descriptor-boundary/0.1")
             || boundary.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
@@ -1965,6 +2945,220 @@ mod tests {
 
     fn refresh(facts: &mut Value, graph: &str, hash: &str) {
         facts[hash] = Value::String(canonical::hash(&facts[graph]).unwrap());
+    }
+
+    fn constructor_fact() -> Value {
+        json!({
+            "schema":"declaration-descriptor/0.1",
+            "file":"A.kt","start":0,"end":12,
+            "symbolIdentity":"constructor:p/Box.<init>#jvm:(I[Ljava/lang/String;)V",
+            "declarationKind":"CONSTRUCTOR","ownerIdentity":"class:p/Box",
+            "containment":["class:p/Box"],"visibility":"public",
+            "effectiveVisibility":"public","exportBoundary":"PUBLIC_API",
+            "modality":"FINAL","compilerCallableId":"p/Box.<init>",
+            "compilerClassId":"p/Box","isPrimary":true,
+            "jvmDescriptor":"(I[Ljava/lang/String;)V",
+            "parameterTypes":[
+                {"index":0,"type":"kotlin/Int","nullable":false},
+                {"index":1,"type":"kotlin/Array<kotlin/String>","nullable":false}
+            ],
+            "typeParameters":[],"module":":","sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "compilerAuthority":"fir-facts-extractor/0.6",
+            "resolution":"PROVEN","provider":"K2_FIR"
+        })
+    }
+
+    #[test]
+    fn strict_jvm_method_descriptor_parser_accepts_the_complete_field_grammar() {
+        for descriptor in [
+            "()V",
+            "(BCDFIJSZ)I",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            "([[I[[[Ljava/util/Map$Entry;)[Ljava/lang/String;",
+            "(Lkotlin/Pair;)Z",
+        ] {
+            validate_jvm_method_descriptor(descriptor).unwrap();
+        }
+        let maximum_array = format!("({}I)V", "[".repeat(255));
+        validate_jvm_method_descriptor(&maximum_array).unwrap();
+    }
+
+    #[test]
+    fn strict_jvm_method_descriptor_parser_rejects_malformed_and_trailing_shapes() {
+        for descriptor in [
+            "",
+            "I",
+            "(",
+            "()",
+            "()VV",
+            "(V)V",
+            "([V)V",
+            "([)V",
+            "(Q)V",
+            "(L;)V",
+            "(Ljava//lang/String;)V",
+            "(Ljava/lang/String)V",
+            "(Ljava.lang.String;)V",
+            "()L;",
+            "()[Igarbage",
+            "()Ljava/lang/String;;",
+        ] {
+            assert!(
+                validate_jvm_method_descriptor(descriptor).is_err(),
+                "accepted malformed descriptor {descriptor:?}"
+            );
+        }
+        let oversized_array = format!("({}I)V", "[".repeat(256));
+        assert!(validate_jvm_method_descriptor(&oversized_array).is_err());
+    }
+
+    #[test]
+    fn full_symbol_validator_rejects_heuristic_and_privacy_lookalikes() {
+        for identity in [
+            "callable:p/Api.read#jvm:()I",
+            "callable:p/Api.read#jvm:read()I",
+            "constructor:p/Box.<init>#jvm:(I)V",
+            "property:p/Box.value",
+            "class:p/Box",
+        ] {
+            validate_kotlin_full_symbol_identity(identity).unwrap();
+        }
+        for identity in [
+            "callable:p/Api.read#jvm:bad",
+            "constructor:p/Box.<init>#jvm:(I)I",
+            "package:p",
+            concat!("callable:https://user:", "secret", "@example/x#jvm:()I"),
+            concat!("class:git", "@example.com:private/repository"),
+            concat!("class:/", "Users/alice/private"),
+            concat!("callable:/", "Users/alice/Foo.read#jvm:()I"),
+            "property:..\\private",
+        ] {
+            assert!(
+                validate_kotlin_full_symbol_identity(identity).is_err(),
+                "accepted unsafe or malformed full identity {identity:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn granular_descriptor_validation_accepts_legacy_and_current_k2_jvm_shapes() {
+        let function = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        assert_eq!(
+            validate_kotlin_semantic_payload(&function).unwrap(),
+            KotlinSemanticPayloadKind::DeclarationDescriptor
+        );
+
+        let mut named_signature = function.clone();
+        named_signature["symbolIdentity"] = json!("callable:p/Derived.read#jvm:read()I");
+        validate_declaration_descriptor_fact(&named_signature).unwrap();
+        validate_declaration_descriptor_fact(&constructor_fact()).unwrap();
+
+        let mut partial = named_signature;
+        let object = partial.as_object_mut().unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            object.remove(field);
+        }
+        object.insert("attributeCoverage".into(), json!("PARTIAL"));
+        object.insert(
+            "sourceRowHash".into(),
+            json!(format!("sha256:{}", "a".repeat(64))),
+        );
+        validate_declaration_descriptor_fact(&partial).unwrap();
+    }
+
+    #[test]
+    fn granular_descriptor_validation_rejects_bad_jvm_grammar_and_identity_substitution() {
+        for identity in [
+            "callable:p/Derived.read#jvm:read(I",
+            "callable:p/Derived.read#jvm:read()Ix",
+            "callable:p/Derived.read#jvm:read(V)I",
+            "callable:p/Derived.read#jvm:read([V)I",
+            "callable:p/Other.read#jvm:read()I",
+        ] {
+            let mut function = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+            function["symbolIdentity"] = json!(identity);
+            assert!(
+                validate_declaration_descriptor_fact(&function).is_err(),
+                "accepted malformed function identity {identity:?}"
+            );
+        }
+
+        let mut constructor = constructor_fact();
+        constructor["jvmDescriptor"] = json!("(I)I");
+        constructor["symbolIdentity"] = json!("constructor:p/Box.<init>#jvm:(I)I");
+        assert!(validate_declaration_descriptor_fact(&constructor).is_err());
+
+        let mut future_field = constructor_fact();
+        future_field["futureAuthority"] = json!(true);
+        assert!(validate_declaration_descriptor_fact(&future_field).is_err());
+    }
+
+    #[test]
+    fn granular_relation_validation_closes_full_and_raw_endpoint_payloads() {
+        let relation = verified_facts()["declarationRelations"]["relations"][0].clone();
+        assert_eq!(
+            validate_kotlin_semantic_payload(&relation).unwrap(),
+            KotlinSemanticPayloadKind::DeclarationRelation
+        );
+
+        let mut full_symbols = relation.clone();
+        full_symbols["owner"] = json!("callable:p/Derived.read#jvm:read()I");
+        full_symbols["target"] = json!("callable:p/Base.read#jvm:()I");
+        validate_declaration_relation_fact(&full_symbols).unwrap();
+
+        for endpoint in [
+            "callable:p/Derived.read#jvm:read(V)I",
+            "callable:p/Derived.read#jvm:read()Ix",
+            "constructor:p/Box.<init>#jvm:(I)I",
+            "p/Derived.read#jvm:()I",
+        ] {
+            let mut malformed = relation.clone();
+            malformed["owner"] = json!(endpoint);
+            assert!(
+                validate_declaration_relation_fact(&malformed).is_err(),
+                "accepted malformed relation endpoint {endpoint:?}"
+            );
+        }
+
+        let mut unexpected = relation;
+        unexpected["futureEndpoint"] = json!("p/Future.call");
+        assert!(validate_declaration_relation_fact(&unexpected).is_err());
+    }
+
+    #[test]
+    fn dispatcher_keeps_unknown_boundaries_distinct_from_proven_facts() {
+        let facts = verified_facts();
+        let descriptor_boundary = &facts["declarationDescriptors"]["boundaries"][0];
+        let relation_boundary = &facts["declarationRelations"]["boundaries"][0];
+        assert_eq!(
+            validate_kotlin_semantic_payload(descriptor_boundary).unwrap(),
+            KotlinSemanticPayloadKind::DeclarationDescriptorBoundary
+        );
+        assert_eq!(
+            validate_kotlin_semantic_payload(relation_boundary).unwrap(),
+            KotlinSemanticPayloadKind::DeclarationRelationBoundary
+        );
+
+        let mut extended = relation_boundary.clone();
+        extended["futureAuthority"] = json!(true);
+        assert!(validate_kotlin_semantic_payload(&extended).is_err());
+        assert!(
+            validate_kotlin_semantic_payload(&json!({
+                "schema":"declaration-relation/0.2"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

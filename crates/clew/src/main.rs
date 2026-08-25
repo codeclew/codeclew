@@ -5,10 +5,16 @@ use clew::session::{
     ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, SessionLanguage,
     bounded_context_stdout, validate_context_request,
 };
+use clew::thread::{ThreadAuthority, ThreadMemberRequest};
+use clew::thread_context::{bounded_thread_context_stdout, create as create_thread_context};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 #[derive(Parser)]
 #[command(
@@ -36,6 +42,10 @@ enum Command {
     Context {
         #[command(subcommand)]
         command: ContextCommand,
+    },
+    Thread {
+        #[command(subcommand)]
+        command: ThreadCommand,
     },
     Plan {
         #[command(subcommand)]
@@ -78,6 +88,17 @@ enum ContextCommand {
 }
 
 #[derive(Subcommand)]
+enum ThreadCommand {
+    Open(ThreadOpenArgs),
+    Context(ThreadContextArgs),
+    Callables(ThreadCallablesArgs),
+    Impact(ThreadImpactArgs),
+    Validate(ThreadValidateArgs),
+    Close(ThreadIdArgs),
+    Gc(ThreadIdArgs),
+}
+
+#[derive(Subcommand)]
 enum PlanCommand {
     Validate(PlanValidateArgs),
 }
@@ -102,6 +123,13 @@ enum SessionLanguageArg {
     Kotlin,
     Python,
     Rust,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ThreadImpactSubjectKindArg {
+    FullSymbol,
+    CallableFamily,
+    Token,
 }
 
 #[derive(Args)]
@@ -222,6 +250,87 @@ struct ContextExpandArgs {
 }
 
 #[derive(Args)]
+struct ThreadOpenArgs {
+    /// Analysis-unit binding in ALIAS=SESSION_ID form. Repeat 2-8 times.
+    #[arg(long = "member", required = true)]
+    members: Vec<String>,
+    /// Optional ALIAS=SERVICE_ALIAS override. Unspecified service aliases use
+    /// the member alias.
+    #[arg(long = "service-alias")]
+    service_aliases: Vec<String>,
+}
+
+#[derive(Args)]
+struct ThreadContextArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    intent: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long, default_value_t = 2)]
+    max_roots: usize,
+}
+
+#[derive(Args)]
+struct ThreadCallablesArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    context: String,
+    #[arg(long)]
+    task_id: String,
+    #[arg(long)]
+    pair_id: String,
+    #[arg(long)]
+    provider: String,
+    #[arg(long)]
+    consumer: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+}
+
+#[derive(Args)]
+struct ThreadImpactArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    fact_set: String,
+    #[arg(long)]
+    pair_id: String,
+    #[arg(long, value_enum)]
+    subject_kind: ThreadImpactSubjectKindArg,
+    #[arg(long)]
+    subject: String,
+    #[arg(long, required_if_eq("subject_kind", "full-symbol"))]
+    member: Option<String>,
+}
+
+#[derive(Args)]
+struct ThreadValidateArgs {
+    #[arg(long)]
+    before_thread: String,
+    #[arg(long)]
+    before_impact: String,
+    #[arg(long)]
+    after_thread: String,
+    #[arg(long)]
+    after_impact: String,
+    /// Total before=after mapping for the selected provider/consumer pair.
+    #[arg(long = "member-correspondence", required = true)]
+    member_correspondence: Vec<String>,
+    /// Closed, inert codeclew-kotlin-change-coverage-document/1.0 JSON file.
+    #[arg(long)]
+    coverage: PathBuf,
+}
+
+#[derive(Args)]
+struct ThreadIdArgs {
+    #[arg(long)]
+    thread: String,
+}
+
+#[derive(Args)]
 struct PlanValidateArgs {
     #[arg(long)]
     session: String,
@@ -272,7 +381,7 @@ fn main() -> ExitCode {
         Ok(value) => {
             println!(
                 "{}",
-                canonical::pretty(&value).unwrap_or_else(|_| "{}".into())
+                canonical::compact(&value).unwrap_or_else(|_| "{}".into())
             );
             ExitCode::SUCCESS
         }
@@ -280,7 +389,7 @@ fn main() -> ExitCode {
             let code = exit_code(&error.code);
             println!(
                 "{}",
-                canonical::pretty(&json!({"schema":"codeclew-error/2.0","error":error}))
+                canonical::compact(&json!({"schema":"codeclew-error/2.0","error":error}))
                     .unwrap_or_else(|_| "{}".into())
             );
             ExitCode::from(code)
@@ -397,9 +506,143 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 evidence,
             )?)
         }
+        Command::Thread {
+            command: ThreadCommand::Open(args),
+        } => {
+            let thread = ThreadAuthority::open(parse_thread_members(args)?)?;
+            Ok(json!({
+                "schema":"codeclew-thread-open/1.0",
+                "status":"OPEN",
+                "thread":thread,
+            }))
+        }
+        Command::Thread {
+            command: ThreadCommand::Context(args),
+        } => {
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let context =
+                create_thread_context(&thread, &args.intent, &args.terms, args.max_roots)?;
+            bounded_thread_context_stdout(&context)
+        }
+        Command::Thread {
+            command: ThreadCommand::Callables(args),
+        } => {
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let root = clew::thread_callables_service::create(
+                &thread,
+                &args.context,
+                clew::thread_callables_service::ThreadCallablesRequest {
+                    task_id: args.task_id,
+                    pair_id: args.pair_id,
+                    provider_member: args.provider,
+                    consumer_member: args.consumer,
+                    terms: args.terms,
+                },
+            )?;
+            clew::thread_callables_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Impact(args),
+        } => {
+            let subject = match args.subject_kind {
+                ThreadImpactSubjectKindArg::FullSymbol => {
+                    clew::thread_impact::KotlinImpactSubject::FullSymbol {
+                        symbol_identity: args.subject,
+                        member_alias: args.member,
+                    }
+                }
+                ThreadImpactSubjectKindArg::CallableFamily => {
+                    if args.member.is_some() {
+                        return Err(ClewError::new(
+                            ErrorCode::InvalidInput,
+                            "thread impact --member is accepted only for full-symbol subjects",
+                        ));
+                    }
+                    clew::thread_impact::KotlinImpactSubject::CallableFamily {
+                        callable_id: args.subject,
+                    }
+                }
+                ThreadImpactSubjectKindArg::Token => {
+                    if args.member.is_some() {
+                        return Err(ClewError::new(
+                            ErrorCode::InvalidInput,
+                            "thread impact --member is accepted only for full-symbol subjects",
+                        ));
+                    }
+                    clew::thread_impact::KotlinImpactSubject::Token { term: args.subject }
+                }
+            };
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let root = clew::thread_impact_service::create(
+                &thread,
+                &args.fact_set,
+                clew::thread_impact_service::ThreadImpactServiceRequest {
+                    pair_id: args.pair_id,
+                    subject,
+                },
+            )?;
+            clew::thread_impact_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Validate(args),
+        } => {
+            let coverage_document = read_bounded_regular_file(
+                &args.coverage,
+                clew::thread_change_set::MAX_CHANGE_COVERAGE_DOCUMENT_BYTES,
+                "coverage document is missing, unsafe, or exceeds 2 MiB",
+            )?;
+            let member_correspondence = args
+                .member_correspondence
+                .iter()
+                .map(|value| {
+                    let (before, after) = parse_binding(value, "member correspondence")?;
+                    Ok(clew::thread_change_set::MemberCorrespondence {
+                        before_member_alias: before.into(),
+                        after_member_alias: after.into(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            let (before, _) = ThreadAuthority::load(&args.before_thread)?;
+            let (after, _) = ThreadAuthority::load(&args.after_thread)?;
+            let root = clew::thread_change_set_service::create(
+                &before,
+                &after,
+                clew::thread_change_set_service::ThreadChangeSetServiceRequest {
+                    before_impact_id: args.before_impact,
+                    after_impact_id: args.after_impact,
+                    member_correspondence,
+                    coverage_document,
+                },
+            )?;
+            clew::thread_change_set_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Close(args),
+        } => {
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let lifecycle = thread.close()?;
+            Ok(json!({
+                "schema":"codeclew-thread-lifecycle-result/1.0",
+                "threadId":thread.thread_id,
+                "lifecycle":lifecycle,
+            }))
+        }
+        Command::Thread {
+            command: ThreadCommand::Gc(args),
+        } => {
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let lifecycle = thread.gc()?;
+            Ok(json!({
+                "schema":"codeclew-thread-gc-result/1.0",
+                "threadId":thread.thread_id,
+                "lifecycle":lifecycle,
+            }))
+        }
         Command::Plan {
             command: PlanCommand::Validate(args),
         } => {
+            reject_thread_context_id(&args.context)?;
+            reject_thread_session_id(&args.session)?;
             let (session, _) = SessionAuthority::load(&args.session)?;
             session.require_open()?;
             let metadata = std::fs::symlink_metadata(&args.plan).map_err(io_error)?;
@@ -419,7 +662,11 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }
         Command::TaskRun {
             command: TaskRunCommand::Start(args),
-        } => start_task_run(&args.session, &args.context, &args.plan),
+        } => {
+            reject_thread_context_id(&args.context)?;
+            reject_thread_session_id(&args.session)?;
+            start_task_run(&args.session, &args.context, &args.plan)
+        }
         Command::TaskRun {
             command: TaskRunCommand::Status(args),
         } => task_run_status(&args.run),
@@ -515,6 +762,8 @@ fn change_open_failure(
 }
 
 fn change_prepare(args: ChangePrepareArgs) -> Result<Value, ClewError> {
+    reject_thread_context_id(&args.context)?;
+    reject_thread_session_id(&args.session)?;
     let (session, _) = SessionAuthority::load(&args.session)?;
     session.require_open()?;
     let metadata = std::fs::symlink_metadata(&args.plan).map_err(io_error)?;
@@ -547,6 +796,9 @@ fn with_schema(schema: &str, mut value: Value) -> Result<Value, ClewError> {
 }
 
 fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(plan_id)?;
+    reject_thread_context_id(context_id)?;
+    reject_thread_session_id(session_id)?;
     let (session, _) = SessionAuthority::load(session_id)?;
     require_mutation_language(session.language)?;
     let record = RunRecord::created(&session, context_id, plan_id)?;
@@ -581,6 +833,7 @@ fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
 }
 
 fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(run_id)?;
     let run = RunRecord::load(run_id)?;
     let state = clew::state::StateAuthority::process_default()?;
     let prepared_path = state.run_root(run_id)?.join("prepared-v2.json");
@@ -598,6 +851,7 @@ fn task_run_status(run_id: &str) -> Result<Value, ClewError> {
 }
 
 fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(run_id)?;
     let mut record = RunRecord::load(run_id)?;
     let (session, _) = SessionAuthority::load(&record.session_id)?;
     require_mutation_language(session.language)?;
@@ -646,6 +900,7 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
 }
 
 fn cancel_task_run(run_id: &str) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(run_id)?;
     let mut record = RunRecord::load(run_id)?;
     if record.status == RunStatus::Cancelled {
         return task_run_status(run_id);
@@ -676,6 +931,7 @@ fn cancellation_allowed(status: RunStatus) -> bool {
 }
 
 fn execute_task_run(run_id: &str) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(run_id)?;
     clew::worker::install_task_run_process_tree_supervisor()?;
     let mut record = RunRecord::load(run_id)?;
     if record.status != RunStatus::Created {
@@ -757,6 +1013,8 @@ fn publish_task_run(
     prepared_authority_digest: Option<&str>,
     acknowledged: &[String],
 ) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(run_id)?;
+    reject_thread_session_id(session_id)?;
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
     require_mutation_language(session.language)?;
@@ -871,6 +1129,8 @@ fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError>
 }
 
 fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> {
+    reject_thread_coverage_id(run_id)?;
+    reject_thread_session_id(session_id)?;
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
     require_mutation_language(session.language)?;
@@ -968,6 +1228,83 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
             Err(error)
         }
     }
+}
+
+fn parse_thread_members(args: ThreadOpenArgs) -> Result<Vec<ThreadMemberRequest>, ClewError> {
+    let mut services = std::collections::BTreeMap::new();
+    for value in args.service_aliases {
+        let (alias, service) = parse_binding(&value, "service alias")?;
+        if services
+            .insert(alias.to_owned(), service.to_owned())
+            .is_some()
+        {
+            return Err(invalid("duplicate thread service-alias binding"));
+        }
+    }
+    let mut requests = Vec::with_capacity(args.members.len());
+    let mut aliases = std::collections::BTreeSet::new();
+    for value in args.members {
+        let (alias, session_id) = parse_binding(&value, "member")?;
+        if !aliases.insert(alias.to_owned()) {
+            return Err(invalid("duplicate thread member alias"));
+        }
+        let service_alias = services.remove(alias).unwrap_or_else(|| alias.to_owned());
+        requests.push(ThreadMemberRequest {
+            member_alias: alias.to_owned(),
+            service_alias,
+            session_id: session_id.to_owned(),
+        });
+    }
+    if !services.is_empty() {
+        return Err(invalid(
+            "thread service-alias override has no matching member",
+        ));
+    }
+    Ok(requests)
+}
+
+fn parse_binding<'a>(value: &'a str, label: &str) -> Result<(&'a str, &'a str), ClewError> {
+    let (left, right) = value
+        .split_once('=')
+        .ok_or_else(|| invalid(&format!("thread {label} must use ALIAS=VALUE")))?;
+    if left.is_empty() || right.is_empty() {
+        return Err(invalid(&format!(
+            "thread {label} must have non-empty ALIAS and VALUE"
+        )));
+    }
+    Ok((left, right))
+}
+
+fn reject_thread_context_id(context_id: &str) -> Result<(), ClewError> {
+    reject_thread_coverage_id(context_id)?;
+    if context_id.starts_with("thread-context:") {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "thread contexts are read-only analysis evidence and cannot be used for plan validation or task execution",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_thread_session_id(session_id: &str) -> Result<(), ClewError> {
+    reject_thread_coverage_id(session_id)?;
+    if session_id.starts_with("thread:") {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "threads are read-only analysis authorities and cannot be used by mutation or publication commands",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_thread_coverage_id(value: &str) -> Result<(), ClewError> {
+    if value.starts_with("thread-coverage:") {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "thread coverage is read-only analysis evidence and cannot authorize mutation or publication",
+        ));
+    }
+    Ok(())
 }
 
 fn require_run_session(record: &RunRecord, session_id: &str) -> Result<(), ClewError> {
@@ -1143,6 +1480,32 @@ fn read_json<T: DeserializeOwned>(
             .map_err(|_| invalid("managed JSON is missing, unsafe, or oversized"))?,
     )
     .map_err(parse_error)
+}
+
+fn read_bounded_regular_file(
+    path: &Path,
+    limit: usize,
+    failure_message: &str,
+) -> Result<Vec<u8>, ClewError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options.open(path).map_err(|_| invalid(failure_message))?;
+    let metadata = file.metadata().map_err(|_| invalid(failure_message))?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        return Err(invalid(failure_message));
+    }
+    let capacity = usize::try_from(metadata.len()).map_err(|_| invalid(failure_message))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.by_ref()
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid(failure_message))?;
+    if bytes.len() > limit {
+        return Err(invalid(failure_message));
+    }
+    Ok(bytes)
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, ClewError> {
@@ -1482,6 +1845,213 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn thread_surface_is_closed_and_bindings_are_explicit() {
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "thread",
+            "open",
+            "--member",
+            "api=session:one",
+            "--member",
+            "client=session:two",
+            "--service-alias",
+            "api=orders",
+        ])
+        .unwrap();
+        let Command::Thread {
+            command: ThreadCommand::Open(args),
+        } = parsed.command
+        else {
+            panic!("expected thread open command");
+        };
+        let requests = parse_thread_members(args).unwrap();
+        assert_eq!(requests[0].member_alias, "api");
+        assert_eq!(requests[0].service_alias, "orders");
+        assert_eq!(requests[1].service_alias, "client");
+        for command in ["inspect", "publish"] {
+            assert!(Cli::try_parse_from(["clew", "thread", command]).is_err());
+        }
+        assert!(
+            reject_thread_context_id(
+                "thread-context:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            )
+            .is_err()
+        );
+        assert!(reject_thread_session_id("thread:authority").is_err());
+
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "thread",
+            "callables",
+            "--thread",
+            "thread:one",
+            "--context",
+            "thread-context:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--task-id",
+            "task-01",
+            "--pair-id",
+            "pair-01",
+            "--provider",
+            "api",
+            "--consumer",
+            "client",
+            "--term",
+            "callable:sample/Api.read#jvm:()I",
+        ])
+        .unwrap();
+        let Command::Thread {
+            command: ThreadCommand::Callables(args),
+        } = parsed.command
+        else {
+            panic!("expected thread callables command");
+        };
+        assert_eq!(args.provider, "api");
+        assert_eq!(args.consumer, "client");
+        assert_eq!(args.terms.len(), 1);
+
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "thread",
+            "impact",
+            "--thread",
+            "thread:one",
+            "--fact-set",
+            "thread-callables:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--pair-id",
+            "pair-01",
+            "--subject-kind",
+            "full-symbol",
+            "--subject",
+            "callable:sample/Api.read#jvm:()I",
+            "--member",
+            "api",
+        ])
+        .unwrap();
+        let Command::Thread {
+            command: ThreadCommand::Impact(args),
+        } = parsed.command
+        else {
+            panic!("expected thread impact command");
+        };
+        assert!(matches!(
+            args.subject_kind,
+            ThreadImpactSubjectKindArg::FullSymbol
+        ));
+        assert_eq!(args.member.as_deref(), Some("api"));
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "thread",
+                "impact",
+                "--thread",
+                "thread:one",
+                "--fact-set",
+                "thread-callables:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--pair-id",
+                "pair-01",
+                "--subject-kind",
+                "full-symbol",
+                "--subject",
+                "callable:sample/Api.read#jvm:()I",
+            ])
+            .is_err()
+        );
+        for kind in ["callable-family", "token"] {
+            assert!(
+                Cli::try_parse_from([
+                    "clew",
+                    "thread",
+                    "impact",
+                    "--thread",
+                    "thread:one",
+                    "--fact-set",
+                    "thread-callables:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "--pair-id",
+                    "pair-01",
+                    "--subject-kind",
+                    kind,
+                    "--subject",
+                    "Api",
+                ])
+                .is_ok()
+            );
+        }
+
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "thread",
+            "validate",
+            "--before-thread",
+            "thread:before",
+            "--before-impact",
+            "thread-impact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--after-thread",
+            "thread:after",
+            "--after-impact",
+            "thread-impact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "--member-correspondence",
+            "provider-old=provider-new",
+            "--member-correspondence",
+            "consumer-old=consumer-new",
+            "--coverage",
+            "coverage.json",
+        ])
+        .unwrap();
+        let Command::Thread {
+            command: ThreadCommand::Validate(args),
+        } = parsed.command
+        else {
+            panic!("expected thread validate command");
+        };
+        assert_eq!(args.member_correspondence.len(), 2);
+    }
+
+    #[test]
+    fn thread_coverage_ids_are_rejected_before_mutation_lookup() {
+        let coverage = "thread-coverage:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert_eq!(
+            reject_thread_coverage_id(coverage).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+        assert!(reject_thread_context_id(coverage).is_err());
+        assert!(reject_thread_session_id(coverage).is_err());
+        assert!(task_run_status(coverage).is_err());
+    }
+
+    #[test]
+    fn bounded_regular_file_reader_is_exact_and_path_safe() {
+        let temporary = tempfile::tempdir().unwrap();
+        let exact = temporary.path().join("exact.json");
+        std::fs::write(&exact, b"1234").unwrap();
+        assert_eq!(
+            read_bounded_regular_file(&exact, 4, "unsafe input").unwrap(),
+            b"1234"
+        );
+        assert!(read_bounded_regular_file(&exact, 3, "unsafe input").is_err());
+        assert!(
+            read_bounded_regular_file(&temporary.path().join("missing"), 4, "unsafe input")
+                .is_err()
+        );
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+
+            std::os::unix::fs::symlink(&exact, temporary.path().join("link.json")).unwrap();
+            assert!(
+                read_bounded_regular_file(&temporary.path().join("link.json"), 4, "unsafe input")
+                    .is_err()
+            );
+            let fifo = temporary.path().join("coverage.fifo");
+            let fifo_name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+            let started = std::time::Instant::now();
+            assert!(read_bounded_regular_file(&fifo, 4, "unsafe input").is_err());
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        }
     }
 
     #[cfg(unix)]

@@ -68,6 +68,21 @@ pub struct CasObject {
     pub size: u64,
 }
 
+impl CasObject {
+    /// Derive the exact immutable reference that `CasStore::put` will publish.
+    /// This is useful when a higher-level content authority must bind the CAS
+    /// identity before the object is durably written.
+    pub fn for_bytes(object_schema: &str, bytes: &[u8]) -> Result<Self, ClewError> {
+        validate_object_schema(object_schema)?;
+        Ok(Self {
+            schema: CAS_OBJECT_SCHEMA.into(),
+            object_schema: object_schema.into(),
+            digest: object_digest(object_schema, bytes),
+            size: bytes.len() as u64,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct CasLease {
     object: CasObject,
@@ -113,14 +128,8 @@ impl CasStore {
     }
 
     pub fn put(&self, object_schema: &str, bytes: &[u8]) -> Result<CasObject, ClewError> {
-        validate_object_schema(object_schema)?;
-        let digest = object_digest(object_schema, bytes);
-        let object = CasObject {
-            schema: CAS_OBJECT_SCHEMA.into(),
-            object_schema: object_schema.into(),
-            digest: digest.clone(),
-            size: bytes.len() as u64,
-        };
+        let object = CasObject::for_bytes(object_schema, bytes)?;
+        let digest = object.digest.clone();
         let lock = self.lock(&digest, LockMode::Exclusive)?;
         let (directory, name) = self.object_location(&digest)?;
         if directory.file_exists(OsStr::new(&name))? {

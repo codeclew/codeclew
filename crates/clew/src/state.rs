@@ -126,6 +126,7 @@ impl StateAuthority {
             "runtimes",
             "repos",
             "sessions",
+            "threads",
             "runs",
             "locks",
             "tmp",
@@ -234,6 +235,13 @@ impl StateAuthority {
         self.ensure_private_directory(&relative)?;
         let path = self.root.join(relative);
         Ok(path)
+    }
+
+    pub fn thread_root(&self, thread_id: &str) -> Result<PathBuf, ClewError> {
+        let name = managed_id_component(thread_id, "thread:")?;
+        let relative = Path::new("threads").join(name);
+        self.ensure_private_directory(&relative)?;
+        Ok(self.root.join(relative))
     }
 
     pub fn run_root(&self, run_id: &str) -> Result<PathBuf, ClewError> {
@@ -437,6 +445,40 @@ impl ManagedDirectory {
             return Err(error);
         }
         self.handle.sync_all().map_err(io_error)
+    }
+
+    /// Installs fully durable bytes only when `name` does not yet exist.
+    /// A crash can leave an unreferenced `.tmp-*` file, but never a partial
+    /// destination. The hard-link step is the create-new commit point.
+    pub(crate) fn atomic_create(
+        &self,
+        name: &std::ffi::OsStr,
+        bytes: &[u8],
+    ) -> Result<bool, ClewError> {
+        validate_file_name(name)?;
+        let temporary_name = format!(".tmp-{}", uuid::Uuid::new_v4());
+        let temporary_name = std::ffi::OsStr::new(&temporary_name);
+        let mut file = self.create_file(temporary_name)?;
+        if let Err(error) = file
+            .write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(io_error)
+        {
+            drop(file);
+            let _ = unlink_at(&self.handle, temporary_name);
+            return Err(error);
+        }
+        drop(file);
+        let installed = match link_at_if_absent(&self.handle, temporary_name, name) {
+            Ok(installed) => installed,
+            Err(error) => {
+                let _ = unlink_at(&self.handle, temporary_name);
+                return Err(error);
+            }
+        };
+        unlink_at(&self.handle, temporary_name)?;
+        self.handle.sync_all().map_err(io_error)?;
+        Ok(installed)
     }
 
     pub(crate) fn rename_to(
@@ -889,6 +931,43 @@ fn rename_between(
     Ok(())
 }
 
+#[cfg(unix)]
+fn link_at_if_absent(
+    parent: &File,
+    source: &std::ffi::OsStr,
+    destination: &std::ffi::OsStr,
+) -> Result<bool, ClewError> {
+    let source = component_name(source)?;
+    let destination = component_name(destination)?;
+    if unsafe {
+        libc::linkat(
+            parent.as_raw_fd(),
+            source.as_ptr(),
+            parent.as_raw_fd(),
+            destination.as_ptr(),
+            0,
+        )
+    } != 0
+    {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::EEXIST) {
+            Ok(false)
+        } else {
+            Err(io_error(error))
+        };
+    }
+    Ok(true)
+}
+
+#[cfg(not(unix))]
+fn link_at_if_absent(
+    _parent: &File,
+    _source: &std::ffi::OsStr,
+    _destination: &std::ffi::OsStr,
+) -> Result<bool, ClewError> {
+    Err(invalid("descriptor-relative managed state requires POSIX"))
+}
+
 #[cfg(not(unix))]
 fn rename_at(
     _parent: &File,
@@ -1220,6 +1299,31 @@ mod tests {
             !repository
                 .key
                 .contains(repo.path().to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn atomic_create_installs_complete_bytes_once_without_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(parent.path().join("state")).unwrap();
+        let directory = state.directory(Path::new("locks")).unwrap();
+        let name = std::ffi::OsStr::new("immutable-root.json");
+        assert!(
+            directory
+                .atomic_create(name, b"first-complete-value")
+                .unwrap()
+        );
+        assert!(!directory.atomic_create(name, b"second-value").unwrap());
+        assert_eq!(
+            directory.read_file(name, 1024).unwrap(),
+            b"first-complete-value"
+        );
+        assert!(
+            directory
+                .entries()
+                .unwrap()
+                .iter()
+                .all(|entry| !entry.to_string_lossy().starts_with(".tmp-"))
         );
     }
 

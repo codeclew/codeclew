@@ -100,6 +100,116 @@ isolated candidate run. The low-level `session`, `context`, `plan`, and
 `task-run` commands remain an advanced protocol for expansion, cancellation,
 relocation, and diagnostics; they are not required for the happy path.
 
+### Read-only multi-service threads
+
+An immutable thread can bind two to eight already-open local sessions and
+return one bounded, path-free context across repositories and languages. Every
+fact and source row retains its member, service, session, language, compilation,
+context, and evidence authority. This is analysis composition only: thread
+contexts are explicitly rejected by plan validation, task runs, and
+publication.
+
+All member sessions must have been opened through the currently active runtime
+capsule. A thread neither owns nor changes them, so the same repository may
+contribute separate Kotlin, Python, or Rust analysis units and a session may be
+used by more than one thread.
+
+```bash
+./clew thread open \
+  --member provider=session:... \
+  --member consumer=session:... \
+  --service-alias provider=orders \
+  --service-alias consumer=checkout
+
+./clew thread context \
+  --thread thread:... \
+  --intent 'trace normalization across services' \
+  --term normalize \
+  --term Service
+
+./clew thread callables \
+  --thread thread:... \
+  --context thread-context:sha256:... \
+  --task-id inspect-normalization \
+  --pair-id orders-checkout \
+  --provider provider \
+  --consumer consumer \
+  --term normalize \
+  --term Service
+
+./clew thread impact \
+  --thread thread:... \
+  --fact-set thread-callables:sha256:... \
+  --pair-id orders-checkout \
+  --subject-kind callable-family \
+  --subject sample/Service.normalize
+
+./clew thread validate \
+  --before-thread thread:... \
+  --before-impact thread-impact:sha256:... \
+  --after-thread thread:... \
+  --after-impact thread-impact:sha256:... \
+  --member-correspondence provider=provider \
+  --member-correspondence consumer=consumer \
+  --coverage change-coverage.json
+
+./clew thread close --thread thread:...
+./clew thread gc --thread thread:...
+```
+
+The composite uses one global 4,096-fact, 32-window/256-KiB source, 1-MiB
+evidence, and 64-KiB stdout budget, with deterministic round-robin selection
+across member and compilation lanes. It never upgrades a member's certainty or
+drops its verification obligations. Member contexts remain independently
+addressed if another member fails, but no composite is published. Thread `gc`
+is a terminal metadata transition; it does not delete member sessions or claim
+physical CAS reclamation, and retained thread-context root records remain
+readable.
+
+`thread callables` is the Kotlin Descriptor Navigation v1 projection. It reads
+already-sealed K2 generations and writes an immutable, thread-owned
+declaration/use/boundary fact set plus a dedicated query index; it never starts
+a compiler or build tool. A descriptor is exact only when its own compiler row
+is complete and no named boundary matches that member and callable. An
+unidentified boundary keeps the aggregate result `PARTIAL/UNSURE` and remains
+an explicit verification obligation, but it does not erase an independently
+proved descriptor shape. Cross-repository relationships remain
+`DECLARED_TOPOLOGY`: exact shape evidence is not service ownership, routing, or
+compatibility evidence.
+
+`thread impact` consumes that immutable fact set without rebuilding it. The
+single command accepts an exact full symbol (with `--member`), a raw CallableId
+family, or a navigation token. Its bounded output includes both declared pair
+members, projected declaration shapes, relevant uses and boundaries, every
+verification obligation, and exact repository-relative source anchors. Source
+text is not copied into the impact authority; each anchor is bound to a source
+CAS digest and byte range so an agent can verify the local code without
+confusing a snippet with semantic authority. Findings may truncate to a fair
+`UNSURE` prefix, while obligations never truncate. No compiler, build tool,
+repository discovery, or target process runs on this path.
+
+`thread validate` compares two retained `CALLABLE_FAMILY` impacts for the same
+repositories and Kotlin profile. It reports compiler-projected `KCD_*`
+changes, both selected pair members, and unresolved before/after/comparison
+obligations; unrelated members of either containing thread are not claimed as
+covered. These are observations to verify, never compatibility or breakage
+verdicts.
+An empty coverage document returns `INCOMPLETE` with every required stable
+target ID. A closed document may acknowledge each target with only an inert
+`ACTION` or `EXTERNAL_WORK` tracking ID:
+
+```json
+{"entries":[{"handling":{"id":"verify-relationship","kind":"EXTERNAL_WORK"},"requiredCategories":["RELATIONSHIP_AUTHORITY"],"targetId":"sha256:..."}],"schema":"codeclew-kotlin-change-coverage-document/1.0"}
+```
+
+Complete acknowledgement returns `VALIDATED_CONDITIONAL`; current
+`DECLARED_TOPOLOGY` authority can never produce an unconditional green status.
+Unknown, duplicate, stale, category-mismatched, executable, path-shaped, or
+shell-shaped entries fail before publication. The result binds both threads,
+fact sets, impacts, runtime manifest, rules, correspondence, document, and the
+full two-sided CAS closure. Repeating it reads retained state only and starts
+no Git, compiler, build tool, or target process.
+
 Terms may be exact identities or natural identifier components. The query
 index retains the full identifier and language-neutral camel-case/snake-case
 aliases, so `Maven` can discover `MavenProjectModel` without changing the exact
@@ -164,6 +274,7 @@ user cache directory):
 runtimes/
 repos/
 sessions/
+threads/
 runs/
 locks/
 tmp/

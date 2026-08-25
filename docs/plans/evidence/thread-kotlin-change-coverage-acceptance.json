@@ -1,0 +1,99 @@
+{
+  "schema": "codeclew-thread-kotlin-change-coverage-acceptance/1.0",
+  "status": "PASS",
+  "profile": "KOTLIN_DESCRIPTOR_NAVIGATION_V1",
+  "authority": {
+    "parentRuntimeMode": "DEVELOPMENT",
+    "parentRuntimeDigest": "sha256:4c5910012e4b1523404503b35cf5f2d52b3b10eddd10c73c9eb21244822c76c2",
+    "validatorRuntimeMode": "DEVELOPMENT",
+    "validatorRuntimeDigest": "sha256:c5a3b42c2975ca1fa2629f081bebf7e0f4395ff5b6288fa364bb6932f9cf26bd",
+    "validatorManifestDigest": "sha256:ba25c4763ea74a9bf41e1765b7d2ef2e1743a49670362527cd891ba0ce100da9",
+    "rulesDigest": "sha256:a57d2d2e1f749c7929f38aba5bac1499ecc61c47e5f1e84268e4e008378dc807",
+    "comparisonDigest": "sha256:b8696c517bdcb3907bde5e4281bf3d80bbc538e82358b130e5ee7415c574d350",
+    "validationBindingDigest": "sha256:5a13305d637c69091ee3f10be2b926741b3271a1ab16a0039b3d558475a68a15",
+    "beforeFactSetDigest": "sha256:dcaad3a08aeeaec37136644053fa4e48897fdac738118f1061660868f80818eb",
+    "afterFactSetDigest": "sha256:bf649f072dd87c96c717cdae7cc036ca2911f877734733e548f682884950602e",
+    "beforeImpactDigest": "sha256:8bde186a5d1eb8c7af193d42815b47f00e62b214516ced701ba9ba2e7c376c42",
+    "afterImpactDigest": "sha256:1a0646a303fd6df03e988eac3ebe9022ace63e8cd87e061e5b69d716060e26ea",
+    "changeSetDigest": "sha256:99c68cec8d601206a25b4fb2985d506818235c1bd984b2edd179c564695339b7"
+  },
+  "fixture": {
+    "repositoryCount": 2,
+    "threadCount": 2,
+    "memberCountPerThread": 2,
+    "compilationCountPerThread": 2,
+    "compilerVersion": "2.4.10",
+    "independentLocalGitRepositories": true,
+    "controlledChange": "EXPLICIT_RETURN_NULLABILITY",
+    "coordinateOrPathIncluded": false
+  },
+  "coverageResult": {
+    "status": "VALIDATED_CONDITIONAL",
+    "relationshipAuthority": "DECLARED_TOPOLOGY",
+    "targetCount": 39,
+    "memberTargetCount": 2,
+    "observationCount": 3,
+    "obligationCount": 34,
+    "coveredTargetCount": 39,
+    "missingTargetCount": 0,
+    "newDerivedCasObjectCount": 2,
+    "retainedCasBytes": 19523730,
+    "observationCodes": [
+      "KCD_NULLABILITY_CHANGED",
+      "KCD_UNSUPPORTED_COMPARISON"
+    ],
+    "compatibilityClaimCount": 0,
+    "breakageClaimCount": 0
+  },
+  "identity": {
+    "validatorRuntimeCount": 2,
+    "comparisonDigestStable": true,
+    "targetIdsStable": true,
+    "validationBindingDigestStable": true,
+    "finalAuthorityChanged": true
+  },
+  "warmAcceptance": {
+    "validationRunMillis": [
+      4651,
+      1755
+    ],
+    "validationRunCount": 2,
+    "maximumValidationRunMillis": 4651,
+    "stdoutBytes": 5052,
+    "stdoutLimitBytes": 65536,
+    "stdoutDigest": "sha256:7907b4f361cdd4b3af9324511c430b7a0767692ed03c11ce798c81dfc17f4115",
+    "byteIdentical": true,
+    "emptyToolPath": true,
+    "prohibitedProcessCount": 0,
+    "stdoutForbiddenMatchCount": 0
+  },
+  "retention": {
+    "threadsGarbageCollected": 2,
+    "memberSessionsGarbageCollected": 4,
+    "rootDigestBefore": "sha256:57462b78441e55736f52bc97c5fd08128e0ddbcad40b5d43228e5c73afd7937c",
+    "rootDigestAfter": "sha256:57462b78441e55736f52bc97c5fd08128e0ddbcad40b5d43228e5c73afd7937c",
+    "closureDigestBefore": "sha256:b54e43e5461b44e2d09f69fb26a33b6bc170ea8fdb05ed2104070a79132d342b",
+    "closureDigestAfter": "sha256:b54e43e5461b44e2d09f69fb26a33b6bc170ea8fdb05ed2104070a79132d342b",
+    "declaredObjectCount": 837,
+    "reachableObjectCount": 859,
+    "reachableBytes": 20246429,
+    "retainedLoadVerified": true
+  },
+  "verification": {
+    "exactLimitAndLimitPlusOneCoverage": true,
+    "atomicRaceAndTamperCoverage": true,
+    "validatorCapsuleIdentityCoverage": true,
+    "s3FocusedTests": 34,
+    "s2RegressionTests": 23,
+    "fullLibraryTestsPassed": 320,
+    "fullLibraryTestsIgnored": 1,
+    "mainCliTests": 13,
+    "managedCliTests": 7,
+    "clippyAllTargets": "PASS",
+    "diffCheck": "PASS",
+    "independentReview": "PASS",
+    "independentP0": 0,
+    "independentP1": 0,
+    "independentP2": 0
+  }
+}
