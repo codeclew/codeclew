@@ -1009,7 +1009,11 @@ fn kotlin_fact_category(fact_key: &str) -> Result<Option<&str>, ClewError> {
         return Err(corrupt("Kotlin semantic fact key digest is invalid"));
     }
     match category {
-        "metadata" | "file" => Ok(None),
+        // These facts remain retained by the sealed generation, but they are
+        // outside the declaration/relation projection consumed by callables.
+        // In particular, local CFG evidence must not affect callable graph
+        // coverage or be parsed as a declaration/relation payload.
+        "metadata" | "file" | "local-cfg" | "local-cfg-boundary" => Ok(None),
         "descriptor" | "descriptor-boundary" | "relation" | "relation-boundary" => {
             Ok(Some(category))
         }
@@ -1177,11 +1181,35 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 mod tests {
     use super::*;
 
+    const FACT_DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     fn source_store() -> (tempfile::TempDir, CasStore) {
         let temporary = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
         let store = CasStore::open(&state).unwrap();
         (temporary, store)
+    }
+
+    #[test]
+    fn callable_category_routing_ignores_local_cfg_but_rejects_unknown_categories() {
+        for category in ["metadata", "file", "local-cfg", "local-cfg-boundary"] {
+            let fact_key = format!("kotlin:{category}:{FACT_DIGEST}");
+            assert_eq!(kotlin_fact_category(&fact_key).unwrap(), None);
+        }
+
+        for category in [
+            "descriptor",
+            "descriptor-boundary",
+            "relation",
+            "relation-boundary",
+        ] {
+            let fact_key = format!("kotlin:{category}:{FACT_DIGEST}");
+            assert_eq!(kotlin_fact_category(&fact_key).unwrap(), Some(category));
+        }
+
+        let error = kotlin_fact_category(&format!("kotlin:arbitrary:{FACT_DIGEST}"))
+            .expect_err("unknown categories must remain fail-closed");
+        assert_eq!(error.code, ErrorCode::StateCorrupt);
     }
 
     #[test]
