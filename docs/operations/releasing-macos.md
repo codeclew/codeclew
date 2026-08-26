@@ -38,8 +38,8 @@ workflow verifies `uname -m` before construction and refuses a runtime in
 
    ```bash
    curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
-   clew capabilities
-   clew doctor
+   clew capabilities --human
+   clew doctor --human
    ```
 
 The workflow creates a normal GitHub Release so the stable

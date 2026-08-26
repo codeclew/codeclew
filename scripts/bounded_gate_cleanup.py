@@ -129,7 +129,7 @@ def cleanup_session(clew: str, session: str, timeout: int) -> bool:
     for action in ("close", "gc"):
         results.append(
             run_bounded(
-                [clew, "session", action, "--json", "--session", session], timeout
+                [clew, "session", action, "--session", session], timeout
             )
         )
     return all(results)

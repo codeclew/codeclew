@@ -16,7 +16,7 @@ curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
 The installer downloads the matching GitHub Release asset, verifies its
 published SHA-256 checksum, installs it below `~/.local/share/codeclew`, and
 atomically links `clew` into `~/.local/bin`. It never compiles Codeclew on the
-target machine. Run `clew doctor` after installation. The source launcher
+target machine. Run `clew doctor --human` after installation. The source launcher
 `./clew` remains the supported development entrypoint.
 
 ## Source-build requirements
@@ -89,18 +89,18 @@ separate decision after 20 recorded in-contour cases meet its numerical gate.
 ## Operational admission
 
 Before opening a session, inspect the runtime-bound support contract and host
-readiness:
+readiness. For a terminal-friendly report, run:
 
 ```bash
-./clew capabilities
-./clew doctor --repo /absolute/path/to/repository --target-ref refs/heads/feature
+./clew capabilities --human
+./clew doctor --repo /absolute/path/to/repository --target-ref refs/heads/feature --human
 ```
 
 The support matrix is also retained as
 [`crates/clew/support-matrix.json`](crates/clew/support-matrix.json). Automation
-must inspect the doctor's JSON status and required checks; the command can
-return a valid `ACTION_REQUIRED` report without treating that report as a CLI
-failure.
+uses the canonical JSON emitted when `--human` is omitted and must inspect the
+doctor's status and required checks. The command can return a valid
+`ACTION_REQUIRED` report without treating that report as a CLI failure.
 
 Before prepare and publish, verify that the session still owns the checked-out
 target authority:

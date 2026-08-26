@@ -1293,7 +1293,6 @@ def run_unit(
         opened = run_json_process(
             [
                 os.fspath(clew),
-                "--json",
                 "session",
                 "open",
                 "--repo",
@@ -1316,7 +1315,6 @@ def run_unit(
             context_value = run_json_process(
                 [
                     os.fspath(clew),
-                    "--json",
                     "context",
                     "create",
                     "--session",
@@ -1336,7 +1334,7 @@ def run_unit(
             )
             task_sides.append(parse_context(context_value, session, side))
         run_json_process(
-            [os.fspath(clew), "--json", "session", "close", "--session", session_id],
+            [os.fspath(clew), "session", "close", "--session", session_id],
             min(timeout_seconds, 120),
         )
         terminal = True
@@ -1380,7 +1378,7 @@ def run_unit(
         if session_id is not None and not terminal:
             try:
                 run_json_process(
-                    [os.fspath(clew), "--json", "session", "abort", "--session", session_id],
+                    [os.fspath(clew), "session", "abort", "--session", session_id],
                     min(timeout_seconds, 120),
                 )
             except GateError:

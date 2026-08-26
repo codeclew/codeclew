@@ -683,7 +683,7 @@ finally:
     record_stage(f"TRIAL_{pair}_{profile}_SESSION_CLOSE")
     try:
         close_code, close_stdout = invoke(
-            ["session", "close", "--json", "--session", session_id], 60
+            ["session", "close", "--session", session_id], 60
         )
     except BaseException:
         close_code, close_stdout = -1, b""
@@ -693,7 +693,7 @@ finally:
     record_stage(f"TRIAL_{pair}_{profile}_SESSION_GC")
     try:
         gc_code, gc_stdout = invoke(
-            ["session", "gc", "--json", "--session", session_id], 60
+            ["session", "gc", "--session", session_id], 60
         )
     except BaseException:
         gc_code, gc_stdout = -1, b""

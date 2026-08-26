@@ -1811,7 +1811,7 @@ def _clew_environment(source: dict[str, str] | None = None) -> dict[str, str]:
 
 def _run_json(clew: Path, arguments: list[str], timeout_seconds: int) -> dict[str, Any]:
     return_code, raw, stderr = _run_bounded_process(
-        [os.fspath(clew), "--json", *arguments],
+        [os.fspath(clew), *arguments],
         environment=_clew_environment(),
         timeout=timeout_seconds,
         stdout_limit=descriptor_gate.MAX_CLEW_STDOUT_BYTES,

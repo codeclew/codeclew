@@ -751,9 +751,9 @@ class PilotHarnessTest(unittest.TestCase):
             return result
 
         def fake_run(command: list[str], *_args: object) -> dict[str, object]:
-            kind = command[2]
-            operation = command[3]
-            identifier = command[5]
+            kind = command[1]
+            operation = command[2]
+            identifier = command[4]
             status = (
                 "GARBAGE_COLLECTED"
                 if operation == "gc"
@@ -770,7 +770,7 @@ class PilotHarnessTest(unittest.TestCase):
                 pending=pending,
                 runtime_key=runtime_key,
             )
-        operations = [(call.args[0][2], call.args[0][3]) for call in run.call_args_list]
+        operations = [(call.args[0][1], call.args[0][2]) for call in run.call_args_list]
         self.assertEqual(
             operations,
             [("thread", "close"), ("thread", "gc"), ("session", "abort"), ("session", "gc")],

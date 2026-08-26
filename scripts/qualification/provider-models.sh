@@ -313,7 +313,7 @@ def qualify_provider(name, path, native_command, term, environment):
         session, session_raw, session_ms = run_json(
             [
                 clew,
-                "session", "open", "--json",
+                "session", "open",
                 "--repo", path,
                 "--target-ref", "main",
                 "--language", "kotlin",
@@ -339,7 +339,7 @@ def qualify_provider(name, path, native_command, term, environment):
         context, context_raw, context_ms = run_json(
             [
                 clew,
-                "context", "create", "--json",
+                "context", "create",
                 "--session", session_id,
                 "--intent", f"inspect {name} provider model and generation authority",
                 "--term", term,
@@ -364,7 +364,7 @@ def qualify_provider(name, path, native_command, term, environment):
         if session_id is not None:
             try:
                 closed, _raw, _elapsed = run_json(
-                    [clew, "session", "close", "--json", "--session", session_id],
+                    [clew, "session", "close", "--session", session_id],
                     environment=environment,
                     timeout=60,
                     stage=f"{name} session close",
@@ -372,7 +372,7 @@ def qualify_provider(name, path, native_command, term, environment):
                 if closed.get("lifecycle", {}).get("status") != "CLOSED":
                     raise GateFailure(f"{name} session did not close")
                 collected, _raw, _elapsed = run_json(
-                    [clew, "session", "gc", "--json", "--session", session_id],
+                    [clew, "session", "gc", "--session", session_id],
                     environment=environment,
                     timeout=60,
                     stage=f"{name} session gc",

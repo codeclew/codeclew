@@ -11,6 +11,9 @@ that checkout, require `CODECLEW_ROOT` and use `$CODECLEW_ROOT/clew`. Never
 invoke a capsule binary or edit `CODECLEW_HOME` directly. In the commands below,
 `clew` means the resolved installed or source launcher.
 
+Codeclew emits canonical JSON by default. Agents must not use the optional
+`--human` presentation provided by `capabilities` and `doctor`.
+
 ## Admit the task
 
 1. Run `clew capabilities` and inspect the JSON support matrix.

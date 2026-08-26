@@ -2321,6 +2321,20 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         capabilities_value["supportMatrix"]["profiles"][0]["profileId"],
         "kotlin-2.4.10-gradle-single"
     );
+    let capabilities_human = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &["capabilities", "--human"],
+        None,
+    );
+    assert!(capabilities_human.status.success());
+    assert!(capabilities_human.stderr.is_empty());
+    let capabilities_report = String::from_utf8(capabilities_human.stdout).unwrap();
+    assert!(capabilities_report.contains("Codeclew capabilities"));
+    assert!(capabilities_report.contains("Kotlin 2.4.10"));
+    assert!(!capabilities_report.contains("codeclew-capabilities/1.0"));
 
     let doctor = run_managed(
         &runtime_binary,
@@ -2348,6 +2362,28 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
                 check["checkId"] == "repository.target-ref-at-head" && check["status"] == "PASS"
             })
     );
+    let doctor_human = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "doctor",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--target-ref",
+            "main",
+            "--human",
+        ],
+        None,
+    );
+    assert!(doctor_human.status.success());
+    assert!(doctor_human.stderr.is_empty());
+    let doctor_report = String::from_utf8(doctor_human.stdout).unwrap();
+    assert!(doctor_report.contains("Codeclew doctor"));
+    assert!(doctor_report.contains("Status: ACTION REQUIRED"));
+    assert!(doctor_report.contains("Target ref points to HEAD"));
+    assert!(!doctor_report.contains(repository.to_str().unwrap()));
 
     let opened = run_managed(
         &runtime_binary,

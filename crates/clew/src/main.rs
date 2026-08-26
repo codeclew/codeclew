@@ -11,6 +11,7 @@ use clew::thread::{ThreadAuthority, ThreadMemberRequest};
 use clew::thread_context::{bounded_thread_context_stdout, create as create_thread_context};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
@@ -25,8 +26,6 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     about = "Codeclew managed semantic change runtime"
 )]
 struct Cli {
-    #[arg(long, global = true)]
-    json: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -34,7 +33,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Print the exact product support matrix bound to the active runtime.
-    Capabilities,
+    Capabilities(CapabilitiesArgs),
     /// Check host, runtime, state, and optional target-repository readiness.
     Doctor(DoctorArgs),
     Change {
@@ -68,6 +67,13 @@ enum Command {
     },
     #[command(name = "__task-run-execute", hide = true)]
     InternalTaskRunExecute(InternalTaskRunArgs),
+}
+
+#[derive(Args)]
+struct CapabilitiesArgs {
+    /// Render a concise human-readable report instead of canonical JSON.
+    #[arg(long)]
+    human: bool,
 }
 
 #[derive(Subcommand)]
@@ -182,6 +188,9 @@ struct DoctorArgs {
     /// Optional ref that must resolve to the checked-out HEAD.
     #[arg(long, requires = "repo")]
     target_ref: Option<String>,
+    /// Render an actionable human-readable report instead of canonical JSON.
+    #[arg(long)]
+    human: bool,
 }
 
 #[derive(Args)]
@@ -396,44 +405,286 @@ struct InternalTaskRunArgs {
     run: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputMode {
+    Json,
+    HumanCapabilities,
+    HumanDoctor,
+}
+
+impl OutputMode {
+    fn from_cli(cli: &Cli) -> Self {
+        match &cli.command {
+            Command::Capabilities(args) if args.human => Self::HumanCapabilities,
+            Command::Doctor(args) if args.human => Self::HumanDoctor,
+            _ => Self::Json,
+        }
+    }
+
+    fn command_name(self) -> &'static str {
+        match self {
+            Self::Json => "request",
+            Self::HumanCapabilities => "capabilities",
+            Self::HumanDoctor => "doctor",
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let started = std::time::Instant::now();
-    let result = run(Cli::parse());
-    eprintln!(
-        "{}",
-        String::from_utf8(
-            canonical::bytes(&json!({
-                "event":"request_completed",
-                "durationMs":started.elapsed().as_millis(),
-                "success":result.is_ok(),
-            }))
-            .unwrap_or_default()
-        )
-        .unwrap_or_else(|_| "{\"event\":\"request_completed\"}".into())
-    );
+    let cli = Cli::parse();
+    let output_mode = OutputMode::from_cli(&cli);
+    let result = run(cli);
+    if output_mode == OutputMode::Json {
+        eprintln!(
+            "{}",
+            String::from_utf8(
+                canonical::bytes(&json!({
+                    "event":"request_completed",
+                    "durationMs":started.elapsed().as_millis(),
+                    "success":result.is_ok(),
+                }))
+                .unwrap_or_default()
+            )
+            .unwrap_or_else(|_| "{\"event\":\"request_completed\"}".into())
+        );
+    }
     match result {
         Ok(value) => {
-            println!(
-                "{}",
-                canonical::compact(&value).unwrap_or_else(|_| "{}".into())
-            );
+            let rendered = match output_mode {
+                OutputMode::Json => canonical::compact(&value).unwrap_or_else(|_| "{}".into()),
+                OutputMode::HumanCapabilities => human_capabilities(&value),
+                OutputMode::HumanDoctor => human_doctor(&value),
+            };
+            println!("{rendered}");
             ExitCode::SUCCESS
         }
         Err(error) => {
             let code = exit_code(&error.code);
-            println!(
-                "{}",
+            let rendered = if output_mode == OutputMode::Json {
                 canonical::compact(&json!({"schema":"codeclew-error/2.0","error":error}))
                     .unwrap_or_else(|_| "{}".into())
-            );
+            } else {
+                human_error(output_mode, &error)
+            };
+            println!("{rendered}");
             ExitCode::from(code)
         }
     }
 }
 
+fn human_capabilities(value: &Value) -> String {
+    let status = value["status"].as_str().unwrap_or("UNKNOWN");
+    let runtime_mode = value["runtimeMode"].as_str().unwrap_or("UNKNOWN");
+    let matrix = &value["supportMatrix"];
+    let platforms = matrix["operatingSystems"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(platform_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "unknown".into());
+
+    let mut report = String::new();
+    let _ = writeln!(report, "Codeclew capabilities");
+    let _ = writeln!(report, "Status: {}", status.replace('_', " "));
+    let _ = writeln!(report, "Runtime: {runtime_mode}");
+    let _ = writeln!(report, "Platforms: {platforms}");
+    let _ = writeln!(report, "\nLanguage profiles:");
+
+    if let Some(profiles) = matrix["profiles"].as_array() {
+        for profile in profiles {
+            let language = profile["language"]
+                .as_str()
+                .map(language_label)
+                .unwrap_or("Unknown");
+            let version = profile["compilerVersion"]
+                .as_str()
+                .or_else(|| profile["engineVersion"].as_str())
+                .unwrap_or("unspecified version");
+            let build = profile["buildSystem"].as_str().map(build_system_label);
+            let access = if profile["mutation"].as_bool() == Some(true) {
+                "read and change"
+            } else {
+                "read only"
+            };
+            let profile_status = profile["status"]
+                .as_str()
+                .unwrap_or("UNKNOWN")
+                .replace('_', " ")
+                .to_ascii_lowercase();
+            let build_suffix = build.map(|name| format!(" / {name}")).unwrap_or_default();
+            let _ = writeln!(
+                report,
+                "  - {language} {version}{build_suffix}: {access} ({profile_status})"
+            );
+        }
+    } else {
+        let _ = writeln!(report, "  - No profile information available");
+    }
+
+    let minimum = matrix["threads"]["minimumMembers"].as_u64().unwrap_or(0);
+    let maximum = matrix["threads"]["maximumMembers"].as_u64().unwrap_or(0);
+    let thread_status = matrix["threads"]["status"]
+        .as_str()
+        .unwrap_or("UNKNOWN")
+        .replace('_', " ")
+        .to_ascii_lowercase();
+    let _ = writeln!(
+        report,
+        "\nMulti-repository threads: {thread_status}, {minimum}-{maximum} members"
+    );
+
+    let _ = writeln!(report, "\nPackaged workers:");
+    if let Some(workers) = value["packagedWorkers"].as_array() {
+        if workers.is_empty() {
+            let _ = writeln!(report, "  - None");
+        }
+        for worker in workers {
+            let runtime_name = worker["runtimeName"].as_str().unwrap_or("unknown");
+            let compiler = worker["compilerVersion"].as_str().unwrap_or("unknown");
+            let _ = writeln!(report, "  - {runtime_name}: Kotlin {compiler}");
+        }
+    } else {
+        let _ = writeln!(report, "  - Unavailable");
+    }
+
+    let _ = write!(
+        report,
+        "\nPrivacy: this report contains no source, repository identity, or absolute paths.\n\
+         Run without --human for canonical JSON."
+    );
+    report
+}
+
+fn human_doctor(value: &Value) -> String {
+    let status = value["status"].as_str().unwrap_or("UNKNOWN");
+    let runtime_mode = value["runtimeMode"].as_str().unwrap_or("UNKNOWN");
+    let mut report = String::new();
+    let _ = writeln!(report, "Codeclew doctor");
+    let _ = writeln!(
+        report,
+        "Status: {}",
+        if status == "PASS" {
+            "READY"
+        } else {
+            "ACTION REQUIRED"
+        }
+    );
+    let _ = writeln!(report, "Runtime: {runtime_mode}");
+    let _ = writeln!(report, "\nChecks:");
+
+    if let Some(checks) = value["checks"].as_array() {
+        for check in checks {
+            let id = check["checkId"].as_str().unwrap_or("unknown");
+            let check_status = check["status"].as_str().unwrap_or("UNKNOWN");
+            let requirement = if check["required"].as_bool() == Some(true) {
+                "required"
+            } else {
+                "optional"
+            };
+            let _ = writeln!(
+                report,
+                "  [{check_status}] {} ({requirement})",
+                doctor_check_label(id)
+            );
+            if check_status != "PASS"
+                && let Some(remediation) = check["remediationId"].as_str()
+            {
+                let _ = writeln!(report, "    Next: {}", remediation_label(remediation));
+            }
+        }
+    } else {
+        let _ = writeln!(report, "  No check information available");
+    }
+
+    let _ = write!(
+        report,
+        "\nPrivacy: this report contains no source, repository identity, or absolute paths.\n\
+         Run without --human for canonical JSON."
+    );
+    report
+}
+
+fn human_error(output_mode: OutputMode, error: &ClewError) -> String {
+    format!(
+        "Codeclew {}\nStatus: FAILED\nError: {:?}\n{}\nRetryable: {}",
+        output_mode.command_name(),
+        error.code,
+        error.message,
+        if error.retryable { "yes" } else { "no" }
+    )
+}
+
+fn platform_label(value: &str) -> &str {
+    match value {
+        "linux" => "Linux",
+        "macos" => "macOS",
+        other => other,
+    }
+}
+
+fn language_label(value: &str) -> &str {
+    match value {
+        "kotlin" => "Kotlin",
+        "python" => "Python",
+        "rust" => "Rust",
+        other => other,
+    }
+}
+
+fn build_system_label(value: &str) -> &str {
+    match value {
+        "GRADLE_WRAPPER" => "Gradle wrapper",
+        "MAVEN" => "Maven",
+        other => other,
+    }
+}
+
+fn doctor_check_label(id: &str) -> &str {
+    match id {
+        "platform.posix" => "Supported POSIX platform",
+        "tool.git" => "Git is available",
+        "tool.python3" => "Python 3.11+ is available",
+        "tool.java" => "JDK 21 is available",
+        "tool.rustc" => "Rust compiler is available",
+        "tool.cargo" => "Cargo is available",
+        "state.free-space" => "At least 6 GiB is free in Codeclew state",
+        "runtime.kotlin24" => "Qualified Kotlin 2.4 runtime is installed",
+        "runtime.kotlin23" => "Kotlin 2.3 preview runtime is installed",
+        "repository.available" => "Target repository is available",
+        "repository.git" => "Target is a Git repository",
+        "repository.clean" => "Target worktree is clean",
+        "repository.target-ref-at-head" => "Target ref points to HEAD",
+        other => other,
+    }
+}
+
+fn remediation_label(id: &str) -> &str {
+    match id {
+        "USE_SUPPORTED_POSIX_HOST" => "use a supported macOS or Linux host",
+        "INSTALL_GIT" => "install Git and make it available in PATH",
+        "INSTALL_PYTHON_3_11" => "install Python 3.11 or newer",
+        "INSTALL_JDK_21" => "install JDK 21 and make java available in PATH",
+        "INSTALL_RUST_1_92" => "install the pinned Rust 1.92 toolchain",
+        "FREE_6_GIB_ON_STATE_VOLUME" => "free at least 6 GiB on the state volume",
+        "INSTALL_QUALIFIED_RUNTIME" => "install or rebuild the qualified runtime",
+        "INSTALL_KOTLIN23_PREVIEW_COMPONENT" => "install the optional Kotlin 2.3 preview component",
+        "SELECT_EXISTING_REPOSITORY" => "select an existing repository",
+        "SELECT_GIT_REPOSITORY" => "select a valid Git repository",
+        "CLEAN_TARGET_WORKTREE" => "commit, stash, or use a separate clean worktree",
+        "CHECKOUT_TARGET_REF_AT_HEAD" => "check out the target ref at HEAD",
+        other => other,
+    }
+}
+
 fn run(cli: Cli) -> Result<Value, ClewError> {
     match cli.command {
-        Command::Capabilities => capabilities(&active_runtime()?),
+        Command::Capabilities(_) => capabilities(&active_runtime()?),
         Command::Doctor(args) => doctor(
             &active_runtime()?,
             args.repo.as_deref(),
@@ -1683,7 +1934,11 @@ mod tests {
     #[test]
     fn operational_entrypoints_require_explicit_closed_arguments() {
         assert!(Cli::try_parse_from(["clew", "capabilities"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "capabilities", "--human"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "doctor"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "doctor", "--human"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "--json", "capabilities"]).is_err());
+        assert!(Cli::try_parse_from(["clew", "doctor", "--json"]).is_err());
         assert!(
             Cli::try_parse_from([
                 "clew",
@@ -1705,6 +1960,75 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["clew", "support", "summarize"]).is_err());
+    }
+
+    #[test]
+    fn human_capabilities_is_readable_and_preserves_the_support_boundary() {
+        let value = json!({
+            "status":"PILOT_READY",
+            "runtimeMode":"RELEASE",
+            "supportMatrix":{
+                "operatingSystems":["linux","macos"],
+                "profiles":[
+                    {
+                        "buildSystem":"GRADLE_WRAPPER",
+                        "compilerVersion":"2.4.10",
+                        "language":"kotlin",
+                        "mutation":true,
+                        "status":"PILOT_READY"
+                    },
+                    {
+                        "engineVersion":"tree-sitter-python-0.25.0",
+                        "language":"python",
+                        "mutation":false,
+                        "status":"READ_ONLY_PREVIEW"
+                    }
+                ],
+                "threads":{
+                    "minimumMembers":2,
+                    "maximumMembers":8,
+                    "status":"READ_ONLY_ANALYSIS"
+                }
+            },
+            "packagedWorkers":[
+                {"compilerVersion":"2.4.10","runtimeName":"kotlin24"}
+            ]
+        });
+        let report = human_capabilities(&value);
+        assert!(report.contains("Codeclew capabilities"));
+        assert!(report.contains("Kotlin 2.4.10 / Gradle wrapper: read and change"));
+        assert!(report.contains("Python tree-sitter-python-0.25.0: read only"));
+        assert!(report.contains("2-8 members"));
+        assert!(report.contains("Run without --human for canonical JSON"));
+        assert!(!report.contains("codeclew-capabilities/1.0"));
+    }
+
+    #[test]
+    fn human_doctor_explains_required_remediation_without_private_identity() {
+        let value = json!({
+            "status":"ACTION_REQUIRED",
+            "runtimeMode":"RELEASE",
+            "checks":[
+                {
+                    "checkId":"tool.git",
+                    "required":true,
+                    "status":"PASS",
+                    "remediationId":null
+                },
+                {
+                    "checkId":"repository.clean",
+                    "required":true,
+                    "status":"ACTION_REQUIRED",
+                    "remediationId":"CLEAN_TARGET_WORKTREE"
+                }
+            ]
+        });
+        let report = human_doctor(&value);
+        assert!(report.contains("Status: ACTION REQUIRED"));
+        assert!(report.contains("[PASS] Git is available (required)"));
+        assert!(report.contains("[ACTION_REQUIRED] Target worktree is clean (required)"));
+        assert!(report.contains("commit, stash, or use a separate clean worktree"));
+        assert!(!report.contains("/private/"));
     }
 
     #[test]

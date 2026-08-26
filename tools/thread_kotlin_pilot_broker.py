@@ -2244,7 +2244,7 @@ class BrokerSession:
             if self.context_id is not None:
                 raise BrokerError("SEMANTIC_CONTEXT_ALREADY_CREATED")
             command = [
-                os.fspath(self.clew), "--json", "thread", "context",
+                os.fspath(self.clew), "thread", "context",
                 "--thread", thread["threadId"],
                 "--intent", "frozen Kotlin descriptor pilot navigation",
                 *[part for term in terms for part in ("--term", term)],
@@ -2254,7 +2254,7 @@ class BrokerSession:
             if self.context_id is None or self.fact_set_id is not None:
                 raise BrokerError("SEMANTIC_SEQUENCE_INVALID")
             command = [
-                os.fspath(self.clew), "--json", "thread", "callables",
+                os.fspath(self.clew), "thread", "callables",
                 "--thread", thread["threadId"], "--context", self.context_id,
                 "--task-id", self.task["taskId"], "--pair-id", self.task["pairId"],
                 "--provider", thread["providerMember"], "--consumer", thread["consumerMember"],
@@ -2276,7 +2276,7 @@ class BrokerSession:
                 raise BrokerError("INVALID_SEMANTIC_REQUEST")
             terms = (subject,)
             command = [
-                os.fspath(self.clew), "--json", "thread", "impact",
+                os.fspath(self.clew), "thread", "impact",
                 "--thread", thread["threadId"], "--fact-set", self.fact_set_id,
                 "--pair-id", self.task["pairId"], "--subject-kind", kind,
                 "--subject", subject,

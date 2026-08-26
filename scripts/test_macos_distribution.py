@@ -102,6 +102,7 @@ class MacosDistributionTest(unittest.TestCase):
                     )
                     self.assertEqual(completed.returncode, 0, completed.stderr)
                     self.assertIn("Codeclew v0.1.0 installed", completed.stdout)
+                    self.assertIn("clew doctor --human", completed.stdout)
                     for message in [
                         "[1/6] Checking macOS and required tools",
                         "[2/6] Downloading the macOS arm64 release",

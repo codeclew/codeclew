@@ -378,7 +378,7 @@ def _open_fixture_sessions(
         )
         value = _run_json(
             [
-                os.fspath(clew), "--json", "session", "open",
+                os.fspath(clew), "session", "open",
                 "--repo", os.fspath(repositories[alias]),
                 "--target-ref", "refs/heads/pilot",
                 "--language", "kotlin",
@@ -397,7 +397,7 @@ def _open_fixture_sessions(
 def _thread(
     clew: Path, sessions: dict[str, dict[str, Any]], environment: dict[str, str]
 ) -> str:
-    command = [os.fspath(clew), "--json", "thread", "open"]
+    command = [os.fspath(clew), "thread", "open"]
     for alias in ["provider", "consumer", "observer"]:
         command.extend(["--member", f"{alias}={sessions[alias]['sessionId']}"])
         command.extend(["--service-alias", f"{alias}={alias}"])
@@ -413,7 +413,7 @@ def _context_and_fact_set(
 ) -> tuple[str, str]:
     context = _run_json(
         [
-            os.fspath(clew), "--json", "thread", "context",
+            os.fspath(clew), "thread", "context",
             "--thread", thread_id,
             "--intent", "warm Kotlin descriptor navigation audit",
             *[part for term in TERMS for part in ("--term", term)],
@@ -427,7 +427,7 @@ def _context_and_fact_set(
         raise WarmAuditError("FIXTURE_CONTEXT_INVALID")
     callables = _run_json(
         [
-            os.fspath(clew), "--json", "thread", "callables",
+            os.fspath(clew), "thread", "callables",
             "--thread", thread_id,
             "--context", context_id,
             "--task-id", "task-warm",
@@ -447,7 +447,7 @@ def _context_and_fact_set(
 
 def _impact_command(clew: Path, thread_id: str, fact_set: str, subject: str) -> list[str]:
     return [
-        os.fspath(clew), "--json", "thread", "impact",
+        os.fspath(clew), "thread", "impact",
         "--thread", thread_id,
         "--fact-set", fact_set,
         "--pair-id", "pair-warm",
@@ -1979,7 +1979,7 @@ def _close_and_gc(
     try:
         closed = _run_json(
             [
-                os.fspath(clew), "--json", resource_kind, "close",
+                os.fspath(clew), resource_kind, "close",
                 f"--{resource_kind}", resource_id,
             ],
             120,
@@ -1999,7 +1999,7 @@ def _close_and_gc(
         pass
     collected = _run_json(
         [
-            os.fspath(clew), "--json", resource_kind, "gc",
+            os.fspath(clew), resource_kind, "gc",
             f"--{resource_kind}", resource_id,
         ],
         120,

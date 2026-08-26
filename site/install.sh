@@ -180,5 +180,5 @@ printf 'Codeclew %s installed for macOS %s.\n' "$VERSION" "$ARCH"
 printf 'Launcher: %s\n' "$BIN_DIR/clew"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) printf 'Add %s to PATH, then run: clew doctor\n' "$BIN_DIR" ;;
+  *) printf 'Add %s to PATH, then run: clew doctor --human\n' "$BIN_DIR" ;;
 esac

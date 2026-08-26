@@ -350,7 +350,7 @@ digraph codeclew_multiservice_thread {
   deterministic, bounded, thread-owned callable fact set and dedicated index.
 - **Product command:**
   ```text
-  clew --json thread callables \
+  clew thread callables \
     --thread THREAD --context THREAD_CONTEXT \
     --task-id TASK --pair-id PAIR \
     --provider MEMBER --consumer MEMBER --term TERM...
@@ -420,7 +420,7 @@ digraph codeclew_multiservice_thread {
   contexts, and every unresolved verification obligation.
 - **Product command:**
   ```text
-  ./clew --json thread impact \
+  ./clew thread impact \
     --thread THREAD --fact-set FACT_SET --pair-id PAIR \
     --subject-kind full-symbol|callable-family|token --subject SUBJECT \
     [--member MEMBER]
@@ -501,7 +501,7 @@ digraph codeclew_multiservice_thread {
   change, selected declared pair member, and unresolved obligation.
 - **Product command:**
   ```text
-  ./clew --json thread validate \
+  ./clew thread validate \
     --before-thread THREAD --before-impact IMPACT \
     --after-thread THREAD --after-impact IMPACT \
     --member-correspondence BEFORE=AFTER ... \

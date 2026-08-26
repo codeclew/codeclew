@@ -1779,7 +1779,7 @@ def prepare_semantic(
         for service in corpus.services:
             target_ref = descriptor_gate.pinned_target_ref(git, service)
             session_command = [
-                os.fspath(clew), "--json", "session", "open",
+                os.fspath(clew), "session", "open",
                 "--repo", os.fspath(service.repository), "--target-ref", target_ref,
                 "--language", "kotlin", "--compilation", descriptor_gate.COMPILATION,
                 "--generation-jobs", "1",
@@ -1828,7 +1828,7 @@ def prepare_semantic(
                 raise PilotError("SEMANTIC_PREPARATION_FAILED")
             _run_json(
                 [
-                    os.fspath(clew), "--json", "context", "create",
+                    os.fspath(clew), "context", "create",
                     "--session", session_id,
                     "--intent", "prime frozen Kotlin descriptor pilot authority",
                     *[part for term in terms for part in ("--term", term)],
@@ -1840,7 +1840,7 @@ def prepare_semantic(
             )
         for task in corpus.tasks:
             thread_command = [
-                os.fspath(clew), "--json", "thread", "open",
+                os.fspath(clew), "thread", "open",
                 "--member", f"provider={sessions[task.provider]}",
                 "--member", f"consumer={sessions[task.consumer]}",
                 "--service-alias", f"provider={task.provider}",
@@ -2148,7 +2148,7 @@ def _cleanup_semantic(
     for task_id, thread_id in reversed(list(remaining_threads.items())):
         try:
             value = _run_json(
-                [os.fspath(clew), "--json", "thread", "close", "--thread", thread_id],
+                [os.fspath(clew), "thread", "close", "--thread", thread_id],
                 120,
                 "SEMANTIC_CLEANUP_FAILED",
                 environment,
@@ -2161,7 +2161,7 @@ def _cleanup_semantic(
             # collected resource.  Exact idempotent GC below is authoritative.
             pass
         collected = _run_json(
-            [os.fspath(clew), "--json", "thread", "gc", "--thread", thread_id],
+            [os.fspath(clew), "thread", "gc", "--thread", thread_id],
             120,
             "SEMANTIC_CLEANUP_FAILED",
             environment,
@@ -2172,7 +2172,7 @@ def _cleanup_semantic(
     for row in reversed(list(remaining_sessions)):
         try:
             value = _run_json(
-                [os.fspath(clew), "--json", "session", "abort", "--session", row["sessionId"]],
+                [os.fspath(clew), "session", "abort", "--session", row["sessionId"]],
                 120,
                 "SEMANTIC_CLEANUP_FAILED",
                 environment,
@@ -2184,7 +2184,7 @@ def _cleanup_semantic(
             pass
         collected = _run_json(
             [
-                os.fspath(clew), "--json", "session", "gc", "--session",
+                os.fspath(clew), "session", "gc", "--session",
                 row["sessionId"],
             ],
             120,

@@ -65,9 +65,11 @@ curl -fsSL https://codeclew.github.io/codeclew/install.sh | \
 After installation:
 
 ```bash
-clew capabilities
-clew doctor
+clew capabilities --human
+clew doctor --human
 ```
+
+Omit `--human` to receive canonical JSON for automation and retained baselines.
 
 The public pilot verifies checksums but is not yet Apple-notarized. Releases are
 built only on GitHub macOS runners for the matching architecture and contain a
@@ -106,8 +108,8 @@ mkdir -p "$CODECLEW_HOME"
 chmod 700 "$CODECLEW_HOME"
 
 ./clew --bootstrap-component-preflight
-./clew capabilities
-./clew doctor
+./clew capabilities --human
+./clew doctor --human
 ```
 
 The checkout must be unchanged and pinned to an approved commit or tag.
@@ -117,9 +119,9 @@ place it in a synchronized directory. When `CODECLEW_HOME` is unset, Codeclew
 uses the user's cache root.
 
 The first normal launch builds and seals an immutable runtime capsule. A warm
-launch verifies and reuses it. After deployment, retain the `capabilities` and
-`doctor` JSON as the baseline for that machine; both responses intentionally
-omit paths and repository identity.
+launch verifies and reuses it. After deployment, run both commands again without
+`--human` and retain the `capabilities` and `doctor` JSON as the baseline for
+that machine; both responses intentionally omit paths and repository identity.
 
 Run a separate check for the target repository:
 
