@@ -117,6 +117,7 @@ enum ThreadCommand {
     Open(ThreadOpenArgs),
     Context(ThreadContextArgs),
     Callables(ThreadCallablesArgs),
+    Flow(ThreadFlowArgs),
     Impact(ThreadImpactArgs),
     Validate(ThreadValidateArgs),
     Close(ThreadIdArgs),
@@ -155,6 +156,16 @@ enum ThreadImpactSubjectKindArg {
     FullSymbol,
     CallableFamily,
     Token,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ThreadFlowRootKindArg {
+    FullSymbol,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ThreadFlowDirectionArg {
+    Downstream,
 }
 
 #[derive(Args)]
@@ -349,6 +360,26 @@ struct ThreadImpactArgs {
     subject: String,
     #[arg(long, required_if_eq("subject_kind", "full-symbol"))]
     member: Option<String>,
+}
+
+#[derive(Args)]
+struct ThreadFlowArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    fact_set: String,
+    #[arg(long)]
+    pair_id: String,
+    #[arg(long)]
+    member: String,
+    #[arg(long, value_enum)]
+    root_kind: ThreadFlowRootKindArg,
+    #[arg(long)]
+    root: String,
+    #[arg(long, value_enum)]
+    direction: ThreadFlowDirectionArg,
+    #[arg(long, default_value_t = 4)]
+    max_depth: usize,
 }
 
 #[derive(Args)]
@@ -847,6 +878,30 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 },
             )?;
             clew::thread_callables_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Flow(args),
+        } => {
+            let root_kind = match args.root_kind {
+                ThreadFlowRootKindArg::FullSymbol => clew::thread_flow::FlowRootKind::FullSymbol,
+            };
+            let direction = match args.direction {
+                ThreadFlowDirectionArg::Downstream => clew::thread_flow::FlowDirection::Downstream,
+            };
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let root = clew::thread_flow_service::create(
+                &thread,
+                &args.fact_set,
+                clew::thread_flow_service::ThreadFlowServiceRequest {
+                    pair_id: args.pair_id,
+                    member_alias: args.member,
+                    root_kind,
+                    root: args.root,
+                    direction,
+                    max_depth: args.max_depth,
+                },
+            )?;
+            clew::thread_flow_service::bounded_stdout(&root)
         }
         Command::Thread {
             command: ThreadCommand::Impact(args),

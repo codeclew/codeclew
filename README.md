@@ -202,6 +202,16 @@ used by more than one thread.
   --term normalize \
   --term Service
 
+./clew thread flow \
+  --thread thread:... \
+  --fact-set thread-callables:sha256:... \
+  --pair-id orders-checkout \
+  --member provider \
+  --root-kind full-symbol \
+  --root 'callable:sample/Service.normalize#jvm:(Ljava/lang/String;)Ljava/lang/String;' \
+  --direction downstream \
+  --max-depth 4
+
 ./clew thread impact \
   --thread thread:... \
   --fact-set thread-callables:sha256:... \
@@ -241,6 +251,18 @@ an explicit verification obligation, but it does not erase an independently
 proved descriptor shape. Cross-repository relationships remain
 `DECLARED_TOPOLOGY`: exact shape evidence is not service ownership, routing, or
 compatibility evidence.
+
+Experimental `thread flow` consumes only that retained fact-set closure and
+starts no compiler, build, repository discovery, or target process. It accepts
+one exact `FULL_SYMBOL` root in one selected-pair member and deterministically
+walks downstream `UseFact` relations with frozen depth, node, edge, boundary,
+stdout, and retained-closure budgets. Every node and edge links back through a
+fact shard and K2 payload to an immutable repository-relative `SourceAnchor`;
+missing, ambiguous, unresolved, cross-member, and truncated transitions remain
+visible boundaries with verification obligations. T00 deliberately represents
+an `UNORDERED_STATIC_RELATION` graph: source offsets are evidence locations,
+not proof that independent calls happen before or after one another. Cycles are
+represented once through stable nodes and edges rather than expanded paths.
 
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId
