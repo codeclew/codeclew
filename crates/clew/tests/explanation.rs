@@ -226,8 +226,8 @@ fn invented_support_agent_authority_and_premature_handoff_fail_closed() {
         "flowId": flow.flow_id,
         "claims": [{
             "localId": "raise-authority",
-            "locale": "ru",
-            "text": "Надёжно",
+            "locale": "en",
+            "text": "Reliable",
             "predicate": {"kind":"NARRATIVE_SUMMARY","subject":SOURCE},
             "supportRefs":["edge-call"],
             "authority":"COMPILER_PROVEN"
@@ -331,8 +331,8 @@ fn claim(
 ) -> ClaimInput {
     ClaimInput {
         local_id: local_id.into(),
-        locale: "ru".into(),
-        text: format!("Описание {local_id}"),
+        locale: "en".into(),
+        text: format!("Description {local_id}"),
         predicate,
         support_refs: support_refs.into_iter().map(str::to_owned).collect(),
         boundary_refs: boundary_refs.into_iter().map(str::to_owned).collect(),
