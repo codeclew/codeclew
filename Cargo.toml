@@ -25,3 +25,6 @@ thiserror = "2.0"
 uuid = { version = "1.19", features = ["v4", "serde"] }
 unicode-normalization = "0.1"
 walkdir = "2.5"
+
+[profile.release]
+strip = "symbols"

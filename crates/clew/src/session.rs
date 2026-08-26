@@ -184,6 +184,19 @@ pub enum SessionStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionFreshness {
+    pub schema: String,
+    pub session_id: String,
+    pub lifecycle_status: SessionStatus,
+    pub status: String,
+    pub head_matches_expected: Option<bool>,
+    pub target_ref_matches_expected: Option<bool>,
+    pub target_worktree_clean: Option<bool>,
+    pub remediation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionLifecycle {
     pub schema: String,
     pub session_id: String,
@@ -525,6 +538,45 @@ impl SessionAuthority {
 
     pub fn gc(&self, force: bool) -> Result<SessionLifecycle, ClewError> {
         garbage_collect_session(self, force)
+    }
+
+    pub fn freshness(&self) -> Result<SessionFreshness, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let lifecycle = load_session_lifecycle(&state, &root, self)?;
+        if lifecycle.status != SessionStatus::Open {
+            return Ok(classify_freshness(
+                &self.session_id,
+                lifecycle.status,
+                None,
+                None,
+                None,
+            ));
+        }
+        let runs = load_session_runs(&state, &root, self)?;
+        let expected = session_terminal_target_oid(self, &runs)?;
+        let repository = self.target_repository_path()?;
+        let head = isolated_git_text(&repository, &["rev-parse", "--verify", "HEAD^{commit}"]);
+        let target = isolated_git_text(
+            &repository,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{}^{{commit}}", self.target_ref),
+            ],
+        );
+        let clean = isolated_git_bytes(
+            &repository,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )
+        .map(|value| value.is_empty());
+        Ok(classify_freshness(
+            &self.session_id,
+            lifecycle.status,
+            head.as_deref().map(|value| value == expected),
+            target.as_deref().map(|value| value == expected),
+            clean,
+        ))
     }
 
     pub fn repository_path(&self) -> Result<PathBuf, ClewError> {
@@ -2202,6 +2254,24 @@ fn git_output(repo: &Path, arguments: &[&str]) -> Result<String, ClewError> {
         .map_err(|_| invalid("Git authority is not UTF-8"))
 }
 
+fn isolated_git_bytes(repo: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
+    let mut command = isolated_git_command(repo);
+    let output = command
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+fn isolated_git_text(repo: &Path, arguments: &[&str]) -> Option<String> {
+    String::from_utf8(isolated_git_bytes(repo, arguments)?)
+        .ok()
+        .map(|value| value.trim().to_owned())
+}
+
 fn isolated_git_output(repo: &Path, arguments: &[&str]) -> Result<String, ClewError> {
     let mut command = isolated_git_command(repo);
     let output = command
@@ -2224,6 +2294,39 @@ fn unix_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn classify_freshness(
+    session_id: &str,
+    lifecycle_status: SessionStatus,
+    head_matches_expected: Option<bool>,
+    target_ref_matches_expected: Option<bool>,
+    target_worktree_clean: Option<bool>,
+) -> SessionFreshness {
+    let (status, remediation_id) = if lifecycle_status != SessionStatus::Open {
+        ("TERMINAL", "NO_ACTION")
+    } else if head_matches_expected.is_none()
+        || target_ref_matches_expected.is_none()
+        || target_worktree_clean.is_none()
+    {
+        ("UNAVAILABLE", "CHECK_REPOSITORY_LOCATOR")
+    } else if head_matches_expected == Some(false) || target_ref_matches_expected == Some(false) {
+        ("STALE", "OPEN_NEW_SESSION")
+    } else if target_worktree_clean == Some(false) {
+        ("DIRTY", "CLEAN_TARGET_WORKTREE")
+    } else {
+        ("FRESH", "NONE")
+    };
+    SessionFreshness {
+        schema: "codeclew-session-freshness/1.0".into(),
+        session_id: session_id.into(),
+        lifecycle_status,
+        status: status.into(),
+        head_matches_expected,
+        target_ref_matches_expected,
+        target_worktree_clean,
+        remediation_id: remediation_id.into(),
+    }
 }
 
 fn session_authority_digest(authority: &SessionAuthority) -> Result<String, ClewError> {
@@ -3468,5 +3571,38 @@ mod tests {
         );
         assert!(reject_thread_context_for_mutation(coverage).is_err());
         assert!(RunRecord::load(coverage).is_err());
+    }
+
+    #[test]
+    fn freshness_classification_is_actionable_and_path_free() {
+        let stale = classify_freshness(
+            "session:fixture",
+            SessionStatus::Open,
+            Some(true),
+            Some(false),
+            Some(true),
+        );
+        assert_eq!(stale.status, "STALE");
+        assert_eq!(stale.remediation_id, "OPEN_NEW_SESSION");
+
+        let dirty = classify_freshness(
+            "session:fixture",
+            SessionStatus::Open,
+            Some(true),
+            Some(true),
+            Some(false),
+        );
+        assert_eq!(dirty.status, "DIRTY");
+        assert_eq!(dirty.remediation_id, "CLEAN_TARGET_WORKTREE");
+
+        let unavailable = classify_freshness(
+            "session:fixture",
+            SessionStatus::Open,
+            None,
+            Some(true),
+            Some(true),
+        );
+        assert_eq!(unavailable.status, "UNAVAILABLE");
+        assert_eq!(unavailable.remediation_id, "CHECK_REPOSITORY_LOCATOR");
     }
 }

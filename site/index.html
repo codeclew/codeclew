@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Codeclew gives coding agents bounded, compiler-backed context and isolated, explicitly published changes.">
+    <meta name="theme-color" content="#0b0d0c">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <title>Codeclew — semantic context for coding agents</title>
+  </head>
+  <body>
+    <header class="nav shell">
+      <a class="brand" href="#top" aria-label="Codeclew home">
+        <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg>
+        <span>Codeclew</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#how">How it works</a>
+        <a href="#support">Support</a>
+        <a href="https://github.com/codeclew/codeclew">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero shell">
+        <div class="eyebrow"><span></span> Public macOS pilot</div>
+        <h1>Give code agents<br><em>evidence, not guesses.</em></h1>
+        <p class="lede">Codeclew builds bounded compiler-backed context, validates changes in an isolated worktree, and publishes only with explicit approval.</p>
+
+        <div class="install" aria-label="Install Codeclew">
+          <div class="install-label"><span>Install on macOS</span><span>Apple Silicon + Intel</span></div>
+          <div class="command-row">
+            <code id="install-command">curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh</code>
+            <button id="copy-command" type="button" aria-label="Copy installation command"><span>Copy</span></button>
+          </div>
+        </div>
+
+        <div class="hero-links">
+          <a class="primary" href="https://github.com/codeclew/codeclew/releases/latest">Download release <span>↗</span></a>
+          <a class="secondary" href="https://github.com/codeclew/codeclew/blob/main/docs/operations/p0-runbook.md">Read the runbook</a>
+        </div>
+        <p class="requirements">Requires macOS, Git, Python 3.11+, and JDK 21 for Kotlin project analysis. Codeclew itself is prebuilt.</p>
+      </section>
+
+      <section class="proof-strip" aria-label="Codeclew guarantees">
+        <div class="shell proof-grid">
+          <div><strong>Bounded</strong><span>Context with explicit evidence limits</span></div>
+          <div><strong>Compiler-backed</strong><span>Kotlin K2 semantic authority</span></div>
+          <div><strong>Transactional</strong><span>Isolated prepare and CAS publish</span></div>
+          <div><strong>Private by default</strong><span>No automatic code upload</span></div>
+        </div>
+      </section>
+
+      <section class="section shell" id="how">
+        <div class="section-heading">
+          <div class="kicker">The operating model</div>
+          <h2>A narrow path from intent to verified change.</h2>
+          <p>Every step retains its authority. Unknowns remain obligations instead of being polished into confidence.</p>
+        </div>
+        <div class="steps">
+          <article>
+            <span class="number">01</span>
+            <h3>Open exact context</h3>
+            <p>Bind a clean repository, target ref, language, compilation, and intent to an immutable session.</p>
+            <code>clew change open …</code>
+          </article>
+          <article>
+            <span class="number">02</span>
+            <h3>Prepare in isolation</h3>
+            <p>Validate a closed edit plan and compile or test the candidate in a managed worktree.</p>
+            <code>clew change prepare …</code>
+          </article>
+          <article>
+            <span class="number">03</span>
+            <h3>Publish explicitly</h3>
+            <p>Recheck freshness, review evidence and obligations, then move the ref with compare-and-swap.</p>
+            <code>clew change publish …</code>
+          </article>
+        </div>
+      </section>
+
+      <section class="section contrast" id="support">
+        <div class="shell support-layout">
+          <div class="section-heading">
+            <div class="kicker">Pilot support matrix</div>
+            <h2>Strong claims stay deliberately small.</h2>
+            <p>The executable support contract is available at any time through <code>clew capabilities</code>.</p>
+          </div>
+          <div class="matrix" role="table" aria-label="Codeclew support matrix">
+            <div class="matrix-row matrix-head" role="row"><span>Profile</span><span>Context</span><span>Change</span></div>
+            <div class="matrix-row" role="row"><span><b>Kotlin 2.4.10</b><small>Gradle · one compilation</small></span><span class="yes">K2</span><span class="pilot">Pilot</span></div>
+            <div class="matrix-row" role="row"><span><b>Kotlin 2.3.0</b><small>Maven</small></span><span class="yes">K2</span><span>Read only</span></div>
+            <div class="matrix-row" role="row"><span><b>Python</b><small>Tree-sitter syntax</small></span><span>Preview</span><span>Read only</span></div>
+            <div class="matrix-row" role="row"><span><b>Rust</b><small>Bounded syntax</small></span><span>Preview</span><span>Read only</span></div>
+            <div class="matrix-row" role="row"><span><b>2–8 repositories</b><small>Immutable analysis thread</small></span><span>Combined</span><span>Read only</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section shell privacy">
+        <div>
+          <div class="kicker">Incident privacy</div>
+          <h2>Keep the evidence.<br>Leave the code at home.</h2>
+        </div>
+        <div class="privacy-copy">
+          <p>Raw diagnostics remain in a caller-owned private file. The support exporter uses an allowlist and removes source, paths, symbols, diffs, arguments, repository identity, and credentials.</p>
+          <code>clew support summarize --input /private/result.json</code>
+          <a href="https://github.com/codeclew/codeclew/blob/main/docs/operations/p0-runbook.md#8-ошибки-и-материал-для-расследования">Incident runbook <span>→</span></a>
+        </div>
+      </section>
+
+      <section class="cta shell">
+        <div>
+          <div class="kicker">Start with a clean ref</div>
+          <h2>Install once. Let agents ask better questions.</h2>
+        </div>
+        <a href="#top">Install Codeclew <span>↑</span></a>
+      </section>
+    </main>
+
+    <footer class="shell">
+      <span>Codeclew · Apache-2.0</span>
+      <div><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/security">Security</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div>
+    </footer>
+    <script src="./app.js" defer></script>
+  </body>
+</html>

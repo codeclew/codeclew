@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+unset CODECLEW_RUNTIME_SEED
+
+LAUNCHER_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+RELEASE_ROOT=$(CDPATH= cd -- "$LAUNCHER_DIR/.." && pwd -P)
+SEED_PATH=
+SEED_COUNT=0
+for candidate in "$RELEASE_ROOT"/seed/release-N-*/seed.json; do
+  if [ -f "$candidate" ]; then
+    SEED_PATH=$candidate
+    SEED_COUNT=$((SEED_COUNT + 1))
+  fi
+done
+
+if [ "$SEED_COUNT" -ne 1 ] || [ ! -x "$RELEASE_ROOT/source/clew" ]; then
+  printf '%s\n' '{"schema":"codeclew-installation-error/1.0","error":"installed release is incomplete"}' >&2
+  exit 7
+fi
+
+CODECLEW_RUNTIME_SEED=$SEED_PATH
+export CODECLEW_RUNTIME_SEED
+exec "$RELEASE_ROOT/source/clew" "$@"

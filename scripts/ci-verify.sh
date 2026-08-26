@@ -15,12 +15,18 @@ export TMPDIR
 python3 -I -S scripts/test_pilot_case_record.py
 python3 -I -S scripts/test_pilot_release_gate.py
 python3 -I -S scripts/test_check_repository_privacy.py
+python3 -I -S scripts/test_macos_distribution.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
 cargo test --locked -p clew --bin clew 'tests::' -- --test-threads=1
+cargo test --locked -p clew --test managed_cli \
+  managed_operational_commands_are_path_free_and_support_recovery -- --test-threads=1
+cargo test --locked -p clew --test managed_cli \
+  managed_support_summary_requires_private_input_and_drops_private_material -- --test-threads=1
 python3 -I -S bootstrap/test_clew_bootstrap.py
 GIT_CONFIG_COUNT=2 \
 GIT_CONFIG_KEY_0=user.name \

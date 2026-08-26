@@ -2,9 +2,24 @@
 
 Codeclew builds bounded compiler-backed context, validates an edit plan in an
 isolated candidate worktree, and publishes the resulting commit explicitly.
-The only supported executable entrypoint is `./clew`.
+Use the installed `clew` launcher for public releases or `./clew` from a pinned
+checkout for source development; direct capsule binaries are unsupported.
 
-## Requirements
+## Install on macOS
+
+The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs:
+
+```bash
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
+```
+
+The installer downloads the matching GitHub Release asset, verifies its
+published SHA-256 checksum, installs it below `~/.local/share/codeclew`, and
+atomically links `clew` into `~/.local/bin`. It never compiles Codeclew on the
+target machine. Run `clew doctor` after installation. The source launcher
+`./clew` remains the supported development entrypoint.
+
+## Source-build requirements
 
 - macOS or Linux
 - Python 3.11+
@@ -70,6 +85,42 @@ tests before relying on dynamic behavior.
 This revision is pilot-ready, not general availability. Team use follows the
 [Kotlin 2.4 pilot runbook](docs/pilot/README.md); a signed prebuilt release is a
 separate decision after 20 recorded in-contour cases meet its numerical gate.
+
+## Operational admission
+
+Before opening a session, inspect the runtime-bound support contract and host
+readiness:
+
+```bash
+./clew capabilities
+./clew doctor --repo /absolute/path/to/repository --target-ref refs/heads/feature
+```
+
+The support matrix is also retained as
+[`crates/clew/support-matrix.json`](crates/clew/support-matrix.json). Automation
+must inspect the doctor's JSON status and required checks; the command can
+return a valid `ACTION_REQUIRED` report without treating that report as a CLI
+failure.
+
+Before prepare and publish, verify that the session still owns the checked-out
+target authority:
+
+```bash
+./clew change check-freshness --session session:...
+```
+
+`DIRTY` preserves developer work and requires a human decision. `STALE`
+requires a new session/context/plan; Codeclew never rebases or replays the old
+plan automatically. For incident sharing, keep raw JSON local in a mode-0600
+file and export only the allowlist summary:
+
+```bash
+./clew support summarize --input /absolute/private/path/result.json
+```
+
+Installation, Codex/Claude skills, frequent-update recovery, privacy rules,
+language extension, and multi-repository operations are documented in the
+[P0 operations runbook](docs/operations/p0-runbook.md).
 
 ## Workflow
 

@@ -30,7 +30,11 @@ FORBIDDEN_EXACT_PATHS = {
     "docs/research/codeclew/source-manifest.json",
 }
 PILOT_CASE_TEMPLATE = "docs/pilot/case-template.json"
-PILOT_CASE_TEMPLATE_SHA256 = "c5a004f7fd6c7c544fd6346188944f3aec2df7d509d7aa185b1a83c0df20b0e1"
+PILOT_CASE_TEMPLATE_SHA256 = {
+    # Public placeholder revisions that have existed in repository history.
+    "69490291d07699ecf142d8fe0cc601581c010c63f2e72d7e501aff88c1635da2",
+    "c5a004f7fd6c7c544fd6346188944f3aec2df7d509d7aa185b1a83c0df20b0e1",
+}
 PILOT_EVIDENCE_SCHEMAS = {
     "codeclew-pilot-attestation-key/1.0",
     "codeclew-pilot-case/1.0",
@@ -74,7 +78,7 @@ def blob_rules(data: bytes, path: str | None = None) -> list[str]:
     exact_template = (
         pilot_schema == "codeclew-pilot-case/1.0"
         and path == PILOT_CASE_TEMPLATE
-        and hashlib.sha256(data).hexdigest() == PILOT_CASE_TEMPLATE_SHA256
+        and hashlib.sha256(data).hexdigest() in PILOT_CASE_TEMPLATE_SHA256
     )
     if pilot_schema in PILOT_EVIDENCE_SCHEMAS and not exact_template:
         findings.add("filled-pilot-case")
