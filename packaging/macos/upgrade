@@ -8,6 +8,7 @@ RELEASE_BASE=${CODECLEW_RELEASE_BASE:-https://github.com/$REPOSITORY/releases}
 INSTALL_ROOT=${CODECLEW_INSTALL_ROOT:?installed launcher did not provide CODECLEW_INSTALL_ROOT}
 BIN_DIR=${CODECLEW_BIN_DIR:?installed launcher did not provide CODECLEW_BIN_DIR}
 CURRENT_VERSION=${CODECLEW_CURRENT_VERSION:?installed launcher did not provide CODECLEW_CURRENT_VERSION}
+CURRENT_PROFILE=${CODECLEW_CURRENT_PROFILE:?installed launcher did not provide CODECLEW_CURRENT_PROFILE}
 INSTALLER=${CODECLEW_INSTALLER_PATH:?installed launcher did not provide CODECLEW_INSTALLER_PATH}
 
 fail() {
@@ -30,6 +31,11 @@ esac
 case "$CURRENT_VERSION" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *) fail "installed version is invalid" ;;
+esac
+case "$CURRENT_PROFILE" in
+  core) CURRENT_PACKS= ;;
+  kotlin23) CURRENT_PACKS=kotlin23 ;;
+  *) fail "installed profile is invalid" ;;
 esac
 
 [ -f "$INSTALLER" ] && [ ! -L "$INSTALLER" ] || fail "bundled installer is unavailable"
@@ -100,5 +106,6 @@ esac
 
 progress "Updating Codeclew from $CURRENT_VERSION to $LATEST_VERSION..."
 CODECLEW_VERSION=$LATEST_VERSION
-export CODECLEW_VERSION CODECLEW_INSTALL_ROOT CODECLEW_BIN_DIR CODECLEW_RELEASE_BASE
+CODECLEW_PACKS=$CURRENT_PACKS
+export CODECLEW_VERSION CODECLEW_PACKS CODECLEW_INSTALL_ROOT CODECLEW_BIN_DIR CODECLEW_RELEASE_BASE
 exec /bin/sh "$INSTALLER"

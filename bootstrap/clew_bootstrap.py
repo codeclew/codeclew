@@ -47,6 +47,7 @@ COMPONENT_SCHEMA = "codeclew-runtime-component/1.0"
 COMPONENT_AUTHORITY_SCHEMA = "codeclew-runtime-component-authority/1.0"
 COMPONENT_DOMAIN = b"codeclew-runtime-component/v1\0"
 COMPONENT_REGISTRY_SCHEMA = "codeclew-runtime-component-registry/1.0"
+RELEASE_SOURCE_SCHEMA = "codeclew-release-source/1.0"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_NODES = 100_000
@@ -830,6 +831,98 @@ def sealed_runtime_seed(source: Path) -> tuple[str, Path, object]:
         lifecycle.close()
 
 
+def _verify_release_source(source: Path, seed: dict[str, object]) -> None:
+    manifest_path = source / "release-source.json"
+    descriptor = os.open(
+        manifest_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_size > MAX_MANIFEST_BYTES
+        ):
+            raise BootstrapError("release source manifest is unsafe")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            encoded = stream.read(MAX_MANIFEST_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        manifest = json.loads(encoded)
+    except (ValueError, TypeError) as error:
+        raise BootstrapError("release source manifest is invalid") from error
+    required = {
+        "files",
+        "manifestDigest",
+        "schema",
+        "sourceRevision",
+        "sourceTree",
+    }
+    unsigned = dict(manifest) if isinstance(manifest, dict) else {}
+    expected_digest = unsigned.get("manifestDigest")
+    unsigned["manifestDigest"] = ""
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != required
+        or manifest.get("schema") != RELEASE_SOURCE_SCHEMA
+        or encoded != canonical(manifest) + b"\n"
+        or not valid_runtime_key(expected_digest)
+        or digest_bytes(canonical(unsigned)) != expected_digest
+        or manifest.get("sourceRevision") != seed.get("sourceRevision")
+        or manifest.get("sourceTree") != seed.get("sourceTree")
+        or expected_digest != seed.get("sourcePayloadDigest")
+        or not isinstance(manifest.get("files"), list)
+        or not manifest["files"]
+    ):
+        raise BootstrapError("release source manifest authority mismatch")
+    observed: set[str] = set()
+    previous = ""
+    for row in manifest["files"]:
+        if not isinstance(row, dict) or set(row) != {"mode", "path", "sha256", "size"}:
+            raise BootstrapError("release source file authority is invalid")
+        relative = row.get("path")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or "\\" in relative
+            or Path(relative).is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.split("/"))
+            or relative <= previous
+            or row.get("mode") not in {0, 0o111}
+            or not isinstance(row.get("size"), int)
+            or row["size"] < 0
+            or not valid_runtime_key(row.get("sha256"))
+        ):
+            raise BootstrapError("release source file authority is invalid")
+        previous = relative
+        target = source / relative
+        target_metadata = target.lstat()
+        expected_mode = 0o500 if row["mode"] else 0o400
+        if (
+            stat.S_ISLNK(target_metadata.st_mode)
+            or not stat.S_ISREG(target_metadata.st_mode)
+            or target_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(target_metadata.st_mode) != expected_mode
+            or target_metadata.st_size != row["size"]
+            or digest_file(target) != row["sha256"]
+        ):
+            raise BootstrapError("release source file authority mismatch")
+        observed.add(relative)
+    actual = set()
+    for path in source.rglob("*"):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise BootstrapError("release source contains a symlink")
+        if stat.S_ISREG(metadata.st_mode):
+            actual.add(path.relative_to(source).as_posix())
+        elif not stat.S_ISDIR(metadata.st_mode):
+            raise BootstrapError("release source contains an unsupported entry")
+    if actual != observed | {"release-source.json"}:
+        raise BootstrapError("release source closure mismatch")
+
+
 def _sealed_runtime_seed_locked(source: Path, seed_path: Path) -> tuple[str, Path, object]:
     if seed_path.resolve(strict=True) != seed_path:
         raise BootstrapError("sealed runtime seed path is unsafe")
@@ -865,7 +958,7 @@ def _sealed_runtime_seed_locked(source: Path, seed_path: Path) -> tuple[str, Pat
         seed = json.loads(seed_bytes)
     except (OSError, ValueError, TypeError) as error:
         raise BootstrapError("sealed runtime seed is invalid") from error
-    expected_fields = {
+    v1_fields = {
         "artifactHashes",
         "buildEvidenceDigests",
         "manifestDigest",
@@ -878,21 +971,35 @@ def _sealed_runtime_seed_locked(source: Path, seed_path: Path) -> tuple[str, Pat
         "stateEpoch",
         "workerTreeHashes",
     }
+    v2_fields = v1_fields | {"sourcePayloadDigest"}
     unsigned = dict(seed) if isinstance(seed, dict) else {}
     expected_digest = unsigned.pop("seedDigest", None)
     if (
         not isinstance(seed, dict)
-        or set(seed) != expected_fields
-        or seed.get("schema") != "codeclew-trusted-release-seed/1.0"
+        or (
+            seed.get("schema") == "codeclew-trusted-release-seed/1.0"
+            and set(seed) != v1_fields
+        )
+        or (
+            seed.get("schema") == "codeclew-trusted-release-seed/2.0"
+            and set(seed) != v2_fields
+        )
+        or seed.get("schema") not in {
+            "codeclew-trusted-release-seed/1.0",
+            "codeclew-trusted-release-seed/2.0",
+        }
         or seed.get("mode") != "RELEASE"
         or expected_digest != digest_bytes(canonical(unsigned))
         or not valid_runtime_key(seed.get("runtimeKey"))
     ):
         raise BootstrapError("sealed runtime seed authority mismatch")
-    revision = run(["git", "rev-parse", "HEAD"], source).decode().strip()
-    tree = run(["git", "rev-parse", "HEAD^{tree}"], source).decode().strip()
-    if seed.get("sourceRevision") != revision or seed.get("sourceTree") != tree:
-        raise BootstrapError("sealed runtime seed source authority mismatch")
+    if seed.get("schema") == "codeclew-trusted-release-seed/1.0":
+        revision = run(["git", "rev-parse", "HEAD"], source).decode().strip()
+        tree = run(["git", "rev-parse", "HEAD^{tree}"], source).decode().strip()
+        if seed.get("sourceRevision") != revision or seed.get("sourceTree") != tree:
+            raise BootstrapError("sealed runtime seed source authority mismatch")
+    else:
+        _verify_release_source(source, seed)
     parallel = epoch / "parallel-state"
     state = parallel / "v2"
     for path in (parallel, state):

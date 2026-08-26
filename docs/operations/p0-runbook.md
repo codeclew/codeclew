@@ -24,7 +24,7 @@ P0 support:
 | Profile | Read | Change and publish |
 |---|---:|---:|
 | Kotlin 2.4.10, Gradle wrapper, one compilation, `PROJECT_NATIVE` | yes, K2 | yes, pilot |
-| Kotlin 2.3.0, Maven | yes, preview | no |
+| Kotlin 2.3.0, Maven, optional `kotlin23` pack | yes, preview | no |
 | Python, Tree-sitter syntax | yes, preview | no |
 | Rust, bounded syntax | yes, preview | no |
 | Thread of 2–8 repositories | yes | no |
@@ -50,7 +50,7 @@ updates the launcher. Codeclew is not compiled on the user's machine.
 
 Files are installed to these locations by default:
 
-- `~/.local/share/codeclew/releases/<version>-macos-<arch>`;
+- `~/.local/share/codeclew/releases/<version>-macos-<arch>-<profile>`;
 - `~/.local/bin/clew`, an atomic link to the selected release.
 
 Pin a version or override the directories with command-local variables:
@@ -67,6 +67,15 @@ After installation:
 ```bash
 clew capabilities --human
 clew doctor --human
+```
+
+The default `core` profile downloads only Kotlin 2.4.10. Enable or remove the
+Kotlin 2.3.0 read-only preview between tasks:
+
+```bash
+clew pack install kotlin23
+clew pack list
+clew pack remove kotlin23
 ```
 
 Omit `--human` to receive canonical JSON for automation and retained baselines.
@@ -427,7 +436,7 @@ current, it exits without downloading the release bundle. If an update exists,
 it preserves the current install root and launcher directory, downloads the
 exact newer release, verifies its published SHA-256 checksum, and atomically
 switches the launcher. Codeclew state, repositories, sessions, and threads are
-not modified.
+not modified. The updater preserves the installed `core` or `kotlin23` profile.
 
 Releases older than v0.1.3 do not contain the updater. Upgrade such an existing
 installation once by rerunning the one-line installer:

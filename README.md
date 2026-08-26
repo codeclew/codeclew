@@ -23,6 +23,15 @@ not `clew upgrade`. Existing
 installations older than v0.1.3 need the one-line installer once more to acquire
 the updater; their later updates use `clew upgrade`.
 
+The default `core` profile contains Kotlin 2.4.10. Kotlin 2.3.0 remains an
+optional read-only preview and is downloaded only when requested:
+
+```bash
+clew pack install kotlin23
+clew pack list
+clew pack remove kotlin23
+```
+
 ## Source-build requirements
 
 - macOS or Linux
@@ -33,8 +42,9 @@ the updater; their later updates use `clew upgrade`.
 - Cargo on `PATH` for Rust repositories
 - Maven on `PATH` only for Maven projects without `./mvnw`
 
-The exact Kotlin 2.3.0 and 2.4.10 workers are packaged into an immutable runtime
-capsule. A cold runtime start may build the capsule. A warm runtime invocation
+The exact Kotlin 2.4.10 worker is packaged into the default immutable runtime
+capsule; the optional `kotlin23` profile adds the exact Kotlin 2.3.0 worker. A
+cold source runtime start may build the capsule. A warm runtime invocation
 verifies and reuses it without running Cargo, Rustc, Gradle, or Maven. The
 workers execute directly from that sealed capsule under its shared lease; the
 runtime warm path does not copy their distributions. Project analysis may still

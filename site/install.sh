@@ -8,6 +8,7 @@ RELEASE_API=${CODECLEW_RELEASE_API:-https://api.github.com/repos/$REPOSITORY/rel
 INSTALL_ROOT=${CODECLEW_INSTALL_ROOT:-"$HOME/.local/share/codeclew"}
 BIN_DIR=${CODECLEW_BIN_DIR:-"$HOME/.local/bin"}
 REQUESTED_VERSION=${CODECLEW_VERSION:-latest}
+REQUESTED_PACKS=${CODECLEW_PACKS:-}
 
 fail() {
   printf 'codeclew installer: %s\n' "$1" >&2
@@ -18,7 +19,7 @@ progress() {
   printf '[codeclew] %s\n' "$1" >&2
 }
 
-progress '[1/6] Checking macOS and required tools...'
+progress '[1/7] Checking macOS and required tools...'
 
 case "$RELEASE_BASE" in
   https://*) ;;
@@ -26,6 +27,12 @@ case "$RELEASE_BASE" in
     [ "${CODECLEW_ALLOW_INSECURE_DOWNLOAD:-}" = 1 ] || fail "release URL must use HTTPS"
     ;;
   *) fail "release URL must use HTTPS" ;;
+esac
+
+case "$REQUESTED_PACKS" in
+  '') PROFILE=core ;;
+  kotlin23) PROFILE=kotlin23 ;;
+  *) fail "CODECLEW_PACKS must be empty or kotlin23" ;;
 esac
 
 case "$REQUESTED_VERSION" in
@@ -55,7 +62,11 @@ command -v python3 >/dev/null 2>&1 || fail "Python 3.11 or newer is required"
 python3 -I -S -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
   || fail "Python 3.11 or newer is required"
 
-ASSET=codeclew-macos-$ARCH.tar.gz
+if [ "$PROFILE" = core ]; then
+  ASSET=codeclew-macos-$ARCH.tar.gz
+else
+  ASSET=codeclew-$PROFILE-macos-$ARCH.tar.gz
+fi
 CHECKSUM=$ASSET.sha256
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-install.XXXXXX")
 cleanup() {
@@ -77,7 +88,7 @@ download() {
 }
 
 if [ "$REQUESTED_VERSION" = latest ]; then
-  progress '[2/6] Resolving the latest immutable release...'
+  progress '[2/7] Resolving the latest immutable release...'
   case "$RELEASE_API" in
     https://*)
       curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
@@ -109,9 +120,9 @@ PY
 fi
 
 DOWNLOAD_ROOT=$RELEASE_BASE/download/$RESOLVED_VERSION
-progress "[2/6] Downloading the macOS $ARCH release (about 265 MB)..."
+progress "[3/7] Downloading the macOS $ARCH $PROFILE profile..."
 download "$DOWNLOAD_ROOT/$ASSET" "$TMP_ROOT/$ASSET"
-progress '[3/6] Downloading and verifying the SHA-256 checksum...'
+progress '[4/7] Downloading and verifying the SHA-256 checksum...'
 download "$DOWNLOAD_ROOT/$CHECKSUM" "$TMP_ROOT/$CHECKSUM"
 
 EXPECTED=$(awk 'NR == 1 { print $1 }' "$TMP_ROOT/$CHECKSUM")
@@ -121,11 +132,11 @@ esac
 [ "${#EXPECTED}" -eq 64 ] || fail "release checksum is invalid"
 ACTUAL=$(shasum -a 256 "$TMP_ROOT/$ASSET" | awk '{ print $1 }')
 [ "$ACTUAL" = "$EXPECTED" ] || fail "release checksum mismatch"
-progress '[3/6] Checksum verified.'
+progress '[4/7] Checksum verified.'
 
 UNPACKED=$TMP_ROOT/unpacked
 mkdir -m 700 "$UNPACKED"
-progress '[4/6] Extracting the sealed runtime...'
+progress '[5/7] Extracting the sealed runtime...'
 python3 -I -S - "$TMP_ROOT/$ASSET" "$UNPACKED" <<'PY'
 import os
 from pathlib import Path, PurePosixPath
@@ -188,21 +199,25 @@ PY
 PACKAGE=$UNPACKED/codeclew
 [ -x "$PACKAGE/bin/clew" ] || fail "release launcher is missing"
 [ -f "$PACKAGE/VERSION" ] || fail "release version is missing"
+[ -f "$PACKAGE/PROFILE" ] || fail "release profile is missing"
 VERSION=$(sed -n '1p' "$PACKAGE/VERSION")
+PACKAGE_PROFILE=$(sed -n '1p' "$PACKAGE/PROFILE")
 case "$VERSION" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *) fail "release version is invalid" ;;
 esac
 [ "$VERSION" = "$RESOLVED_VERSION" ] \
   || fail "downloaded release version does not match requested release"
+[ "$PACKAGE_PROFILE" = "$PROFILE" ] \
+  || fail "downloaded release profile does not match requested packs"
 CLI_VERSION=$("$PACKAGE/bin/clew" --version) || fail "release CLI version check failed"
 [ "$CLI_VERSION" = "clew ${VERSION#v}" ] \
   || fail "release CLI version does not match release metadata"
 
-progress "[5/6] Activating Codeclew $VERSION..."
+progress "[6/7] Activating Codeclew $VERSION ($PROFILE)..."
 mkdir -p "$INSTALL_ROOT/releases" "$BIN_DIR"
 chmod 700 "$INSTALL_ROOT" "$INSTALL_ROOT/releases" "$BIN_DIR"
-DESTINATION=$INSTALL_ROOT/releases/$VERSION-macos-$ARCH
+DESTINATION=$INSTALL_ROOT/releases/$VERSION-macos-$ARCH-$PROFILE
 if [ -e "$DESTINATION" ]; then
   [ -x "$DESTINATION/bin/clew" ] || fail "existing release directory is incomplete"
 else
@@ -217,10 +232,10 @@ LINK=$BIN_DIR/.clew-link.$$
 ln -s "$DESTINATION/bin/clew" "$LINK"
 mv -f "$LINK" "$BIN_DIR/clew"
 
-progress '[6/6] Verifying the installed runtime...'
+progress '[7/7] Verifying the installed runtime...'
 "$BIN_DIR/clew" capabilities >/dev/null
-progress '[6/6] Runtime verification passed.'
-printf 'Codeclew %s installed for macOS %s.\n' "$VERSION" "$ARCH"
+progress '[7/7] Runtime verification passed.'
+printf 'Codeclew %s installed for macOS %s (%s profile).\n' "$VERSION" "$ARCH" "$PROFILE"
 printf 'Launcher: %s\n' "$BIN_DIR/clew"
 printf 'Update later: clew upgrade\n'
 case ":$PATH:" in

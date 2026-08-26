@@ -35,6 +35,7 @@ class MacosDistributionTest(unittest.TestCase):
             package = temporary / "payload" / "codeclew"
             (package / "bin").mkdir(parents=True)
             (package / "VERSION").write_text("v0.1.0\n", encoding="ascii")
+            (package / "PROFILE").write_text("core\n", encoding="ascii")
             launcher = package / "bin" / "clew"
             shutil.copyfile(LAUNCHER, launcher)
             launcher.chmod(0o500)
@@ -62,10 +63,18 @@ class MacosDistributionTest(unittest.TestCase):
             seed.parent.mkdir(parents=True)
             seed.write_text("{}\n", encoding="ascii")
 
-            def publish(downloads: Path, version: str) -> tuple[Path, Path]:
+            def publish(
+                downloads: Path, version: str, profile: str = "core"
+            ) -> tuple[Path, Path]:
                 (package / "VERSION").write_text(f"{version}\n", encoding="ascii")
-                downloads.mkdir(parents=True)
-                asset = downloads / "codeclew-macos-arm64.tar.gz"
+                (package / "PROFILE").write_text(f"{profile}\n", encoding="ascii")
+                downloads.mkdir(parents=True, exist_ok=True)
+                asset_name = (
+                    "codeclew-macos-arm64.tar.gz"
+                    if profile == "core"
+                    else f"codeclew-{profile}-macos-arm64.tar.gz"
+                )
+                asset = downloads / asset_name
                 with tarfile.open(asset, "w:gz") as archive:
                     archive.add(package, arcname="codeclew")
                 digest = hashlib.sha256(asset.read_bytes()).hexdigest()
@@ -76,7 +85,17 @@ class MacosDistributionTest(unittest.TestCase):
             initial_asset, initial_checksum = publish(
                 document_root / "releases" / "download" / "v0.1.0", "v0.1.0"
             )
+            publish(
+                document_root / "releases" / "download" / "v0.1.0",
+                "v0.1.0",
+                "kotlin23",
+            )
             publish(document_root / "releases" / "download" / "v0.1.1", "v0.1.1")
+            publish(
+                document_root / "releases" / "download" / "v0.1.1",
+                "v0.1.1",
+                "kotlin23",
+            )
             release_api = document_root / "release-api.json"
             release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
 
@@ -130,12 +149,12 @@ class MacosDistributionTest(unittest.TestCase):
                     self.assertIn("Codeclew v0.1.0 installed", completed.stdout)
                     self.assertIn("clew doctor --human", completed.stdout)
                     for message in [
-                        "[1/6] Checking macOS and required tools",
-                        "[2/6] Downloading the macOS arm64 release",
-                        "[3/6] Checksum verified",
-                        "[4/6] Extracting the sealed runtime",
-                        "[5/6] Activating Codeclew v0.1.0",
-                        "[6/6] Runtime verification passed",
+                        "[1/7] Checking macOS and required tools",
+                        "[3/7] Downloading the macOS arm64 core profile",
+                        "[4/7] Checksum verified",
+                        "[5/7] Extracting the sealed runtime",
+                        "[6/7] Activating Codeclew v0.1.0 (core)",
+                        "[7/7] Runtime verification passed",
                     ]:
                         self.assertIn(message, completed.stderr)
                 installed = temporary / "bin" / "clew"
@@ -172,7 +191,7 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
                 self.assertIn("Codeclew v0.1.1 installed", upgraded.stdout)
                 self.assertIn("Updating Codeclew from v0.1.0 to v0.1.1", upgraded.stderr)
-                self.assertIn("v0.1.1-macos-arm64", str(installed.resolve()))
+                self.assertIn("v0.1.1-macos-arm64-core", str(installed.resolve()))
 
                 current_again = subprocess.run(
                     [str(installed), "upgrade"],
@@ -184,6 +203,40 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertEqual(current_again.returncode, 0, current_again.stderr)
                 self.assertIn("v0.1.1 is already up to date", current_again.stdout)
+
+                packed = subprocess.run(
+                    [str(installed), "pack", "install", "kotlin23"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(packed.returncode, 0, packed.stderr)
+                self.assertIn("kotlin23 profile", packed.stdout)
+                self.assertIn(
+                    "v0.1.1-macos-arm64-kotlin23", str(installed.resolve())
+                )
+                listed = subprocess.run(
+                    [str(installed), "pack", "list"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(listed.returncode, 0, listed.stderr)
+                self.assertIn("Kotlin 2.3.0 preview", listed.stdout)
+                unpacked = subprocess.run(
+                    [str(installed), "pack", "remove", "kotlin23"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(unpacked.returncode, 0, unpacked.stderr)
+                self.assertIn("core profile", unpacked.stdout)
+                self.assertIn("v0.1.1-macos-arm64-core", str(installed.resolve()))
 
                 binary.chmod(0o700)
                 binary.write_text(
@@ -213,7 +266,7 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertIn(
                     "CLI version does not match release metadata", mismatched.stderr
                 )
-                self.assertIn("v0.1.1-macos-arm64", str(installed.resolve()))
+                self.assertIn("v0.1.1-macos-arm64-core", str(installed.resolve()))
 
                 release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
                 initial_checksum.write_text(

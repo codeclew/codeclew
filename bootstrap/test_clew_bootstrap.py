@@ -1163,6 +1163,66 @@ class BootstrapAuthorityTest(unittest.TestCase):
             self.assertEqual(victim.read_bytes(), b"unchanged")
             self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o644)
 
+    def test_minimal_release_source_is_closed_and_seed_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            bootstrap_directory = source / "bootstrap"
+            bootstrap_directory.mkdir(parents=True, mode=0o700)
+            launcher = source / "clew"
+            launcher.write_bytes(b"#!/bin/sh\nexit 0\n")
+            os.chmod(launcher, 0o500)
+            module = bootstrap_directory / "clew_bootstrap.py"
+            module.write_bytes(b"pass\n")
+            os.chmod(module, 0o400)
+            rows = []
+            for path in (module, launcher):
+                metadata = path.stat()
+                rows.append({
+                    "mode": 0o111 if metadata.st_mode & 0o111 else 0,
+                    "path": path.relative_to(source).as_posix(),
+                    "sha256": bootstrap.digest_file(path),
+                    "size": metadata.st_size,
+                })
+            rows.sort(key=lambda row: row["path"])
+            manifest = {
+                "files": rows,
+                "manifestDigest": "",
+                "schema": bootstrap.RELEASE_SOURCE_SCHEMA,
+                "sourceRevision": "a" * 40,
+                "sourceTree": "b" * 40,
+            }
+            manifest["manifestDigest"] = bootstrap.digest_bytes(
+                bootstrap.canonical(manifest)
+            )
+            manifest_path = source / "release-source.json"
+            manifest_path.write_bytes(bootstrap.canonical(manifest) + b"\n")
+            os.chmod(manifest_path, 0o400)
+            seed = {
+                "sourcePayloadDigest": manifest["manifestDigest"],
+                "sourceRevision": manifest["sourceRevision"],
+                "sourceTree": manifest["sourceTree"],
+            }
+            bootstrap._verify_release_source(source, seed)
+
+            os.chmod(module, 0o600)
+            module.write_bytes(b"tampered\n")
+            os.chmod(module, 0o400)
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "file authority mismatch"
+            ):
+                bootstrap._verify_release_source(source, seed)
+
+            os.chmod(module, 0o600)
+            module.write_bytes(b"pass\n")
+            os.chmod(module, 0o400)
+            extra = source / "unexpected"
+            extra.write_bytes(b"private")
+            os.chmod(extra, 0o400)
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "closure mismatch"
+            ):
+                bootstrap._verify_release_source(source, seed)
+
     def test_metadata_checkpoint_warm_path_never_runs_or_hashes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

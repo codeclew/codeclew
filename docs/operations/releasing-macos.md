@@ -5,17 +5,21 @@ default branch. End-user machines never compile Codeclew.
 
 ## Release contents
 
-The `macOS release` GitHub Actions workflow builds two fixed asset names:
+The `macOS release` GitHub Actions workflow builds four fixed asset names:
 
 - `codeclew-macos-arm64.tar.gz`;
 - `codeclew-macos-x86_64.tar.gz`;
+- `codeclew-kotlin23-macos-arm64.tar.gz`;
+- `codeclew-kotlin23-macos-x86_64.tar.gz`;
 - one `.sha256` file for each archive.
 
-Each archive contains a clean, credential-free source checkout, an immutable
-release runtime capsule, its source-bound seed authority, and the installed
-launcher. The source checkout remains necessary because the current bootstrap
-verifies the release seed against the exact Git commit and tree; it does not
-compile on the installed warm path.
+The default archive contains the Kotlin 2.4.10 `core` profile. The optional
+`kotlin23` archive adds the Kotlin 2.3.0 read-only preview. Each archive contains
+one immutable executable runtime capsule, its source-bound seed authority, the
+installed launcher, and a minimal hash-closed bootstrap payload. Build-only
+component-cache copies and the full Git checkout are excluded. The bootstrap
+payload manifest remains bound to the exact Git commit and tree, and the
+installed warm path never compiles Codeclew.
 
 Apple Silicon is built on `macos-15`; Intel is built on `macos-15-intel`. The
 workflow verifies `uname -m` before construction and refuses a runtime in
@@ -49,6 +53,9 @@ workflow verifies `uname -m` before construction and refuses a runtime in
    curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
    clew capabilities --human
    clew doctor --human
+   clew pack install kotlin23
+   clew pack list
+   clew pack remove kotlin23
    clew upgrade
    ```
 
