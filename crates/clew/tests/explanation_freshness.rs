@@ -496,6 +496,7 @@ fn relation(owner: &str, target: &str, file: &str, start: u64) -> Value {
         "schema":"declaration-relation/0.1", "file":file, "start":start, "end":start + 6,
         "kind":"CALLS", "owner":owner, "target":target, "resolution":"PROVEN",
         "provider":"K2_FIR", "cfgNodeIds":[],
+        "orderKey":start,
         "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
         "orderProvenance":"FIR_SOURCE_RANGE"
     })

@@ -364,6 +364,58 @@ regeneration obligation. Regeneration is a separate agent action. Both old and
 new CAS closures are retained in the report; repeated status reads start no
 compiler, build, repository scan, target process, or agent.
 
+### Save-product explanation walkthrough
+
+The executable acceptance fixture under `fixtures/kotlin-explanation` contains
+a product service and a separate outbox worker. The product method performs a
+duplicate check, calls `ProductRepository.save`, calls `OutboxRepository.save`,
+and carries a local annotation named `Transactional`. That annotation is
+deliberately not framework authority: the walkthrough proves both call edges
+from K2 facts, but reports transaction atomicity as `UNKNOWN` with
+`VERIFY_CONTROL_FLOW_ORDER` rather than inferring Spring or database behavior.
+
+Run the complete scenario with:
+
+```bash
+python3 scripts/test_explanation_smoke.py
+python3 scripts/explanation-smoke.py
+```
+
+The second command creates private temporary Git repositories and Codeclew
+state, validates both Gradle projects, and performs this chain:
+
+```text
+Kotlin sessions -> multi-service thread -> bounded context
+  -> callable fact set -> exact saveProduct flow
+  -> agent claim template bound to exact flow refs
+  -> immutable explanation bundle -> five semantic-zoom renders
+  -> compiler fact/CAS/source-anchor drilldown
+  -> offset-only freshness -> controlled relation-change freshness
+```
+
+`thread flow` returns the complete retained slice when it fits 64 KiB. For a
+larger slice it returns a root-centric `claimBinding` projection containing
+exact direct node/edge IDs, support fact IDs, and relevant boundary IDs; the
+full slice remains in CAS and is what `thread explain` validates. The smoke
+does not trust selector text after binding: ambiguous or absent roots, edges,
+boundaries, source anchors, or authorities fail the run.
+
+The expected authority split is:
+
+- product repository save: `COMPILER_PROVEN`;
+- outbox repository save: `COMPILER_PROVEN`;
+- high-level narrative: at most `AGENT_INFERRED`;
+- transaction atomicity: `UNKNOWN` until a separate framework/runtime
+  authority proves it.
+
+The smoke then uses managed `change open/prepare/publish` operations rather
+than editing Kotlin directly. Inserting a blank line must produce `CURRENT`;
+removing the outbox save must produce `PARTIALLY_STALE` with both affected and
+unaffected claims. Its final JSON includes cold generation, warm retained-read,
+render, and freshness timings. These are diagnostic measurements, not fixed
+performance thresholds; identity reuse and the absence of extra generations
+on retained operations are the acceptance conditions.
+
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId
 family, or a navigation token. Its bounded output includes both declared pair

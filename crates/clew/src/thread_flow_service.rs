@@ -19,11 +19,12 @@ use crate::thread_flow_cfg::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 pub const THREAD_FLOW_ROOT_SCHEMA: &str = "codeclew-thread-flow-root/0.1";
 pub const THREAD_FLOW_RESULT_SCHEMA: &str = "codeclew-thread-flow-result/0.1";
+pub const THREAD_FLOW_INSPECTION_RESULT_SCHEMA: &str = "codeclew-thread-flow-inspection-result/0.1";
 pub const MAX_FLOW_RETAINED_CLOSURE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_THREAD_FLOW_ROOT_BYTES: usize = 256 * 1024;
 
@@ -102,6 +103,137 @@ pub fn load(thread: &ThreadAuthority, flow_id: &str) -> Result<ThreadFlowRoot, C
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     load_verified(&state, &store, thread, flow_id).map(|(root, _, _)| root)
+}
+
+/// Return the retained slice when it fits stdout, otherwise an explicit
+/// path-free reference-only projection. This never starts a compiler.
+pub fn inspect(thread: &ThreadAuthority, flow_id: &str) -> Result<Value, ClewError> {
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
+    let (root, _facts, prepared) = load_verified(&state, &store, thread, flow_id)?;
+    let full = json!({
+        "schema": THREAD_FLOW_INSPECTION_RESULT_SCHEMA,
+        "threadId": root.thread_id,
+        "threadAuthorityDigest": root.thread_authority_digest,
+        "factSetId": root.fact_set_id,
+        "factSetAuthorityDigest": root.fact_set_authority_digest,
+        "flowId": root.flow_id,
+        "sliceRef": root.slice_ref,
+        "sliceIncluded": true,
+        "flow": prepared.slice,
+    });
+    if canonical::bytes(&full)
+        .map_err(internal)?
+        .len()
+        .saturating_add(1)
+        <= MAX_FLOW_STDOUT_BYTES
+    {
+        return Ok(full);
+    }
+    let direct_edges = prepared
+        .slice
+        .edges
+        .iter()
+        .filter(|edge| edge.source_node_id == prepared.slice.root_node_id)
+        .collect::<Vec<_>>();
+    let direct_node_ids = direct_edges
+        .iter()
+        .flat_map(|edge| [&edge.source_node_id, &edge.target_node_id])
+        .chain([&prepared.slice.root_node_id])
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let direct_fact_ids = prepared
+        .slice
+        .nodes
+        .iter()
+        .filter(|node| direct_node_ids.contains(node.node_id.as_str()))
+        .flat_map(|node| node.support_refs.iter())
+        .chain(
+            direct_edges
+                .iter()
+                .flat_map(|edge| edge.support_refs.iter()),
+        )
+        .map(|support| support.fact_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let claim_binding = json!({
+        "flowId": prepared.slice.flow_id,
+        "nodes": prepared.slice.nodes.iter().filter(|node| {
+            direct_node_ids.contains(node.node_id.as_str())
+        }).map(|node| json!({
+            "nodeId": node.node_id,
+            "nodeKind": node.node_kind,
+            "memberAlias": node.member_alias,
+            "serviceAlias": node.service_alias,
+            "repositoryNamespace": node.repository_namespace,
+            "symbolIdentity": node.symbol_identity,
+            "supportRefs": node.support_refs.iter().map(|support| json!({
+                "factId": support.fact_id,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "edges": direct_edges.iter().map(|edge| json!({
+            "edgeId": edge.edge_id,
+            "sourceNodeId": edge.source_node_id,
+            "targetNodeId": edge.target_node_id,
+            "relationKind": edge.relation_kind,
+            "relationshipAuthority": edge.relationship_authority,
+            "orderAuthority": edge.order_authority,
+            "supportRefs": edge.support_refs.iter().map(|support| json!({
+                "factId": support.fact_id,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "boundaries": prepared.slice.boundaries.iter().filter(|boundary| {
+            boundary.subject == prepared.slice.request.root
+                || boundary.support_refs.iter().any(|support| {
+                    direct_fact_ids.contains(support.fact_id.as_str())
+                })
+        }).map(|boundary| json!({
+            "boundaryId": boundary.boundary_id,
+            "code": boundary.code,
+            "subject": boundary.subject,
+            "supportRefs": boundary.support_refs.iter().map(|support| json!({
+                "factId": support.fact_id,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "controlFlowRegions": prepared.slice.control_flow_regions.iter().filter(|region| {
+            region.owner_node_id == prepared.slice.root_node_id
+        }).map(|region| json!({
+            "regionId": region.region_id,
+            "ownerNodeId": region.owner_node_id,
+        })).collect::<Vec<_>>(),
+    });
+    let compact = json!({
+        "schema": THREAD_FLOW_INSPECTION_RESULT_SCHEMA,
+        "threadId": root.thread_id,
+        "threadAuthorityDigest": root.thread_authority_digest,
+        "factSetId": root.fact_set_id,
+        "factSetAuthorityDigest": root.fact_set_authority_digest,
+        "flowId": root.flow_id,
+        "sliceRef": root.slice_ref,
+        "sliceIncluded": false,
+        "claimBindingIncluded": true,
+        "claimBinding": claim_binding,
+        "flow": root.projection,
+    });
+    if canonical::bytes(&compact)
+        .map_err(internal)?
+        .len()
+        .saturating_add(1)
+        <= MAX_FLOW_STDOUT_BYTES
+    {
+        return Ok(compact);
+    }
+    Ok(json!({
+        "schema": THREAD_FLOW_INSPECTION_RESULT_SCHEMA,
+        "threadId": root.thread_id,
+        "threadAuthorityDigest": root.thread_authority_digest,
+        "factSetId": root.fact_set_id,
+        "factSetAuthorityDigest": root.fact_set_authority_digest,
+        "flowId": root.flow_id,
+        "sliceRef": root.slice_ref,
+        "sliceIncluded": false,
+        "claimBindingIncluded": false,
+        "flow": root.projection,
+    }))
 }
 
 pub(crate) fn load_verified(

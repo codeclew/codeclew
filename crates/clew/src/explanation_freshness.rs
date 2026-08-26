@@ -836,7 +836,10 @@ fn strip_source_fields(value: &Value) -> Value {
             object
                 .iter()
                 .filter(|(key, _)| {
-                    !matches!(key.as_str(), "file" | "start" | "end" | "sourceProvenance")
+                    !matches!(
+                        key.as_str(),
+                        "file" | "start" | "end" | "orderKey" | "sourceProvenance"
+                    )
                 })
                 .map(|(key, value)| (key.clone(), strip_source_fields(value)))
                 .collect::<Map<_, _>>(),

@@ -139,7 +139,7 @@ pub fn render(
     })
     .unwrap_or_default();
     let support_candidates = if detail == DetailLevel::Compiler {
-        compiler_support(flow)
+        compiler_support(bundle, flow)
     } else {
         Vec::new()
     };
@@ -155,6 +155,16 @@ pub fn render(
             |projection, value| projection.claims.push(value),
             |projection| {
                 projection.claims.pop();
+            },
+        )?;
+        advanced |= try_add(
+            &mut projection,
+            format,
+            &support_candidates,
+            &mut positions[4],
+            |projection, value| projection.compiler_support.push(value),
+            |projection| {
+                projection.compiler_support.pop();
             },
         )?;
         advanced |= try_add(
@@ -185,16 +195,6 @@ pub fn render(
             |projection, value| projection.control_flow_regions.push(value),
             |projection| {
                 projection.control_flow_regions.pop();
-            },
-        )?;
-        advanced |= try_add(
-            &mut projection,
-            format,
-            &support_candidates,
-            &mut positions[4],
-            |projection, value| projection.compiler_support.push(value),
-            |projection| {
-                projection.compiler_support.pop();
             },
         )?;
         if !advanced {
@@ -261,7 +261,7 @@ fn project_claim(claim: &ExplanationClaim, detail: DetailLevel) -> RenderClaim {
     }
 }
 
-fn compiler_support(flow: &FlowSlice) -> Vec<FlowSupportRef> {
+fn compiler_support(bundle: &ExplanationBundle, flow: &FlowSlice) -> Vec<FlowSupportRef> {
     let mut support = BTreeMap::<String, FlowSupportRef>::new();
     for reference in flow
         .nodes
@@ -278,7 +278,37 @@ fn compiler_support(flow: &FlowSlice) -> Vec<FlowSupportRef> {
             .entry(reference.fact_id.clone())
             .or_insert_with(|| reference.clone());
     }
-    support.into_values().collect()
+    let claim_refs = bundle
+        .claims
+        .iter()
+        .flat_map(|claim| claim.support_refs.iter().chain(&claim.boundary_refs))
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let prioritized_fact_ids = flow
+        .nodes
+        .iter()
+        .filter(|node| claim_refs.contains(node.node_id.as_str()))
+        .flat_map(|node| node.support_refs.iter())
+        .chain(
+            flow.edges
+                .iter()
+                .filter(|edge| claim_refs.contains(edge.edge_id.as_str()))
+                .flat_map(|edge| edge.support_refs.iter()),
+        )
+        .chain(
+            flow.boundaries
+                .iter()
+                .filter(|boundary| claim_refs.contains(boundary.boundary_id.as_str()))
+                .flat_map(|boundary| boundary.support_refs.iter()),
+        )
+        .map(|reference| reference.fact_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut ordered = prioritized_fact_ids
+        .iter()
+        .filter_map(|fact_id| support.remove(*fact_id))
+        .collect::<Vec<_>>();
+    ordered.extend(support.into_values());
+    ordered
 }
 
 fn fair_by_member<T>(values: Vec<T>, key: impl Fn(&T) -> (String, String)) -> Vec<T> {

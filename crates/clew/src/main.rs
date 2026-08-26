@@ -961,7 +961,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     max_depth: args.max_depth,
                 },
             )?;
-            clew::thread_flow_service::bounded_stdout(&root)
+            clew::thread_flow_service::inspect(&thread, &root.flow_id)
         }
         Command::Thread {
             command: ThreadCommand::Explain(args),

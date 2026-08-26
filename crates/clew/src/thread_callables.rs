@@ -968,6 +968,7 @@ pub fn build_with_jobs(
                 &request,
                 &declaration_lookup,
                 &member_namespaces,
+                &boundaries,
                 &request.budgets,
             )
         })
@@ -1739,6 +1740,7 @@ fn normalize_use(
     request: &CallableFactSetRequest,
     declarations: &BTreeMap<(String, String), &DeclarationFact>,
     member_namespaces: &BTreeMap<String, String>,
+    boundaries: &[BoundaryFact],
     budgets: &CallableBudgets,
 ) -> Result<UseFact, ClewError> {
     let payload = &input.payload;
@@ -1748,17 +1750,20 @@ fn normalize_use(
     let partial_row = payload.get("attributeCoverage").and_then(Value::as_str) == Some("PARTIAL")
         || payload.get("sourceRowHash").is_some();
     let mut uncertainty_reasons = BTreeSet::new();
-    if input.compilation.relation_coverage == GraphCoverage::Partial {
-        uncertainty_reasons.insert("PARTIAL_RELATION_COVERAGE".to_owned());
-    }
     if partial_row {
         uncertainty_reasons.insert("PARTIAL_USE".to_owned());
     }
     let target_is_full_symbol = full_symbol_identity(&raw_target);
+    uncertainty_reasons.extend(relation_boundary_reasons(
+        input,
+        &source_owner,
+        &raw_target,
+        boundaries,
+    ));
     let source_namespace = member_namespaces
         .get(&input.member.member_alias)
         .ok_or_else(|| invalid("use source member has no repository namespace"))?;
-    let mut candidates = BTreeSet::<(String, RelationshipAuthority)>::new();
+    let mut candidates = BTreeSet::<(String, String, RelationshipAuthority)>::new();
     if target_is_full_symbol {
         if let Some(declaration) = declarations.get(&(source_namespace.clone(), raw_target.clone()))
             && declaration.exact_eligible
@@ -1766,6 +1771,7 @@ fn normalize_use(
         {
             candidates.insert((
                 source_namespace.clone(),
+                declaration.symbol_identity.clone(),
                 RelationshipAuthority::VerifiedSameSnapshotCompilationDependency,
             ));
         }
@@ -1783,6 +1789,40 @@ fn normalize_use(
             {
                 candidates.insert((
                     namespace.clone(),
+                    raw_target.clone(),
+                    RelationshipAuthority::VerifiedSameSnapshotCompilationDependency,
+                ));
+            }
+        }
+    } else {
+        for declaration in declarations.values().filter(|declaration| {
+            declaration.exact_eligible
+                && declaration.provenance.repository_namespace == *source_namespace
+                && declaration.provenance.compilation_id == input.compilation.compilation_id
+                && declaration.compiler_callable_id.as_deref() == Some(raw_target.as_str())
+        }) {
+            candidates.insert((
+                source_namespace.clone(),
+                declaration.symbol_identity.clone(),
+                RelationshipAuthority::VerifiedSameSnapshotCompilationDependency,
+            ));
+        }
+        for pair in request.pairs.iter().filter(|pair| {
+            pair.consumer_member == input.member.member_alias
+                && pair.relationship_authority
+                    == RelationshipAuthority::VerifiedSameSnapshotCompilationDependency
+        }) {
+            let Some(namespace) = member_namespaces.get(&pair.provider_member) else {
+                continue;
+            };
+            for declaration in declarations.values().filter(|declaration| {
+                declaration.exact_eligible
+                    && declaration.provenance.repository_namespace == *namespace
+                    && declaration.compiler_callable_id.as_deref() == Some(raw_target.as_str())
+            }) {
+                candidates.insert((
+                    namespace.clone(),
+                    declaration.symbol_identity.clone(),
                     RelationshipAuthority::VerifiedSameSnapshotCompilationDependency,
                 ));
             }
@@ -1804,9 +1844,9 @@ fn normalize_use(
     });
     let (target_resolution, target_symbol_identity, target_namespace, relationship_authority) =
         match exact_target {
-            Some((namespace, authority)) => (
+            Some((namespace, symbol_identity, authority)) => (
                 TargetResolution::ExactSymbol,
-                Some(raw_target.clone()),
+                Some(symbol_identity),
                 Some(namespace),
                 authority,
             ),
@@ -1825,7 +1865,9 @@ fn normalize_use(
         declarations
             .get(&(
                 target_namespace.clone().expect("exact target namespace"),
-                raw_target.clone(),
+                target_symbol_identity
+                    .clone()
+                    .expect("exact target symbol identity"),
             ))
             .and_then(|declaration| declaration.compiler_callable_id.clone())
             .or_else(|| callable_family_from_symbol(&raw_target))
@@ -1854,6 +1896,52 @@ fn normalize_use(
     };
     row.fact_id = use_fact_id(&row)?;
     Ok(row)
+}
+
+fn relation_boundary_reasons(
+    input: &QualifiedCallablePayload,
+    source_owner: &str,
+    raw_target: &str,
+    boundaries: &[BoundaryFact],
+) -> BTreeSet<String> {
+    let same_compilation = boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary.provenance.member_alias == input.member.member_alias
+                && boundary.provenance.compilation_id == input.compilation.compilation_id
+                && boundary
+                    .provenance
+                    .input_fact_key
+                    .starts_with("kotlin:relation-boundary:")
+        })
+        .collect::<Vec<_>>();
+    let matching = same_compilation
+        .iter()
+        .filter(|boundary| relation_boundary_affects_target_resolution(boundary))
+        .filter(|boundary| {
+            boundary.subject.as_deref().is_none_or(|subject| {
+                subject == source_owner
+                    || subject == raw_target
+                    || callable_family_from_symbol(raw_target).as_deref() == Some(subject)
+            })
+        })
+        .map(|boundary| format!("BOUNDARY_{}", boundary.code))
+        .collect::<BTreeSet<_>>();
+    if matching.is_empty()
+        && input.compilation.relation_coverage == GraphCoverage::Partial
+        && same_compilation.is_empty()
+    {
+        BTreeSet::from(["PARTIAL_RELATION_COVERAGE".into()])
+    } else {
+        matching
+    }
+}
+
+fn relation_boundary_affects_target_resolution(boundary: &BoundaryFact) -> bool {
+    matches!(
+        boundary.stage.as_str(),
+        "CALL_RESOLUTION" | "CONSTRUCTOR_RESOLUTION" | "TARGET_RESOLUTION" | "RELATION_RESOLUTION"
+    )
 }
 
 fn normalize_boundary(
@@ -4185,6 +4273,124 @@ mod tests {
                 .iter()
                 .all(|hit| hit.authority == LookupAuthority::ExactFullSymbol)
         );
+    }
+
+    #[test]
+    fn unrelated_relation_boundary_does_not_downgrade_a_proven_use() {
+        let left = member("left");
+        let right = member("right");
+        let left_compilation = compilation(
+            "left",
+            GraphCoverage::CompleteSupportedSubset,
+            GraphCoverage::Partial,
+        );
+        let right_compilation = compilation(
+            "right",
+            GraphCoverage::CompleteSupportedSubset,
+            GraphCoverage::CompleteSupportedSubset,
+        );
+        let prepared = build(
+            request(RelationshipAuthority::DeclaredTopology),
+            input(vec![
+                qualified(
+                    left.clone(),
+                    left_compilation.clone(),
+                    descriptor("p/Orders.save", "()V", "src/Left.kt", 0),
+                ),
+                qualified(
+                    left.clone(),
+                    left_compilation.clone(),
+                    descriptor("p/Orders.write", "()V", "src/Left.kt", 20),
+                ),
+                qualified(
+                    left.clone(),
+                    left_compilation.clone(),
+                    relation(
+                        "p/Orders.save",
+                        "callable:p/Orders.write#jvm:()V",
+                        "src/Left.kt",
+                        10,
+                    ),
+                ),
+                qualified(
+                    left,
+                    left_compilation,
+                    relation_boundary("p/Orders.unrelated", "src/Left.kt", 40),
+                ),
+                qualified(
+                    right,
+                    right_compilation,
+                    descriptor("p/Consumer.read", "()V", "src/Right.kt", 0),
+                ),
+            ]),
+        )
+        .unwrap();
+        let use_row = facts(&prepared)
+            .into_iter()
+            .find_map(|fact| match fact {
+                CallableFact::Use(row) if row.source_owner == "p/Orders.save" => Some(row),
+                _ => None,
+            })
+            .unwrap();
+        assert!(use_row.exact_eligible);
+        assert_eq!(use_row.target_resolution, TargetResolution::ExactSymbol);
+        assert!(use_row.uncertainty_reasons.is_empty());
+    }
+
+    #[test]
+    fn unique_compiler_callable_target_resolves_to_its_full_symbol() {
+        let left = member("left");
+        let left_compilation = compilation(
+            "left",
+            GraphCoverage::CompleteSupportedSubset,
+            GraphCoverage::CompleteSupportedSubset,
+        );
+        let mut use_payload = relation(
+            "p/Orders.save",
+            "callable:p/Orders.write#jvm:()V",
+            "src/Left.kt",
+            10,
+        );
+        use_payload["target"] = json!("p/Orders.write");
+        let prepared = build(
+            request(RelationshipAuthority::DeclaredTopology),
+            input(vec![
+                qualified(
+                    left.clone(),
+                    left_compilation.clone(),
+                    descriptor("p/Orders.save", "()V", "src/Left.kt", 0),
+                ),
+                qualified(
+                    left.clone(),
+                    left_compilation.clone(),
+                    descriptor("p/Orders.write", "()V", "src/Left.kt", 20),
+                ),
+                qualified(left, left_compilation, use_payload),
+                qualified(
+                    member("right"),
+                    compilation(
+                        "right",
+                        GraphCoverage::CompleteSupportedSubset,
+                        GraphCoverage::CompleteSupportedSubset,
+                    ),
+                    descriptor("p/Consumer.read", "()V", "src/Right.kt", 0),
+                ),
+            ]),
+        )
+        .unwrap();
+        let use_row = facts(&prepared)
+            .into_iter()
+            .find_map(|fact| match fact {
+                CallableFact::Use(row) if row.source_owner == "p/Orders.save" => Some(row),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(use_row.target_resolution, TargetResolution::ExactSymbol);
+        assert_eq!(
+            use_row.target_symbol_identity.as_deref(),
+            Some("callable:p/Orders.write#jvm:()V")
+        );
+        assert!(use_row.exact_eligible);
     }
 
     #[test]

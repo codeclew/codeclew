@@ -162,6 +162,32 @@ fn relevant_boundary_must_be_present_and_caps_authority_to_unknown() {
 }
 
 #[test]
+fn missing_cfg_only_caps_order_claims_not_a_compiler_proven_call() {
+    let mut flow = flow(true);
+    flow.boundaries[0].code = "VERIFY_CONTROL_FLOW_ORDER".into();
+    flow.boundaries[0].required_checks = vec!["VERIFY_CONTROL_FLOW_ORDER".into()];
+    let flow_ref = flow_ref(&flow);
+    let document = ClaimInputDocument {
+        schema: CLAIM_INPUT_SCHEMA.into(),
+        flow_id: flow.flow_id.clone(),
+        claims: vec![claim(
+            "call",
+            ClaimPredicate::CallExists {
+                subject: SOURCE.into(),
+                object: TARGET.into(),
+            },
+            vec!["edge-call"],
+            vec![],
+        )],
+    };
+    let prepared = clew::explanation::build(&flow, &flow_ref, document).unwrap();
+    assert_eq!(
+        prepared.bundle.claims[0].authority,
+        ClaimAuthority::CompilerProven
+    );
+}
+
+#[test]
 fn invented_support_agent_authority_and_premature_handoff_fail_closed() {
     let flow = flow(false);
     let flow_ref = flow_ref(&flow);

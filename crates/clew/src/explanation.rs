@@ -642,14 +642,25 @@ fn relevant_boundaries<'a>(
     flow.boundaries
         .iter()
         .filter(|boundary| {
-            subjects.contains(boundary.subject.as_str())
-                || boundary
-                    .support_refs
-                    .iter()
-                    .any(|support| fact_ids.contains(support.fact_id.as_str()))
+            boundary_affects_predicate(&input.predicate, boundary)
+                && (subjects.contains(boundary.subject.as_str())
+                    || boundary
+                        .support_refs
+                        .iter()
+                        .any(|support| fact_ids.contains(support.fact_id.as_str())))
         })
         .map(|boundary| boundary.boundary_id.as_str())
         .collect()
+}
+
+fn boundary_affects_predicate(predicate: &ClaimPredicate, boundary: &FlowBoundary) -> bool {
+    match boundary.code.as_str() {
+        "VERIFY_CONTROL_FLOW_ORDER" => matches!(predicate, ClaimPredicate::OrderedBefore { .. }),
+        "DECLARED_TOPOLOGY_HANDOFF" => {
+            matches!(predicate, ClaimPredicate::ComponentHandoff { .. })
+        }
+        _ => true,
+    }
 }
 
 fn cfg_reaches(graph: &crate::thread_flow_cfg::LocalCfgPayload, from: u64, to: u64) -> bool {
