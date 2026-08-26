@@ -43,8 +43,13 @@ class MacosDistributionTest(unittest.TestCase):
             binary.parent.mkdir()
             binary.write_text(
                 "#!/bin/sh\n"
-                "[ \"${1:-}\" = capabilities ] || exit 2\n"
-                "printf '%s\\n' '{\"schema\":\"codeclew-capabilities/1.0\",\"status\":\"PILOT_READY\"}'\n",
+                "case \"${1:-}\" in\n"
+                "  --version) version=$(sed -n '1p' \"$(dirname -- \"$0\")/../VERSION\"); "
+                "printf 'clew %s\\n' \"${version#v}\" ;;\n"
+                "  capabilities) printf '%s\\n' "
+                "'{\"schema\":\"codeclew-capabilities/1.0\",\"status\":\"PILOT_READY\"}' ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
                 encoding="utf-8",
             )
             binary.chmod(0o500)
@@ -178,6 +183,36 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertEqual(current_again.returncode, 0, current_again.stderr)
                 self.assertIn("v0.1.1 is already up to date", current_again.stdout)
+
+                binary.chmod(0o700)
+                binary.write_text(
+                    "#!/bin/sh\n"
+                    "case \"${1:-}\" in\n"
+                    "  --version) printf '%s\\n' 'clew 0.1.1' ;;\n"
+                    "  capabilities) printf '%s\\n' "
+                    "'{\"schema\":\"codeclew-capabilities/1.0\",\"status\":\"PILOT_READY\"}' ;;\n"
+                    "  *) exit 2 ;;\n"
+                    "esac\n",
+                    encoding="utf-8",
+                )
+                binary.chmod(0o500)
+                publish(document_root / "releases" / "download" / "v0.1.2", "v0.1.2")
+                environment["CODECLEW_VERSION"] = "v0.1.2"
+                mismatched = subprocess.run(
+                    ["/bin/sh", str(INSTALLER)],
+                    cwd=ROOT,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertNotEqual(mismatched.returncode, 0)
+                self.assertIn(
+                    "CLI version does not match release metadata", mismatched.stderr
+                )
+                self.assertIn("v0.1.1-macos-arm64", str(installed.resolve()))
 
                 latest_checksum.write_text(
                     f"{'0' * 64}  {latest_asset.name}\n", encoding="ascii"

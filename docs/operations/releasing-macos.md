@@ -57,7 +57,9 @@ workflow verifies `uname -m` before construction and refuses a runtime in
 
 The workflow creates a normal GitHub Release so the stable
 `releases/latest/download/...` endpoint used by the installer resolves. Release
-notes retain the `public pilot` qualification.
+notes retain the `public pilot` qualification. The release builder and public
+installer both require `clew --version` to equal the release tag without its
+leading `v`; a mismatch fails before the release is published or activated.
 
 ## Failure and rollback
 

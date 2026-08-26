@@ -154,6 +154,9 @@ esac
 if [ "$REQUESTED_VERSION" != latest ] && [ "$VERSION" != "$REQUESTED_VERSION" ]; then
   fail "downloaded release version does not match CODECLEW_VERSION"
 fi
+CLI_VERSION=$("$PACKAGE/bin/clew" --version) || fail "release CLI version check failed"
+[ "$CLI_VERSION" = "clew ${VERSION#v}" ] \
+  || fail "release CLI version does not match release metadata"
 
 progress "[5/6] Activating Codeclew $VERSION..."
 mkdir -p "$INSTALL_ROOT/releases" "$BIN_DIR"
