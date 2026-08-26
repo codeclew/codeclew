@@ -205,6 +205,26 @@ def write_archive(package: Path, output: Path, architecture: str) -> tuple[Path,
     return asset, checksum
 
 
+def verify_cli_version(
+    launcher: Path, release_version: str, state_root: Path, working_directory: Path
+) -> None:
+    environment = dict(os.environ)
+    environment["CODECLEW_HOME"] = str(state_root)
+    completed = subprocess.run(
+        [str(launcher), "--version"],
+        cwd=working_directory,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    expected = f"clew {release_version.removeprefix('v')}\n"
+    if completed.returncode != 0 or completed.stdout != expected:
+        raise ReleaseError("release CLI version does not match the semantic version tag")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -237,21 +257,12 @@ def main() -> int:
         shutil.copyfile(root / "packaging" / "macos" / "clew", launcher)
         launcher.chmod(0o500)
         (package / "VERSION").write_text(arguments.version + "\n", encoding="ascii")
-        version_check_environment = dict(os.environ)
-        version_check_environment["CODECLEW_HOME"] = str(work / "version-check-state")
-        version_check = subprocess.run(
-            [str(launcher), "--version"],
-            cwd=package,
-            env=version_check_environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            text=True,
+        verify_cli_version(
+            launcher,
+            arguments.version,
+            temporary / "version-check-state",
+            package,
         )
-        expected_cli_version = f"clew {arguments.version.removeprefix('v')}\n"
-        if version_check.returncode != 0 or version_check.stdout != expected_cli_version:
-            raise ReleaseError("release CLI version does not match the semantic version tag")
         metadata = {
             "architecture": platform.machine(),
             "operatingSystem": "macos",
