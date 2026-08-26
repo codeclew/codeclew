@@ -12,4 +12,4 @@ if [ "${1:-}" = upgrade ] && [ "$#" -eq 1 ]; then
   printf '%s\n' 'Retryable: no'
   exit 2
 fi
-exec python3 -I -S "$SOURCE_ROOT/bootstrap/clew_bootstrap.py" --source-root "$SOURCE_ROOT" "$@"
+exec python3 -I -S -B "$SOURCE_ROOT/bootstrap/clew_bootstrap.py" --source-root "$SOURCE_ROOT" "$@"
