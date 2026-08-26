@@ -48,7 +48,13 @@ def run(arguments: list[str], cwd: Path, *, environment: dict[str, str] | None =
         check=False,
     )
     if completed.returncode != 0:
-        raise ReleaseError(f"release command failed: {arguments[0]}")
+        diagnostic = completed.stderr.decode("utf-8", errors="replace").strip()
+        if len(diagnostic) > 4096:
+            diagnostic = diagnostic[-4096:]
+        suffix = f": {diagnostic}" if diagnostic else ""
+        raise ReleaseError(
+            f"release command failed ({completed.returncode}): {arguments[0]}{suffix}"
+        )
     return completed.stdout
 
 
