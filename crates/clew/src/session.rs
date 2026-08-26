@@ -2701,7 +2701,7 @@ mod tests {
     #[test]
     fn context_request_is_bounded_and_nfc_before_analysis() {
         validate_context_request(
-            "Переименовать функцию без изменения поведения",
+            "Rename the function without changing its behavior",
             &["com.example.Café".into()],
         )
         .unwrap();

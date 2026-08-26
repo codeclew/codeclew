@@ -6,10 +6,10 @@ import kotlin.test.assertEquals
 
 class ArchiveServiceTest {
     @Test
-    @DisplayName("Событие архивации содержит идентичность товара")
+    @DisplayName("The archive event contains the product identity")
     fun archiveEventContainsProductIdentity() {
-        val event = ArchiveService().archiveEvent(ProductIdentity("42", "SKU-42", "Товар"))
+        val event = ArchiveService().archiveEvent(ProductIdentity("42", "SKU-42", "Product"))
 
-        assertEquals("42:SKU-42:Товар", event)
+        assertEquals("42:SKU-42:Product", event)
     }
 }

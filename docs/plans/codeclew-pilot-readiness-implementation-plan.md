@@ -1,60 +1,61 @@
-# Codeclew — план достижения pilot-ready состояния
+# Codeclew — Pilot-Readiness Implementation Plan
 
-## Метаданные
+## Metadata
 
-- **Источник продуктовой правды:** [README.md](../../README.md), зелёный usable
-  baseline `44e82496da759518b539b70b944633a1f6965cc6`,
+- **Product source of truth:** [README.md](../../README.md), green usable
+  baseline `44e82496da759518b539b70b944633a1f6965cc6`, and
   [codeclew-usable-first-plan.md](codeclew-usable-first-plan.md).
-- **Канон реализации:** `crates/clew/src/main.rs`,
+- **Implementation canon:** `crates/clew/src/main.rs`,
   `bootstrap/clew_bootstrap.py`, `bootstrap/runtime_components.json`,
-  `scripts/usability-smoke.py`, `.github/workflows/ci.yml`.
-- **Approval source:** пользователь 2026-08-23 явно попросил подробный план,
-  независимую проверку и немедленное последовательное исполнение в режиме цели.
-- **Оркестратор:** выполняет первую задачу со `Status: - [ ]`, проверяет DoD,
-  меняет статус на `- [x]` и только затем переходит дальше.
-- **Параллелизм:** реализация последовательна. Независимый review плана и
-  финальный review выполняются отдельным агентом с чистой ролью проверяющего.
-- **Stop-loss:** разрешены ровно три локальных product E2E invocation: facade
-  smoke в T00, трёхкейсный pilot в T02 и финальный `ci-verify` в T05. Каждый
-  invocation может сделать один cold prime собственного private state; ни один
-  не повторяется ради диагностики. До T05 выполняются только targeted checks.
-  После push разрешён ровно один GitHub RELEASE run; его падение оставляет цель
-  незавершённой и не разрешает второй push/run в рамках этого плана.
+  `scripts/usability-smoke.py`, and `.github/workflows/ci.yml`.
+- **Approval source:** on 2026-08-23, the user explicitly requested a detailed
+  plan, independent review, and immediate sequential execution in goal mode.
+- **Orchestration:** execute the first task with `Status: - [ ]`, verify its
+  definition of done, change the status to `- [x]`, and only then continue.
+- **Parallelism:** implementation is sequential. A separate agent with a clean
+  reviewer role performs the independent plan review and final review.
+- **Stop-loss:** exactly three local product E2E invocations are allowed: the
+  facade smoke test in T00, the three-case pilot in T02, and final `ci-verify`
+  in T05. Each invocation may perform one cold prime of its own private state;
+  none may be repeated for diagnosis. Before T05, run targeted checks only.
+  After push, exactly one GitHub RELEASE run is allowed. A failure leaves the
+  goal incomplete and does not authorize a second push/run within this plan.
 
-## Результат milestone
+## Milestone outcome
 
-Codeclew пригоден для ограниченного командного пилота на Kotlin 2.4/Gradle:
+Codeclew is ready for a limited team pilot on Kotlin 2.4 with Gradle:
 
-1. Агент использует публичный двухфазный `change`-интерфейс вместо ручной
-   оркестрации `session/context/plan/task-run`.
-2. Production capsule содержит только доказанный K24 worker; preview workers не
-   увеличивают cold start и не могут случайно стать runtime prerequisite.
-3. Один pilot runner выполняет три разных изменения на чистых репозиториях,
-   переиспользуя один runtime, и выдаёт обезличенный агрегат.
-4. PR CI проверяет узкие контракты и один product smoke; scheduled/manual
-   qualification проверяет трёхкейсный pilot и строгий warm audit.
-5. README честно называет границу pilot-ready и следующий release milestone.
+1. The agent uses the public two-phase `change` interface instead of manually
+   orchestrating `session/context/plan/task-run`.
+2. The production capsule contains only the proven K24 worker; preview workers
+   do not increase cold-start cost or accidentally become runtime prerequisites.
+3. One pilot runner performs three distinct changes in clean repositories,
+   reuses one runtime, and emits an anonymized aggregate.
+4. PR CI verifies narrow contracts and one product smoke test; scheduled/manual
+   qualification verifies the three-case pilot and a strict warm audit.
+5. The README states the pilot-ready boundary and the next release milestone
+   accurately.
 
-Это не general-availability release. Подписанные prebuilt capsule, Maven,
-Android/KMP, K21/K23, multi-compilation performance и внешний agent benchmark
-не входят в milestone.
+This is not a general-availability release. Signed prebuilt capsules, Maven,
+Android/KMP, K21/K23, multi-compilation performance, and an external agent
+benchmark are outside this milestone.
 
-## Поддержанный публичный flow
+## Supported public flow
 
 ```text
 ./clew change open ...              -> sessionId + contextId + bounded context
-agent создаёт immutable plan
+agent creates an immutable plan
 ./clew change prepare ...           -> planId + run
 ./clew change status --run ...      -> bounded candidate/status
 ./clew change publish ...           -> explicit publication
 ./clew change recover ...           -> exceptional recovery
 ```
 
-Низкоуровневые команды не удаляются: это внутренний протокол и диагностический
-escape hatch. Facade не создаёт новую change-базу, locator или schema; `sessionId`,
-`contextId`, `planId` и `runId` остаются единственной authority.
+Low-level commands remain available as the internal protocol and diagnostic
+escape hatch. The facade creates no new change database, locator, or schema;
+`sessionId`, `contextId`, `planId`, and `runId` remain the sole authority.
 
-## Общие команды проверки
+## Common verification commands
 
 ```bash
 cargo fmt --all --check
@@ -64,57 +65,58 @@ python3 -I -S bootstrap/test_clew_bootstrap.py
 python3 -I -S scripts/check_repository_privacy.py --pre-commit
 ```
 
-## Известные пробелы покрытия
+## Known coverage gaps
 
-- Нет подписанного portable installer/prebuilt capsule; решение принимается по
-  данным пилота, а не проектируется заранее.
-- Pilot использует три контролируемых K24 Gradle изменения. Он проверяет
-  transaction/runtime, но не качество произвольной генерации plan внешним LLM.
-- Нет Maven, Android/KMP, K21/K23 и multi-compilation product claims.
-- Нет pen-test и формальной верификации ledger/CAS.
-- macOS/Linux scheduled qualification подтверждает поддержанные платформы, но
-  не все JDK vendors и filesystem/network configurations.
+- There is no signed portable installer/prebuilt capsule; that decision follows
+  pilot evidence instead of being designed in advance.
+- The pilot uses three controlled K24 Gradle changes. It verifies transaction
+  and runtime behavior, not the quality of arbitrary plans generated by an
+  external LLM.
+- There are no Maven, Android/KMP, K21/K23, or multi-compilation product claims.
+- There is no penetration test or formal verification of the ledger/CAS.
+- Scheduled macOS/Linux qualification proves the supported platforms, not every
+  JDK vendor or filesystem/network configuration.
 
-## T00. Двухфазный публичный `change` vertical slice
+## T00. Two-phase public `change` vertical slice
 
 - **Status:** - [x]
-- **Goal:** Агент получает context и запускает подготовку изменения двумя
-  публичными командами, не воспроизводя вручную внутреннюю state machine.
+- **Goal:** The agent obtains context and starts change preparation through two
+  public commands without reproducing the internal state machine manually.
 - **Sources:** `README.md:20-155`, `crates/clew/src/main.rs:20-400`,
   `scripts/usability-smoke.py:90-330`.
 - **Depends on:** —.
 - **Read first:**
-  - `crates/clew/src/main.rs:20-220` — Clap surface и аргументы;
+  - `crates/clew/src/main.rs:20-220` — Clap surface and arguments;
   - `crates/clew/src/main.rs:240-405` — session/context/plan dispatch;
   - `scripts/usability-smoke.py:90-330` — acceptance-bearing flow.
 - **Modify:**
   - `crates/clew/src/main.rs` — `change open|prepare|status|publish|recover`;
-  - unit tests в `crates/clew/src/main.rs`;
-  - `scripts/usability-smoke.py` — основной happy path через facade;
-  - `README.md` — facade как основной flow, low-level API как advanced.
-- **Product artifacts:** `README.md` меняет основной пользовательский flow.
-  Отдельного scenario baseline в репозитории нет; новые baseline/cards/DOT не
-  создаются, потому что README и executable smoke являются текущей канонической
-  поверхностью данного developer tool.
+  - unit tests in `crates/clew/src/main.rs`;
+  - `scripts/usability-smoke.py` — primary happy path through the facade;
+  - `README.md` — facade as the primary flow, low-level API as advanced.
+- **Product artifacts:** `README.md` changes the primary user flow. There is no
+  separate scenario baseline in the repository; no new baselines, cards, or DOT
+  files are created because the README and executable smoke test are the current
+  canonical surface for this developer tool.
 - **Steps:**
-  1. Добавить `Command::Change` и пять thin subcommands. Переиспользовать
-     существующие функции; не создавать новую persisted authority.
-  2. `change open` принимает аргументы session open плюс `--intent`, повторяемый
-     `--term` и `--max-roots`; возвращает schema `codeclew-change-open/1.0`,
-     session и bounded context.
-     Если context creation падает после session open, facade под тем же session
-     admission выполняет `abort` и `gc`. Если полная компенсация невозможна,
-     typed error получает recovery authority (`transactionId=sessionId`) и
-     retryable recovery code; orphan session никогда не скрывается от клиента.
-  3. `change prepare` принимает `--session`, `--context`, `--plan`; безопасно
-     читает/валидирует plan и вызывает idempotent start, возвращая schema
-     `codeclew-change-prepare/1.0`, `planId` и текущий run projection.
-  4. `status`, `publish`, `recover` являются typed wrappers существующих
-     операций и не ослабляют conditional/recovery checks.
-  5. Добавить parser/dispatch tests: обязательные аргументы, removed ambiguity,
-     conditional flags и совпадение low-level/facade результатов.
-  6. Перевести единственный usability smoke на `change` flow; close/gc оставить
-     operational session-командами.
+  1. Add `Command::Change` and five thin subcommands. Reuse existing functions;
+     do not create new persisted authority.
+  2. `change open` accepts session-open arguments plus `--intent`, repeatable
+     `--term`, and `--max-roots`; it returns schema
+     `codeclew-change-open/1.0`, a session, and bounded context. If context
+     creation fails after session open, the facade performs `abort` and `gc`
+     under the same session admission. If complete compensation is impossible,
+     the typed error receives recovery authority (`transactionId=sessionId`)
+     and a retryable recovery code; an orphan session is never hidden.
+  3. `change prepare` accepts `--session`, `--context`, and `--plan`; safely
+     reads and validates the plan, invokes idempotent start, and returns schema
+     `codeclew-change-prepare/1.0`, `planId`, and the current run projection.
+  4. `status`, `publish`, and `recover` are typed wrappers around existing
+     operations and do not weaken conditional or recovery checks.
+  5. Add parser/dispatch tests for required arguments, removed ambiguity,
+     conditional flags, and equivalent low-level/facade results.
+  6. Move the sole usability smoke test to the `change` flow; keep close/gc as
+     operational session commands.
 - **Verify:**
   ```bash
   cargo fmt --all --check && \
@@ -122,54 +124,55 @@ python3 -I -S scripts/check_repository_privacy.py --pre-commit
   python3 -I -S scripts/usability-smoke.py
   ```
 - **DoD:**
-  - основной README flow содержит только `change open`, `change prepare`,
-    `change status`, `change publish` и exceptional `change recover`;
-  - smoke публикует ровно один commit/two files через facade;
-  - conditional approval остаётся exact digest/obligation-bound;
-  - fault-injection test доказывает cleanup post-open failure, а failure самой
-    компенсации возвращает session-bound typed recovery error;
-  - stdout остаётся bounded и не содержит private paths;
-  - low-level protocol продолжает проходить существующие tests.
+  - the primary README flow contains only `change open`, `change prepare`,
+    `change status`, `change publish`, and exceptional `change recover`;
+  - the smoke test publishes exactly one commit and two files through the facade;
+  - conditional approval remains bound to exact digests and obligations;
+  - a fault-injection test proves cleanup after a post-open failure, while a
+    compensation failure returns a session-bound typed recovery error;
+  - stdout remains bounded and contains no private paths;
+  - the low-level protocol continues to pass existing tests.
 
 ---
 
 ## T01. K24-only production capsule
 
 - **Status:** - [x]
-- **Goal:** Cold/warm runtime собирает и арендует только доказанный Kotlin 2.4
-  worker, исключая preview workers из стоимости и authority пилота.
+- **Goal:** Cold and warm runtimes build and lease only the proven Kotlin 2.4
+  worker, excluding preview workers from pilot cost and authority.
 - **Sources:** `README.md:9-27`, `bootstrap/runtime_components.json`,
-  `bootstrap/clew_bootstrap.py:1330-1510`, финальный RELEASE smoke run
+  `bootstrap/clew_bootstrap.py:1330-1510`, final RELEASE smoke run
   `32607078475`.
 - **Depends on:** T00.
 - **Read first:**
-  - `bootstrap/runtime_components.json` целиком;
-  - `bootstrap/test_clew_bootstrap.py` tests, проверяющие component IDs;
-  - `crates/clew/src/worker.rs` mapping compiler version → runtime worker.
+  - all of `bootstrap/runtime_components.json`;
+  - tests in `bootstrap/test_clew_bootstrap.py` that verify component IDs;
+  - compiler-version-to-runtime-worker mapping in `crates/clew/src/worker.rs`.
 - **Modify:**
-  - `bootstrap/runtime_components.json` — оставить `clew` и `kotlin24`;
+  - `bootstrap/runtime_components.json` — retain `clew` and `kotlin24` only;
   - `bootstrap/test_clew_bootstrap.py` — exact registry/capsule expectations;
-  - `crates/clew/src/worker.rs` — admission поддерживает только Kotlin 2.4;
-  - component input closure: core `clew` не хеширует общий `workers/`, K24
-    component хеширует только свои authoritative worker inputs;
-  - связанные qualification fixtures, только если они проверяют default
-    production registry;
-  - `README.md` — K21/K23 остаются source-level research, не packaged runtime.
-- **Product artifacts:** `README.md` сужает packaged capability до реально
-  поддержанного K24. Другие продуктовые артефакты не существуют.
+  - `crates/clew/src/worker.rs` — admit Kotlin 2.4 only;
+  - component input closure — core `clew` does not hash the shared `workers/`
+    tree; K24 hashes only its authoritative worker inputs;
+  - related qualification fixtures only when they verify the default production
+    registry;
+  - `README.md` — K21/K23 remain source-level research, not packaged runtime.
+- **Product artifacts:** `README.md` narrows the packaged capability to the
+  actually supported K24 worker. No other product artifacts exist.
 - **Steps:**
-  1. Удалить K21/K23 entries из default registry, не добавляя profile switch.
-     Удалить общий `workers/` из input closure core component; точные K24 пути
-     остаются в K24 component.
-  2. Отклонять любой non-K24 project до поиска/сборки worker distribution.
-     Обновить exact tests и preflight expectations на `[clew, kotlin24]`.
-  3. Проверить, что runtime manifest содержит `workerIds=[kotlin24]`, а Gradle
-     build plan не включает K21/K23 tasks.
-  4. Mutation test меняет non-K24-only source и доказывает неизменность
-     production runtime/component key; изменение K24 source либо реально
-     используемого K24 shared source обязано изменить key.
-  5. Не удалять worker sources в этой задаче: отсутствие runtime references —
-     достаточная граница, широкая чистка не даёт pilot outcome.
+  1. Remove K21/K23 entries from the default registry without adding a profile
+     switch. Remove shared `workers/` from the core component input closure;
+     exact K24 paths remain in the K24 component.
+  2. Reject every non-K24 project before looking up or building a worker
+     distribution. Update exact tests and preflight expectations to
+     `[clew, kotlin24]`.
+  3. Verify that the runtime manifest contains `workerIds=[kotlin24]` and the
+     Gradle build plan excludes K21/K23 tasks.
+  4. A mutation test changes non-K24-only source and proves the production
+     runtime/component key is unchanged. Changing K24 source or shared source
+     actually compiled by K24 must change the key.
+  5. Do not delete worker sources in this task. Removing runtime references is a
+     sufficient boundary; broad cleanup does not produce a pilot outcome.
 - **Verify:**
   ```bash
   python3 -I -S bootstrap/test_clew_bootstrap.py && \
@@ -177,152 +180,157 @@ python3 -I -S scripts/check_repository_privacy.py --pre-commit
   ./clew --bootstrap-component-preflight
   ```
 - **DoD:**
-  - preflight возвращает ровно `clew,kotlin24`;
-  - default cold build не запускает K21/K23 Gradle tasks;
-  - non-K24-only source bytes не входят в production runtime authority; K24 и
-    реально компилируемые им shared source bytes входят;
-  - non-K24 project получает early typed unsupported error;
-  - K24 RELEASE manifest verification остаётся fail-closed;
-  - bootstrap tests не требуют cache seed/copy; facade smoke не повторяется в
-    T01 и сохраняет уже полученное в T00 доказательство.
+  - preflight returns exactly `clew,kotlin24`;
+  - the default cold build does not launch K21/K23 Gradle tasks;
+  - non-K24-only source bytes are outside production runtime authority; K24 and
+    shared source bytes it actually compiles remain inside authority;
+  - a non-K24 project receives an early typed unsupported error;
+  - K24 RELEASE manifest verification remains fail-closed;
+  - bootstrap tests require no cache seed/copy; T01 does not repeat the facade
+    smoke test and retains the proof obtained in T00.
 
 ---
 
-## T02. Трёхкейсный pilot runner
+## T02. Three-case pilot runner
 
 - **Status:** - [x]
-- **Goal:** Один воспроизводимый запуск доказывает три разных K24 изменения на
-  чистых репозиториях и выдаёт пригодный для сравнения обезличенный результат.
-- **Sources:** `scripts/usability-smoke.py`, `fixtures/kotlin-basic`, публичный
-  `change` flow из T00.
+- **Goal:** One reproducible run proves three distinct K24 changes in clean
+  repositories and produces a comparable anonymized result.
+- **Sources:** `scripts/usability-smoke.py`, `fixtures/kotlin-basic`, and the
+  public `change` flow from T00.
 - **Depends on:** T00, T01.
 - **Read first:**
-  - `scripts/usability-smoke.py` целиком;
+  - all of `scripts/usability-smoke.py`;
   - `fixtures/kotlin-basic/src/main/kotlin/com/acme/Samples.kt`;
-  - `crates/clew/src/context_v2.rs` public bounded projection.
+  - the public bounded projection in `crates/clew/src/context_v2.rs`.
 - **Modify:**
-  - `scripts/pilot.py` — новый bounded runner;
-  - `scripts/test_pilot.py` — unit tests агрегата/limits/failure behavior;
-  - при необходимости маленькие plan builders внутри `scripts/pilot.py`, без
-    отдельной framework/schema;
-  - `scripts/usability-smoke.py` — переиспользовать общие безопасные helpers
-    только если это уменьшает дублирование без изменения smoke claim.
-- **Product artifacts:** No product artifact update because pilot execution does
-  not change the user-visible flow defined by T00; T04 documents operation and
-  interpretation after the runner exists.
+  - `scripts/pilot.py` — new bounded runner;
+  - `scripts/test_pilot.py` — unit tests for aggregation, limits, and failures;
+  - small plan builders inside `scripts/pilot.py` when needed, with no separate
+    framework or schema;
+  - `scripts/usability-smoke.py` — reuse safe helpers only when it reduces
+    duplication without changing the smoke claim.
+- **Product artifacts:** no product artifact changes because pilot execution
+  does not alter the user-visible flow established by T00; T04 documents
+  operation and interpretation once the runner exists.
 - **Steps:**
-  1. Runner создаёт один private `CODECLEW_HOME`, выполняет один cold prime,
-     затем три fresh committed
-     copies `fixtures/kotlin-basic`; абсолютные пути не выводятся.
-  2. Cases: boundary behavior + new test; классификация edge-case + new test;
-     method behavior change + new test. Каждый plan использует contentRef из
-     своего context, exact replacement и exact expected file set.
-  3. Для каждого case выполнить native baseline test, `change open`,
-     `change prepare`, idempotent повтор, poll bounded status, strict refusal,
-     conditional publish, повтор publish, native post-test, close/gc.
-  4. Измерять только монотонные stage durations: native baseline, open,
-     prepare-to-ready, publish, total. Не сохранять command, path, source text,
-     stdout/stderr или пользовательский intent.
-  5. stdout — один canonical JSON `codeclew-pilot/1.0`: 3 case IDs,
-     pass/fail/errorCode, durations, runtimeMode, aggregate counts. При первом
-     failure runner прекращает следующие cases и возвращает non-zero.
-  6. Unit tests подменяют subprocess boundary и проверяют bounds, redaction,
-     fail-fast и canonical order без запуска E2E.
+  1. The runner creates one private `CODECLEW_HOME`, performs one cold prime,
+     then creates three fresh committed copies of `fixtures/kotlin-basic`.
+     Absolute paths are never printed.
+  2. Cases: boundary behavior plus a new test; edge-case classification plus a
+     new test; method behavior change plus a new test. Every plan uses a
+     `contentRef` from its own context, exact replacement, and an exact expected
+     file set.
+  3. For each case, run the native baseline test, `change open`,
+     `change prepare`, an idempotent repeat, bounded status polling, strict
+     refusal, conditional publication, repeated publication, native post-test,
+     and close/gc.
+  4. Measure only monotonic stage durations: native baseline, open,
+     prepare-to-ready, publish, and total. Do not retain commands, paths, source
+     text, stdout/stderr, or user intent.
+  5. stdout is one canonical `codeclew-pilot/1.0` JSON object containing three
+     case IDs, pass/fail/errorCode, durations, runtimeMode, and aggregate counts.
+     On the first failure, stop subsequent cases and exit non-zero.
+  6. Unit tests replace the subprocess boundary and verify bounds, redaction,
+     fail-fast behavior, and canonical order without running E2E.
 - **Verify:**
   ```bash
   python3 -I -S scripts/test_pilot.py && \
   python3 -I -S scripts/pilot.py
   ```
 - **DoD:**
-  - pilot с одним cold prime завершает 3/3 cases без ручной очистки;
-  - каждый case публикует один commit и только ожидаемые два файла;
-  - один runtime переиспользуется; второй и третий cases не строят capsule;
-  - aggregate JSON не содержит абсолютных путей или исходный код;
-  - failure возвращает typed errorCode и не продолжает следующие cases.
+  - the pilot completes 3/3 cases after one cold prime and no manual cleanup;
+  - every case publishes one commit and only the two expected files;
+  - one runtime is reused; cases two and three do not build a capsule;
+  - aggregate JSON contains no absolute paths or source code;
+  - failure returns a typed `errorCode` and does not continue subsequent cases.
 
 ---
 
-## T03. Дешёвый PR gate и отдельная qualification lane
+## T03. Low-cost PR gate and separate qualification lane
 
 - **Status:** - [x]
-- **Goal:** Обычные изменения получают быстрый сигнал без трёхкейсного E2E;
-  warm/platform/pilot доказательства выполняются отдельно и не замедляют PR.
+- **Goal:** Routine changes receive fast feedback without the three-case E2E;
+  warm, platform, and pilot evidence runs separately and does not slow PRs.
 - **Sources:** `.github/workflows/ci.yml`, `scripts/ci-verify.sh`,
   `bootstrap/clew_bootstrap.py:2982-3155`, T02.
 - **Depends on:** T01, T02.
 - **Read first:**
-  - `.github/workflows/ci.yml` и `scripts/ci-verify.sh` целиком;
-  - `warm_audit_payload` и `--bootstrap-warm-audit`;
-  - последний зелёный CI run `32607078475`.
+  - all of `.github/workflows/ci.yml` and `scripts/ci-verify.sh`;
+  - `warm_audit_payload` and `--bootstrap-warm-audit`;
+  - last green CI run `32607078475`.
 - **Modify:**
-  - `.github/workflows/ci.yml` — оставить current targeted tests + one smoke;
-  - `.github/workflows/qualification.yml` — manual/scheduled matrix
-    `ubuntu-latest, macos-latest`;
+  - `.github/workflows/ci.yml` — retain current targeted tests plus one smoke;
+  - `.github/workflows/qualification.yml` — manual/scheduled matrix using
+    `ubuntu-latest` and `macos-latest`;
   - `scripts/qualification/pilot-readiness.sh` — prime once, strict warm audit,
-    T02 pilot;
-  - узкие Python/shell tests существующего gate style.
-- **Product artifacts:** No product artifact update because CI routing changes
+    then the T02 pilot;
+  - narrow Python/shell tests in the existing gate style.
+- **Product artifacts:** no product artifact change because CI routing changes
   assurance cadence, not the supported command flow or product decision.
 - **Steps:**
-  1. PR workflow не получает новый pilot run; один usability smoke остаётся
-     единственным E2E acceptance.
-  2. Qualification workflow запускается `workflow_dispatch` и weekly schedule,
-     использует JDK 21 и pinned Rust на Linux/macOS.
-  3. Qualification prime выполняется один раз, затем
-     `./clew --bootstrap-warm-audit`; assert `PASSED`, `processRuns=0`,
-     `digestFileCalls=0`, no cold toolchain/capsule build.
-  4. После warm gate запустить T02 pilot. Не добавлять K21/K23/Maven arms.
-  5. Обновить deprecated setup actions только в затронутых workflow, если
-     доступная major версия совместима; это warning cleanup, не новый gate.
+  1. Do not add a pilot run to the PR workflow; one usability smoke test remains
+     the sole E2E acceptance check.
+  2. Run qualification through `workflow_dispatch` and a weekly schedule using
+     JDK 21 and pinned Rust on Linux and macOS.
+  3. Prime qualification once, then run `./clew --bootstrap-warm-audit`; assert
+     `PASSED`, `processRuns=0`, `digestFileCalls=0`, and no cold
+     toolchain/capsule build.
+  4. Run the T02 pilot after the warm gate. Do not add K21/K23/Maven arms.
+  5. Update deprecated setup actions only in affected workflows when the
+     available major version is compatible. This is warning cleanup, not a new
+     gate.
 - **Verify:**
   ```bash
   sh -n scripts/qualification/pilot-readiness.sh && \
   python3 -I -S scripts/test_gate_safety.py
   ```
 - **DoD:**
-  - PR CI содержит ровно один product E2E;
-  - qualification имеет только manual+weekly triggers и две supported OS;
-  - warm audit fail-closed проверяет нулевые process/digest counters;
-  - pilot failure блокирует только qualification claim, не unrelated PR CI.
+  - PR CI contains exactly one product E2E;
+  - qualification has only manual and weekly triggers on two supported OSes;
+  - the fail-closed warm audit verifies zero process/digest counters;
+  - pilot failure blocks only the qualification claim, not unrelated PR CI.
 
 ---
 
-## T04. Операторский контракт пилота и release decision gate
+## T04. Pilot operator contract and release-decision gate
 
 - **Status:** - [x]
-- **Goal:** Команда может повторяемо использовать поддержанный contour и после
-  20 реальных изменений принять evidence-based решение о prebuilt release.
-- **Sources:** T00–T03, `README.md`, `docs/plans/codeclew-usable-first-plan.md`.
+- **Goal:** The team can repeatedly use the supported operating model and make
+  an evidence-based decision about a prebuilt release after 20 real changes.
+- **Sources:** T00–T03, `README.md`, and
+  `docs/plans/codeclew-usable-first-plan.md`.
 - **Depends on:** T03.
 - **Read first:**
-  - фактический stdout T02 pilot;
-  - README supported contour и recovery/conditional sections;
-  - error codes в `crates/clew/src/error.rs`.
+  - actual stdout from the T02 pilot;
+  - README supported-scope and recovery/conditional sections;
+  - error codes in `crates/clew/src/error.rs`.
 - **Modify:**
   - `docs/pilot/README.md` — runbook, supported scope, feature-branch policy,
-    recovery, anonymized recording fields, stop conditions;
-  - `docs/pilot/case-template.json` — только case ID, project class, outcome,
-    durations, runtime mode, error code; без repo/path/intent/source;
-  - `README.md` — ссылка на pilot runbook и pilot-ready wording.
-  - `scripts/check_repository_privacy.py` — запрещённый subtree для заполненных
+    recovery, anonymized recording fields, and stop conditions;
+  - `docs/pilot/case-template.json` — case ID, project class, outcome,
+    durations, runtime mode, and error code only; no repo/path/intent/source;
+  - `README.md` — pilot runbook link and pilot-ready wording;
+  - `scripts/check_repository_privacy.py` — forbidden subtree for populated
     evidence;
   - `scripts/test_check_repository_privacy.py` — exact path-rule self-test;
-  - `.gitignore` — удобный ignore, не являющийся security boundary.
-- **Product artifacts:** `README.md` и `docs/pilot/README.md` фиксируют текущий
-  operator flow. `case-template.json` является приватно заполняемым шаблоном,
-  не доказательством и не report; заполненные cases запрещено коммитить.
+  - `.gitignore` — convenient ignore rule that is not a security boundary.
+- **Product artifacts:** `README.md` and `docs/pilot/README.md` establish the
+  current operator flow. `case-template.json` is a privately populated template,
+  not evidence or a report; populated cases must never be committed.
 - **Steps:**
-  1. Зафиксировать обязательную feature-branch/clean-worktree политику пилота.
-  2. Описать 20-case exit criteria: ≥95% prepare без ручной очистки, 100% no
-     source mutation before publish, idempotent retry, typed failure/recovery,
-     отсутствие private data.
-  3. Решение о signed prebuilt capsule разрешено только после 20 completed
-     cases. Failure ниже порога выбирает top typed blocker, а не расширение
-     языка/runtime.
-  4. Документировать три уровня checks: PR, qualification, future release.
-  5. Заполненные evidence хранятся только вне repository. Зарезервировать
-     `docs/pilot/results/` как forbidden prefix в scanner и ignore; scanner
-     обязан отклонять путь даже при force-add. Committed template проходит.
+  1. Establish the mandatory feature-branch and clean-worktree policy.
+  2. Define 20-case exit criteria: at least 95% prepare without manual cleanup,
+     100% no source mutation before publish, idempotent retry, typed
+     failure/recovery, and no private data.
+  3. Permit a signed prebuilt-capsule decision only after 20 completed cases. A
+     result below the threshold selects the top typed blocker rather than
+     expanding language or runtime scope.
+  4. Document three check levels: PR, qualification, and future release.
+  5. Store populated evidence outside the repository. Reserve
+     `docs/pilot/results/` as a forbidden scanner prefix and ignore it; the
+     scanner must reject the path even when force-added. The committed template
+     remains valid.
 - **Verify:**
   ```bash
   python3 -I -S scripts/test_check_repository_privacy.py && \
@@ -330,42 +338,43 @@ python3 -I -S scripts/check_repository_privacy.py --pre-commit
   rg -n '20|95%|feature|qualification|release' docs/pilot/README.md README.md
   ```
 - **DoD:**
-  - новый оператор проходит supported flow без чтения research scripts;
-  - заполненные pilot cases не могут попасть в Git;
-  - критерий release decision численный и не допускает ручного повышения
-    `UNSURE` до `VERIFIED`;
-  - preview contours явно не входят в pilot claim.
+  - a new operator completes the supported flow without reading research scripts;
+  - populated pilot cases cannot enter Git;
+  - the release-decision criterion is numeric and forbids manually promoting
+    `UNSURE` to `VERIFIED`;
+  - preview operating models are explicitly outside the pilot claim.
 
 ---
 
-## T05. Финальная проверка, публикация и один GitHub run
+## T05. Final verification, publication, and one GitHub run
 
 - **Status:** - [x]
-- **Goal:** Опубликовать один coherent pilot-ready revision с независимым
-  verdict и зелёным Linux RELEASE smoke.
-- **Sources:** T00–T04, текущий `origin/main`, privacy policy.
+- **Goal:** Publish one coherent pilot-ready revision with an independent
+  verdict and a green Linux RELEASE smoke test.
+- **Sources:** T00–T04, current `origin/main`, and privacy policy.
 - **Depends on:** T04.
 - **Read first:**
-  - полный diff T00–T04;
+  - the complete T00–T04 diff;
   - `scripts/ci-verify.sh`;
-  - `.github/workflows/ci.yml` и qualification workflow.
+  - `.github/workflows/ci.yml` and the qualification workflow.
 - **Modify:**
-  - только blocking fixes независимого review;
-  - этот план — статусы T00–T05;
-  - никаких новых feature/qualification arms.
-- **Product artifacts:** No product artifact update because T05 verifies and
-  publishes the already documented T00–T04 outcome.
+  - blocking fixes from the independent review only;
+  - this plan's T00–T05 statuses;
+  - no new feature or qualification arms.
+- **Product artifacts:** no product artifact change because T05 verifies and
+  publishes the T00–T04 outcome already documented.
 - **Steps:**
-  1. Независимый агент проверяет facade authority, K24-only registry, pilot
-     redaction/fail-fast, warm gate locality и docs; максимум один targeted
-     repair без нового full review.
-  2. Выполнить fmt/clippy, targeted unit/bootstrap/pilot unit и privacy, затем
-     ровно один финальный `./scripts/ci-verify.sh` как третий local product E2E.
-  3. Не повторять ни smoke, ни pilot, ни `ci-verify` ради диагностики.
-  4. Commit generic identity, lease-safe push, найти GitHub run exact SHA.
-  5. Наблюдать единственный CI до terminal. При failure не исправлять и не
-     перепушивать в рамках этого плана: зафиксировать точную причину и оставить
-     T05/цель незавершёнными.
+  1. An independent agent reviews facade authority, the K24-only registry,
+     pilot redaction/fail-fast behavior, warm-gate locality, and documentation;
+     allow at most one targeted repair without another full review.
+  2. Run fmt/clippy, targeted unit/bootstrap/pilot unit tests, and privacy, then
+     exactly one final `./scripts/ci-verify.sh` as the third local product E2E.
+  3. Do not repeat smoke, pilot, or `ci-verify` for diagnosis.
+  4. Commit with generic identity, push with lease safety, and find the GitHub
+     run for the exact SHA.
+  5. Observe the sole CI run to terminal state. On failure, do not fix and push
+     again within this plan; record the exact cause and leave T05/the goal
+     incomplete.
 - **Verify:**
   ```bash
   test -z "$(git status --porcelain=v1 --untracked-files=all)" && \
@@ -374,14 +383,14 @@ python3 -I -S scripts/check_repository_privacy.py --pre-commit
     --json databaseId,headSha,status,conclusion,url
   ```
 - **DoD:**
-  - независимый verdict `PASS` без critical/major;
-  - local targeted checks зелёные;
-  - exact GitHub SHA зелёный и smoke сообщает `runtimeMode=RELEASE`;
-  - worktree чистый, local/remote HEAD совпадают;
-  - все T00–T05 отмечены `[x]`, либо цель честно оставлена active/blocked с
-    точным remaining task — не объявлена завершённой частично.
+  - independent verdict is `PASS` with no critical or major findings;
+  - local targeted checks are green;
+  - the exact GitHub SHA is green and smoke reports `runtimeMode=RELEASE`;
+  - the worktree is clean and local/remote HEAD match;
+  - every T00–T05 status is `[x]`, or the goal honestly remains active/blocked
+    with the exact remaining task instead of being declared partially complete.
 
-## Финальный чек
+## Final check
 
 ```bash
 unchecked=$(grep -cE '^- \*\*Status:\*\* - \[ \]' docs/plans/codeclew-pilot-readiness-implementation-plan.md)

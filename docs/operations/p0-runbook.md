@@ -1,59 +1,59 @@
-# Codeclew P0: установка и эксплуатация
+# Codeclew P0: Installation and Operations
 
-Этот документ описывает минимальный промышленный контур Codeclew: как
-развернуть исходный дистрибутив на машине разработчика, подключить Codex или
-Claude, безопасно переживать изменения целевых репозиториев и собирать материал
-для расследований без передачи исходного кода.
+This document describes Codeclew's minimum production-ready operating model:
+installing the distribution on a developer machine, connecting Codex or Claude,
+handling changes in target repositories safely, and collecting investigation
+material without disclosing source code.
 
-P0 является пилотным контуром, а не обещанием общей доступности. Для публичного
-macOS release используется установленная команда `clew`; для разработки из
-исходников — `./clew` из зафиксированного checkout. Прямой запуск бинарника из
-runtime capsule и ручное редактирование `CODECLEW_HOME` не поддерживаются.
+P0 is a pilot operating model, not a general-availability commitment. Use the
+installed `clew` command for the public macOS release and `./clew` from a pinned
+checkout for source development. Running the binary directly from a runtime
+capsule and editing `CODECLEW_HOME` contents manually are unsupported.
 
-## 1. Что именно поддерживается
+## 1. Supported scope
 
-Машиночитаемая истина находится в
-`crates/clew/support-matrix.json` и возвращается командой:
+The machine-readable source of truth is `crates/clew/support-matrix.json` and is
+returned by:
 
 ```bash
 ./clew capabilities
 ```
 
-На P0:
+P0 support:
 
-| Профиль | Чтение | Изменение и публикация |
+| Profile | Read | Change and publish |
 |---|---:|---:|
-| Kotlin 2.4.10, Gradle wrapper, одна compilation, `PROJECT_NATIVE` | да, K2 | да, пилот |
-| Kotlin 2.3.0, Maven | да, preview | нет |
-| Python, Tree-sitter syntax | да, preview | нет |
-| Rust, bounded syntax | да, preview | нет |
-| Нить из 2–8 репозиториев | да | нет |
+| Kotlin 2.4.10, Gradle wrapper, one compilation, `PROJECT_NATIVE` | yes, K2 | yes, pilot |
+| Kotlin 2.3.0, Maven | yes, preview | no |
+| Python, Tree-sitter syntax | yes, preview | no |
+| Rust, bounded syntax | yes, preview | no |
+| Thread of 2–8 repositories | yes | no |
 
-Python и Rust дают синтаксические факты, а не доказанную динамическую семантику.
-Многорепозиторная нить не превращает объявленную топологию в доказанную связь и
-не может быть источником плана изменения.
+Python and Rust provide syntactic facts, not proven dynamic semantics. A
+multi-repository thread does not turn declared topology into a proven
+relationship and cannot be used as the source of a change plan.
 
-## 2. Установка на другую машину
+## 2. Installing on another machine
 
-### Публичный macOS pilot
+### Public macOS pilot
 
-Для Apple Silicon и Intel Mac установка выполняется одной строкой:
+Install on Apple Silicon or Intel Mac with one command:
 
 ```bash
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
 ```
 
-Installer определяет архитектуру, скачивает готовый bundle из последнего GitHub
-Release, проверяет опубликованный SHA-256, безопасно распаковывает архив без
-symlink/path traversal и атомарно обновляет launcher. Codeclew на машине
-пользователя не компилируется.
+The installer detects the architecture, downloads a prebuilt bundle from the
+latest GitHub Release, verifies the published SHA-256 checksum, extracts the
+archive while rejecting symlink and path-traversal entries, and atomically
+updates the launcher. Codeclew is not compiled on the user's machine.
 
-По умолчанию файлы размещаются в:
+Files are installed to these locations by default:
 
 - `~/.local/share/codeclew/releases/<version>-macos-<arch>`;
-- `~/.local/bin/clew` — атомарная ссылка на выбранный release.
+- `~/.local/bin/clew`, an atomic link to the selected release.
 
-Можно закрепить версию и изменить каталоги локальными переменными:
+Pin a version or override the directories with command-local variables:
 
 ```bash
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | \
@@ -62,37 +62,37 @@ curl -fsSL https://codeclew.github.io/codeclew/install.sh | \
   CODECLEW_BIN_DIR=/absolute/private/path/bin sh
 ```
 
-После установки:
+After installation:
 
 ```bash
 clew capabilities
 clew doctor
 ```
 
-Публичный pilot проверяет checksum, но пока не является Apple-notarized
-поставкой. Release строится только на GitHub macOS runner соответствующей
-архитектуры и содержит запечатанный runtime seed, поэтому Rust/Cargo/Gradle не
-нужны для установки или старта самого Codeclew. Git, Python 3.11+ и JDK 21 для
-анализа Kotlin-проектов остаются внешними зависимостями.
+The public pilot verifies checksums but is not yet Apple-notarized. Releases are
+built only on GitHub macOS runners for the matching architecture and contain a
+sealed runtime seed, so Rust, Cargo, and Gradle are not required to install or
+start Codeclew. Git, Python 3.11+, and JDK 21 remain external dependencies when
+analyzing Kotlin projects.
 
-### Зависимости source build
+### Source-build dependencies
 
-Нужны:
+Required:
 
-- macOS или Linux;
+- macOS or Linux;
 - Git;
-- Python 3.11 или новее;
+- Python 3.11 or newer;
 - JDK 21;
-- Rust/Cargo из `rust-toolchain.toml` (сейчас Rust 1.92.0);
-- не менее 6 GiB свободного места на томе `CODECLEW_HOME` для холодной сборки;
-- Maven в `PATH` только для Maven-проектов без `./mvnw`.
+- Rust/Cargo from `rust-toolchain.toml` (currently Rust 1.92.0);
+- at least 6 GiB free on the `CODECLEW_HOME` volume for a cold build;
+- Maven in `PATH` only for Maven projects without `./mvnw`.
 
-Холодная сборка runtime capsule также должна иметь доступ к уже заполненным
-локальным dependency caches или к одобренным источникам Cargo, Gradle и Maven.
-Изолированная поставка готового подписанного runtime не входит в P0; для
-полностью offline/fleet-развёртывания нужен отдельный release pipeline.
+A cold runtime-capsule build also needs either populated local dependency caches
+or access to approved Cargo, Gradle, and Maven sources. An isolated prebuilt,
+signed runtime distribution is outside P0; fully offline or fleet deployment
+requires a separate release pipeline.
 
-### Установка из зафиксированного исходного checkout для разработки
+### Installing from a pinned source checkout for development
 
 ```bash
 git clone <approved-codeclew-repository> /absolute/path/to/codeclew
@@ -110,18 +110,18 @@ chmod 700 "$CODECLEW_HOME"
 ./clew doctor
 ```
 
-Checkout должен быть неизменённым и закреплённым за одобренным commit/tag.
-`CODECLEW_HOME` должен быть физическим нормализованным абсолютным путём,
-принадлежать текущему пользователю и иметь режим `0700`. Не используйте один
-state root несколькими Unix-пользователями и не размещайте его в синхронизируемой
-папке. Если `CODECLEW_HOME` не задан, используется пользовательский cache root.
+The checkout must be unchanged and pinned to an approved commit or tag.
+`CODECLEW_HOME` must be a physically normalized absolute path owned by the
+current user with mode `0700`. Do not share one state root between Unix users or
+place it in a synchronized directory. When `CODECLEW_HOME` is unset, Codeclew
+uses the user's cache root.
 
-Первый обычный запуск строит и запечатывает immutable runtime capsule. Тёплый
-запуск проверяет и повторно использует его. После развертывания сохраните JSON
-от `capabilities` и `doctor` как baseline конкретной машины; оба ответа намеренно
-не содержат путей или идентичности репозитория.
+The first normal launch builds and seals an immutable runtime capsule. A warm
+launch verifies and reuses it. After deployment, retain the `capabilities` and
+`doctor` JSON as the baseline for that machine; both responses intentionally
+omit paths and repository identity.
 
-Для целевого репозитория выполните отдельную проверку:
+Run a separate check for the target repository:
 
 ```bash
 ./clew doctor \
@@ -129,20 +129,20 @@ state root несколькими Unix-пользователями и не ра
   --target-ref refs/heads/feature/codeclew-task
 ```
 
-Команда может завершиться с кодом 0 и `status: ACTION_REQUIRED`: автоматизация
-обязана читать JSON и разрешать работу только когда все строки с
-`required: true` имеют `status: PASS`.
+The command can exit with code 0 and `status: ACTION_REQUIRED`. Automation must
+inspect the JSON and proceed only when every item with `required: true` has
+`status: PASS`.
 
-## 3. Подключение Codex и Claude
+## 3. Connecting Codex and Claude
 
-В checkout Codeclew уже находятся project skills:
+The Codeclew checkout includes project skills for both agents:
 
 - Codex: `.agents/skills/codeclew/SKILL.md`;
 - Claude: `.claude/skills/codeclew/SKILL.md`.
 
-Если агент запускается из целевого репозитория, скопируйте соответствующий skill
-в него. Не создавайте машинно-зависимый symlink и не записывайте абсолютный путь
-Codeclew в Git:
+If the agent runs from the target repository, copy the appropriate skill into
+that repository. Do not create a machine-specific symlink or commit an absolute
+Codeclew path:
 
 ```bash
 export CODECLEW_ROOT=/absolute/path/to/codeclew
@@ -159,24 +159,23 @@ install -m 0644 \
   "$TARGET_REPO/.claude/skills/codeclew/SKILL.md"
 ```
 
-Перед запуском агента задайте `CODECLEW_ROOT` в его локальном окружении. Skill
-требует использовать `$CODECLEW_ROOT/clew`, запускать `capabilities` и `doctor`,
-не угадывать язык/compilation, проверять freshness и не публиковать результат
-без явного разрешения пользователя. После обновления Codeclew скопируйте skill
-повторно. В контролируемой среде полезно проверять совпадение его хеша с
-одобренной версией.
+Set `CODECLEW_ROOT` in the agent's local environment before starting it. The
+skill requires `$CODECLEW_ROOT/clew`, runs `capabilities` and `doctor`, forbids
+guessing the language or compilation, checks freshness, and prevents publication
+without explicit user approval. Copy the skill again after updating Codeclew.
+In a controlled environment, verify that its hash matches the approved version.
 
-Для проверки обнаружения попросите агента явно применить `codeclew` к безопасной
-read-only задаче. Успешный агент сначала покажет результат admission
-(`capabilities`/`doctor`), а не начнёт читать весь репозиторий обычными shell
-командами. Явное указание имени skill остаётся аварийным способом, если
-автоматический выбор не сработал.
+To test discovery, explicitly ask the agent to apply `codeclew` to a safe,
+read-only task. A correctly configured agent reports admission results
+(`capabilities` and `doctor`) before attempting to read the whole repository
+with general shell commands. Explicitly naming the skill remains the fallback
+when automatic selection does not activate it.
 
-## 4. Обычный Kotlin workflow
+## 4. Standard Kotlin workflow
 
-Целевой ref должен указывать на текущий `HEAD`, а worktree быть чистым. Работайте
-на отдельной feature-ветке; Codeclew не должен публиковать прямо в защищённую
-ветку.
+The target ref must point to the current `HEAD`, and the worktree must be clean.
+Work on a dedicated feature branch; Codeclew must not publish directly to a
+protected branch.
 
 ```bash
 "$CODECLEW_ROOT/clew" change open \
@@ -184,13 +183,13 @@ read-only задаче. Успешный агент сначала покаже�
   --target-ref refs/heads/feature/codeclew-task \
   --language kotlin \
   --compilation :app/main \
-  --intent 'описание изменения' \
+  --intent 'describe the change' \
   --term ImportantSymbol \
   --term ImportantBehavior
 ```
 
-Сохраните `sessionId` и `contextId` из JSON. Подготовьте закрытый edit-plan и
-перед началом изолированной мутации проверьте freshness:
+Save the `sessionId` and `contextId` from the JSON response. Prepare a private
+edit plan and check freshness before isolated mutation starts:
 
 ```bash
 "$CODECLEW_ROOT/clew" change check-freshness --session session:...
@@ -203,13 +202,13 @@ read-only задаче. Успешный агент сначала покаже�
 "$CODECLEW_ROOT/clew" change status --run run:...
 ```
 
-Проверьте candidate diff, результаты compile/test и все obligations. Статусы
-`READY_TO_PUBLISH_CONDITIONAL` и `VALIDATED_CONDITIONAL` не являются зелёным
-сигналом: оставшиеся проверки должны быть явно выполнены или приняты владельцем
-изменения.
+Review the candidate diff, compile and test results, and every obligation.
+`READY_TO_PUBLISH_CONDITIONAL` and `VALIDATED_CONDITIONAL` are not unconditional
+approval: the remaining checks must be performed explicitly or accepted by the
+change owner.
 
-Непосредственно перед публикацией повторите `change check-freshness`. Затем,
-только после явного согласия пользователя:
+Immediately before publication, repeat `change check-freshness`. Then, only
+after explicit user approval:
 
 ```bash
 "$CODECLEW_ROOT/clew" change publish \
@@ -220,41 +219,40 @@ read-only задаче. Успешный агент сначала покаже�
 "$CODECLEW_ROOT/clew" session gc --session session:...
 ```
 
-## 5. Часто обновляемый репозиторий
+## 5. Frequently updated repositories
 
-Session привязан к точному runtime, исходному commit, target ref и target OID.
-Внешний push сам по себе не меняет локальный ref; обновление локальной ветки,
-commit другого разработчика или незакоммиченная правка меняют её состояние.
-Codeclew не делает rebase и не переносит старый план автоматически.
+A session is bound to an exact runtime, source commit, target ref, and target
+OID. A remote push does not change the local ref by itself, but a local branch
+update, another developer's commit, or an uncommitted edit changes its state.
+Codeclew neither rebases nor automatically carries an old plan forward.
 
-`change check-freshness` возвращает:
+`change check-freshness` returns:
 
-| Статус | Смысл | Действие |
+| Status | Meaning | Action |
 |---|---|---|
-| `FRESH` | `HEAD`, target ref и ожидаемый OID совпадают, worktree чист | можно продолжать |
-| `DIRTY` | есть локальные изменения | остановиться; владелец решает, commit/stash/другой worktree |
-| `STALE` | `HEAD` или ref ушёл от session authority | закрыть старую session и открыть новую |
-| `UNAVAILABLE` | репозиторий/locator/Git недоступен | восстановить доступ, не публиковать |
-| `TERMINAL` | session закрыта/abort/gc | открыть новую при необходимости |
+| `FRESH` | `HEAD`, target ref, and expected OID match; worktree is clean | continue |
+| `DIRTY` | local changes exist | stop; the owner chooses commit, stash, or another worktree |
+| `STALE` | `HEAD` or the ref moved away from session authority | close the old session and open a new one |
+| `UNAVAILABLE` | repository, locator, or Git is unavailable | restore access; do not publish |
+| `TERMINAL` | session was closed, aborted, or garbage-collected | open a new session if needed |
 
-Ранбук для `STALE`:
+Runbook for `STALE`:
 
-1. Не публиковать и не переиспользовать старый edit-plan.
-2. Сохранить только нужное человеку описание intent; не копировать старые
-   semantic assertions как доказанные.
-3. Закрыть старую session.
-4. Обновить целевую feature-ветку обычным командным процессом команды.
-5. Добиться чистого worktree и `target ref == HEAD`.
-6. Повторить `doctor`, `change open`, построение context и plan.
+1. Do not publish or reuse the old edit plan.
+2. Retain only the human-readable intent when useful; do not copy old semantic
+   assertions as established facts.
+3. Close the old session.
+4. Update the target feature branch using the team's normal process.
+5. Restore a clean worktree with `target ref == HEAD`.
+6. Repeat `doctor`, `change open`, context creation, and plan creation.
 
-Если публикация столкнулась с compare-and-swap, применяется тот же ранбук. Это
-ожидаемая защита от гонки, а не повод принудительно двигать ref.
+Use the same runbook when publication hits a compare-and-swap conflict. This is
+expected race protection, not a reason to force-move the ref.
 
-## 6. Чтение Python и Rust
+## 6. Reading Python and Rust
 
-Python читается из tracked UTF-8 `.py` blobs точного base commit. Codeclew не
-запускает Python, не импортирует модули, не читает `.env` и не устанавливает
-зависимости.
+Python is read from tracked UTF-8 `.py` blobs at the exact base commit. Codeclew
+does not execute Python, import modules, read `.env`, or install dependencies.
 
 ```bash
 "$CODECLEW_ROOT/clew" session open \
@@ -265,16 +263,16 @@ Python читается из tracked UTF-8 `.py` blobs точного base commi
 
 "$CODECLEW_ROOT/clew" context create \
   --session session:... \
-  --intent 'найти путь нормализации запроса' \
+  --intent 'find the request normalization path' \
   --term normalize \
   --term Request
 ```
 
-Import root должен совпадать с source root или быть его предком. Выход остаётся
-`PARTIAL/UNSURE`: framework wiring, runtime imports, типы и реальные call edges
-проверяются штатными тестами Python-проекта.
+The import root must equal the source root or be its ancestor. Results remain
+`PARTIAL/UNSURE`: verify framework wiring, runtime imports, types, and actual
+call edges with the Python project's normal test suite.
 
-Для Rust нужен корневой обычный `Cargo.lock` и точный target selector:
+Rust requires a regular root `Cargo.lock` and an exact target selector:
 
 ```bash
 "$CODECLEW_ROOT/clew" session open \
@@ -284,14 +282,15 @@ Import root должен совпадать с source root или быть ег�
   --compilation 'cargo:crates/example/Cargo.toml#example#lib#example'
 ```
 
-Rust preview не утверждает name resolution, `cfg`, procedural macro или call
-edge. Python/Rust session нельзя передать в `change prepare`/publish.
+The Rust preview makes no claim about name resolution, `cfg`, procedural macros,
+or call edges. Python and Rust sessions cannot be passed to `change prepare` or
+publication.
 
-## 7. Многорепозиторные нити
+## 7. Multi-repository threads
 
-Откройте отдельную session для каждого точного repository/language/compilation.
-Один и тот же репозиторий может иметь несколько analysis units. Затем свяжите
-от двух до восьми sessions:
+Open a separate session for every exact repository, language, and compilation.
+One repository may have multiple analysis units. Then connect two to eight
+sessions:
 
 ```bash
 "$CODECLEW_ROOT/clew" thread open \
@@ -302,31 +301,31 @@ edge. Python/Rust session нельзя передать в `change prepare`/publ
 
 "$CODECLEW_ROOT/clew" thread context \
   --thread thread:... \
-  --intent 'проследить нормализацию между сервисами' \
+  --intent 'trace normalization across services' \
   --term normalize \
   --term Service
 ```
 
-Для квалифицированных Kotlin members доступны `thread callables`,
-`thread impact` и условная `thread validate`; полные примеры находятся в
-README. Нить read-only, не владеет member sessions и не может использоваться в
-plan/task-run. Закрытие и GC нити не закрывают member sessions:
+Qualified Kotlin members support `thread callables`, `thread impact`, and
+conditional `thread validate`; see the README for complete examples. A thread
+is read-only, does not own its member sessions, and cannot be used in a plan or
+task run. Closing or garbage-collecting a thread does not close member sessions:
 
 ```bash
 "$CODECLEW_ROOT/clew" thread close --thread thread:...
 "$CODECLEW_ROOT/clew" thread gc --thread thread:...
 ```
 
-При обновлении хотя бы одного репозитория откройте новую session этого member и
-новую immutable thread. Старую нить не «подменяют» новым member задним числом.
+When any repository changes, open a new session for that member and create a
+new immutable thread. Never replace a member inside an old thread retroactively.
 
-## 8. Ошибки и материал для расследования
+## 8. Errors and investigation material
 
-Полный stdout может содержать source windows, diff, symbols, arguments, IDs и
-пути. Он нужен для локального расследования, но не является безопасным для
-отправки. Codeclew не отправляет его автоматически.
+Full stdout may contain source windows, diffs, symbols, arguments, identifiers,
+and paths. It is useful for local investigation but is unsafe to send. Codeclew
+never sends it automatically.
 
-Создайте приватный каталог и захватите stdout/stderr отдельно:
+Create a private directory and capture stdout and stderr separately:
 
 ```bash
 umask 077
@@ -339,10 +338,11 @@ mkdir -m 700 "$INCIDENT_DIR"
 chmod 600 "$INCIDENT_DIR/result.json" "$INCIDENT_DIR/completion.json"
 ```
 
-Для core error/status передайте локальный `result.json` в allowlist-конвертер.
-Для bootstrap failure передайте файл, содержащий ровно один bootstrap error
-JSON; если сломанная установка не запускает summarizer, используйте исправную
-установку той же одобренной версии на доверенной машине:
+For a core error or status, pass the local `result.json` to the allowlist-based
+converter. For a bootstrap failure, provide a file containing exactly one
+bootstrap error JSON object. If the broken installation cannot start the
+summarizer, use a working installation of the same approved version on a
+trusted machine:
 
 ```bash
 "$CODECLEW_ROOT/clew" support summarize \
@@ -350,123 +350,125 @@ JSON; если сломанная установка не запускает sum
   >"$INCIDENT_DIR/shareable-summary.json"
 ```
 
-Вход обязан быть нормализованным абсолютным путём, обычным файлом владельца с
-режимом ровно `0600`, размером не более 1 MiB и не symlink. Чтение проверяет
-identity/size/timestamps до и после, поэтому гонка закрывается отказом.
+The input must be a normalized absolute path to a non-symlink regular file,
+owned by the current user, exactly mode `0600`, and no larger than 1 MiB.
+Codeclew checks identity, size, and timestamps before and after reading, so a
+racing modification fails closed.
 
-Выход строится только из allowlist и имеет `status: SAFE_TO_SHARE`. Он содержит
-schema/stage, типизированный код ошибки или terminal status, retryability,
-remediation ID и digest самой очищенной сводки. Он не переносит сообщения,
-исходники, diff, symbols, arguments, repository content digests, repository/session/run
-identity или пути.
+The output is built only from an allowlist and has `status: SAFE_TO_SHARE`. It
+contains the schema and stage, typed error code or terminal status,
+retryability, remediation ID, and a digest of the sanitized summary itself. It
+does not carry messages, source, diffs, symbols, arguments, repository content
+digests, repository/session/run identity, or paths.
 
-В обращение можно приложить только:
+Attach only the following to a support request:
 
 1. `shareable-summary.json`;
-2. свежий JSON `capabilities`;
-3. свежий JSON `doctor` без `--repo` либо с repo-проверками — оба варианта
-   path-free;
-4. человеческое время события и повторяемость без имён/путей/фрагментов кода.
+2. fresh `capabilities` JSON;
+3. fresh `doctor` JSON, with or without `--repo`; both forms are path-free;
+4. the approximate event time and reproducibility, without names, paths, or
+   code fragments.
 
-Не прикладывайте raw stdout/stderr, plan, candidate diff, CAS, runtime/state
-каталоги, Git remote, названия закрытых symbols и командную строку. Оригиналы
-остаются только на машине разработчика по политике retention команды и
-удаляются после закрытия расследования.
+Do not attach raw stdout or stderr, plans, candidate diffs, CAS objects,
+runtime/state directories, Git remotes, private symbol names, or command lines.
+Originals remain on the developer machine under the team's retention policy and
+are deleted after the investigation closes.
 
-## 9. Типовые аварийные ранбуки
+## 9. Common incident runbooks
 
 ### Worker crash
 
-1. Проверить typed error и `retryable`.
-2. Для `WORKER_CRASHED` повторить операцию один раз без смены authority.
-3. При повторе остановиться, собрать safe summary и сохранить локальные raw
-   artifacts.
-4. Не делать бесконечный retry и не удалять state до решения расследующего.
+1. Inspect the typed error and `retryable` value.
+2. For `WORKER_CRASHED`, retry once without changing authority.
+3. If it repeats, stop, generate a safe summary, and retain raw artifacts
+   locally.
+4. Do not retry indefinitely or delete state before the investigator decides.
 
 ### `WORKTREE_RECOVERY_REQUIRED`
 
-1. Не изменять candidate worktree вручную.
-2. Запустить `change recover --session session:... --run run:...`.
-3. Снова получить `change status` и выполнить указанную remediation.
-4. Если recovery повторно не завершается, сохранить incident и остановиться.
+1. Do not edit the candidate worktree manually.
+2. Run `change recover --session session:... --run run:...`.
+3. Fetch `change status` again and follow the reported remediation.
+4. If recovery repeatedly fails, preserve the incident locally and stop.
 
 ### `PROJECT_MODEL_CHANGED`
 
-Session была создана другим runtime/model authority. Запустите её из исходного
-зафиксированного checkout Codeclew или закройте и создайте новую session текущей
-версией. Не переписывайте session JSON.
+The session was created under another runtime/model authority. Run it from the
+original pinned Codeclew checkout, or close it and create a new session with the
+current version. Do not rewrite session JSON.
 
-### Недостаток места
+### Insufficient disk space
 
-Освободите минимум 6 GiB на state volume, затем повторите `doctor`. Удаляйте
-только завершённые sessions/threads их командами `gc`; ручное удаление объектов
-может разрушить authority. Если state подозревается в повреждении, сначала
-сохраните локальный incident и прекратите запись.
+Free at least 6 GiB on the state volume, then repeat `doctor`. Remove only
+terminal sessions and threads through their `gc` commands; manual object removal
+can break authority. If state corruption is suspected, first retain a local
+incident and stop writing.
 
-### Грязный worktree
+### Dirty worktree
 
-Codeclew ничего не stash/reset. Владелец выбирает commit, отдельный Git worktree
-или ручной stash. После этого повторяются `doctor` и freshness. Агент не должен
-принимать это решение самостоятельно.
+Codeclew never runs stash or reset. The owner chooses whether to commit, create
+a separate Git worktree, or stash manually. Then repeat `doctor` and the
+freshness check. The agent must not make this decision autonomously.
 
-## 10. Обновление Codeclew
+## 10. Updating Codeclew
 
-Обновляйте checkout только между задачами:
+Update the checkout only between tasks:
 
-1. Завершите либо явно abort/close все активные sessions и threads.
-2. Сохраните baseline `capabilities` и `doctor` старой версии.
-3. Переключите checkout на новый одобренный commit/tag без локальных правок.
-4. Выполните bootstrap preflight, `capabilities`, `doctor` и пилотный smoke case.
-5. Обновите copies skills в целевых репозиториях.
-6. Не мигрируйте и не редактируйте старые session records. Для нового runtime
-   открывайте новые sessions.
+1. Complete or explicitly abort and close all active sessions and threads.
+2. Retain the old version's `capabilities` and `doctor` baseline.
+3. Switch to the new approved commit or tag with no local modifications.
+4. Run bootstrap preflight, `capabilities`, `doctor`, and a pilot smoke case.
+5. Refresh copied skills in target repositories.
+6. Do not migrate or edit old session records. Open new sessions for the new
+   runtime.
 
-Rollback означает запуск старого зафиксированного checkout с его совместимым
-runtime. Общий state хранит capsules content-addressed, но P0 не обещает, что
-новый CLI продолжит старую session при изменении runtime/model authority.
+Rollback means using the old pinned checkout with its compatible runtime. The
+shared state stores content-addressed capsules, but P0 does not promise that a
+new CLI can continue an old session after runtime/model authority changes.
 
-## 11. Как добавлять язык или расширять профиль
+## 11. Adding a language or expanding a profile
 
-Поддержка языка не добавляется одним parser plugin. Минимальный безопасный путь:
+Language support is not a single parser plug-in. The minimum safe path is:
 
-1. Описать новый profile и его границу в support matrix; сначала
-   `READ_ONLY_PREVIEW`, `mutation: false`.
-2. Реализовать или выбрать `BuildModelProvider` для точной compilation authority.
-3. Реализовать `LanguageAdapter` handshake и generation facts с явной
-   completeness/certainty/obligations.
-4. Читать только sealed repository snapshot и публиковать canonical bounded
-   facts в CAS; не сканировать ambient filesystem и не запускать проект на
+1. Define the profile and its boundary in the support matrix. Start with
+   `READ_ONLY_PREVIEW` and `mutation: false`.
+2. Implement or select a `BuildModelProvider` for exact compilation authority.
+3. Implement the `LanguageAdapter` handshake and generation facts with explicit
+   completeness, certainty, and obligations.
+4. Read only a sealed repository snapshot and publish canonical bounded facts
+   to CAS. Do not scan the ambient filesystem or execute the project on the
    query path.
-5. Добавить CLI language/compilation parsing, admission и path/privacy tests.
-6. Добавить fixture corpus: корректные проекты, ambiguity, parse/model failure,
-   symlinks, dirty/untracked data, resource limits и deterministic replay.
-7. Доказать read-only acceptance на реальных проектах.
-8. Для mutation отдельно реализовать plan validation, isolated candidate,
-   compile/test gates, effects/writeset/ABI checks, freshness/CAS publication и
-   recovery. Только после независимого mutation gate менять support matrix.
+5. Add CLI language/compilation parsing, admission, and path/privacy tests.
+6. Add a fixture corpus covering valid projects, ambiguity, parse/model failure,
+   symlinks, dirty and untracked data, resource limits, and deterministic replay.
+7. Prove read-only acceptance on real projects.
+8. For mutation, separately implement plan validation, an isolated candidate,
+   compile/test gates, effects/writeset/ABI checks, freshness/CAS publication,
+   and recovery. Change the support matrix only after an independent mutation
+   gate passes.
 
-Текущие точки расширения находятся в `crates/clew/src/adapter_v2.rs`;
-референсы — `kotlin_adapter_v2.rs`, `python_adapter_v2.rs`,
-`rust_adapter_v2.rs`, а project-model контуры Python/Rust находятся в соседних
-модулях. Runtime-packaged Kotlin worker живёт в `workers/` и регистрируется через
-component manifests. Любая новая версия компилятора является новым профилем, а
-не молчаливой заменой существующего.
+Current extension points are in `crates/clew/src/adapter_v2.rs`; references are
+`kotlin_adapter_v2.rs`, `python_adapter_v2.rs`, and `rust_adapter_v2.rs`. The
+Python and Rust project-model paths are in adjacent modules. The runtime-packaged
+Kotlin worker lives under `workers/` and is registered through component
+manifests. Every new compiler version is a new profile, not a silent replacement
+for an existing one.
 
 ## 12. P0 acceptance checklist
 
-Развёртывание готово к пилоту, когда:
+A deployment is pilot-ready when:
 
-- checkout и support matrix закреплены одобренным commit;
-- `capabilities` и все required `doctor` checks проходят;
-- state root приватный и не общий;
-- Codex/Claude skill установлен и проверен read-only запросом;
-- Kotlin mutation допускается только в точном P0 profile;
-- перед prepare/publish проверяется freshness;
-- conditional obligations не скрываются;
-- публикация требует явного согласия человека;
-- incident workflow выдаёт только `SAFE_TO_SHARE` summary;
-- команда умеет выполнить stale, recovery, upgrade и disk-space runbooks.
+- the checkout and support matrix are pinned to an approved commit;
+- `capabilities` and all required `doctor` checks pass;
+- the state root is private and not shared;
+- the Codex or Claude skill is installed and verified with a read-only request;
+- Kotlin mutation is admitted only for the exact P0 profile;
+- freshness is checked before preparation and publication;
+- conditional obligations remain visible;
+- publication requires explicit human approval;
+- the incident workflow produces only a `SAFE_TO_SHARE` summary;
+- the team can execute stale, recovery, upgrade, and disk-space runbooks.
 
-Подписанный installer, централизованное fleet-управление, автоматическая
-доставка диагностик, cross-host shared state, Python/Rust mutation и
-многорепозиторная публикация намеренно остаются за границей P0.
+A signed installer, centralized fleet management, automatic diagnostic upload,
+cross-host shared state, Python/Rust mutation, and multi-repository publication
+remain intentionally outside P0.

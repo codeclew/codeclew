@@ -1277,10 +1277,10 @@ mod tests {
         for identity in [
             "python-syntax:src/sample.py#function:work@10-20",
             "rust-syntax:src/lib.rs#function:work@30-40",
-            "kotlin:sample/Класс@50-60",
+            "kotlin:sample/Café@50-60",
         ] {
-            let term = if identity.contains("Класс") {
-                "класс"
+            let term = if identity.contains("Café") {
+                "café"
             } else {
                 "work"
             };
