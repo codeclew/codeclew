@@ -94,6 +94,52 @@ fn large_optional_sections_truncate_without_losing_boundaries() {
 }
 
 #[test]
+fn truncated_technical_render_keeps_both_pair_member_lanes() {
+    let mut flow = flow();
+    for index in 0..1_500 {
+        flow.nodes.push(FlowNode {
+            node_id: format!("node-product-{index:04}"),
+            node_kind: FlowNodeKind::Callable,
+            member_alias: "product".into(),
+            service_alias: "product-service".into(),
+            repository_namespace: "repo:product".into(),
+            symbol_identity: format!("callable:sample/Product.extra{index}#jvm:()V"),
+            depth: 1,
+            order_authority: FlowOrderAuthority::UnorderedStaticRelation,
+            support_refs: vec![],
+        });
+    }
+    flow.nodes.push(FlowNode {
+        node_id: "node-outbox-boundary".into(),
+        node_kind: FlowNodeKind::Boundary,
+        member_alias: "outbox".into(),
+        service_alias: "outbox-service".into(),
+        repository_namespace: "repo:outbox".into(),
+        symbol_identity: "sample/Outbox.publish".into(),
+        depth: 1,
+        order_authority: FlowOrderAuthority::Unknown,
+        support_refs: vec![],
+    });
+    flow.counts.nodes = flow.nodes.len();
+    let value = clew::explanation_render::render(
+        &bundle(&flow),
+        &flow,
+        DetailLevel::Technical,
+        RenderFormat::Json,
+    )
+    .unwrap();
+    assert_eq!(value["truncated"], true);
+    let members = value["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["memberAlias"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(members.contains("product"));
+    assert!(members.contains("outbox"));
+}
+
+#[test]
 fn render_cli_closes_detail_and_format_enums() {
     let binary = env!("CARGO_BIN_EXE_clew");
     let help = Command::new(binary)
@@ -235,6 +281,12 @@ fn flow() -> FlowSlice {
             edge_id: "edge-call".into(),
             source_node_id: "node-source".into(),
             target_node_id: "node-target".into(),
+            source_member_alias: "product".into(),
+            source_service_alias: "product-service".into(),
+            source_repository_namespace: "repo:product".into(),
+            target_member_alias: "product".into(),
+            target_service_alias: "product-service".into(),
+            target_repository_namespace: "repo:product".into(),
             relation_kind: "CALLS".into(),
             relationship_authority:
                 RelationshipAuthority::VerifiedSameSnapshotCompilationDependency,
@@ -273,6 +325,7 @@ fn flow_node(id: &str, symbol: &str, depth: usize) -> FlowNode {
         node_id: id.into(),
         node_kind: FlowNodeKind::Callable,
         member_alias: "product".into(),
+        service_alias: "product-service".into(),
         repository_namespace: "repo:product".into(),
         symbol_identity: symbol.into(),
         depth,

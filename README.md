@@ -267,13 +267,33 @@ Experimental `thread flow` consumes only that retained fact-set closure and
 starts no compiler, build, repository discovery, or target process. It accepts
 one exact `FULL_SYMBOL` root in one selected-pair member and deterministically
 walks downstream `UseFact` relations with frozen depth, node, edge, boundary,
-stdout, and retained-closure budgets. Every node and edge links back through a
-fact shard and K2 payload to an immutable repository-relative `SourceAnchor`;
-missing, ambiguous, unresolved, cross-member, and truncated transitions remain
-visible boundaries with verification obligations. T00 deliberately represents
-an `UNORDERED_STATIC_RELATION` graph: source offsets are evidence locations,
-not proof that independent calls happen before or after one another. Cycles are
-represented once through stable nodes and edges rather than expanded paths.
+stdout, and retained-closure budgets. Nodes and edges are qualified by member,
+service, and repository namespace; their support retains session, compilation,
+generation, fact-shard, payload, and immutable repository-relative source
+authority. This prevents identical CallableIds in two repositories from
+colliding. Missing, ambiguous, unresolved, out-of-pair, and truncated
+transitions remain visible boundaries with verification obligations. Cycles
+are represented once through stable nodes and edges rather than expanded
+paths.
+
+Pair flow is not whole-thread navigation. Traversal is confined to the exact
+provider/consumer pair named by `--pair-id`; a relation into a third member is
+reported as `TARGET_OUTSIDE_SELECTED_PAIR`. In v1, a cross-repository relation
+may become only a `DECLARED_TOPOLOGY` handoff from the declared consumer to a
+boundary node for the provider. It includes
+`VERIFY_RUNTIME_COMPONENT_HANDOFF` and is never described as an observed HTTP,
+Kafka, database, or runtime call. `UNBOUND` creates no handoff edge. A supplied
+`VERIFIED_SAME_SNAPSHOT_COMPILATION_DEPENDENCY` cross-repository relation is
+also rejected as `UNSUPPORTED_EXACT_PAIR_DEPENDENCY`: support for proving that
+relationship is deliberately outside this version. Member lanes are selected
+fairly so one large repository cannot silently displace the other from a
+bounded projection. Because v1 relation facts do not carry a pair ID, a
+consumer participating in multiple declared pairs produces
+`AMBIGUOUS_DECLARED_TOPOLOGY_HANDOFF` instead of guessing a provider.
+
+Absent compiler CFG evidence, the graph is an `UNORDERED_STATIC_RELATION`:
+source offsets are evidence locations, not proof that independent calls happen
+before or after one another.
 
 Control-flow order is claimed only when the selected sealed generation also
 contains a canonical `local-cfg/0.1` payload for the exact full-symbol owner and
@@ -295,11 +315,14 @@ may provide only a local ID, `en`/`ru` narrative text, a typed predicate, flow
 support refs, and relevant boundary refs; input fields such as `authority`,
 `status`, or a digest are rejected. Core validates `CALL_EXISTS`, `CONSTRUCTS`,
 `BRANCH_EXISTS`, `ORDERED_BEFORE`, `REACHABLE_STATIC_PATH`, and
-`NARRATIVE_SUMMARY` against the immutable FlowSlice, computes the authority
-cap (`COMPILER_PROVEN`, `STATIC_DERIVED`, `DECLARED`, `AGENT_INFERRED`, or
+`NARRATIVE_SUMMARY` against the immutable FlowSlice. `COMPONENT_HANDOFF` is
+accepted only for a member-qualified cross-repository edge whose target is the
+declared topology boundary; its authority is exactly `DECLARED`, never
+compiler- or runtime-proven. Core computes the authority cap
+(`COMPILER_PROVEN`, `STATIC_DERIVED`, `DECLARED`, `AGENT_INFERRED`, or
 `UNKNOWN`), and publishes one content-addressed bundle. A missing mandatory
 support, invented ref, contradictory endpoint, omitted relevant boundary,
-truncated path, or premature `COMPONENT_HANDOFF` fails closed. Narrative text
+truncated path, or attempted authority promotion fails closed. Narrative text
 is never semantic authority: even supported narrative is capped at
 `AGENT_INFERRED`, while boundary-only narrative is `UNKNOWN`.
 
@@ -314,8 +337,10 @@ projection; Markdown is returned in the `content` field of a bounded result and
 uses stable anchors for claim → node/edge/region → fact expansion. Both formats
 carry the same explanation ID, flow ID, semantic digest, truncation flag,
 boundaries, authorities, and obligations. Optional sections are filled in a
-fair round-robin until 64 KiB; critical boundaries and obligations are never
-silently truncated, and the render fails if they alone exceed the budget.
+fair round-robin across pair members until 64 KiB; Markdown groups technical
+nodes by service/member and labels declared cross-service edges explicitly.
+Critical boundaries and obligations are never silently truncated, and the
+render fails if they alone exceed the budget.
 
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId

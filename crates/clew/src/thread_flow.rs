@@ -138,6 +138,7 @@ pub struct FlowNode {
     pub node_id: String,
     pub node_kind: FlowNodeKind,
     pub member_alias: String,
+    pub service_alias: String,
     pub repository_namespace: String,
     pub symbol_identity: String,
     pub depth: usize,
@@ -151,6 +152,12 @@ pub struct FlowEdge {
     pub edge_id: String,
     pub source_node_id: String,
     pub target_node_id: String,
+    pub source_member_alias: String,
+    pub source_service_alias: String,
+    pub source_repository_namespace: String,
+    pub target_member_alias: String,
+    pub target_service_alias: String,
+    pub target_repository_namespace: String,
     pub relation_kind: String,
     pub relationship_authority: RelationshipAuthority,
     pub order_authority: FlowOrderAuthority,
@@ -276,6 +283,24 @@ fn build_internal(
     cfg: Option<&LocalCfgCatalog>,
 ) -> Result<PreparedFlowSlice, ClewError> {
     validate_request(&request, fact_set)?;
+    let selected_pair = fact_set
+        .authority
+        .pairs
+        .iter()
+        .find(|pair| pair.pair_id == request.pair_id)
+        .ok_or_else(|| corrupt("validated flow pair disappeared"))?;
+    let members = fact_set
+        .authority
+        .members
+        .iter()
+        .map(|member| (member.member_alias.as_str(), member))
+        .collect::<BTreeMap<_, _>>();
+    let selected_members = [
+        selected_pair.provider_member.as_str(),
+        selected_pair.consumer_member.as_str(),
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
     let facts = read_facts(fact_set)?;
     let declarations = facts
         .iter()
@@ -341,18 +366,18 @@ fn build_internal(
     let mut boundaries = BTreeMap::<String, FlowBoundary>::new();
     let mut obligations = BTreeSet::<String>::new();
     let mut truncated = false;
-    let root_node = callable_node(&roots[0], 0)?;
+    let root_node = callable_node(&roots[0], 0, &members)?;
     let root_node_id = root_node.node_id.clone();
     nodes.insert(root_node.node_id.clone(), root_node);
-    let mut queue = VecDeque::from([(request.root.clone(), 0usize)]);
-    let mut visited = BTreeSet::from([request.root.clone()]);
+    let mut queue = VecDeque::from([(request.member_alias.clone(), request.root.clone(), 0usize)]);
+    let mut visited = BTreeSet::from([(request.member_alias.clone(), request.root.clone())]);
 
-    while let Some((source_symbol, depth)) = queue.pop_front() {
-        let Some(source_node_id) = node_for_symbol(&nodes, &source_symbol) else {
+    while let Some((source_member, source_symbol, depth)) = queue.pop_front() {
+        let Some(source_node_id) = node_for_symbol(&nodes, &source_member, &source_symbol) else {
             return Err(corrupt("flow traversal lost a visited callable node"));
         };
         let source_declarations = declarations
-            .get(&(request.member_alias.clone(), source_symbol.clone()))
+            .get(&(source_member.clone(), source_symbol.clone()))
             .ok_or_else(|| corrupt("visited flow callable lost its declaration"))?;
         let source_declaration = match &source_declarations[0].fact {
             CallableFact::Declaration(row) => row,
@@ -371,7 +396,7 @@ fn build_internal(
             continue;
         };
         if callable_families
-            .get(&(request.member_alias.clone(), source_callable_id.clone()))
+            .get(&(source_member.clone(), source_callable_id.clone()))
             .is_none_or(|family| family.len() != 1)
         {
             add_boundary(
@@ -385,10 +410,23 @@ fn build_internal(
             )?;
             continue;
         }
-        let outgoing = uses
-            .get(&(request.member_alias.clone(), source_callable_id.clone()))
+        let mut outgoing = uses
+            .get(&(source_member.clone(), source_callable_id.clone()))
             .cloned()
             .unwrap_or_default();
+        outgoing.sort_by(|left, right| {
+            let priority = |fact: &IndexedFact| match &fact.fact {
+                CallableFact::Use(row)
+                    if row.relationship_authority == RelationshipAuthority::DeclaredTopology =>
+                {
+                    0
+                }
+                _ => 1,
+            };
+            priority(left)
+                .cmp(&priority(right))
+                .then_with(|| left.fact.fact_id().cmp(right.fact.fact_id()))
+        });
         if depth >= request.budgets.max_depth && !outgoing.is_empty() {
             truncated = true;
             add_boundary(
@@ -410,22 +448,172 @@ fn build_internal(
                 .target_symbol_identity
                 .as_ref()
                 .filter(|_| row.target_resolution == TargetResolution::ExactSymbol);
-            let same_member = row.relationship_authority
-                == RelationshipAuthority::VerifiedSameSnapshotCompilationDependency
-                && row
-                    .target_repository_namespace
-                    .as_deref()
-                    .is_some_and(|namespace| namespace == row.provenance.repository_namespace);
+            let target_member = row
+                .target_repository_namespace
+                .as_deref()
+                .and_then(|namespace| {
+                    members
+                        .values()
+                        .find(|member| member.repository_namespace == namespace)
+                        .map(|member| member.member_alias.as_str())
+                });
+            let same_member = target_member == Some(source_member.as_str())
+                && row.relationship_authority
+                    == RelationshipAuthority::VerifiedSameSnapshotCompilationDependency;
+            if !same_member
+                && target_member.is_some_and(|member| !selected_members.contains(member))
+            {
+                add_boundary(
+                    &mut boundaries,
+                    &mut obligations,
+                    &request,
+                    "TARGET_OUTSIDE_SELECTED_PAIR",
+                    exact_target
+                        .map(String::as_str)
+                        .unwrap_or(&row.target_callable_id),
+                    vec!["SELECT_PAIR_CONTAINING_TARGET_MEMBER".into()],
+                    vec![indexed.support()],
+                )?;
+                continue;
+            }
+            if !same_member
+                && row.relationship_authority
+                    == RelationshipAuthority::VerifiedSameSnapshotCompilationDependency
+            {
+                add_boundary(
+                    &mut boundaries,
+                    &mut obligations,
+                    &request,
+                    "UNSUPPORTED_EXACT_PAIR_DEPENDENCY",
+                    exact_target
+                        .map(String::as_str)
+                        .unwrap_or(&row.target_callable_id),
+                    vec!["VERIFY_PAIR_DEPENDENCY_OUTSIDE_V1".into()],
+                    vec![indexed.support()],
+                )?;
+                continue;
+            }
+            if !same_member && row.relationship_authority == RelationshipAuthority::DeclaredTopology
+            {
+                let declared_pairs = fact_set
+                    .authority
+                    .pairs
+                    .iter()
+                    .filter(|pair| {
+                        pair.consumer_member == source_member
+                            && pair.relationship_authority
+                                == RelationshipAuthority::DeclaredTopology
+                    })
+                    .collect::<Vec<_>>();
+                if selected_pair.relationship_authority != RelationshipAuthority::DeclaredTopology
+                    || declared_pairs.len() != 1
+                    || declared_pairs[0].pair_id != selected_pair.pair_id
+                {
+                    add_boundary(
+                        &mut boundaries,
+                        &mut obligations,
+                        &request,
+                        "AMBIGUOUS_DECLARED_TOPOLOGY_HANDOFF",
+                        &row.target_callable_id,
+                        vec!["DISAMBIGUATE_DECLARED_COMPONENT_PAIR".into()],
+                        vec![indexed.support()],
+                    )?;
+                    continue;
+                }
+                if source_member != selected_pair.consumer_member {
+                    add_boundary(
+                        &mut boundaries,
+                        &mut obligations,
+                        &request,
+                        "DECLARED_TOPOLOGY_DIRECTION_MISMATCH",
+                        &row.target_callable_id,
+                        vec!["VERIFY_DECLARED_CONSUMER_PROVIDER_DIRECTION".into()],
+                        vec![indexed.support()],
+                    )?;
+                    continue;
+                }
+                let target_member = members
+                    .get(selected_pair.provider_member.as_str())
+                    .ok_or_else(|| corrupt("selected provider has no callable authority"))?;
+                let source_component = members
+                    .get(source_member.as_str())
+                    .ok_or_else(|| corrupt("flow source has no callable authority"))?;
+                let target_node =
+                    declared_handoff_node(target_member, &row.target_callable_id, depth + 1)?;
+                let target_node_id = target_node.node_id.clone();
+                if !nodes.contains_key(&target_node_id) && nodes.len() >= request.budgets.max_nodes
+                {
+                    truncated = true;
+                    add_boundary(
+                        &mut boundaries,
+                        &mut obligations,
+                        &request,
+                        "FLOW_NODE_BUDGET_TRUNCATED",
+                        &row.target_callable_id,
+                        vec!["SELECT_NARROWER_ROOT".into()],
+                        vec![indexed.support()],
+                    )?;
+                    continue;
+                }
+                nodes.entry(target_node_id.clone()).or_insert(target_node);
+                if edges.len() >= request.budgets.max_edges {
+                    truncated = true;
+                    add_boundary(
+                        &mut boundaries,
+                        &mut obligations,
+                        &request,
+                        "FLOW_EDGE_BUDGET_TRUNCATED",
+                        &source_symbol,
+                        vec!["SELECT_NARROWER_ROOT".into()],
+                        vec![indexed.support()],
+                    )?;
+                    continue;
+                }
+                let edge_id = stable_id(
+                    "flow-edge",
+                    &json!({
+                        "source": source_node_id,
+                        "target": target_node_id,
+                        "fact": row.fact_id,
+                        "authority": "DECLARED_TOPOLOGY",
+                    }),
+                )?;
+                edges.entry(edge_id.clone()).or_insert(FlowEdge {
+                    edge_id,
+                    source_node_id: source_node_id.clone(),
+                    target_node_id,
+                    source_member_alias: source_component.member_alias.clone(),
+                    source_service_alias: source_component.service_alias.clone(),
+                    source_repository_namespace: source_component.repository_namespace.clone(),
+                    target_member_alias: target_member.member_alias.clone(),
+                    target_service_alias: target_member.service_alias.clone(),
+                    target_repository_namespace: target_member.repository_namespace.clone(),
+                    relation_kind: row.relation_kind.clone(),
+                    relationship_authority: RelationshipAuthority::DeclaredTopology,
+                    order_authority: FlowOrderAuthority::Unknown,
+                    cfg_graph_id: None,
+                    cfg_node_ids: Vec::new(),
+                    support_refs: vec![indexed.support()],
+                });
+                add_boundary(
+                    &mut boundaries,
+                    &mut obligations,
+                    &request,
+                    "DECLARED_TOPOLOGY_HANDOFF",
+                    &row.target_callable_id,
+                    vec!["VERIFY_RUNTIME_COMPONENT_HANDOFF".into()],
+                    vec![indexed.support()],
+                )?;
+                continue;
+            }
             if !same_member {
                 add_boundary(
                     &mut boundaries,
                     &mut obligations,
                     &request,
-                    "CROSS_MEMBER_NOT_EXPANDED",
-                    exact_target
-                        .map(String::as_str)
-                        .unwrap_or(&row.target_callable_id),
-                    vec!["VERIFY_SELECTED_MEMBER_OR_ENABLE_PAIR_FLOW".into()],
+                    "UNBOUND_COMPONENT_TARGET",
+                    &row.target_callable_id,
+                    vec!["BIND_TARGET_TO_SELECTED_PAIR".into()],
                     vec![indexed.support()],
                 )?;
                 continue;
@@ -442,7 +630,7 @@ fn build_internal(
                 )?;
                 continue;
             };
-            let target_key = (request.member_alias.clone(), target_symbol.clone());
+            let target_key = (source_member.clone(), target_symbol.clone());
             let Some(targets) = declarations.get(&target_key) else {
                 add_boundary(
                     &mut boundaries,
@@ -467,7 +655,7 @@ fn build_internal(
                 )?;
                 continue;
             }
-            let target_node = callable_node(&targets[0], depth + 1)?;
+            let target_node = callable_node(&targets[0], depth + 1, &members)?;
             if !nodes.contains_key(&target_node.node_id) && nodes.len() >= request.budgets.max_nodes
             {
                 truncated = true;
@@ -511,7 +699,7 @@ fn build_internal(
                     Vec::new(),
                     FlowOrderAuthority::UnorderedStaticRelation,
                 ),
-                Some(catalog) => match catalog.get(&request.member_alias, &source_symbol) {
+                Some(catalog) => match catalog.get(&source_member, &source_symbol) {
                     Some(graph) => match relation_cfg_nodes(row, &graph.payload) {
                         Some(node_ids) => (
                             Some(graph.payload.graph_id.clone()),
@@ -534,10 +722,22 @@ fn build_internal(
                     None => (None, Vec::new(), FlowOrderAuthority::Unknown),
                 },
             };
+            let source_component = members
+                .get(source_member.as_str())
+                .ok_or_else(|| corrupt("flow source has no callable authority"))?;
+            let target_component = members
+                .get(source_member.as_str())
+                .ok_or_else(|| corrupt("flow target has no callable authority"))?;
             edges.entry(edge_id.clone()).or_insert(FlowEdge {
                 edge_id,
                 source_node_id: source_node_id.clone(),
                 target_node_id,
+                source_member_alias: source_component.member_alias.clone(),
+                source_service_alias: source_component.service_alias.clone(),
+                source_repository_namespace: source_component.repository_namespace.clone(),
+                target_member_alias: target_component.member_alias.clone(),
+                target_service_alias: target_component.service_alias.clone(),
+                target_repository_namespace: target_component.repository_namespace.clone(),
                 relation_kind: row.relation_kind.clone(),
                 relationship_authority: row.relationship_authority,
                 order_authority,
@@ -545,8 +745,8 @@ fn build_internal(
                 cfg_node_ids,
                 support_refs: vec![indexed.support()],
             });
-            if visited.insert(target_symbol.clone()) {
-                queue.push_back((target_symbol.clone(), depth + 1));
+            if visited.insert((source_member.clone(), target_symbol.clone())) {
+                queue.push_back((source_member.clone(), target_symbol.clone(), depth + 1));
             }
         }
     }
@@ -582,13 +782,12 @@ fn build_internal(
         let CallableFact::Boundary(row) = &indexed.fact else {
             continue;
         };
-        if row.provenance.member_alias != request.member_alias {
+        if !selected_members.contains(row.provenance.member_alias.as_str()) {
             continue;
         }
-        let relevant = row
-            .subject
-            .as_ref()
-            .is_some_and(|subject| visited.contains(subject));
+        let relevant = row.subject.as_ref().is_some_and(|subject| {
+            visited.contains(&(row.provenance.member_alias.clone(), subject.clone()))
+        });
         if relevant {
             add_boundary(
                 &mut boundaries,
@@ -604,11 +803,11 @@ fn build_internal(
 
     let mut control_flow_regions = Vec::new();
     if let Some(catalog) = cfg {
-        for symbol in &visited {
-            let Some(owner_node_id) = node_for_symbol(&nodes, symbol) else {
+        for (member_alias, symbol) in &visited {
+            let Some(owner_node_id) = node_for_symbol(&nodes, member_alias, symbol) else {
                 continue;
             };
-            match catalog.get(&request.member_alias, symbol) {
+            match catalog.get(member_alias, symbol) {
                 Some(graph) => control_flow_regions.push(FlowControlRegion {
                     region_id: stable_id(
                         "flow-cfg-region",
@@ -835,10 +1034,22 @@ fn read_facts(fact_set: &PreparedCallableFactSet) -> Result<Vec<IndexedFact>, Cl
     Ok(facts)
 }
 
-fn callable_node(indexed: &IndexedFact, depth: usize) -> Result<FlowNode, ClewError> {
+fn callable_node(
+    indexed: &IndexedFact,
+    depth: usize,
+    members: &BTreeMap<&str, &crate::thread_callables::CallableMemberBinding>,
+) -> Result<FlowNode, ClewError> {
     let CallableFact::Declaration(row) = &indexed.fact else {
         return Err(corrupt("callable node support is not a declaration"));
     };
+    let member = members
+        .get(row.provenance.member_alias.as_str())
+        .ok_or_else(|| corrupt("callable declaration has no member authority"))?;
+    if member.repository_namespace != row.provenance.repository_namespace {
+        return Err(corrupt(
+            "callable declaration repository namespace differs from member authority",
+        ));
+    }
     let node_id = stable_id(
         "flow-node",
         &json!({
@@ -851,6 +1062,7 @@ fn callable_node(indexed: &IndexedFact, depth: usize) -> Result<FlowNode, ClewEr
         node_id,
         node_kind: FlowNodeKind::Callable,
         member_alias: row.provenance.member_alias.clone(),
+        service_alias: member.service_alias.clone(),
         repository_namespace: row.provenance.repository_namespace.clone(),
         symbol_identity: row.symbol_identity.clone(),
         depth,
@@ -859,10 +1071,46 @@ fn callable_node(indexed: &IndexedFact, depth: usize) -> Result<FlowNode, ClewEr
     })
 }
 
-fn node_for_symbol(nodes: &BTreeMap<String, FlowNode>, symbol: &str) -> Option<String> {
+fn declared_handoff_node(
+    member: &crate::thread_callables::CallableMemberBinding,
+    target_callable_id: &str,
+    depth: usize,
+) -> Result<FlowNode, ClewError> {
+    let node_id = stable_id(
+        "flow-node",
+        &json!({
+            "kind": "DECLARED_TOPOLOGY_BOUNDARY",
+            "member": member.member_alias,
+            "service": member.service_alias,
+            "repository": member.repository_namespace,
+            "callableFamily": target_callable_id,
+        }),
+    )?;
+    Ok(FlowNode {
+        node_id,
+        node_kind: FlowNodeKind::Boundary,
+        member_alias: member.member_alias.clone(),
+        service_alias: member.service_alias.clone(),
+        repository_namespace: member.repository_namespace.clone(),
+        symbol_identity: target_callable_id.into(),
+        depth,
+        order_authority: FlowOrderAuthority::Unknown,
+        support_refs: Vec::new(),
+    })
+}
+
+fn node_for_symbol(
+    nodes: &BTreeMap<String, FlowNode>,
+    member_alias: &str,
+    symbol: &str,
+) -> Option<String> {
     nodes
         .values()
-        .find(|node| node.symbol_identity == symbol)
+        .find(|node| {
+            node.member_alias == member_alias
+                && node.symbol_identity == symbol
+                && node.node_kind == FlowNodeKind::Callable
+        })
         .map(|node| node.node_id.clone())
 }
 

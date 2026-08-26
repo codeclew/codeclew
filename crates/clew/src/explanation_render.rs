@@ -109,13 +109,21 @@ pub fn render(
         detail,
         DetailLevel::Technical | DetailLevel::Evidence | DetailLevel::Compiler
     )
-    .then(|| sorted(flow.nodes.clone(), |value| value.node_id.clone()))
+    .then(|| {
+        fair_by_member(flow.nodes.clone(), |value| {
+            (value.member_alias.clone(), value.node_id.clone())
+        })
+    })
     .unwrap_or_default();
     let edge_candidates = matches!(
         detail,
         DetailLevel::Technical | DetailLevel::Evidence | DetailLevel::Compiler
     )
-    .then(|| sorted(flow.edges.clone(), |value| value.edge_id.clone()))
+    .then(|| {
+        fair_by_member(flow.edges.clone(), |value| {
+            (value.source_member_alias.clone(), value.edge_id.clone())
+        })
+    })
     .unwrap_or_default();
     let region_candidates = matches!(
         detail,
@@ -216,6 +224,7 @@ fn selected_claims(bundle: &ExplanationBundle, detail: DetailLevel) -> Vec<&Expl
                     | ExplanationPredicateKind::BranchExists
                     | ExplanationPredicateKind::OrderedBefore
                     | ExplanationPredicateKind::ReachableStaticPath
+                    | ExplanationPredicateKind::ComponentHandoff
             ),
             DetailLevel::Technical | DetailLevel::Evidence | DetailLevel::Compiler => true,
         })
@@ -270,6 +279,32 @@ fn compiler_support(flow: &FlowSlice) -> Vec<FlowSupportRef> {
             .or_insert_with(|| reference.clone());
     }
     support.into_values().collect()
+}
+
+fn fair_by_member<T>(values: Vec<T>, key: impl Fn(&T) -> (String, String)) -> Vec<T> {
+    let mut lanes = BTreeMap::<String, Vec<(String, T)>>::new();
+    for value in values {
+        let (member, stable_key) = key(&value);
+        lanes.entry(member).or_default().push((stable_key, value));
+    }
+    for lane in lanes.values_mut() {
+        lane.sort_by(|left, right| left.0.cmp(&right.0));
+        lane.reverse();
+    }
+    let mut output = Vec::new();
+    loop {
+        let mut advanced = false;
+        for lane in lanes.values_mut() {
+            if let Some((_, value)) = lane.pop() {
+                output.push(value);
+                advanced = true;
+            }
+        }
+        if !advanced {
+            break;
+        }
+    }
+    output
 }
 
 fn try_add<T: Clone>(
@@ -380,22 +415,36 @@ fn markdown(projection: &ExplanationRender) -> String {
     }
     if !projection.nodes.is_empty() || !projection.edges.is_empty() {
         output.push_str("\n## Technical graph\n");
+        let mut current_component = None;
         for node in &projection.nodes {
+            let component = (&node.member_alias, &node.service_alias);
+            if current_component != Some(component) {
+                output.push_str(&format!(
+                    "\n### Service `{}` · member `{}`\n",
+                    escape(&node.service_alias),
+                    escape(&node.member_alias)
+                ));
+                current_component = Some(component);
+            }
             output.push_str(&format!(
-                "\n- <a id=\"{}\"></a>Node `{}`: `{}`\n",
+                "\n- <a id=\"{}\"></a>Node `{}`: `{}` ({:?})\n",
                 anchor(&node.node_id),
                 escape(&node.node_id),
-                escape(&node.symbol_identity)
+                escape(&node.symbol_identity),
+                node.node_kind
             ));
         }
         for edge in &projection.edges {
             output.push_str(&format!(
-                "\n- <a id=\"{}\"></a>Edge `{}`: `{}` → `{}` (`{}`)\n",
+                "\n- <a id=\"{}\"></a>Edge `{}`: `{}`/`{}` → `{}`/`{}` (`{}`, `{:?}`)\n",
                 anchor(&edge.edge_id),
                 escape(&edge.edge_id),
+                escape(&edge.source_service_alias),
                 escape(&edge.source_node_id),
+                escape(&edge.target_service_alias),
                 escape(&edge.target_node_id),
-                escape(&edge.relation_kind)
+                escape(&edge.relation_kind),
+                edge.relationship_authority
             ));
         }
     }

@@ -468,10 +468,8 @@ fn validate_claim<'a>(
                 ClaimAuthority::AgentInferred
             }
         }
-        ClaimPredicate::ComponentHandoff { .. } => {
-            return Err(invalid(
-                "COMPONENT_HANDOFF is unavailable before pair-flow T04",
-            ));
+        ClaimPredicate::ComponentHandoff { subject, object } => {
+            validate_component_handoff(input, nodes, edges, subject, object)?
         }
     };
     let relevant = relevant_boundaries(flow, input, nodes, edges);
@@ -483,10 +481,62 @@ fn validate_claim<'a>(
     if !relevant.is_subset(&supplied) {
         return Err(invalid("claim omits a relevant flow boundary"));
     }
-    if !relevant.is_empty() {
+    let only_declared_handoff_boundaries =
+        matches!(input.predicate, ClaimPredicate::ComponentHandoff { .. })
+            && relevant.iter().all(|reference| {
+                boundaries
+                    .get(reference)
+                    .is_some_and(|boundary| boundary.code == "DECLARED_TOPOLOGY_HANDOFF")
+            });
+    if !relevant.is_empty() && !only_declared_handoff_boundaries {
         authority = ClaimAuthority::Unknown;
     }
     Ok(authority)
+}
+
+fn validate_component_handoff(
+    input: &ClaimInput,
+    nodes: &BTreeMap<&str, &FlowNode>,
+    edges: &BTreeMap<&str, &FlowEdge>,
+    subject: &str,
+    object: &str,
+) -> Result<ClaimAuthority, ClewError> {
+    if input.support_refs.len() != 1 {
+        return Err(invalid(
+            "component handoff requires exactly one pair-scoped edge",
+        ));
+    }
+    let edge = edges
+        .get(input.support_refs[0].as_str())
+        .ok_or_else(|| invalid("component handoff support is not a flow edge"))?;
+    let source = nodes
+        .get(edge.source_node_id.as_str())
+        .ok_or_else(|| corrupt("component handoff edge has no source node"))?;
+    let target = nodes
+        .get(edge.target_node_id.as_str())
+        .ok_or_else(|| corrupt("component handoff edge has no target node"))?;
+    if source.member_alias == target.member_alias
+        || source.service_alias != subject
+        || target.service_alias != object
+        || edge.source_member_alias != source.member_alias
+        || edge.source_service_alias != source.service_alias
+        || edge.source_repository_namespace != source.repository_namespace
+        || edge.target_member_alias != target.member_alias
+        || edge.target_service_alias != target.service_alias
+        || edge.target_repository_namespace != target.repository_namespace
+    {
+        return Err(invalid(
+            "component handoff contradicts its qualified pair edge",
+        ));
+    }
+    if edge.relationship_authority != RelationshipAuthority::DeclaredTopology
+        || target.node_kind != crate::thread_flow::FlowNodeKind::Boundary
+    {
+        return Err(invalid(
+            "component handoff is not backed by a declared topology boundary",
+        ));
+    }
+    Ok(ClaimAuthority::Declared)
 }
 
 fn validate_relation_claim(

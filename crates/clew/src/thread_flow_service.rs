@@ -69,7 +69,7 @@ pub(crate) fn create_with_state(
     thread.require_open_with_state(state)?;
     let store = CasStore::open(state)?;
     let (callable_root, fact_set) = load_callable_verified(state, &store, thread, fact_set_id)?;
-    let cfg = load_cfg_catalog(&store, &fact_set, &request.member_alias)?;
+    let cfg = load_cfg_catalog(&store, &fact_set, &request.pair_id)?;
     let prepared = crate::thread_flow::build_with_cfg(
         FlowRequest {
             thread_id: thread.thread_id.clone(),
@@ -148,7 +148,7 @@ pub(crate) fn load_verified(
         slice_ref: root.slice_ref.clone(),
         projection: root.projection.clone(),
     };
-    let cfg = load_cfg_catalog(store, &fact_set, &prepared.slice.request.member_alias)?;
+    let cfg = load_cfg_catalog(store, &fact_set, &prepared.slice.request.pair_id)?;
     let is_t00_slice = prepared.slice.control_flow_regions.is_empty()
         && !prepared
             .slice
@@ -436,54 +436,63 @@ fn verify_support_closure(
 fn load_cfg_catalog(
     store: &CasStore,
     fact_set: &PreparedCallableFactSet,
-    member_alias: &str,
+    pair_id: &str,
 ) -> Result<LocalCfgCatalog, ClewError> {
-    let member = fact_set
+    let pair = fact_set
         .authority
-        .members
+        .pairs
         .iter()
-        .find(|member| member.member_alias == member_alias)
-        .ok_or_else(|| invalid("flow member has no callable authority"))?;
+        .find(|pair| pair.pair_id == pair_id)
+        .ok_or_else(|| invalid("flow pair has no callable authority"))?;
     let mut catalog = LocalCfgCatalog::default();
-    for compilation in &member.compilations {
-        let generation_size = usize::try_from(compilation.generation_ref.size)
-            .map_err(|_| budget("flow generation manifest exceeds host size"))?;
-        let generation_lease = store.read(&compilation.generation_ref, generation_size)?;
-        let generation: GenerationManifest = serde_json::from_slice(generation_lease.bytes())
-            .map_err(|_| corrupt("flow generation manifest is invalid"))?;
-        if compilation.generation_ref.object_schema != GENERATION_SCHEMA
-            || canonical::bytes(&generation).map_err(internal)? != generation_lease.bytes()
-        {
-            return Err(corrupt("flow generation manifest is not canonical"));
+    for member_alias in [&pair.provider_member, &pair.consumer_member] {
+        let member = fact_set
+            .authority
+            .members
+            .iter()
+            .find(|member| member.member_alias == *member_alias)
+            .ok_or_else(|| invalid("flow pair member has no callable authority"))?;
+        for compilation in &member.compilations {
+            let generation_size = usize::try_from(compilation.generation_ref.size)
+                .map_err(|_| budget("flow generation manifest exceeds host size"))?;
+            let generation_lease = store.read(&compilation.generation_ref, generation_size)?;
+            let generation: GenerationManifest =
+                serde_json::from_slice(generation_lease.bytes())
+                    .map_err(|_| corrupt("flow generation manifest is invalid"))?;
+            if compilation.generation_ref.object_schema != GENERATION_SCHEMA
+                || canonical::bytes(&generation).map_err(internal)? != generation_lease.bytes()
+            {
+                return Err(corrupt("flow generation manifest is not canonical"));
+            }
+            generation.visit_facts(store, |fact| {
+                if !fact.fact_key.starts_with("kotlin:local-cfg:") {
+                    return Ok(());
+                }
+                if fact.payload.object_schema != LOCAL_CFG_PAYLOAD_SCHEMA {
+                    return Err(corrupt("local CFG fact has another payload schema"));
+                }
+                let payload_size = usize::try_from(fact.payload.size)
+                    .map_err(|_| budget("local CFG payload exceeds host size"))?;
+                if payload_size > 4 * 1024 * 1024 {
+                    return Err(budget("local CFG payload exceeds 4 MiB"));
+                }
+                let payload_lease = store.read(&fact.payload, payload_size)?;
+                let payload: LocalCfgPayload = serde_json::from_slice(payload_lease.bytes())
+                    .map_err(|_| corrupt("local CFG payload is invalid"))?;
+                if canonical::bytes(&payload).map_err(internal)? != payload_lease.bytes() {
+                    return Err(corrupt("local CFG payload is not canonical"));
+                }
+                catalog.insert(PreparedLocalCfg {
+                    payload,
+                    support: LocalCfgSupport {
+                        member_alias: member_alias.to_string(),
+                        compilation_id: compilation.compilation_id.clone(),
+                        generation_ref: compilation.generation_ref.clone(),
+                        payload_ref: fact.payload.clone(),
+                    },
+                })
+            })?;
         }
-        generation.visit_facts(store, |fact| {
-            if !fact.fact_key.starts_with("kotlin:local-cfg:") {
-                return Ok(());
-            }
-            if fact.payload.object_schema != LOCAL_CFG_PAYLOAD_SCHEMA {
-                return Err(corrupt("local CFG fact has another payload schema"));
-            }
-            let payload_size = usize::try_from(fact.payload.size)
-                .map_err(|_| budget("local CFG payload exceeds host size"))?;
-            if payload_size > 4 * 1024 * 1024 {
-                return Err(budget("local CFG payload exceeds 4 MiB"));
-            }
-            let payload_lease = store.read(&fact.payload, payload_size)?;
-            let payload: LocalCfgPayload = serde_json::from_slice(payload_lease.bytes())
-                .map_err(|_| corrupt("local CFG payload is invalid"))?;
-            if canonical::bytes(&payload).map_err(internal)? != payload_lease.bytes() {
-                return Err(corrupt("local CFG payload is not canonical"));
-            }
-            catalog.insert(PreparedLocalCfg {
-                payload,
-                support: LocalCfgSupport {
-                    member_alias: member_alias.into(),
-                    compilation_id: compilation.compilation_id.clone(),
-                    generation_ref: compilation.generation_ref.clone(),
-                    payload_ref: fact.payload.clone(),
-                },
-            })
-        })?;
     }
     Ok(catalog)
 }

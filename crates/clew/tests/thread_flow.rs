@@ -106,7 +106,7 @@ fn foreign_bindings_and_corrupt_fact_shards_are_rejected() {
 }
 
 #[test]
-fn cross_member_target_is_a_visible_boundary_before_pair_flow() {
+fn exact_cross_member_dependency_is_a_visible_unsupported_v1_boundary() {
     let left = member("left");
     let right = member("right");
     let left_compilation = compilation("left");
@@ -141,7 +141,7 @@ fn cross_member_target_is_a_visible_boundary_before_pair_flow() {
         flow.slice
             .boundaries
             .iter()
-            .any(|boundary| boundary.code == "CROSS_MEMBER_NOT_EXPANDED")
+            .any(|boundary| boundary.code == "UNSUPPORTED_EXACT_PAIR_DEPENDENCY")
     );
 }
 
