@@ -4,6 +4,7 @@ umask 077
 
 REPOSITORY=codeclew/codeclew
 RELEASE_BASE=${CODECLEW_RELEASE_BASE:-https://github.com/$REPOSITORY/releases}
+RELEASE_API=${CODECLEW_RELEASE_API:-https://api.github.com/repos/$REPOSITORY/releases/latest}
 INSTALL_ROOT=${CODECLEW_INSTALL_ROOT:-"$HOME/.local/share/codeclew"}
 BIN_DIR=${CODECLEW_BIN_DIR:-"$HOME/.local/bin"}
 REQUESTED_VERSION=${CODECLEW_VERSION:-latest}
@@ -28,8 +29,16 @@ case "$RELEASE_BASE" in
 esac
 
 case "$REQUESTED_VERSION" in
-  latest) DOWNLOAD_ROOT=$RELEASE_BASE/latest/download ;;
-  v[0-9]*.[0-9]*.[0-9]*) DOWNLOAD_ROOT=$RELEASE_BASE/download/$REQUESTED_VERSION ;;
+  latest)
+    case "$RELEASE_API" in
+      https://*) ;;
+      http://127.0.0.1:*|http://localhost:*)
+        [ "${CODECLEW_ALLOW_INSECURE_DOWNLOAD:-}" = 1 ] || fail "release API must use HTTPS"
+        ;;
+      *) fail "release API must use HTTPS" ;;
+    esac
+    ;;
+  v[0-9]*.[0-9]*.[0-9]*) RESOLVED_VERSION=$REQUESTED_VERSION ;;
   *) fail "CODECLEW_VERSION must be latest or vMAJOR.MINOR.PATCH" ;;
 esac
 
@@ -56,7 +65,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 download() {
-  case "$RELEASE_BASE" in
+  case "$1" in
     https://*)
       curl --fail --show-error --location --progress-bar --proto '=https' --tlsv1.2 \
         "$1" --output "$2"
@@ -67,6 +76,39 @@ download() {
   esac
 }
 
+if [ "$REQUESTED_VERSION" = latest ]; then
+  progress '[2/6] Resolving the latest immutable release...'
+  case "$RELEASE_API" in
+    https://*)
+      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        "$RELEASE_API" --output "$TMP_ROOT/latest.json"
+      ;;
+    *)
+      curl --fail --silent --show-error --location \
+        "$RELEASE_API" --output "$TMP_ROOT/latest.json"
+      ;;
+  esac
+  [ "$(wc -c <"$TMP_ROOT/latest.json" | tr -d ' ')" -le 65536 ] \
+    || fail "release metadata is oversized"
+  RESOLVED_VERSION=$(python3 -I -S - "$TMP_ROOT/latest.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_bytes())
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+version = value.get("tag_name") if isinstance(value, dict) else None
+if not isinstance(version, str) or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+    raise SystemExit(1)
+print(version)
+PY
+  ) || fail "release metadata is invalid"
+fi
+
+DOWNLOAD_ROOT=$RELEASE_BASE/download/$RESOLVED_VERSION
 progress "[2/6] Downloading the macOS $ARCH release (about 265 MB)..."
 download "$DOWNLOAD_ROOT/$ASSET" "$TMP_ROOT/$ASSET"
 progress '[3/6] Downloading and verifying the SHA-256 checksum...'
@@ -151,9 +193,8 @@ case "$VERSION" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *) fail "release version is invalid" ;;
 esac
-if [ "$REQUESTED_VERSION" != latest ] && [ "$VERSION" != "$REQUESTED_VERSION" ]; then
-  fail "downloaded release version does not match CODECLEW_VERSION"
-fi
+[ "$VERSION" = "$RESOLVED_VERSION" ] \
+  || fail "downloaded release version does not match requested release"
 CLI_VERSION=$("$PACKAGE/bin/clew" --version) || fail "release CLI version check failed"
 [ "$CLI_VERSION" = "clew ${VERSION#v}" ] \
   || fail "release CLI version does not match release metadata"

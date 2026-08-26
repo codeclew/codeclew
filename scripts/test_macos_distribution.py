@@ -32,7 +32,6 @@ class MacosDistributionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
             document_root = temporary / "www"
-            latest_downloads = document_root / "releases" / "latest" / "download"
             package = temporary / "payload" / "codeclew"
             (package / "bin").mkdir(parents=True)
             (package / "VERSION").write_text("v0.1.0\n", encoding="ascii")
@@ -74,7 +73,9 @@ class MacosDistributionTest(unittest.TestCase):
                 checksum.write_text(f"{digest}  {asset.name}\n", encoding="ascii")
                 return asset, checksum
 
-            latest_asset, latest_checksum = publish(latest_downloads, "v0.1.0")
+            initial_asset, initial_checksum = publish(
+                document_root / "releases" / "download" / "v0.1.0", "v0.1.0"
+            )
             publish(document_root / "releases" / "download" / "v0.1.1", "v0.1.1")
             release_api = document_root / "release-api.json"
             release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
@@ -214,8 +215,9 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertIn("v0.1.1-macos-arm64", str(installed.resolve()))
 
-                latest_checksum.write_text(
-                    f"{'0' * 64}  {latest_asset.name}\n", encoding="ascii"
+                release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
+                initial_checksum.write_text(
+                    f"{'0' * 64}  {initial_asset.name}\n", encoding="ascii"
                 )
                 environment["CODECLEW_VERSION"] = "latest"
                 rejected = subprocess.run(

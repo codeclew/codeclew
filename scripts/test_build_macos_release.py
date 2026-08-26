@@ -19,16 +19,16 @@ class ReleaseVersionTest(unittest.TestCase):
             temporary = Path(value)
             launcher = temporary / "clew"
             launcher.write_text(
-                "#!/bin/sh\nprintf '%s\\n' 'clew 0.1.6'\n", encoding="ascii"
+                "#!/bin/sh\nprintf '%s\\n' 'clew 0.1.7'\n", encoding="ascii"
             )
             launcher.chmod(0o500)
 
             release.verify_cli_version(
-                launcher, "v0.1.6", temporary / "state", temporary
+                launcher, "v0.1.7", temporary / "state", temporary
             )
             with self.assertRaisesRegex(release.ReleaseError, "does not match"):
                 release.verify_cli_version(
-                    launcher, "v0.1.5", temporary / "other-state", temporary
+                    launcher, "v0.1.6", temporary / "other-state", temporary
                 )
 
 

@@ -55,9 +55,10 @@ workflow verifies `uname -m` before construction and refuses a runtime in
    The final command must report that the newly installed version is already up
    to date without downloading another release bundle.
 
-The workflow creates a normal GitHub Release so the stable
-`releases/latest/download/...` endpoint used by the installer resolves. Release
-notes retain the `public pilot` qualification. The release builder and public
+The workflow creates a normal GitHub Release. The installer resolves the latest
+release API response to an immutable tag before fetching both the archive and
+checksum, avoiding mixed CDN state during publication. Release notes retain the
+`public pilot` qualification. The release builder and public
 installer both require `clew --version` to equal the release tag without its
 leading `v`; a mismatch fails before the release is published or activated.
 
