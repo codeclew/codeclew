@@ -119,6 +119,7 @@ enum ThreadCommand {
     Callables(ThreadCallablesArgs),
     Flow(ThreadFlowArgs),
     Explain(ThreadExplainArgs),
+    Render(ThreadRenderArgs),
     Impact(ThreadImpactArgs),
     Validate(ThreadValidateArgs),
     Close(ThreadIdArgs),
@@ -167,6 +168,21 @@ enum ThreadFlowRootKindArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ThreadFlowDirectionArg {
     Downstream,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExplanationDetailArg {
+    Summary,
+    Scenario,
+    Technical,
+    Evidence,
+    Compiler,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExplanationFormatArg {
+    Json,
+    Markdown,
 }
 
 #[derive(Args)]
@@ -392,6 +408,18 @@ struct ThreadExplainArgs {
     /// Closed, canonical codeclew-explanation-claim-input/0.1 JSON file.
     #[arg(long)]
     claims: PathBuf,
+}
+
+#[derive(Args)]
+struct ThreadRenderArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    explanation: String,
+    #[arg(long, value_enum)]
+    detail: ExplanationDetailArg,
+    #[arg(long, value_enum)]
+    format: ExplanationFormatArg,
 }
 
 #[derive(Args)]
@@ -927,6 +955,23 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let (thread, _) = ThreadAuthority::load(&args.thread)?;
             let root = clew::explanation_service::create(&thread, &args.flow, document)?;
             clew::explanation_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Render(args),
+        } => {
+            let detail = match args.detail {
+                ExplanationDetailArg::Summary => clew::explanation_render::DetailLevel::Summary,
+                ExplanationDetailArg::Scenario => clew::explanation_render::DetailLevel::Scenario,
+                ExplanationDetailArg::Technical => clew::explanation_render::DetailLevel::Technical,
+                ExplanationDetailArg::Evidence => clew::explanation_render::DetailLevel::Evidence,
+                ExplanationDetailArg::Compiler => clew::explanation_render::DetailLevel::Compiler,
+            };
+            let format = match args.format {
+                ExplanationFormatArg::Json => clew::explanation_render::RenderFormat::Json,
+                ExplanationFormatArg::Markdown => clew::explanation_render::RenderFormat::Markdown,
+            };
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            clew::explanation_service::render(&thread, &args.explanation, detail, format)
         }
         Command::Thread {
             command: ThreadCommand::Impact(args),

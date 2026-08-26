@@ -217,6 +217,12 @@ used by more than one thread.
   --flow thread-flow:sha256:... \
   --claims claims.json
 
+./clew thread render \
+  --thread thread:... \
+  --explanation thread-explanation:sha256:... \
+  --detail summary \
+  --format markdown
+
 ./clew thread impact \
   --thread thread:... \
   --fact-set thread-callables:sha256:... \
@@ -296,6 +302,20 @@ support, invented ref, contradictory endpoint, omitted relevant boundary,
 truncated path, or premature `COMPONENT_HANDOFF` fails closed. Narrative text
 is never semantic authority: even supported narrative is capped at
 `AGENT_INFERRED`, while boundary-only narrative is `UNKNOWN`.
+
+`thread render` selects one of five deterministic views from that same bundle:
+`SUMMARY` keeps outcomes and unknown claims, `SCENARIO` adds branches/order/path
+claims and CFG regions, `TECHNICAL` adds symbols and relation edges, `EVIDENCE`
+adds claim support/boundary closure, and `COMPILER` adds the bounded fact,
+payload, shard, provenance, and source-anchor references already retained by
+the flow. Rendering never rereads a mutable repository and never invokes an
+agent, compiler, build tool, or target process. JSON is the structured
+projection; Markdown is returned in the `content` field of a bounded result and
+uses stable anchors for claim → node/edge/region → fact expansion. Both formats
+carry the same explanation ID, flow ID, semantic digest, truncation flag,
+boundaries, authorities, and obligations. Optional sections are filled in a
+fair round-robin until 64 KiB; critical boundaries and obligations are never
+silently truncated, and the render fails if they alone exceed the budget.
 
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId

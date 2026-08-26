@@ -66,7 +66,20 @@ pub(crate) fn create_with_state(
 pub fn load(thread: &ThreadAuthority, explanation_id: &str) -> Result<ExplanationRoot, ClewError> {
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
-    load_verified(&state, &store, thread, explanation_id).map(|(root, _, _)| root)
+    load_verified(&state, &store, thread, explanation_id).map(|(root, _, _, _)| root)
+}
+
+pub fn render(
+    thread: &ThreadAuthority,
+    explanation_id: &str,
+    detail: crate::explanation_render::DetailLevel,
+    format: crate::explanation_render::RenderFormat,
+) -> Result<Value, ClewError> {
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
+    let (_root, _flow_root, flow, explanation) =
+        load_verified(&state, &store, thread, explanation_id)?;
+    crate::explanation_render::render(&explanation.bundle, &flow.slice, detail, format)
 }
 
 pub(crate) fn load_verified(
@@ -74,7 +87,15 @@ pub(crate) fn load_verified(
     store: &CasStore,
     thread: &ThreadAuthority,
     explanation_id: &str,
-) -> Result<(ExplanationRoot, ThreadFlowRoot, PreparedExplanation), ClewError> {
+) -> Result<
+    (
+        ExplanationRoot,
+        ThreadFlowRoot,
+        crate::thread_flow::PreparedFlowSlice,
+        PreparedExplanation,
+    ),
+    ClewError,
+> {
     thread.verify()?;
     let path = explanation_root_path(state, thread, explanation_id)?;
     let bytes = state
@@ -114,7 +135,7 @@ pub(crate) fn load_verified(
         projection: root.projection.clone(),
     };
     crate::explanation::verify_prepared(&flow.slice, &prepared)?;
-    Ok((root, flow_root, prepared))
+    Ok((root, flow_root, flow, prepared))
 }
 
 pub fn bounded_stdout(root: &ExplanationRoot) -> Result<Value, ClewError> {
