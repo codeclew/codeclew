@@ -7,6 +7,7 @@ import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -33,7 +34,11 @@ class MacosDistributionTest(unittest.TestCase):
             package = temporary / "payload" / "codeclew"
             (package / "bin").mkdir(parents=True)
             (package / "VERSION").write_text("v0.1.0\n", encoding="ascii")
-            binary = package / "bin" / "clew"
+            launcher = package / "bin" / "clew"
+            shutil.copyfile(LAUNCHER, launcher)
+            launcher.chmod(0o500)
+            binary = package / "source" / "clew"
+            binary.parent.mkdir()
             binary.write_text(
                 "#!/bin/sh\n"
                 "[ \"${1:-}\" = capabilities ] || exit 2\n"
@@ -41,6 +46,9 @@ class MacosDistributionTest(unittest.TestCase):
                 encoding="utf-8",
             )
             binary.chmod(0o500)
+            seed = package / "seed" / "release-N-test" / "seed.json"
+            seed.parent.mkdir(parents=True)
+            seed.write_text("{}\n", encoding="ascii")
             downloads.mkdir(parents=True)
             asset = downloads / "codeclew-macos-arm64.tar.gz"
             with tarfile.open(asset, "w:gz") as archive:
