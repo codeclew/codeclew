@@ -277,10 +277,10 @@ def prepare_profile_state(source: Path, destination: Path, profile: str) -> Path
         manifest["manifestDigest"] = sha256(canonical(manifest))
         manifest_path.write_bytes(canonical(manifest) + b"\n")
         (capsule / "READY").write_text(new_key + "\n", encoding="ascii")
-        seal_capsule_tree(capsule)
         target = capsule.parent / new_key.removeprefix("sha256:")
         capsule.rename(target)
         capsule = target
+        seal_capsule_tree(capsule)
     components = destination / "v2" / "runtimes" / "components"
     if components.exists():
         make_removable(components)

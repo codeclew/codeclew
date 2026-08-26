@@ -142,6 +142,7 @@ class ReleaseVersionTest(unittest.TestCase):
             destination = temporary / "core-state"
             core_capsule = release.prepare_profile_state(state, destination, "core")
             core_manifest = json.loads((core_capsule / "runtime.json").read_bytes())
+            self.assertEqual(stat.S_IMODE(core_capsule.stat().st_mode), 0o500)
             self.assertEqual(set(core_manifest["workers"]), {"kotlin24"})
             self.assertEqual(set(core_manifest["components"]), {"kotlin24"})
             self.assertFalse((core_capsule / "workers" / "kotlin23").exists())
