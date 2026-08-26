@@ -170,9 +170,23 @@ def check_entries(entries: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
 
 def check_history_metadata() -> list[tuple[str, str]]:
     findings = []
-    rows = git("log", "HEAD", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce").splitlines()
+    rows = git(
+        "log",
+        "HEAD",
+        "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%cn%x00%ce",
+    ).splitlines()
     for row in rows:
-        commit, author, email, committer, committer_email = row.decode("utf-8").split("\0")
+        commit, parents, subject, author, email, committer, committer_email = (
+            row.decode("utf-8").split("\0")
+        )
+        github_pull_request_merge = (
+            len(parents.split()) == 2
+            and subject.startswith("Merge pull request #")
+            and (committer, committer_email)
+            == ("GitHub", "noreply@" + "github" + ".com")
+        )
+        if github_pull_request_merge:
+            continue
         if (author, email) != (GENERIC_NAME, GENERIC_EMAIL):
             findings.append((commit, "non-generic-author"))
         if (committer, committer_email) != (GENERIC_NAME, GENERIC_EMAIL):
