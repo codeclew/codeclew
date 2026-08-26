@@ -306,6 +306,29 @@ fn validate_jvm_function_signature(signature: &str) -> Result<(), ClewError> {
     validate_jvm_method_descriptor(descriptor)
 }
 
+/// A retained PARTIAL descriptor does not claim an exact JVM signature. The
+/// compiler normalizer keeps the opaque suffix only to preserve a stable link
+/// to the original callable while a paired UNKNOWN boundary records why the
+/// attributed row could not be proven. Keep that identity bounded and inert;
+/// exact descriptors still pass through the strict JVM grammar above.
+fn validate_partial_jvm_signature(signature: &str) -> Result<(), ClewError> {
+    if signature.is_empty()
+        || signature.chars().any(char::is_control)
+        || signature.contains("#jvm:")
+        || signature.contains("://")
+        || signature
+            .chars()
+            .any(|character| matches!(character, '\\' | '@'))
+        || !signature.contains('(')
+        || !signature.contains(')')
+    {
+        return Err(payload_invalid(
+            "partial JVM signature is not a safe opaque compiler identity",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_raw_compiler_identity(identity: &str, label: &str) -> Result<(), ClewError> {
     if identity.is_empty()
         || identity.chars().any(char::is_control)
@@ -487,7 +510,11 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
             let signature = payload_string(value, "symbolIdentity")?
                 .strip_prefix(&prefix)
                 .ok_or_else(|| payload_invalid("function symbol identity is inconsistent"))?;
-            validate_jvm_function_signature(signature)?;
+            if partial {
+                validate_partial_jvm_signature(signature)?;
+            } else {
+                validate_jvm_function_signature(signature)?;
+            }
         }
         "CONSTRUCTOR" => {
             let callable = payload_string(value, "compilerCallableId")?;
@@ -495,11 +522,17 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
             let descriptor = payload_string(value, "jvmDescriptor")?;
             validate_raw_compiler_identity(callable, "constructor compilerCallableId")?;
             validate_raw_compiler_identity(class, "constructor compilerClassId")?;
-            if !parse_jvm_method_descriptor(descriptor)?.returns_void
-                || payload_string(value, "symbolIdentity")?
-                    != format!("constructor:{callable}#jvm:{descriptor}")
+            if payload_string(value, "symbolIdentity")?
+                != format!("constructor:{callable}#jvm:{descriptor}")
                 || payload_string(value, "ownerIdentity")? != format!("class:{class}")
             {
+                return Err(payload_invalid(
+                    "constructor compiler/JVM identity is inconsistent",
+                ));
+            }
+            if partial {
+                validate_partial_jvm_signature(descriptor)?;
+            } else if !parse_jvm_method_descriptor(descriptor)?.returns_void {
                 return Err(payload_invalid(
                     "constructor compiler/JVM identity is inconsistent",
                 ));
@@ -524,6 +557,58 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
         _ => unreachable!(),
     }
     Ok(())
+}
+
+/// Return true only when an otherwise valid exact descriptor fails solely
+/// because its compiler-emitted JVM suffix is safe to retain as opaque UNKNOWN
+/// evidence but is not valid JVM descriptor grammar. Admission may quarantine
+/// such a row; it must never persist it as a PROVEN descriptor.
+pub(crate) fn has_quarantinable_exact_jvm_descriptor(value: &Value) -> bool {
+    if value.get("attributeCoverage").is_some()
+        || value.get("sourceRowHash").is_some()
+        || validate_declaration_descriptor_fact(value).is_ok()
+    {
+        return false;
+    }
+    let kind = value.get("declarationKind").and_then(Value::as_str);
+    let mut normalized = value.clone();
+    match kind {
+        Some("FUNCTION") => {
+            let Some(callable) = value.get("compilerCallableId").and_then(Value::as_str) else {
+                return false;
+            };
+            let prefix = format!("callable:{callable}#jvm:");
+            let Some(signature) = value
+                .get("symbolIdentity")
+                .and_then(Value::as_str)
+                .and_then(|identity| identity.strip_prefix(&prefix))
+            else {
+                return false;
+            };
+            if validate_partial_jvm_signature(signature).is_err() {
+                return false;
+            }
+            normalized["symbolIdentity"] = Value::String(format!("{prefix}()V"));
+        }
+        Some("CONSTRUCTOR") => {
+            let Some(callable) = value.get("compilerCallableId").and_then(Value::as_str) else {
+                return false;
+            };
+            let Some(descriptor) = value.get("jvmDescriptor").and_then(Value::as_str) else {
+                return false;
+            };
+            if validate_partial_jvm_signature(descriptor).is_err()
+                || value.get("symbolIdentity").and_then(Value::as_str)
+                    != Some(format!("constructor:{callable}#jvm:{descriptor}").as_str())
+            {
+                return false;
+            }
+            normalized["jvmDescriptor"] = Value::String("()V".to_owned());
+            normalized["symbolIdentity"] = Value::String(format!("constructor:{callable}#jvm:()V"));
+        }
+        _ => return false,
+    }
+    validate_declaration_descriptor_fact(&normalized).is_ok()
 }
 
 fn relation_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static str>, ClewError> {
@@ -779,7 +864,12 @@ pub(crate) fn validate_declaration_descriptor_boundary(value: &Value) -> Result<
         || value.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
         || !matches!(
             value.get("provider").and_then(Value::as_str),
-            Some("K2_FIR" | "COMPILER_DESCRIPTOR_NORMALIZER" | "WORKER")
+            Some(
+                "K2_FIR"
+                    | "COMPILER_DESCRIPTOR_NORMALIZER"
+                    | "CODECLEW_DESCRIPTOR_NORMALIZER"
+                    | "WORKER"
+            )
         )
         || !matches!(
             value.get("stage").and_then(Value::as_str),
@@ -799,6 +889,7 @@ pub(crate) fn validate_declaration_descriptor_boundary(value: &Value) -> Result<
                     | "MALFORMED_COMPILER_FACT_ROW"
                     | "INVALID_DESCRIPTOR_SOURCE_PATH"
                     | "INVALID_DESCRIPTOR_IDENTITY"
+                    | "INVALID_JVM_DESCRIPTOR"
                     | "UNKNOWN_DECLARATION_KIND"
                     | "UNKNOWN_VISIBILITY"
                     | "UNKNOWN_EFFECTIVE_VISIBILITY"
@@ -2474,7 +2565,12 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
             || boundary.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
             || !matches!(
                 boundary.get("provider").and_then(Value::as_str),
-                Some("K2_FIR" | "COMPILER_DESCRIPTOR_NORMALIZER" | "WORKER")
+                Some(
+                    "K2_FIR"
+                        | "COMPILER_DESCRIPTOR_NORMALIZER"
+                        | "CODECLEW_DESCRIPTOR_NORMALIZER"
+                        | "WORKER"
+                )
             )
             || !matches!(
                 boundary.get("stage").and_then(Value::as_str),
@@ -2494,6 +2590,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                         | "MALFORMED_COMPILER_FACT_ROW"
                         | "INVALID_DESCRIPTOR_SOURCE_PATH"
                         | "INVALID_DESCRIPTOR_IDENTITY"
+                        | "INVALID_JVM_DESCRIPTOR"
                         | "UNKNOWN_DECLARATION_KIND"
                         | "UNKNOWN_VISIBILITY"
                         | "UNKNOWN_EFFECTIVE_VISIBILITY"
@@ -2703,17 +2800,36 @@ pub(crate) fn descriptor_validation_diagnostic(facts: &Value) -> Value {
             "returnNullable",
             "declaredType",
             "declaredNullable",
+            "attributeCoverage",
+            "sourceRowHash",
         ];
         let shapes = fields
             .into_iter()
             .map(|field| (field.to_owned(), shape(row.get(field))))
             .collect::<serde_json::Map<_, _>>();
+        let jvm_signature = match row.get("declarationKind").and_then(Value::as_str) {
+            Some("FUNCTION") => row
+                .get("symbolIdentity")
+                .and_then(Value::as_str)
+                .and_then(|identity| identity.split_once("#jvm:").map(|(_, suffix)| suffix)),
+            Some("CONSTRUCTOR") => row.get("jvmDescriptor").and_then(Value::as_str),
+            _ => None,
+        };
         serde_json::json!({
             "schema":"descriptor-validation-diagnostic/0.1",
             "stage":stage,
             "ordinal":ordinal,
             "rowHash":canonical::hash(row).unwrap_or_else(|_| "unavailable".into()),
             "kind":row.get("declarationKind").and_then(Value::as_str).filter(|kind| matches!(*kind, "FUNCTION"|"CONSTRUCTOR"|"PROPERTY"|"MUTABLE_PROPERTY"|"CLASS")),
+            "partial":row.get("attributeCoverage").and_then(Value::as_str) == Some("PARTIAL")
+                || row.get("sourceRowHash").is_some(),
+            "jvmShape":{
+                "present":jvm_signature.is_some(),
+                "byteLength":jvm_signature.map(str::len),
+                "containsDot":jvm_signature.is_some_and(|value| value.contains('.')),
+                "containsControl":jvm_signature.is_some_and(|value| value.chars().any(char::is_control)),
+                "containsNestedClassMarker":jvm_signature.is_some_and(|value| value.contains('$')),
+            },
             "shapes":shapes,
         })
     }
@@ -2751,6 +2867,17 @@ pub(crate) fn descriptor_validation_diagnostic(facts: &Value) -> Value {
             })
         {
             return report("OWNER_CONTAINMENT", ordinal, descriptor);
+        }
+        let partial = descriptor.get("attributeCoverage").is_some()
+            || descriptor.get("sourceRowHash").is_some();
+        if partial {
+            if validate_declaration_descriptor_fact(descriptor).is_err() {
+                return report("PARTIAL_CORE", ordinal, descriptor);
+            }
+            continue;
+        }
+        if validate_declaration_descriptor_fact(descriptor).is_err() {
+            return report("EXACT_PAYLOAD", ordinal, descriptor);
         }
         let effective = descriptor
             .get("effectiveVisibility")
@@ -3078,12 +3205,132 @@ mod tests {
     }
 
     #[test]
+    fn partial_descriptor_admission_keeps_jvm_suffix_opaque_but_safe() {
+        let source_row_hash = format!("sha256:{}", "a".repeat(64));
+
+        let mut partial_function =
+            verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        partial_function["symbolIdentity"] =
+            json!("callable:p/Derived.read#jvm:(Lcompiler.rendered.Type;)I");
+        let function = partial_function.as_object_mut().unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            function.remove(field);
+        }
+        function.insert("attributeCoverage".into(), json!("PARTIAL"));
+        function.insert("sourceRowHash".into(), json!(source_row_hash));
+        validate_declaration_descriptor_fact(&partial_function).unwrap();
+
+        let mut partial_constructor = constructor_fact();
+        partial_constructor["jvmDescriptor"] = json!("(Lcompiler.rendered.Type;)");
+        partial_constructor["symbolIdentity"] =
+            json!("constructor:p/Box.<init>#jvm:(Lcompiler.rendered.Type;)");
+        let constructor = partial_constructor.as_object_mut().unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isPrimary",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            constructor.remove(field);
+        }
+        constructor.insert("attributeCoverage".into(), json!("PARTIAL"));
+        constructor.insert(
+            "sourceRowHash".into(),
+            json!(format!("sha256:{}", "b".repeat(64))),
+        );
+        validate_declaration_descriptor_fact(&partial_constructor).unwrap();
+
+        for unsafe_suffix in [
+            "",
+            "()V#jvm:forged",
+            "https://example.invalid()V",
+            "bad@id()V",
+        ] {
+            let mut unsafe_partial = partial_function.clone();
+            unsafe_partial["symbolIdentity"] =
+                json!(format!("callable:p/Derived.read#jvm:{unsafe_suffix}"));
+            assert!(validate_declaration_descriptor_fact(&unsafe_partial).is_err());
+        }
+    }
+
+    #[test]
+    fn partial_descriptor_snapshot_requires_exact_unknown_boundary_pair() {
+        let mut facts = verified_facts();
+        let source_row_hash = format!("sha256:{}", "c".repeat(64));
+        let descriptor = facts["declarationDescriptors"]["descriptors"][0]
+            .as_object_mut()
+            .unwrap();
+        descriptor.insert(
+            "symbolIdentity".into(),
+            json!("callable:p/Derived.read#jvm:(Lcompiler.rendered.Type;)I"),
+        );
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            descriptor.remove(field);
+        }
+        descriptor.insert("attributeCoverage".into(), json!("PARTIAL"));
+        descriptor.insert("sourceRowHash".into(), json!(source_row_hash));
+        let retained_hash = canonical::hash(&Value::Object(descriptor.clone())).unwrap();
+        facts["declarationDescriptors"]["boundaries"] = json!([{
+            "schema":"declaration-descriptor-boundary/0.1",
+            "file":"A.kt","start":0,"end":12,
+            "symbolIdentity":"callable:p/Derived.read#jvm:(Lcompiler.rendered.Type;)I",
+            "stage":"NORMALIZE","code":"UNKNOWN_VISIBILITY",
+            "resolution":"UNKNOWN","provider":"COMPILER_DESCRIPTOR_NORMALIZER",
+            "module":":","sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "compilerAuthority":"fir-facts-extractor/0.6",
+            "rawRowHash":format!("sha256:{}", "c".repeat(64)),
+            "retainedDescriptorHash":retained_hash,
+        }]);
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+
+        validate_declaration_descriptor_snapshot(&facts).unwrap();
+
+        facts["declarationDescriptors"]["boundaries"][0]["retainedDescriptorHash"] =
+            json!(format!("sha256:{}", "d".repeat(64)));
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        assert!(validate_declaration_descriptor_snapshot(&facts).is_err());
+    }
+
+    #[test]
     fn granular_descriptor_validation_rejects_bad_jvm_grammar_and_identity_substitution() {
         for identity in [
             "callable:p/Derived.read#jvm:read(I",
             "callable:p/Derived.read#jvm:read()Ix",
             "callable:p/Derived.read#jvm:read(V)I",
             "callable:p/Derived.read#jvm:read([V)I",
+            "callable:p/Derived.read#jvm:(Lcompiler.rendered.Type;)I",
             "callable:p/Other.read#jvm:read()I",
         ] {
             let mut function = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
@@ -3098,6 +3345,22 @@ mod tests {
         constructor["jvmDescriptor"] = json!("(I)I");
         constructor["symbolIdentity"] = json!("constructor:p/Box.<init>#jvm:(I)I");
         assert!(validate_declaration_descriptor_fact(&constructor).is_err());
+
+        let mut incomplete_constructor = constructor_fact();
+        incomplete_constructor["jvmDescriptor"] = json!("(Lcompiler.rendered.Type;)");
+        incomplete_constructor["symbolIdentity"] =
+            json!("constructor:p/Box.<init>#jvm:(Lcompiler.rendered.Type;)");
+        assert!(validate_declaration_descriptor_fact(&incomplete_constructor).is_err());
+        assert!(has_quarantinable_exact_jvm_descriptor(
+            &incomplete_constructor
+        ));
+        assert!(!has_quarantinable_exact_jvm_descriptor(&constructor_fact()));
+
+        let mut inconsistent_constructor = incomplete_constructor.clone();
+        inconsistent_constructor["ownerIdentity"] = json!("class:p/Decoy");
+        assert!(!has_quarantinable_exact_jvm_descriptor(
+            &inconsistent_constructor
+        ));
 
         let mut future_field = constructor_fact();
         future_field["futureAuthority"] = json!(true);
@@ -3207,6 +3470,45 @@ mod tests {
                 Value::String("unavailable".into())
             );
         }
+    }
+
+    #[test]
+    fn descriptor_failure_diagnostic_distinguishes_partial_rows() {
+        let mut facts = verified_facts();
+        let descriptor = facts["declarationDescriptors"]["descriptors"][0]
+            .as_object_mut()
+            .unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isOverride",
+            "returnType",
+            "returnNullable",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            descriptor.remove(field);
+        }
+        descriptor.insert("attributeCoverage".into(), json!("PARTIAL"));
+        descriptor.insert(
+            "sourceRowHash".into(),
+            json!(format!("sha256:{}", "a".repeat(64))),
+        );
+        descriptor.insert(
+            "symbolIdentity".into(),
+            json!("callable:p/Derived.read#jvm:unsafe@identity()I"),
+        );
+
+        let diagnostic = descriptor_validation_diagnostic(&facts);
+        assert_eq!(diagnostic["stage"], "PARTIAL_CORE");
+        assert_eq!(diagnostic["partial"], true);
+        assert_eq!(
+            diagnostic["shapes"]["attributeCoverage"]["jsonType"],
+            "STRING"
+        );
+        assert_eq!(diagnostic["shapes"]["sourceRowHash"]["jsonType"], "STRING");
     }
 
     #[test]

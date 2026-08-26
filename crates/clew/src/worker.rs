@@ -1219,6 +1219,116 @@ fn normalize_optional_relation_evidence(facts: &mut Value) -> Result<(), ClewErr
     Ok(())
 }
 
+/// Quarantine exact descriptor rows whose only invalid claim is a non-JVMS
+/// compiler suffix. The raw worker graph is hash-verified before mutation and
+/// the row becomes typed UNKNOWN evidence; it is never admitted as PROVEN.
+fn normalize_invalid_jvm_descriptors(facts: &mut Value) -> Result<usize, ClewError> {
+    fn invalid(message: impl Into<String>) -> ClewError {
+        ClewError::new(ErrorCode::InvalidInput, message)
+    }
+
+    let expected_hash = facts
+        .get("declarationDescriptorHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("worker index has no declarationDescriptorHash"))?
+        .to_owned();
+    let graph = facts
+        .get_mut("declarationDescriptors")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| invalid("worker index has no declaration descriptor graph"))?;
+    if crate::canonical::hash(graph).map_err(internal)? != expected_hash {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "declaration descriptor hash differs before JVM descriptor normalization",
+        ));
+    }
+    for label in ["descriptors", "boundaries"] {
+        let rows = graph
+            .get(label)
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(format!("declaration descriptor graph has no {label}")))?;
+        let encoded = rows
+            .iter()
+            .map(crate::canonical::bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(internal)?;
+        if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(invalid(format!(
+                "declaration descriptor {label} must be canonical before normalization"
+            )));
+        }
+    }
+    if graph["boundaries"].as_array().is_some_and(|boundaries| {
+        boundaries.iter().any(|boundary| {
+            boundary.get("provider").and_then(Value::as_str)
+                == Some("CODECLEW_DESCRIPTOR_NORMALIZER")
+                || boundary.get("code").and_then(Value::as_str) == Some("INVALID_JVM_DESCRIPTOR")
+        })
+    }) {
+        return Err(invalid(
+            "raw worker graph impersonates Codeclew descriptor normalization",
+        ));
+    }
+
+    let mut added_boundaries = Vec::new();
+    let mut quarantined_count = 0_usize;
+    {
+        let descriptors = graph["descriptors"]
+            .as_array_mut()
+            .ok_or_else(|| invalid("declaration descriptor graph has no descriptors"))?;
+        let mut retained = Vec::with_capacity(descriptors.len());
+        for descriptor in std::mem::take(descriptors) {
+            if !crate::semantic_validation::has_quarantinable_exact_jvm_descriptor(&descriptor) {
+                retained.push(descriptor);
+                continue;
+            }
+            let raw_row_hash = crate::canonical::hash(&descriptor).map_err(internal)?;
+            let symbol_identity = descriptor["symbolIdentity"]
+                .as_str()
+                .expect("quarantinable descriptor has a validated symbolIdentity")
+                .to_owned();
+            quarantined_count += 1;
+            added_boundaries.push(serde_json::json!({
+                "schema":"declaration-descriptor-boundary/0.1",
+                "file":descriptor["file"],
+                "start":descriptor["start"],
+                "end":descriptor["end"],
+                "symbolIdentity":symbol_identity,
+                "stage":"NORMALIZE",
+                "code":"INVALID_JVM_DESCRIPTOR",
+                "resolution":"UNKNOWN",
+                "provider":"CODECLEW_DESCRIPTOR_NORMALIZER",
+                "module":descriptor["module"],
+                "sourceSet":descriptor["sourceSet"],
+                "sourceProvenance":descriptor["sourceProvenance"],
+                "compilerAuthority":descriptor["compilerAuthority"],
+                "rawRowHash":raw_row_hash,
+            }));
+        }
+        *descriptors = retained;
+    }
+
+    if !added_boundaries.is_empty() {
+        let boundaries = graph["boundaries"]
+            .as_array_mut()
+            .ok_or_else(|| invalid("declaration descriptor graph has no boundaries"))?;
+        boundaries.extend(added_boundaries);
+        let mut unique_boundaries = BTreeMap::new();
+        for boundary in std::mem::take(boundaries) {
+            unique_boundaries.insert(
+                crate::canonical::bytes(&boundary).map_err(internal)?,
+                boundary,
+            );
+        }
+        *boundaries = unique_boundaries.into_values().collect();
+        graph["coverage"] = Value::String("PARTIAL".to_owned());
+    }
+
+    facts["declarationDescriptorHash"] =
+        Value::String(crate::canonical::hash(graph).map_err(internal)?);
+    Ok(quarantined_count)
+}
+
 impl VerifiedIndexFacts {
     pub fn authority(&self) -> &'static str {
         COMPILER_SEMANTIC_AUTHORITY
@@ -2149,6 +2259,9 @@ impl WorkerClient {
                 Some(&facts),
             ));
         }
+        normalize_invalid_jvm_descriptors(&mut facts).map_err(|error| {
+            attach_verified_index_failure(error, "DESCRIPTOR_NORMALIZATION", Some(&facts))
+        })?;
         let descriptor = crate::semantic_validation::validate_declaration_descriptor_snapshot(
             &facts,
         )
@@ -4561,6 +4674,93 @@ mod tests {
             "declarationRelationHash":crate::canonical::hash(&graph).unwrap(),
             "declarationRelations":graph,
         })
+    }
+
+    fn descriptor_normalization_facts(jvm_descriptor: &str) -> Value {
+        let descriptor = json!({
+            "schema":"declaration-descriptor/0.1",
+            "file":"A.kt","start":0,"end":12,
+            "symbolIdentity":format!("constructor:p/Box.<init>#jvm:{jvm_descriptor}"),
+            "declarationKind":"CONSTRUCTOR","ownerIdentity":"class:p/Box",
+            "containment":["class:p/Box"],"visibility":"public",
+            "effectiveVisibility":"public","exportBoundary":"PUBLIC_API",
+            "modality":"FINAL","compilerCallableId":"p/Box.<init>",
+            "compilerClassId":"p/Box","isPrimary":true,
+            "jvmDescriptor":jvm_descriptor,
+            "parameterTypes":[{"index":0,"type":"kotlin/String","nullable":false}],
+            "typeParameters":[],"module":":","sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "compilerAuthority":"fir-facts-extractor/0.6",
+            "resolution":"PROVEN","provider":"K2_FIR"
+        });
+        let graph = json!({
+            "schema":"declaration-descriptor-graph/0.1",
+            "compilation":":/main",
+            "coverage":"COMPLETE_SUPPORTED_SUBSET",
+            "descriptors":[descriptor],
+            "boundaries":[],
+            "provenance":{},
+        });
+        json!({
+            "declarationDescriptorHash":crate::canonical::hash(&graph).unwrap(),
+            "declarationDescriptors":graph,
+        })
+    }
+
+    #[test]
+    fn non_jvms_exact_descriptor_is_quarantined_as_typed_unknown() {
+        let malformed = "(Lcompiler.rendered.Type;)V";
+        let mut facts = descriptor_normalization_facts(malformed);
+        let raw_hash =
+            crate::canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap();
+
+        let quarantined = normalize_invalid_jvm_descriptors(&mut facts).unwrap();
+
+        assert_eq!(quarantined, 1);
+        let graph = &facts["declarationDescriptors"];
+        assert_eq!(graph["coverage"], "PARTIAL");
+        assert!(graph["descriptors"].as_array().unwrap().is_empty());
+        let boundary = &graph["boundaries"][0];
+        assert_eq!(boundary["code"], "INVALID_JVM_DESCRIPTOR");
+        assert_eq!(boundary["provider"], "CODECLEW_DESCRIPTOR_NORMALIZER");
+        assert_eq!(boundary["rawRowHash"], raw_hash);
+        crate::semantic_validation::validate_declaration_descriptor_boundary(boundary).unwrap();
+        assert_eq!(
+            facts["declarationDescriptorHash"],
+            crate::canonical::hash(graph).unwrap()
+        );
+    }
+
+    #[test]
+    fn valid_exact_descriptor_is_not_normalized_and_forged_hash_is_rejected() {
+        let mut valid = descriptor_normalization_facts("(Ljava/lang/String;)V");
+        let original = valid.clone();
+        assert_eq!(normalize_invalid_jvm_descriptors(&mut valid).unwrap(), 0);
+        assert_eq!(valid, original);
+
+        let mut forged = descriptor_normalization_facts("(Lcompiler.rendered.Type;)V");
+        forged["declarationDescriptorHash"] = json!("sha256:forged");
+        assert_eq!(
+            normalize_invalid_jvm_descriptors(&mut forged)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProjectModelChanged
+        );
+
+        let mut impersonated = descriptor_normalization_facts("(Ljava/lang/String;)V");
+        impersonated["declarationDescriptors"]["boundaries"] = json!([{
+            "schema":"declaration-descriptor-boundary/0.1",
+            "stage":"NORMALIZE","code":"INVALID_JVM_DESCRIPTOR",
+            "resolution":"UNKNOWN","provider":"CODECLEW_DESCRIPTOR_NORMALIZER"
+        }]);
+        impersonated["declarationDescriptorHash"] =
+            json!(crate::canonical::hash(&impersonated["declarationDescriptors"]).unwrap());
+        assert_eq!(
+            normalize_invalid_jvm_descriptors(&mut impersonated)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
     }
 
     #[test]
