@@ -212,6 +212,11 @@ used by more than one thread.
   --direction downstream \
   --max-depth 4
 
+./clew thread explain \
+  --thread thread:... \
+  --flow thread-flow:sha256:... \
+  --claims claims.json
+
 ./clew thread impact \
   --thread thread:... \
   --fact-set thread-callables:sha256:... \
@@ -277,6 +282,20 @@ relation, the result is `orderAuthority=UNKNOWN` with
 treated as before/after evidence. The currently bundled worker generations do
 not yet emit this standalone normalized payload, so existing retained
 generations intentionally take that fail-closed path.
+
+`thread explain` accepts a canonical, closed
+`codeclew-explanation-claim-input/0.1` document authored by an agent. The agent
+may provide only a local ID, `en`/`ru` narrative text, a typed predicate, flow
+support refs, and relevant boundary refs; input fields such as `authority`,
+`status`, or a digest are rejected. Core validates `CALL_EXISTS`, `CONSTRUCTS`,
+`BRANCH_EXISTS`, `ORDERED_BEFORE`, `REACHABLE_STATIC_PATH`, and
+`NARRATIVE_SUMMARY` against the immutable FlowSlice, computes the authority
+cap (`COMPILER_PROVEN`, `STATIC_DERIVED`, `DECLARED`, `AGENT_INFERRED`, or
+`UNKNOWN`), and publishes one content-addressed bundle. A missing mandatory
+support, invented ref, contradictory endpoint, omitted relevant boundary,
+truncated path, or premature `COMPONENT_HANDOFF` fails closed. Narrative text
+is never semantic authority: even supported narrative is capped at
+`AGENT_INFERRED`, while boundary-only narrative is `UNKNOWN`.
 
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId

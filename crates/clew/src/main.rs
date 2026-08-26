@@ -118,6 +118,7 @@ enum ThreadCommand {
     Context(ThreadContextArgs),
     Callables(ThreadCallablesArgs),
     Flow(ThreadFlowArgs),
+    Explain(ThreadExplainArgs),
     Impact(ThreadImpactArgs),
     Validate(ThreadValidateArgs),
     Close(ThreadIdArgs),
@@ -380,6 +381,17 @@ struct ThreadFlowArgs {
     direction: ThreadFlowDirectionArg,
     #[arg(long, default_value_t = 4)]
     max_depth: usize,
+}
+
+#[derive(Args)]
+struct ThreadExplainArgs {
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    flow: String,
+    /// Closed, canonical codeclew-explanation-claim-input/0.1 JSON file.
+    #[arg(long)]
+    claims: PathBuf,
 }
 
 #[derive(Args)]
@@ -902,6 +914,19 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 },
             )?;
             clew::thread_flow_service::bounded_stdout(&root)
+        }
+        Command::Thread {
+            command: ThreadCommand::Explain(args),
+        } => {
+            let bytes = read_bounded_regular_file(
+                &args.claims,
+                clew::explanation::MAX_CLAIM_DOCUMENT_BYTES,
+                "claim document is missing, unsafe, or exceeds 1 MiB",
+            )?;
+            let document = clew::explanation::parse_claim_document(&bytes)?;
+            let (thread, _) = ThreadAuthority::load(&args.thread)?;
+            let root = clew::explanation_service::create(&thread, &args.flow, document)?;
+            clew::explanation_service::bounded_stdout(&root)
         }
         Command::Thread {
             command: ThreadCommand::Impact(args),

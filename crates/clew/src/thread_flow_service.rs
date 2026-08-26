@@ -173,6 +173,29 @@ pub(crate) fn load_verified(
     Ok((root, fact_set, prepared))
 }
 
+pub(crate) fn revalidate_root_record(
+    state: &StateAuthority,
+    thread: &ThreadAuthority,
+    expected: &ThreadFlowRoot,
+) -> Result<(), ClewError> {
+    let path = flow_root_path(state, thread, &expected.flow_id)?;
+    let bytes = state
+        .read_private_file(&path, MAX_THREAD_FLOW_ROOT_BYTES)
+        .map_err(|_| {
+            ClewError::new(
+                ErrorCode::BindingChanged,
+                "thread flow root disappeared before derived publication",
+            )
+        })?;
+    if bytes != canonical::bytes(expected).map_err(internal)? {
+        return Err(ClewError::new(
+            ErrorCode::BindingChanged,
+            "thread flow root changed before derived publication",
+        ));
+    }
+    Ok(())
+}
+
 pub fn bounded_stdout(root: &ThreadFlowRoot) -> Result<Value, ClewError> {
     validate_root(root)?;
     let value = json!({

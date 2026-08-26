@@ -5,6 +5,8 @@ pub mod cold_start;
 pub mod context_v2;
 pub mod derived_manifest;
 pub mod error;
+pub mod explanation;
+pub mod explanation_service;
 pub mod generation_service;
 pub mod generation_v2;
 pub mod incremental_v2;
