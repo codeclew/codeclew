@@ -223,6 +223,15 @@ used by more than one thread.
   --detail summary \
   --format markdown
 
+./clew thread explanation-status \
+  --thread thread:... \
+  --explanation thread-explanation:sha256:... \
+  --against-thread thread:... \
+  --against-fact-set thread-callables:sha256:... \
+  --against-flow thread-flow:sha256:... \
+  --member-correspondence provider=provider \
+  --member-correspondence consumer=consumer
+
 ./clew thread impact \
   --thread thread:... \
   --fact-set thread-callables:sha256:... \
@@ -341,6 +350,19 @@ fair round-robin across pair members until 64 KiB; Markdown groups technical
 nodes by service/member and labels declared cross-service edges explicitly.
 Critical boundaries and obligations are never silently truncated, and the
 render fails if they alone exceed the budget.
+
+An explanation bundle is immutable and remains byte-for-byte reproducible for
+its original thread snapshot. `thread explanation-status` compares it with an
+explicit new thread/fact-set/flow binding chain; it never rewrites the bundle
+or Markdown. Exact member correspondence must preserve repository namespace
+and Kotlin profile authority. Root and evidence are matched by full symbol,
+declaration shape, relation identity, and normalized CFG structure, while file
+and line offsets are ignored as semantic change signals. The retained report
+is `CURRENT`, `PARTIALLY_STALE`, `STALE`, or `UNRESOLVED` and lists only
+affected claim IDs, their old refs, observed new candidates, reasons, and a
+regeneration obligation. Regeneration is a separate agent action. Both old and
+new CAS closures are retained in the report; repeated status reads start no
+compiler, build, repository scan, target process, or agent.
 
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId

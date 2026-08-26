@@ -6,6 +6,8 @@ pub mod context_v2;
 pub mod derived_manifest;
 pub mod error;
 pub mod explanation;
+pub mod explanation_freshness;
+pub mod explanation_freshness_service;
 pub mod explanation_render;
 pub mod explanation_service;
 pub mod generation_service;

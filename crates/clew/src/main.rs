@@ -120,6 +120,7 @@ enum ThreadCommand {
     Flow(ThreadFlowArgs),
     Explain(ThreadExplainArgs),
     Render(ThreadRenderArgs),
+    ExplanationStatus(ThreadExplanationStatusArgs),
     Impact(ThreadImpactArgs),
     Validate(ThreadValidateArgs),
     Close(ThreadIdArgs),
@@ -420,6 +421,25 @@ struct ThreadRenderArgs {
     detail: ExplanationDetailArg,
     #[arg(long, value_enum)]
     format: ExplanationFormatArg,
+}
+
+#[derive(Args)]
+struct ThreadExplanationStatusArgs {
+    /// Thread that owns the immutable explanation bundle.
+    #[arg(long)]
+    thread: String,
+    #[arg(long)]
+    explanation: String,
+    /// New thread snapshot used only as comparison authority.
+    #[arg(long)]
+    against_thread: String,
+    #[arg(long)]
+    against_fact_set: String,
+    #[arg(long)]
+    against_flow: String,
+    /// Total old=against mapping for the selected provider/consumer pair.
+    #[arg(long = "member-correspondence", required = true)]
+    member_correspondence: Vec<String>,
 }
 
 #[derive(Args)]
@@ -972,6 +992,34 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             };
             let (thread, _) = ThreadAuthority::load(&args.thread)?;
             clew::explanation_service::render(&thread, &args.explanation, detail, format)
+        }
+        Command::Thread {
+            command: ThreadCommand::ExplanationStatus(args),
+        } => {
+            let member_correspondence = args
+                .member_correspondence
+                .iter()
+                .map(|value| {
+                    let (before, after) = parse_binding(value, "member correspondence")?;
+                    Ok(clew::thread_change_set::MemberCorrespondence {
+                        before_member_alias: before.into(),
+                        after_member_alias: after.into(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            let (old_thread, _) = ThreadAuthority::load(&args.thread)?;
+            let (against_thread, _) = ThreadAuthority::load(&args.against_thread)?;
+            let root = clew::explanation_freshness_service::create(
+                &old_thread,
+                &against_thread,
+                clew::explanation_freshness_service::ExplanationFreshnessServiceRequest {
+                    old_explanation_id: args.explanation,
+                    against_fact_set_id: args.against_fact_set,
+                    against_flow_id: args.against_flow,
+                    member_correspondence,
+                },
+            )?;
+            clew::explanation_freshness_service::bounded_stdout(&root)
         }
         Command::Thread {
             command: ThreadCommand::Impact(args),
