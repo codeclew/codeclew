@@ -98,8 +98,8 @@ class ReleaseVersionTest(unittest.TestCase):
             state = temporary / "source-state"
             runtime_key = "1" * 64
             capsule = state / "v2" / "runtimes" / runtime_key
-            kotlin23 = capsule / "workers" / "kotlin23"
-            kotlin24 = capsule / "workers" / "kotlin"
+            kotlin23 = capsule / "workers" / "kotlin23" / "build" / "install" / "kotlin23"
+            kotlin24 = capsule / "workers" / "kotlin" / "build" / "install" / "kotlin"
             kotlin23.mkdir(parents=True)
             kotlin24.mkdir(parents=True)
             (kotlin23 / "worker.jar").write_bytes(b"kotlin23")
@@ -127,11 +127,11 @@ class ReleaseVersionTest(unittest.TestCase):
                 "workerIds": ["kotlin23", "kotlin24"],
                 "workers": {
                     "kotlin23": {
-                        "distribution": "workers/kotlin23",
+                        "distribution": "workers/kotlin23/build/install/kotlin23",
                         "treeHash": "sha256:" + "6" * 64,
                     },
                     "kotlin24": {
-                        "distribution": "workers/kotlin",
+                        "distribution": "workers/kotlin/build/install/kotlin",
                         "treeHash": "sha256:" + "7" * 64,
                     },
                 },

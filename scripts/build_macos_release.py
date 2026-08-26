@@ -258,6 +258,13 @@ def prepare_profile_state(source: Path, destination: Path, profile: str) -> Path
             raise ReleaseError("Kotlin 2.3 distribution path is invalid")
         make_removable(distribution)
         shutil.rmtree(distribution)
+        parent = distribution.parent
+        while parent != capsule:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
         manifest["workerIds"] = sorted(manifest["workers"])
         old_key = str(manifest.get("runtimeKey"))
         new_key = sha256(canonical({
