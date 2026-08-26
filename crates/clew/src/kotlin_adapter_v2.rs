@@ -24,7 +24,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 pub const KOTLIN_LANGUAGE: &str = "language:kotlin";
 pub const KOTLIN_FACTS_CAPABILITY: &str = "analysis:kotlin-semantic-facts";
 const FACT_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0";
-const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.2";
+const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.3";
 const RECEIPT_SCHEMA: &str = "codeclew-completeness-receipt/2.0";
 const WORKSPACE_SET_AUTHORIZATION_SCHEMA: &str = "codeclew-kotlin-workspace-set-authorization/1.0";
 
@@ -653,13 +653,14 @@ pub(crate) fn translate_facts(
     let capability = CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?;
     let mut pending = Vec::new();
     let metadata = json!({
-        "schema":"codeclew-kotlin-index-metadata/2.0",
+        "schema":"codeclew-kotlin-index-metadata/2.1",
         "compilation":index.get("compilation"),
         "compilerVersion":index.get("compilerVersion"),
         "projectModelHash":index.get("projectModelHash"),
         "classpathHash":index.get("classpathHash"),
         "compilerOptionsHash":index.get("compilerOptionsHash"),
         "semanticInputManifestHash":index.get("semanticInputManifestHash"),
+        "localCfgHash":index.get("localCfgHash"),
     });
     push_fact(&capability, "metadata", &metadata, &mut pending)?;
     for (category, pointer) in [
@@ -668,6 +669,8 @@ pub(crate) fn translate_facts(
         ("descriptor-boundary", "/declarationDescriptors/boundaries"),
         ("relation", "/declarationRelations/relations"),
         ("relation-boundary", "/declarationRelations/boundaries"),
+        ("local-cfg", "/localCfgs"),
+        ("local-cfg-boundary", "/localCfgBoundaries"),
     ] {
         let rows = index
             .pointer(pointer)
@@ -682,6 +685,29 @@ pub(crate) fn translate_facts(
             if category == "file" {
                 let normalized = normalize_file_fact(row)?;
                 push_fact(&capability, category, &normalized, &mut pending)?;
+            } else if category == "local-cfg" {
+                let payload: crate::thread_flow_cfg::LocalCfgPayload =
+                    serde_json::from_value(row.clone()).map_err(|_| {
+                        ClewError::new(
+                            ErrorCode::WorkerProtocolMismatch,
+                            "Kotlin local CFG payload is malformed",
+                        )
+                    })?;
+                crate::thread_flow_cfg::validate(&payload).map_err(|_| {
+                    ClewError::new(
+                        ErrorCode::WorkerProtocolMismatch,
+                        "Kotlin local CFG payload failed admission",
+                    )
+                })?;
+                push_fact(&capability, category, row, &mut pending)?;
+            } else if category == "local-cfg-boundary" {
+                crate::thread_flow_cfg::validate_boundary(row).map_err(|_| {
+                    ClewError::new(
+                        ErrorCode::WorkerProtocolMismatch,
+                        "Kotlin local CFG boundary failed admission",
+                    )
+                })?;
+                push_fact(&capability, category, row, &mut pending)?;
             } else {
                 push_fact(&capability, category, row, &mut pending)?;
             }
@@ -918,6 +944,7 @@ pub(crate) fn semantic_scope_digest(index: &Value) -> Result<String, ClewError> 
         "semanticInputManifestHash":index.get("semanticInputManifestHash"),
         "declarationDescriptorHash":index.get("declarationDescriptorHash"),
         "declarationRelationHash":index.get("declarationRelationHash"),
+        "localCfgHash":index.get("localCfgHash"),
     }))
     .map_err(internal)
 }
@@ -1010,6 +1037,10 @@ mod tests {
     use crate::worker::CompilerIndexStatus;
     use std::path::Path;
 
+    fn empty_local_cfg_hash() -> String {
+        canonical::hash(&json!({"graphs":[],"boundaries":[]})).unwrap()
+    }
+
     #[derive(Clone)]
     struct FakeDriver {
         version: &'static str,
@@ -1028,9 +1059,12 @@ mod tests {
                 "semanticInputManifestHash":format!("sha256:{}", "4".repeat(64)),
                 "declarationDescriptorHash":format!("sha256:{}", "5".repeat(64)),
                 "declarationRelationHash":format!("sha256:{}", "6".repeat(64)),
+                "localCfgHash":empty_local_cfg_hash(),
                 "files":[{"path":"src/Main.kt","contentHash":format!("sha256:{}", "7".repeat(64)),"declarations":[]}],
                 "declarationDescriptors":{"coverage":"COMPLETE_SUPPORTED_SUBSET","descriptors":[],"boundaries":[]},
                 "declarationRelations":{"coverage":"COMPLETE_SUPPORTED_SUBSET","relations":[],"boundaries":[]},
+                "localCfgs":[],
+                "localCfgBoundaries":[],
             }))
         }
     }
@@ -1075,6 +1109,9 @@ mod tests {
             }],
             "declarationDescriptors":{"descriptors":[],"boundaries":[]},
             "declarationRelations":{"relations":[],"boundaries":[]},
+            "localCfgHash":empty_local_cfg_hash(),
+            "localCfgs":[],
+            "localCfgBoundaries":[],
         });
         let facts = translate_facts(&store, &index).unwrap();
         let file = facts
@@ -1150,6 +1187,77 @@ mod tests {
             translate_facts(&store, &unsafe_relative_uri)
                 .unwrap_err()
                 .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+    }
+
+    #[test]
+    fn local_cfg_graphs_and_unknown_boundaries_are_persisted_as_distinct_cas_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let mut graph = json!({
+            "schema":"local-cfg/0.1",
+            "graphId":"",
+            "ownerSymbolIdentity":"callable:p/Box.save#jvm:()V",
+            "file":"src/main/kotlin/p/Box.kt",
+            "compilerGraphName":"Box.save",
+            "provider":"K2_FIR_CFG",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "nodes":[{"nodeId":0,"role":"ENTRY"},{"nodeId":1,"role":"RETURN"}],
+            "edges":[{"sourceNodeId":0,"targetNodeId":1,"kind":"RETURN","label":"CFG_RETURN"}],
+        });
+        graph["graphId"] = json!(canonical::hash(&graph).unwrap());
+        let boundary = json!({
+            "schema":"local-cfg-boundary/0.1",
+            "stage":"NORMALIZE",
+            "code":"UNSUPPORTED_LOCAL_CFG_EDGE",
+            "resolution":"UNKNOWN",
+            "provider":"K2_FIR_CFG",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "rawRowHash":format!("sha256:{}", "9".repeat(64)),
+        });
+        let index = json!({
+            "compilation":":/main",
+            "compilerVersion":"2.4.10",
+            "projectModelHash":format!("sha256:{}", "1".repeat(64)),
+            "classpathHash":format!("sha256:{}", "2".repeat(64)),
+            "compilerOptionsHash":format!("sha256:{}", "3".repeat(64)),
+            "semanticInputManifestHash":format!("sha256:{}", "4".repeat(64)),
+            "files":[],
+            "declarationDescriptors":{"descriptors":[],"boundaries":[]},
+            "declarationRelations":{"relations":[],"boundaries":[]},
+            "localCfgHash":canonical::hash(&json!({"graphs":[graph.clone()],"boundaries":[boundary.clone()]})).unwrap(),
+            "localCfgs":[graph.clone()],
+            "localCfgBoundaries":[boundary.clone()],
+        });
+
+        let facts = translate_facts(&store, &index).unwrap();
+        let graph_fact = facts
+            .iter()
+            .find(|fact| fact.fact_key.starts_with("kotlin:local-cfg:"))
+            .unwrap();
+        let boundary_fact = facts
+            .iter()
+            .find(|fact| fact.fact_key.starts_with("kotlin:local-cfg-boundary:"))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(store.read(&graph_fact.payload, 8192).unwrap().bytes())
+                .unwrap(),
+            graph
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                store.read(&boundary_fact.payload, 8192).unwrap().bytes()
+            )
+            .unwrap(),
+            boundary
+        );
+
+        let mut invalid = index;
+        invalid["localCfgs"][0]["graphId"] = json!(format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            translate_facts(&store, &invalid).unwrap_err().code,
             ErrorCode::WorkerProtocolMismatch
         );
     }

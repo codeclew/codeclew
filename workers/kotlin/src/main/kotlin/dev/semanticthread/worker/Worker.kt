@@ -892,7 +892,68 @@ internal class Worker(
         val request = if (payload.isEmpty()) buildJsonObject {} else json.parseToJsonElement(payload.decodeToString()).jsonObject
         val result = when (kind) {
             2 -> inspect(Path.of(request.requiredString("repo")).toRealPath(), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content)
-            3 -> index(Path.of(request.requiredString("repo")).toRealPath(), request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content, request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true, request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty())
+            3 -> {
+                val repo = Path.of(request.requiredString("repo")).toRealPath()
+                val compilation = request["compilation"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content
+                val selected = compilation ?: ":/main"
+                val syntaxOnly = request["syntaxOnly"]?.jsonPrimitive?.booleanOrNull == true
+                val requestedFiles = request["files"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+                val indexed = index(repo, compilation, syntaxOnly, requestedFiles)
+                if (syntaxOnly) {
+                    indexed
+                } else {
+                    val analysis = analyzeWithK2(repo, compilation = selected)
+                    val results = indexed["files"]!!.jsonArray.flatMap { fileValue ->
+                        val relative = fileValue.jsonObject["path"]!!.jsonPrimitive.content
+                        val path = repo.resolve(relative).normalize().toRealPath()
+                        val kt = parse(path)
+                        val functions = PsiTreeUtil.collectElementsOfType(kt, KtNamedFunction::class.java)
+                            .sortedBy { it.textRange.startOffset }
+                        cfgRecords(repo, path, analysis).map { cfg ->
+                            val start = cfg["start"]?.jsonPrimitive?.intOrNull
+                            val end = cfg["end"]?.jsonPrimitive?.intOrNull
+                            val fn = functions.singleOrNull {
+                                start == it.textRange.startOffset && end == it.textRange.endOffset
+                            }
+                            val symbol = cfg["symbol"]?.jsonPrimitive?.contentOrNull
+                            val jvmDescriptor = cfg["jvmDescriptor"]?.jsonPrimitive?.contentOrNull
+                            val owner = if (symbol != null && jvmDescriptor != null) {
+                                "callable:$symbol#jvm:$jvmDescriptor"
+                            } else {
+                                null
+                            }
+                            val graphName = cfg["name"]?.jsonPrimitive?.contentOrNull
+                            if (fn == null) {
+                                unknownCompilerLocalCfg(
+                                    "NO_SOURCE_FUNCTION",
+                                    cfg,
+                                    relative,
+                                    owner,
+                                    graphName,
+                                )
+                            } else {
+                                runCatching {
+                                    sealCompilerLocalCfg(
+                                        normalizeFirCfg(repo, relative, owner.orEmpty(), kt, fn, cfg, analysis, selected),
+                                        owner,
+                                        relative,
+                                        graphName,
+                                    )
+                                }.getOrElse {
+                                    unknownCompilerLocalCfg(
+                                        "LOCAL_CFG_NORMALIZATION_FAILED",
+                                        cfg,
+                                        relative,
+                                        owner,
+                                        graphName,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    attachCompilerLocalCfgSnapshot(indexed, results)
+                }
+            }
             4 -> resolveSymbol(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("symbol"), request["compilation"]?.jsonPrimitive?.content ?: ":/main")
             5 -> resolveExpression(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("file"), request.requiredInt("offset"), request["compilation"]?.jsonPrimitive?.content ?: ":/main")
             6 -> localGraph(Path.of(request.requiredString("repo")).toRealPath(), request.requiredString("symbol"), request["compilation"]?.jsonPrimitive?.content ?: ":/main")

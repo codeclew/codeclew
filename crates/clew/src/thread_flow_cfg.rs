@@ -7,9 +7,11 @@ use crate::canonical;
 use crate::cas::CasObject;
 use crate::error::{ClewError, ErrorCode};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const LOCAL_CFG_SCHEMA: &str = "local-cfg/0.1";
+pub const LOCAL_CFG_BOUNDARY_SCHEMA: &str = "local-cfg-boundary/0.1";
 pub const LOCAL_CFG_PAYLOAD_SCHEMA: &str = "codeclew-kotlin-semantic-fact/3.0";
 pub const MAX_LOCAL_CFG_NODES: usize = 4_096;
 pub const MAX_LOCAL_CFG_EDGES: usize = 8_192;
@@ -237,6 +239,109 @@ pub fn validate(payload: &LocalCfgPayload) -> Result<(), ClewError> {
         return Err(invalid("local CFG graph identity is invalid"));
     }
     Ok(())
+}
+
+/// Validate a typed UNKNOWN boundary emitted either by the pinned K2 worker or
+/// by the Rust admission normalizer. Boundaries deliberately carry no graph
+/// topology and therefore cannot be mistaken for executable CFG evidence.
+pub(crate) fn validate_boundary(value: &Value) -> Result<(), ClewError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("local CFG boundary is not an object"))?;
+    let allowed = BTreeSet::from([
+        "schema",
+        "file",
+        "ownerSymbolIdentity",
+        "compilerGraphName",
+        "stage",
+        "code",
+        "resolution",
+        "provider",
+        "sourceProvenance",
+        "rawRowHash",
+    ]);
+    if object.keys().any(|key| !allowed.contains(key.as_str())) {
+        return Err(invalid(
+            "local CFG boundary has a field outside its exact contract",
+        ));
+    }
+    let provider = value.get("provider").and_then(Value::as_str);
+    let code = value.get("code").and_then(Value::as_str);
+    let worker_code = matches!(
+        code,
+        Some(
+            "INVALID_LOCAL_CFG_IDENTITY"
+                | "UNSUPPORTED_LOCAL_CFG_NODE"
+                | "UNSUPPORTED_LOCAL_CFG_EDGE"
+                | "LOCAL_CFG_BUDGET_EXCEEDED"
+                | "INVALID_LOCAL_CFG_TOPOLOGY"
+                | "NO_SOURCE_FUNCTION"
+                | "LOCAL_CFG_NORMALIZATION_FAILED"
+                | "DUPLICATE_LOCAL_CFG_OWNER"
+        )
+    );
+    let normalizer_code = matches!(code, Some("INVALID_LOCAL_CFG" | "UNPROVEN_LOCAL_CFG_OWNER"));
+    if value.get("schema").and_then(Value::as_str) != Some(LOCAL_CFG_BOUNDARY_SCHEMA)
+        || value.get("stage").and_then(Value::as_str) != Some("NORMALIZE")
+        || value.get("resolution").and_then(Value::as_str) != Some("UNKNOWN")
+        || value.get("sourceProvenance").and_then(Value::as_str)
+            != Some("COMPILER_UTF16_RANGE_TO_UTF8_BYTES")
+        || !matches!(
+            (provider, worker_code, normalizer_code),
+            (Some("K2_FIR_CFG"), true, false)
+                | (Some("CODECLEW_LOCAL_CFG_NORMALIZER"), false, true)
+        )
+    {
+        return Err(invalid("malformed local CFG UNKNOWN boundary"));
+    }
+    let raw_hash = value
+        .get("rawRowHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("local CFG boundary has no raw row hash"))?;
+    if !canonical_sha256(raw_hash) {
+        return Err(invalid("local CFG boundary raw row hash is invalid"));
+    }
+    if let Some(file) = value.get("file").and_then(Value::as_str) {
+        validate_text(file, "local CFG boundary file", 4_096)?;
+        if file.starts_with('/')
+            || file.contains('\\')
+            || file
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(invalid(
+                "local CFG boundary file is not repository-relative",
+            ));
+        }
+    } else if value.get("file").is_some() {
+        return Err(invalid("local CFG boundary file is malformed"));
+    }
+    if let Some(owner) = value.get("ownerSymbolIdentity").and_then(Value::as_str) {
+        crate::semantic_validation::validate_kotlin_full_symbol_identity(owner)?;
+    } else if value.get("ownerSymbolIdentity").is_some() {
+        return Err(invalid("local CFG boundary owner is malformed"));
+    }
+    if let Some(name) = value.get("compilerGraphName").and_then(Value::as_str) {
+        validate_text(
+            name,
+            "local CFG boundary compiler graph name",
+            MAX_CFG_TEXT_BYTES,
+        )?;
+    } else if value.get("compilerGraphName").is_some() {
+        return Err(invalid(
+            "local CFG boundary compiler graph name is malformed",
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_sha256(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 pub fn seal(mut payload: LocalCfgPayload) -> Result<LocalCfgPayload, ClewError> {

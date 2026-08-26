@@ -637,6 +637,7 @@ pub struct VerifiedIndexFacts {
     payload_hash: String,
     relation_hash: String,
     descriptor_hash: String,
+    local_cfg_hash: String,
     payload: Value,
 }
 
@@ -921,6 +922,16 @@ fn validate_source_syntax_response(
         source_syntax_protocol_error("SOURCE_SYNTAX response is not a JSON object")
     })?;
     require_absent_or_empty_rows(top, "semanticFacts", "top-level semantic facts")?;
+    require_absent_or_empty_rows(top, "localCfgs", "compiler local CFG rows")?;
+    require_absent_or_empty_rows(top, "localCfgBoundaries", "compiler local CFG boundaries")?;
+    if top
+        .get("localCfgHash")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(source_syntax_protocol_error(
+            "SOURCE_SYNTAX response contains a compiler local CFG hash",
+        ));
+    }
 
     let files = facts
         .get("files")
@@ -1327,6 +1338,220 @@ fn normalize_invalid_jvm_descriptors(facts: &mut Value) -> Result<usize, ClewErr
     facts["declarationDescriptorHash"] =
         Value::String(crate::canonical::hash(graph).map_err(internal)?);
     Ok(quarantined_count)
+}
+
+fn canonical_local_cfg_rows(rows: &[Value], label: &str) -> Result<(), ClewError> {
+    let encoded = rows
+        .iter()
+        .map(crate::canonical::bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    if encoded.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            format!("local CFG {label} must be canonical, sorted, and unique"),
+        ));
+    }
+    Ok(())
+}
+
+fn local_cfg_snapshot_hash(graphs: &[Value], boundaries: &[Value]) -> Result<String, ClewError> {
+    crate::canonical::hash(&serde_json::json!({
+        "graphs":graphs,
+        "boundaries":boundaries,
+    }))
+    .map_err(internal)
+}
+
+fn proven_descriptor_identities(descriptor_graph: &Value) -> BTreeSet<String> {
+    descriptor_graph
+        .get("descriptors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.get("symbolIdentity").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn validate_local_cfg_snapshot(
+    facts: &Value,
+    descriptor_graph: &Value,
+) -> Result<String, ClewError> {
+    let graphs = facts
+        .get("localCfgs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "worker index has no localCfgs"))?;
+    let boundaries = facts
+        .get("localCfgBoundaries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                "worker index has no localCfgBoundaries",
+            )
+        })?;
+    canonical_local_cfg_rows(graphs, "graphs")?;
+    canonical_local_cfg_rows(boundaries, "boundaries")?;
+    let proven = proven_descriptor_identities(descriptor_graph);
+    let mut owners = BTreeSet::new();
+    for graph in graphs {
+        let payload: crate::thread_flow_cfg::LocalCfgPayload =
+            serde_json::from_value(graph.clone()).map_err(|_| {
+                ClewError::new(ErrorCode::InvalidInput, "local CFG payload is malformed")
+            })?;
+        crate::thread_flow_cfg::validate(&payload)?;
+        if !proven.contains(&payload.owner_symbol_identity)
+            || !owners.insert(payload.owner_symbol_identity)
+        {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "local CFG owner is not a unique proven declaration descriptor",
+            ));
+        }
+    }
+    for boundary in boundaries {
+        crate::thread_flow_cfg::validate_boundary(boundary)?;
+    }
+    let hash = facts
+        .get("localCfgHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "worker index has no localCfgHash"))?
+        .to_owned();
+    if local_cfg_snapshot_hash(graphs, boundaries)? != hash {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "local CFG hash differs from canonical Rust snapshot hash",
+        ));
+    }
+    Ok(hash)
+}
+
+/// Verify the worker's original local-CFG snapshot before mutation, retain only
+/// graphs linked to a proven declaration descriptor, and quarantine every
+/// unsupported graph as typed UNKNOWN evidence. Numeric node IDs are never
+/// inspected here to invent control-flow order.
+fn normalize_local_cfg_evidence(
+    facts: &mut Value,
+    descriptor_graph: &Value,
+) -> Result<String, ClewError> {
+    let expected_hash = facts
+        .get("localCfgHash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "worker index has no localCfgHash"))?
+        .to_owned();
+    let raw_graphs = facts
+        .get("localCfgs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ClewError::new(ErrorCode::InvalidInput, "worker index has no localCfgs"))?
+        .clone();
+    let raw_boundaries = facts
+        .get("localCfgBoundaries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ClewError::new(
+                ErrorCode::InvalidInput,
+                "worker index has no localCfgBoundaries",
+            )
+        })?
+        .clone();
+    canonical_local_cfg_rows(&raw_graphs, "graphs")?;
+    canonical_local_cfg_rows(&raw_boundaries, "boundaries")?;
+    if local_cfg_snapshot_hash(&raw_graphs, &raw_boundaries)? != expected_hash {
+        return Err(ClewError::new(
+            ErrorCode::ProjectModelChanged,
+            "local CFG hash differs before admission normalization",
+        ));
+    }
+    let mut normalized_raw_boundaries = Vec::with_capacity(raw_boundaries.len());
+    for mut boundary in raw_boundaries {
+        if !boundary.is_object() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "raw worker local CFG boundary is not an object",
+            ));
+        }
+        if boundary.get("provider").and_then(Value::as_str) == Some("CODECLEW_LOCAL_CFG_NORMALIZER")
+        {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "raw worker snapshot impersonates Codeclew local CFG normalization",
+            ));
+        }
+        if boundary
+            .get("ownerSymbolIdentity")
+            .and_then(Value::as_str)
+            .is_some_and(|owner| {
+                crate::semantic_validation::validate_kotlin_full_symbol_identity(owner).is_err()
+            })
+        {
+            boundary
+                .as_object_mut()
+                .expect("checked local CFG boundary object")
+                .remove("ownerSymbolIdentity");
+        }
+        crate::thread_flow_cfg::validate_boundary(&boundary)?;
+        normalized_raw_boundaries.push(boundary);
+    }
+
+    let proven = proven_descriptor_identities(descriptor_graph);
+    let mut owner_counts = BTreeMap::<String, usize>::new();
+    for graph in &raw_graphs {
+        if let Ok(payload) =
+            serde_json::from_value::<crate::thread_flow_cfg::LocalCfgPayload>(graph.clone())
+        {
+            *owner_counts
+                .entry(payload.owner_symbol_identity)
+                .or_default() += 1;
+        }
+    }
+    let mut retained = Vec::new();
+    let mut boundaries = normalized_raw_boundaries;
+    for graph in raw_graphs {
+        let raw_row_hash = crate::canonical::hash(&graph).map_err(internal)?;
+        let parsed =
+            serde_json::from_value::<crate::thread_flow_cfg::LocalCfgPayload>(graph.clone());
+        let accepted = parsed.as_ref().is_ok_and(|payload| {
+            crate::thread_flow_cfg::validate(payload).is_ok()
+                && proven.contains(&payload.owner_symbol_identity)
+                && owner_counts.get(&payload.owner_symbol_identity) == Some(&1)
+        });
+        if accepted {
+            retained.push(graph);
+            continue;
+        }
+        let code = parsed
+            .as_ref()
+            .ok()
+            .filter(|payload| crate::thread_flow_cfg::validate(payload).is_ok())
+            .map_or("INVALID_LOCAL_CFG", |_| "UNPROVEN_LOCAL_CFG_OWNER");
+        boundaries.push(serde_json::json!({
+            "schema":crate::thread_flow_cfg::LOCAL_CFG_BOUNDARY_SCHEMA,
+            "stage":"NORMALIZE",
+            "code":code,
+            "resolution":"UNKNOWN",
+            "provider":"CODECLEW_LOCAL_CFG_NORMALIZER",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "rawRowHash":raw_row_hash,
+        }));
+    }
+    retained.sort_by_key(|row| crate::canonical::bytes(row).unwrap_or_default());
+    boundaries.sort_by_key(|row| crate::canonical::bytes(row).unwrap_or_default());
+    boundaries.dedup_by(|left, right| {
+        crate::canonical::bytes(left).ok() == crate::canonical::bytes(right).ok()
+    });
+    facts["localCfgs"] = Value::Array(retained);
+    facts["localCfgBoundaries"] = Value::Array(boundaries);
+    let normalized_hash = local_cfg_snapshot_hash(
+        facts["localCfgs"]
+            .as_array()
+            .expect("assigned local CFG graphs"),
+        facts["localCfgBoundaries"]
+            .as_array()
+            .expect("assigned local CFG boundaries"),
+    )?;
+    facts["localCfgHash"] = Value::String(normalized_hash);
+    validate_local_cfg_snapshot(facts, descriptor_graph)
 }
 
 impl VerifiedIndexFacts {
@@ -2266,6 +2491,10 @@ impl WorkerClient {
             &facts,
         )
         .map_err(|error| attach_verified_index_failure(error, "DESCRIPTOR_GRAPH", Some(&facts)))?;
+        let local_cfg_hash =
+            normalize_local_cfg_evidence(&mut facts, &descriptor.graph).map_err(|error| {
+                attach_verified_index_failure(error, "LOCAL_CFG_GRAPH", Some(&facts))
+            })?;
         normalize_optional_relation_evidence(&mut facts).map_err(|error| {
             attach_verified_index_failure(error, "RELATION_NORMALIZATION", Some(&facts))
         })?;
@@ -2315,6 +2544,7 @@ impl WorkerClient {
             "payloadHash":payload_hash,
             "relationHash":relation.hash,
             "descriptorHash":descriptor.hash,
+            "localCfgHash":local_cfg_hash,
         }))
         .map_err(internal)?;
         self.issued_index_facts.insert(receipt_id, seal);
@@ -2331,6 +2561,7 @@ impl WorkerClient {
             payload_hash,
             relation_hash: relation.hash,
             descriptor_hash: descriptor.hash,
+            local_cfg_hash,
             payload: facts,
         })
     }
@@ -2353,6 +2584,7 @@ impl WorkerClient {
             "payloadHash":facts.payload_hash,
             "relationHash":facts.relation_hash,
             "descriptorHash":facts.descriptor_hash,
+            "localCfgHash":facts.local_cfg_hash,
         }))
         .map_err(internal)?;
         if facts.authority_session != self.authority_session
@@ -2389,6 +2621,7 @@ impl WorkerClient {
             "payloadHash":facts.payload_hash,
             "relationHash":facts.relation_hash,
             "descriptorHash":facts.descriptor_hash,
+            "localCfgHash":facts.local_cfg_hash,
         }))
         .map_err(internal)?;
         if facts.authority_session != self.authority_session
@@ -2416,7 +2649,11 @@ impl WorkerClient {
             crate::semantic_validation::validate_declaration_relation_snapshot(&facts.payload)?;
         let descriptor =
             crate::semantic_validation::validate_declaration_descriptor_snapshot(&facts.payload)?;
-        if relation.hash != facts.relation_hash || descriptor.hash != facts.descriptor_hash {
+        let local_cfg_hash = validate_local_cfg_snapshot(&facts.payload, &descriptor.graph)?;
+        if relation.hash != facts.relation_hash
+            || descriptor.hash != facts.descriptor_hash
+            || local_cfg_hash != facts.local_cfg_hash
+        {
             return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
                 "verified semantic graph hash changed after issuance",
@@ -4526,6 +4763,17 @@ mod tests {
                 .code,
             ErrorCode::WorkerProtocolMismatch
         );
+
+        let (repo, relative, mut response) = source_syntax_fixture();
+        response["localCfgs"] = json!([{"schema":"local-cfg/0.1"}]);
+        response["localCfgBoundaries"] = json!([]);
+        response["localCfgHash"] = json!(format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            validate_source_syntax_response(repo.path(), ":/main", &[relative], &response)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
     }
 
     #[test]
@@ -4705,6 +4953,166 @@ mod tests {
             "declarationDescriptorHash":crate::canonical::hash(&graph).unwrap(),
             "declarationDescriptors":graph,
         })
+    }
+
+    fn local_cfg_graph(owner: &str) -> Value {
+        let mut graph = json!({
+            "schema":"local-cfg/0.1",
+            "graphId":"",
+            "ownerSymbolIdentity":owner,
+            "file":"src/main/kotlin/p/Box.kt",
+            "compilerGraphName":"Box.save",
+            "provider":"K2_FIR_CFG",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "nodes":[
+                {"nodeId":2,"role":"DECISION"},
+                {"nodeId":7,"role":"RETURN"},
+                {"nodeId":9,"role":"ENTRY"}
+            ],
+            "edges":[
+                {"sourceNodeId":2,"targetNodeId":7,"kind":"TRUE","label":"CFG_TRUE"},
+                {"sourceNodeId":9,"targetNodeId":2,"kind":"NEXT"}
+            ]
+        });
+        graph["graphId"] = json!(crate::canonical::hash(&graph).unwrap());
+        let payload: crate::thread_flow_cfg::LocalCfgPayload =
+            serde_json::from_value(graph.clone()).unwrap();
+        crate::thread_flow_cfg::validate(&payload).unwrap();
+        graph
+    }
+
+    fn local_cfg_facts(graphs: Vec<Value>, boundaries: Vec<Value>) -> Value {
+        let hash = local_cfg_snapshot_hash(&graphs, &boundaries).unwrap();
+        json!({
+            "localCfgs":graphs,
+            "localCfgBoundaries":boundaries,
+            "localCfgHash":hash,
+        })
+    }
+
+    fn local_cfg_descriptor_graph(owner: Option<&str>) -> Value {
+        json!({
+            "descriptors":owner.into_iter().map(|symbol| json!({
+                "symbolIdentity":symbol,
+            })).collect::<Vec<_>>()
+        })
+    }
+
+    #[test]
+    fn local_cfg_admission_preserves_explicit_edges_without_numeric_ordering() {
+        let owner = "callable:p/Box.save#jvm:()V";
+        let graph = local_cfg_graph(owner);
+        let mut facts = local_cfg_facts(vec![graph.clone()], vec![]);
+
+        let hash =
+            normalize_local_cfg_evidence(&mut facts, &local_cfg_descriptor_graph(Some(owner)))
+                .unwrap();
+
+        assert_eq!(facts["localCfgs"][0]["edges"][0]["sourceNodeId"], 2);
+        assert_eq!(facts["localCfgs"][0]["edges"][1]["sourceNodeId"], 9);
+        assert_eq!(facts["localCfgs"][0]["edges"][1]["targetNodeId"], 2);
+        assert_eq!(facts["localCfgHash"], hash);
+        assert!(facts["localCfgBoundaries"].as_array().unwrap().is_empty());
+        assert_eq!(facts["localCfgs"][0], graph);
+    }
+
+    #[test]
+    fn local_cfg_unproven_owner_becomes_typed_unknown() {
+        let graph = local_cfg_graph("callable:p/Box.save#jvm:()V");
+        let raw_hash = crate::canonical::hash(&graph).unwrap();
+        let mut facts = local_cfg_facts(vec![graph], vec![]);
+
+        normalize_local_cfg_evidence(&mut facts, &local_cfg_descriptor_graph(None)).unwrap();
+
+        assert!(facts["localCfgs"].as_array().unwrap().is_empty());
+        let boundary = &facts["localCfgBoundaries"][0];
+        assert_eq!(boundary["code"], "UNPROVEN_LOCAL_CFG_OWNER");
+        assert_eq!(boundary["resolution"], "UNKNOWN");
+        assert_eq!(boundary["rawRowHash"], raw_hash);
+        crate::thread_flow_cfg::validate_boundary(boundary).unwrap();
+    }
+
+    #[test]
+    fn local_cfg_unknown_boundary_drops_only_an_invalid_optional_owner() {
+        let boundary = json!({
+            "schema":"local-cfg-boundary/0.1",
+            "ownerSymbolIdentity":"callable:<local>/Box.save#jvm:(Lrendered.Type;)V",
+            "stage":"NORMALIZE",
+            "code":"NO_SOURCE_FUNCTION",
+            "resolution":"UNKNOWN",
+            "provider":"K2_FIR_CFG",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "rawRowHash":format!("sha256:{}", "4".repeat(64)),
+        });
+        let mut facts = local_cfg_facts(vec![], vec![boundary]);
+
+        normalize_local_cfg_evidence(&mut facts, &local_cfg_descriptor_graph(None)).unwrap();
+
+        let normalized = &facts["localCfgBoundaries"][0];
+        assert!(normalized.get("ownerSymbolIdentity").is_none());
+        assert_eq!(normalized["code"], "NO_SOURCE_FUNCTION");
+        assert_eq!(normalized["resolution"], "UNKNOWN");
+        crate::thread_flow_cfg::validate_boundary(normalized).unwrap();
+    }
+
+    #[test]
+    fn local_cfg_rejects_forged_hash_and_normalizer_impersonation() {
+        let owner = "callable:p/Box.save#jvm:()V";
+        let mut forged = local_cfg_facts(vec![local_cfg_graph(owner)], vec![]);
+        forged["localCfgHash"] = json!(format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            normalize_local_cfg_evidence(&mut forged, &local_cfg_descriptor_graph(Some(owner)),)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProjectModelChanged
+        );
+
+        let boundary = json!({
+            "schema":"local-cfg-boundary/0.1",
+            "stage":"NORMALIZE",
+            "code":"INVALID_LOCAL_CFG",
+            "resolution":"UNKNOWN",
+            "provider":"CODECLEW_LOCAL_CFG_NORMALIZER",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "rawRowHash":format!("sha256:{}", "1".repeat(64)),
+        });
+        let mut impersonated = local_cfg_facts(vec![], vec![boundary]);
+        assert_eq!(
+            normalize_local_cfg_evidence(
+                &mut impersonated,
+                &local_cfg_descriptor_graph(Some(owner)),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn compiler_local_cfg_snapshot_hash_matches_rust_canonical_bytes() {
+        let _workspace_worker_guard = workspace_worker_test_lock();
+        let workspace = workspace_root();
+        let repo = workspace
+            .join("fixtures/kotlin-basic")
+            .canonicalize()
+            .unwrap();
+        let mut worker = WorkerClient::start(&workspace).unwrap();
+        worker
+            .open_project_verified(&json!({"repo":repo,"compilation":":/main"}))
+            .unwrap();
+        let facts = worker
+            .request(
+                RequestKind::IndexFiles,
+                &json!({"repo":repo,"compilation":":/main","syntaxOnly":false}),
+            )
+            .unwrap();
+        let graphs = facts["localCfgs"].as_array().unwrap();
+        let boundaries = facts["localCfgBoundaries"].as_array().unwrap();
+        assert_eq!(
+            facts["localCfgHash"].as_str().unwrap(),
+            local_cfg_snapshot_hash(graphs, boundaries).unwrap(),
+        );
+        worker.shutdown().unwrap();
     }
 
     #[test]
