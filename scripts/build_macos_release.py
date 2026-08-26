@@ -296,9 +296,10 @@ def write_seed(
     if runtime_key != f"sha256:{capsule.name}" or manifest.get("mode") != "RELEASE":
         raise ReleaseError("profiled runtime identity is invalid")
     seed_root = package / "seed"
+    seed_root.mkdir(mode=0o700)
     epoch = seed_root / f"release-N-{revision}"
     locks = seed_root / "locks"
-    locks.mkdir(parents=True, mode=0o700)
+    locks.mkdir(mode=0o700)
     lifecycle = locks / "lifecycle.lock"
     lifecycle.write_bytes(b"")
     lifecycle.chmod(0o600)

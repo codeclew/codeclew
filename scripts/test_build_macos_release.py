@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,40 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def test_seed_lifecycle_root_has_bootstrap_safe_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            temporary = Path(value)
+            package = temporary / "package"
+            package.mkdir()
+            state = temporary / "state"
+            runtime_key = "1" * 64
+            capsule = state / "v2" / "runtimes" / runtime_key
+            capsule.mkdir(parents=True)
+            manifest = {
+                "artifacts": {},
+                "manifestDigest": "sha256:" + "2" * 64,
+                "mode": "RELEASE",
+                "runtimeKey": "sha256:" + runtime_key,
+                "workers": {},
+            }
+            (capsule / "runtime.json").write_bytes(
+                release.canonical(manifest) + b"\n"
+            )
+
+            release.write_seed(
+                package,
+                state,
+                b"evidence",
+                "a" * 40,
+                "b" * 40,
+                "sha256:" + "3" * 64,
+            )
+
+            self.assertEqual(
+                stat.S_IMODE((package / "seed").stat().st_mode),
+                0o700,
+            )
+
     def test_cli_version_must_match_the_release_tag(self) -> None:
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
