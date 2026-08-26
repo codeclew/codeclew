@@ -3,6 +3,7 @@
 use crate::canonical;
 use crate::cas::{CasLease, CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
+use crate::generation_v2::{GENERATION_SCHEMA, GenerationManifest};
 use crate::state::StateAuthority;
 use crate::thread::ThreadAuthority;
 use crate::thread_callables::{PreparedCallableFactSet, SourceAnchor};
@@ -12,6 +13,9 @@ use crate::thread_callables_service::{
 use crate::thread_flow::{
     FLOW_SLICE_SCHEMA, FlowBudgets, FlowDirection, FlowRequest, FlowRootKind, FlowSlice,
     FlowSliceProjection, MAX_FLOW_SLICE_BYTES, MAX_FLOW_STDOUT_BYTES, PreparedFlowSlice,
+};
+use crate::thread_flow_cfg::{
+    LOCAL_CFG_PAYLOAD_SCHEMA, LocalCfgCatalog, LocalCfgPayload, LocalCfgSupport, PreparedLocalCfg,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,7 +69,8 @@ pub(crate) fn create_with_state(
     thread.require_open_with_state(state)?;
     let store = CasStore::open(state)?;
     let (callable_root, fact_set) = load_callable_verified(state, &store, thread, fact_set_id)?;
-    let prepared = crate::thread_flow::build(
+    let cfg = load_cfg_catalog(&store, &fact_set, &request.member_alias)?;
+    let prepared = crate::thread_flow::build_with_cfg(
         FlowRequest {
             thread_id: thread.thread_id.clone(),
             thread_authority_digest: thread.authority_digest.clone(),
@@ -79,8 +84,9 @@ pub(crate) fn create_with_state(
             budgets: FlowBudgets::frozen(request.max_depth)?,
         },
         &fact_set,
+        &cfg,
     )?;
-    crate::thread_flow::verify_prepared(&prepared, &fact_set)?;
+    crate::thread_flow::verify_prepared_with_cfg(&prepared, &fact_set, &cfg)?;
     let root = root_from_prepared(thread, &callable_root, &prepared)?;
     bounded_stdout(&root)?;
     let _leases = verify_support_closure(&store, &fact_set, &prepared, false)?;
@@ -142,7 +148,18 @@ pub(crate) fn load_verified(
         slice_ref: root.slice_ref.clone(),
         projection: root.projection.clone(),
     };
-    crate::thread_flow::verify_prepared(&prepared, &fact_set)?;
+    let cfg = load_cfg_catalog(store, &fact_set, &prepared.slice.request.member_alias)?;
+    let is_t00_slice = prepared.slice.control_flow_regions.is_empty()
+        && !prepared
+            .slice
+            .boundaries
+            .iter()
+            .any(|boundary| boundary.code == "VERIFY_CONTROL_FLOW_ORDER");
+    if is_t00_slice {
+        crate::thread_flow::verify_prepared(&prepared, &fact_set)?;
+    } else {
+        crate::thread_flow::verify_prepared_with_cfg(&prepared, &fact_set, &cfg)?;
+    }
     if prepared.slice.request.thread_id != root.thread_id
         || prepared.slice.request.thread_authority_digest != root.thread_authority_digest
         || prepared.slice.request.fact_set_id != root.fact_set_id
@@ -306,6 +323,40 @@ fn verify_support_closure(
             }
         }
     }
+    let mut cfg_payloads = BTreeMap::<String, CasObject>::new();
+    for region in &prepared.slice.control_flow_regions {
+        if parent.get(region.support.generation_ref.digest.as_str())
+            != Some(&&region.support.generation_ref)
+        {
+            return Err(corrupt("local CFG generation escapes its parent fact set"));
+        }
+        let bytes = canonical::bytes(&region.graph).map_err(internal)?;
+        if CasObject::for_bytes(LOCAL_CFG_PAYLOAD_SCHEMA, &bytes)? != region.support.payload_ref {
+            return Err(corrupt(
+                "local CFG graph differs from its payload authority",
+            ));
+        }
+        match cfg_payloads.entry(region.support.payload_ref.digest.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(region.support.payload_ref.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                if entry.get() != &region.support.payload_ref {
+                    return Err(corrupt(
+                        "local CFG payload digest has conflicting authority",
+                    ));
+                }
+            }
+        }
+    }
+    let cfg_bytes = cfg_payloads.values().try_fold(0usize, |total, reference| {
+        let size = usize::try_from(reference.size)
+            .map_err(|_| budget("local CFG payload exceeds host size"))?;
+        store.read(reference, size)?;
+        total
+            .checked_add(size)
+            .ok_or_else(|| budget("local CFG retained bytes overflowed"))
+    })?;
     let inherited_bytes =
         fact_set
             .authority
@@ -318,7 +369,10 @@ fn verify_support_closure(
                     .checked_add(size)
                     .ok_or_else(|| budget("flow retained byte count overflowed"))
             })?;
-    if inherited_bytes.saturating_add(prepared.slice_bytes.len()) > MAX_FLOW_RETAINED_CLOSURE_BYTES
+    if inherited_bytes
+        .saturating_add(cfg_bytes)
+        .saturating_add(prepared.slice_bytes.len())
+        > MAX_FLOW_RETAINED_CLOSURE_BYTES
     {
         return Err(budget("thread flow retained closure exceeds 64 MiB"));
     }
@@ -354,6 +408,61 @@ fn verify_support_closure(
         leases.push(lease);
     }
     Ok(leases)
+}
+
+fn load_cfg_catalog(
+    store: &CasStore,
+    fact_set: &PreparedCallableFactSet,
+    member_alias: &str,
+) -> Result<LocalCfgCatalog, ClewError> {
+    let member = fact_set
+        .authority
+        .members
+        .iter()
+        .find(|member| member.member_alias == member_alias)
+        .ok_or_else(|| invalid("flow member has no callable authority"))?;
+    let mut catalog = LocalCfgCatalog::default();
+    for compilation in &member.compilations {
+        let generation_size = usize::try_from(compilation.generation_ref.size)
+            .map_err(|_| budget("flow generation manifest exceeds host size"))?;
+        let generation_lease = store.read(&compilation.generation_ref, generation_size)?;
+        let generation: GenerationManifest = serde_json::from_slice(generation_lease.bytes())
+            .map_err(|_| corrupt("flow generation manifest is invalid"))?;
+        if compilation.generation_ref.object_schema != GENERATION_SCHEMA
+            || canonical::bytes(&generation).map_err(internal)? != generation_lease.bytes()
+        {
+            return Err(corrupt("flow generation manifest is not canonical"));
+        }
+        generation.visit_facts(store, |fact| {
+            if !fact.fact_key.starts_with("kotlin:local-cfg:") {
+                return Ok(());
+            }
+            if fact.payload.object_schema != LOCAL_CFG_PAYLOAD_SCHEMA {
+                return Err(corrupt("local CFG fact has another payload schema"));
+            }
+            let payload_size = usize::try_from(fact.payload.size)
+                .map_err(|_| budget("local CFG payload exceeds host size"))?;
+            if payload_size > 4 * 1024 * 1024 {
+                return Err(budget("local CFG payload exceeds 4 MiB"));
+            }
+            let payload_lease = store.read(&fact.payload, payload_size)?;
+            let payload: LocalCfgPayload = serde_json::from_slice(payload_lease.bytes())
+                .map_err(|_| corrupt("local CFG payload is invalid"))?;
+            if canonical::bytes(&payload).map_err(internal)? != payload_lease.bytes() {
+                return Err(corrupt("local CFG payload is not canonical"));
+            }
+            catalog.insert(PreparedLocalCfg {
+                payload,
+                support: LocalCfgSupport {
+                    member_alias: member_alias.into(),
+                    compilation_id: compilation.compilation_id.clone(),
+                    generation_ref: compilation.generation_ref.clone(),
+                    payload_ref: fact.payload.clone(),
+                },
+            })
+        })?;
+    }
+    Ok(catalog)
 }
 
 fn flow_root_path(

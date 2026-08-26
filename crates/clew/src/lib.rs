@@ -30,6 +30,7 @@ pub mod thread_change_set;
 pub mod thread_change_set_service;
 pub mod thread_context;
 pub mod thread_flow;
+pub mod thread_flow_cfg;
 pub mod thread_flow_service;
 pub mod thread_impact;
 pub mod thread_impact_service;

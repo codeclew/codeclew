@@ -10,6 +10,7 @@ use crate::thread_callables::{
     CallableFact, CallableFactProvenance, CallableFactSetCertainty, CallableFactShard,
     PreparedCallableFactSet, RelationshipAuthority, SourceAnchor, TargetResolution,
 };
+use crate::thread_flow_cfg::{LocalCfgCatalog, LocalCfgPayload, LocalCfgSupport};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -39,6 +40,7 @@ pub enum FlowDirection {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FlowOrderAuthority {
     UnorderedStaticRelation,
+    CompilerCfg,
     Unknown,
 }
 
@@ -152,7 +154,20 @@ pub struct FlowEdge {
     pub relation_kind: String,
     pub relationship_authority: RelationshipAuthority,
     pub order_authority: FlowOrderAuthority,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cfg_graph_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cfg_node_ids: Vec<u64>,
     pub support_refs: Vec<FlowSupportRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FlowControlRegion {
+    pub region_id: String,
+    pub owner_node_id: String,
+    pub graph: LocalCfgPayload,
+    pub support: LocalCfgSupport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +186,8 @@ pub struct FlowCounts {
     pub nodes: usize,
     pub edges: usize,
     pub boundaries: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub control_flow_regions: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,6 +200,8 @@ pub struct FlowSlice {
     pub nodes: Vec<FlowNode>,
     pub edges: Vec<FlowEdge>,
     pub boundaries: Vec<FlowBoundary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_flow_regions: Vec<FlowControlRegion>,
     pub counts: FlowCounts,
     pub status: FlowStatus,
     pub certainty: FlowCertainty,
@@ -239,6 +258,22 @@ impl IndexedFact {
 pub fn build(
     request: FlowRequest,
     fact_set: &PreparedCallableFactSet,
+) -> Result<PreparedFlowSlice, ClewError> {
+    build_internal(request, fact_set, None)
+}
+
+pub fn build_with_cfg(
+    request: FlowRequest,
+    fact_set: &PreparedCallableFactSet,
+    cfg: &LocalCfgCatalog,
+) -> Result<PreparedFlowSlice, ClewError> {
+    build_internal(request, fact_set, Some(cfg))
+}
+
+fn build_internal(
+    request: FlowRequest,
+    fact_set: &PreparedCallableFactSet,
+    cfg: Option<&LocalCfgCatalog>,
 ) -> Result<PreparedFlowSlice, ClewError> {
     validate_request(&request, fact_set)?;
     let facts = read_facts(fact_set)?;
@@ -470,13 +505,44 @@ pub fn build(
                     "fact": row.fact_id,
                 }),
             )?;
+            let (cfg_graph_id, cfg_node_ids, order_authority) = match cfg {
+                None => (
+                    None,
+                    Vec::new(),
+                    FlowOrderAuthority::UnorderedStaticRelation,
+                ),
+                Some(catalog) => match catalog.get(&request.member_alias, &source_symbol) {
+                    Some(graph) => match relation_cfg_nodes(row, &graph.payload) {
+                        Some(node_ids) => (
+                            Some(graph.payload.graph_id.clone()),
+                            node_ids,
+                            FlowOrderAuthority::CompilerCfg,
+                        ),
+                        None => {
+                            add_boundary(
+                                &mut boundaries,
+                                &mut obligations,
+                                &request,
+                                "VERIFY_CONTROL_FLOW_ORDER",
+                                &source_symbol,
+                                vec!["VERIFY_CONTROL_FLOW_ORDER".into()],
+                                vec![indexed.support()],
+                            )?;
+                            (None, Vec::new(), FlowOrderAuthority::Unknown)
+                        }
+                    },
+                    None => (None, Vec::new(), FlowOrderAuthority::Unknown),
+                },
+            };
             edges.entry(edge_id.clone()).or_insert(FlowEdge {
                 edge_id,
                 source_node_id: source_node_id.clone(),
                 target_node_id,
                 relation_kind: row.relation_kind.clone(),
                 relationship_authority: row.relationship_authority,
-                order_authority: FlowOrderAuthority::UnorderedStaticRelation,
+                order_authority,
+                cfg_graph_id,
+                cfg_node_ids,
                 support_refs: vec![indexed.support()],
             });
             if visited.insert(target_symbol.clone()) {
@@ -536,12 +602,46 @@ pub fn build(
         }
     }
 
+    let mut control_flow_regions = Vec::new();
+    if let Some(catalog) = cfg {
+        for symbol in &visited {
+            let Some(owner_node_id) = node_for_symbol(&nodes, symbol) else {
+                continue;
+            };
+            match catalog.get(&request.member_alias, symbol) {
+                Some(graph) => control_flow_regions.push(FlowControlRegion {
+                    region_id: stable_id(
+                        "flow-cfg-region",
+                        &json!({
+                            "ownerNodeId": owner_node_id,
+                            "graphId": graph.payload.graph_id,
+                            "support": graph.support,
+                        }),
+                    )?,
+                    owner_node_id,
+                    graph: graph.payload.clone(),
+                    support: graph.support.clone(),
+                }),
+                None => add_boundary(
+                    &mut boundaries,
+                    &mut obligations,
+                    &request,
+                    "VERIFY_CONTROL_FLOW_ORDER",
+                    symbol,
+                    vec!["VERIFY_CONTROL_FLOW_ORDER".into()],
+                    Vec::new(),
+                )?,
+            }
+        }
+    }
+
     let mut nodes = nodes.into_values().collect::<Vec<_>>();
     let mut edges = edges.into_values().collect::<Vec<_>>();
     let mut boundaries = boundaries.into_values().collect::<Vec<_>>();
     nodes.sort_by(|left, right| left.node_id.cmp(&right.node_id));
     edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
     boundaries.sort_by(|left, right| left.boundary_id.cmp(&right.boundary_id));
+    control_flow_regions.sort_by(|left, right| left.region_id.cmp(&right.region_id));
     let certainty = if truncated
         || !boundaries.is_empty()
         || fact_set.authority.completeness.certainty == CallableFactSetCertainty::Unsure
@@ -559,8 +659,21 @@ pub fn build(
         nodes: nodes.len(),
         edges: edges.len(),
         boundaries: boundaries.len(),
+        control_flow_regions: control_flow_regions.len(),
     };
     let obligations = obligations.into_iter().collect::<Vec<_>>();
+    let projection_order_authority = match cfg {
+        None => FlowOrderAuthority::UnorderedStaticRelation,
+        Some(_)
+            if counts.control_flow_regions > 0
+                && edges
+                    .iter()
+                    .all(|edge| edge.order_authority == FlowOrderAuthority::CompilerCfg) =>
+        {
+            FlowOrderAuthority::CompilerCfg
+        }
+        Some(_) => FlowOrderAuthority::Unknown,
+    };
     let parent_fact_shards = fact_set
         .authority
         .fact_shards
@@ -574,6 +687,7 @@ pub fn build(
         "nodes": nodes,
         "edges": edges,
         "boundaries": boundaries,
+        "controlFlowRegions": control_flow_regions,
         "status": status,
         "certainty": certainty,
         "verificationObligations": obligations,
@@ -591,6 +705,7 @@ pub fn build(
         nodes,
         edges,
         boundaries,
+        control_flow_regions,
         counts: counts.clone(),
         status,
         certainty,
@@ -611,7 +726,7 @@ pub fn build(
         counts,
         status,
         certainty,
-        order_authority: FlowOrderAuthority::UnorderedStaticRelation,
+        order_authority: projection_order_authority,
         verification_obligations: obligations,
     };
     Ok(PreparedFlowSlice {
@@ -633,6 +748,7 @@ pub fn verify_prepared(
         || prepared.slice.counts.nodes != prepared.slice.nodes.len()
         || prepared.slice.counts.edges != prepared.slice.edges.len()
         || prepared.slice.counts.boundaries != prepared.slice.boundaries.len()
+        || prepared.slice.counts.control_flow_regions != prepared.slice.control_flow_regions.len()
     {
         return Err(corrupt("prepared flow slice is internally inconsistent"));
     }
@@ -640,6 +756,27 @@ pub fn verify_prepared(
     if &rebuilt != prepared {
         return Err(corrupt(
             "prepared flow slice differs from deterministic retained facts",
+        ));
+    }
+    Ok(())
+}
+
+pub fn verify_prepared_with_cfg(
+    prepared: &PreparedFlowSlice,
+    fact_set: &PreparedCallableFactSet,
+    cfg: &LocalCfgCatalog,
+) -> Result<(), ClewError> {
+    if canonical::bytes(&prepared.slice).map_err(internal)? != prepared.slice_bytes
+        || CasObject::for_bytes(FLOW_SLICE_SCHEMA, &prepared.slice_bytes)? != prepared.slice_ref
+    {
+        return Err(corrupt(
+            "prepared CFG flow slice is internally inconsistent",
+        ));
+    }
+    let rebuilt = build_with_cfg(prepared.slice.request.clone(), fact_set, cfg)?;
+    if &rebuilt != prepared {
+        return Err(corrupt(
+            "prepared CFG flow slice differs from deterministic retained facts",
         ));
     }
     Ok(())
@@ -727,6 +864,43 @@ fn node_for_symbol(nodes: &BTreeMap<String, FlowNode>, symbol: &str) -> Option<S
         .values()
         .find(|node| node.symbol_identity == symbol)
         .map(|node| node.node_id.clone())
+}
+
+fn relation_cfg_nodes(
+    row: &crate::thread_callables::UseFact,
+    graph: &LocalCfgPayload,
+) -> Option<Vec<u64>> {
+    if row
+        .relation_evidence
+        .get("orderProvenance")
+        .and_then(serde_json::Value::as_str)
+        != Some("K2_FIR_CFG")
+    {
+        return None;
+    }
+    let known = graph
+        .nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<BTreeSet<_>>();
+    let values = row
+        .relation_evidence
+        .get("cfgNodeIds")?
+        .as_array()?
+        .iter()
+        .map(serde_json::Value::as_u64)
+        .collect::<Option<Vec<_>>>()?;
+    if values.is_empty()
+        || values.windows(2).any(|pair| pair[0] >= pair[1])
+        || values.iter().any(|node| !known.contains(node))
+    {
+        return None;
+    }
+    Some(values)
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[allow(clippy::too_many_arguments)]

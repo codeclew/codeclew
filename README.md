@@ -264,6 +264,20 @@ an `UNORDERED_STATIC_RELATION` graph: source offsets are evidence locations,
 not proof that independent calls happen before or after one another. Cycles are
 represented once through stable nodes and edges rather than expanded paths.
 
+Control-flow order is claimed only when the selected sealed generation also
+contains a canonical `local-cfg/0.1` payload for the exact full-symbol owner and
+the relation's `cfgNodeIds` all exist in that graph. The normalized contract
+uses stable roles (`DECISION`, `RETURN`, `THROW`, `LOOP_CONDITION`, and others)
+and transition kinds (`TRUE`, `FALSE`, `WHEN_CASE`, `EXCEPTION`, `LOOP_BACK`,
+and others), not Kotlin-version-specific FIR class names. Loops remain graph
+back-edges and exceptional/return edges do not continue along a fabricated
+happy path. If the graph is absent, partial, ambiguous, or not linked to the
+relation, the result is `orderAuthority=UNKNOWN` with
+`VERIFY_CONTROL_FLOW_ORDER`; numeric CFG IDs and source offsets alone are never
+treated as before/after evidence. The currently bundled worker generations do
+not yet emit this standalone normalized payload, so existing retained
+generations intentionally take that fail-closed path.
+
 `thread impact` consumes that immutable fact set without rebuilding it. The
 single command accepts an exact full symbol (with `--member`), a raw CallableId
 family, or a navigation token. Its bounded output includes both declared pair

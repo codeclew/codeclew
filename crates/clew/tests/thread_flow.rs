@@ -6,7 +6,12 @@ use clew::thread_callables::{
     GraphCoverage, KOTLIN_SEMANTIC_FACT_SCHEMA, QualifiedCallablePayload, RelationshipAuthority,
 };
 use clew::thread_flow::{
-    FlowBudgets, FlowCertainty, FlowDirection, FlowRequest, FlowRootKind, FlowStatus,
+    FlowBudgets, FlowCertainty, FlowDirection, FlowOrderAuthority, FlowRequest, FlowRootKind,
+    FlowStatus,
+};
+use clew::thread_flow_cfg::{
+    LOCAL_CFG_PAYLOAD_SCHEMA, LocalCfgCatalog, LocalCfgEdge, LocalCfgEdgeKind, LocalCfgNode,
+    LocalCfgNodeRole, LocalCfgPayload, LocalCfgSourceRange, LocalCfgSupport, PreparedLocalCfg,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -251,7 +256,85 @@ fn public_cli_is_exact_root_read_only_and_closed() {
     }
 }
 
+#[test]
+fn cfg_regions_prove_only_explicitly_linked_relations() {
+    let facts = fixture_with_cfg_relations();
+    let mut catalog = LocalCfgCatalog::default();
+    for symbol in [ROOT, WRITE, AUDIT] {
+        let graph = clew::thread_flow_cfg::seal(LocalCfgPayload {
+            schema: "local-cfg/0.1".into(),
+            graph_id: String::new(),
+            owner_symbol_identity: symbol.into(),
+            file: "src/Service.kt".into(),
+            compiler_graph_name: symbol.into(),
+            provider: "K2_FIR_CFG".into(),
+            source_provenance: "COMPILER_UTF16_RANGE_TO_UTF8_BYTES".into(),
+            nodes: vec![
+                cfg_node(0, LocalCfgNodeRole::Entry),
+                cfg_node(1, LocalCfgNodeRole::Operation),
+                cfg_node(2, LocalCfgNodeRole::Return),
+            ],
+            edges: vec![
+                cfg_edge(0, 1, LocalCfgEdgeKind::Next),
+                cfg_edge(1, 2, LocalCfgEdgeKind::Return),
+            ],
+        })
+        .unwrap();
+        let bytes = canonical::bytes(&graph).unwrap();
+        catalog
+            .insert(PreparedLocalCfg {
+                payload: graph,
+                support: LocalCfgSupport {
+                    member_alias: "left".into(),
+                    compilation_id: ":app/main".into(),
+                    generation_ref: facts.authority.members[0].compilations[0]
+                        .generation_ref
+                        .clone(),
+                    payload_ref: CasObject::for_bytes(LOCAL_CFG_PAYLOAD_SCHEMA, &bytes).unwrap(),
+                },
+            })
+            .unwrap();
+    }
+    let flow =
+        clew::thread_flow::build_with_cfg(request(&facts, ROOT, 4), &facts, &catalog).unwrap();
+    assert_eq!(flow.slice.control_flow_regions.len(), 3);
+    assert_eq!(
+        flow.projection.order_authority,
+        FlowOrderAuthority::CompilerCfg
+    );
+    assert!(flow.slice.edges.iter().all(|edge| {
+        edge.order_authority == FlowOrderAuthority::CompilerCfg
+            && edge.cfg_node_ids == vec![0, 1, 2]
+    }));
+
+    let unknown = clew::thread_flow::build_with_cfg(
+        request(&facts, ROOT, 4),
+        &facts,
+        &LocalCfgCatalog::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        unknown.projection.order_authority,
+        FlowOrderAuthority::Unknown
+    );
+    assert!(
+        unknown
+            .slice
+            .boundaries
+            .iter()
+            .any(|boundary| boundary.code == "VERIFY_CONTROL_FLOW_ORDER")
+    );
+}
+
 fn fixture() -> clew::thread_callables::PreparedCallableFactSet {
+    fixture_with_relations(false)
+}
+
+fn fixture_with_cfg_relations() -> clew::thread_callables::PreparedCallableFactSet {
+    fixture_with_relations(true)
+}
+
+fn fixture_with_relations(cfg: bool) -> clew::thread_callables::PreparedCallableFactSet {
     let left = member("left");
     let right = member("right");
     let left_compilation = compilation("left");
@@ -275,17 +358,17 @@ fn fixture() -> clew::thread_callables::PreparedCallableFactSet {
         qualified(
             left.clone(),
             left_compilation.clone(),
-            relation("sample/Service.save", WRITE, "src/Service.kt", 10),
+            relation_with_cfg("sample/Service.save", WRITE, "src/Service.kt", 10, cfg),
         ),
         qualified(
             left.clone(),
             left_compilation.clone(),
-            relation("sample/Service.write", AUDIT, "src/Service.kt", 30),
+            relation_with_cfg("sample/Service.write", AUDIT, "src/Service.kt", 30, cfg),
         ),
         qualified(
             left.clone(),
             left_compilation.clone(),
-            relation("sample/Service.audit", ROOT, "src/Service.kt", 50),
+            relation_with_cfg("sample/Service.audit", ROOT, "src/Service.kt", 50, cfg),
         ),
         qualified(
             right.clone(),
@@ -444,6 +527,10 @@ fn descriptor_with_jvm(callable: &str, jvm: &str, file: &str, start: u64) -> Val
 }
 
 fn relation(owner: &str, target: &str, file: &str, start: u64) -> Value {
+    relation_with_cfg(owner, target, file, start, false)
+}
+
+fn relation_with_cfg(owner: &str, target: &str, file: &str, start: u64, cfg: bool) -> Value {
     json!({
         "schema":"declaration-relation/0.1",
         "file":file,
@@ -454,10 +541,30 @@ fn relation(owner: &str, target: &str, file: &str, start: u64) -> Value {
         "target":target,
         "resolution":"PROVEN",
         "provider":"K2_FIR",
-        "cfgNodeIds":[],
+        "cfgNodeIds":if cfg { vec![0, 1, 2] } else { Vec::<u64>::new() },
         "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
-        "orderProvenance":"FIR_SOURCE_RANGE",
+        "orderProvenance":if cfg { "K2_FIR_CFG" } else { "FIR_SOURCE_RANGE" },
     })
+}
+
+fn cfg_node(node_id: u64, role: LocalCfgNodeRole) -> LocalCfgNode {
+    LocalCfgNode {
+        node_id,
+        role,
+        source: Some(LocalCfgSourceRange {
+            start: node_id,
+            end: node_id + 1,
+        }),
+    }
+}
+
+fn cfg_edge(source: u64, target: u64, kind: LocalCfgEdgeKind) -> LocalCfgEdge {
+    LocalCfgEdge {
+        source_node_id: source,
+        target_node_id: target,
+        kind,
+        label: None,
+    }
 }
 
 fn qualified(
