@@ -83,7 +83,9 @@ def validate_tree(root: Path) -> None:
                 raise ReleaseError("release tree contains an unsupported entry")
 
 
-def build_seed(root: Path, work: Path, revision: str, source_tree: str) -> Path:
+def build_seed(
+    root: Path, work: Path, revision: str, source_tree: str, release_version: str
+) -> Path:
     runtime_home = work / "runtime-state"
     environment = dict(os.environ)
     environment["CODECLEW_HOME"] = str(runtime_home)
@@ -112,6 +114,7 @@ def build_seed(root: Path, work: Path, revision: str, source_tree: str) -> Path:
         != {"2.3.0", "2.4.10"}
     ):
         raise ReleaseError("release runtime does not match the supported macOS profile")
+    verify_cli_version(root / "clew", release_version, runtime_home, root)
 
     runtime_parent = runtime_home / "v2" / "runtimes"
     candidates = sorted(
@@ -249,7 +252,9 @@ def main() -> int:
     try:
         package = temporary / "package" / "codeclew"
         (package / "bin").mkdir(parents=True, mode=0o700)
-        seed_path = build_seed(root, temporary, revision, source_tree)
+        seed_path = build_seed(
+            root, temporary, revision, source_tree, arguments.version
+        )
         if not seed_path.is_file():
             raise ReleaseError("release seed was not created")
         assemble_source(root, package, arguments.version, revision, source_tree)
@@ -257,12 +262,6 @@ def main() -> int:
         shutil.copyfile(root / "packaging" / "macos" / "clew", launcher)
         launcher.chmod(0o500)
         (package / "VERSION").write_text(arguments.version + "\n", encoding="ascii")
-        verify_cli_version(
-            launcher,
-            arguments.version,
-            temporary / "version-check-state",
-            package,
-        )
         metadata = {
             "architecture": platform.machine(),
             "operatingSystem": "macos",
