@@ -102,6 +102,15 @@ class MacosDistributionTest(unittest.TestCase):
                     )
                     self.assertEqual(completed.returncode, 0, completed.stderr)
                     self.assertIn("Codeclew v0.1.0 installed", completed.stdout)
+                    for message in [
+                        "[1/6] Checking macOS and required tools",
+                        "[2/6] Downloading the macOS arm64 release",
+                        "[3/6] Checksum verified",
+                        "[4/6] Extracting the sealed runtime",
+                        "[5/6] Activating Codeclew v0.1.0",
+                        "[6/6] Runtime verification passed",
+                    ]:
+                        self.assertIn(message, completed.stderr)
                 installed = temporary / "bin" / "clew"
                 self.assertTrue(installed.is_symlink())
                 result = subprocess.run(

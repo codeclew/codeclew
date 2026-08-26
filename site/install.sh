@@ -13,6 +13,12 @@ fail() {
   exit 1
 }
 
+progress() {
+  printf '[codeclew] %s\n' "$1" >&2
+}
+
+progress '[1/6] Checking macOS and required tools...'
+
 case "$RELEASE_BASE" in
   https://*) ;;
   http://127.0.0.1:*|http://localhost:*)
@@ -52,16 +58,18 @@ trap cleanup EXIT HUP INT TERM
 download() {
   case "$RELEASE_BASE" in
     https://*)
-      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      curl --fail --show-error --location --progress-bar --proto '=https' --tlsv1.2 \
         "$1" --output "$2"
       ;;
     *)
-      curl --fail --silent --show-error --location "$1" --output "$2"
+      curl --fail --show-error --location --progress-bar "$1" --output "$2"
       ;;
   esac
 }
 
+progress "[2/6] Downloading the macOS $ARCH release (about 265 MB)..."
 download "$DOWNLOAD_ROOT/$ASSET" "$TMP_ROOT/$ASSET"
+progress '[3/6] Downloading and verifying the SHA-256 checksum...'
 download "$DOWNLOAD_ROOT/$CHECKSUM" "$TMP_ROOT/$CHECKSUM"
 
 EXPECTED=$(awk 'NR == 1 { print $1 }' "$TMP_ROOT/$CHECKSUM")
@@ -71,9 +79,11 @@ esac
 [ "${#EXPECTED}" -eq 64 ] || fail "release checksum is invalid"
 ACTUAL=$(shasum -a 256 "$TMP_ROOT/$ASSET" | awk '{ print $1 }')
 [ "$ACTUAL" = "$EXPECTED" ] || fail "release checksum mismatch"
+progress '[3/6] Checksum verified.'
 
 UNPACKED=$TMP_ROOT/unpacked
 mkdir -m 700 "$UNPACKED"
+progress '[4/6] Extracting the sealed runtime...'
 python3 -I -S - "$TMP_ROOT/$ASSET" "$UNPACKED" <<'PY'
 import os
 from pathlib import Path, PurePosixPath
@@ -145,6 +155,7 @@ if [ "$REQUESTED_VERSION" != latest ] && [ "$VERSION" != "$REQUESTED_VERSION" ];
   fail "downloaded release version does not match CODECLEW_VERSION"
 fi
 
+progress "[5/6] Activating Codeclew $VERSION..."
 mkdir -p "$INSTALL_ROOT/releases" "$BIN_DIR"
 chmod 700 "$INSTALL_ROOT" "$INSTALL_ROOT/releases" "$BIN_DIR"
 DESTINATION=$INSTALL_ROOT/releases/$VERSION-macos-$ARCH
@@ -162,7 +173,9 @@ LINK=$BIN_DIR/.clew-link.$$
 ln -s "$DESTINATION/bin/clew" "$LINK"
 mv -f "$LINK" "$BIN_DIR/clew"
 
+progress '[6/6] Verifying the installed runtime...'
 "$BIN_DIR/clew" capabilities >/dev/null
+progress '[6/6] Runtime verification passed.'
 printf 'Codeclew %s installed for macOS %s.\n' "$VERSION" "$ARCH"
 printf 'Launcher: %s\n' "$BIN_DIR/clew"
 case ":$PATH:" in
