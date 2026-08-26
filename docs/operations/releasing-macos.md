@@ -33,6 +33,15 @@ workflow verifies `uname -m` before construction and refuses a runtime in
    ```
 
 4. Wait for both architecture jobs and the release publication job.
+   If GitHub loses the tag event or reports `startup_failure` before creating a
+   job, dispatch the same immutable tag manually:
+
+   ```bash
+   gh workflow run release-macos.yml --ref main -f version=v0.1.0
+   ```
+
+   The workflow checks out that exact tag, and the release builder still
+   verifies that the tag points at the packaged commit.
 5. Verify the public installer on a clean Apple Silicon Mac and a clean Intel
    Mac:
 
