@@ -16,8 +16,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
+SOURCE_LAUNCHER = ROOT / "clew"
 INSTALLER = ROOT / "site" / "install.sh"
 LAUNCHER = ROOT / "packaging" / "macos" / "clew"
+UPGRADER = ROOT / "packaging" / "macos" / "upgrade"
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -30,7 +32,7 @@ class MacosDistributionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
             document_root = temporary / "www"
-            downloads = document_root / "releases" / "latest" / "download"
+            latest_downloads = document_root / "releases" / "latest" / "download"
             package = temporary / "payload" / "codeclew"
             (package / "bin").mkdir(parents=True)
             (package / "VERSION").write_text("v0.1.0\n", encoding="ascii")
@@ -46,16 +48,31 @@ class MacosDistributionTest(unittest.TestCase):
                 encoding="utf-8",
             )
             binary.chmod(0o500)
+            bundled_upgrader = package / "source" / "packaging" / "macos" / "upgrade"
+            bundled_upgrader.parent.mkdir(parents=True)
+            shutil.copyfile(UPGRADER, bundled_upgrader)
+            bundled_installer = package / "source" / "site" / "install.sh"
+            bundled_installer.parent.mkdir(parents=True)
+            shutil.copyfile(INSTALLER, bundled_installer)
             seed = package / "seed" / "release-N-test" / "seed.json"
             seed.parent.mkdir(parents=True)
             seed.write_text("{}\n", encoding="ascii")
-            downloads.mkdir(parents=True)
-            asset = downloads / "codeclew-macos-arm64.tar.gz"
-            with tarfile.open(asset, "w:gz") as archive:
-                archive.add(package, arcname="codeclew")
-            digest = hashlib.sha256(asset.read_bytes()).hexdigest()
-            checksum = downloads / f"{asset.name}.sha256"
-            checksum.write_text(f"{digest}  {asset.name}\n", encoding="ascii")
+
+            def publish(downloads: Path, version: str) -> tuple[Path, Path]:
+                (package / "VERSION").write_text(f"{version}\n", encoding="ascii")
+                downloads.mkdir(parents=True)
+                asset = downloads / "codeclew-macos-arm64.tar.gz"
+                with tarfile.open(asset, "w:gz") as archive:
+                    archive.add(package, arcname="codeclew")
+                digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+                checksum = downloads / f"{asset.name}.sha256"
+                checksum.write_text(f"{digest}  {asset.name}\n", encoding="ascii")
+                return asset, checksum
+
+            latest_asset, latest_checksum = publish(latest_downloads, "v0.1.0")
+            publish(document_root / "releases" / "download" / "v0.1.1", "v0.1.1")
+            release_api = document_root / "release-api.json"
+            release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
 
             fake_bin = temporary / "fake-bin"
             fake_bin.mkdir()
@@ -85,6 +102,9 @@ class MacosDistributionTest(unittest.TestCase):
                         "CODECLEW_INSTALL_ROOT": str(temporary / "install"),
                         "CODECLEW_RELEASE_BASE": (
                             f"http://127.0.0.1:{server.server_port}/releases"
+                        ),
+                        "CODECLEW_RELEASE_API": (
+                            f"http://127.0.0.1:{server.server_port}/release-api.json"
                         ),
                         "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
                     }
@@ -122,7 +142,47 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertIn("codeclew-capabilities/1.0", result.stdout)
 
-                checksum.write_text(f"{'0' * 64}  {asset.name}\n", encoding="ascii")
+                current = subprocess.run(
+                    [str(installed), "upgrade"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(current.returncode, 0, current.stderr)
+                self.assertIn("v0.1.0 is already up to date", current.stdout)
+                self.assertIn("Checking for updates from v0.1.0", current.stderr)
+
+                release_api.write_text('{"tag_name":"v0.1.1"}\n', encoding="ascii")
+                upgraded = subprocess.run(
+                    [str(installed), "upgrade"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
+                self.assertIn("Codeclew v0.1.1 installed", upgraded.stdout)
+                self.assertIn("Updating Codeclew from v0.1.0 to v0.1.1", upgraded.stderr)
+                self.assertIn("v0.1.1-macos-arm64", str(installed.resolve()))
+
+                current_again = subprocess.run(
+                    [str(installed), "upgrade"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(current_again.returncode, 0, current_again.stderr)
+                self.assertIn("v0.1.1 is already up to date", current_again.stdout)
+
+                latest_checksum.write_text(
+                    f"{'0' * 64}  {latest_asset.name}\n", encoding="ascii"
+                )
+                environment["CODECLEW_VERSION"] = "latest"
                 rejected = subprocess.run(
                     ["/bin/sh", str(INSTALLER)],
                     cwd=ROOT,
@@ -147,7 +207,7 @@ class MacosDistributionTest(unittest.TestCase):
         self.assertIn("REPOSITORY=codeclew/codeclew", installer)
 
     def test_shell_entrypoints_are_syntactically_valid(self) -> None:
-        for path in [INSTALLER, LAUNCHER]:
+        for path in [SOURCE_LAUNCHER, INSTALLER, LAUNCHER, UPGRADER]:
             completed = subprocess.run(
                 ["/bin/sh", "-n", str(path)],
                 check=False,
@@ -155,6 +215,21 @@ class MacosDistributionTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+
+    def test_source_checkout_upgrade_points_to_git_without_bootstrapping(self) -> None:
+        completed = subprocess.run(
+            [str(SOURCE_LAUNCHER), "upgrade"],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("source checkout", completed.stdout)
+        self.assertIn("Git", completed.stdout)
+        self.assertEqual(completed.stderr, "")
 
 
 if __name__ == "__main__":

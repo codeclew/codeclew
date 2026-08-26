@@ -4,4 +4,12 @@ set -eu
 unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT PYTHONWARNINGS PYTHONSAFEPATH
 
 SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+if [ "${1:-}" = upgrade ] && [ "$#" -eq 1 ]; then
+  printf '%s\n' 'Codeclew upgrade'
+  printf '%s\n' 'Status: FAILED'
+  printf '%s\n' 'Error: InvalidInput'
+  printf '%s\n' 'This is a source checkout; update it through the approved Git commit or tag.'
+  printf '%s\n' 'Retryable: no'
+  exit 2
+fi
 exec python3 -I -S "$SOURCE_ROOT/bootstrap/clew_bootstrap.py" --source-root "$SOURCE_ROOT" "$@"

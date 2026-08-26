@@ -414,7 +414,36 @@ freshness check. The agent must not make this decision autonomously.
 
 ## 10. Updating Codeclew
 
-Update the checkout only between tasks:
+### Installed macOS release
+
+Run the updater between tasks:
+
+```bash
+clew upgrade
+```
+
+The command checks the latest GitHub Release first. If the installed version is
+current, it exits without downloading the release bundle. If an update exists,
+it preserves the current install root and launcher directory, downloads the
+exact newer release, verifies its published SHA-256 checksum, and atomically
+switches the launcher. Codeclew state, repositories, sessions, and threads are
+not modified.
+
+Releases older than v0.1.3 do not contain the updater. Upgrade such an existing
+installation once by rerunning the one-line installer:
+
+```bash
+curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
+```
+
+After that transition, use `clew upgrade` for later releases. If `clew` is not
+on `PATH`, invoke the installed launcher directly, normally
+`~/.local/bin/clew upgrade`.
+
+### Source checkout
+
+`./clew upgrade` deliberately refuses to update a source checkout. Update a
+pinned checkout through Git, and only between tasks:
 
 1. Complete or explicitly abort and close all active sessions and threads.
 2. Retain the old version's `capabilities` and `doctor` baseline.

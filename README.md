@@ -16,8 +16,11 @@ curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
 The installer downloads the matching GitHub Release asset, verifies its
 published SHA-256 checksum, installs it below `~/.local/share/codeclew`, and
 atomically links `clew` into `~/.local/bin`. It never compiles Codeclew on the
-target machine. Run `clew doctor --human` after installation. The source launcher
-`./clew` remains the supported development entrypoint.
+target machine. Run `clew doctor --human` after installation and `clew upgrade`
+to install a newer release. The source launcher `./clew` remains the supported
+development entrypoint and is updated through Git, not `clew upgrade`. Existing
+installations older than v0.1.3 need the one-line installer once more to acquire
+the updater; their later updates use `clew upgrade`.
 
 ## Source-build requirements
 

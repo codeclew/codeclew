@@ -1,0 +1,104 @@
+#!/bin/sh
+set -eu
+umask 077
+
+REPOSITORY=codeclew/codeclew
+RELEASE_API=${CODECLEW_RELEASE_API:-https://api.github.com/repos/$REPOSITORY/releases/latest}
+RELEASE_BASE=${CODECLEW_RELEASE_BASE:-https://github.com/$REPOSITORY/releases}
+INSTALL_ROOT=${CODECLEW_INSTALL_ROOT:?installed launcher did not provide CODECLEW_INSTALL_ROOT}
+BIN_DIR=${CODECLEW_BIN_DIR:?installed launcher did not provide CODECLEW_BIN_DIR}
+CURRENT_VERSION=${CODECLEW_CURRENT_VERSION:?installed launcher did not provide CODECLEW_CURRENT_VERSION}
+INSTALLER=${CODECLEW_INSTALLER_PATH:?installed launcher did not provide CODECLEW_INSTALLER_PATH}
+
+fail() {
+  printf 'codeclew upgrade: %s\n' "$1" >&2
+  exit 1
+}
+
+progress() {
+  printf '[codeclew] %s\n' "$1" >&2
+}
+
+case "$RELEASE_API" in
+  https://*) ;;
+  http://127.0.0.1:*|http://localhost:*)
+    [ "${CODECLEW_ALLOW_INSECURE_DOWNLOAD:-}" = 1 ] || fail "release API must use HTTPS"
+    ;;
+  *) fail "release API must use HTTPS" ;;
+esac
+
+case "$CURRENT_VERSION" in
+  v[0-9]*.[0-9]*.[0-9]*) ;;
+  *) fail "installed version is invalid" ;;
+esac
+
+[ -f "$INSTALLER" ] && [ ! -L "$INSTALLER" ] || fail "bundled installer is unavailable"
+command -v curl >/dev/null 2>&1 || fail "curl is required"
+command -v python3 >/dev/null 2>&1 || fail "Python 3.11 or newer is required"
+python3 -I -S -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+  || fail "Python 3.11 or newer is required"
+
+TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-upgrade.XXXXXX")
+cleanup() {
+  chmod -R u+w "$TMP_ROOT" 2>/dev/null || true
+  rm -rf -- "$TMP_ROOT"
+}
+trap cleanup EXIT HUP INT TERM
+
+progress "Checking for updates from $CURRENT_VERSION..."
+case "$RELEASE_API" in
+  https://*)
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+      "$RELEASE_API" --output "$TMP_ROOT/latest.json"
+    ;;
+  *)
+    curl --fail --silent --show-error --location \
+      "$RELEASE_API" --output "$TMP_ROOT/latest.json"
+    ;;
+esac
+
+[ "$(wc -c <"$TMP_ROOT/latest.json" | tr -d ' ')" -le 65536 ] \
+  || fail "release metadata is oversized"
+LATEST_VERSION=$(python3 -I -S - "$TMP_ROOT/latest.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_bytes())
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+version = value.get("tag_name") if isinstance(value, dict) else None
+if not isinstance(version, str) or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+    raise SystemExit(1)
+print(version)
+PY
+) || fail "release metadata is invalid"
+
+RELATION=$(python3 -I -S - "$CURRENT_VERSION" "$LATEST_VERSION" <<'PY'
+import sys
+
+def parts(value: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in value[1:].split("."))
+
+current = parts(sys.argv[1])
+latest = parts(sys.argv[2])
+print("same" if latest == current else "newer" if latest > current else "older")
+PY
+) || fail "release version comparison failed"
+
+case "$RELATION" in
+  same)
+    printf 'Codeclew %s is already up to date.\n' "$CURRENT_VERSION"
+    exit 0
+    ;;
+  newer) ;;
+  older) fail "latest release is older than the installed version" ;;
+  *) fail "release version comparison failed" ;;
+esac
+
+progress "Updating Codeclew from $CURRENT_VERSION to $LATEST_VERSION..."
+CODECLEW_VERSION=$LATEST_VERSION
+export CODECLEW_VERSION CODECLEW_INSTALL_ROOT CODECLEW_BIN_DIR CODECLEW_RELEASE_BASE
+exec /bin/sh "$INSTALLER"

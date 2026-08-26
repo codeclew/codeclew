@@ -65,6 +65,8 @@ h1 em { color: var(--acid); font-style: normal; font-weight: 570; }
 .command-row code { flex: 1; padding: 19px 20px; overflow-x: auto; white-space: nowrap; color: #e8eee5; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .command-row button { align-self: stretch; min-width: 84px; border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--acid); cursor: pointer; }
 .command-row button:hover { background: rgba(185,255,102,.07); }
+.install > p { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.install > p code { color: var(--acid-soft); }
 .hero-links { margin-top: 26px; display: flex; gap: 13px; flex-wrap: wrap; }
 .hero-links a, .cta > a { padding: 13px 18px; border-radius: 8px; font-size: 14px; font-weight: 700; }
 .hero-links .primary { background: var(--acid); color: #11170d; }

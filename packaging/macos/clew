@@ -3,6 +3,7 @@ set -eu
 
 unset CODECLEW_RUNTIME_SEED
 
+ENTRYPOINT=$0
 LAUNCHER=$0
 LINK_HOPS=0
 while [ -L "$LAUNCHER" ]; do
@@ -20,6 +21,34 @@ done
 
 LAUNCHER_DIR=$(CDPATH= cd -- "$(dirname -- "$LAUNCHER")" && pwd -P)
 RELEASE_ROOT=$(CDPATH= cd -- "$LAUNCHER_DIR/.." && pwd -P)
+
+if [ "${1:-}" = upgrade ] && [ "$#" -eq 1 ]; then
+  [ -L "$ENTRYPOINT" ] || {
+    printf '%s\n' 'Codeclew upgrade is available only through the installed launcher.' >&2
+    exit 2
+  }
+  ENTRYPOINT_DIR=$(CDPATH= cd -- "$(dirname -- "$ENTRYPOINT")" && pwd -P)
+  RELEASES_DIR=$(CDPATH= cd -- "$RELEASE_ROOT/.." && pwd -P)
+  [ "$(basename -- "$RELEASES_DIR")" = releases ] || {
+    printf '%s\n' 'Codeclew installed release layout is invalid.' >&2
+    exit 7
+  }
+  INSTALL_ROOT=$(CDPATH= cd -- "$RELEASES_DIR/.." && pwd -P)
+  CURRENT_VERSION=$(sed -n '1p' "$RELEASE_ROOT/VERSION")
+  UPGRADE_SCRIPT=$RELEASE_ROOT/source/packaging/macos/upgrade
+  INSTALLER_PATH=$RELEASE_ROOT/source/site/install.sh
+  [ -f "$UPGRADE_SCRIPT" ] && [ ! -L "$UPGRADE_SCRIPT" ] || {
+    printf '%s\n' 'Codeclew installed updater is unavailable.' >&2
+    exit 7
+  }
+  CODECLEW_INSTALL_ROOT=$INSTALL_ROOT
+  CODECLEW_BIN_DIR=$ENTRYPOINT_DIR
+  CODECLEW_CURRENT_VERSION=$CURRENT_VERSION
+  CODECLEW_INSTALLER_PATH=$INSTALLER_PATH
+  export CODECLEW_INSTALL_ROOT CODECLEW_BIN_DIR CODECLEW_CURRENT_VERSION CODECLEW_INSTALLER_PATH
+  exec /bin/sh "$UPGRADE_SCRIPT"
+fi
+
 SEED_PATH=
 SEED_COUNT=0
 for candidate in "$RELEASE_ROOT"/seed/release-N-*/seed.json; do

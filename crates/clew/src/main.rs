@@ -36,6 +36,8 @@ enum Command {
     Capabilities(CapabilitiesArgs),
     /// Check host, runtime, state, and optional target-repository readiness.
     Doctor(DoctorArgs),
+    /// Update an installed macOS release. Source checkouts are updated with Git.
+    Upgrade,
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
@@ -410,6 +412,7 @@ enum OutputMode {
     Json,
     HumanCapabilities,
     HumanDoctor,
+    HumanUpgrade,
 }
 
 impl OutputMode {
@@ -417,6 +420,7 @@ impl OutputMode {
         match &cli.command {
             Command::Capabilities(args) if args.human => Self::HumanCapabilities,
             Command::Doctor(args) if args.human => Self::HumanDoctor,
+            Command::Upgrade => Self::HumanUpgrade,
             _ => Self::Json,
         }
     }
@@ -426,6 +430,7 @@ impl OutputMode {
             Self::Json => "request",
             Self::HumanCapabilities => "capabilities",
             Self::HumanDoctor => "doctor",
+            Self::HumanUpgrade => "upgrade",
         }
     }
 }
@@ -455,6 +460,7 @@ fn main() -> ExitCode {
                 OutputMode::Json => canonical::compact(&value).unwrap_or_else(|_| "{}".into()),
                 OutputMode::HumanCapabilities => human_capabilities(&value),
                 OutputMode::HumanDoctor => human_doctor(&value),
+                OutputMode::HumanUpgrade => unreachable!("upgrade cannot succeed in source mode"),
             };
             println!("{rendered}");
             ExitCode::SUCCESS
@@ -690,6 +696,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             args.repo.as_deref(),
             args.target_ref.as_deref(),
         ),
+        Command::Upgrade => Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "this is a source checkout; update it through the approved Git commit or tag",
+        )),
         Command::Change {
             command: ChangeCommand::Open(args),
         } => change_open(args),
@@ -1937,6 +1947,8 @@ mod tests {
         assert!(Cli::try_parse_from(["clew", "capabilities", "--human"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "doctor"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "doctor", "--human"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "upgrade"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "upgrade", "--human"]).is_err());
         assert!(Cli::try_parse_from(["clew", "--json", "capabilities"]).is_err());
         assert!(Cli::try_parse_from(["clew", "doctor", "--json"]).is_err());
         assert!(
@@ -1960,6 +1972,16 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["clew", "support", "summarize"]).is_err());
+    }
+
+    #[test]
+    fn source_checkout_upgrade_explains_the_supported_update_path() {
+        let cli = Cli::try_parse_from(["clew", "upgrade"]).unwrap();
+        assert_eq!(OutputMode::from_cli(&cli), OutputMode::HumanUpgrade);
+        let error = run(cli).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.contains("source checkout"));
+        assert!(error.message.contains("Git"));
     }
 
     #[test]

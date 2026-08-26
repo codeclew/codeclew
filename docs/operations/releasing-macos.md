@@ -40,7 +40,11 @@ workflow verifies `uname -m` before construction and refuses a runtime in
    curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
    clew capabilities --human
    clew doctor --human
+   clew upgrade
    ```
+
+   The final command must report that the newly installed version is already up
+   to date without downloading another release bundle.
 
 The workflow creates a normal GitHub Release so the stable
 `releases/latest/download/...` endpoint used by the installer resolves. Release
