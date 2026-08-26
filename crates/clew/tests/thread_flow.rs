@@ -121,7 +121,7 @@ fn cross_member_target_is_a_visible_boundary_before_pair_flow() {
             qualified(
                 right,
                 right_compilation,
-                relation(CLIENT, ROOT, "src/Client.kt", 10),
+                relation("sample/Client.save", ROOT, "src/Client.kt", 10),
             ),
         ],
         RelationshipAuthority::VerifiedSameSnapshotCompilationDependency,
@@ -137,6 +137,58 @@ fn cross_member_target_is_a_visible_boundary_before_pair_flow() {
             .boundaries
             .iter()
             .any(|boundary| boundary.code == "CROSS_MEMBER_NOT_EXPANDED")
+    );
+}
+
+#[test]
+fn overloaded_callable_owner_is_not_attributed_to_one_exact_root() {
+    let left = member("left");
+    let right = member("right");
+    let left_compilation = compilation("left");
+    let right_compilation = compilation("right");
+    let facts = build_fact_set(
+        vec![
+            qualified(
+                left.clone(),
+                left_compilation.clone(),
+                descriptor("sample/Service.save", "src/Service.kt", 0),
+            ),
+            qualified(
+                left.clone(),
+                left_compilation.clone(),
+                descriptor_with_jvm(
+                    "sample/Service.save",
+                    "()Ljava/lang/Object;",
+                    "src/Service.kt",
+                    20,
+                ),
+            ),
+            qualified(
+                left.clone(),
+                left_compilation.clone(),
+                descriptor("sample/Service.write", "src/Service.kt", 40),
+            ),
+            qualified(
+                left,
+                left_compilation,
+                relation("sample/Service.save", WRITE, "src/Service.kt", 60),
+            ),
+            qualified(
+                right,
+                right_compilation,
+                descriptor("sample/Client.read", "src/Client.kt", 0),
+            ),
+        ],
+        RelationshipAuthority::DeclaredTopology,
+    );
+    let flow = clew::thread_flow::build(request(&facts, ROOT, 4), &facts).unwrap();
+    assert_eq!(flow.slice.counts.nodes, 1);
+    assert_eq!(flow.slice.counts.edges, 0);
+    assert!(
+        flow.slice
+            .boundaries
+            .iter()
+            .any(|boundary| boundary.code == "AMBIGUOUS_SOURCE_OWNER_OVERLOAD")
     );
 }
 
@@ -223,17 +275,17 @@ fn fixture() -> clew::thread_callables::PreparedCallableFactSet {
         qualified(
             left.clone(),
             left_compilation.clone(),
-            relation(ROOT, WRITE, "src/Service.kt", 10),
+            relation("sample/Service.save", WRITE, "src/Service.kt", 10),
         ),
         qualified(
             left.clone(),
             left_compilation.clone(),
-            relation(WRITE, AUDIT, "src/Service.kt", 30),
+            relation("sample/Service.write", AUDIT, "src/Service.kt", 30),
         ),
         qualified(
             left.clone(),
             left_compilation.clone(),
-            relation(AUDIT, ROOT, "src/Service.kt", 50),
+            relation("sample/Service.audit", ROOT, "src/Service.kt", 50),
         ),
         qualified(
             right.clone(),
@@ -359,12 +411,16 @@ fn compilation(alias: &str) -> CallableCompilationAuthority {
 }
 
 fn descriptor(callable: &str, file: &str, start: u64) -> Value {
+    descriptor_with_jvm(callable, "()Ljava/lang/String;", file, start)
+}
+
+fn descriptor_with_jvm(callable: &str, jvm: &str, file: &str, start: u64) -> Value {
     json!({
         "schema":"declaration-descriptor/0.1",
         "file":file,
         "start":start,
         "end":start + 8,
-        "symbolIdentity":format!("callable:{callable}#jvm:()Ljava/lang/String;"),
+        "symbolIdentity":format!("callable:{callable}#jvm:{jvm}"),
         "declarationKind":"FUNCTION",
         "ownerIdentity":format!("class:{}", callable.rsplit_once('.').unwrap().0),
         "containment":[format!("class:{}", callable.rsplit_once('.').unwrap().0)],

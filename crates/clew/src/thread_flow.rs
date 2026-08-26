@@ -266,6 +266,24 @@ pub fn build(
         return Err(invalid("exact flow root declaration is ambiguous"));
     }
 
+    let callable_families = facts
+        .iter()
+        .filter_map(|fact| match &fact.fact {
+            CallableFact::Declaration(row) if row.exact_eligible => {
+                row.compiler_callable_id.as_ref().map(|callable_id| {
+                    (
+                        (row.provenance.member_alias.clone(), callable_id.clone()),
+                        fact.clone(),
+                    )
+                })
+            }
+            _ => None,
+        })
+        .fold(BTreeMap::<_, Vec<_>>::new(), |mut map, (key, fact)| {
+            map.entry(key).or_default().push(fact);
+            map
+        });
+
     let uses = facts
         .iter()
         .filter_map(|fact| match &fact.fact {
@@ -298,8 +316,42 @@ pub fn build(
         let Some(source_node_id) = node_for_symbol(&nodes, &source_symbol) else {
             return Err(corrupt("flow traversal lost a visited callable node"));
         };
-        let outgoing = uses
+        let source_declarations = declarations
             .get(&(request.member_alias.clone(), source_symbol.clone()))
+            .ok_or_else(|| corrupt("visited flow callable lost its declaration"))?;
+        let source_declaration = match &source_declarations[0].fact {
+            CallableFact::Declaration(row) => row,
+            _ => unreachable!(),
+        };
+        let Some(source_callable_id) = source_declaration.compiler_callable_id.as_ref() else {
+            add_boundary(
+                &mut boundaries,
+                &mut obligations,
+                &request,
+                "MISSING_SOURCE_CALLABLE_ID",
+                &source_symbol,
+                vec!["VERIFY_EXACT_SOURCE_CALLABLE_ID".into()],
+                vec![source_declarations[0].support()],
+            )?;
+            continue;
+        };
+        if callable_families
+            .get(&(request.member_alias.clone(), source_callable_id.clone()))
+            .is_none_or(|family| family.len() != 1)
+        {
+            add_boundary(
+                &mut boundaries,
+                &mut obligations,
+                &request,
+                "AMBIGUOUS_SOURCE_OWNER_OVERLOAD",
+                source_callable_id,
+                vec!["DISAMBIGUATE_RELATION_SOURCE_OVERLOAD".into()],
+                vec![source_declarations[0].support()],
+            )?;
+            continue;
+        }
+        let outgoing = uses
+            .get(&(request.member_alias.clone(), source_callable_id.clone()))
             .cloned()
             .unwrap_or_default();
         if depth >= request.budgets.max_depth && !outgoing.is_empty() {
