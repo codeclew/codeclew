@@ -23,6 +23,38 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+#[cfg(unix)]
+struct WritableTreeOnDrop(std::path::PathBuf);
+
+#[cfg(unix)]
+impl Drop for WritableTreeOnDrop {
+    fn drop(&mut self) {
+        make_tree_removable(&self.0);
+    }
+}
+
+#[cfg(unix)]
+fn make_tree_removable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    if metadata.is_dir() {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                make_tree_removable(&entry.path());
+            }
+        }
+    } else if metadata.is_file() {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+}
+
 fn run_git(repo: &Path, arguments: &[&str]) {
     let status = Command::new("git")
         .args(arguments)
@@ -2231,4 +2263,230 @@ fn managed_thread_validate_compares_two_revisions_without_project_processes() {
             ],
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_operational_commands_are_path_free_and_support_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repository = temporary.path().join("private-operational-repository");
+    fs::create_dir(&repository).unwrap();
+    fs::write(repository.join("README.md"), b"baseline\n").unwrap();
+    fs::write(
+        repository.join("pyproject.toml"),
+        b"[project]\nname='fixture'\n",
+    )
+    .unwrap();
+    run_git(&repository, &["init", "-q", "-b", "main"]);
+    run_git(&repository, &["add", "."]);
+    run_git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=codeclew@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "baseline",
+        ],
+    );
+
+    let state_root = temporary.path().join("state/v2");
+    let runtime_digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&runtime_digest);
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{runtime_digest}.lease"));
+
+    let capabilities = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &["capabilities"],
+        None,
+    );
+    assert!(capabilities.status.success());
+    let capabilities_value: Value = serde_json::from_slice(&capabilities.stdout).unwrap();
+    assert_eq!(capabilities_value["schema"], "codeclew-capabilities/1.0");
+    assert_eq!(
+        capabilities_value["supportMatrix"]["profiles"][0]["profileId"],
+        "kotlin-2.4.10-gradle-single"
+    );
+
+    let doctor = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "doctor",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--target-ref",
+            "main",
+        ],
+        None,
+    );
+    assert!(doctor.status.success());
+    let doctor_value: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(doctor_value["schema"], "codeclew-doctor/1.0");
+    assert!(
+        doctor_value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| {
+                check["checkId"] == "repository.target-ref-at-head" && check["status"] == "PASS"
+            })
+    );
+
+    let opened = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "session",
+            "open",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--target-ref",
+            "main",
+            "--language",
+            "kotlin",
+            "--compilation",
+            ":/main",
+        ],
+        None,
+    );
+    assert!(opened.status.success());
+    let opened_value: Value = serde_json::from_slice(&opened.stdout).unwrap();
+    let session_id = opened_value["session"]["sessionId"].as_str().unwrap();
+
+    let freshness = |session_id: &str| {
+        run_managed(
+            &runtime_binary,
+            &state_root,
+            &runtime,
+            &lease,
+            &["change", "check-freshness", "--session", session_id],
+            None,
+        )
+    };
+    let fresh = freshness(session_id);
+    assert!(fresh.status.success());
+    let fresh_value: Value = serde_json::from_slice(&fresh.stdout).unwrap();
+    assert_eq!(fresh_value["status"], "FRESH");
+    assert_eq!(fresh_value["remediationId"], "NONE");
+
+    fs::write(repository.join("README.md"), b"dirty\n").unwrap();
+    let dirty = freshness(session_id);
+    let dirty_value: Value = serde_json::from_slice(&dirty.stdout).unwrap();
+    assert_eq!(dirty_value["status"], "DIRTY");
+    assert_eq!(dirty_value["remediationId"], "CLEAN_TARGET_WORKTREE");
+
+    run_git(&repository, &["add", "."]);
+    run_git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=codeclew@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "external update",
+        ],
+    );
+    let stale = freshness(session_id);
+    let stale_value: Value = serde_json::from_slice(&stale.stdout).unwrap();
+    assert_eq!(stale_value["status"], "STALE");
+    assert_eq!(stale_value["remediationId"], "OPEN_NEW_SESSION");
+
+    for output in [
+        &capabilities.stdout,
+        &doctor.stdout,
+        &fresh.stdout,
+        &dirty.stdout,
+        &stale.stdout,
+    ] {
+        assert_bytes_hide_paths(output, &[&repository, &state_root, &runtime]);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_support_summary_requires_private_input_and_drops_private_material() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let state_root = temporary.path().join("state/v2");
+    let runtime_digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&runtime_digest);
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{runtime_digest}.lease"));
+    let diagnostic = temporary.path().join("private-diagnostic.json");
+    fs::write(
+        &diagnostic,
+        br#"{"schema":"codeclew-error/2.0","error":{"code":"WORKER_CRASHED","message":"/private/repository/src/Secret.kt failed","transactionId":"run:private","retryable":true}}"#,
+    )
+    .unwrap();
+    fs::set_permissions(&diagnostic, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let summarized = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "support",
+            "summarize",
+            "--input",
+            diagnostic.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(summarized.status.success());
+    let value: Value = serde_json::from_slice(&summarized.stdout).unwrap();
+    assert_eq!(value["schema"], "codeclew-support-summary/1.0");
+    assert_eq!(value["status"], "SAFE_TO_SHARE");
+    assert_eq!(value["errorCode"], "WORKER_CRASHED");
+    let stdout = String::from_utf8(summarized.stdout).unwrap();
+    for forbidden in ["/private", "Secret.kt", "run:private"] {
+        assert!(!stdout.contains(forbidden));
+    }
+
+    fs::set_permissions(&diagnostic, fs::Permissions::from_mode(0o644)).unwrap();
+    let rejected = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "support",
+            "summarize",
+            "--input",
+            diagnostic.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(!rejected.status.success());
+    let rejected_value: Value = serde_json::from_slice(&rejected.stdout).unwrap();
+    assert_eq!(rejected_value["error"]["code"], "INVALID_INPUT");
+    assert_bytes_hide_paths(&rejected.stdout, &[&diagnostic]);
 }

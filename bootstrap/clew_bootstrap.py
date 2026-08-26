@@ -1804,6 +1804,21 @@ def build_environment(
     stage: Path, root: Path, *, gradle_required: bool = True
 ) -> dict[str, str]:
     environment = sanitized_environment()
+    physical_home = Path.home()
+    # Build scripts sometimes embed HOME/USER even when rustc source paths are
+    # remapped.  Give child processes a stable, non-personal logical identity;
+    # keep Cargo/Rustup stores explicit so the installed toolchain remains
+    # discoverable without consulting the logical home.
+    environment["CARGO_HOME"] = environment.get(
+        "CARGO_HOME", str(physical_home / ".cargo")
+    )
+    environment["RUSTUP_HOME"] = environment.get(
+        "RUSTUP_HOME", str(physical_home / ".rustup")
+    )
+    environment["HOME"] = "/codeclew/home"
+    environment["USER"] = "codeclew"
+    environment["LOGNAME"] = "codeclew"
+    environment["XDG_CONFIG_HOME"] = "/codeclew/config"
     cargo_target = stage.parent / "cargo-target"
     cargo_target.mkdir(mode=0o700)
     environment["CARGO_TARGET_DIR"] = str(cargo_target)
@@ -1816,7 +1831,9 @@ def build_environment(
     # rustc applies the last matching prefix, therefore order mappings from
     # broadest to most specific.
     remaps = [
-        f"--remap-path-prefix={Path.home()}=/codeclew/home",
+        f"--remap-path-prefix={physical_home}=/codeclew/home",
+        f"--remap-path-prefix={environment['CARGO_HOME']}=/codeclew/cargo-home",
+        f"--remap-path-prefix={environment['RUSTUP_HOME']}=/codeclew/rustup-home",
         f"--remap-path-prefix={stage.parent}=/codeclew/build",
         f"--remap-path-prefix={stage}=/codeclew/source",
     ]
@@ -1863,10 +1880,27 @@ def verify_capsule_has_no_private_paths(capsule: Path, paths: list[Path]) -> Non
         with artifact.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 window = tail + chunk
-                if any(value in window for value in forbidden):
+                matches = [value for value in forbidden if value in window]
+                if matches:
+                    fingerprints = ",".join(
+                        sorted(hashlib.sha256(value).hexdigest()[:16] for value in matches)
+                    )
+                    origins = set()
+                    for value in matches:
+                        for suffix, label in [
+                            (b"/.cargo", "cargo-home"),
+                            (b"/.rustup", "rustup-home"),
+                            (b"/work", "workspace"),
+                            (b"/.cache", "cache-home"),
+                            (b"/.local", "local-home"),
+                        ]:
+                            if value + suffix in window:
+                                origins.add(label)
+                    origin_summary = ",".join(sorted(origins or {"other"}))
                     raise BootstrapError(
                         "capsule artifact contains a private build path: "
-                        f"{artifact.relative_to(capsule).as_posix()}"
+                        f"{artifact.relative_to(capsule).as_posix()} "
+                        f"(path fingerprints: {fingerprints}; origins: {origin_summary})"
                     )
                 tail = window[-overlap:] if overlap else b""
 
@@ -2489,10 +2523,22 @@ def build_capsule(
                 "treeHash": tree_hash(rows),
                 "files": rows,
             }
-        verify_capsule_has_no_private_paths(
-            capsule,
-            [source, temporary, stage, root, Path.home()],
+        private_paths = [source, temporary, stage, root]
+        physical_home = Path.home()
+        generic_runner_homes = {
+            "/" + "home" + "/runner",
+            "/" + "Users" + "/runner",
+        }
+        generic_github_home = (
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and physical_home.as_posix() in generic_runner_homes
         )
+        # GitHub-hosted runners use a documented generic account path for the
+        # shared Cargo cache.  It is stable public infrastructure, not tenant
+        # identity.  Source, state, and build roots remain forbidden above.
+        if not generic_github_home:
+            private_paths.append(physical_home)
+        verify_capsule_has_no_private_paths(capsule, private_paths)
         artifacts = {}
         for spec in core_specs:
             name = spec["buildContract"]["artifactName"]

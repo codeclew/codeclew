@@ -1473,17 +1473,27 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 environment = bootstrap.build_environment(stage, root)
             self.assertEqual(Path(environment["CARGO_TARGET_DIR"]), root / "cargo-target")
             self.assertEqual(environment["CARGO_INCREMENTAL"], "0")
+            self.assertEqual(environment["HOME"], "/codeclew/home")
+            self.assertEqual(environment["USER"], "codeclew")
+            self.assertEqual(environment["LOGNAME"], "codeclew")
+            self.assertEqual(environment["XDG_CONFIG_HOME"], "/codeclew/config")
+            self.assertTrue(Path(environment["CARGO_HOME"]).is_absolute())
+            self.assertTrue(Path(environment["RUSTUP_HOME"]).is_absolute())
             self.assertNotIn("RUSTFLAGS", environment)
             remaps = environment["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+            self.assertEqual(remaps[0], f"--remap-path-prefix={Path.home()}=/codeclew/home")
             self.assertEqual(
-                remaps[:3],
-                [
-                    f"--remap-path-prefix={Path.home()}=/codeclew/home",
-                    f"--remap-path-prefix={root}=/codeclew/build",
-                    f"--remap-path-prefix={stage}=/codeclew/source",
-                ],
+                remaps[1],
+                f"--remap-path-prefix={environment['CARGO_HOME']}=/codeclew/cargo-home",
             )
-            self.assertEqual(remaps[3:], [])
+            self.assertEqual(
+                remaps[2],
+                f"--remap-path-prefix={environment['RUSTUP_HOME']}=/codeclew/rustup-home",
+            )
+            self.assertEqual(remaps[3:], [
+                f"--remap-path-prefix={root}=/codeclew/build",
+                f"--remap-path-prefix={stage}=/codeclew/source",
+            ])
             self.assertNotIn(
                 "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER", environment
             )

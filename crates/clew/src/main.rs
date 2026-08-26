@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
+use clew::operations::{capabilities, doctor, support_summary};
+use clew::runtime::RuntimeAuthority;
 use clew::session::{
     ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, SessionLanguage,
     bounded_context_stdout, validate_context_request,
@@ -14,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 #[derive(Parser)]
 #[command(
@@ -31,6 +33,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Print the exact product support matrix bound to the active runtime.
+    Capabilities,
+    /// Check host, runtime, state, and optional target-repository readiness.
+    Doctor(DoctorArgs),
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
@@ -56,6 +62,10 @@ enum Command {
         #[command(subcommand)]
         command: TaskRunCommand,
     },
+    Support {
+        #[command(subcommand)]
+        command: SupportCommand,
+    },
     #[command(name = "__task-run-execute", hide = true)]
     InternalTaskRunExecute(InternalTaskRunArgs),
 }
@@ -63,10 +73,17 @@ enum Command {
 #[derive(Subcommand)]
 enum ChangeCommand {
     Open(ChangeOpenArgs),
+    CheckFreshness(SessionIdArgs),
     Prepare(ChangePrepareArgs),
     Status(RunIdArgs),
     Publish(SessionPublishArgs),
     Recover(SessionRunArgs),
+}
+
+#[derive(Subcommand)]
+enum SupportCommand {
+    /// Build an allowlist-only summary from a private Codeclew JSON artifact.
+    Summarize(SupportSummarizeArgs),
 }
 
 #[derive(Subcommand)]
@@ -155,6 +172,23 @@ struct SessionOpenArgs {
     model_cache: ModelCachePolicyArg,
     #[arg(long, requires = "model_cache")]
     external_build_state: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct DoctorArgs {
+    /// Optional target repository to check without opening a session.
+    #[arg(long)]
+    repo: Option<PathBuf>,
+    /// Optional ref that must resolve to the checked-out HEAD.
+    #[arg(long, requires = "repo")]
+    target_ref: Option<String>,
+}
+
+#[derive(Args)]
+struct SupportSummarizeArgs {
+    /// Absolute caller-owned mode-0600 file containing one Codeclew JSON result.
+    #[arg(long)]
+    input: PathBuf,
 }
 
 #[derive(Args)]
@@ -399,9 +433,21 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     match cli.command {
+        Command::Capabilities => capabilities(&active_runtime()?),
+        Command::Doctor(args) => doctor(
+            &active_runtime()?,
+            args.repo.as_deref(),
+            args.target_ref.as_deref(),
+        ),
         Command::Change {
             command: ChangeCommand::Open(args),
         } => change_open(args),
+        Command::Change {
+            command: ChangeCommand::CheckFreshness(args),
+        } => {
+            let (session, _) = SessionAuthority::load(&args.session)?;
+            serde_json::to_value(session.freshness()?).map_err(internal)
+        }
         Command::Change {
             command: ChangeCommand::Prepare(args),
         } => change_prepare(args),
@@ -688,8 +734,25 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Recover(args),
         } => recover_task_run(&args.session, &args.run),
+        Command::Support {
+            command: SupportCommand::Summarize(args),
+        } => {
+            let bytes = read_private_diagnostic_input(&args.input, 1024 * 1024)?;
+            let value: Value = serde_json::from_slice(&bytes)
+                .map_err(|_| invalid("diagnostic input is not one JSON object"))?;
+            support_summary(&value)
+        }
         Command::InternalTaskRunExecute(args) => execute_task_run(&args.run),
     }
+}
+
+fn active_runtime() -> Result<RuntimeAuthority, ClewError> {
+    RuntimeAuthority::from_environment()?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerPreparationRequired,
+            "operational commands must be launched through ./clew",
+        )
+    })
 }
 
 fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
@@ -1508,6 +1571,67 @@ fn read_bounded_regular_file(
     Ok(bytes)
 }
 
+fn read_private_diagnostic_input(path: &Path, limit: usize) -> Result<Vec<u8>, ClewError> {
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(invalid(
+            "diagnostic input must use a normalized absolute path",
+        ));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options
+        .open(path)
+        .map_err(|_| invalid("diagnostic input is unavailable or unsafe"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| invalid("diagnostic input is unavailable or unsafe"))?;
+    #[cfg(unix)]
+    let private = metadata.uid() == unsafe { libc::geteuid() }
+        && metadata.permissions().mode() & 0o777 == 0o600;
+    #[cfg(not(unix))]
+    let private = false;
+    if !metadata.is_file() || !private || metadata.len() > limit as u64 {
+        return Err(invalid(
+            "diagnostic input must be a caller-owned mode-0600 regular file within the size limit",
+        ));
+    }
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| invalid("diagnostic input exceeds the host size"))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.by_ref()
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid("diagnostic input changed or became unreadable"))?;
+    let after = file
+        .metadata()
+        .map_err(|_| invalid("diagnostic input changed or became unreadable"))?;
+    #[cfg(unix)]
+    let unchanged = metadata.dev() == after.dev()
+        && metadata.ino() == after.ino()
+        && metadata.mode() == after.mode()
+        && metadata.uid() == after.uid()
+        && metadata.len() == after.len()
+        && metadata.mtime() == after.mtime()
+        && metadata.mtime_nsec() == after.mtime_nsec()
+        && metadata.ctime() == after.ctime()
+        && metadata.ctime_nsec() == after.ctime_nsec();
+    #[cfg(not(unix))]
+    let unchanged = false;
+    if bytes.len() != capacity || !unchanged {
+        return Err(invalid("diagnostic input changed while it was read"));
+    }
+    Ok(bytes)
+}
+
 fn absolute(path: &Path) -> Result<PathBuf, ClewError> {
     path.canonicalize().map_err(io_error)
 }
@@ -1551,16 +1675,36 @@ mod tests {
 
     #[test]
     fn removed_entrypoints_are_unparseable() {
-        for removed in [
-            "doctor",
-            "project",
-            "index",
-            "resolve",
-            "thread",
-            "task-apply",
-        ] {
+        for removed in ["project", "index", "resolve", "thread", "task-apply"] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());
         }
+    }
+
+    #[test]
+    fn operational_entrypoints_require_explicit_closed_arguments() {
+        assert!(Cli::try_parse_from(["clew", "capabilities"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "doctor"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "change",
+                "check-freshness",
+                "--session",
+                "session:fixture",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "support",
+                "summarize",
+                "--input",
+                "/private/fixture.json",
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["clew", "support", "summarize"]).is_err());
     }
 
     #[test]
