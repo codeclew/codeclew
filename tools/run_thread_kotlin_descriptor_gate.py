@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
+
 import verify_thread_kotlin_descriptor_gate as checked_verifier
 
 
@@ -656,13 +658,39 @@ def executable_authority(path: Path) -> tuple[Path, str]:
     return resolved, f"sha256:{digest.hexdigest()}"
 
 
-def git_output(repository: Path, arguments: list[str]) -> str:
+def pinned_git_executable(path: Path) -> Path:
+    try:
+        if not path.is_absolute():
+            raise GateError("GIT_AUTHORITY_UNAVAILABLE")
+        resolved = path.resolve(strict=True)
+        metadata = os.stat(resolved)
+    except OSError as error:
+        raise GateError("GIT_AUTHORITY_UNAVAILABLE") from error
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(resolved, os.X_OK):
+        raise GateError("GIT_AUTHORITY_UNAVAILABLE")
+    return resolved
+
+
+def closed_git_environment() -> dict[str, str]:
+    return {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+    }
+
+
+def git_output(git: Path, repository: Path, arguments: list[str]) -> str:
     try:
         completed = subprocess.run(
-            ["git", "-C", os.fspath(repository), *arguments],
+            [os.fspath(git), "-C", os.fspath(repository), *arguments],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=closed_git_environment(),
             timeout=30,
             check=False,
         )
@@ -676,13 +704,16 @@ def git_output(repository: Path, arguments: list[str]) -> str:
         raise GateError("GIT_AUTHORITY_UNAVAILABLE") from error
 
 
-def git_output_optional(repository: Path, arguments: list[str]) -> str | None:
+def git_output_optional(
+    git: Path, repository: Path, arguments: list[str]
+) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "-C", os.fspath(repository), *arguments],
+            [os.fspath(git), "-C", os.fspath(repository), *arguments],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=closed_git_environment(),
             timeout=30,
             check=False,
         )
@@ -698,27 +729,41 @@ def git_output_optional(repository: Path, arguments: list[str]) -> str | None:
         raise GateError("GIT_AUTHORITY_UNAVAILABLE") from error
 
 
-def pinned_target_ref(service: Service) -> str:
-    commit = git_output(service.repository, ["rev-parse", "--verify", f"{service.revision}^{{commit}}"])
-    head = git_output(service.repository, ["rev-parse", "--verify", "HEAD^{commit}"])
+def pinned_target_ref(git: Path, service: Service) -> str:
+    commit = git_output(
+        git,
+        service.repository,
+        ["rev-parse", "--verify", f"{service.revision}^{{commit}}"],
+    )
+    head = git_output(
+        git, service.repository, ["rev-parse", "--verify", "HEAD^{commit}"]
+    )
     if commit != service.revision or head != service.revision:
         raise GateError("HEAD_NOT_PINNED")
-    symbolic = git_output_optional(service.repository, ["symbolic-ref", "-q", "HEAD"])
+    symbolic = git_output_optional(
+        git, service.repository, ["symbolic-ref", "-q", "HEAD"]
+    )
     candidates = []
     if symbolic is not None and symbolic.startswith("refs/heads/"):
         candidates.append(symbolic)
     listed = git_output(
+        git,
         service.repository,
         ["for-each-ref", "--format=%(refname)", "--points-at", service.revision, "refs/heads"],
     )
     candidates.extend(line for line in listed.splitlines() if line.startswith("refs/heads/"))
     for candidate in sorted(set(candidates)):
-        if git_output(service.repository, ["rev-parse", "--verify", candidate]) == service.revision:
+        if (
+            git_output(
+                git, service.repository, ["rev-parse", "--verify", candidate]
+            )
+            == service.revision
+        ):
             return candidate
     raise GateError("PINNED_BRANCH_UNAVAILABLE")
 
 
-def validate_oracle_files(corpus: Corpus, benchmark: Benchmark) -> None:
+def validate_oracle_files(git: Path, corpus: Corpus, benchmark: Benchmark) -> None:
     services = {service.alias: service for service in corpus.services}
     checked: set[tuple[str, str, str]] = set()
     for side in benchmark.sides:
@@ -731,11 +776,12 @@ def validate_oracle_files(corpus: Corpus, benchmark: Benchmark) -> None:
                 continue
             checked.add(key)
             observed = git_output(
+                git,
                 service.repository,
                 ["rev-parse", "--verify", f"{service.revision}:{navigation.relative_file}"],
             )
             if observed != navigation.blob_oid or git_output(
-                service.repository, ["cat-file", "-t", observed]
+                git, service.repository, ["cat-file", "-t", observed]
             ) != "blob":
                 raise GateError("ORACLE_BLOB_AUTHORITY_INVALID")
 
@@ -1235,6 +1281,7 @@ def run_unit(
     service: Service,
     oracle_sides: tuple[OracleSide, ...],
     corpus_digest: str,
+    git: Path,
     clew: Path,
     max_roots: int,
     timeout_seconds: int,
@@ -1242,7 +1289,7 @@ def run_unit(
     session_id: str | None = None
     terminal = False
     try:
-        target_ref = pinned_target_ref(service)
+        target_ref = pinned_target_ref(git, service)
         opened = run_json_process(
             [
                 os.fspath(clew),
@@ -1624,7 +1671,8 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
     if args.timeout_seconds > benchmark.max_cold_seconds:
         raise GateError("RESOURCE_BUDGET_INVALID")
     oracles = side_oracles(benchmark)
-    validate_oracle_files(corpus, benchmark)
+    git = pinned_git_executable(args.git)
+    validate_oracle_files(git, corpus, benchmark)
     benchmark_digest = benchmark.authority_digest
     clew, clew_authority = executable_authority(args.clew)
 
@@ -1636,6 +1684,7 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
                 service,
                 oracles[service.alias],
                 corpus_digest,
+                git,
                 clew,
                 benchmark.max_roots,
                 args.timeout_seconds,
@@ -2051,6 +2100,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--private-output", type=Path)
     value.add_argument("--checked-output", type=Path)
     value.add_argument("--clew", type=Path)
+    value.add_argument("--git", type=Path)
     value.add_argument("--max-parallelism", type=int, default=2)
     value.add_argument("--timeout-seconds", type=int, default=900)
     value.add_argument("--self-test", action="store_true")
@@ -2068,7 +2118,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps({"schema": PRIVATE_OUTPUT_SCHEMA, "selfTest": "PASS"}, sort_keys=True))
         return 0
-    for name in ["private_corpus", "private_benchmark", "private_output", "checked_output", "clew"]:
+    for name in [
+        "private_corpus",
+        "private_benchmark",
+        "private_output",
+        "checked_output",
+        "clew",
+        "git",
+    ]:
         if getattr(args, name) is None:
             argument_parser.error(f"--{name.replace('_', '-')} is required")
     if not 1 <= args.max_parallelism <= 4:

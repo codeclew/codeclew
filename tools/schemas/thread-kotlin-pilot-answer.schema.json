@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.local/schemas/thread-kotlin-pilot-answer.schema.json",
+  "title": "Codeclew Kotlin descriptor pilot answer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "taskId",
+    "pairId",
+    "arm",
+    "members",
+    "manualVerification",
+    "relationship",
+    "httpEndpointEquivalence",
+    "compatibility"
+  ],
+  "properties": {
+    "schema": {
+      "const": "codeclew-kotlin-descriptor-pilot-answer/1.0"
+    },
+    "taskId": {
+      "type": "string",
+      "pattern": "^task-[0-9]{2}$"
+    },
+    "pairId": {
+      "type": "string",
+      "pattern": "^pair-[0-9]{2}$"
+    },
+    "arm": {
+      "enum": ["DEFAULT", "CODECLEW"]
+    },
+    "members": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/member"
+      }
+    },
+    "manualVerification": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/manualVerification"
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "status"],
+      "properties": {
+        "authority": {
+          "enum": [
+            "DECLARED_TOPOLOGY",
+            "UNBOUND",
+            "EXACT_RELATIONSHIP"
+          ]
+        },
+        "status": {
+          "enum": ["UNSURE", "EXACT"]
+        }
+      }
+    },
+    "httpEndpointEquivalence": {
+      "enum": ["NOT_CLAIMED", "EXACT_CLAIMED"]
+    },
+    "compatibility": {
+      "enum": ["NOT_CLAIMED", "EXACT_CLAIMED"]
+    }
+  },
+  "$defs": {
+    "member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "serviceAlias",
+        "revision",
+        "rankedFiles",
+        "declarations"
+      ],
+      "properties": {
+        "role": {
+          "enum": ["provider", "consumer"]
+        },
+        "serviceAlias": {
+          "type": "string",
+          "pattern": "^service-[0-9]{2}$"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "rankedFiles": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/rankedFile"
+          }
+        },
+        "declarations": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/declaration"
+          }
+        }
+      }
+    },
+    "rankedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rank", "relativeFile", "blobOid"],
+      "properties": {
+        "rank": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "relativeFile": {
+          "$ref": "#/$defs/relativeKotlinFile"
+        },
+        "blobOid": {
+          "$ref": "#/$defs/gitOid"
+        }
+      }
+    },
+    "declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "descriptorClass",
+        "declarationKind",
+        "name",
+        "shapeStatus",
+        "relativeFile",
+        "blobOid",
+        "sourceRange"
+        ,"ownerIdentity"
+        ,"normalizedSignature"
+        ,"shapeDigest"
+      ],
+      "properties": {
+        "descriptorClass": {
+          "enum": ["CALLABLE", "TYPE"]
+        },
+        "declarationKind": {
+          "enum": [
+            "FUNCTION",
+            "CONSTRUCTOR",
+            "CLASS",
+            "PROPERTY",
+            "MUTABLE_PROPERTY"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,255}$"
+        },
+        "ownerIdentity": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "normalizedSignature": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "shapeStatus": {
+          "enum": ["EXACT_PROJECTED_DECLARATION", "UNSURE"]
+        },
+        "shapeDigest": {
+          "anyOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        },
+        "relativeFile": {
+          "$ref": "#/$defs/relativeKotlinFile"
+        },
+        "blobOid": {
+          "$ref": "#/$defs/gitOid"
+        },
+        "sourceRange": {
+          "$ref": "#/$defs/sourceRange"
+        }
+      }
+    },
+    "manualVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "status", "requiredCheck"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        },
+        "status": {
+          "const": "UNSURE"
+        },
+        "requiredCheck": {
+          "type": "string",
+          "pattern": "^VERIFY_[A-Z0-9_]{1,120}$"
+        }
+      }
+    },
+    "sourceRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startByte", "endByte"],
+      "properties": {
+        "startByte": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "relativeKotlinFile": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*\\u0000).+\\.kts?$",
+      "maxLength": 4096
+    },
+    "gitOid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

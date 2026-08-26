@@ -2,8 +2,9 @@
 
 ## Document status
 
-- **Status:** S0, G1O, H1, G1K, S1K, S2K, and S3K completed. S4K protocol
-  closure is next; measured pilot arms have not started.
+- **Status:** S0, G1O, H1, G1K, S1K, S2K, and S3K completed. The S4K protocol
+  and fail-closed harness are implemented and independently reviewed; measured
+  pilot arms have not started.
 - **Date:** 2026-08-25.
 - **Execution order:** `S0 -> G1O(STOP) -> H1 -> G1K -> S1K -> S2K -> S3K ->
   S4K`.
@@ -594,7 +595,8 @@ digraph codeclew_multiservice_thread {
 
 ## S4K — Frozen pilot and adoption verdict
 
-- **Status:** Not started; depends on S3K.
+- **Status:** Closed execution protocol and fail-closed harness independently
+  reviewed `PASS`. No pilot arm has run, so there is no adoption verdict yet.
 - **Goal:** Determine whether the complete read-only Kotlin descriptor workflow
   materially improves agent navigation over equal-budget default local tools.
 - **Frozen authority:** The G1K task IDs, pairs, revisions, prompt/oracle/rubric/
@@ -609,9 +611,9 @@ digraph codeclew_multiservice_thread {
   relationship/compatibility claims, elapsed time, source bytes/files opened,
   tool starts, and noncached agent-input tokens.
 - **Binary task pass:** Every oracle-declared member and verification category
-  is named, the primary relevant file is in the top ten, callable/shape claims
-  are correct, and there is no false exact relationship/HTTP/compatibility
-  claim.
+  is named, an approved pinned file for each side is in the top ten,
+  callable/shape claims are correct, and there is no false exact
+  relationship/HTTP/compatibility claim.
 - **Warm audit:** Exactly 30 invocations of one primed three-member case;
   nearest-rank p95 is sorted sample 29.
 - **Adoption gate:**
@@ -629,6 +631,70 @@ digraph codeclew_multiservice_thread {
 - **Outcome:** On pass, document a **qualified local Kotlin structural-
   navigation pilot**. On failure, do not cut over; publish the exact failed
   metric and the next evidence-based optimization candidate.
+  These ten frozen pair/scenario stimuli qualify only this local Kotlin
+  structural-navigation contour; they do not establish value for arbitrary
+  free-form requests, other projects, or other language/framework semantics.
+
+### S4K closed execution protocol
+
+The frozen G1K corpus and benchmark remain byte-for-byte unchanged. Before the
+first model arm, a private `0600` authority seals their digests together with
+the shape oracle, fixture oracle, answer schema, runner, broker, Codex CLI,
+model, and configuration digests. The prompts contain only the frozen generic
+profile plus task/pair/scenario, aliases, and pinned revisions; declaration
+names, files, source, and oracle hints are never added.
+
+Every valid completed run executes exactly 20 fresh arms: Default first for odd task numbers
+and Codeclew first for even task numbers. Both arms have the same model,
+reasoning effort, prompt, answer schema, sandbox, pinned Git operations, and
+bounded source reads. Only the Codeclew arm gains the existing thread context,
+callables, and impact capabilities. A closed broker keeps repository locators,
+managed identifiers, and subprocesses outside the model sandbox. A non-broker
+command, the 41st tool start, or 600 seconds terminates that arm's whole process
+group. A product/model/capability/resource failure becomes one bounded zero-
+score failed arm and fixed ordering continues only when usage, provenance,
+broker audit, and teardown remain exact. Product or model failures are never
+retried. Truncated transport, ambiguous accounting, audit/provenance mismatch,
+authority drift, or residual-process/teardown failure invalidates the whole
+execution rather than scoring either product arm. Cancellation or `SIGKILL`
+also invalidates the experiment: completed arms are not resumed or reused, and
+a new sealed run with fresh output authority is required.
+
+The sealed denominators are 20 declared sides, 20 top-ten relevant-file sides,
+20 descriptor slots, 74 manual-verification obligations, and ten tasks per arm.
+All 20 sides are critical. A file hit is any approved `(relativeFile, blobOid)`
+at ranks 1-10; the benchmark defines no synthetic primary file. An exact shape
+claim must match the complete hidden compiler row. `UNSURE` is honest but does
+not fill a descriptor slot. Ten-sample medians use the middle-pair sum, so the
+token gate is checked without floating point as
+`10 * (codeclew[4] + codeclew[5]) <= 7 * (default[4] + default[5])`; opened
+files use `codeclew[4] + codeclew[5] <= default[4] + default[5]`.
+
+Warm evidence uses three independently committed copies of the tracked Kotlin
+2.4.10 fixture. After session/thread/context/callables/impact priming, exactly
+30 fresh `thread impact` processes query the same callable family. All outputs
+must be byte-identical; nearest-rank p95 is sorted sample 29 and must be at most
+ten seconds. The measured contour denies network, build/compiler/target
+processes, and ambient build-cache access. Public evidence contains only safe
+IDs, digests, counts, timings, rubric booleans, failed-gate enums, and the
+qualified/not-qualified verdict. Qualification requires both Codeclew's frozen
+10/10 aggregate and every S4 comparative, audit, privacy, and independent-
+review gate; one cannot compensate for the other.
+
+The warm isolation claim is host-specific: this pilot qualifies only the
+macOS Seatbelt adapter exercised by the audit. It does not claim an equivalent
+Linux sandbox until a separately reviewed Linux adapter produces the same
+canaries and process/write/network evidence.
+
+Before each product `session open` or `thread open`, the private runner writes
+and fsyncs an `openInFlight` request digest. It clears that marker only after
+the returned identifier and authority are validated and durably checkpointed.
+Because the current product has no request-id/status lookup that can resolve a
+crash in that interval, a dead run with this marker (or a retained private
+temporary root) stops with `OPERATOR_CLEANUP_REQUIRED`. The runner neither
+guesses an identifier nor reports cleanup or qualification. The cancelled run
+is never resumed or reused; after explicit cleanup the complete 20-arm
+experiment starts again with fresh output authority.
 
 ## Secondary backlog — recorded, not scheduled
 
