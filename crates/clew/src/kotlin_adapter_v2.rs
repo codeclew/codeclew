@@ -1651,6 +1651,27 @@ mod tests {
         (index, profile.expect("K24 compiler profile"), requests)
     }
 
+    fn real_default_engine_index(
+        state: &StateAuthority,
+        store: &CasStore,
+        fixture: &Path,
+        component: &str,
+    ) -> Value {
+        let (snapshot, _) = repository_snapshot::capture(fixture, store).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(state, store, &snapshot, &[":/main".into()])
+                .unwrap();
+        let attempt = workspace
+            .open_compilation_from_set(state, ":/main", component, None)
+            .unwrap();
+        let (index, _, requests) = attempt.analyze_strict().unwrap();
+        let workspace_profile = workspace.finish().unwrap();
+        assert_eq!(workspace_profile.workspace_set_authorizations, 1);
+        assert_eq!(workspace_profile.legacy_open_project_calls, 1);
+        assert_one_real_index_request(&requests);
+        index
+    }
+
     fn real_qualification_analysis(
         state: &StateAuthority,
         store: &CasStore,
@@ -1708,6 +1729,26 @@ mod tests {
                 "semantic boundaries in {graph}: {index}",
             );
         }
+    }
+
+    fn normalized_semantic_facts_digest(index: &Value) -> String {
+        let files = index
+            .get("files")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|file| normalize_file_fact(file).unwrap())
+            .collect::<Vec<_>>();
+        canonical::hash(&json!({
+            "schema":"codeclew-kotlin-normalized-cross-engine-facts/1.0",
+            "files":files,
+            "descriptors":index.pointer("/declarationDescriptors/descriptors"),
+            "descriptorBoundaries":index.pointer("/declarationDescriptors/boundaries"),
+            "relations":index.pointer("/declarationRelations/relations"),
+            "relationBoundaries":index.pointer("/declarationRelations/boundaries"),
+            "localCfgs":index.get("localCfgs"),
+        }))
+        .unwrap()
     }
 
     fn mutable_authority(state: &StateAuthority, component: &str) -> std::path::PathBuf {
@@ -2086,11 +2127,13 @@ mod tests {
                 .and_then(Value::as_str),
             Some(expected_project_version.as_str()),
         );
+        let expected_authority = std::env::var("CODECLEW_KOTLIN_QUALIFICATION_AUTHORITY")
+            .unwrap_or_else(|_| "KGP_COMPILER_VERSION_PROVIDER".into());
         assert_eq!(
             project
                 .pointer("/projectCompilerAuthority/source")
                 .and_then(Value::as_str),
-            Some("KGP_COMPILER_VERSION_PROVIDER"),
+            Some(expected_authority.as_str()),
         );
         assert_eq!(
             project
@@ -2120,18 +2163,18 @@ mod tests {
         assert!(!cold.fallback_used, "{cold:?}");
         assert_complete_qualification_index(&cold_index);
         assert_one_real_index_request(&cold_requests);
-        let cold_digest = semantic_scope_digest(&cold_index).unwrap();
+        let cold_digest = normalized_semantic_facts_digest(&cold_index);
 
         if std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_K23_ORACLE").is_some() {
             let oracle_root = tempfile::tempdir().unwrap();
             let oracle_state = StateAuthority::open(oracle_root.path().join("v2")).unwrap();
             let oracle_store = CasStore::open(&oracle_state).unwrap();
-            let (oracle_index, _, _) =
-                real_k24_analysis(&oracle_state, &oracle_store, &fixture, &"c".repeat(64));
+            let oracle_index =
+                real_default_engine_index(&oracle_state, &oracle_store, &fixture, &"c".repeat(64));
             assert_complete_qualification_index(&oracle_index);
             assert_eq!(
-                cold_digest,
-                semantic_scope_digest(&oracle_index).unwrap(),
+                normalized_semantic_facts_digest(&cold_index),
+                normalized_semantic_facts_digest(&oracle_index),
                 "K23 and K24 engines produced different normalized semantic facts",
             );
         }
@@ -2157,7 +2200,7 @@ mod tests {
                 "{unchanged:?}"
             );
             assert_eq!(
-                semantic_scope_digest(&unchanged_index).unwrap(),
+                normalized_semantic_facts_digest(&unchanged_index),
                 cold_digest,
             );
             assert_eq!(
@@ -2201,8 +2244,8 @@ mod tests {
             );
             assert_eq!(fresh.status, CompilerIndexStatus::ColdFull, "{fresh:?}");
             assert_eq!(
-                semantic_scope_digest(&incremental_index).unwrap(),
-                semantic_scope_digest(&fresh_index).unwrap(),
+                normalized_semantic_facts_digest(&incremental_index),
+                normalized_semantic_facts_digest(&fresh_index),
             );
             assert_one_real_index_request(&fresh_requests);
 
@@ -2221,14 +2264,14 @@ mod tests {
             );
             assert!(recovered.recovered);
             assert_eq!(
-                semantic_scope_digest(&recovered_index).unwrap(),
-                semantic_scope_digest(&fresh_index).unwrap(),
+                normalized_semantic_facts_digest(&recovered_index),
+                normalized_semantic_facts_digest(&fresh_index),
             );
             assert_one_real_index_request(&recovered_requests);
         }
 
         println!(
-            "CODECLEW_KOTLIN_QUALIFICATION_RESULT={{\"projectCompilerVersion\":\"{}\",\"engine\":\"{}\",\"semanticScopeDigest\":\"{}\"}}",
+            "CODECLEW_KOTLIN_QUALIFICATION_RESULT={{\"projectCompilerVersion\":\"{}\",\"engine\":\"{}\",\"normalizedFactsDigest\":\"{}\"}}",
             expected_project_version,
             KotlinSemanticEngine::Kotlin24.engine_id(),
             cold_digest,

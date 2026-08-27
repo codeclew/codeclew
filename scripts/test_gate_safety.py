@@ -43,12 +43,26 @@ def main() -> None:
     assert "pull_request" not in qualification and "push:" not in qualification
     assert "ubuntu-latest" in qualification and "macos-latest" in qualification
     assert qualification.count("pilot-readiness.sh") == 2
+    assert qualification.count("kotlin-compatibility-gate.py") == 2
+    assert "--full-lifecycle" in qualification
+    for row in (
+        "k24-exact",
+        "k24-language-23",
+        "k24-from-240",
+        "k24-from-230",
+        "k24-from-2121",
+        "k24-from-2121-serialization",
+        "allopen-negative",
+        "k19-negative",
+    ):
+        assert row in qualification
     assert pilot_qualification.count("--bootstrap-warm-audit") == 1
     assert 'counters.get("processRuns") != 0' in pilot_qualification
     assert 'counters.get("digestFileCalls") != 0' in pilot_qualification
     assert "--reuse-primed-runtime" in pilot_qualification
     assert ci.count("./scripts/ci-verify.sh") == 1
     assert ci_verify.count("scripts/usability-smoke.py") == 1
+    assert ci_verify.count("kotlin_engine::tests::") == 1
     assert "scripts/pilot.py" not in ci and "scripts/pilot.py" not in ci_verify
     check_gate("scripts/multi-compilation-gate.sh", inline_tree_cleanup=False)
     multi = (ROOT / "scripts/multi-compilation-gate.sh").read_text(encoding="utf-8")

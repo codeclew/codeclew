@@ -43,12 +43,14 @@ ROWS = {
         "version": "2.1.21",
         "language": "2.1",
         "outcome": "QUALIFIED",
+        "authority": "KOTLIN_COMPILER_VERSION_CLASSLOADER_FALLBACK",
     },
     "k24-from-2121-serialization": {
         "version": "2.1.21",
         "language": "2.1",
         "outcome": "QUALIFIED",
         "serialization": True,
+        "authority": "KOTLIN_COMPILER_VERSION_CLASSLOADER_FALLBACK",
     },
     "allopen-negative": {
         "version": "2.3.0",
@@ -179,7 +181,9 @@ def main() -> int:
             environment["CODECLEW_KOTLIN_QUALIFICATION_K23_ORACLE"] = "1"
         if row.get("serialization"):
             environment["CODECLEW_KOTLIN_QUALIFICATION_SERIALIZATION"] = "1"
-        if expected_golden is not None:
+        if row.get("authority"):
+            environment["CODECLEW_KOTLIN_QUALIFICATION_AUTHORITY"] = str(row["authority"])
+        if expected_golden is not None and not args.discover_golden:
             environment["CODECLEW_KOTLIN_QUALIFICATION_GOLDEN"] = expected_golden
         completed = subprocess.run(
             [

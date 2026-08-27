@@ -165,17 +165,24 @@ impl KotlinProjectSemantics {
                 .map(str::to_owned)
         };
         let mut compiler_plugins = model
-            .get("requestedCompilerPlugins")
-            .or_else(|| model.get("compilerPlugins"))
+            .get("compilerPlugins")
+            .or_else(|| model.get("requestedCompilerPlugins"))
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(|raw| {
-                let artifact_name = Path::new(raw)
+                let identity = raw
+                    .rsplit_once(":sha256:")
+                    .map_or(raw, |(identity, _)| identity);
+                let locator = identity
+                    .strip_prefix("artifact:")
+                    .or_else(|| identity.strip_prefix("repo:"))
+                    .unwrap_or(identity);
+                let artifact_name = Path::new(locator)
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or(raw)
+                    .unwrap_or(locator)
                     .to_owned();
                 let kind = if artifact_name
                     .starts_with("kotlin-serialization-compiler-plugin-embeddable-")
@@ -545,6 +552,51 @@ mod tests {
                 .unwrap(),
             KotlinSemanticEngine::Kotlin24,
         );
+    }
+
+    #[test]
+    fn project_semantics_uses_effective_plugins_not_kgp_implementation_jars() {
+        let model = json!({
+            "declaredCompilerVersion":"2.3.0",
+            "languageVersion":"2.3",
+            "apiVersion":"2.3",
+            "jvmTarget":"21",
+            "requestedCompilerPlugins":[
+                "kotlin-scripting-compiler-embeddable-2.3.0.jar",
+                "kotlin-stdlib-2.3.0.jar"
+            ],
+            "compilerPlugins":[],
+        });
+        let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
+        assert!(project.compiler_plugins.is_empty());
+        assert_eq!(
+            KotlinEngineRegistry
+                .qualify(&project, KotlinSemanticEngine::Kotlin24)
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin24,
+        );
+    }
+
+    #[test]
+    fn normalized_artifact_identity_preserves_serialization_policy() {
+        let model = json!({
+            "declaredCompilerVersion":"2.1.21",
+            "languageVersion":"2.1",
+            "apiVersion":"2.1",
+            "jvmTarget":"21",
+            "compilerPlugins":[format!(
+                "artifact:kotlin-serialization-compiler-plugin-embeddable-2.4.10.jar:sha256:{}",
+                "a".repeat(64),
+            )],
+        });
+        let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
+        assert_eq!(
+            project.compiler_plugins[0].kind,
+            KotlinCompilerPluginKind::KotlinSerialization,
+        );
+        KotlinEngineRegistry
+            .qualify(&project, KotlinSemanticEngine::Kotlin24)
+            .unwrap();
     }
 
     #[test]
