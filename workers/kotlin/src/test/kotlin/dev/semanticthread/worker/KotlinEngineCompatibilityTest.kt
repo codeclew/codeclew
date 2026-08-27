@@ -29,12 +29,30 @@ class KotlinEngineCompatibilityTest {
     }
 
     @Test
-    fun unqualifiedProjectCompilerIsNotInferredFromLanguageVersion() {
+    fun qualifiedPatchLineUsesTheProductionK24Route() {
         val project = KotlinProjectSemantics(
             projectCompilerVersion = "2.4.0",
             compilerVersionAuthority = "KGP_COMPILER_VERSION_PROVIDER",
             languageVersion = "2.4",
             apiVersion = "2.4",
+            jvmTarget = "21",
+            compilerPlugins = emptyList(),
+            unstableCompilerOptions = emptyList(),
+        )
+
+        val decision = kotlinEngineCompatibilityDecision(project)
+        assertEquals("QUALIFIED", decision.status)
+        assertEquals("QUALIFIED_PATCH_LINE", decision.kind)
+        assertTrue(decision.btaEligible)
+    }
+
+    @Test
+    fun experimentalProjectCompilerRemainsQualificationOnly() {
+        val project = KotlinProjectSemantics(
+            projectCompilerVersion = "2.1.21",
+            compilerVersionAuthority = "KOTLIN_COMPILER_VERSION_CLASSLOADER_FALLBACK",
+            languageVersion = "2.1",
+            apiVersion = "2.1",
             jvmTarget = "21",
             compilerPlugins = emptyList(),
             unstableCompilerOptions = emptyList(),

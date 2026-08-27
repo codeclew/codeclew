@@ -4900,6 +4900,7 @@ mod tests {
     fn project_semantics_route_through_qualified_engine_registry() {
         for (version, expected) in [
             ("2.3.0", KotlinSemanticEngine::Kotlin23),
+            ("2.4.0", KotlinSemanticEngine::Kotlin24),
             ("2.4.10", KotlinSemanticEngine::Kotlin24),
         ] {
             let project = KotlinProjectSemantics::from_project_model(&serde_json::json!({
@@ -4913,7 +4914,7 @@ mod tests {
             .unwrap();
             assert_eq!(KotlinEngineRegistry.select(&project).unwrap(), expected);
         }
-        for version in ["2.1.21", "2.3.10", "2.3.20", "2.4.0", "1.9.25"] {
+        for version in ["2.1.21", "2.3.10", "2.3.20", "1.9.25"] {
             let project = KotlinProjectSemantics::from_project_model(&serde_json::json!({
                 "declaredCompilerVersion":version,
                 "languageVersion":"2.3",

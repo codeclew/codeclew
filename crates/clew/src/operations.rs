@@ -446,6 +446,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(mutable.len(), 1);
         assert_eq!(mutable[0]["profileId"], "kotlin-2.4.10-gradle-single");
+        let qualified_patch = matrix["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["profileId"] == "kotlin-2.4.0-gradle-single")
+            .unwrap();
+        assert_eq!(qualified_patch["semanticEngine"], "kotlin-engine-2.4.10");
+        assert_eq!(qualified_patch["mutation"], false);
     }
 
     #[test]

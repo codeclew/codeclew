@@ -237,6 +237,7 @@ impl KotlinProjectSemantics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompatibilityKind {
     ExactCompilerAbi,
+    QualifiedPatchLine,
     QualificationCandidate,
     ExperimentalCandidate,
 }
@@ -282,8 +283,8 @@ const QUALIFIED_COMPATIBILITY: &[QualifiedCompatibility] = &[
         language_version: None,
         api_version: None,
         engine: KotlinSemanticEngine::Kotlin24,
-        kind: CompatibilityKind::QualificationCandidate,
-        default_route: false,
+        kind: CompatibilityKind::QualifiedPatchLine,
+        default_route: true,
         allow_serialization_rebind: true,
     },
     QualifiedCompatibility {
@@ -447,46 +448,55 @@ mod tests {
     }
 
     #[test]
-    fn unknown_plugin_fails_closed_for_cross_engine_row() {
-        let rows = [QualifiedCompatibility {
-            project_compiler_version: "2.3.0",
-            language_version: Some("2.3"),
-            api_version: Some("2.3"),
-            engine: KotlinSemanticEngine::Kotlin24,
-            kind: CompatibilityKind::QualificationCandidate,
-            default_route: true,
-            allow_serialization_rebind: true,
-        }];
-        let error = select_from_rows(
-            &project(
-                "2.3.0",
-                "2.3",
+    fn qualified_patch_line_keeps_cross_engine_safeguards() {
+        let registry = KotlinEngineRegistry;
+        let error = registry
+            .select(&project(
+                "2.4.0",
+                "2.4",
                 &[("custom-plugin.jar", KotlinCompilerPluginKind::Unknown)],
-            ),
-            &rows,
-            true,
-            None,
-        )
-        .unwrap_err();
+            ))
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::UnsupportedCompilerPluginAbi);
+
+        let mut with_flag = project("2.4.0", "2.4", &[]);
+        with_flag.unstable_compiler_options = vec!["-Xcontext-parameters".into()];
+        let error = registry.select(&with_flag).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
     }
 
     #[test]
-    fn qualification_rows_are_not_production_routes() {
+    fn qualified_patch_line_is_a_production_route() {
         let registry = KotlinEngineRegistry;
-        for version in ["2.4.0", "2.1.21"] {
-            let error = registry.select(&project(version, "2.4", &[])).unwrap_err();
-            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
-            assert_eq!(
-                registry
-                    .qualify(
-                        &project(version, "2.4", &[]),
-                        KotlinSemanticEngine::Kotlin24,
-                    )
-                    .unwrap(),
-                KotlinSemanticEngine::Kotlin24,
-            );
-        }
+        assert_eq!(
+            registry.select(&project("2.4.0", "2.4", &[])).unwrap(),
+            KotlinSemanticEngine::Kotlin24,
+        );
+        assert_eq!(
+            registry
+                .qualify(
+                    &project("2.4.0", "2.4", &[]),
+                    KotlinSemanticEngine::Kotlin24,
+                )
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin24,
+        );
+    }
+
+    #[test]
+    fn experimental_row_is_not_a_production_route() {
+        let registry = KotlinEngineRegistry;
+        let error = registry.select(&project("2.1.21", "2.1", &[])).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert_eq!(
+            registry
+                .qualify(
+                    &project("2.1.21", "2.1", &[]),
+                    KotlinSemanticEngine::Kotlin24,
+                )
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin24,
+        );
         assert_eq!(
             registry
                 .qualify(
