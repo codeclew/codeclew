@@ -509,6 +509,12 @@ Context stdout is bounded to 64 KiB. It contains the edit-ready projection and
 content IDs; full evidence remains in private managed state. Plans are bounded
 to 1 MiB, 256 operations, 256 files, and a 256 KiB expected write set.
 
+For syntax-backed Rust and Python facts, an exact matched declaration includes
+its complete declaration body when that body fits the existing 32 KiB source
+budget. Larger declarations retain the bounded line-window fallback. This
+improves access to inner assertions and literals without changing
+`PARTIAL/UNSURE` certainty or claiming name resolution.
+
 Opaque per-file `semanticFacts` arrays are normalized before hashing and
 replaced in public/query file facts by a fact count and digest. Other normalized
 file metadata and declarations remain present, while granular compiler

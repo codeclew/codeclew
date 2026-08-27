@@ -19,6 +19,11 @@ returned by:
 ./clew capabilities
 ```
 
+The canonical response also includes `productVersion`, sourced from the exact
+compiled package version. Use it together with `runtimeMode` and
+`supportMatrixDigest` when recording pilot admission; do not infer a version
+from a runtime path.
+
 P0 support:
 
 | Profile | Read | Change and publish |
