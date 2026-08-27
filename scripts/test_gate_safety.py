@@ -57,7 +57,7 @@ def main() -> None:
     ):
         assert row in qualification
     assert pilot_qualification.count("--bootstrap-warm-audit") == 1
-    assert 'chmod -R u+w -- "$QUALIFICATION_ROOT"' in pilot_qualification
+    assert 'chmod -R u+w "$QUALIFICATION_ROOT"' in pilot_qualification
     assert 'counters.get("processRuns") != 0' in pilot_qualification
     assert 'counters.get("digestFileCalls") != 0' in pilot_qualification
     assert "--reuse-primed-runtime" in pilot_qualification

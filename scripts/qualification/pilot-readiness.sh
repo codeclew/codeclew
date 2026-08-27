@@ -14,7 +14,7 @@ cleanup() {
     # Verified runtime capsules are deliberately owner-read-only. Restore only
     # the owner's write bit inside this private qualification root before the
     # temporary state is removed.
-    chmod -R u+w -- "$QUALIFICATION_ROOT"
+    chmod -R u+w "$QUALIFICATION_ROOT"
     rm -rf -- "$QUALIFICATION_ROOT"
   fi
 }
