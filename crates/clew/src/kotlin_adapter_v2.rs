@@ -6,6 +6,7 @@ use crate::adapter_v2::{
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
+use crate::kotlin_engine::{KOTLIN_ADAPTER_CONTRACT_ID, KotlinSemanticEngine};
 use crate::repository_snapshot::{
     RepositoryInputSnapshot, capture, capture_ignoring_derived_mounts, materialize,
 };
@@ -28,31 +29,6 @@ const TRANSLATION_AUTHORITY_SCHEMA: &str = "codeclew-kotlin-fact-translation/3.3
 const RECEIPT_SCHEMA: &str = "codeclew-completeness-receipt/2.0";
 const WORKSPACE_SET_AUTHORIZATION_SCHEMA: &str = "codeclew-kotlin-workspace-set-authorization/1.0";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KotlinCompilerLine {
-    K21,
-    K23,
-    K24,
-}
-
-impl KotlinCompilerLine {
-    pub fn compiler_version(self) -> &'static str {
-        match self {
-            Self::K21 => "2.1.21",
-            Self::K23 => "2.3.0",
-            Self::K24 => "2.4.10",
-        }
-    }
-
-    fn adapter_id(self) -> &'static str {
-        match self {
-            Self::K21 => "kotlin-2.1",
-            Self::K23 => "kotlin-2.3",
-            Self::K24 => "kotlin-2.4",
-        }
-    }
-}
-
 pub(crate) fn kotlin_adapter_digest(worker_tree_hash: &str) -> Result<String, ClewError> {
     require_digest(worker_tree_hash)?;
     canonical::hash(&json!({
@@ -72,7 +48,7 @@ pub trait KotlinGenerationDriver: Send + Sync {
 }
 
 pub struct KotlinAdapterV2<D> {
-    line: KotlinCompilerLine,
+    engine: KotlinSemanticEngine,
     adapter_digest: String,
     toolchain_digest: String,
     store: CasStore,
@@ -83,7 +59,7 @@ pub struct KotlinAdapterV2<D> {
 
 impl<D> KotlinAdapterV2<D> {
     pub fn new(
-        line: KotlinCompilerLine,
+        engine: KotlinSemanticEngine,
         adapter_digest: String,
         toolchain_digest: String,
         store: CasStore,
@@ -92,7 +68,7 @@ impl<D> KotlinAdapterV2<D> {
         require_digest(&adapter_digest)?;
         require_digest(&toolchain_digest)?;
         Ok(Self {
-            line,
+            engine,
             adapter_digest,
             toolchain_digest,
             store,
@@ -107,13 +83,13 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
     fn handshake(&self) -> Result<AdapterHandshake, ClewError> {
         Ok(AdapterHandshake {
             protocol: ADAPTER_PROTOCOL.into(),
-            adapter_id: self.line.adapter_id().into(),
+            adapter_id: KOTLIN_ADAPTER_CONTRACT_ID.into(),
             adapter_digest: self.adapter_digest.clone(),
             languages: vec![LanguageUri::parse(KOTLIN_LANGUAGE)?],
             capabilities: vec![CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?],
             toolchains: vec![ToolchainConstraint {
                 authority_digest: self.toolchain_digest.clone(),
-                minimum_version: Some(self.line.compiler_version().into()),
+                minimum_version: Some(self.engine.analyzer_compiler_version().into()),
                 maximum_version_exclusive: None,
             }],
         })
@@ -154,8 +130,11 @@ impl<D: KotlinGenerationDriver> LanguageAdapter for KotlinAdapterV2<D> {
         {
             return Err(cancelled_error());
         }
-        if index.get("compilerVersion").and_then(Value::as_str)
-            != Some(self.line.compiler_version())
+        if index
+            .get("analyzerCompilerVersion")
+            .or_else(|| index.get("compilerVersion"))
+            .and_then(Value::as_str)
+            != Some(self.engine.analyzer_compiler_version())
             || index.get("k2Validated").and_then(Value::as_bool) != Some(true)
         {
             return Err(ClewError::new(
@@ -653,9 +632,13 @@ pub(crate) fn translate_facts(
     let capability = CapabilityUri::parse(KOTLIN_FACTS_CAPABILITY)?;
     let mut pending = Vec::new();
     let metadata = json!({
-        "schema":"codeclew-kotlin-index-metadata/2.1",
+        "schema":"codeclew-kotlin-index-metadata/2.2",
         "compilation":index.get("compilation"),
         "compilerVersion":index.get("compilerVersion"),
+        "projectCompilerVersion":index.get("projectCompilerVersion").or_else(|| index.get("declaredCompilerVersion")),
+        "analyzerCompilerVersion":index.get("analyzerCompilerVersion").or_else(|| index.get("compilerVersion")),
+        "kotlinProjectSemantics":index.get("kotlinProjectSemantics"),
+        "kotlinSemanticEngine":index.get("kotlinSemanticEngine"),
         "projectModelHash":index.get("projectModelHash"),
         "classpathHash":index.get("classpathHash"),
         "compilerOptionsHash":index.get("compilerOptionsHash"),
@@ -940,6 +923,10 @@ pub(crate) fn semantic_scope_digest(index: &Value) -> Result<String, ClewError> 
     canonical::hash(&json!({
         "compilation":index.get("compilation"),
         "compilerVersion":index.get("compilerVersion"),
+        "projectCompilerVersion":index.get("projectCompilerVersion").or_else(|| index.get("declaredCompilerVersion")),
+        "analyzerCompilerVersion":index.get("analyzerCompilerVersion").or_else(|| index.get("compilerVersion")),
+        "kotlinProjectSemantics":index.get("kotlinProjectSemantics"),
+        "kotlinSemanticEngine":index.get("kotlinSemanticEngine"),
         "projectModelHash":index.get("projectModelHash"),
         "semanticInputManifestHash":index.get("semanticInputManifestHash"),
         "declarationDescriptorHash":index.get("declarationDescriptorHash"),
@@ -1310,15 +1297,18 @@ mod tests {
     #[test]
     fn k21_k23_and_k24_share_one_streaming_adapter_contract() {
         for line in [
-            KotlinCompilerLine::K21,
-            KotlinCompilerLine::K23,
-            KotlinCompilerLine::K24,
+            KotlinSemanticEngine::Kotlin21,
+            KotlinSemanticEngine::Kotlin23,
+            KotlinSemanticEngine::Kotlin24,
         ] {
             let root = tempfile::tempdir().unwrap();
             let state = StateAuthority::open(root.path().join("v2")).unwrap();
             let store = CasStore::open(&state).unwrap();
             let toolchain = store
-                .put("test/toolchain/1", line.compiler_version().as_bytes())
+                .put(
+                    "test/toolchain/1",
+                    line.analyzer_compiler_version().as_bytes(),
+                )
                 .unwrap();
             let adapter = KotlinAdapterV2::new(
                 line,
@@ -1326,7 +1316,7 @@ mod tests {
                 toolchain.digest.clone(),
                 store.clone(),
                 FakeDriver {
-                    version: line.compiler_version(),
+                    version: line.analyzer_compiler_version(),
                 },
             )
             .unwrap();
@@ -1346,8 +1336,9 @@ mod tests {
             let handshake = adapter.handshake().unwrap();
             assert_eq!(
                 handshake.toolchains[0].minimum_version.as_deref(),
-                Some(line.compiler_version())
+                Some(line.analyzer_compiler_version())
             );
+            assert_eq!(handshake.adapter_id, KOTLIN_ADAPTER_CONTRACT_ID);
         }
     }
 
@@ -1358,7 +1349,7 @@ mod tests {
         let store = CasStore::open(&state).unwrap();
         let toolchain = store.put("test/toolchain/1", b"2.4.10").unwrap();
         let adapter = KotlinAdapterV2::new(
-            KotlinCompilerLine::K24,
+            KotlinSemanticEngine::Kotlin24,
             format!("sha256:{}", "a".repeat(64)),
             toolchain.digest.clone(),
             store.clone(),
@@ -1744,7 +1735,7 @@ mod tests {
         let compiler_store = CompilerStoreKey {
             schema: COMPILER_STORE_KEY_SCHEMA.into(),
             key: digest('1'),
-            adapter_id: "kotlin-2.4".into(),
+            adapter_id: KOTLIN_ADAPTER_CONTRACT_ID.into(),
             adapter_digest: digest('2'),
             language_uri: KOTLIN_LANGUAGE.into(),
             toolchain: object("test/toolchain/1", '3'),

@@ -22,9 +22,13 @@ use crate::incremental_v2::{
     IncrementalReceipt, Support, VerificationObligation, plan_incremental,
 };
 use crate::kotlin_adapter_v2::{
-    KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinCompilerLine,
-    KotlinGenerationDriver, ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace,
-    ProjectNativeKotlinWorkspaceProfile, kotlin_adapter_digest, semantic_scope_digest,
+    KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinGenerationDriver,
+    ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace, ProjectNativeKotlinWorkspaceProfile,
+    kotlin_adapter_digest, semantic_scope_digest,
+};
+use crate::kotlin_engine::{
+    KOTLIN_ADAPTER_CONTRACT_ID, KotlinEngineCapabilities, KotlinProjectSemantics,
+    KotlinSemanticEngine,
 };
 use crate::python_adapter_v2::{
     PYTHON_LANGUAGE, PYTHON_SYNTAX_FACTS_CAPABILITY, PythonAdapterV2, PythonSyntaxAuthority,
@@ -60,7 +64,7 @@ use std::os::fd::AsRawFd;
 
 pub const READY_GENERATION_SCHEMA: &str = "codeclew-ready-generation/2.0";
 pub const READY_GENERATION_SET_SCHEMA: &str = "codeclew-ready-generation-set/1.0";
-const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/2.0";
+const PREPARED_AUTHORITY_SCHEMA: &str = "codeclew-prepared-generation-authority/3.0";
 const MODEL_ANALYSIS_SCHEMA: &str = "codeclew-project-native-analysis/2.0";
 const INCREMENTAL_HEAD_SCHEMA: &str = "codeclew-incremental-head/2.0";
 const INCREMENTAL_EVIDENCE_SCHEMA: &str = "codeclew-incremental-execution/3.0";
@@ -127,7 +131,8 @@ struct PreparedGenerationAuthority {
     runtime_key: String,
     repository_snapshot: CasObject,
     compilation: String,
-    compiler_version: String,
+    project_semantics: KotlinProjectSemantics,
+    semantic_engine: KotlinEngineCapabilities,
     adapter_digest: String,
     descriptor: CompilationDescriptor,
     derived_input_manifest: CasObject,
@@ -1117,7 +1122,7 @@ fn ensure_generation(
     state.directory_at(&cache_root)?;
     let cache_path = cache_root.join(format!("{}.json", digest_component(&generation_key)?));
     let compiler_store = CompilerStoreKey::create(
-        compiler_line(&prepared.compiler_version)?.2,
+        KOTLIN_ADAPTER_CONTRACT_ID,
         prepared.adapter_digest.clone(),
         &prepared.descriptor,
     )?;
@@ -1312,7 +1317,9 @@ fn build_ready(
     planned: IncrementalPlan,
     live_attempt: ProjectNativeKotlinAttempt,
 ) -> Result<ReadyGeneration, ClewError> {
-    let line = compiler_line(&prepared.compiler_version)?.1;
+    let engine = KotlinSemanticEngine::from_analyzer_compiler_version(
+        &prepared.semantic_engine.analyzer_compiler_version,
+    )?;
     let semantic_output = Arc::new(Mutex::new(None));
     let cancellation = live_attempt.cancellation_handle();
     let driver = LiveKotlinDriver {
@@ -1322,7 +1329,7 @@ fn build_ready(
         output: Arc::clone(&semantic_output),
     };
     let adapter = KotlinAdapterV2::new(
-        line,
+        engine,
         prepared.adapter_digest.clone(),
         prepared.descriptor.toolchain.digest.clone(),
         store.clone(),
@@ -1396,7 +1403,7 @@ fn build_ready(
             runtime_key: runtime.runtime_key.clone(),
             base_revision: session.base_revision.clone(),
             compilation: prepared.compilation.clone(),
-            compiler_version: prepared.compiler_version,
+            compiler_version: prepared.semantic_engine.analyzer_compiler_version,
             completeness: completeness.clone(),
             coverage: coverage_label(&completeness).into(),
             certainty: certainty_label(&completeness).into(),
@@ -1475,7 +1482,7 @@ fn build_unchanged_ready(
     ready.runtime_key = runtime.runtime_key.clone();
     ready.base_revision = session.base_revision.clone();
     ready.compilation = prepared.compilation.clone();
-    ready.compiler_version = prepared.compiler_version.clone();
+    ready.compiler_version = prepared.semantic_engine.analyzer_compiler_version.clone();
     ready.repository_snapshot = snapshot_object;
     ready.derived_input_manifest = prepared.derived_input_manifest.clone();
     ready.incremental = IncrementalExecutionEvidence {
@@ -1572,14 +1579,17 @@ fn prepare_authority(
     compilation: &str,
     project: &Value,
 ) -> Result<PreparedGenerationAuthority, ClewError> {
-    let compiler_version = project
-        .get("compilerVersion")
+    let analyzer_compiler_version = project
+        .get("analyzerCompilerVersion")
+        .or_else(|| project.get("compilerVersion"))
         .and_then(Value::as_str)
-        .ok_or_else(|| corrupt("OpenProject has no Kotlin compiler identity"))?
+        .ok_or_else(|| corrupt("OpenProject has no Kotlin semantic engine identity"))?
         .to_owned();
-    let (worker_name, _, _) = compiler_line(&compiler_version)?;
-    let worker = runtime.worker(worker_name)?;
-    if worker.compiler_version != compiler_version {
+    let engine = KotlinSemanticEngine::from_analyzer_compiler_version(&analyzer_compiler_version)?;
+    let project_semantics = KotlinProjectSemantics::from_project_model(project)?;
+    let semantic_engine = engine.authority();
+    let worker = runtime.worker(engine.runtime_name())?;
+    if worker.compiler_version != analyzer_compiler_version {
         return Err(corrupt("runtime worker compiler identity changed"));
     }
     let project_model_hash = required_digest(project, "projectModelHash")?;
@@ -1589,8 +1599,14 @@ fn prepare_authority(
         &canonical::bytes(worker).map_err(internal)?,
     )?;
     let options = store.put(
-        "codeclew-project-native-options/2.0",
-        &canonical::bytes(&json!({"nativeCompilation":compilation})).map_err(internal)?,
+        "codeclew-project-native-options/3.0",
+        &canonical::bytes(&json!({
+            "nativeCompilation":compilation,
+            "projectSemantics":&project_semantics,
+            "semanticEngine":&semantic_engine,
+            "semanticAuthorityDigest":project_semantics.authority_digest(engine)?,
+        }))
+        .map_err(internal)?,
     )?;
     let model = store.put(
         "codeclew-project-native-model/2.0",
@@ -1598,7 +1614,8 @@ fn prepare_authority(
             "schema":"codeclew-project-native-model/2.0",
             "snapshotId":snapshot.snapshot_id,
             "compilation":compilation,
-            "compilerVersion":compiler_version,
+            "projectSemantics":&project_semantics,
+            "semanticEngine":&semantic_engine,
             "projectModelHash":project_model_hash,
             "semanticInputManifestHash":semantic_input_manifest_hash,
         }))
@@ -1642,7 +1659,8 @@ fn prepare_authority(
         runtime_key: runtime.runtime_key.clone(),
         repository_snapshot: snapshot_object.clone(),
         compilation: compilation.into(),
-        compiler_version,
+        project_semantics,
+        semantic_engine,
         adapter_digest: kotlin_adapter_digest(&worker.tree_hash)?,
         descriptor,
         derived_input_manifest,
@@ -1678,13 +1696,18 @@ fn verify_prepared_authority(
     compilation: &str,
 ) -> Result<(), ClewError> {
     prepared.descriptor.validate()?;
-    let (worker_name, _, _) = compiler_line(&prepared.compiler_version)?;
-    let worker = runtime.worker(worker_name)?;
+    let engine = KotlinSemanticEngine::from_analyzer_compiler_version(
+        &prepared.semantic_engine.analyzer_compiler_version,
+    )?;
+    let worker = runtime.worker(engine.runtime_name())?;
     if prepared.schema != PREPARED_AUTHORITY_SCHEMA
         || prepared.runtime_key != runtime.runtime_key
         || prepared.repository_snapshot != *snapshot
         || prepared.compilation != compilation
         || prepared.adapter_digest != kotlin_adapter_digest(&worker.tree_hash)?
+        || prepared.semantic_engine != engine.authority()
+        || prepared.project_semantics.schema
+            != crate::kotlin_engine::KOTLIN_PROJECT_SEMANTICS_SCHEMA
         || prepared.descriptor.language_uri.as_str() != KOTLIN_LANGUAGE
         || prepared.descriptor.compilation_id != safe_compilation_id(compilation)
         || prepared.descriptor.source_roots.len() != 1
@@ -2067,19 +2090,6 @@ fn obligation_codes(completeness: &CompletenessVector) -> Vec<String> {
         .iter()
         .map(|obligation| obligation.code.clone())
         .collect()
-}
-
-fn compiler_line(
-    compiler_version: &str,
-) -> Result<(&'static str, KotlinCompilerLine, &'static str), ClewError> {
-    match compiler_version {
-        "2.3.0" => Ok(("kotlin23", KotlinCompilerLine::K23, "kotlin-2.3")),
-        "2.4.10" => Ok(("kotlin24", KotlinCompilerLine::K24, "kotlin-2.4")),
-        _ => Err(ClewError::new(
-            ErrorCode::UnsupportedProjectConfiguration,
-            "project Kotlin compiler line is unsupported",
-        )),
-    }
 }
 
 fn compiler_store_key(runtime: &RuntimeAuthority, compilation: &str) -> Result<String, ClewError> {
@@ -2914,19 +2924,16 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
-    fn compiler_line_admission_is_exact() {
+    fn analyzer_engine_identity_is_separate_from_adapter_contract() {
         assert_eq!(
-            compiler_line("2.3.0").unwrap(),
-            ("kotlin23", KotlinCompilerLine::K23, "kotlin-2.3")
+            KotlinSemanticEngine::from_analyzer_compiler_version("2.3.0").unwrap(),
+            KotlinSemanticEngine::Kotlin23,
         );
         assert_eq!(
-            compiler_line("2.4.10").unwrap(),
-            ("kotlin24", KotlinCompilerLine::K24, "kotlin-2.4")
+            KotlinSemanticEngine::from_analyzer_compiler_version("2.4.10").unwrap(),
+            KotlinSemanticEngine::Kotlin24,
         );
-        for version in ["2.1.21", "2.3.10", "2.3.20", "2.4.0", "1.9.25"] {
-            let error = compiler_line(version).unwrap_err();
-            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
-        }
+        assert_eq!(KOTLIN_ADAPTER_CONTRACT_ID, "kotlin-semantic-facts");
     }
 
     #[test]
@@ -3507,7 +3514,7 @@ mod tests {
         let compiler_store = CompilerStoreKey {
             schema: COMPILER_STORE_KEY_SCHEMA.into(),
             key: digest('a'),
-            adapter_id: "kotlin-2.4".into(),
+            adapter_id: KOTLIN_ADAPTER_CONTRACT_ID.into(),
             adapter_digest: digest('b'),
             language_uri: KOTLIN_LANGUAGE.into(),
             toolchain: object("test/toolchain/1", 'c'),

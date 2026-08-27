@@ -1,4 +1,5 @@
 use crate::error::{ClewError, ErrorCode};
+use crate::kotlin_engine::{KotlinEngineRegistry, KotlinProjectSemantics, KotlinSemanticEngine};
 use crate::process_isolation::isolate_controller_authority;
 use crate::proto::{
     BlobRef, IndexFilesRequest, OpenProjectRequest, ProtocolVersion, RequestKind, SchemaVersion,
@@ -140,7 +141,7 @@ pub struct RequestProfile {
 
 pub struct WorkerClient {
     workspace: PathBuf,
-    variant: WorkerVariant,
+    engine: KotlinSemanticEngine,
     process: OwnedWorkerProcess,
     stdin: ChildStdin,
     stdout: ChildStdout,
@@ -1583,56 +1584,11 @@ struct TrustedWorkerDistribution {
     plugin_fingerprint: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkerVariant {
-    Kotlin23,
-    Kotlin24,
-}
-
-impl WorkerVariant {
-    fn runtime_name(self) -> &'static str {
-        match self {
-            Self::Kotlin23 => "kotlin23",
-            Self::Kotlin24 => "kotlin24",
-        }
-    }
-
-    fn for_project(version: &str) -> Result<Self, ClewError> {
-        match version {
-            "2.3.0" => Ok(Self::Kotlin23),
-            "2.4.10" => Ok(Self::Kotlin24),
-            _ => Err(ClewError::new(
-                ErrorCode::UnsupportedProjectConfiguration,
-                format!(
-                    "unsupported Kotlin compiler {version}; supported exact versions are 2.3.0 and 2.4.10"
-                ),
-            )),
-        }
-    }
-
-    fn compiler_version(self) -> &'static str {
-        match self {
-            Self::Kotlin23 => "2.3.0",
-            Self::Kotlin24 => "2.4.10",
-        }
-    }
-
-    fn discovery_bit(self) -> u8 {
-        match self {
-            Self::Kotlin23 => 1 << 0,
-            Self::Kotlin24 => 1 << 1,
-        }
-    }
-
-    fn next_untried_for_abi_discovery(tried: u8) -> Option<Self> {
-        [Self::Kotlin24, Self::Kotlin23]
-            .into_iter()
-            .find(|variant| tried & variant.discovery_bit() == 0)
-    }
-
+impl KotlinSemanticEngine {
     #[cfg(test)]
     fn install_task(self) -> &'static str {
         match self {
+            Self::Kotlin21 => ":workers:kotlin21:installDist",
             Self::Kotlin23 => ":workers:kotlin23:installDist",
             Self::Kotlin24 => ":workers:kotlin:installDist",
         }
@@ -1641,6 +1597,7 @@ impl WorkerVariant {
     #[cfg(test)]
     fn distribution_relative(self) -> &'static str {
         match self {
+            Self::Kotlin21 => "workers/kotlin21/build/install/kotlin21",
             Self::Kotlin23 => "workers/kotlin23/build/install/kotlin23",
             Self::Kotlin24 => "workers/kotlin/build/install/kotlin",
         }
@@ -1648,6 +1605,7 @@ impl WorkerVariant {
 
     fn launcher_name(self) -> &'static str {
         match self {
+            Self::Kotlin21 => "kotlin21",
             Self::Kotlin23 => "kotlin23",
             Self::Kotlin24 => "kotlin",
         }
@@ -1655,6 +1613,7 @@ impl WorkerVariant {
 
     fn plugin_jar_name(self) -> &'static str {
         match self {
+            Self::Kotlin21 => "kotlin21-0.1.0.jar",
             Self::Kotlin23 => "kotlin23-0.1.0.jar",
             Self::Kotlin24 => "kotlin-0.1.0.jar",
         }
@@ -1663,6 +1622,7 @@ impl WorkerVariant {
     #[cfg(test)]
     fn pinned_inputs(self) -> PinnedInputs {
         match self {
+            Self::Kotlin21 => panic!("Kotlin 2.1 is qualification-only and not a packaged runtime"),
             Self::Kotlin23 => PinnedInputs {
                 roots: PINNED_KOTLIN23_INPUT_ROOTS,
                 files: PINNED_KOTLIN23_INPUT_FILES,
@@ -1772,7 +1732,7 @@ fn validate_build_namespace_digest(value: &str) -> Result<String, ClewError> {
 impl WorkerClient {
     #[cfg(test)]
     pub fn start(workspace: &Path) -> Result<Self, ClewError> {
-        Self::start_variant(workspace, WorkerVariant::Kotlin24, None, None, None)
+        Self::start_engine(workspace, KotlinSemanticEngine::Kotlin24, None, None, None)
     }
 
     pub(crate) fn start_with_managed_states(
@@ -1781,18 +1741,18 @@ impl WorkerClient {
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: &str,
     ) -> Result<Self, ClewError> {
-        Self::start_variant(
+        Self::start_engine(
             workspace,
-            WorkerVariant::Kotlin24,
+            KotlinSemanticEngine::Kotlin24,
             build_state_root,
             compiler_index_root,
             Some(build_namespace_digest),
         )
     }
 
-    fn start_variant(
+    fn start_engine(
         workspace: &Path,
-        variant: WorkerVariant,
+        engine: KotlinSemanticEngine,
         build_state_root: Option<&Path>,
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: Option<&str>,
@@ -1805,7 +1765,7 @@ impl WorkerClient {
             .unwrap_or_else(|| {
                 crate::canonical::hash_bytes(b"codeclew-non-product-worker-namespace/2.0")
             });
-        let trusted_distribution = prepare_trusted_worker_distribution(workspace, variant)?;
+        let trusted_distribution = prepare_trusted_worker_distribution(workspace, engine)?;
         let launcher = trusted_distribution.launcher.clone();
         let canonical_build_state = build_state_root
             .map(|root| root.canonicalize().map_err(internal))
@@ -1868,7 +1828,7 @@ impl WorkerClient {
                 ));
             }
         };
-        if capabilities.compiler_version != variant.compiler_version()
+        if capabilities.compiler_version != engine.analyzer_compiler_version()
             || !capabilities.protocol_versions.iter().any(|v| v.major == 1)
         {
             return Err(ClewError::new(
@@ -1878,7 +1838,7 @@ impl WorkerClient {
         }
         Ok(Self {
             workspace: workspace.to_path_buf(),
-            variant,
+            engine,
             process,
             stdin,
             stdout,
@@ -1903,13 +1863,13 @@ impl WorkerClient {
         self.process.cancellation_handle()
     }
 
-    fn switch_variant(&mut self, variant: WorkerVariant) -> Result<(), ClewError> {
-        if self.variant == variant {
+    fn switch_engine(&mut self, engine: KotlinSemanticEngine) -> Result<(), ClewError> {
+        if self.engine == engine {
             return Ok(());
         }
-        let mut replacement = Self::start_variant(
+        let mut replacement = Self::start_engine(
             &self.workspace,
-            variant,
+            engine,
             self.build_state_root.as_deref(),
             self.compiler_index_root.as_ref(),
             Some(&self.build_namespace_digest),
@@ -2043,9 +2003,9 @@ impl WorkerClient {
                 if kind == RequestKind::OpenProject
                     && failure.code == ErrorCode::UnsupportedCompilerPluginAbi
                 {
-                    let tried = tried_discovery_variants | self.variant.discovery_bit();
-                    if let Some(next) = WorkerVariant::next_untried_for_abi_discovery(tried) {
-                        self.switch_variant(next)?;
+                    let tried = tried_discovery_variants | self.engine.discovery_bit();
+                    if let Some(next) = KotlinEngineRegistry::next_untried_for_discovery(tried) {
+                        self.switch_engine(next)?;
                         return self.request_with_discovery_variants(kind, payload, tried);
                     }
                 }
@@ -2094,21 +2054,17 @@ impl WorkerClient {
         let mut value: Value = serde_json::from_slice(&canonical_json).map_err(internal)?;
         let json_micros = json_started.elapsed().as_micros() as u64;
         if kind == RequestKind::OpenProject {
-            let project_compiler = value
-                .get("declaredCompilerVersion")
-                .or_else(|| value.get("compilerVersion"))
-                .and_then(Value::as_str)
-                .unwrap_or(self.capabilities.compiler_version.as_str());
-            let desired = WorkerVariant::for_project(project_compiler)?;
-            if desired != self.variant {
-                let tried = tried_discovery_variants | self.variant.discovery_bit();
+            let project_semantics = KotlinProjectSemantics::from_project_model(&value)?;
+            let desired = KotlinEngineRegistry.select(&project_semantics)?;
+            if desired != self.engine {
+                let tried = tried_discovery_variants | self.engine.discovery_bit();
                 if tried & desired.discovery_bit() != 0 {
                     return Err(ClewError::new(
                         ErrorCode::UnsupportedCompilerPluginAbi,
-                        "declared Kotlin compiler variant could not open the project with its own compiler plugins",
+                        "qualified Kotlin semantic engine could not open the project with its compiler plugins",
                     ));
                 }
-                self.switch_variant(desired)?;
+                self.switch_engine(desired)?;
                 return self.request_with_discovery_variants(kind, payload, tried);
             }
             self.snapshot = Some(SnapshotId {
@@ -2414,8 +2370,8 @@ impl WorkerClient {
             ));
         }
         // OpenProject may discover and switch to the project's Kotlin worker
-        // variant. Bind the semantic receipt to that selected distribution,
-        // never to the bootstrap variant that happened to start the session.
+        // engine. Bind the semantic receipt to that selected distribution,
+        // never to the bootstrap engine that happened to start the session.
         let trusted = &self.trusted_distribution;
         if trusted.workspace != workspace_root() {
             return Err(ClewError::new(
@@ -2870,25 +2826,30 @@ fn read_worker_transport_blob(root: &Path, blob: &BlobRef) -> Result<Vec<u8>, Cl
 }
 
 #[cfg(test)]
-fn worker_launcher(workspace: &Path, variant: WorkerVariant) -> PathBuf {
-    match variant {
-        WorkerVariant::Kotlin23 => {
+fn worker_launcher(workspace: &Path, engine: KotlinSemanticEngine) -> PathBuf {
+    match engine {
+        KotlinSemanticEngine::Kotlin21 => {
+            workspace.join("workers/kotlin21/build/install/kotlin21/bin/kotlin21")
+        }
+        KotlinSemanticEngine::Kotlin23 => {
             workspace.join("workers/kotlin23/build/install/kotlin23/bin/kotlin23")
         }
-        WorkerVariant::Kotlin24 => workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin"),
+        KotlinSemanticEngine::Kotlin24 => {
+            workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin")
+        }
     }
 }
 
 fn prepare_trusted_worker_distribution(
     workspace: &Path,
-    variant: WorkerVariant,
+    engine: KotlinSemanticEngine,
 ) -> Result<TrustedWorkerDistribution, ClewError> {
     let canonical = workspace.canonicalize().map_err(internal)?;
     let runtime = match RuntimeAuthority::from_environment()? {
         Some(runtime) => runtime,
         None => {
             #[cfg(test)]
-            return prepare_checkout_worker_distribution_for_test(&canonical, variant);
+            return prepare_checkout_worker_distribution_for_test(&canonical, engine);
             #[cfg(not(test))]
             return Err(preparation_required(
                 "sealed runtime capsule authority is required to start a Kotlin worker",
@@ -2900,13 +2861,13 @@ fn prepare_trusted_worker_distribution(
             "runtime workspace differs from the verified capsule root",
         ));
     }
-    let runtime_worker = runtime.worker(variant.runtime_name())?;
-    if runtime_worker.compiler_version != variant.compiler_version() {
+    let runtime_worker = runtime.worker(engine.runtime_name())?;
+    if runtime_worker.compiler_version != engine.analyzer_compiler_version() {
         return Err(preparation_required(
-            "runtime worker compiler identity differs from the selected variant",
+            "runtime worker compiler identity differs from the selected semantic engine",
         ));
     }
-    let source_distribution = runtime.verify_worker(variant.runtime_name())?;
+    let source_distribution = runtime.verify_worker(engine.runtime_name())?;
     let tree_manifest = runtime_worker_manifest(runtime_worker);
     let tree_hash = hash_string_manifest(&tree_manifest);
     if tree_hash != runtime_worker.tree_hash {
@@ -2914,12 +2875,10 @@ fn prepare_trusted_worker_distribution(
             "runtime worker manifest differs from runtime authority",
         ));
     }
-    let launcher = source_distribution
-        .join("bin")
-        .join(variant.launcher_name());
+    let launcher = source_distribution.join("bin").join(engine.launcher_name());
     let plugin = source_distribution
         .join("lib")
-        .join(variant.plugin_jar_name());
+        .join(engine.plugin_jar_name());
     if !launcher.is_file() || !plugin.is_file() {
         return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
@@ -2943,18 +2902,18 @@ fn prepare_trusted_worker_distribution(
 #[cfg(test)]
 fn prepare_checkout_worker_distribution_for_test(
     canonical: &Path,
-    variant: WorkerVariant,
+    engine: KotlinSemanticEngine,
 ) -> Result<TrustedWorkerDistribution, ClewError> {
     if canonical != workspace_root() {
         return Err(preparation_required(
             "test worker workspace differs from the checkout fixture root",
         ));
     }
-    let pinned = variant.pinned_inputs();
+    let pinned = engine.pinned_inputs();
     verify_pinned_build_inputs(canonical, &pinned)?;
     reject_unpinned_workspace_build_initialization(canonical)?;
-    let source_distribution = canonical.join(variant.distribution_relative());
-    if bootstrap_trusted_worker_distribution_if_missing(canonical, variant, &source_distribution)? {
+    let source_distribution = canonical.join(engine.distribution_relative());
+    if bootstrap_trusted_worker_distribution_if_missing(canonical, engine, &source_distribution)? {
         verify_pinned_build_inputs(canonical, &pinned)?;
     }
     verify_pinned_distribution(&source_distribution, &pinned)?;
@@ -2971,10 +2930,8 @@ fn prepare_checkout_worker_distribution_for_test(
             "private worker copy differs from embedded expected distribution",
         ));
     }
-    let launcher = distribution_root.join("bin").join(variant.launcher_name());
-    let plugin = distribution_root
-        .join("lib")
-        .join(variant.plugin_jar_name());
+    let launcher = distribution_root.join("bin").join(engine.launcher_name());
+    let plugin = distribution_root.join("lib").join(engine.plugin_jar_name());
     if !launcher.is_file() || !plugin.is_file() {
         return Err(ClewError::new(
             ErrorCode::WorkerProtocolMismatch,
@@ -3009,12 +2966,12 @@ fn runtime_worker_manifest(worker: &crate::runtime::RuntimeWorker) -> BTreeMap<S
 #[cfg(test)]
 fn bootstrap_trusted_worker_distribution_if_missing(
     workspace: &Path,
-    variant: WorkerVariant,
+    engine: KotlinSemanticEngine,
     distribution: &Path,
 ) -> Result<bool, ClewError> {
     bootstrap_trusted_worker_distribution_if_missing_with_environment(
         workspace,
-        variant,
+        engine,
         distribution,
         std::env::vars_os(),
     )
@@ -3023,7 +2980,7 @@ fn bootstrap_trusted_worker_distribution_if_missing(
 #[cfg(test)]
 fn bootstrap_trusted_worker_distribution_if_missing_with_environment(
     workspace: &Path,
-    variant: WorkerVariant,
+    engine: KotlinSemanticEngine,
     distribution: &Path,
     build_environment: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Result<bool, ClewError> {
@@ -3044,7 +3001,7 @@ fn bootstrap_trusted_worker_distribution_if_missing_with_environment(
 
     let mut command = Command::new(&wrapper);
     command
-        .args([variant.install_task(), "--no-daemon", "--quiet"])
+        .args([engine.install_task(), "--no-daemon", "--quiet"])
         .current_dir(workspace)
         // A cold start must resolve the worker with the same Gradle/JVM setup
         // as the repository wrapper: caller caches, mirrors and JVM options are
@@ -4825,17 +4782,17 @@ mod tests {
     }
 
     #[test]
-    fn compiler_plugin_abi_discovery_visits_each_supported_variant_once() {
+    fn compiler_plugin_abi_discovery_visits_each_packaged_engine_once() {
         let mut tried = 0;
-        let first = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
-        assert_eq!(first, WorkerVariant::Kotlin24);
+        let first = KotlinEngineRegistry::next_untried_for_discovery(tried).unwrap();
+        assert_eq!(first, KotlinSemanticEngine::Kotlin24);
         tried |= first.discovery_bit();
 
-        let second = WorkerVariant::next_untried_for_abi_discovery(tried).unwrap();
-        assert_eq!(second, WorkerVariant::Kotlin23);
+        let second = KotlinEngineRegistry::next_untried_for_discovery(tried).unwrap();
+        assert_eq!(second, KotlinSemanticEngine::Kotlin23);
         tried |= second.discovery_bit();
 
-        assert!(WorkerVariant::next_untried_for_abi_discovery(tried).is_none());
+        assert!(KotlinEngineRegistry::next_untried_for_discovery(tried).is_none());
     }
 
     #[test]
@@ -4880,7 +4837,7 @@ mod tests {
             .unwrap();
         assert_eq!(project["declaredCompilerVersion"], "2.3.0");
         assert_eq!(project["compilerVersion"], "2.3.0");
-        assert_eq!(worker.variant, WorkerVariant::Kotlin23);
+        assert_eq!(worker.engine, KotlinSemanticEngine::Kotlin23);
         assert_eq!(worker.capabilities.compiler_version, "2.3.0");
         assert_eq!(
             worker.request_counters(),
@@ -4893,17 +4850,35 @@ mod tests {
     }
 
     #[test]
-    fn project_compiler_admission_is_exact() {
+    fn project_semantics_route_through_qualified_engine_registry() {
         for (version, expected) in [
-            ("2.3.0", WorkerVariant::Kotlin23),
-            ("2.4.10", WorkerVariant::Kotlin24),
+            ("2.3.0", KotlinSemanticEngine::Kotlin23),
+            ("2.4.10", KotlinSemanticEngine::Kotlin24),
         ] {
-            assert_eq!(WorkerVariant::for_project(version).unwrap(), expected);
+            let project = KotlinProjectSemantics::from_project_model(&serde_json::json!({
+                "declaredCompilerVersion":version,
+                "languageVersion":version.split('.').take(2).collect::<Vec<_>>().join("."),
+                "apiVersion":version.split('.').take(2).collect::<Vec<_>>().join("."),
+                "jvmTarget":"21",
+                "requestedCompilerPlugins":[],
+                "freeCompilerArguments":[],
+            }))
+            .unwrap();
+            assert_eq!(KotlinEngineRegistry.select(&project).unwrap(), expected);
         }
         for version in ["2.1.21", "2.3.10", "2.3.20", "2.4.0", "1.9.25"] {
-            let error = WorkerVariant::for_project(version).unwrap_err();
+            let project = KotlinProjectSemantics::from_project_model(&serde_json::json!({
+                "declaredCompilerVersion":version,
+                "languageVersion":"2.3",
+                "apiVersion":"2.3",
+                "jvmTarget":"21",
+                "requestedCompilerPlugins":[],
+                "freeCompilerArguments":[],
+            }))
+            .unwrap();
+            let error = KotlinEngineRegistry.select(&project).unwrap_err();
             assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
-            assert!(error.message.contains("supported exact versions"));
+            assert!(error.message.contains("qualified semantic engine"));
         }
     }
 
@@ -5323,7 +5298,7 @@ mod tests {
         let plugin = trusted
             .distribution_root
             .join("lib")
-            .join(WorkerVariant::Kotlin24.plugin_jar_name());
+            .join(KotlinSemanticEngine::Kotlin24.plugin_jar_name());
         let plugin_bytes = std::fs::read(&plugin).unwrap();
         std::fs::write(&plugin, b"changed").unwrap();
         assert_eq!(
@@ -5348,7 +5323,7 @@ mod tests {
         assert!(worker.inspect_verified_index(&verified).is_ok());
         worker.shutdown().unwrap();
 
-        let workspace_launcher = worker_launcher(&workspace, WorkerVariant::Kotlin24);
+        let workspace_launcher = worker_launcher(&workspace, KotlinSemanticEngine::Kotlin24);
         {
             let original = RestoreFile {
                 bytes: std::fs::read(&workspace_launcher).unwrap(),
@@ -5368,9 +5343,9 @@ mod tests {
         }
 
         let workspace_plugin = workspace
-            .join(WorkerVariant::Kotlin24.distribution_relative())
+            .join(KotlinSemanticEngine::Kotlin24.distribution_relative())
             .join("lib")
-            .join(WorkerVariant::Kotlin24.plugin_jar_name());
+            .join(KotlinSemanticEngine::Kotlin24.plugin_jar_name());
         {
             let original = RestoreFile {
                 bytes: std::fs::read(&workspace_plugin).unwrap(),
@@ -5385,7 +5360,7 @@ mod tests {
             drop(original);
         }
 
-        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+        let distribution = workspace.join(KotlinSemanticEngine::Kotlin24.distribution_relative());
         let extra = distribution.join("unexpected-authority-input");
         std::fs::write(&extra, b"extra").unwrap();
         let extra_guard = RemoveFile(extra.clone());
@@ -5447,12 +5422,12 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+        let distribution = workspace.join(KotlinSemanticEngine::Kotlin24.distribution_relative());
 
         assert!(
             bootstrap_trusted_worker_distribution_if_missing(
                 &workspace,
-                WorkerVariant::Kotlin24,
+                KotlinSemanticEngine::Kotlin24,
                 &distribution,
             )
             .unwrap()
@@ -5466,7 +5441,7 @@ mod tests {
         assert!(
             !bootstrap_trusted_worker_distribution_if_missing(
                 &workspace,
-                WorkerVariant::Kotlin24,
+                KotlinSemanticEngine::Kotlin24,
                 &distribution,
             )
             .unwrap()
@@ -5498,7 +5473,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+        let distribution = workspace.join(KotlinSemanticEngine::Kotlin24.distribution_relative());
         let gradle_home = workspace.join("caller-gradle-home");
 
         // Inject an isolated snapshot instead of mutating the process environment:
@@ -5537,7 +5512,7 @@ mod tests {
         assert!(
             bootstrap_trusted_worker_distribution_if_missing_with_environment(
                 &workspace,
-                WorkerVariant::Kotlin24,
+                KotlinSemanticEngine::Kotlin24,
                 &distribution,
                 build_environment,
             )
@@ -5568,14 +5543,14 @@ ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
         let wrapper = workspace.join("gradlew");
         std::fs::write(&wrapper, "#!/bin/sh\ntouch wrapper-invoked\nexit 99\n").unwrap();
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let distribution = workspace.join(WorkerVariant::Kotlin24.distribution_relative());
+        let distribution = workspace.join(KotlinSemanticEngine::Kotlin24.distribution_relative());
         std::fs::create_dir_all(&distribution).unwrap();
         std::fs::write(distribution.join("drifted"), b"not trusted").unwrap();
 
         assert!(
             !bootstrap_trusted_worker_distribution_if_missing(
                 &workspace,
-                WorkerVariant::Kotlin24,
+                KotlinSemanticEngine::Kotlin24,
                 &distribution,
             )
             .unwrap()
@@ -5589,7 +5564,7 @@ ORG_GRADLE_PROJECT_codeclewBootstrapMarker=caller-project-property\n",
         assert_eq!(
             bootstrap_trusted_worker_distribution_if_missing(
                 &workspace,
-                WorkerVariant::Kotlin24,
+                KotlinSemanticEngine::Kotlin24,
                 &distribution,
             )
             .unwrap_err()

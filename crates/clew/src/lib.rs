@@ -14,6 +14,7 @@ pub mod generation_service;
 pub mod generation_v2;
 pub mod incremental_v2;
 pub mod kotlin_adapter_v2;
+pub mod kotlin_engine;
 pub mod operations;
 pub mod process_isolation;
 pub mod python_adapter_v2;
