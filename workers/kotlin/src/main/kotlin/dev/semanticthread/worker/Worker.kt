@@ -1127,14 +1127,14 @@ internal class Worker(
             ?.get("source")?.jsonPrimitive?.contentOrNull
             ?: buildModel["compilerVersionAuthority"]?.jsonPrimitive?.contentOrNull
             ?: "LEGACY_MODEL_FIELD"
-        val requestedPluginRegistrars = requestedPlugins.map(Path::of).filter(::isCompilerPluginJar)
+        val effectivePluginRegistrars = plugins.map(Path::of).filter(::isCompilerPluginJar)
         val projectSemantics = KotlinProjectSemantics(
             projectCompilerVersion = declaredCompilerVersion,
             compilerVersionAuthority = compilerVersionAuthority,
             languageVersion = languageVersion,
             apiVersion = apiVersion,
             jvmTarget = jvmTarget,
-            compilerPlugins = requestedPluginRegistrars.map { it.fileName.toString() }.distinct().sorted(),
+            compilerPlugins = effectivePluginRegistrars.map { it.fileName.toString() }.distinct().sorted(),
             unstableCompilerOptions = buildModel["freeCompilerArguments"]?.jsonArray
                 ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                 ?.filter { it.startsWith("-X") }
