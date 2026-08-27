@@ -11,6 +11,11 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 class IncrementalK2RuntimeTest {
+    @Test
+    fun `packaged incremental backend is available`() {
+        assertNotNull(IncrementalK2Runtime.backendOrNull())
+    }
+
     private data class ProfileCase(
         val status: IncrementalK2Status,
         val valid: Boolean,

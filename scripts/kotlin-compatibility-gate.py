@@ -107,15 +107,13 @@ def prepare_fixture(destination: Path, row: dict[str, object]) -> None:
     (main / "QualifiedA.kt").write_text(
         "package com.acme\n\n"
         "interface Source { fun read(value: Int): Number }\n"
-        "class IntegerSource : Source { override fun read(value: Int): Int = value + 1 }\n"
-        "fun callSource(source: Source): Number = source.read(4)\n",
+        "abstract class IntegerSource : Source { abstract override fun read(value: Int): Int }\n",
         encoding="utf-8",
     )
     (main / "QualifiedB.kt").write_text(
         "package com.acme\n\n"
         "class Box(val value: String)\n"
-        "fun nullableLength(value: String?): Int = value?.length ?: 0\n"
-        "fun makeBox(value: String): Box = Box(value)\n",
+        "interface NullableReader { fun nullableLength(value: String?): Int }\n",
         encoding="utf-8",
     )
     (main / "Empty.kt").write_text("", encoding="utf-8")
@@ -210,9 +208,9 @@ def main() -> int:
             return completed.returncode
         result = next(
             (
-                json.loads(line.removeprefix(RESULT_PREFIX))
+                json.loads(line.split(RESULT_PREFIX, 1)[1])
                 for line in completed.stdout.splitlines()
-                if line.startswith(RESULT_PREFIX)
+                if RESULT_PREFIX in line
             ),
             None,
         )

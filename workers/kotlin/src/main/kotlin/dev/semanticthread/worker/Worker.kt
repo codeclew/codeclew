@@ -1614,7 +1614,7 @@ internal class Worker(
                 val indexRoot = runCatching {
                     System.getenv(K2_INDEX_ROOT_ENV)?.takeIf(String::isNotBlank)?.let(Path::of)?.toRealPath()
                 }.getOrNull()
-                val btaEligible = model["engineCompatibility"]?.jsonObject
+                val btaEligible = semanticModel["engineCompatibility"]?.jsonObject
                     ?.get("btaEligible")?.jsonPrimitive?.booleanOrNull == true
                 val useBackend = overrides.isEmpty() &&
                     backend != null &&

@@ -2170,7 +2170,7 @@ mod tests {
 
             let changed_source = fixture.join("src/main/kotlin/com/acme/QualifiedA.kt");
             let mut changed = std::fs::read_to_string(&changed_source).unwrap();
-            changed.push_str("\nfun qualificationChanged(value: Int): Int = value + 1\n");
+            changed.push_str("\nclass QualificationChanged(val value: Int)\n");
             std::fs::write(&changed_source, changed).unwrap();
             let (_, incremental_index, incremental, incremental_requests) =
                 real_qualification_analysis(

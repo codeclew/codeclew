@@ -443,7 +443,7 @@ private fun sourceSetDigest21(files: List<Pair<String, String>>): String = sha25
     } }),
 ))
 
-private fun graphDigest21(facts: List<JsonObject>): String = "sha256:" + sha256K221(canonicalK2Bytes21(
+private fun graphDigest21(facts: List<JsonObject>): String = sha256K221(canonicalK2Bytes21(
     JsonArray(facts.sortedBy(::canonicalK2Json21)),
 ))
 
