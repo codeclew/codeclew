@@ -51,6 +51,7 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
         .collect::<Vec<_>>();
     Ok(json!({
         "schema":"codeclew-capabilities/1.0",
+        "productVersion":env!("CARGO_PKG_VERSION"),
         "status":"PILOT_READY",
         "runtimeMode":runtime.mode,
         "supportMatrix":matrix,

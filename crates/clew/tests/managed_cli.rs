@@ -2318,6 +2318,10 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
     let capabilities_value: Value = serde_json::from_slice(&capabilities.stdout).unwrap();
     assert_eq!(capabilities_value["schema"], "codeclew-capabilities/1.0");
     assert_eq!(
+        capabilities_value["productVersion"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
         capabilities_value["supportMatrix"]["profiles"][0]["profileId"],
         "kotlin-2.4.10-gradle-single"
     );
