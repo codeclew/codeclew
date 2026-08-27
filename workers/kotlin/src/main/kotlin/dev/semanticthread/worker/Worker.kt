@@ -55,6 +55,86 @@ internal data class EffectiveCompilerPluginPlan(
     val boundaries: List<String>,
 )
 
+internal data class KotlinProjectSemantics(
+    val projectCompilerVersion: String,
+    val compilerVersionAuthority: String,
+    val languageVersion: String,
+    val apiVersion: String,
+    val jvmTarget: String,
+    val compilerPlugins: List<String>,
+    val unstableCompilerOptions: List<String>,
+)
+
+internal data class KotlinSemanticEngineCapabilities(
+    val engineId: String,
+    val analyzerCompilerVersion: String,
+    val firApiRow: String,
+    val factsExtractorIdentity: String,
+    val btaImplementation: String,
+)
+
+internal data class KotlinEngineCompatibilityDecision(
+    val status: String,
+    val kind: String,
+    val reason: String,
+    val btaEligible: Boolean,
+)
+
+private data class QualifiedKotlinEngineRow(
+    val projectCompilerVersion: String,
+    val engineCompilerVersion: String,
+    val kind: String,
+    val btaEligible: Boolean,
+)
+
+private val QUALIFIED_KOTLIN_ENGINE_ROWS = listOf(
+    QualifiedKotlinEngineRow("2.3.0", "2.3.0", "EXACT_COMPILER_ABI", false),
+    QualifiedKotlinEngineRow("2.4.10", "2.4.10", "EXACT_COMPILER_ABI", true),
+)
+
+internal fun currentKotlinSemanticEngine(): KotlinSemanticEngineCapabilities {
+    val compilerLine = WORKER_COMPILER_VERSION.split('.').take(2).joinToString(".")
+    return KotlinSemanticEngineCapabilities(
+        engineId = "kotlin-engine-$WORKER_COMPILER_VERSION",
+        analyzerCompilerVersion = WORKER_COMPILER_VERSION,
+        firApiRow = "fir-internal-$WORKER_COMPILER_VERSION",
+        factsExtractorIdentity = "codeclew-kotlin-facts-$compilerLine",
+        btaImplementation = when (WORKER_COMPILER_VERSION) {
+            "2.1.21", "2.4.10" -> "kotlin-bta-$WORKER_COMPILER_VERSION"
+            else -> "none"
+        },
+    )
+}
+
+internal fun kotlinEngineCompatibilityDecision(
+    project: KotlinProjectSemantics,
+    engine: KotlinSemanticEngineCapabilities = currentKotlinSemanticEngine(),
+): KotlinEngineCompatibilityDecision {
+    val row = QUALIFIED_KOTLIN_ENGINE_ROWS.singleOrNull {
+        it.projectCompilerVersion == project.projectCompilerVersion &&
+            it.engineCompilerVersion == engine.analyzerCompilerVersion
+    } ?: return KotlinEngineCompatibilityDecision(
+        status = "REJECTED",
+        kind = "UNQUALIFIED",
+        reason = "PROJECT_ENGINE_ROW_NOT_QUALIFIED",
+        btaEligible = false,
+    )
+    if (row.kind == "QUALIFIED_CROSS_ENGINE" && project.unstableCompilerOptions.isNotEmpty()) {
+        return KotlinEngineCompatibilityDecision(
+            status = "REJECTED",
+            kind = row.kind,
+            reason = "UNSTABLE_COMPILER_OPTIONS_NOT_QUALIFIED",
+            btaEligible = false,
+        )
+    }
+    return KotlinEngineCompatibilityDecision(
+        status = "QUALIFIED",
+        kind = row.kind,
+        reason = "CHECKED_IN_QUALIFICATION_POLICY",
+        btaEligible = row.btaEligible && engine.btaImplementation != "none",
+    )
+}
+
 private fun isCompilerPluginJar(path: Path): Boolean =
     path.isRegularFile() && runCatching {
         ZipFile(path.toFile()).use { archive ->
@@ -1000,6 +1080,39 @@ internal class Worker(
         val declaredCompilerVersion = buildModel["compilerVersion"]?.jsonPrimitive?.contentOrNull
             ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "declared Kotlin compiler version is unavailable")
         val compilerLine = declaredCompilerVersion.split('.').take(2).joinToString(".")
+        val languageVersion = buildModel["languageVersion"]?.takeUnless { it is JsonNull }
+            ?.jsonPrimitive?.contentOrNull ?: compilerLine
+        val apiVersion = buildModel["apiVersion"]?.takeUnless { it is JsonNull }
+            ?.jsonPrimitive?.contentOrNull ?: compilerLine
+        val jvmTarget = buildModel["jvmTarget"]?.takeUnless { it is JsonNull }
+            ?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21"
+        val compilerVersionAuthority = buildModel["projectCompilerAuthority"]?.jsonObject
+            ?.get("source")?.jsonPrimitive?.contentOrNull
+            ?: buildModel["compilerVersionAuthority"]?.jsonPrimitive?.contentOrNull
+            ?: "LEGACY_MODEL_FIELD"
+        val requestedPluginRegistrars = requestedPlugins.map(Path::of).filter(::isCompilerPluginJar)
+        val projectSemantics = KotlinProjectSemantics(
+            projectCompilerVersion = declaredCompilerVersion,
+            compilerVersionAuthority = compilerVersionAuthority,
+            languageVersion = languageVersion,
+            apiVersion = apiVersion,
+            jvmTarget = jvmTarget,
+            compilerPlugins = requestedPluginRegistrars.map { it.fileName.toString() }.distinct().sorted(),
+            unstableCompilerOptions = buildModel["freeCompilerArguments"]?.jsonArray
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                ?.filter { it.startsWith("-X") }
+                ?.distinct()
+                ?.sorted()
+                .orEmpty(),
+        )
+        val semanticEngine = currentKotlinSemanticEngine()
+        val engineCompatibility = kotlinEngineCompatibilityDecision(projectSemantics, semanticEngine)
+        if (engineCompatibility.status != "QUALIFIED") {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "Kotlin project semantics are not qualified for ${semanticEngine.engineId}: ${engineCompatibility.reason}",
+            )
+        }
         val module = buildModel["projectPath"]?.jsonPrimitive?.contentOrNull ?: ":"
         val sourceSet = compilation?.substringAfterLast('/') ?: "main"
         val canonicalCompilation = "$module/$sourceSet"
@@ -1023,7 +1136,35 @@ internal class Worker(
             putJsonArray("compileClasspath") { classpath.forEach(::add) }; putJsonArray("friendPaths") { buildModel["friendPaths"]?.jsonArray?.map { normalizeArtifact(repo, Path.of(it.jsonPrimitive.content)) }?.forEach(::add) }
             put("compilerVersion", WORKER_COMPILER_VERSION)
             put("declaredCompilerVersion", declaredCompilerVersion)
-            put("languageVersion", buildModel["languageVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("apiVersion", buildModel["apiVersion"]?.takeUnless { it is JsonNull } ?: JsonPrimitive(compilerLine)); put("jvmTarget", buildModel["jvmTarget"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
+            put("projectCompilerVersion", declaredCompilerVersion)
+            put("analyzerCompilerVersion", semanticEngine.analyzerCompilerVersion)
+            put("projectCompilerAuthority", buildModel["projectCompilerAuthority"] ?: buildJsonObject {
+                put("source", compilerVersionAuthority)
+                put("status", "AVAILABLE")
+            })
+            put("languageVersion", languageVersion); put("apiVersion", apiVersion); put("jvmTarget", jvmTarget)
+            putJsonObject("kotlinProjectSemantics") {
+                put("projectCompilerVersion", projectSemantics.projectCompilerVersion)
+                put("compilerVersionAuthority", projectSemantics.compilerVersionAuthority)
+                put("languageVersion", projectSemantics.languageVersion)
+                put("apiVersion", projectSemantics.apiVersion)
+                put("jvmTarget", projectSemantics.jvmTarget)
+                putJsonArray("compilerPlugins") { projectSemantics.compilerPlugins.forEach(::add) }
+                putJsonArray("unstableCompilerOptions") { projectSemantics.unstableCompilerOptions.forEach(::add) }
+            }
+            putJsonObject("kotlinSemanticEngine") {
+                put("engineId", semanticEngine.engineId)
+                put("analyzerCompilerVersion", semanticEngine.analyzerCompilerVersion)
+                put("firApiRow", semanticEngine.firApiRow)
+                put("factsExtractorIdentity", semanticEngine.factsExtractorIdentity)
+                put("btaImplementation", semanticEngine.btaImplementation)
+            }
+            putJsonObject("engineCompatibility") {
+                put("status", engineCompatibility.status)
+                put("kind", engineCompatibility.kind)
+                put("reason", engineCompatibility.reason)
+                put("btaEligible", engineCompatibility.btaEligible)
+            }
             putJsonArray("freeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.forEach(::add) }
             putJsonArray("optIns") { buildModel["optIns"]?.jsonArray?.forEach(::add) }
             putJsonArray("requestedCompilerPlugins") { requestedPlugins.forEach(::add) }
@@ -1058,6 +1199,10 @@ internal class Worker(
             put("compilation", canonicalCompilation)
             put("declaredCompilerVersion", declaredCompilerVersion)
             put("analyzerCompilerVersion", WORKER_COMPILER_VERSION)
+            put("kotlinProjectSemantics", normalized["kotlinProjectSemantics"] ?: JsonNull)
+            put("kotlinSemanticEngine", normalized["kotlinSemanticEngine"] ?: JsonNull)
+            put("engineCompatibility", normalized["engineCompatibility"] ?: JsonNull)
+            put("projectCompilerAuthority", normalized["projectCompilerAuthority"] ?: JsonNull)
             putJsonArray("orderedCompileClasspath") { classpath.forEach(::add) }
             putJsonArray("orderedFriendPaths") {
                 buildModel["friendPaths"]?.jsonArray
@@ -1414,6 +1559,10 @@ internal class Worker(
             buildString {
                 val version = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull ?: WORKER_COMPILER_VERSION
                 append("declaredCompilerVersion=").append(version).append('\u0000')
+                append("semanticEngine=").append(
+                    model["kotlinSemanticEngine"]?.jsonObject?.get("engineId")?.jsonPrimitive?.contentOrNull
+                        ?: "kotlin-engine-$WORKER_COMPILER_VERSION",
+                ).append('\u0000')
                 append("semanticConfigurationDigest=").append(semanticInputManifestDigest).append('\u0000')
                 append("factsPlugin=").append(factsPluginDigest).append('\u0000')
             },
@@ -1424,16 +1573,15 @@ internal class Worker(
 
         val pluginPlan = runCatching {
             IncrementalK2Runtime.backendOrNull()?.let { backend ->
-                val modelVersion = model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull
-                    ?: WORKER_COMPILER_VERSION
                 val indexRoot = runCatching {
                     System.getenv(K2_INDEX_ROOT_ENV)?.takeIf(String::isNotBlank)?.let(Path::of)?.toRealPath()
                 }.getOrNull()
+                val btaEligible = model["engineCompatibility"]?.jsonObject
+                    ?.get("btaEligible")?.jsonPrimitive?.booleanOrNull == true
                 val useBackend = overrides.isEmpty() &&
                     backend != null &&
                     indexRoot != null &&
-                    modelVersion == WORKER_COMPILER_VERSION &&
-                    modelVersion in setOf("2.1.21", WORKER_COMPILER_VERSION)
+                    btaEligible
                 if (!useBackend) return@runCatching null
                 IncrementalK2Runtime.recordConfigurationEvidence(
                     semanticInputManifestDigest = semanticInputManifestDigest,
