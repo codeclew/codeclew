@@ -590,7 +590,7 @@ fn load_source_snippets(
     snapshot: &RepositoryInputSnapshot,
     paths: &[String],
     terms: &[String],
-    source_hints: &BTreeMap<String, BTreeSet<usize>>,
+    source_hints: &SourceRangeHints,
 ) -> Result<Vec<Value>, ClewError> {
     let worktree = snapshot
         .worktree
@@ -661,7 +661,9 @@ fn load_source_snippets(
     Ok(snippets)
 }
 
-fn source_offset_hints(facts: &[Value], terms: &[String]) -> BTreeMap<String, BTreeSet<usize>> {
+type SourceRangeHints = BTreeMap<String, BTreeMap<usize, Option<usize>>>;
+
+fn source_offset_hints(facts: &[Value], terms: &[String]) -> SourceRangeHints {
     let lowered_terms = terms
         .iter()
         .map(|term| term.to_lowercase())
@@ -676,7 +678,7 @@ fn source_offset_hints(facts: &[Value], terms: &[String]) -> BTreeMap<String, BT
 fn collect_source_offset_hints(
     value: &Value,
     terms: &BTreeSet<String>,
-    output: &mut BTreeMap<String, BTreeSet<usize>>,
+    output: &mut SourceRangeHints,
     depth: usize,
 ) {
     if depth > 32 {
@@ -710,11 +712,28 @@ fn collect_source_offset_hints(
                     .and_then(Value::as_u64)
                     .or_else(|| values.get("rangeStart").and_then(Value::as_u64))
                     .or_else(|| values.get("start").and_then(Value::as_u64));
+                let end = values
+                    .get("sourceOrigin")
+                    .and_then(Value::as_object)
+                    .and_then(|origin| origin.get("rangeEnd"))
+                    .and_then(Value::as_u64)
+                    .or_else(|| values.get("rangeEnd").and_then(Value::as_u64))
+                    .or_else(|| values.get("end").and_then(Value::as_u64));
                 if let (Some(file), Some(offset)) = (file, offset)
                     && safe_path(file)
                     && let Ok(offset) = usize::try_from(offset)
                 {
-                    output.entry(file.to_owned()).or_default().insert(offset);
+                    let end = end
+                        .and_then(|end| usize::try_from(end).ok())
+                        .filter(|end| *end > offset);
+                    let observed = output
+                        .entry(file.to_owned())
+                        .or_default()
+                        .entry(offset)
+                        .or_insert(None);
+                    if let Some(end) = end {
+                        *observed = Some(observed.map_or(end, |current| current.max(end)));
+                    }
                 }
             }
             for value in values.values() {
@@ -725,20 +744,60 @@ fn collect_source_offset_hints(
     }
 }
 
+fn declaration_window(
+    source: &str,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> Option<(usize, usize, String)> {
+    let (start, end) = (start?, end?);
+    if start >= end
+        || end > source.len()
+        || !source.is_char_boundary(start)
+        || !source.is_char_boundary(end)
+    {
+        return None;
+    }
+    let line_start = source[..start]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = source[end..]
+        .find('\n')
+        .map(|index| end + index)
+        .unwrap_or(source.len());
+    if line_end.saturating_sub(line_start) > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let text = source[line_start..line_end].to_owned();
+    let start_line = source[..line_start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let end_line = start_line + text.lines().count().max(1) - 1;
+    Some((start_line, end_line, text))
+}
+
 fn source_windows(
     source: &str,
     terms: &[String],
-    source_offsets: Option<&BTreeSet<usize>>,
+    source_ranges: Option<&BTreeMap<usize, Option<usize>>>,
 ) -> Vec<(usize, usize, String)> {
-    let offsets = source_offsets
-        .filter(|offsets| !offsets.is_empty())
-        .map(|offsets| offsets.iter().copied().map(Some).collect::<Vec<_>>())
-        .unwrap_or_else(|| vec![None]);
+    let ranges = source_ranges
+        .filter(|ranges| !ranges.is_empty())
+        .map(|ranges| {
+            ranges
+                .iter()
+                .map(|(start, end)| (Some(*start), *end))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec![(None, None)]);
     let mut windows = Vec::new();
     let mut projected_bytes = 0usize;
     let lines = source.lines().collect::<Vec<_>>();
-    for offset in offsets {
-        let window = snippet(source, terms, offset);
+    for (offset, end) in ranges {
+        let window = declaration_window(source, offset, end)
+            .unwrap_or_else(|| snippet(source, terms, offset));
         if windows.iter().any(|existing: &(usize, usize, String)| {
             existing.0 == window.0 && existing.1 == window.1
         }) {
@@ -1057,7 +1116,7 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES,
+        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES,
         PROJECTION_TARGET_BYTES, bounded_projection, load_fact_evidence, merge_query_contexts,
         ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints, source_windows,
         validate_source_rows,
@@ -1654,6 +1713,32 @@ mod tests {
         let text = &windows[0].2;
         assert!(text.contains("class Target"));
         assert!(!text.contains("import sample.Target"));
+    }
+
+    #[test]
+    fn declaration_range_includes_a_body_beyond_the_default_window() {
+        let mut source = "import sample.Target\n".to_owned();
+        source.push_str(&"padding\n".repeat(2_100));
+        let declaration_offset = source.len();
+        source.push_str("fn Target() {\n");
+        source.push_str(&"    let value = 1;\n".repeat(80));
+        source.push_str("    let marker = \"DECLARATION_TAIL\";\n}\n");
+        let declaration_end = source.len();
+        let facts = vec![json!({
+            "payload": {
+                "name": "Target",
+                "file": "src/target.rs",
+                "rangeStart": declaration_offset,
+                "rangeEnd": declaration_end,
+            }
+        })];
+        let hints = source_offset_hints(&facts, &["Target".into()]);
+        let windows = source_windows(&source, &["Target".into()], hints.get("src/target.rs"));
+        assert_eq!(windows.len(), 1);
+        let text = &windows[0].2;
+        assert!(text.contains("DECLARATION_TAIL"));
+        assert!(!text.contains("padding"));
+        assert!(text.len() <= MAX_SOURCE_BYTES);
     }
 
     #[test]
