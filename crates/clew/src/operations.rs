@@ -436,7 +436,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_support_matrix_is_canonical_and_keeps_mutation_narrow() {
+    fn embedded_support_matrix_is_canonical_and_keeps_mutation_qualified() {
         let matrix = support_matrix().unwrap();
         let mutable = matrix["profiles"]
             .as_array()
@@ -444,8 +444,12 @@ mod tests {
             .iter()
             .filter(|profile| profile["mutation"] == true)
             .collect::<Vec<_>>();
-        assert_eq!(mutable.len(), 1);
+        assert_eq!(mutable.len(), 3);
         assert_eq!(mutable[0]["profileId"], "kotlin-2.4.10-gradle-single");
+        assert_eq!(mutable[1]["profileId"], "python-syntax");
+        assert_eq!(mutable[1]["status"], "CONDITIONAL_MUTATION");
+        assert_eq!(mutable[2]["profileId"], "rust-syntax");
+        assert_eq!(mutable[2]["status"], "CONDITIONAL_MUTATION");
         let qualified_patch = matrix["profiles"]
             .as_array()
             .unwrap()

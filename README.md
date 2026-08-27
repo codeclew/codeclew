@@ -50,15 +50,15 @@ workers execute directly from that sealed capsule under its shared lease; the
 runtime warm path does not copy their distributions. Project analysis may still
 invoke the project wrapper under the model-cache policy described below.
 
-The current supported product contour is deliberately narrower than the
-source-level research surface: Kotlin 2.4.10, Gradle, `PROJECT_NATIVE`, and one
-exact compilation. Exact Kotlin 2.3.0 with Maven is qualified as a read-only
-compiler-backed context preview: it has real-project context acceptance, but no
-mutation or publish claim. Kotlin 2.1, multiple compilations, Android/KMP and
-`EXTERNAL` remain unqualified contours until they have their own acceptance
-tests.
+The strict compiler-backed mutation contour is Kotlin 2.4.10, Gradle,
+`PROJECT_NATIVE`, and one exact compilation. Exact Kotlin 2.3.0 with Maven is a
+read-only compiler-backed context preview: it has real-project context
+acceptance, but no mutation or publish claim. Kotlin 2.1, multiple
+compilations, Android/KMP and `EXTERNAL` remain unqualified until they have
+their own acceptance tests. Rust and Python also support conditional mutation,
+with the weaker evidence boundaries described below.
 
-Rust has a separate read-only syntax preview contour. Open it with `--language rust`
+Rust has a bounded syntax contour. Open it with `--language rust`
 and an exact target selector such as
 `cargo:crates/clew/Cargo.toml#clew#lib#clew`. The repository must have a regular
 root `Cargo.lock`; live `cargo metadata --no-deps` authority and all paths are
@@ -67,11 +67,14 @@ snapshot-backed `mod name;` files from the selected target and exposes bounded
 declaration occurrences with exact syntax ranges. It deliberately emits no
 resolved references or call edges: cfg, derive/procedural macros, custom module
 paths, parse failures, ambiguity, and resource caps remain explicit boundaries,
-so the generation is `PARTIAL/UNSURE`. Task preparation and publication are
-rejected in both the CLI and transaction layer until compiler name resolution,
-cfg/macros, compilation, and tests receive their own mutation acceptance.
+so the generation is `PARTIAL/UNSURE`. A Rust change plan must use only Cargo
+validation. Codeclew may prepare and publish the isolated candidate only as
+`READY_TO_PUBLISH_CONDITIONAL` / `PUBLISHED_CONDITIONAL`, after the caller
+reviews the diff, sees successful native validation, and explicitly
+acknowledges every cfg/macro and name-resolution obligation. This never upgrades
+syntax evidence to compiler-backed certainty.
 
-Python has a generic read-only syntax preview contour. It parses only selected
+Python has a generic bounded syntax contour. It parses only selected
 tracked UTF-8 `.py` blobs directly from the immutable session base commit with
 the pinned in-process Tree-sitter grammar. It creates no source checkout and
 does not start Python, import project modules, activate a virtualenv, install
@@ -88,13 +91,16 @@ for example:
   --compilation 'python:.#src'
 ```
 
-The source root must equal the import root or be its descendant. The preview
+The source root must equal the import root or be its descendant. Analysis
 returns bounded source, declaration, import, decorator-name and syntactic
 call-name facts with exact ranges. It never claims runtime import, type, call,
 decorator or framework resolution, so its authority is always
-`PARTIAL/UNSURE`. Python task preparation and publication are rejected before
-candidate creation; verify the reported obligations with the project's normal
-tests before relying on dynamic behavior.
+`PARTIAL/UNSURE`. A Python change plan must validate with
+`python3 -m <safe.module> ...`; inline code and shell launchers are rejected.
+Codeclew may publish only conditionally after the native module succeeds and
+the caller acknowledges every runtime-import/type and dynamic-execution
+obligation. The Python environment remains project-owned: activate or place its
+virtual environment on `PATH` before `change prepare`.
 
 This revision is pilot-ready, not general availability. Team use follows the
 [Kotlin 2.4 pilot runbook](docs/pilot/README.md); a signed prebuilt release is a

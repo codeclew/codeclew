@@ -201,6 +201,24 @@ Definition of done:
 - privacy and repository checks pass;
 - the worktree is clean after the final commit.
 
+Qualification evidence (2026-08-27):
+
+- Kotlin 2.4.10 pilot: three compiler-backed cases passed end to end in a
+  RELEASE runtime; the runner also proved teardown of sealed runtime inputs;
+- Rust fixture and a clean Codeclew clone reached
+  `PUBLISHED_CONDITIONAL`; focused Cargo validation passed both in the isolated
+  candidate and after publication;
+- Python fixture and a clean `research/planitforme` clone reached
+  `PUBLISHED_CONDITIONAL`; focused pytest validation passed both in the
+  isolated candidate and after publication;
+- both real-repository sessions closed and passed strict managed GC;
+- after the generalized implementation, the three-case Kotlin 2.4 regression
+  passed 3/3 on the warm DEVELOPMENT runtime (total case times 74.449 s,
+  30.935 s, and 30.674 s; runtime prime 0 ms);
+- Rust cfg/macro/name resolution and Python imports/types/dynamic execution
+  remain explicit publication obligations, so neither contour claims verified
+  semantic certainty.
+
 ## Deliberate non-goals
 
 - Kotlin mutation outside the already qualified 2.4.10 Gradle profile;

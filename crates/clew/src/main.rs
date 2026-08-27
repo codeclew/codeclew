@@ -2176,8 +2176,8 @@ mod tests {
                     {
                         "engineVersion":"tree-sitter-python-0.25.0",
                         "language":"python",
-                        "mutation":false,
-                        "status":"READ_ONLY_PREVIEW"
+                        "mutation":true,
+                        "status":"CONDITIONAL_MUTATION"
                     }
                 ],
                 "threads":{
@@ -2193,7 +2193,7 @@ mod tests {
         let report = human_capabilities(&value);
         assert!(report.contains("Codeclew capabilities"));
         assert!(report.contains("Kotlin 2.4.10 / Gradle wrapper: read and change"));
-        assert!(report.contains("Python tree-sitter-python-0.25.0: read only"));
+        assert!(report.contains("Python tree-sitter-python-0.25.0: read and change"));
         assert!(report.contains("2-8 members"));
         assert!(report.contains("Run without --human for canonical JSON"));
         assert!(!report.contains("codeclew-capabilities/1.0"));

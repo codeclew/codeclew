@@ -25,11 +25,13 @@ P0 support:
 |---|---:|---:|
 | Kotlin 2.4.10, Gradle wrapper, one compilation, `PROJECT_NATIVE` | yes, K2 | yes, pilot |
 | Kotlin 2.3.0, Maven, optional `kotlin23` pack | yes, preview | no |
-| Python, Tree-sitter syntax | yes, preview | no |
-| Rust, bounded syntax | yes, preview | no |
+| Python, Tree-sitter syntax | yes | yes, conditional |
+| Rust, bounded syntax | yes | yes, conditional |
 | Thread of 2–8 repositories | yes | no |
 
-Python and Rust provide syntactic facts, not proven dynamic semantics. A
+Python and Rust provide syntactic facts, not proven dynamic semantics. Their
+changes require successful project-native validation plus explicit
+acknowledgement of every reported obligation, and remain `UNSURE`. A
 multi-repository thread does not turn declared topology into a proven
 relationship and cannot be used as the source of a change plan.
 
@@ -260,7 +262,7 @@ Runbook for `STALE`:
 Use the same runbook when publication hits a compare-and-swap conflict. This is
 expected race protection, not a reason to force-move the ref.
 
-## 6. Reading Python and Rust
+## 6. Reading and conditionally changing Python and Rust
 
 Python is read from tracked UTF-8 `.py` blobs at the exact base commit. Codeclew
 does not execute Python, import modules, read `.env`, or install dependencies.
@@ -293,9 +295,36 @@ Rust requires a regular root `Cargo.lock` and an exact target selector:
   --compilation 'cargo:crates/example/Cargo.toml#example#lib#example'
 ```
 
-The Rust preview makes no claim about name resolution, `cfg`, procedural macros,
-or call edges. Python and Rust sessions cannot be passed to `change prepare` or
-publication.
+The Rust contour makes no claim about name resolution, `cfg`, procedural
+macros, or call edges. For mutation, open with `change open` using the same
+language/compilation selectors, build the immutable plan only from returned
+sources and facts, and use a language-native validator:
+
+```json
+{"launcher":"CARGO","args":["test","-p","example","focused_test"]}
+{"launcher":"PYTHON","args":["-m","pytest","tests/test_focused.py","-q"]}
+```
+
+Python validation executes `python3 -m`; activate the project's virtual
+environment or put it first on `PATH` before `change prepare`. Shell commands
+and `python -c` are rejected. Rust plans accept only Cargo validation. For both
+languages, inspect `change status`, review the exact bounded diff and successful
+validation evidence, then publish only with all returned authorities:
+
+```bash
+"$CODECLEW_ROOT/clew" change prepare \
+  --session session:... --context context:... --plan /private/plan.json
+"$CODECLEW_ROOT/clew" change status --run run:...
+"$CODECLEW_ROOT/clew" change publish \
+  --session session:... --run run:... \
+  --allow-conditional \
+  --prepared-authority-digest sha256:... \
+  --acknowledge-obligation context:sha256:... \
+  --acknowledge-obligation candidate:sha256:...
+```
+
+The final status is `PUBLISHED_CONDITIONAL`; native validation and acknowledgement
+do not turn syntax evidence into compiler-backed certainty.
 
 ## 7. Multi-repository threads
 
@@ -502,7 +531,9 @@ A deployment is pilot-ready when:
 - `capabilities` and all required `doctor` checks pass;
 - the state root is private and not shared;
 - the Codex or Claude skill is installed and verified with a read-only request;
-- Kotlin mutation is admitted only for the exact P0 profile;
+- strict mutation is admitted only for the exact Kotlin P0 profile;
+- Rust/Python mutation remains conditional on native validation and explicit
+  acknowledgement of every `UNSURE` obligation;
 - freshness is checked before preparation and publication;
 - conditional obligations remain visible;
 - publication requires explicit human approval;
@@ -510,5 +541,5 @@ A deployment is pilot-ready when:
 - the team can execute stale, recovery, upgrade, and disk-space runbooks.
 
 A signed installer, centralized fleet management, automatic diagnostic upload,
-cross-host shared state, Python/Rust mutation, and multi-repository publication
-remain intentionally outside P0.
+cross-host shared state, semantic Rust/Python resolution, and multi-repository
+publication remain intentionally outside P0.

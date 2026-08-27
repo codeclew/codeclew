@@ -1,6 +1,6 @@
 ---
 name: codeclew
-description: Use Codeclew for bounded Kotlin semantic changes, Python or Rust syntax context, multi-repository analysis threads, session freshness checks, recovery, and privacy-safe incident summaries. Trigger when a task asks to inspect or change code through Codeclew, trace behavior across repositories, or diagnose a Codeclew run.
+description: Use Codeclew for bounded Kotlin semantic changes, conditional Python or Rust syntax-backed changes, multi-repository analysis threads, session freshness checks, recovery, and privacy-safe incident summaries. Trigger when a task asks to inspect or change code through Codeclew, trace behavior across repositories, or diagnose a Codeclew run.
 ---
 
 # Codeclew
@@ -22,13 +22,15 @@ Codeclew emits canonical JSON by default. Agents must not use the optional
    language/profile supports the requested operation.
 4. Require an explicit language and exact compilation. Do not guess them.
 
-Mutation is currently limited to the `kotlin-2.4.10-gradle-single` profile.
-Kotlin 2.3 Maven, Python, Rust, and multi-repository threads are read-only.
-Never turn partial or unsure evidence into a verified claim.
+Strict compiler-backed mutation is limited to
+`kotlin-2.4.10-gradle-single`. The `rust-syntax` and `python-syntax` profiles
+allow only conditional mutation with their native validators and explicit
+obligation acknowledgement. Kotlin previews and multi-repository threads are
+read-only. Never turn partial or unsure evidence into a verified claim.
 
 ## Work with one repository
 
-For Kotlin mutation, use `change open`, retain the returned session/context
+For any admitted mutation profile, use `change open`, retain the returned session/context
 identities, create a closed immutable edit plan, then use `change prepare`.
 Inspect `change status` and all obligations. Before prepare and again before
 publish, run:
@@ -50,9 +52,13 @@ must stay visible. Close and garbage-collect completed sessions.
 
 For Python use `--language python` with
 `--compilation 'python:<import-root>#<source-root>'`. For Rust use
-`--language rust` with an exact Cargo target selector. These contours provide
-bounded read-only syntax evidence; use the repository's own tests and runtime
-checks for dynamic behavior.
+`--language rust` with an exact Cargo target selector. Rust plans must contain
+only `CARGO` validation. Python plans must contain only `PYTHON` validation with
+arguments beginning `-m <safe.module>`; activate the project environment before
+prepare. These contours provide bounded syntax evidence, not resolved semantic
+authority. Publish only with `--allow-conditional`, the exact prepared authority
+digest, and every obligation returned by `change status`, after reviewing the
+bounded diff and successful project-native validation.
 
 ## Work across repositories
 

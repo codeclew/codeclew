@@ -2414,7 +2414,7 @@ mod tests {
         .unwrap();
         let normalized =
             normalize_qualified_obligations(vec![obligation.clone(), obligation.clone()]).unwrap();
-        assert_eq!(normalized, [obligation.clone()]);
+        assert_eq!(normalized.as_slice(), std::slice::from_ref(&obligation));
 
         let mut conflicting = obligation.clone();
         conflicting.record["subject"] = json!(["different-scope"]);
