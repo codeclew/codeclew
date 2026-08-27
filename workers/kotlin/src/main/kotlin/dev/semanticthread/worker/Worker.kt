@@ -84,16 +84,17 @@ private data class QualifiedKotlinEngineRow(
     val projectCompilerVersion: String,
     val engineCompilerVersion: String,
     val kind: String,
+    val defaultRoute: Boolean,
     val btaEligible: Boolean,
     val allowSerializationRebind: Boolean,
 )
 
 private val QUALIFIED_KOTLIN_ENGINE_ROWS = listOf(
-    QualifiedKotlinEngineRow("2.3.0", "2.3.0", "EXACT_COMPILER_ABI", false, true),
-    QualifiedKotlinEngineRow("2.4.10", "2.4.10", "EXACT_COMPILER_ABI", true, true),
-    QualifiedKotlinEngineRow("2.4.0", "2.4.10", "QUALIFICATION_CANDIDATE", true, true),
-    QualifiedKotlinEngineRow("2.3.0", "2.4.10", "QUALIFICATION_CANDIDATE", true, true),
-    QualifiedKotlinEngineRow("2.1.21", "2.4.10", "EXPERIMENTAL_CANDIDATE", true, true),
+    QualifiedKotlinEngineRow("2.3.0", "2.3.0", "EXACT_COMPILER_ABI", true, false, true),
+    QualifiedKotlinEngineRow("2.4.10", "2.4.10", "EXACT_COMPILER_ABI", true, true, true),
+    QualifiedKotlinEngineRow("2.4.0", "2.4.10", "QUALIFIED_PATCH_LINE", true, true, true),
+    QualifiedKotlinEngineRow("2.3.0", "2.4.10", "QUALIFICATION_CANDIDATE", false, true, true),
+    QualifiedKotlinEngineRow("2.1.21", "2.4.10", "EXPERIMENTAL_CANDIDATE", false, true, true),
 )
 
 internal fun currentKotlinSemanticEngine(): KotlinSemanticEngineCapabilities {
@@ -124,7 +125,7 @@ internal fun kotlinEngineCompatibilityDecision(
         btaEligible = false,
     )
     val qualificationMode = System.getenv("CODECLEW_KOTLIN_QUALIFICATION_ENGINE") == engine.engineId
-    if (row.kind != "EXACT_COMPILER_ABI" && !qualificationMode) {
+    if (!row.defaultRoute && !qualificationMode) {
         return KotlinEngineCompatibilityDecision(
             status = "REJECTED",
             kind = "UNQUALIFIED",
