@@ -83,11 +83,26 @@ gradle.beforeProject { project ->
             def classpathAuthoritiesDiffer = taskLibrariesUsable && configurationUsable &&
                 libraries.values != sourceSetClasspath
             def compilerVersion = null
-            def compilerVersionAvailable = true
+            def compilerVersionSource = "UNAVAILABLE"
             try {
-                def versionClass = compile.class.classLoader.loadClass("org.jetbrains.kotlin.config.KotlinCompilerVersion")
-                compilerVersion = versionClass.getField("VERSION").get(null)?.toString()
-            } catch (Throwable ignored) { compilerVersionAvailable = false }
+                def providerGetter = compile.class.methods.find { method ->
+                    method.parameterCount == 0 &&
+                        (method.name == "getKotlinCompilerVersion" || method.name.startsWith("getKotlinCompilerVersion\$"))
+                }
+                def provider = providerGetter?.invoke(compile)
+                def value = provider?.metaClass?.respondsTo(provider, "getOrNull") ? provider.getOrNull() :
+                    (provider?.metaClass?.respondsTo(provider, "get") ? provider.get() : provider)
+                compilerVersion = value?.toString()?.trim()
+                if (compilerVersion) compilerVersionSource = "KGP_COMPILER_VERSION_PROVIDER"
+            } catch (Throwable ignored) {}
+            if (!compilerVersion) {
+                try {
+                    def versionClass = compile.class.classLoader.loadClass("org.jetbrains.kotlin.config.KotlinCompilerVersion")
+                    compilerVersion = versionClass.getField("VERSION").get(null)?.toString()?.trim()
+                    if (compilerVersion) compilerVersionSource = "KOTLIN_COMPILER_VERSION_CLASSLOADER_FALLBACK"
+                } catch (Throwable ignored) {}
+            }
+            def compilerVersionAvailable = compilerVersion != null && !compilerVersion.isEmpty()
             def dependencyCoordinates = []
             def dependencyCoordinatesAvailable = true
             try {
@@ -155,6 +170,10 @@ gradle.beforeProject { project ->
                 friendPaths: friendPaths.values,
                 compilerPlugins: pluginClasspath.values,
                 compilerVersion: compilerVersion,
+                projectCompilerAuthority: [
+                    source: compilerVersionSource,
+                    status: compilerVersionAvailable ? "AVAILABLE" : "UNAVAILABLE"
+                ],
                 languageVersion: languageVersion.value,
                 apiVersion: apiVersion.value,
                 jvmTarget: jvmTarget.value,
@@ -180,7 +199,7 @@ gradle.beforeProject { project ->
                     languageVersion: languageVersion.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
                     apiVersion: apiVersion.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
                     jvmTarget: jvmTarget.available ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
-                    compilerVersion: compilerVersionAvailable ? "AVAILABLE" : "UNAVAILABLE_REFLECTION",
+                    compilerVersion: compilerVersionAvailable ? "AVAILABLE_${compilerVersionSource}" : "UNAVAILABLE",
                     jdkHome: jdkHomeAvailable ? "AVAILABLE_COMPILE_TOOLCHAIN" : "BOUNDARY_BUILD_JVM_FALLBACK"
                 ],
                 tasks: tasks,
