@@ -85,11 +85,15 @@ private data class QualifiedKotlinEngineRow(
     val engineCompilerVersion: String,
     val kind: String,
     val btaEligible: Boolean,
+    val allowSerializationRebind: Boolean,
 )
 
 private val QUALIFIED_KOTLIN_ENGINE_ROWS = listOf(
-    QualifiedKotlinEngineRow("2.3.0", "2.3.0", "EXACT_COMPILER_ABI", false),
-    QualifiedKotlinEngineRow("2.4.10", "2.4.10", "EXACT_COMPILER_ABI", true),
+    QualifiedKotlinEngineRow("2.3.0", "2.3.0", "EXACT_COMPILER_ABI", false, true),
+    QualifiedKotlinEngineRow("2.4.10", "2.4.10", "EXACT_COMPILER_ABI", true, true),
+    QualifiedKotlinEngineRow("2.4.0", "2.4.10", "QUALIFICATION_CANDIDATE", true, true),
+    QualifiedKotlinEngineRow("2.3.0", "2.4.10", "QUALIFICATION_CANDIDATE", true, true),
+    QualifiedKotlinEngineRow("2.1.21", "2.4.10", "EXPERIMENTAL_CANDIDATE", true, true),
 )
 
 internal fun currentKotlinSemanticEngine(): KotlinSemanticEngineCapabilities {
@@ -119,13 +123,46 @@ internal fun kotlinEngineCompatibilityDecision(
         reason = "PROJECT_ENGINE_ROW_NOT_QUALIFIED",
         btaEligible = false,
     )
-    if (row.kind == "QUALIFIED_CROSS_ENGINE" && project.unstableCompilerOptions.isNotEmpty()) {
+    val qualificationMode = System.getenv("CODECLEW_KOTLIN_QUALIFICATION_ENGINE") == engine.engineId
+    if (row.kind != "EXACT_COMPILER_ABI" && !qualificationMode) {
+        return KotlinEngineCompatibilityDecision(
+            status = "REJECTED",
+            kind = "UNQUALIFIED",
+            reason = "QUALIFICATION_ONLY_ROW",
+            btaEligible = false,
+        )
+    }
+    if (row.kind != "EXACT_COMPILER_ABI" && project.unstableCompilerOptions.isNotEmpty()) {
         return KotlinEngineCompatibilityDecision(
             status = "REJECTED",
             kind = row.kind,
             reason = "UNSTABLE_COMPILER_OPTIONS_NOT_QUALIFIED",
             btaEligible = false,
         )
+    }
+    if (row.kind != "EXACT_COMPILER_ABI") {
+        val unsupportedPlugins = project.compilerPlugins.filterNot {
+            it.startsWith("kotlin-serialization-compiler-plugin-embeddable-")
+        }
+        if (unsupportedPlugins.isNotEmpty()) {
+            return KotlinEngineCompatibilityDecision(
+                status = "REJECTED",
+                kind = row.kind,
+                reason = "COMPILER_PLUGIN_ABI_NOT_QUALIFIED",
+                btaEligible = false,
+            )
+        }
+        val hasSerialization = project.compilerPlugins.any {
+            it.startsWith("kotlin-serialization-compiler-plugin-embeddable-")
+        }
+        if (hasSerialization && !row.allowSerializationRebind) {
+            return KotlinEngineCompatibilityDecision(
+                status = "REJECTED",
+                kind = row.kind,
+                reason = "SERIALIZATION_REBIND_NOT_QUALIFIED",
+                btaEligible = false,
+            )
+        }
     }
     return KotlinEngineCompatibilityDecision(
         status = "QUALIFIED",
@@ -1107,12 +1144,6 @@ internal class Worker(
         )
         val semanticEngine = currentKotlinSemanticEngine()
         val engineCompatibility = kotlinEngineCompatibilityDecision(projectSemantics, semanticEngine)
-        if (engineCompatibility.status != "QUALIFIED") {
-            throw WorkerFailure(
-                "UNSUPPORTED_PROJECT_CONFIGURATION",
-                "Kotlin project semantics are not qualified for ${semanticEngine.engineId}: ${engineCompatibility.reason}",
-            )
-        }
         val module = buildModel["projectPath"]?.jsonPrimitive?.contentOrNull ?: ":"
         val sourceSet = compilation?.substringAfterLast('/') ?: "main"
         val canonicalCompilation = "$module/$sourceSet"
@@ -1540,6 +1571,13 @@ internal class Worker(
         val analysisRepo = repo.toRealPath()
         val model = cachedProjectModel(analysisRepo, compilation)
         val semanticModel = inspect(analysisRepo, compilation)
+        val compatibility = semanticModel["engineCompatibility"]?.jsonObject
+        if (compatibility?.get("status")?.jsonPrimitive?.contentOrNull != "QUALIFIED") {
+            throw WorkerFailure(
+                "UNSUPPORTED_PROJECT_CONFIGURATION",
+                "Kotlin semantic engine is not qualified for project analysis",
+            )
+        }
         val sources = (model["analysisSourceFiles"] ?: model["sourceFiles"])
             ?.jsonArray
             ?.map { Path.of(it.jsonPrimitive.content) }
