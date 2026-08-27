@@ -31,16 +31,22 @@ use crate::kotlin_engine::{
     KotlinSemanticEngine,
 };
 use crate::python_adapter_v2::{
-    PYTHON_LANGUAGE, PYTHON_SYNTAX_FACTS_CAPABILITY, PythonAdapterV2, PythonSyntaxAuthority,
+    MAX_SOURCE_FILE_BYTES as MAX_PYTHON_SOURCE_FILE_BYTES,
+    MAX_SOURCE_FILES as MAX_PYTHON_SOURCE_FILES,
+    MAX_TOTAL_SOURCE_BYTES as MAX_PYTHON_TOTAL_SOURCE_BYTES, PYTHON_LANGUAGE,
+    PYTHON_SYNTAX_FACTS_CAPABILITY, PythonAdapterV2, PythonSyntaxAuthority,
     build_syntax_index as build_python_syntax_index, python_adapter_digest, python_scope_digest,
 };
 use crate::python_project_model::{
-    PYTHON_GRAMMAR_AUTHORITY, PYTHON_MODEL_SCHEMA, PythonProjectModel,
+    PYTHON_GRAMMAR_AUTHORITY, PYTHON_MODEL_SCHEMA, PythonCompilationSelector, PythonProjectModel,
 };
 use crate::query_v2::{
     QUERY_INDEX_SCHEMA, QueryIndexManifest, build_query_index, verify_index, verify_index_manifest,
 };
-use crate::repository_snapshot::{RepositoryInputSnapshot, SNAPSHOT_SCHEMA, WorktreeKind, capture};
+use crate::repository_snapshot::{
+    RepositoryInputSnapshot, SNAPSHOT_SCHEMA, TrackedScopeLimits, WorktreeKind, capture,
+    capture_commit_scope,
+};
 use crate::runtime::RuntimeAuthority;
 use crate::rust_adapter_v2::{
     RUST_LANGUAGE, RUST_SYNTAX_FACTS_CAPABILITY, RustAdapterV2, RustSyntaxAuthority,
@@ -53,7 +59,7 @@ use crate::worker::WorkerRequestCounters;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::path::Path;
@@ -224,6 +230,7 @@ pub fn ensure_session_generation(
             snapshot_object,
             &compilation_root,
             &binding_path,
+            "",
         );
     }
     let repo = session.repository_path()?;
@@ -241,6 +248,8 @@ pub fn ensure_session_generation(
                 snapshot_object,
                 &compilation_root,
                 &binding_path,
+                true,
+                "",
             );
         }
         SessionLanguage::Python => unreachable!("Python generation returned above"),
@@ -309,6 +318,8 @@ fn ensure_rust_generation_set(
     snapshot_object: CasObject,
     compilation_root: &Path,
     binding_path: &Path,
+    publish_head: bool,
+    binding_prefix: &str,
 ) -> Result<ReadyGenerationSet, ClewError> {
     let model = extract_cargo_model(repo, &session.compilations)?;
     let (_, observed_snapshot) = capture(repo, store)?;
@@ -347,7 +358,8 @@ fn ensure_rust_generation_set(
             &model_object,
             target,
             compilation,
-            &compilation_root.join(format!("{component}.json")),
+            &compilation_root.join(format!("{binding_prefix}{component}.json")),
+            publish_head,
         )?);
     }
     let ready = assemble_ready_set(session, snapshot_object, results)?;
@@ -364,6 +376,7 @@ fn ensure_python_generation_set(
     snapshot_object: CasObject,
     compilation_root: &Path,
     binding_path: &Path,
+    binding_prefix: &str,
 ) -> Result<ReadyGenerationSet, ClewError> {
     let model = PythonProjectModel::create(&session.compilations)?;
     let model_object = store.put(
@@ -395,7 +408,7 @@ fn ensure_python_generation_set(
             &model_object,
             selector,
             compilation,
-            &compilation_root.join(format!("{component}.json")),
+            &compilation_root.join(format!("{binding_prefix}{component}.json")),
         )?);
     }
     let ready = assemble_ready_set(session, snapshot_object, results)?;
@@ -642,6 +655,7 @@ fn ensure_rust_generation(
     target: &CargoTargetModel,
     compilation: &str,
     binding_path: &Path,
+    publish_head: bool,
 ) -> Result<ReadyGeneration, ClewError> {
     if state.private_file_exists(binding_path)? {
         return load_ready(state, store, binding_path, session, compilation, false);
@@ -803,11 +817,13 @@ fn ensure_rust_generation(
     match result {
         Ok(ready) => {
             journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
-            let head_path = incremental_head_path(
-                &state.repository(&session.repository_path()?)?.root,
-                compilation,
-            )?;
-            publish_incremental_head(state, store, &head_path, &ready, &compiler_store.key)?;
+            if publish_head {
+                let head_path = incremental_head_path(
+                    &state.repository(&session.repository_path()?)?.root,
+                    compilation,
+                )?;
+                publish_incremental_head(state, store, &head_path, &ready, &compiler_store.key)?;
+            }
             write_private_atomic(state, binding_path, &ready)?;
             Ok(ready)
         }
@@ -888,16 +904,62 @@ pub fn ensure_candidate_generation(
     if state.private_file_exists(binding_path)? {
         return load_ready_set(&state, &store, binding_path, &candidate, false);
     }
-    let (snapshot, snapshot_object) = capture(repository, &store)?;
-    if session.language != SessionLanguage::Kotlin {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedLanguage,
-            "candidate generation is disabled for read-only language contours",
-        ));
-    }
     let parent = binding_path
         .parent()
         .ok_or_else(|| corrupt("candidate generation binding has no parent"))?;
+    if session.language == SessionLanguage::Python {
+        let selectors = candidate
+            .compilations
+            .iter()
+            .map(|value| PythonCompilationSelector::parse(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let source_roots = selectors
+            .iter()
+            .map(|selector| selector.source_root.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (snapshot, snapshot_object) = capture_commit_scope(
+            repository,
+            candidate_revision,
+            &source_roots,
+            &store,
+            |path| selectors.iter().any(|selector| selector.contains(path)),
+            TrackedScopeLimits {
+                max_files: MAX_PYTHON_SOURCE_FILES,
+                max_file_bytes: MAX_PYTHON_SOURCE_FILE_BYTES,
+                max_total_bytes: MAX_PYTHON_TOTAL_SOURCE_BYTES,
+                max_tree_entries: 262_144,
+                max_tree_bytes: 64 * 1024 * 1024,
+                max_tree_path_bytes: 4096,
+            },
+        )?;
+        return ensure_python_generation_set(
+            &candidate,
+            &state,
+            &store,
+            &snapshot,
+            snapshot_object,
+            parent,
+            binding_path,
+            "staged-generation-",
+        );
+    }
+    let (snapshot, snapshot_object) = capture(repository, &store)?;
+    if session.language == SessionLanguage::Rust {
+        return ensure_rust_generation_set(
+            &candidate,
+            &state,
+            &store,
+            repository,
+            &snapshot,
+            snapshot_object,
+            parent,
+            binding_path,
+            false,
+            "staged-generation-",
+        );
+    }
     let pool = generation_pool(&candidate)?;
     let workspace =
         ProjectNativeKotlinWorkspace::prepare(&state, &store, &snapshot, &candidate.compilations)?;

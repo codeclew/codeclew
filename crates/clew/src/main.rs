@@ -1297,7 +1297,7 @@ fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<V
     reject_thread_context_id(context_id)?;
     reject_thread_session_id(session_id)?;
     let (session, _) = SessionAuthority::load(session_id)?;
-    require_mutation_language(session.language)?;
+    require_mutation_request(&session, context_id, plan_id)?;
     let record = RunRecord::created(&session, context_id, plan_id)?;
     if !record.create_once()? {
         return task_run_status(&record.run_id);
@@ -1351,7 +1351,7 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
     reject_thread_coverage_id(run_id)?;
     let mut record = RunRecord::load(run_id)?;
     let (session, _) = SessionAuthority::load(&record.session_id)?;
-    require_mutation_language(session.language)?;
+    require_mutation_request(&session, &record.context_id, &record.plan_id)?;
     // Admission stays locked until the inactive run is either classified as
     // recovery-required or durably returned to CREATED and handed to the
     // supervisor. close/abort use the same session -> run lock order.
@@ -1514,9 +1514,9 @@ fn publish_task_run(
     reject_thread_session_id(session_id)?;
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
-    require_mutation_language(session.language)?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
+    require_mutation_request(&session, &record.context_id, &record.plan_id)?;
     let state = clew::state::StateAuthority::process_default()?;
     let prepared: clew::task_run_v2::PreparedCandidateV2 = read_json(
         &state,
@@ -1615,13 +1615,14 @@ fn publish_task_run(
     }
 }
 
-fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError> {
-    if language != SessionLanguage::Kotlin {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedLanguage,
-            "mutation is supported only for Kotlin sessions with a qualified validation contour",
-        ));
-    }
+fn require_mutation_request(
+    session: &SessionAuthority,
+    context_id: &str,
+    plan_id: &str,
+) -> Result<(), ClewError> {
+    let context = session.load_context(context_id)?;
+    let plan = session.load_plan(plan_id)?;
+    clew::task_run_v2::require_mutation_request(session, &context, &plan)?;
     Ok(())
 }
 
@@ -1630,9 +1631,9 @@ fn recover_task_run(session_id: &str, run_id: &str) -> Result<Value, ClewError> 
     reject_thread_session_id(session_id)?;
     let (session, _) = SessionAuthority::load(session_id)?;
     session.require_open()?;
-    require_mutation_language(session.language)?;
     let mut record = RunRecord::load(run_id)?;
     require_run_session(&record, session_id)?;
+    require_mutation_request(&session, &record.context_id, &record.plan_id)?;
     if matches!(
         record.status,
         RunStatus::Published | RunStatus::PublishedConditional
@@ -2224,15 +2225,6 @@ mod tests {
         assert!(report.contains("[ACTION_REQUIRED] Target worktree is clean (required)"));
         assert!(report.contains("commit, stash, or use a separate clean worktree"));
         assert!(!report.contains("/private/"));
-    }
-
-    #[test]
-    fn non_kotlin_languages_are_hard_read_only_before_mutation_qualification() {
-        assert!(require_mutation_language(SessionLanguage::Kotlin).is_ok());
-        for language in [SessionLanguage::Python, SessionLanguage::Rust] {
-            let error = require_mutation_language(language).unwrap_err();
-            assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
-        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use crate::generation_service::{
 };
 use crate::incremental_v2::{Coverage, Support};
 use crate::process_isolation::isolate_controller_authority;
+use crate::python_project_model::PYTHON_GRAMMAR_AUTHORITY;
 use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
 use crate::session::{ContextObject, PlanObject, SessionAuthority, SessionLanguage};
 use crate::state::{StateAuthority, create_private_directory};
@@ -94,6 +95,7 @@ pub enum ValidationLauncher {
     Gradle,
     Maven,
     Cargo,
+    Python,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,8 +300,7 @@ pub fn prepare(
     plan_object: &PlanObject,
     candidate_root: &Path,
 ) -> Result<PreparedCandidateV2, ClewError> {
-    require_mutation_language(session.language)?;
-    let plan = validate_plan_value(&plan_object.plan)?;
+    let plan = require_mutation_request(session, context, plan_object)?;
     if context.session_id != session.session_id
         || plan_object.context_id != context.context_id
         || plan_object.base_revision != session.base_revision
@@ -320,7 +321,7 @@ pub fn prepare(
             "context cannot authorize candidate preparation",
         ));
     }
-    let repo = session.repository_path()?;
+    let repo = mutation_git_repository(session)?;
     if git(&repo, &["rev-parse", "HEAD"])? != session.base_revision
         || git(&repo, &["rev-parse", &session.target_ref])? != session.target_oid
     {
@@ -459,13 +460,7 @@ fn finish_preparation(
         context_publication_authority(context)?;
     let mut qualified_obligations = qualified_obligations;
     qualified_obligations.extend(candidate_obligations(&semantic)?);
-    qualified_obligations.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
-    if qualified_obligations
-        .windows(2)
-        .any(|pair| pair[0].approval_id == pair[1].approval_id)
-    {
-        return Err(invalid("conditional obligation authority is not unique"));
-    }
+    let qualified_obligations = normalize_qualified_obligations(qualified_obligations)?;
     let candidate_strict = semantic.completeness.publishable();
     let candidate_conditional = semantic.completeness.support == Support::Supported
         && matches!(
@@ -525,14 +520,13 @@ pub fn recover_preparation(
     plan_object: &PlanObject,
     candidate_root: &Path,
 ) -> Result<PreparedCandidateV2, ClewError> {
-    require_mutation_language(session.language)?;
+    let plan = require_mutation_request(session, context, plan_object)?;
     let mut checkpoint = if candidate_root.join("checkpoint-v2.json").exists() {
         load_candidate_checkpoint(candidate_root)?
     } else {
         reconstruct_candidate_checkpoint(session, context, plan_object, candidate_root)?
     };
     validate_checkpoint(session, context, plan_object, &checkpoint)?;
-    let plan = validate_plan_value(&plan_object.plan)?;
     checkpoint.validation_evidence =
         run_validation(&candidate_root.join("worktree"), &plan.validation)?;
     finish_preparation(session, context, plan_object, candidate_root, checkpoint)
@@ -624,7 +618,7 @@ pub fn discard_precommit_candidate(
         Command::new("git")
             .args(["worktree", "remove", "--force"])
             .arg(&worktree)
-            .current_dir(session.repository_path()?),
+            .current_dir(mutation_git_repository(session)?),
         "derived pre-commit candidate cleanup failed",
     )?;
     Ok(true)
@@ -777,6 +771,27 @@ fn qualify_obligation(
         record_digest,
         record,
     })
+}
+
+fn normalize_qualified_obligations(
+    mut obligations: Vec<QualifiedObligation>,
+) -> Result<Vec<QualifiedObligation>, ClewError> {
+    obligations.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+    let mut normalized = Vec::<QualifiedObligation>::with_capacity(obligations.len());
+    for obligation in obligations {
+        if let Some(previous) = normalized.last()
+            && previous.approval_id == obligation.approval_id
+        {
+            if previous != &obligation {
+                return Err(invalid(
+                    "conditional obligation authority has a conflicting identity",
+                ));
+            }
+            continue;
+        }
+        normalized.push(obligation);
+    }
+    Ok(normalized)
 }
 
 fn candidate_diff(
@@ -1137,7 +1152,6 @@ pub fn publish(
     candidate_root: &Path,
     approval: Option<&ConditionalPublicationApproval>,
 ) -> Result<Value, ClewError> {
-    require_mutation_language(session.language)?;
     validate_prepared(session, prepared)?;
     if prepared.publication_blocked && approval.is_none() {
         return Err(ClewError::new(
@@ -1155,8 +1169,13 @@ pub fn publish(
     let repository = state.repository(&repo)?;
     let _publish_lock = RepositoryPublishLock::acquire(&state, &repository.key)?;
     let worktree = candidate_root.join("worktree");
-    let source = session.repository_path()?;
-    let inventory = require_publish_worktrees(session, prepared, &repo, &source, &worktree)?;
+    let source = if session.language == SessionLanguage::Python {
+        None
+    } else {
+        Some(session.repository_path()?)
+    };
+    let inventory =
+        require_publish_worktrees(session, prepared, &repo, source.as_deref(), &worktree)?;
     verify_candidate_snapshot(&worktree, &prepared.candidate_snapshot)?;
     let store = CasStore::open(&state)?;
     let semantic = load_candidate_generation(
@@ -1256,14 +1275,157 @@ pub fn publish(
     }))
 }
 
-fn require_mutation_language(language: SessionLanguage) -> Result<(), ClewError> {
-    if language != SessionLanguage::Kotlin {
-        return Err(ClewError::new(
-            ErrorCode::UnsupportedLanguage,
-            "mutation is supported only for Kotlin sessions with a qualified validation contour",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationProfile {
+    Kotlin24Gradle,
+    RustSyntax,
+    PythonSyntax,
+}
+
+pub fn require_mutation_request(
+    session: &SessionAuthority,
+    context: &ContextObject,
+    plan_object: &PlanObject,
+) -> Result<TaskPlanV2, ClewError> {
+    let plan = validate_plan_value(&plan_object.plan)?;
+    let profile = qualified_mutation_profile(session, context)?;
+    require_profile_validation(profile, &plan)?;
+    Ok(plan)
+}
+
+fn qualified_mutation_profile(
+    session: &SessionAuthority,
+    context: &ContextObject,
+) -> Result<MutationProfile, ClewError> {
+    let evidence = context
+        .evidence
+        .get("context")
+        .ok_or_else(|| unsupported_profile("context evidence is missing"))?;
+    if evidence.get("language").and_then(Value::as_str) != Some(session.language.uri()) {
+        return Err(unsupported_profile(
+            "context language differs from the session mutation authority",
+        ));
+    }
+    let versions = evidence
+        .get("compilerVersions")
+        .and_then(Value::as_object)
+        .ok_or_else(|| unsupported_profile("context compiler authority is missing"))?;
+    if versions.len() != session.compilations.len()
+        || session.compilations.iter().any(|compilation| {
+            !versions
+                .get(compilation)
+                .is_some_and(|version| version.is_string())
+        })
+    {
+        return Err(unsupported_profile(
+            "context compilation authority differs from the session",
+        ));
+    }
+    let has_gradle_wrapper = if session.language == SessionLanguage::Kotlin {
+        let repository = session.target_repository_path()?;
+        let wrapper = repository.join("gradlew");
+        fs::symlink_metadata(wrapper)
+            .is_ok_and(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+    } else {
+        false
+    };
+    mutation_profile_for(
+        session.language,
+        &session.compilations,
+        versions,
+        has_gradle_wrapper,
+    )
+}
+
+fn mutation_profile_for(
+    language: SessionLanguage,
+    compilations: &[String],
+    versions: &serde_json::Map<String, Value>,
+    has_gradle_wrapper: bool,
+) -> Result<MutationProfile, ClewError> {
+    match language {
+        SessionLanguage::Kotlin => {
+            if compilations.len() != 1
+                || versions
+                    .values()
+                    .any(|version| version.as_str() != Some("2.4.10"))
+                || !has_gradle_wrapper
+            {
+                return Err(unsupported_profile(
+                    "Kotlin mutation requires the qualified 2.4.10 single-compilation Gradle profile",
+                ));
+            }
+            Ok(MutationProfile::Kotlin24Gradle)
+        }
+        SessionLanguage::Rust => {
+            if versions.values().any(|version| {
+                !version
+                    .as_str()
+                    .and_then(|value| value.lines().next())
+                    .is_some_and(|value| value.starts_with("rustc 1.92.0 "))
+            }) {
+                return Err(unsupported_profile(
+                    "Rust mutation requires the pinned Rust 1.92 syntax profile",
+                ));
+            }
+            Ok(MutationProfile::RustSyntax)
+        }
+        SessionLanguage::Python => {
+            if versions
+                .values()
+                .any(|version| version.as_str() != Some(PYTHON_GRAMMAR_AUTHORITY))
+            {
+                return Err(unsupported_profile(
+                    "Python mutation requires the qualified tree-sitter syntax profile",
+                ));
+            }
+            Ok(MutationProfile::PythonSyntax)
+        }
+    }
+}
+
+fn require_profile_validation(
+    profile: MutationProfile,
+    plan: &TaskPlanV2,
+) -> Result<(), ClewError> {
+    let matches = match profile {
+        MutationProfile::Kotlin24Gradle => plan
+            .validation
+            .iter()
+            .all(|step| step.launcher == ValidationLauncher::Gradle),
+        MutationProfile::RustSyntax => plan
+            .validation
+            .iter()
+            .all(|step| step.launcher == ValidationLauncher::Cargo),
+        MutationProfile::PythonSyntax => plan.validation.iter().all(|step| {
+            step.launcher == ValidationLauncher::Python
+                && step.args.len() >= 2
+                && step.args[0] == "-m"
+                && safe_python_module(&step.args[1])
+        }),
+    };
+    if !matches {
+        return Err(unsupported_profile(
+            "task validation launchers differ from the qualified mutation profile",
         ));
     }
     Ok(())
+}
+
+fn safe_python_module(module: &str) -> bool {
+    !module.is_empty()
+        && module.len() <= 255
+        && module.split('.').all(|segment| {
+            let mut characters = segment.chars();
+            characters
+                .next()
+                .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+                && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+        })
+}
+
+fn unsupported_profile(message: &str) -> ClewError {
+    ClewError::new(ErrorCode::UnsupportedProjectConfiguration, message)
 }
 
 fn publication_recovery_error(error: ClewError) -> ClewError {
@@ -1325,15 +1487,17 @@ fn require_publish_worktrees(
     session: &SessionAuthority,
     prepared: &PreparedCandidateV2,
     target: &Path,
-    source: &Path,
+    source: Option<&Path>,
     candidate: &Path,
 ) -> Result<Vec<WorktreeView>, ClewError> {
     let inventory = worktree_inventory(target)?;
     let target = target.canonicalize().map_err(io_error)?;
-    let source = source.canonicalize().map_err(io_error)?;
+    let source = source
+        .map(|source| source.canonicalize().map_err(io_error))
+        .transpose()?;
     let candidate = candidate.canonicalize().map_err(io_error)?;
     let mut target_branch_count = 0usize;
-    let mut source_found = false;
+    let mut source_found = source.is_none();
     let mut candidate_found = false;
     for item in &inventory {
         let path = item.path.canonicalize().map_err(io_error)?;
@@ -1349,7 +1513,7 @@ fn require_publish_worktrees(
             }
             require_clean(&path)?;
         }
-        if path == source {
+        if source.as_ref().is_some_and(|source| path == *source) {
             source_found = item.branch.is_none() && item.head == session.base_revision;
         }
         if path == candidate {
@@ -1363,6 +1527,14 @@ fn require_publish_worktrees(
         ));
     }
     Ok(inventory)
+}
+
+fn mutation_git_repository(session: &SessionAuthority) -> Result<PathBuf, ClewError> {
+    if session.language == SessionLanguage::Python {
+        session.target_repository_path()
+    } else {
+        session.repository_path()
+    }
 }
 
 fn verify_published_worktrees(
@@ -1713,6 +1885,7 @@ fn run_validation(
             ValidationLauncher::Maven if root.join("mvnw").is_file() => "./mvnw",
             ValidationLauncher::Maven => "mvn",
             ValidationLauncher::Cargo => "cargo",
+            ValidationLauncher::Python => "python3",
         };
         let mut command = Command::new(executable);
         command
@@ -1742,7 +1915,8 @@ fn run_validation(
                 match step.launcher {
                     ValidationLauncher::Cargo
                     | ValidationLauncher::Gradle
-                    | ValidationLauncher::Maven => ErrorCode::TestFailed,
+                    | ValidationLauncher::Maven
+                    | ValidationLauncher::Python => ErrorCode::TestFailed,
                 },
                 "candidate validation failed; inspect private run evidence",
             ));
@@ -2044,12 +2218,111 @@ mod tests {
     }
 
     #[test]
-    fn transaction_layer_refuses_non_kotlin_mutation_authority() {
-        assert!(require_mutation_language(SessionLanguage::Kotlin).is_ok());
-        for language in [SessionLanguage::Python, SessionLanguage::Rust] {
-            let error = require_mutation_language(language).unwrap_err();
-            assert_eq!(error.code, ErrorCode::UnsupportedLanguage);
+    fn mutation_profiles_require_their_native_validator() {
+        let plan = |launcher: &str, args: Value| {
+            validate_plan_value(&json!({
+                "schema":PLAN_V2_SCHEMA,
+                "operations":[{
+                    "kind":"DELETE_FILE",
+                    "opId":"one",
+                    "target":{"fileId":"source.txt","contentRef":reference()}
+                }],
+                "validation":[{"launcher":launcher,"args":args}],
+            }))
+            .unwrap()
+        };
+        assert!(
+            require_profile_validation(
+                MutationProfile::Kotlin24Gradle,
+                &plan("GRADLE", json!(["test"])),
+            )
+            .is_ok()
+        );
+        assert!(
+            require_profile_validation(
+                MutationProfile::RustSyntax,
+                &plan("CARGO", json!(["test"])),
+            )
+            .is_ok()
+        );
+        assert!(
+            require_profile_validation(
+                MutationProfile::PythonSyntax,
+                &plan("PYTHON", json!(["-m", "unittest"])),
+            )
+            .is_ok()
+        );
+        assert!(
+            require_profile_validation(
+                MutationProfile::PythonSyntax,
+                &plan("PYTHON", json!(["-c", "pass"])),
+            )
+            .is_err()
+        );
+        assert!(
+            require_profile_validation(
+                MutationProfile::RustSyntax,
+                &plan("GRADLE", json!(["test"])),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn mutation_profiles_keep_unqualified_kotlin_read_only() {
+        let versions = |value: Value| value.as_object().unwrap().clone();
+        assert_eq!(
+            mutation_profile_for(
+                SessionLanguage::Kotlin,
+                &[":/main".into()],
+                &versions(json!({":/main":"2.4.10"})),
+                true,
+            )
+            .unwrap(),
+            MutationProfile::Kotlin24Gradle
+        );
+        for compiler in ["2.4.0", "2.3.0"] {
+            assert!(
+                mutation_profile_for(
+                    SessionLanguage::Kotlin,
+                    &[":/main".into()],
+                    &versions(json!({":/main":compiler})),
+                    true,
+                )
+                .is_err()
+            );
         }
+        assert!(
+            mutation_profile_for(
+                SessionLanguage::Kotlin,
+                &[":/main".into()],
+                &versions(json!({":/main":"2.4.10"})),
+                false,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            mutation_profile_for(
+                SessionLanguage::Python,
+                &["python:.#src".into()],
+                &versions(json!({"python:.#src":PYTHON_GRAMMAR_AUTHORITY})),
+                false,
+            )
+            .unwrap(),
+            MutationProfile::PythonSyntax
+        );
+        assert_eq!(
+            mutation_profile_for(
+                SessionLanguage::Rust,
+                &["cargo:Cargo.toml#demo#lib#demo".into()],
+                &versions(json!({
+                    "cargo:Cargo.toml#demo#lib#demo":"rustc 1.92.0 (qualified)\nbinary: rustc"
+                })),
+                false,
+            )
+            .unwrap(),
+            MutationProfile::RustSyntax
+        );
     }
 
     #[test]
@@ -2126,6 +2399,26 @@ mod tests {
         let error = validate_plan_value(&plan).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidInput);
         assert!(error.message.contains("unified-diff"));
+    }
+
+    #[test]
+    fn identical_multi_compilation_obligations_are_deduplicated() {
+        let obligation = qualify_obligation(
+            ObligationSource::Candidate,
+            json!({
+                "code":"VERIFY_PYTHON_RUNTIME_IMPORTS_AND_TYPES",
+                "publicationBlocking":true,
+                "subject":["scope"]
+            }),
+        )
+        .unwrap();
+        let normalized =
+            normalize_qualified_obligations(vec![obligation.clone(), obligation.clone()]).unwrap();
+        assert_eq!(normalized, [obligation.clone()]);
+
+        let mut conflicting = obligation.clone();
+        conflicting.record["subject"] = json!(["different-scope"]);
+        assert!(normalize_qualified_obligations(vec![obligation, conflicting]).is_err());
     }
 
     #[test]

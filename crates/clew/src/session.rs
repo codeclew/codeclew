@@ -3214,6 +3214,23 @@ mod tests {
     }
 
     #[test]
+    fn candidate_generation_bindings_have_one_closed_file_shape() {
+        let digest = "a".repeat(64);
+        assert!(candidate_derived_state_name(std::ffi::OsStr::new(
+            "staged-generation.json"
+        )));
+        assert!(candidate_derived_state_name(std::ffi::OsStr::new(
+            &format!("staged-generation-{digest}.json")
+        )));
+        assert!(!candidate_derived_state_name(std::ffi::OsStr::new(
+            "staged-compilations"
+        )));
+        assert!(!candidate_derived_state_name(std::ffi::OsStr::new(
+            "staged-generation-ABC.json"
+        )));
+    }
+
+    #[test]
     fn session_compilations_are_nonempty_bounded_and_canonical() {
         let kotlin = SessionLanguage::Kotlin;
         assert!(canonical_compilations(kotlin, &[]).is_err());
