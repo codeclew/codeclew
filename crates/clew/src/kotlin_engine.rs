@@ -230,7 +230,14 @@ impl KotlinProjectSemantics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompatibilityKind {
     ExactCompilerAbi,
-    QualifiedCrossEngine,
+    QualificationCandidate,
+    ExperimentalCandidate,
+}
+
+impl CompatibilityKind {
+    const fn is_cross_engine(self) -> bool {
+        !matches!(self, Self::ExactCompilerAbi)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -263,6 +270,33 @@ const QUALIFIED_COMPATIBILITY: &[QualifiedCompatibility] = &[
         default_route: true,
         allow_serialization_rebind: true,
     },
+    QualifiedCompatibility {
+        project_compiler_version: "2.4.0",
+        language_version: None,
+        api_version: None,
+        engine: KotlinSemanticEngine::Kotlin24,
+        kind: CompatibilityKind::QualificationCandidate,
+        default_route: false,
+        allow_serialization_rebind: true,
+    },
+    QualifiedCompatibility {
+        project_compiler_version: "2.3.0",
+        language_version: None,
+        api_version: None,
+        engine: KotlinSemanticEngine::Kotlin24,
+        kind: CompatibilityKind::QualificationCandidate,
+        default_route: false,
+        allow_serialization_rebind: true,
+    },
+    QualifiedCompatibility {
+        project_compiler_version: "2.1.21",
+        language_version: None,
+        api_version: None,
+        engine: KotlinSemanticEngine::Kotlin24,
+        kind: CompatibilityKind::ExperimentalCandidate,
+        default_route: false,
+        allow_serialization_rebind: true,
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -273,7 +307,20 @@ impl KotlinEngineRegistry {
         &self,
         project: &KotlinProjectSemantics,
     ) -> Result<KotlinSemanticEngine, ClewError> {
-        select_from_rows(project, QUALIFIED_COMPATIBILITY, true)
+        select_from_rows(project, QUALIFIED_COMPATIBILITY, true, None)
+    }
+
+    pub(crate) fn qualify(
+        &self,
+        project: &KotlinProjectSemantics,
+        requested_engine: KotlinSemanticEngine,
+    ) -> Result<KotlinSemanticEngine, ClewError> {
+        select_from_rows(
+            project,
+            QUALIFIED_COMPATIBILITY,
+            false,
+            Some(requested_engine),
+        )
     }
 
     pub fn next_untried_for_discovery(tried: u8) -> Option<KotlinSemanticEngine> {
@@ -287,6 +334,7 @@ fn select_from_rows(
     project: &KotlinProjectSemantics,
     rows: &[QualifiedCompatibility],
     default_only: bool,
+    requested_engine: Option<KotlinSemanticEngine>,
 ) -> Result<KotlinSemanticEngine, ClewError> {
     let row = rows.iter().find(|row| {
         row.project_compiler_version == project.project_compiler_version
@@ -297,13 +345,14 @@ fn select_from_rows(
                 .api_version
                 .is_none_or(|version| project.api_version.as_deref() == Some(version))
             && (!default_only || row.default_route)
+            && requested_engine.is_none_or(|engine| row.engine == engine)
     });
     let Some(row) = row else {
         return Err(unsupported(
             "project Kotlin semantics have no checked-in qualified semantic engine",
         ));
     };
-    if row.kind == CompatibilityKind::QualifiedCrossEngine {
+    if row.kind.is_cross_engine() {
         if !project.unstable_compiler_options.is_empty() {
             return Err(unsupported(
                 "cross-engine Kotlin analysis has unqualified unstable compiler options",
@@ -397,7 +446,7 @@ mod tests {
             language_version: Some("2.3"),
             api_version: Some("2.3"),
             engine: KotlinSemanticEngine::Kotlin24,
-            kind: CompatibilityKind::QualifiedCrossEngine,
+            kind: CompatibilityKind::QualificationCandidate,
             default_route: true,
             allow_serialization_rebind: true,
         }];
@@ -409,9 +458,93 @@ mod tests {
             ),
             &rows,
             true,
+            None,
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::UnsupportedCompilerPluginAbi);
+    }
+
+    #[test]
+    fn qualification_rows_are_not_production_routes() {
+        let registry = KotlinEngineRegistry;
+        for version in ["2.4.0", "2.1.21"] {
+            let error = registry.select(&project(version, "2.4", &[])).unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+            assert_eq!(
+                registry
+                    .qualify(
+                        &project(version, "2.4", &[]),
+                        KotlinSemanticEngine::Kotlin24,
+                    )
+                    .unwrap(),
+                KotlinSemanticEngine::Kotlin24,
+            );
+        }
+        assert_eq!(
+            registry
+                .qualify(
+                    &project("2.3.0", "2.3", &[]),
+                    KotlinSemanticEngine::Kotlin24,
+                )
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin24,
+        );
+    }
+
+    #[test]
+    fn qualification_rejects_unlisted_versions_and_wrong_engine() {
+        let registry = KotlinEngineRegistry;
+        for (version, engine) in [
+            ("1.9.24", KotlinSemanticEngine::Kotlin24),
+            ("2.4.0", KotlinSemanticEngine::Kotlin23),
+        ] {
+            let error = registry
+                .qualify(&project(version, "1.9", &[]), engine)
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        }
+    }
+
+    #[test]
+    fn qualification_rejects_unknown_plugin_and_unstable_flags() {
+        let registry = KotlinEngineRegistry;
+        let with_plugin = project(
+            "2.3.0",
+            "2.3",
+            &[("custom-plugin.jar", KotlinCompilerPluginKind::Unknown)],
+        );
+        let error = registry
+            .qualify(&with_plugin, KotlinSemanticEngine::Kotlin24)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedCompilerPluginAbi);
+
+        let mut with_flag = project("2.3.0", "2.3", &[]);
+        with_flag.unstable_compiler_options = vec!["-Xcontext-parameters".into()];
+        let error = registry
+            .qualify(&with_flag, KotlinSemanticEngine::Kotlin24)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+    }
+
+    #[test]
+    fn serialization_is_an_explicit_qualification_capability() {
+        let registry = KotlinEngineRegistry;
+        assert_eq!(
+            registry
+                .qualify(
+                    &project(
+                        "2.1.21",
+                        "2.1",
+                        &[(
+                            "kotlin-serialization-compiler-plugin-embeddable-2.1.21.jar",
+                            KotlinCompilerPluginKind::KotlinSerialization,
+                        )],
+                    ),
+                    KotlinSemanticEngine::Kotlin24,
+                )
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin24,
+        );
     }
 
     #[test]

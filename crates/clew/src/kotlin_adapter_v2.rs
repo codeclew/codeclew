@@ -277,6 +277,41 @@ impl ProjectNativeKotlinWorkspace {
         compiler_store_component: &str,
         build_state_root: Option<&std::path::Path>,
     ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
+        self.open_compilation_with_engine(
+            state,
+            native_compilation,
+            compiler_store_component,
+            build_state_root,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    fn open_qualification_compilation_from_set(
+        &self,
+        state: &StateAuthority,
+        native_compilation: &str,
+        compiler_store_component: &str,
+        build_state_root: Option<&std::path::Path>,
+        engine: KotlinSemanticEngine,
+    ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
+        self.open_compilation_with_engine(
+            state,
+            native_compilation,
+            compiler_store_component,
+            build_state_root,
+            Some(engine),
+        )
+    }
+
+    fn open_compilation_with_engine(
+        &self,
+        state: &StateAuthority,
+        native_compilation: &str,
+        compiler_store_component: &str,
+        build_state_root: Option<&std::path::Path>,
+        qualification_engine: Option<KotlinSemanticEngine>,
+    ) -> Result<ProjectNativeKotlinAttempt, ClewError> {
         validate_compiler_store_component(compiler_store_component)?;
         if !self.authorized_compilations.contains(native_compilation) {
             return Err(invalid(
@@ -302,12 +337,30 @@ impl ProjectNativeKotlinWorkspace {
             .directory(std::path::Path::new("generations/compiler-store"))?
             .child(std::path::Path::new(compiler_store_component))?;
         let compiler_store_namespace = format!("sha256:{compiler_store_component}");
-        let mut worker = WorkerClient::start_with_managed_states(
-            &workspace_root(),
-            build_state_root,
-            Some(&compiler_store),
-            &compiler_store_namespace,
-        )?;
+        let mut worker = if let Some(engine) = qualification_engine {
+            #[cfg(test)]
+            {
+                WorkerClient::start_qualification_engine_with_managed_states(
+                    &workspace_root(),
+                    engine,
+                    build_state_root,
+                    Some(&compiler_store),
+                    &compiler_store_namespace,
+                )?
+            }
+            #[cfg(not(test))]
+            {
+                let _ = engine;
+                unreachable!("qualification engine is test-only")
+            }
+        } else {
+            WorkerClient::start_with_managed_states(
+                &workspace_root(),
+                build_state_root,
+                Some(&compiler_store),
+                &compiler_store_namespace,
+            )?
+        };
         let request = json!({
             "repo":self.repo,
             "compilation":native_compilation,
@@ -413,6 +466,35 @@ impl ProjectNativeKotlinAttempt {
             }
             Err(error) => return Err(error),
         };
+        let profile = worker.last_profile.compiler_index.clone();
+        let counters = self.finish()?;
+        Ok((index, profile, counters))
+    }
+
+    #[cfg(test)]
+    fn analyze_strict(
+        mut self,
+    ) -> Result<
+        (
+            Value,
+            Option<crate::worker::CompilerIndexProfile>,
+            WorkerRequestCounters,
+        ),
+        ClewError,
+    > {
+        let worker = self
+            .worker
+            .as_mut()
+            .ok_or_else(|| invalid("project-native worker is unavailable"))?;
+        let verified = worker
+            .index_files_verified_after_project(&self.request, &self.project)
+            .map_err(|error| {
+                panic!(
+                    "strict Kotlin semantic analysis failed: code={:?}; evidence={:?}",
+                    error.code, error.evidence
+                )
+            })?;
+        let index = worker.inspect_verified_index(&verified)?.clone();
         let profile = worker.last_profile.compiler_index.clone();
         let counters = self.finish()?;
         Ok((index, profile, counters))
@@ -1562,11 +1644,70 @@ mod tests {
         let attempt = workspace
             .open_compilation_from_set(state, ":/main", component, None)
             .unwrap();
-        let (index, profile, requests) = attempt.analyze().unwrap();
+        let (index, profile, requests) = attempt.analyze_strict().unwrap();
         let workspace_profile = workspace.finish().unwrap();
         assert_eq!(workspace_profile.workspace_set_authorizations, 1);
         assert_eq!(workspace_profile.legacy_open_project_calls, 1);
         (index, profile.expect("K24 compiler profile"), requests)
+    }
+
+    fn real_qualification_analysis(
+        state: &StateAuthority,
+        store: &CasStore,
+        fixture: &Path,
+        component: &str,
+        engine: KotlinSemanticEngine,
+    ) -> (
+        Value,
+        Value,
+        crate::worker::CompilerIndexProfile,
+        WorkerRequestCounters,
+    ) {
+        let (snapshot, _) = repository_snapshot::capture(fixture, store).unwrap();
+        let workspace =
+            ProjectNativeKotlinWorkspace::prepare(state, store, &snapshot, &[":/main".into()])
+                .unwrap();
+        let attempt = workspace
+            .open_qualification_compilation_from_set(state, ":/main", component, None, engine)
+            .unwrap();
+        let project = attempt.project_authority().clone();
+        let (index, profile, requests) = attempt.analyze_strict().unwrap();
+        let workspace_profile = workspace.finish().unwrap();
+        assert_eq!(workspace_profile.workspace_set_authorizations, 1);
+        assert_eq!(workspace_profile.legacy_open_project_calls, 1);
+        let profile = profile.unwrap_or_else(|| {
+            panic!("qualification compiler profile is absent; project={project}; index={index}")
+        });
+        (project, index, profile, requests)
+    }
+
+    fn assert_complete_qualification_index(index: &Value) {
+        assert_eq!(
+            index.get("k2Validated").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            index.get("analysisMode").and_then(Value::as_str),
+            Some("K2_SEMANTIC")
+        );
+        assert_eq!(index.get("partial").and_then(Value::as_bool), Some(false));
+        for graph in ["declarationDescriptors", "declarationRelations"] {
+            assert_eq!(
+                index
+                    .pointer(&format!("/{graph}/coverage"))
+                    .and_then(Value::as_str),
+                Some("COMPLETE_SUPPORTED_SUBSET"),
+                "incomplete {graph}: {index}",
+            );
+            assert_eq!(
+                index
+                    .pointer(&format!("/{graph}/boundaries"))
+                    .and_then(Value::as_array)
+                    .map(Vec::len),
+                Some(0),
+                "semantic boundaries in {graph}: {index}",
+            );
+        }
     }
 
     fn mutable_authority(state: &StateAuthority, component: &str) -> std::path::PathBuf {
@@ -1881,5 +2022,216 @@ mod tests {
             semantic_scope_digest(&fresh_index).unwrap(),
         );
         assert_one_real_index_request(&recovered_requests);
+    }
+
+    #[test]
+    #[ignore = "qualification gate launches real version-specific Kotlin workers"]
+    fn kotlin_engine_qualification_probe() {
+        let fixture = std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_FIXTURE")
+            .map(std::path::PathBuf::from)
+            .expect("qualification fixture is required")
+            .canonicalize()
+            .unwrap();
+        let expected_project_version =
+            std::env::var("CODECLEW_KOTLIN_QUALIFICATION_PROJECT_VERSION")
+                .expect("project version is required");
+        let expected_outcome = std::env::var("CODECLEW_KOTLIN_QUALIFICATION_OUTCOME")
+            .unwrap_or_else(|_| "QUALIFIED".into());
+        let full_lifecycle =
+            std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_FULL_LIFECYCLE").is_some();
+        let component = "b".repeat(64);
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+
+        if expected_outcome != "QUALIFIED" {
+            let (snapshot, _) = repository_snapshot::capture(&fixture, &store).unwrap();
+            let workspace = ProjectNativeKotlinWorkspace::prepare(
+                &state,
+                &store,
+                &snapshot,
+                &[":/main".into()],
+            )
+            .unwrap();
+            let error = workspace
+                .open_qualification_compilation_from_set(
+                    &state,
+                    ":/main",
+                    &component,
+                    None,
+                    KotlinSemanticEngine::Kotlin24,
+                )
+                .err()
+                .expect("negative qualification row must fail closed");
+            let expected_code = if expected_outcome == "UNSUPPORTED_COMPILER_PLUGIN_ABI" {
+                ErrorCode::UnsupportedCompilerPluginAbi
+            } else {
+                ErrorCode::UnsupportedProjectConfiguration
+            };
+            assert_eq!(error.code, expected_code);
+            workspace.finish().unwrap();
+            return;
+        }
+
+        let (project, cold_index, cold, cold_requests) = real_qualification_analysis(
+            &state,
+            &store,
+            &fixture,
+            &component,
+            KotlinSemanticEngine::Kotlin24,
+        );
+        assert_eq!(
+            project
+                .get("declaredCompilerVersion")
+                .and_then(Value::as_str),
+            Some(expected_project_version.as_str()),
+        );
+        assert_eq!(
+            project
+                .pointer("/projectCompilerAuthority/source")
+                .and_then(Value::as_str),
+            Some("KGP_COMPILER_VERSION_PROVIDER"),
+        );
+        assert_eq!(
+            project
+                .pointer("/kotlinSemanticEngine/analyzerCompilerVersion")
+                .and_then(Value::as_str),
+            Some("2.4.10"),
+        );
+        assert_eq!(
+            project
+                .pointer("/engineCompatibility/status")
+                .and_then(Value::as_str),
+            Some("QUALIFIED"),
+        );
+        if std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_SERIALIZATION").is_some() {
+            assert!(
+                project
+                    .get("buildModelBoundaries")
+                    .and_then(Value::as_array)
+                    .is_some_and(|boundaries| boundaries.iter().any(|boundary| {
+                        boundary.as_str()
+                            == Some("KOTLIN_SERIALIZATION_PLUGIN_REBOUND_TO_ANALYZER_PATCH")
+                    })),
+                "serialization plugin was not rebound to the analyzer ABI: {project}",
+            );
+        }
+        assert_eq!(cold.status, CompilerIndexStatus::ColdFull, "{cold:?}");
+        assert!(!cold.fallback_used, "{cold:?}");
+        assert_complete_qualification_index(&cold_index);
+        assert_one_real_index_request(&cold_requests);
+        let cold_digest = semantic_scope_digest(&cold_index).unwrap();
+
+        if std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_K23_ORACLE").is_some() {
+            let oracle_root = tempfile::tempdir().unwrap();
+            let oracle_state = StateAuthority::open(oracle_root.path().join("v2")).unwrap();
+            let oracle_store = CasStore::open(&oracle_state).unwrap();
+            let (oracle_index, _, _) =
+                real_k24_analysis(&oracle_state, &oracle_store, &fixture, &"c".repeat(64));
+            assert_complete_qualification_index(&oracle_index);
+            assert_eq!(
+                cold_digest,
+                semantic_scope_digest(&oracle_index).unwrap(),
+                "K23 and K24 engines produced different normalized semantic facts",
+            );
+        }
+
+        if let Ok(expected_digest) = std::env::var("CODECLEW_KOTLIN_QUALIFICATION_GOLDEN") {
+            assert_eq!(cold_digest, expected_digest, "qualification golden changed");
+        }
+
+        if full_lifecycle {
+            let (unchanged_index, unchanged_project, unchanged, unchanged_requests) = {
+                let (project, index, profile, requests) = real_qualification_analysis(
+                    &state,
+                    &store,
+                    &fixture,
+                    &component,
+                    KotlinSemanticEngine::Kotlin24,
+                );
+                (index, project, profile, requests)
+            };
+            assert_eq!(
+                unchanged.status,
+                CompilerIndexStatus::UnchangedHit,
+                "{unchanged:?}"
+            );
+            assert_eq!(
+                semantic_scope_digest(&unchanged_index).unwrap(),
+                cold_digest,
+            );
+            assert_eq!(
+                unchanged_project
+                    .pointer("/engineCompatibility/status")
+                    .and_then(Value::as_str),
+                Some("QUALIFIED"),
+            );
+            assert_one_real_index_request(&unchanged_requests);
+
+            let changed_source = fixture.join("src/main/kotlin/com/acme/QualifiedA.kt");
+            let mut changed = std::fs::read_to_string(&changed_source).unwrap();
+            changed.push_str("\nfun qualificationChanged(value: Int): Int = value + 1\n");
+            std::fs::write(&changed_source, changed).unwrap();
+            let (_, incremental_index, incremental, incremental_requests) =
+                real_qualification_analysis(
+                    &state,
+                    &store,
+                    &fixture,
+                    &component,
+                    KotlinSemanticEngine::Kotlin24,
+                );
+            assert_eq!(
+                incremental.status,
+                CompilerIndexStatus::Incremental,
+                "{incremental:?}"
+            );
+            assert!(incremental.compiled_files > 0);
+            assert!(incremental.compiled_files < incremental.total_files);
+            assert_one_real_index_request(&incremental_requests);
+
+            let fresh_root = tempfile::tempdir().unwrap();
+            let fresh_state = StateAuthority::open(fresh_root.path().join("v2")).unwrap();
+            let fresh_store = CasStore::open(&fresh_state).unwrap();
+            let (_, fresh_index, fresh, fresh_requests) = real_qualification_analysis(
+                &fresh_state,
+                &fresh_store,
+                &fixture,
+                &component,
+                KotlinSemanticEngine::Kotlin24,
+            );
+            assert_eq!(fresh.status, CompilerIndexStatus::ColdFull, "{fresh:?}");
+            assert_eq!(
+                semantic_scope_digest(&incremental_index).unwrap(),
+                semantic_scope_digest(&fresh_index).unwrap(),
+            );
+            assert_one_real_index_request(&fresh_requests);
+
+            std::fs::write(mutable_authority(&state, &component), b"corrupt\n").unwrap();
+            let (_, recovered_index, recovered, recovered_requests) = real_qualification_analysis(
+                &state,
+                &store,
+                &fixture,
+                &component,
+                KotlinSemanticEngine::Kotlin24,
+            );
+            assert_eq!(
+                recovered.status,
+                CompilerIndexStatus::RecoveredFull,
+                "{recovered:?}"
+            );
+            assert!(recovered.recovered);
+            assert_eq!(
+                semantic_scope_digest(&recovered_index).unwrap(),
+                semantic_scope_digest(&fresh_index).unwrap(),
+            );
+            assert_one_real_index_request(&recovered_requests);
+        }
+
+        println!(
+            "CODECLEW_KOTLIN_QUALIFICATION_RESULT={{\"projectCompilerVersion\":\"{}\",\"engine\":\"{}\",\"semanticScopeDigest\":\"{}\"}}",
+            expected_project_version,
+            KotlinSemanticEngine::Kotlin24.engine_id(),
+            cold_digest,
+        );
     }
 }

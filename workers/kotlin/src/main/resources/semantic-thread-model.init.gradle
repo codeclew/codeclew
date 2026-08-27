@@ -21,8 +21,11 @@ gradle.beforeProject { project ->
                 try {
                     def value = compile.compilerOptions."${property}"
                     if (value == null) return [available: true, value: null]
-                    if (value.metaClass.respondsTo(value, "getOrNull")) return [available: true, value: value.getOrNull()?.toString()]
-                    return [available: true, value: value.toString()]
+                    def rendered = value.metaClass.respondsTo(value, "getOrNull") ? value.getOrNull()?.toString() : value.toString()
+                    if (property in ["languageVersion", "apiVersion"] && rendered ==~ /KOTLIN_[0-9]+_[0-9]+/) {
+                        rendered = rendered.substring("KOTLIN_".length()).replace('_', '.')
+                    }
+                    return [available: true, value: rendered]
                 } catch (Throwable ignored) {
                     return [available: false, value: null]
                 }

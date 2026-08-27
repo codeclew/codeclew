@@ -142,6 +142,7 @@ pub struct RequestProfile {
 pub struct WorkerClient {
     workspace: PathBuf,
     engine: KotlinSemanticEngine,
+    qualification_engine: Option<KotlinSemanticEngine>,
     process: OwnedWorkerProcess,
     stdin: ChildStdin,
     stdout: ChildStdout,
@@ -1732,7 +1733,14 @@ fn validate_build_namespace_digest(value: &str) -> Result<String, ClewError> {
 impl WorkerClient {
     #[cfg(test)]
     pub fn start(workspace: &Path) -> Result<Self, ClewError> {
-        Self::start_engine(workspace, KotlinSemanticEngine::Kotlin24, None, None, None)
+        Self::start_engine(
+            workspace,
+            KotlinSemanticEngine::Kotlin24,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn start_with_managed_states(
@@ -1747,6 +1755,25 @@ impl WorkerClient {
             build_state_root,
             compiler_index_root,
             Some(build_namespace_digest),
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_qualification_engine_with_managed_states(
+        workspace: &Path,
+        engine: KotlinSemanticEngine,
+        build_state_root: Option<&Path>,
+        compiler_index_root: Option<&ManagedDirectory>,
+        build_namespace_digest: &str,
+    ) -> Result<Self, ClewError> {
+        Self::start_engine(
+            workspace,
+            engine,
+            build_state_root,
+            compiler_index_root,
+            Some(build_namespace_digest),
+            Some(engine),
         )
     }
 
@@ -1756,6 +1783,7 @@ impl WorkerClient {
         build_state_root: Option<&Path>,
         compiler_index_root: Option<&ManagedDirectory>,
         build_namespace_digest: Option<&str>,
+        qualification_engine: Option<KotlinSemanticEngine>,
     ) -> Result<Self, ClewError> {
         #[cfg(unix)]
         use std::os::unix::process::CommandExt;
@@ -1805,6 +1833,18 @@ impl WorkerClient {
             resolved_compiler_index.as_deref(),
             &build_namespace_digest,
         );
+        if let Some(qualification_engine) = qualification_engine {
+            if qualification_engine != engine {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "qualification engine must match the launched Kotlin engine",
+                ));
+            }
+            command.env(
+                "CODECLEW_KOTLIN_QUALIFICATION_ENGINE",
+                qualification_engine.engine_id(),
+            );
+        }
         #[cfg(unix)]
         command.process_group(0);
         let task_run_spawn_permit = task_run_worker_spawn_permit()?;
@@ -1839,6 +1879,7 @@ impl WorkerClient {
         Ok(Self {
             workspace: workspace.to_path_buf(),
             engine,
+            qualification_engine,
             process,
             stdin,
             stdout,
@@ -1873,6 +1914,7 @@ impl WorkerClient {
             self.build_state_root.as_deref(),
             self.compiler_index_root.as_ref(),
             Some(&self.build_namespace_digest),
+            None,
         )?;
         replacement.request_counters = self.request_counters;
         let previous = std::mem::replace(self, replacement);
@@ -2000,7 +2042,8 @@ impl WorkerClient {
                     relevant_anchors_or_symbols: relevant.into_boxed_slice(),
                     retryable: error.retryable,
                 };
-                if kind == RequestKind::OpenProject
+                if self.qualification_engine.is_none()
+                    && kind == RequestKind::OpenProject
                     && failure.code == ErrorCode::UnsupportedCompilerPluginAbi
                 {
                     let tried = tried_discovery_variants | self.engine.discovery_bit();
@@ -2055,7 +2098,11 @@ impl WorkerClient {
         let json_micros = json_started.elapsed().as_micros() as u64;
         if kind == RequestKind::OpenProject {
             let project_semantics = KotlinProjectSemantics::from_project_model(&value)?;
-            let desired = KotlinEngineRegistry.select(&project_semantics)?;
+            let desired = if let Some(engine) = self.qualification_engine {
+                KotlinEngineRegistry.qualify(&project_semantics, engine)?
+            } else {
+                KotlinEngineRegistry.select(&project_semantics)?
+            };
             if desired != self.engine {
                 let tried = tried_discovery_variants | self.engine.discovery_bit();
                 if tried & desired.discovery_bit() != 0 {
