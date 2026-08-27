@@ -110,6 +110,10 @@ class PilotTest(unittest.TestCase):
         with pilot.PilotWorkspace() as disposable:
             assert disposable.path is not None
             disposable_path = disposable.path
+            sealed = disposable_path / "state" / "runtime"
+            sealed.mkdir(parents=True)
+            (sealed / "artifact").write_text("sealed")
+            sealed.chmod(0o500)
         self.assertFalse(disposable_path.exists())
 
         with pilot.PilotWorkspace() as recovery:

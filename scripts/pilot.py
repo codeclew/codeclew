@@ -52,6 +52,13 @@ class PilotWorkspace:
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         if not self.preserve and self.path is not None:
+            # Runtime capsules are deliberately sealed read-only.  The pilot owns
+            # this entire 0700 workspace, so restore directory write permission
+            # before removing it without weakening capsules in persistent state.
+            for directory, _children, _files in os.walk(
+                self.path, topdown=True, followlinks=False
+            ):
+                os.chmod(directory, 0o700, follow_symlinks=False)
             shutil.rmtree(self.path)
 
 
@@ -670,8 +677,12 @@ def main() -> int:
         )
         workspace.preserve = recovery_required
         summary = public_summary(results, runtime_mode, prime_ms)
-        print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
-        return 0 if summary["status"] == "PASSED" else (2 if recovery_required else 1)
+        exit_code = (
+            0 if summary["status"] == "PASSED" else (2 if recovery_required else 1)
+        )
+    # Emit exactly one result only after disposable-workspace cleanup succeeds.
+    print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
+    return exit_code
 
 
 if __name__ == "__main__":
