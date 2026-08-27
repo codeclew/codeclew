@@ -14,6 +14,7 @@ export TMPDIR
 
 python3 -I -S scripts/test_pilot_case_record.py
 python3 -I -S scripts/test_pilot_release_gate.py
+python3 -I -S scripts/test_language_mutation_pilot.py
 python3 -I -S scripts/test_check_repository_privacy.py
 python3 -I -S scripts/check_english_content.py
 python3 -I -S scripts/test_macos_distribution.py

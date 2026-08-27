@@ -55,8 +55,8 @@ The strict compiler-backed mutation contour is Kotlin 2.4.10, Gradle,
 read-only compiler-backed context preview: it has real-project context
 acceptance, but no mutation or publish claim. Kotlin 2.1, multiple
 compilations, Android/KMP and `EXTERNAL` remain unqualified until they have
-their own acceptance tests. Rust and Python also support conditional mutation,
-with the weaker evidence boundaries described below.
+their own acceptance tests. Rust and Python are operationally `PILOT_READY` for
+conditional mutation, with the weaker evidence boundaries described below.
 
 Rust has a bounded syntax contour. Open it with `--language rust`
 and an exact target selector such as
@@ -73,6 +73,12 @@ validation. Codeclew may prepare and publish the isolated candidate only as
 reviews the diff, sees successful native validation, and explicitly
 acknowledges every cfg/macro and name-resolution obligation. This never upgrades
 syntax evidence to compiler-backed certainty.
+
+The repository-owned Rust/Python qualification runs three independent changes
+per language and requires idempotent prepare/publish, exact writes, native tests
+and managed GC. Run it with
+`python3 -I -S scripts/language_mutation_pilot.py`; a passing profile is ready
+for limited team use, while its evidence remains `PARTIAL/UNSURE`.
 
 Python has a generic bounded syntax contour. It parses only selected
 tracked UTF-8 `.py` blobs directly from the immutable session base commit with

@@ -617,17 +617,17 @@ def public_summary(
     return value
 
 
-def validate_public_value(value: object) -> None:
+def validate_public_value(value: object, *, max_list: int = len(CASES)) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str) or len(key) > 64:
                 raise ValueError("invalid public key")
-            validate_public_value(child)
+            validate_public_value(child, max_list=max_list)
     elif isinstance(value, list):
-        if len(value) > len(CASES):
+        if len(value) > max_list:
             raise ValueError("public list exceeds pilot bound")
         for child in value:
-            validate_public_value(child)
+            validate_public_value(child, max_list=max_list)
     elif isinstance(value, str):
         if len(value) > 128 or "\n" in value or Path(value).is_absolute():
             raise ValueError("private or unbounded public string")

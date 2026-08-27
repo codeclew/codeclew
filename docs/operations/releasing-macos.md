@@ -28,15 +28,18 @@ workflow verifies `uname -m` before construction and refuses a runtime in
 ## Publishing
 
 1. Merge only a clean, fully verified default branch.
-2. Confirm the workspace version matches the intended tag.
-3. Create and push an annotated semantic version tag:
+2. Run `python3 -I -S scripts/language_mutation_pilot.py` and require 6/6,
+   3/3 per language, with `runtimeMode: RELEASE`.
+3. Confirm the workspace version matches the intended tag.
+4. Create and push an annotated semantic version tag:
 
    ```bash
    git tag -a v0.1.0 -m 'Codeclew v0.1.0 macOS pilot'
    git push origin v0.1.0
    ```
 
-4. Wait for both architecture jobs and the release publication job.
+5. Wait for qualification, both architecture jobs and the release publication
+   job.
    If GitHub loses the tag event or reports `startup_failure` before creating a
    job, dispatch the same immutable tag manually:
 
@@ -46,7 +49,7 @@ workflow verifies `uname -m` before construction and refuses a runtime in
 
    The workflow checks out that exact tag, and the release builder still
    verifies that the tag points at the packaged commit.
-5. Verify the public installer on a clean Apple Silicon Mac and a clean Intel
+6. Verify the public installer on a clean Apple Silicon Mac and a clean Intel
    Mac:
 
    ```bash

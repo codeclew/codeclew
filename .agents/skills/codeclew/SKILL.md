@@ -23,10 +23,11 @@ Codeclew emits canonical JSON by default. Agents must not use the optional
 4. Require an explicit language and exact compilation. Do not guess them.
 
 Strict compiler-backed mutation is limited to
-`kotlin-2.4.10-gradle-single`. The `rust-syntax` and `python-syntax` profiles
-allow only conditional mutation with their native validators and explicit
-obligation acknowledgement. Kotlin previews and multi-repository threads are
-read-only. Never turn partial or unsure evidence into a verified claim.
+`kotlin-2.4.10-gradle-single`. The operationally `PILOT_READY` `rust-syntax`
+and `python-syntax` profiles allow only conditional mutation with their native
+validators and explicit obligation acknowledgement. Kotlin previews and
+multi-repository threads are read-only. Never turn partial or unsure evidence
+into a verified claim.
 
 ## Work with one repository
 

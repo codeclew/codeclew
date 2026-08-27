@@ -218,6 +218,11 @@ Qualification evidence (2026-08-27):
 - Rust cfg/macro/name resolution and Python imports/types/dynamic execution
   remain explicit publication obligations, so neither contour claims verified
   semantic certainty.
+- the reusable conditional-mutation qualification subsequently passed 6/6 in
+  RELEASE mode: 3/3 independent Rust cases and 3/3 independent Python cases,
+  each including idempotent prepare/publish, native validation, exact writes and
+  managed GC; this promotes operational status to `PILOT_READY` without changing
+  the `UNSURE` evidence class.
 
 ## Deliberate non-goals
 

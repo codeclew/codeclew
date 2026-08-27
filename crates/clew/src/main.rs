@@ -2177,7 +2177,7 @@ mod tests {
                         "engineVersion":"tree-sitter-python-0.25.0",
                         "language":"python",
                         "mutation":true,
-                        "status":"CONDITIONAL_MUTATION"
+                        "status":"PILOT_READY"
                     }
                 ],
                 "threads":{

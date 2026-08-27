@@ -18,8 +18,28 @@ permissions:
   contents: read
 
 jobs:
+  qualify:
+    name: Qualify conditional mutation pilot
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_VERSION }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Qualify Rust and Python conditional mutation
+        run: python3 -I -S scripts/language_mutation_pilot.py
+
   build:
     name: Build macOS ${{ matrix.arch }}
+    needs: qualify
     strategy:
       fail-fast: false
       matrix:
@@ -91,7 +111,8 @@ jobs:
             '```' \
             '' \
             'The installer verifies the published SHA-256 checksum and never compiles Codeclew locally.' \
-            'The default profile contains Kotlin 2.4.10. Install the optional Kotlin 2.3.0 preview later with `clew pack install kotlin23`.' \
+            'The default profile contains Kotlin 2.4.10 plus operationally pilot-ready conditional Rust and Python mutation. Rust/Python evidence remains PARTIAL/UNSURE and requires native validation plus explicit obligation acknowledgement.' \
+            'Install the optional Kotlin 2.3.0 preview later with `clew pack install kotlin23`.' \
             >"$notes"
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             gh release upload "$RELEASE_VERSION" "$RUNNER_TEMP"/release-assets/* --clobber

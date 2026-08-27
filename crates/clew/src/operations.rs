@@ -447,9 +447,9 @@ mod tests {
         assert_eq!(mutable.len(), 3);
         assert_eq!(mutable[0]["profileId"], "kotlin-2.4.10-gradle-single");
         assert_eq!(mutable[1]["profileId"], "python-syntax");
-        assert_eq!(mutable[1]["status"], "CONDITIONAL_MUTATION");
+        assert_eq!(mutable[1]["status"], "PILOT_READY");
         assert_eq!(mutable[2]["profileId"], "rust-syntax");
-        assert_eq!(mutable[2]["status"], "CONDITIONAL_MUTATION");
+        assert_eq!(mutable[2]["status"], "PILOT_READY");
         let qualified_patch = matrix["profiles"]
             .as_array()
             .unwrap()

@@ -25,8 +25,8 @@ P0 support:
 |---|---:|---:|
 | Kotlin 2.4.10, Gradle wrapper, one compilation, `PROJECT_NATIVE` | yes, K2 | yes, pilot |
 | Kotlin 2.3.0, Maven, optional `kotlin23` pack | yes, preview | no |
-| Python, Tree-sitter syntax | yes | yes, conditional |
-| Rust, bounded syntax | yes | yes, conditional |
+| Python, Tree-sitter syntax | yes | yes, conditional pilot |
+| Rust, bounded syntax | yes | yes, conditional pilot |
 | Thread of 2–8 repositories | yes | no |
 
 Python and Rust provide syntactic facts, not proven dynamic semantics. Their
@@ -34,6 +34,10 @@ changes require successful project-native validation plus explicit
 acknowledgement of every reported obligation, and remain `UNSURE`. A
 multi-repository thread does not turn declared topology into a proven
 relationship and cannot be used as the source of a change plan.
+
+Rust/Python pilot admission is reproduced by
+`python3 -I -S scripts/language_mutation_pilot.py`. It requires 3/3 independent
+cases per language; passing does not upgrade syntax evidence beyond `UNSURE`.
 
 ## 2. Installing on another machine
 
