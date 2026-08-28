@@ -2,9 +2,11 @@
 
 ## Document authority
 
-- **Status:** M1, M2, W1, L1, J1, C1, W2, W3, and the W4 local
-  publication core, T1/T2 ECMAScript profiles, P1 polyglot composition, and the
-  CS0 C# fit gate are complete; CS0 concluded `DEFER`, so Q1 is next. W4 remains deliberately
+- **Status:** roadmap execution is complete through Q1. M1, M2, W1, L1, J1,
+  C1, W2, W3, the W4 local publication core, T1/T2 ECMAScript profiles, P1
+  polyglot composition, and CS0 are accepted. CS0 concluded `DEFER`; Q1
+  concluded `NOT_QUALIFIED` and identified sandbox runtime attach as the next
+  product blocker. W4 remains deliberately
   unadvertised for JVM multi-service mutation until its three-case JVM gate.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
@@ -709,6 +711,29 @@ an agent materially better on realistic local development tasks.
 - The final product claim lists exact qualified languages, build profiles,
   repository counts, operation classes, and unresolved boundaries.
 
+### Measured outcome
+
+`NOT_QUALIFIED`. One frozen internal experiment used five task classes and ten
+same-model arms after one dry run. Default passed 5/5 tasks; Codeclew passed 2/5,
+failed both managed-change tasks at admission, and timed out on the cross-
+repository analysis arm. Codeclew's median noncached tokens among completed
+arms were 125,089 versus Default's 72,097, so the required 30% reduction was not
+met. Oracle recall was 41.4%, recovery terminality was 0%, and no false exact
+claim was observed.
+
+The dominant failure was not missing language evidence. Within the agent's
+workspace sandbox, the pinned source launcher did not attach to the already
+primed compatible RELEASE capsule and sessions. It attempted a new Gradle worker
+bootstrap, whose local DatagramChannel was denied by sandbox policy. Read arms
+then spent time on honest fallback; managed mutations correctly failed closed.
+
+The next product slice is therefore a stable installed RELEASE entrypoint with
+typed, build-free warm attach to a compatible capsule. Adding another language,
+framework semantics, or benchmark infrastructure before that fix would not
+improve the measured agent workflow. The complete privacy-safe aggregate and
+qualified-scope statement are retained in
+`docs/plans/evidence/agent-development-qualification.json`.
+
 ## Deferred until evidence promotes them
 
 - automatic repository discovery or remote repository access;
@@ -722,8 +747,10 @@ an agent materially better on realistic local development tasks.
 
 ## Overall completion audit
 
-The roadmap is complete only when current checked artifacts prove every phase's
-Definition of Done. A green narrow unit test cannot prove a broad product claim;
-missing or indirect evidence counts as incomplete. The final audit must map every
-requirement above to a retained artifact, test, measurement, or explicit
-`STOP/DEFER` outcome allowed by this plan.
+Roadmap execution is complete because every phase requirement now maps to a
+retained artifact, test, measurement, or the explicit CS0 `DEFER` decision. Q1
+did not pass its product gates, so the broader superiority claim is explicitly
+rejected rather than silently treated as an incomplete phase. A green narrow
+unit test cannot override that measured result. Any later qualification must
+follow a material product change, retain this failed cohort, and keep the frozen
+task set unchanged rather than tuning it to the observed answers.

@@ -1,0 +1,187 @@
+{
+  "schema": "codeclew-agent-development-qualification/1.0",
+  "date": "2026-08-29",
+  "status": "Q1_NOT_QUALIFIED",
+  "authority": {
+    "corpusDigest": "fa4176cc1539940c08027a0ae920d3de6b39c9b57132287bd4c6268dcdb34634",
+    "benchmarkDigest": "f30d673a7b0f255c009ea42c2c791621327c6d33bfc75ec688cbdfb7583210d0",
+    "responseSchemaDigest": "50bab6285c25acd5e5a3013ac4c97132b09d336a955a530f0ffa8c7801967494",
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "high",
+    "runner": "codex-cli-0.147.0",
+    "privateInputsMode": "0600",
+    "retunedAfterMeasuredStart": false
+  },
+  "protocol": {
+    "dryRuns": 1,
+    "measuredRuns": 1,
+    "taskCount": 5,
+    "armCount": 10,
+    "taskClasses": [
+      "SINGLE_REPOSITORY_ANALYSIS",
+      "FACT_BACKED_DOCUMENTATION",
+      "ONE_REPOSITORY_CHANGE",
+      "CROSS_REPOSITORY_ANALYSIS",
+      "MULTI_REPOSITORY_CHANGE_RECOVERY"
+    ],
+    "wallLimitSecondsPerArm": 600,
+    "warmCodeclewIndexesPrimedBeforeMeasurement": true,
+    "coldStartScored": false
+  },
+  "tasks": [
+    {
+      "class": "SINGLE_REPOSITORY_ANALYSIS",
+      "default": {
+        "accepted": true,
+        "noncachedTokens": 87080,
+        "toolCalls": 11,
+        "toolOutputBytes": 152545
+      },
+      "codeclew": {
+        "accepted": true,
+        "noncachedTokens": 58201,
+        "toolCalls": 23,
+        "toolOutputBytes": 88277,
+        "usedFallback": true
+      }
+    },
+    {
+      "class": "FACT_BACKED_DOCUMENTATION",
+      "default": {
+        "accepted": true,
+        "noncachedTokens": 72097,
+        "toolCalls": 8,
+        "toolOutputBytes": 84176
+      },
+      "codeclew": {
+        "accepted": true,
+        "noncachedTokens": 127480,
+        "toolCalls": 38,
+        "toolOutputBytes": 177739,
+        "usedFallback": true
+      }
+    },
+    {
+      "class": "ONE_REPOSITORY_CHANGE",
+      "default": {
+        "accepted": true,
+        "noncachedTokens": 75409,
+        "toolCalls": 23,
+        "toolOutputBytes": 38728,
+        "externalDeterministicCompile": "PASS"
+      },
+      "codeclew": {
+        "accepted": false,
+        "noncachedTokens": 199827,
+        "toolCalls": 49,
+        "toolOutputBytes": 202007,
+        "terminal": "ADMISSION_FAILED"
+      }
+    },
+    {
+      "class": "CROSS_REPOSITORY_ANALYSIS",
+      "default": {
+        "accepted": true,
+        "noncachedTokens": 44316,
+        "toolCalls": 16,
+        "toolOutputBytes": 125629
+      },
+      "codeclew": {
+        "accepted": false,
+        "noncachedTokens": null,
+        "toolCalls": null,
+        "toolOutputBytes": null,
+        "terminal": "WALL_TIMEOUT_600_SECONDS"
+      }
+    },
+    {
+      "class": "MULTI_REPOSITORY_CHANGE_RECOVERY",
+      "default": {
+        "accepted": true,
+        "noncachedTokens": 30928,
+        "toolCalls": 6,
+        "toolOutputBytes": 3374,
+        "recovery": "ROLLED_FORWARD"
+      },
+      "codeclew": {
+        "accepted": false,
+        "noncachedTokens": 122697,
+        "toolCalls": 42,
+        "toolOutputBytes": 189733,
+        "recovery": "RECOVERY_REQUIRED",
+        "terminal": "ADMISSION_FAILED"
+      }
+    }
+  ],
+  "aggregate": {
+    "defaultPassRate": 1.0,
+    "codeclewPassRate": 0.4,
+    "defaultMedianNoncachedTokens": 72097,
+    "codeclewCompletedArmMedianNoncachedTokens": 125089,
+    "medianNoncachedTokenReduction": -0.735,
+    "defaultMedianToolCalls": 11,
+    "codeclewCompletedArmMedianToolCalls": 40,
+    "defaultMedianToolOutputBytes": 84176,
+    "codeclewCompletedArmMedianToolOutputBytes": 183736,
+    "defaultOracleRecall": 1.0,
+    "codeclewOracleRecall": 0.414,
+    "defaultRecoveryTerminality": 1.0,
+    "codeclewRecoveryTerminality": 0.0,
+    "defaultCriticalMisses": 0,
+    "codeclewCriticalMisses": 17,
+    "falseExactClaims": 0
+  },
+  "gates": {
+    "passRateNotLower": "FAIL",
+    "zeroCriticalMisses": "FAIL",
+    "zeroFalseExactClaims": "PASS",
+    "noncachedTokensAtLeastThirtyPercentLower": "FAIL",
+    "documentationVerificationRecallAtLeastNinetyPercent": "FAIL",
+    "recoveryTerminalityOneHundredPercent": "FAIL",
+    "privacySafeAggregate": "PASS",
+    "independentRawReplay": "FAIL_TASK_ONE_RAW_RESULT_NOT_RETAINED"
+  },
+  "primaryFinding": {
+    "code": "SANDBOX_RUNTIME_ATTACH_MISS",
+    "summary": "An agent invoking the pinned source launcher inside its workspace sandbox did not attach to the already primed compatible capsule and sessions.",
+    "observedConsequence": "The launcher attempted a new Gradle worker bootstrap; sandbox policy denied Gradle FileLockContentionHandler DatagramChannel creation. Read tasks wandered into fallback and managed changes failed closed.",
+    "requiredProductChange": "Provide one stable installed RELEASE entrypoint that resolves and attaches to a compatible primed capsule without source checkout or build-tool authority, and make doctor report a typed attach mismatch before any bootstrap attempt."
+  },
+  "qualifiedProductClaim": {
+    "languages": {
+      "kotlin": "2.4.10 Gradle compiler-backed read and managed mutation; 2.4.0 Gradle and 2.3.0 Maven read-only preview",
+      "java": "JDK compiler-backed read-only",
+      "typescript": "TypeScript 5.x exact-tsconfig read-only preview",
+      "javascript": "TypeScript-checked exact read-only plus declaration-typed and syntax-conditional read-only modes",
+      "rust": "conditional syntax-backed read and managed mutation with native validation",
+      "python": "conditional syntax-backed read and managed mutation with native validation",
+      "csharp": "not qualified; CS0 deferred"
+    },
+    "repositoryOperations": {
+      "singleRepositoryAnalysis": "qualified on direct CLI use",
+      "singleRepositoryMutation": "profile-specific and conditional where advertised",
+      "multiRepositoryAnalysis": "bounded explicit local workspaces of two to four repositories",
+      "multiRepositoryMutation": "local prepare/publish saga core exists but JVM agent workflow is not advertised",
+      "agentSandboxWorkflow": "not qualified by Q1"
+    },
+    "unresolvedBoundaries": [
+      "stable sandbox-to-runtime attach",
+      "C# compiler authority",
+      "framework-specific semantics",
+      "JVM multi-service mutation qualification",
+      "publication-grade external benchmark"
+    ]
+  },
+  "measurementLimits": {
+    "elapsedWasScoredByTerminalClassAndWallTimeoutNotRetainedAsExactPerArmSeconds": true,
+    "openedSourceBytesWereApproximatedByCommandOutputBytes": true,
+    "timedOutArmHasNoFinalUsageRecord": true,
+    "rawRepositoryAndModelArtifactsTrackedInGit": false
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSourceBodies": false,
+    "containsRawModelOutput": false
+  }
+}
