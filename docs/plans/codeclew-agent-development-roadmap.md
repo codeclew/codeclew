@@ -2,7 +2,7 @@
 
 ## Document authority
 
-- **Status:** M1, M2, and W1 complete; L1 common semantic envelope is next.
+- **Status:** M1, M2, W1, and L1 complete; J1 Java read-only profile is next.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
@@ -56,6 +56,9 @@ The target workflow lets an agent:
 - Mission-bound workspaces provide deterministic, globally bounded read-only
   composition for two to four explicitly selected repositories. Lower-level
   multi-repository threads remain available for advanced analysis.
+- The internal common semantic envelope projects Kotlin callable facts into six
+  bounded concepts while retaining the complete language row as opaque CAS bytes.
+  Composition preserves independent certainty and completeness authority.
 - Three internal warm-path cases demonstrate exact single-repository facts,
   exact two-repository composition, and an honest `UNSURE` fallback with a named
   manual verification obligation.
@@ -65,9 +68,9 @@ The target workflow lets an agent:
   longer available. Their public digests remain historical evidence and must not
   be overwritten or represented as reproducible inputs.
 
-These facts do **not** yet prove coordinated multi-repository mutation, a common
-cross-language envelope, Java/TypeScript/C# support, or an overall advantage
-over default agent use.
+These facts do **not** yet prove coordinated multi-repository mutation, a
+qualified non-Kotlin projection into the common envelope, Java/TypeScript/C#
+support, or an overall advantage over default agent use.
 
 ## Product and authority invariants
 
@@ -335,6 +338,14 @@ Language-specific payloads remain opaque and versioned.
 - Unknown language-specific fields round-trip without being interpreted by core.
 - Cross-language composition cannot promote certainty or invent a relation.
 - Envelope queries remain bounded and deterministic.
+
+The bounded L1 acceptance is implemented by six focused tests: complete Kotlin
+callable rows round-trip byte-for-byte through opaque CAS payloads, unknown future
+language bytes remain uninterpreted, weak authority survives composition,
+declarations produce no invented relations, relation authority is preserved, and
+query ordering/limits are deterministic. The full `clew` test suite and strict
+Clippy gate pass. L1 deliberately adds no public endpoint, index, daemon, or state
+migration; J1 is the first second-language producer of this envelope.
 
 ## J1 — Java read-only profile
 
