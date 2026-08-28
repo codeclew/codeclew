@@ -1487,7 +1487,7 @@ fn cancel_task_run(run_id: &str) -> Result<Value, ClewError> {
     if !cancellation_allowed(record.status) {
         return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
-            "only a created or preparing run can be cancelled",
+            "only a created, preparing, or unpublished ready run can be cancelled",
         ));
     }
     let process = record.process_id.zip(record.process_start_token.clone());
@@ -1506,7 +1506,13 @@ fn cancel_task_run(run_id: &str) -> Result<Value, ClewError> {
 }
 
 fn cancellation_allowed(status: RunStatus) -> bool {
-    matches!(status, RunStatus::Created | RunStatus::Preparing)
+    matches!(
+        status,
+        RunStatus::Created
+            | RunStatus::Preparing
+            | RunStatus::ReadyToPublish
+            | RunStatus::ReadyToPublishConditional
+    )
 }
 
 fn execute_task_run(run_id: &str) -> Result<Value, ClewError> {
@@ -2434,6 +2440,8 @@ mod tests {
         );
         assert!(cancellation_allowed(RunStatus::Created));
         assert!(cancellation_allowed(RunStatus::Preparing));
+        assert!(cancellation_allowed(RunStatus::ReadyToPublish));
+        assert!(cancellation_allowed(RunStatus::ReadyToPublishConditional));
         assert!(!cancellation_allowed(RunStatus::Publishing));
         assert!(!cancellation_allowed(RunStatus::Published));
         assert!(!cancellation_allowed(RunStatus::WorktreeRecoveryRequired));

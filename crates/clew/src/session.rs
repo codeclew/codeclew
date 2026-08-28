@@ -211,6 +211,7 @@ pub struct SessionLifecycle {
 }
 
 pub struct SessionAdmission {
+    session_id: String,
     _lock: SessionLifecycleLock,
 }
 
@@ -560,6 +561,28 @@ impl SessionAuthority {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
         let lifecycle = load_session_lifecycle(&state, &root, self)?;
+        self.freshness_from_lifecycle(&state, &root, lifecycle)
+    }
+
+    pub fn freshness_under_admission(
+        &self,
+        admission: &SessionAdmission,
+    ) -> Result<SessionFreshness, ClewError> {
+        if admission.session_id != self.session_id {
+            return Err(invalid("session admission belongs to another session"));
+        }
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let lifecycle = load_session_lifecycle_unlocked(&state, &root, self)?;
+        self.freshness_from_lifecycle(&state, &root, lifecycle)
+    }
+
+    fn freshness_from_lifecycle(
+        &self,
+        state: &StateAuthority,
+        root: &Path,
+        lifecycle: SessionLifecycle,
+    ) -> Result<SessionFreshness, ClewError> {
         if lifecycle.status != SessionStatus::Open {
             return Ok(classify_freshness(
                 &self.session_id,
@@ -909,7 +932,10 @@ fn open_session_admission_with_state(
             "session is terminal and cannot admit work",
         ));
     }
-    Ok(SessionAdmission { _lock: lock })
+    Ok(SessionAdmission {
+        session_id: authority.session_id.clone(),
+        _lock: lock,
+    })
 }
 
 struct SessionLifecycleLock(File);
@@ -1976,7 +2002,7 @@ fn run_transition_allowed(from: RunStatus, to: RunStatus) -> bool {
                 RunStatus::Created | RunStatus::WorktreeRecoveryRequired
             ) | (
                 RunStatus::ReadyToPublish | RunStatus::ReadyToPublishConditional,
-                RunStatus::Publishing
+                RunStatus::Publishing | RunStatus::Cancelled
             ) | (
                 RunStatus::Publishing,
                 RunStatus::Published
@@ -3519,6 +3545,28 @@ mod tests {
                 .status,
             RunStatus::Created
         );
+    }
+
+    #[test]
+    fn unpublished_ready_run_can_be_cancelled() {
+        for ready in [
+            RunStatus::ReadyToPublish,
+            RunStatus::ReadyToPublishConditional,
+        ] {
+            let (_temporary, state, root, mut run) = initialized_run();
+            run.status = RunStatus::Preparing;
+            save_run_transition(&state, &root, &mut run).unwrap();
+            run.status = ready;
+            save_run_transition(&state, &root, &mut run).unwrap();
+            run.status = RunStatus::Cancelled;
+            save_run_transition(&state, &root, &mut run).unwrap();
+            assert_eq!(
+                load_run_projection(&state, &root, &run.run_id)
+                    .unwrap()
+                    .status,
+                RunStatus::Cancelled
+            );
+        }
     }
 
     #[test]

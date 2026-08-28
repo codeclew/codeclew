@@ -177,6 +177,32 @@ isolated candidate run. The low-level `session`, `context`, `plan`, and
 `task-run` commands remain an advanced protocol for expansion, cancellation,
 relocation, and diagnostics; they are not required for the happy path.
 
+### Durable development missions
+
+A mission binds one canonical `codeclew-change-spec/1.0` to one through eight
+already-open sessions. The spec gives requirements, non-goals, acceptance
+criteria, and documentation policy stable IDs. Keep it in a private mode-0600
+file and record existing immutable context, plan, and run authorities instead
+of copying their mutable output into prose:
+
+```bash
+./clew mission open --session session:... --spec /absolute/private/change-spec.json
+./clew mission record \
+  --mission mission:... \
+  --session session:... \
+  --context context:sha256:... \
+  --plan plan:sha256:... \
+  --run run:...
+./clew mission inspect --mission mission:...
+./clew mission status --mission mission:...
+./clew mission close --mission mission:...
+```
+
+Mission events are append-only, content-bound, bounded, and path-free on
+stdout. A failed or conditional run remains failed or conditional in the
+mission record; mission status never upgrades its certainty or substitutes for
+the existing publication checks.
+
 ### Read-only multi-service threads
 
 An immutable thread can bind two to eight already-open local sessions and

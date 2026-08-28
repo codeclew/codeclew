@@ -735,6 +735,103 @@ def _runtime_capsule_directory(root: Path, key: object) -> Path | None:
     return capsule
 
 
+def cleanup_session_id(command: list[str]) -> str | None:
+    """Return the authority id only for runtime-agnostic session cleanup."""
+    if len(command) < 4 or command[:2] not in (["session", "close"], ["session", "gc"]):
+        return None
+    values: list[str] = []
+    for index, argument in enumerate(command[2:]):
+        if argument == "--session" and index + 3 < len(command):
+            values.append(command[index + 3])
+        elif argument.startswith("--session="):
+            values.append(argument.split("=", 1)[1])
+    if len(values) != 1:
+        return None
+    session_id = values[0]
+    component = session_id.removeprefix("session:")
+    if (
+        not session_id.startswith("session:")
+        or not component
+        or len(component) > 128
+        or any(
+            not (
+                character.isascii()
+                and (character.isalnum() or character in "-_")
+            )
+            for character in component
+        )
+    ):
+        return None
+    return session_id
+
+
+def sealed_session_cleanup_runtime(
+    root: Path, session_id: str
+) -> tuple[str, Path, object]:
+    """Lease the existing capsule bound to a close/gc session authority.
+
+    Cleanup is deliberately independent of the current source digest: active
+    sessions retain their capsule as a runtime-GC root, and the selected binary
+    validates the complete session authority before changing lifecycle state.
+    """
+    component = session_id.removeprefix("session:")
+    sessions_fd = os.open(root / "sessions", _directory_flags())
+    session_fd = -1
+    authority_fd = -1
+    try:
+        session_fd = os.open(component, _directory_flags(), dir_fd=sessions_fd)
+        authority_fd = os.open(
+            "authority.json",
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=session_fd,
+        )
+        metadata = os.fstat(authority_fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > MAX_MANIFEST_BYTES
+        ):
+            raise BootstrapError("session cleanup authority is unsafe")
+        with os.fdopen(authority_fd, "rb") as stream:
+            authority_fd = -1
+            payload = stream.read(MAX_MANIFEST_BYTES + 1)
+        value = json.loads(payload)
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") not in GC_SESSION_SCHEMAS
+            or value.get("sessionId") != session_id
+            or not valid_runtime_key(value.get("authorityDigest"))
+            or not valid_runtime_key(value.get("runtimeKey"))
+            or value.get("runtimeMode") not in {"RELEASE", "DEVELOPMENT"}
+        ):
+            raise BootstrapError("session cleanup authority is invalid")
+        key = str(value["runtimeKey"])
+        capsule = _runtime_capsule_directory(root, key)
+        if capsule is None:
+            raise BootstrapError("session cleanup runtime capsule is unavailable")
+        lease_path = root / "locks" / f"runtime-{key.removeprefix('sha256:')}.lease"
+        lease = lease_path.open("a+b")
+        try:
+            os.chmod(lease_path, 0o600)
+            fcntl.flock(lease, fcntl.LOCK_SH)
+            manifest = verify_capsule(capsule, key)
+            if manifest.get("mode") != value["runtimeMode"]:
+                raise BootstrapError("session cleanup runtime authority mismatch")
+        except Exception:
+            lease.close()
+            raise
+        return key, capsule, lease
+    except FileNotFoundError as error:
+        raise BootstrapError("session cleanup authority is unavailable") from error
+    finally:
+        if authority_fd >= 0:
+            os.close(authority_fd)
+        if session_fd >= 0:
+            os.close(session_fd)
+        os.close(sessions_fd)
+
+
 def read_locator(path: Path, expected: str, root: Path | None = None) -> str | None:
     if not path.exists():
         return None
@@ -3270,6 +3367,9 @@ def main() -> int:
                 lease = lease_path.open("a+b")
                 os.chmod(lease_path, 0o600)
                 fcntl.flock(lease, fcntl.LOCK_SH)
+    if checkpoint is None and (cleanup_id := cleanup_session_id(command)) is not None:
+        key, capsule, lease = sealed_session_cleanup_runtime(root, cleanup_id)
+        checkpoint = {"sessionCleanup": True, "runtimeKey": key}
     if checkpoint is None:
         inputs, development = source_manifest(source)
         mode = "DEVELOPMENT" if development else "RELEASE"

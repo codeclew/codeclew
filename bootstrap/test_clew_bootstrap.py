@@ -52,6 +52,77 @@ def write_minimal_registry(
 
 
 class BootstrapAuthorityTest(unittest.TestCase):
+    def test_session_cleanup_uses_its_retained_capsule_without_source_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            session_name = "01234567-89ab-cdef-0123-456789abcdef"
+            session_id = f"session:{session_name}"
+            runtime_key = "sha256:" + "8" * 64
+            session = root / "sessions" / session_name
+            capsule = root / "runtimes" / runtime_key.removeprefix("sha256:")
+            locks = root / "locks"
+            session.mkdir(mode=0o700, parents=True)
+            capsule.mkdir(mode=0o500, parents=True)
+            locks.mkdir(mode=0o700)
+            authority = session / "authority.json"
+            authority.write_bytes(bootstrap.canonical({
+                "schema": "codeclew-session/5.0",
+                "sessionId": session_id,
+                "authorityDigest": "sha256:" + "9" * 64,
+                "runtimeKey": runtime_key,
+                "runtimeMode": "RELEASE",
+            }) + b"\n")
+            authority.chmod(0o600)
+
+            self.assertEqual(
+                bootstrap.cleanup_session_id(
+                    ["session", "gc", "--force", "--session", session_id]
+                ),
+                session_id,
+            )
+            self.assertIsNone(
+                bootstrap.cleanup_session_id(
+                    ["session", "inspect", "--session", session_id]
+                )
+            )
+            with mock.patch.object(
+                bootstrap,
+                "verify_capsule",
+                return_value={"mode": "RELEASE"},
+            ) as verify:
+                key, selected, lease = bootstrap.sealed_session_cleanup_runtime(
+                    root, session_id
+                )
+            try:
+                self.assertEqual(key, runtime_key)
+                self.assertEqual(selected, capsule)
+                verify.assert_called_once_with(capsule, runtime_key)
+            finally:
+                lease.close()
+
+    def test_session_cleanup_rejects_unsafe_authority_and_runtime_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            session_name = "01234567-89ab-cdef-0123-456789abcdef"
+            session_id = f"session:{session_name}"
+            session = root / "sessions" / session_name
+            session.mkdir(mode=0o700, parents=True)
+            (root / "runtimes").mkdir()
+            (root / "locks").mkdir()
+            authority = session / "authority.json"
+            authority.write_bytes(bootstrap.canonical({
+                "schema": "codeclew-session/5.0",
+                "sessionId": session_id,
+                "authorityDigest": "sha256:" + "9" * 64,
+                "runtimeKey": "sha256:" + "8" * 64,
+                "runtimeMode": "AMBIENT",
+            }) + b"\n")
+            authority.chmod(0o600)
+            with self.assertRaisesRegex(
+                bootstrap.BootstrapError, "session cleanup authority is invalid"
+            ):
+                bootstrap.sealed_session_cleanup_runtime(root, session_id)
+
     def test_effective_resources_honor_affinity_cpuset_quota_and_memory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

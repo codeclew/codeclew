@@ -1,6 +1,6 @@
 use super::{
-    ContextObject, PlanObject, RunRecord, SessionAuthority, SessionLanguage, SessionStatus,
-    internal, invalid, read_managed_json, unix_ms, write_managed_json_create_new,
+    ContextObject, PlanObject, RunRecord, SessionAuthority, SessionLanguage, internal, invalid,
+    read_managed_json, unix_ms, write_managed_json_create_new,
 };
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use uuid::Uuid;
 
 #[cfg(unix)]
@@ -243,8 +243,8 @@ pub fn record(
         .ok_or_else(|| invalid("mission record session is not a bound member"))?;
     let (session, _) = SessionAuthority::load(session_id)?;
     require_same_member(member, &session)?;
-    let _admission = session.open_admission()?;
-    require_fresh(&session)?;
+    let admission = session.open_admission()?;
+    require_fresh(&session, &admission)?;
     let binding = build_binding(&session, context_id, plan_id, run_id)?;
     if loaded.events.iter().any(|event| {
         event.kind == MissionEventKind::Bound && event.binding.as_ref() == Some(&binding)
@@ -503,7 +503,9 @@ fn load_live_members(session_ids: &[String]) -> Result<Vec<MissionMemberAuthorit
     let mut admissions = Vec::with_capacity(sessions.len());
     for session in &sessions {
         admissions.push(session.open_admission()?);
-        require_fresh(session)?;
+    }
+    for (session, admission) in sessions.iter().zip(&admissions) {
+        require_fresh(session, admission)?;
     }
     let members = sessions.iter().map(member_from_session).collect::<Vec<_>>();
     drop(admissions);
@@ -511,17 +513,27 @@ fn load_live_members(session_ids: &[String]) -> Result<Vec<MissionMemberAuthorit
 }
 
 fn require_live_members(members: &[MissionMemberAuthority]) -> Result<(), ClewError> {
+    let mut sessions = Vec::with_capacity(members.len());
     for member in members {
         let (session, _) = SessionAuthority::load(&member.session_id)?;
         require_same_member(member, &session)?;
-        session.require_open()?;
-        require_fresh(&session)?;
+        sessions.push(session);
+    }
+    let mut admissions = Vec::with_capacity(sessions.len());
+    for session in &sessions {
+        admissions.push(session.open_admission()?);
+    }
+    for (session, admission) in sessions.iter().zip(&admissions) {
+        require_fresh(session, admission)?;
     }
     Ok(())
 }
 
-fn require_fresh(session: &SessionAuthority) -> Result<(), ClewError> {
-    let freshness = session.freshness()?;
+fn require_fresh(
+    session: &SessionAuthority,
+    admission: &super::SessionAdmission,
+) -> Result<(), ClewError> {
+    let freshness = session.freshness_under_admission(admission)?;
     if freshness.status != "FRESH" {
         return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
