@@ -118,6 +118,8 @@ enum WorkspaceCommand {
     Inspect(WorkspaceIdArgs),
     /// Reuse the globally bounded multi-repository context engine.
     Context(WorkspaceContextArgs),
+    /// Prepare every independently planned member before any ref can publish.
+    Prepare(WorkspacePrepareArgs),
     Close(WorkspaceIdArgs),
 }
 
@@ -367,6 +369,15 @@ struct WorkspaceContextArgs {
     terms: Vec<String>,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
+}
+
+#[derive(Args)]
+struct WorkspacePrepareArgs {
+    #[arg(long)]
+    workspace: String,
+    /// Closed canonical codeclew-workspace-prepare-input/1.0 JSON file.
+    #[arg(long)]
+    request: PathBuf,
 }
 
 #[derive(Args)]
@@ -1010,6 +1021,15 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: WorkspaceCommand::Context(args),
         } => workspace::context(&args.workspace, &args.intent, &args.terms, args.max_roots),
         Command::Workspace {
+            command: WorkspaceCommand::Prepare(args),
+        } => {
+            let source = read_private_diagnostic_input(
+                &args.request,
+                clew::workspace_prepare::MAX_WORKSPACE_PREPARE_INPUT_BYTES,
+            )?;
+            prepare_workspace(&args.workspace, &source)
+        }
+        Command::Workspace {
             command: WorkspaceCommand::Close(args),
         } => serde_json::to_value(workspace::close(&args.workspace)?).map_err(internal),
         Command::Session {
@@ -1503,6 +1523,39 @@ fn start_task_run(session_id: &str, context_id: &str, plan_id: &str) -> Result<V
     }
     spawn_task_run(&record.run_id)?;
     task_run_status(&record.run_id)
+}
+
+fn prepare_workspace(workspace_id: &str, source: &[u8]) -> Result<Value, ClewError> {
+    let authority = clew::workspace_prepare::resolve(workspace_id, source)?;
+    if let Some(after) = clew::workspace_prepare::retained_after(&authority)? {
+        return bounded_after_workspace(after);
+    }
+    for member in &authority.members {
+        start_task_run(&member.session_id, &member.context_id, &member.plan_id)?;
+    }
+    loop {
+        match clew::workspace_prepare::observe_and_finalize(&authority)? {
+            clew::workspace_prepare::WorkspacePrepareObservation::Preparing(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            clew::workspace_prepare::WorkspacePrepareObservation::Prepared(after) => {
+                return bounded_after_workspace(after);
+            }
+        }
+    }
+}
+
+fn bounded_after_workspace(
+    after: clew::workspace_prepare::AfterWorkspace,
+) -> Result<Value, ClewError> {
+    let value = serde_json::to_value(after).map_err(internal)?;
+    if canonical::bytes(&value).map_err(internal)?.len() > 64 * 1024 {
+        return Err(ClewError::new(
+            ErrorCode::SliceBudgetExceeded,
+            "AfterWorkspace stdout exceeds 64 KiB",
+        ));
+    }
+    Ok(value)
 }
 
 fn spawn_task_run(run_id: &str) -> Result<(), ClewError> {
@@ -2957,7 +3010,19 @@ mod tests {
             ])
             .is_ok()
         );
-        for command in ["publish", "prepare", "gc"] {
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "workspace",
+                "prepare",
+                "--workspace",
+                "workspace:authority",
+                "--request",
+                "/private/prepare.json",
+            ])
+            .is_ok()
+        );
+        for command in ["publish", "gc"] {
             assert!(Cli::try_parse_from(["clew", "workspace", command]).is_err());
         }
     }

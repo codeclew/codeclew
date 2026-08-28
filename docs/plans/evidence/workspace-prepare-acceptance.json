@@ -1,0 +1,48 @@
+{
+  "schema": "codeclew-workspace-prepare-acceptance/1.0",
+  "status": "PASS",
+  "profile": "WORKSPACE_PREPARE_ALL_V1",
+  "authority": {
+    "runtimeMode": "RELEASE",
+    "afterWorkspaceAuthorityDigest": "sha256:af1cf5eb7f413f28f0c9cba1cb5a4124cd9ebcfc314264e32440bf0a04b7e29e"
+  },
+  "fixture": {
+    "repositoryCount": 2,
+    "memberCount": 2,
+    "declaredEdgeCount": 1,
+    "language": "python",
+    "independentLocalGitRepositories": true,
+    "privateLocatorIncluded": false
+  },
+  "prepareAll": {
+    "status": "PREPARED_ALL",
+    "candidateCount": 2,
+    "successfulNativeValidationCount": 2,
+    "conditionalMemberCount": 2,
+    "sourceRefUpdateCount": 0,
+    "sourceWorktreeChangeCount": 0,
+    "candidateEdgeBindsBothRevisions": true,
+    "certaintyPromotedByComposition": false
+  },
+  "idempotency": {
+    "initialPrepareMillis": 76899,
+    "repeatPrepareMillis": 221,
+    "sameAfterWorkspaceAuthority": true,
+    "repeatStartedTaskRunCount": 0
+  },
+  "failureContour": {
+    "classifiedRunStatusCount": 11,
+    "preparedStatuses": 3,
+    "pendingStatuses": 2,
+    "terminalOrRecoveryStatuses": 6,
+    "publicationCalledByPrepare": false,
+    "unpublishedCandidatesRemainRunBoundForExplicitRecoveryOrGc": true
+  },
+  "verification": {
+    "focusedRustTests": 3,
+    "cliSurfaceTests": 1,
+    "clippyAllTargets": "PASS",
+    "formatCheck": "PASS",
+    "diffCheck": "PASS"
+  }
+}

@@ -1085,6 +1085,39 @@ pub fn public_candidate_status(prepared: &PreparedCandidateV2) -> Result<Value, 
     Ok(value)
 }
 
+pub(crate) fn load_prepared_for_workspace(
+    run: &crate::session::RunRecord,
+) -> Result<PreparedCandidateV2, ClewError> {
+    let state = StateAuthority::process_default()?;
+    let bytes = state.read_private_file(
+        &state.run_root(&run.run_id)?.join("prepared-v2.json"),
+        16 * 1024 * 1024,
+    )?;
+    let prepared: PreparedCandidateV2 =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("prepared candidate is not JSON"))?;
+    if canonical::bytes(&prepared).map_err(internal)? != bytes {
+        return Err(ClewError::new(
+            ErrorCode::StateCorrupt,
+            "prepared candidate is not canonical",
+        ));
+    }
+    let (session, _) = SessionAuthority::load(&run.session_id)?;
+    validate_prepared(&session, &prepared)?;
+    if run.context_id != prepared.context_id
+        || run.plan_id != prepared.plan_id
+        || run.candidate_commit.as_deref() != Some(prepared.candidate_commit.as_str())
+        || run.candidate_snapshot.as_ref() != Some(&prepared.candidate_snapshot)
+        || run.prepared_authority_digest.as_deref()
+            != Some(prepared.prepared_authority_digest.as_str())
+    {
+        return Err(ClewError::new(
+            ErrorCode::BindingChanged,
+            "run ledger differs from its prepared candidate authority",
+        ));
+    }
+    Ok(prepared)
+}
+
 pub fn conditional_approval(
     session: &SessionAuthority,
     prepared: &PreparedCandidateV2,

@@ -331,6 +331,22 @@ pub fn inspect(workspace_id: &str) -> Result<WorkspaceInspection, ClewError> {
     Ok(inspection(&authority, lifecycle.status))
 }
 
+pub(crate) fn load_open_authority(
+    workspace_id: &str,
+) -> Result<(WorkspaceAuthority, std::path::PathBuf), ClewError> {
+    let state = StateAuthority::process_default()?;
+    let (authority, root) = load_with_state(&state, workspace_id)?;
+    let lifecycle = load_lifecycle(&state, &root, &authority)?;
+    if lifecycle.status != WorkspaceStatus::Open {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "workspace is closed and cannot prepare candidates",
+        ));
+    }
+    verify_live_authorities(&authority)?;
+    Ok((authority, root))
+}
+
 pub fn context(
     workspace_id: &str,
     intent: &str,

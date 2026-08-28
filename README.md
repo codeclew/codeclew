@@ -300,8 +300,26 @@ exactly once, and members must refer to distinct repositories:
   --intent 'compare the selected service boundaries' \
   --term Service \
   --term Repository
+
+./clew workspace prepare \
+  --workspace workspace:... \
+  --request /absolute/private/workspace-prepare.json
 ./clew workspace close --workspace workspace:...
 ```
+
+The mode-0600 prepare request binds one existing context and immutable plan per
+member:
+
+```json
+{"members":[{"alias":"api","contextId":"context:sha256:...","planId":"plan:sha256:..."},{"alias":"client","contextId":"context:sha256:...","planId":"plan:sha256:..."}],"schema":"codeclew-workspace-prepare-input/1.0"}
+```
+
+`workspace prepare` starts or attaches to each deterministic task run and emits
+an immutable `PREPARED_ALL` `AfterWorkspace` only after every candidate has
+passed its own validation. It never updates a target ref. Declared edges bind
+both exact candidate OIDs for later combined checks without replacing member
+authority or promoting catalog certainty. An identical repeat returns the same
+retained authority without starting task runners.
 
 Member and edge order cannot change the workspace identity; changing an alias,
 edge, session, repository revision, mission, or ChangeSpec does. Context reuses

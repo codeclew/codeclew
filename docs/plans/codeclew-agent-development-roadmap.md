@@ -2,7 +2,7 @@
 
 ## Document authority
 
-- **Status:** M1, M2, W1, L1, J1, and C1 complete; W2 prepare-all is next.
+- **Status:** M1, M2, W1, L1, J1, C1, and W2 complete; W3 scenario receipts is next.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
@@ -416,6 +416,8 @@ compatibility remains `NOT_ASSESSED`. The checked aggregate is
 
 ## W2 — Prepare-all and candidate AfterWorkspace
 
+**Status:** Complete for two-to-four already-open local workspace members.
+
 ### Practical purpose
 
 Cross-service work is safe only when all candidates can be inspected and tested
@@ -440,6 +442,20 @@ together before any target ref moves.
 - Candidate build/test validation can refer to other candidate revisions without
   replacing member authority.
 - Dirty, stale, missing, or terminal members fail with actionable typed status.
+
+### Accepted result
+
+One RELEASE experiment prepared two independent Python candidates concurrently.
+Both native validations passed, both runs retained their conditional syntax
+obligations, and neither target ref nor source worktree changed. The immutable
+`AfterWorkspace` binds each before/candidate OID, context evidence, plan, run,
+validation, obligation-tree digest, and both candidate OIDs on the declared
+edge. Repeating the identical request returned the same authority in 221 ms and
+started no new run. All eleven task-run states have a closed prepare-barrier
+classification. Failed or interrupted preparation cannot publish; any retained
+candidate remains an unpublished, run-bound derived object for explicit recovery
+or GC. The checked aggregate is
+`docs/plans/evidence/workspace-prepare-acceptance.json`.
 
 ## W3 — Scenario receipts
 
