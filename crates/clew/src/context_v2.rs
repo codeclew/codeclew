@@ -141,7 +141,11 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
 fn supported_context_language(language: &str) -> bool {
     matches!(
         language,
-        "language:java" | "language:kotlin" | "language:python" | "language:rust"
+        "language:java"
+            | "language:kotlin"
+            | "language:python"
+            | "language:rust"
+            | "language:typescript"
     )
 }
 
@@ -1037,13 +1041,24 @@ fn rank_fact_evidence(
         let mut decorated = std::mem::take(facts)
             .into_iter()
             .map(|fact| {
+                let direct_name_coverage = fact["payload"]
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| {
+                        let name = name
+                            .chars()
+                            .flat_map(char::to_lowercase)
+                            .collect::<String>();
+                        usize::from(lowered.iter().any(|term| term == &name))
+                    })
+                    .unwrap_or(0);
                 let identities = exact_identity_terms(&fact["payload"]);
                 let exact_coverage = lowered
                     .iter()
                     .filter(|term| identities.contains(term.as_str()))
                     .count();
                 let score = fact_score(&fact["payload"], &lowered, None, 0);
-                (exact_coverage, score, fact)
+                (direct_name_coverage, exact_coverage, score, fact)
             })
             .collect::<Vec<_>>();
         decorated.sort_by(|left, right| {
@@ -1051,9 +1066,10 @@ fn rank_fact_evidence(
                 .0
                 .cmp(&left.0)
                 .then_with(|| right.1.cmp(&left.1))
-                .then_with(|| left.2["factKey"].as_str().cmp(&right.2["factKey"].as_str()))
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.3["factKey"].as_str().cmp(&right.3["factKey"].as_str()))
         });
-        *facts = decorated.into_iter().map(|(_, _, fact)| fact).collect();
+        *facts = decorated.into_iter().map(|(_, _, _, fact)| fact).collect();
     }
     let lanes = lanes.into_values().collect::<Vec<_>>();
     let mut ranked = Vec::new();
@@ -1139,14 +1155,14 @@ fn collect_exact_identity_terms(
                 )
             }) =>
         {
-            output.extend(
-                value
-                    .split(|character: char| {
-                        matches!(character, '/' | '.' | '#' | ':' | '(' | ')' | ';' | '@')
-                    })
-                    .filter(|component| !component.is_empty())
-                    .map(|component| component.chars().flat_map(char::to_lowercase).collect()),
-            );
+            for component in value
+                .split(|character: char| {
+                    matches!(character, '/' | '.' | '#' | ':' | '(' | ')' | ';' | '@')
+                })
+                .filter(|component| !component.is_empty())
+            {
+                insert_identity_component_terms(component, output);
+            }
         }
         Value::Array(values) => {
             for value in values {
@@ -1159,6 +1175,42 @@ fn collect_exact_identity_terms(
             }
         }
         _ => {}
+    }
+}
+
+fn insert_identity_component_terms(component: &str, output: &mut BTreeSet<String>) {
+    output.insert(component.chars().flat_map(char::to_lowercase).collect());
+    let characters = component.chars().collect::<Vec<_>>();
+    let mut start = 0usize;
+    for index in 1..characters.len() {
+        let previous = characters[index - 1];
+        let current = characters[index];
+        let next = characters.get(index + 1).copied();
+        if current.is_uppercase()
+            && (previous.is_lowercase()
+                || previous.is_numeric()
+                || (previous.is_uppercase() && next.is_some_and(char::is_lowercase)))
+        {
+            if index > start {
+                output.insert(
+                    characters[start..index]
+                        .iter()
+                        .copied()
+                        .flat_map(char::to_lowercase)
+                        .collect(),
+                );
+            }
+            start = index;
+        }
+    }
+    if start < characters.len() {
+        output.insert(
+            characters[start..]
+                .iter()
+                .copied()
+                .flat_map(char::to_lowercase)
+                .collect(),
+        );
     }
 }
 
@@ -1283,6 +1335,7 @@ mod tests {
         assert!(super::supported_context_language("language:kotlin"));
         assert!(super::supported_context_language("language:python"));
         assert!(super::supported_context_language("language:rust"));
+        assert!(super::supported_context_language("language:typescript"));
         assert!(!super::supported_context_language("language:unknown"));
     }
 
@@ -1465,6 +1518,34 @@ mod tests {
             None,
             0,
         ));
+    }
+
+    #[test]
+    fn camel_case_identity_aliases_keep_exact_declarations_ahead_of_references() {
+        let declaration = json!({
+            "compilation":"tsconfig:tsconfig.json",
+            "factKey":"declaration",
+            "payload":{
+                "kind":"DECLARATION",
+                "symbolIdentity":"ts:src/hooks.ts#function:usePersistentState@10-80",
+            },
+        });
+        let reference = json!({
+            "compilation":"tsconfig:tsconfig.json",
+            "factKey":"reference",
+            "payload":{
+                "kind":"RELATION",
+                "sourceIdentity":"ts:src/page.ts#function:render@90-120",
+                "targetIdentity":"ts:src/hooks.ts#function:usePersistentState@10-80",
+                "description":"use persistent state persistent state",
+            },
+        });
+        let terms = ["persistent", "state", "use", "usepersistentstate"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let ranked = rank_fact_evidence(vec![reference, declaration], &terms, 2).unwrap();
+        assert_eq!(ranked[0]["factKey"], "declaration");
     }
 
     #[test]

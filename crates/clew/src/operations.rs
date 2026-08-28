@@ -123,6 +123,12 @@ pub fn doctor(
             "INSTALL_RUST_1_92",
         ),
         check(
+            "tool.node",
+            executable_available("node"),
+            false,
+            "INSTALL_NODE",
+        ),
+        check(
             "state.free-space",
             available_bytes(state.root())
                 .is_some_and(|value| value >= COLD_BUILD_MINIMUM_FREE_BYTES),
@@ -216,9 +222,10 @@ fn repository_checks(repository: &Path, target_ref: Option<&str>) -> Vec<DoctorC
         || regular_non_symlink(&repository.join("setup.py"));
     let rust = regular_non_symlink(&repository.join("Cargo.toml"))
         && regular_non_symlink(&repository.join("Cargo.lock"));
+    let typescript = regular_non_symlink(&repository.join("tsconfig.json"));
     checks.push(check(
         "repository.recognized-project-marker",
-        gradle || maven || python || rust,
+        gradle || maven || python || rust || typescript,
         false,
         "SELECT_EXPLICIT_LANGUAGE_AND_COMPILATION",
     ));
@@ -464,6 +471,19 @@ mod tests {
                 && profile["mutation"] == false
                 && profile["status"] == "READ_ONLY_PREVIEW"
         }));
+        let typescript = matrix["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["profileId"] == "typescript-5-project-read-only")
+            .unwrap();
+        assert_eq!(
+            typescript["analysisAuthority"],
+            "COMPILER_BACKED_TYPESCRIPT"
+        );
+        assert_eq!(typescript["compilerVersion"], "5.x");
+        assert_eq!(typescript["mutation"], false);
+        assert_eq!(typescript["status"], "READ_ONLY_PREVIEW");
         let qualified_patch = matrix["profiles"]
             .as_array()
             .unwrap()

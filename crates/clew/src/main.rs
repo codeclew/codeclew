@@ -194,6 +194,8 @@ enum SessionLanguageArg {
     Kotlin,
     Python,
     Rust,
+    #[value(name = "typescript")]
+    TypeScript,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -897,6 +899,7 @@ fn language_label(value: &str) -> &str {
         "kotlin" => "Kotlin",
         "python" => "Python",
         "rust" => "Rust",
+        "typescript" => "TypeScript",
         other => other,
     }
 }
@@ -905,6 +908,7 @@ fn build_system_label(value: &str) -> &str {
     match value {
         "GRADLE_WRAPPER" => "Gradle wrapper",
         "MAVEN" => "Maven",
+        "TSCONFIG" => "tsconfig",
         other => other,
     }
 }
@@ -917,6 +921,7 @@ fn doctor_check_label(id: &str) -> &str {
         "tool.java" => "JDK 21 is available",
         "tool.rustc" => "Rust compiler is available",
         "tool.cargo" => "Cargo is available",
+        "tool.node" => "Node.js is available",
         "state.free-space" => "At least 6 GiB is free in Codeclew state",
         "runtime.kotlin24" => "Qualified Kotlin 2.4 runtime is installed",
         "runtime.kotlin23" => "Kotlin 2.3 preview runtime is installed",
@@ -935,6 +940,7 @@ fn remediation_label(id: &str) -> &str {
         "INSTALL_PYTHON_3_11" => "install Python 3.11 or newer",
         "INSTALL_JDK_21" => "install JDK 21 and make java available in PATH",
         "INSTALL_RUST_1_92" => "install the pinned Rust 1.92 toolchain",
+        "INSTALL_NODE" => "install Node.js and project-local TypeScript 5.x",
         "FREE_6_GIB_ON_STATE_VOLUME" => "free at least 6 GiB on the state volume",
         "INSTALL_QUALIFIED_RUNTIME" => "install or rebuild the qualified runtime",
         "INSTALL_KOTLIN23_PREVIEW_COMPONENT" => "install the optional Kotlin 2.3 preview component",
@@ -1122,7 +1128,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Abort(args),
         } => {
-            let (session, _) = SessionAuthority::load(&args.session)?;
+            let (session, _) = SessionAuthority::load_for_cleanup(&args.session)?;
             let lifecycle = session.abort()?;
             Ok(json!({"schema":"codeclew-session-lifecycle-result/1.0","lifecycle":lifecycle}))
         }
@@ -1486,6 +1492,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
             SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
             SessionLanguageArg::Python => SessionLanguage::Python,
             SessionLanguageArg::Rust => SessionLanguage::Rust,
+            SessionLanguageArg::TypeScript => SessionLanguage::TypeScript,
         },
         &args.compilation,
         args.generation_jobs,

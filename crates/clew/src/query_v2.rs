@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/3.0";
+pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/4.0";
 pub const QUERY_SHARD_SCHEMA: &str = "codeclew-query-shard/2.0";
 pub const QUERY_CONTEXT_SCHEMA: &str = "codeclew-query-context/2.0";
 pub const MAX_QUERY_SHARD_BYTES: usize = 8 * 1024 * 1024;
@@ -125,11 +125,17 @@ pub fn build_query_index(
             domain_uri: fact.domain_uri.clone(),
             payload: fact.payload.clone(),
         };
-        let mut terms = terms_for_fact(store, fact)?;
+        let (mut terms, direct_terms) = fact_query_terms(store, fact)?;
         terms.sort();
         terms.dedup();
         for term in terms {
             postings.entry(term).or_default().insert(hit.clone());
+        }
+        for term in direct_terms {
+            postings
+                .entry(direct_name_term(&term))
+                .or_default()
+                .insert(hit.clone());
         }
         Ok(())
     })?;
@@ -213,43 +219,42 @@ pub fn query(
     if requested_terms.is_empty() {
         return Err(invalid("query has no normalized terms"));
     }
+    let mut direct_by_term = Vec::with_capacity(requested_terms.len());
     let mut matched_by_term = Vec::with_capacity(requested_terms.len());
     let mut unmatched = Vec::new();
     let mut shards_read = BTreeSet::<String>::new();
     for term in &requested_terms {
-        let bucket = bucket(term);
-        let references = index.shards.iter().filter(|reference| {
-            reference.bucket == bucket
-                && reference.first_term.as_str() <= term.as_str()
-                && term.as_str() <= reference.last_term.as_str()
-        });
-        let mut term_matches = BTreeSet::new();
-        for reference in references {
-            let lease = store.read(&reference.object, MAX_QUERY_SHARD_BYTES)?;
-            shards_read.insert(reference.object.digest.clone());
-            let shard: QueryShard = serde_json::from_slice(lease.bytes())
-                .map_err(|_| corrupt("query shard is not a closed object"))?;
-            verify_shard(reference, &shard, lease.bytes())?;
-            if let Ok(position) = shard.postings.binary_search_by(|row| row.term.cmp(term)) {
-                term_matches.extend(shard.postings[position].facts.iter().cloned());
-            }
-        }
+        let direct_term = direct_name_term(term);
+        direct_by_term.push(read_term_matches(
+            store,
+            index,
+            &direct_term,
+            &mut shards_read,
+        )?);
+        let term_matches = read_term_matches(store, index, term, &mut shards_read)?;
         if term_matches.is_empty() {
             unmatched.push(term.clone());
         }
-        matched_by_term.push(term_matches.into_iter().collect::<Vec<_>>());
+        matched_by_term.push(term_matches);
     }
-    let unique_match_count = matched_by_term
+    let unique_match_count = direct_by_term
         .iter()
+        .chain(&matched_by_term)
         .flatten()
         .cloned()
         .collect::<BTreeSet<_>>()
         .len();
-    let facts = fair_fact_selection(&matched_by_term, limit);
+    let selection_lanes = direct_by_term
+        .iter()
+        .chain(&matched_by_term)
+        .cloned()
+        .collect::<Vec<_>>();
+    let facts = fair_fact_selection(&selection_lanes, limit);
     let truncated = unique_match_count > facts.len()
-        || requested_terms
-            .iter()
-            .any(|term| index.overflow_terms.contains(term));
+        || requested_terms.iter().any(|term| {
+            index.overflow_terms.contains(term)
+                || index.overflow_terms.contains(&direct_name_term(term))
+        });
     Ok(QueryContext {
         schema: QUERY_CONTEXT_SCHEMA.into(),
         index_id: index.index_id.clone(),
@@ -259,6 +264,35 @@ pub fn query(
         query_shards_read: shards_read.len() as u32,
         truncated,
     })
+}
+
+fn read_term_matches(
+    store: &CasStore,
+    index: &QueryIndexManifest,
+    term: &str,
+    shards_read: &mut BTreeSet<String>,
+) -> Result<Vec<FactHit>, ClewError> {
+    let bucket = bucket(term);
+    let references = index.shards.iter().filter(|reference| {
+        reference.bucket == bucket
+            && reference.first_term.as_str() <= term
+            && term <= reference.last_term.as_str()
+    });
+    let mut term_matches = BTreeSet::new();
+    for reference in references {
+        let lease = store.read(&reference.object, MAX_QUERY_SHARD_BYTES)?;
+        shards_read.insert(reference.object.digest.clone());
+        let shard: QueryShard = serde_json::from_slice(lease.bytes())
+            .map_err(|_| corrupt("query shard is not a closed object"))?;
+        verify_shard(reference, &shard, lease.bytes())?;
+        if let Ok(position) = shard
+            .postings
+            .binary_search_by(|row| row.term.as_str().cmp(term))
+        {
+            term_matches.extend(shard.postings[position].facts.iter().cloned());
+        }
+    }
+    Ok(term_matches.into_iter().collect())
 }
 
 pub fn expand(
@@ -630,21 +664,43 @@ fn verify_shard(
     Ok(())
 }
 
-fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, ClewError> {
+fn fact_query_terms(
+    store: &CasStore,
+    fact: &FactRecord,
+) -> Result<(Vec<String>, Vec<String>), ClewError> {
     let mut values = BTreeSet::from([
         semantic_fact_key(&fact.fact_key),
         fact.domain_uri.as_str().to_owned(),
     ]);
     if fact.payload.size > MAX_QUERY_METADATA_PAYLOAD_BYTES {
-        return Ok(normalize_index_terms(values.iter().map(String::as_str)));
+        return Ok((
+            normalize_index_terms(values.iter().map(String::as_str)),
+            Vec::new(),
+        ));
     }
     let limit = usize::try_from(fact.payload.size)
         .map_err(|_| ClewError::new(ErrorCode::ResourceLimit, "fact payload exceeds host size"))?;
     let lease = store.read(&fact.payload, limit)?;
+    let mut direct_terms = Vec::new();
     if let Ok(value) = serde_json::from_slice::<Value>(lease.bytes()) {
         collect_json_strings(&value, &mut values, 0)?;
+        if let Some(name) = value.get("name").and_then(Value::as_str) {
+            direct_terms = normalize_index_terms(std::iter::once(name));
+        }
     }
-    Ok(normalize_index_terms(values.iter().map(String::as_str)))
+    Ok((
+        normalize_index_terms(values.iter().map(String::as_str)),
+        direct_terms,
+    ))
+}
+
+#[cfg(test)]
+fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, ClewError> {
+    fact_query_terms(store, fact).map(|(terms, _)| terms)
+}
+
+fn direct_name_term(term: &str) -> String {
+    format!("codeclewdirectname_{term}")
 }
 
 fn collect_json_strings(
@@ -887,10 +943,10 @@ mod tests {
         let result = query(&store, &first, &["AlphaService".into()], 10).unwrap();
         assert_eq!(result.facts.len(), 1);
         assert_eq!(result.facts[0].fact_key, "symbol:alpha");
-        assert_eq!(result.query_shards_read, 1);
+        assert_eq!(result.query_shards_read, 2);
         let expanded = expand(&store, &first, &result, &["BetaService".into()], 10).unwrap();
         assert_eq!(expanded.facts.len(), 2);
-        assert!(expanded.query_shards_read <= 2);
+        assert!(expanded.query_shards_read <= 4);
         assert_eq!(
             first
                 .shards
@@ -975,6 +1031,66 @@ mod tests {
                 .any(|fact| fact.fact_key.starts_with("a:alpha:"))
         );
         assert!(expanded.facts.iter().any(|fact| fact.fact_key == "z:beta"));
+    }
+
+    #[test]
+    fn direct_named_fact_cannot_be_evicted_by_owner_and_reference_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let declaration_payload = store
+            .put(
+                "test/payload/1",
+                br#"{"kind":"DECLARATION","name":"TargetSymbol"}"#,
+            )
+            .unwrap();
+        let reference_payload = store
+            .put(
+                "test/payload/1",
+                br#"{"kind":"RELATION","ownerIdentity":"TargetSymbol"}"#,
+            )
+            .unwrap();
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        for index in 0..64 {
+            writer
+                .push(&FactRecord {
+                    fact_key: format!("a:reference:{index:02}"),
+                    domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                    payload: reference_payload.clone(),
+                })
+                .unwrap();
+        }
+        writer
+            .push(&FactRecord {
+                fact_key: "z:declaration".into(),
+                domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                payload: declaration_payload,
+            })
+            .unwrap();
+        let attempt = AttemptAuthority {
+            compilation_id: "main".into(),
+            capability: CapabilityUri::parse("analysis:symbol").unwrap(),
+            completion: AnalysisAttemptComplete {
+                scope_digest: format!("sha256:{}", "c".repeat(64)),
+                completeness_receipt: receipt,
+                fact_count: 65,
+            },
+        };
+        let (generation, generation_object) = finalize_generation(
+            &store,
+            derived,
+            vec![attempt],
+            vec![writer.finish().unwrap()],
+        )
+        .unwrap();
+        let (index, _) = build_query_index(&store, &generation, generation_object).unwrap();
+
+        let result = query(&store, &index, &["TargetSymbol".into()], 1).unwrap();
+        assert_eq!(result.facts.len(), 1);
+        assert_eq!(result.facts[0].fact_key, "z:declaration");
+        assert!(result.truncated);
     }
 
     #[test]

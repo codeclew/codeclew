@@ -1380,6 +1380,9 @@ fn mutation_profile_for(
         SessionLanguage::Java => Err(unsupported_profile(
             "Java v1 is a read-only compiler-backed profile",
         )),
+        SessionLanguage::TypeScript => Err(unsupported_profile(
+            "TypeScript v1 is a read-only compiler-backed profile",
+        )),
         SessionLanguage::Kotlin => {
             if compilations.len() != 1
                 || versions
@@ -2377,6 +2380,18 @@ mod tests {
         .unwrap_err();
         assert_eq!(java_error.code, ErrorCode::UnsupportedProjectConfiguration);
         assert!(java_error.message.contains("read-only"));
+        let typescript_error = mutation_profile_for(
+            SessionLanguage::TypeScript,
+            &["tsconfig:tsconfig.json".into()],
+            &versions(json!({"tsconfig:tsconfig.json":"5.9.2"})),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            typescript_error.code,
+            ErrorCode::UnsupportedProjectConfiguration
+        );
+        assert!(typescript_error.message.contains("read-only"));
     }
 
     #[test]

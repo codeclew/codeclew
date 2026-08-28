@@ -60,6 +60,14 @@ use crate::rust_adapter_v2::{
 use crate::rust_project_model::{CargoProjectModel, CargoTargetModel, extract_cargo_model};
 use crate::session::{ModelCachePolicy, SessionAuthority, SessionLanguage};
 use crate::state::StateAuthority;
+use crate::typescript_adapter_v2::{
+    TYPESCRIPT_COMPILER_FACTS_CAPABILITY, TYPESCRIPT_LANGUAGE, TypeScriptAdapterV2,
+    TypeScriptCompilerFact, TypeScriptCompilerIndex, build_typescript_compiler_index,
+    typescript_adapter_digest, typescript_scope_digest,
+};
+use crate::typescript_project_model::{
+    TYPESCRIPT_MODEL_SCHEMA, TypeScriptOperationalModel, extract_typescript_model,
+};
 use crate::worker::WorkerRequestCounters;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -239,6 +247,29 @@ pub fn ensure_session_generation(
             "",
         );
     }
+    if session.language == SessionLanguage::TypeScript {
+        if session.freshness()?.status != "FRESH" {
+            return Err(ClewError::new(
+                ErrorCode::InputMutated,
+                "TypeScript target is no longer fresh for this session",
+            ));
+        }
+        let target_repo = session.target_repository_path()?;
+        let (snapshot, snapshot_object) = capture(&target_repo, &store)?;
+        let compilation_root = session_root.join("compilations");
+        state.directory_at(&compilation_root)?;
+        return ensure_typescript_generation_set(
+            session,
+            &state,
+            &store,
+            &target_repo,
+            &snapshot,
+            snapshot_object,
+            &compilation_root,
+            &binding_path,
+            "",
+        );
+    }
     let repo = session.repository_path()?;
     let (snapshot, snapshot_object) = capture(&repo, &store)?;
     let compilation_root = session_root.join("compilations");
@@ -270,6 +301,7 @@ pub fn ensure_session_generation(
                 "",
             );
         }
+        SessionLanguage::TypeScript => unreachable!("TypeScript generation returned above"),
         SessionLanguage::Python => unreachable!("Python generation returned above"),
         SessionLanguage::Kotlin => {}
     }
@@ -753,6 +785,406 @@ fn java_incremental_receipt(
         generation_id: generation.generation_id.clone(),
         files,
         boundaries: Vec::<BoundaryReceipt>::new(),
+        completeness,
+    };
+    receipt.validate()?;
+    store.put(
+        INCREMENTAL_RECEIPT_SCHEMA,
+        &canonical::bytes(&receipt).map_err(internal)?,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_typescript_generation_set(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    repository: &Path,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: CasObject,
+    compilation_root: &Path,
+    binding_path: &Path,
+    binding_prefix: &str,
+) -> Result<ReadyGenerationSet, ClewError> {
+    let (target_snapshot, target_before) = capture(repository, store)?;
+    if target_snapshot.index != snapshot.index || target_snapshot.worktree != snapshot.worktree {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            "TypeScript target differs from the sealed session snapshot",
+        ));
+    }
+    let sources = effective_typescript_sources(snapshot)?;
+    let mut results = Vec::with_capacity(session.compilations.len());
+    for compilation in &session.compilations {
+        let component = digest_component(
+            &canonical::hash(&json!({
+                "schema":"codeclew-session-typescript-compilation-binding/1.0",
+                "compilation":compilation,
+            }))
+            .map_err(internal)?,
+        )?
+        .to_owned();
+        let model = extract_typescript_model(repository, compilation)?;
+        let source_content_digests = typescript_source_content_digests(store, &sources, &model)?;
+        results.push(ensure_typescript_generation(
+            session,
+            state,
+            store,
+            snapshot_object.clone(),
+            model,
+            source_content_digests,
+            compilation,
+            &compilation_root.join(format!("{binding_prefix}{component}.json")),
+        )?);
+    }
+    let (_, target_after) = capture(repository, store)?;
+    if target_after != target_before {
+        return Err(ClewError::new(
+            ErrorCode::InputMutated,
+            "TypeScript analysis changed the sealed repository input",
+        ));
+    }
+    let ready = assemble_ready_set(session, snapshot_object, results)?;
+    write_ready_set(state, binding_path, &ready)?;
+    Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_typescript_generation(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot_object: CasObject,
+    model: TypeScriptOperationalModel,
+    source_content_digests: BTreeMap<String, String>,
+    compilation: &str,
+    binding_path: &Path,
+) -> Result<ReadyGeneration, ClewError> {
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerPreparationRequired,
+            "generation service must run through ./clew",
+        )
+    })?;
+    let model_object = store.put(
+        TYPESCRIPT_MODEL_SCHEMA,
+        &canonical::bytes(&model.authority).map_err(internal)?,
+    )?;
+    let toolchain = store.put(
+        "codeclew-typescript-toolchain-authority/1.0",
+        &canonical::bytes(&json!({
+            "schema":"codeclew-typescript-toolchain-authority/1.0",
+            "compilerVersion":model.authority.compiler_version,
+            "compilerModuleDigest":model.authority.compiler_module_digest,
+            "nodeVersion":model.authority.node_version,
+            "analyzerDigest":crate::typescript_project_model::analyzer_digest(),
+        }))
+        .map_err(internal)?,
+    )?;
+    let mut classpath = model
+        .authority
+        .external_files
+        .iter()
+        .map(|authority| {
+            store.put(
+                "codeclew-typescript-declaration-authority/1.0",
+                &canonical::bytes(authority).map_err(internal)?,
+            )
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    classpath.sort_by(|left, right| left.digest.cmp(&right.digest));
+    classpath.dedup_by(|left, right| left.digest == right.digest);
+    let descriptor = CompilationDescriptor {
+        schema: COMPILATION_SCHEMA.into(),
+        compilation_id: safe_compilation_id(compilation),
+        language_uri: LanguageUri::parse(TYPESCRIPT_LANGUAGE)?,
+        source_roots: vec![SourceRootDescriptor {
+            logical_name: "project".into(),
+            tree: snapshot_object.clone(),
+        }],
+        generated_source_roots: Vec::new(),
+        classpath,
+        toolchain,
+        plugins: Vec::new(),
+        canonical_options: model_object.clone(),
+        dependency_compilation_ids: Vec::new(),
+        operations: Vec::new(),
+        origin: DescriptorOrigin::ProjectNative,
+        completeness: if model.authority.boundaries.is_empty() {
+            DescriptorCompleteness::Complete
+        } else {
+            DescriptorCompleteness::Partial
+        },
+    };
+    let provider = ProviderModel {
+        handshake: ProviderHandshake {
+            protocol: PROVIDER_PROTOCOL.into(),
+            provider_id: "project-native-typescript".into(),
+            provider_digest: model.authority.model_digest.clone(),
+            build_system_uris: vec!["build:tsconfig".into()],
+        },
+        build_model: BuildModel {
+            provider_id: "project-native-typescript".into(),
+            model: model_object,
+            compilations: vec![descriptor.clone()],
+        },
+    };
+    let (_, derived_input_manifest) =
+        DerivedAnalysisInputManifest::create(store, snapshot_object.clone(), vec![provider])?;
+    let generation_key = final_generation_key(
+        &runtime.runtime_key,
+        &session.base_revision,
+        &snapshot_object,
+        compilation,
+        &derived_input_manifest,
+    )?;
+    let _lock = GenerationLock::acquire(state, &generation_key)?;
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let adapter_digest = typescript_adapter_digest()?;
+    let compiler_store =
+        CompilerStoreKey::create("typescript-compiler-1", adapter_digest.clone(), &descriptor)?;
+    let index = build_typescript_compiler_index(model, &source_content_digests)?;
+    let adapter = TypeScriptAdapterV2::new(
+        adapter_digest,
+        descriptor.toolchain.digest.clone(),
+        descriptor.compilation_id.clone(),
+        store.clone(),
+        index.clone(),
+    )?;
+    let mut registry = AdapterRegistry::default();
+    registry.register_adapter(Arc::new(adapter))?;
+    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
+    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
+    journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
+    journal.transition(
+        AttemptState::Analyzing,
+        "TypeScript compiler adapter DAG started",
+    )?;
+    let request = AnalyzeGenerationRequest {
+        schema: ANALYSIS_REQUEST_SCHEMA.into(),
+        attempt_id: journal.attempt().attempt_id.clone(),
+        generation_key: generation_key.clone(),
+        capability: CapabilityUri::parse(TYPESCRIPT_COMPILER_FACTS_CAPABILITY)?,
+        compilation: descriptor,
+        derived_input_manifest: derived_input_manifest.clone(),
+        parent_generation: None,
+    };
+    let analysis = match HostResources::detect().and_then(|resources| {
+        execute_analysis_dag_with_jobs(state, Arc::new(registry), request, resources, 1)
+    }) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            journal.transition(
+                AttemptState::Failed,
+                "TypeScript compiler adapter DAG failed",
+            )?;
+            return Err(error);
+        }
+    };
+    journal.transition(
+        AttemptState::Finalizing,
+        "TypeScript deterministic merge started",
+    )?;
+    let result = (|| {
+        let (generation, generation_object) = finalize_generation(
+            store,
+            derived_input_manifest.clone(),
+            vec![AttemptAuthority {
+                compilation_id: safe_compilation_id(compilation),
+                capability: CapabilityUri::parse(TYPESCRIPT_COMPILER_FACTS_CAPABILITY)?,
+                completion: analysis.completion,
+            }],
+            analysis.runs,
+        )?;
+        let (_, query_index) = build_query_index(store, &generation, generation_object.clone())?;
+        let scope_digest = typescript_scope_digest(&index)?;
+        let completeness = typescript_completeness(&index, &scope_digest)?;
+        let incremental_receipt = typescript_incremental_receipt(
+            store,
+            &index,
+            &source_content_digests,
+            &compiler_store,
+            &generation,
+            completeness.clone(),
+        )?;
+        let ready = ReadyGeneration {
+            schema: READY_GENERATION_SCHEMA.into(),
+            generation_key,
+            runtime_key: runtime.runtime_key.clone(),
+            base_revision: session.base_revision.clone(),
+            compilation: compilation.into(),
+            compiler_version: index.model.compiler_version.clone(),
+            completeness: completeness.clone(),
+            coverage: coverage_label(&completeness).into(),
+            certainty: certainty_label(&completeness).into(),
+            obligations: obligation_codes(&completeness),
+            incremental: full_execution_evidence(
+                IncrementalPlan::Full {
+                    reason: FullAnalysisReason::NoParent,
+                },
+                WorkerRequestCounters {
+                    open_project_requests: 0,
+                    index_files_requests: 0,
+                },
+                AnalysisExecutionAuthority::CompilerProcess,
+            ),
+            incremental_receipt,
+            repository_snapshot: snapshot_object,
+            derived_input_manifest,
+            generation: generation_object,
+            query_index,
+        };
+        verify_ready(store, &ready, session, compilation, true)?;
+        Ok(ready)
+    })();
+    match result {
+        Ok(ready) => {
+            journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
+            write_private_atomic(state, binding_path, &ready)?;
+            Ok(ready)
+        }
+        Err(error) => {
+            journal.transition(
+                AttemptState::Failed,
+                "TypeScript generation finalization failed",
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn effective_typescript_sources(
+    snapshot: &RepositoryInputSnapshot,
+) -> Result<BTreeMap<String, CasObject>, ClewError> {
+    fn is_typescript(path: &str) -> bool {
+        [".ts", ".tsx", ".mts", ".cts"]
+            .iter()
+            .any(|extension| path.ends_with(extension))
+    }
+    let mut sources = snapshot
+        .index
+        .iter()
+        .filter(|entry| entry.stage == 0 && is_typescript(&entry.path))
+        .map(|entry| (entry.path.clone(), entry.content.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for entry in snapshot
+        .worktree
+        .iter()
+        .filter(|entry| is_typescript(&entry.path))
+    {
+        match entry.kind {
+            WorktreeKind::Missing => {
+                sources.remove(&entry.path);
+            }
+            WorktreeKind::Regular => {
+                sources.insert(
+                    entry.path.clone(),
+                    entry
+                        .content
+                        .clone()
+                        .ok_or_else(|| corrupt("TypeScript source has no content authority"))?,
+                );
+            }
+            WorktreeKind::Symlink => {
+                return Err(ClewError::new(
+                    ErrorCode::UnsupportedProjectConfiguration,
+                    "TypeScript source symlinks are unsupported",
+                ));
+            }
+        }
+    }
+    Ok(sources)
+}
+
+fn typescript_source_content_digests(
+    store: &CasStore,
+    sources: &BTreeMap<String, CasObject>,
+    model: &TypeScriptOperationalModel,
+) -> Result<BTreeMap<String, String>, ClewError> {
+    model
+        .authority
+        .source_files
+        .iter()
+        .map(|path| {
+            let source = sources.get(path).ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::InputMutated,
+                    "TypeScript model selected a source outside the sealed snapshot",
+                )
+            })?;
+            Ok((path.clone(), source_content_digest(store, source)?))
+        })
+        .collect()
+}
+
+fn typescript_completeness(
+    index: &TypeScriptCompilerIndex,
+    scope_digest: &str,
+) -> Result<CompletenessVector, ClewError> {
+    if !index
+        .facts
+        .iter()
+        .any(|fact| matches!(fact, TypeScriptCompilerFact::Boundary { .. }))
+    {
+        return CompletenessVector::verified_complete(scope_digest.into());
+    }
+    let completeness = CompletenessVector {
+        schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+        support: Support::Supported,
+        coverage: Coverage::Partial {
+            observed_scopes: vec![scope_digest.into()],
+            boundaries: vec!["TYPESCRIPT_COMPILER_BOUNDARY".into()],
+        },
+        certainty: Certainty::Unsure {
+            check_set: vec!["typescript-configuration-dependencies-and-diagnostics".into()],
+        },
+        obligations: vec![VerificationObligation {
+            code: "FIX_TYPESCRIPT_CONFIGURATION_DEPENDENCY_OR_DIAGNOSTIC".into(),
+            subject: vec![scope_digest.into()],
+            publication_blocking: true,
+        }],
+    };
+    completeness.validate()?;
+    Ok(completeness)
+}
+
+fn typescript_incremental_receipt(
+    store: &CasStore,
+    index: &TypeScriptCompilerIndex,
+    source_content_digests: &BTreeMap<String, String>,
+    compiler_store: &CompilerStoreKey,
+    generation: &GenerationManifest,
+    completeness: CompletenessVector,
+) -> Result<CasObject, ClewError> {
+    let mut surfaces = BTreeMap::<String, Vec<&TypeScriptCompilerFact>>::new();
+    for fact in &index.facts {
+        if let TypeScriptCompilerFact::Declaration { file, .. } = fact {
+            surfaces.entry(file.clone()).or_default().push(fact);
+        }
+    }
+    let files = source_content_digests
+        .iter()
+        .map(|(path, content_digest)| {
+            let surface = surfaces.remove(path).unwrap_or_default();
+            Ok(FileReceipt {
+                path: path.clone(),
+                content_digest: content_digest.clone(),
+                exported_surface_digest: canonical::hash(&surface).map_err(internal)?,
+                dependencies: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    let receipt = IncrementalReceipt {
+        schema: INCREMENTAL_RECEIPT_SCHEMA.into(),
+        compiler_store_key: compiler_store.key.clone(),
+        generation_id: generation.generation_id.clone(),
+        files,
+        boundaries: Vec::new(),
         completeness,
     };
     receipt.validate()?;
@@ -1359,6 +1791,12 @@ pub fn ensure_candidate_generation(
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
             "Java v1 is read-only and has no candidate generation path",
+        ));
+    }
+    if session.language == SessionLanguage::TypeScript {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "TypeScript v1 is read-only and has no candidate generation path",
         ));
     }
     let pool = generation_pool(&candidate)?;

@@ -73,6 +73,8 @@ pub enum SessionLanguage {
     Kotlin,
     Python,
     Rust,
+    #[serde(rename = "TYPESCRIPT")]
+    TypeScript,
 }
 
 impl SessionLanguage {
@@ -82,6 +84,7 @@ impl SessionLanguage {
             Self::Kotlin => "language:kotlin",
             Self::Python => "language:python",
             Self::Rust => "language:rust",
+            Self::TypeScript => "language:typescript",
         }
     }
 }
@@ -2707,6 +2710,12 @@ fn valid_compilation(language: SessionLanguage, compilation: &str) -> bool {
             return crate::python_project_model::PythonCompilationSelector::parse(compilation)
                 .is_ok();
         }
+        SessionLanguage::TypeScript => {
+            return crate::typescript_project_model::TypeScriptCompilationSelector::parse(
+                compilation,
+            )
+            .is_ok();
+        }
         SessionLanguage::Java => {
             let Some((_, source_set)) = compilation.split_once('/') else {
                 return false;
@@ -3451,6 +3460,14 @@ mod tests {
             [selector]
         );
         assert!(canonical_compilations(python, &[":/main".into()]).is_err());
+
+        let typescript = SessionLanguage::TypeScript;
+        let selector = "tsconfig:packages/api/tsconfig.json".to_owned();
+        assert_eq!(
+            canonical_compilations(typescript, std::slice::from_ref(&selector)).unwrap(),
+            [selector]
+        );
+        assert!(canonical_compilations(typescript, &["tsconfig:../tsconfig.json".into()]).is_err());
     }
 
     #[test]
@@ -3468,6 +3485,7 @@ mod tests {
             SessionLanguage::Java,
             SessionLanguage::Python,
             SessionLanguage::Rust,
+            SessionLanguage::TypeScript,
         ] {
             assert!(model_cache_policy_is_valid(
                 language,

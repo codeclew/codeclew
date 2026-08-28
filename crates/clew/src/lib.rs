@@ -46,6 +46,8 @@ pub mod thread_flow_cfg;
 pub mod thread_flow_service;
 pub mod thread_impact;
 pub mod thread_impact_service;
+pub mod typescript_adapter_v2;
+pub mod typescript_project_model;
 pub mod worker;
 pub mod workspace;
 pub mod workspace_prepare;

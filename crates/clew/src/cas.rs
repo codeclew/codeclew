@@ -360,22 +360,30 @@ impl CasStore {
     }
 
     fn refresh_pack_catalog(&self) -> Result<(), ClewError> {
-        let mut catalog = BTreeMap::new();
-        for index_name in self
+        let indexes = self
             .packs
             .entries()?
             .into_iter()
             .filter(|name| Path::new(name).extension() == Some(OsStr::new("json")))
-        {
-            let component = Path::new(&index_name)
-                .file_stem()
-                .and_then(OsStr::to_str)
-                .ok_or_else(|| corrupt("CAS pack index name is invalid"))?;
-            let data_name = format!("{component}.pack");
-            let index_name = index_name
-                .to_str()
-                .ok_or_else(|| corrupt("CAS pack index name is not UTF-8"))?;
-            let manifest = self.verify_pack_pair(&data_name, index_name, None)?;
+            .collect::<Vec<_>>();
+        let mut verified = indexes
+            .par_iter()
+            .map(|index_name| {
+                let component = Path::new(index_name)
+                    .file_stem()
+                    .and_then(OsStr::to_str)
+                    .ok_or_else(|| corrupt("CAS pack index name is invalid"))?;
+                let data_name = format!("{component}.pack");
+                let index_name = index_name
+                    .to_str()
+                    .ok_or_else(|| corrupt("CAS pack index name is not UTF-8"))?;
+                let manifest = self.verify_pack_pair(&data_name, index_name, None)?;
+                Ok((data_name, manifest))
+            })
+            .collect::<Result<Vec<_>, ClewError>>()?;
+        verified.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut catalog = BTreeMap::new();
+        for (data_name, manifest) in verified {
             add_pack_to_catalog(&mut catalog, &data_name, &manifest)?;
         }
         *self
