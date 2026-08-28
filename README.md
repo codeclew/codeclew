@@ -88,6 +88,17 @@ J1 deliberately does not infer Spring meaning, analyze generated sources, or
 admit Java mutation. Unsupported toolchains and unresolved compiler diagnostics
 remain typed boundaries instead of exact claims.
 
+TypeScript 5 and JavaScript use the project-local TypeScript compiler through an
+exact `tsconfig:<repo-relative-json>` authority. Open them with `--language
+typescript` or `--language javascript`; Codeclew never downloads a compiler or
+uses a global `typescript` module. TypeScript and `checkJs` JavaScript expose
+compiler-resolved declarations, shapes, imports, calls and type uses.
+JavaScript without `checkJs` is explicitly either declaration-typed and
+conditional, or syntax-only with `SYNTAX_OBSERVED` facts and `<unchecked>`
+shapes. Project references, mixed-language files, missing dependencies, `any`
+types and unresolved calls remain named boundaries. Both profiles are read-only
+previews and reject candidate generation.
+
 Rust has a bounded syntax contour. Open it with `--language rust`
 and an exact target selector such as
 `cargo:crates/clew/Cargo.toml#clew#lib#clew`. The repository must have a regular

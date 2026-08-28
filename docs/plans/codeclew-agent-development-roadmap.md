@@ -3,7 +3,7 @@
 ## Document authority
 
 - **Status:** M1, M2, W1, L1, J1, C1, W2, W3, and the W4 local
-  publication core and T1 TypeScript are complete; T2 JavaScript is next. W4 remains deliberately
+  publication core and T1/T2 ECMAScript profiles are complete; P1 is next. W4 remains deliberately
   unadvertised for JVM multi-service mutation until its three-case JVM gate.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
@@ -599,8 +599,26 @@ Path aliases and a repository declaration file remain complete and verified.
 Project references, mixed unchecked JavaScript, and a missing dependency each
 produce a named conditional boundary instead of a false exact claim. Mutation
 remains disabled. The checked aggregate is
-`docs/plans/evidence/typescript-profile-acceptance.json`; T2 now qualifies the
-three JavaScript authority modes against the same bounded product metrics.
+`docs/plans/evidence/typescript-profile-acceptance.json`; the completed T2
+qualification below applies the same bounded product metrics to JavaScript.
+
+### T2 accepted result
+
+JavaScript now exposes three closed authority modes through the same exact,
+project-local TypeScript 5 compiler contour. `checkJs` can reach
+`COMPLETE/VERIFIED`; declaration-typed projects retain compiler-resolved shapes
+and relations but remain conditional because JavaScript itself was not checked;
+unchecked projects expose only `SYNTAX_OBSERVED` facts, `<unchecked>` shapes, and
+a named obligation. None of the modes admits mutation.
+
+Ten bounded tasks on an existing local JavaScript codebase found every expected
+compiler-resolved declaration and primary file, with zero unmatched terms, zero
+false exact relations, 5.45-second warm p95, and a maximum 39,624-byte response.
+The checked, declaration-typed, and syntax-only public session cases all preserve
+their distinct certainty. The checked aggregate is
+`docs/plans/evidence/javascript-profile-acceptance.json`; P1 now composes one
+Kotlin/Java/TypeScript workspace record without inventing cross-language
+relations.
 
 ## CS0/CS1 — C# artifact-fit gate and optional Roslyn profile
 

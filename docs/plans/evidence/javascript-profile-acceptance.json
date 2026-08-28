@@ -1,0 +1,87 @@
+{
+  "schema": "codeclew-javascript-profile-acceptance/1.0",
+  "date": "2026-08-28",
+  "status": "ACCEPTED_T2_READ_ONLY_PREVIEW",
+  "runtimeMode": "RELEASE",
+  "profile": {
+    "language": "JAVASCRIPT",
+    "compilerApi": "typescript-5.x",
+    "compilerVersionObserved": "5.9.2",
+    "compilationAuthority": "EXACT_TSCONFIG",
+    "mutationAdvertised": false
+  },
+  "authorityModes": {
+    "JAVASCRIPT_CHECKED": {
+      "publicContextStatus": "COMPLETE_VERIFIED",
+      "declarationResolution": "COMPILER_RESOLVED",
+      "relationResolution": "COMPILER_RESOLVED",
+      "typedBoundary": null
+    },
+    "JAVASCRIPT_DECLARATION_TYPED": {
+      "publicContextStatus": "CONDITIONAL_UNSURE",
+      "declarationResolution": "COMPILER_RESOLVED",
+      "relationResolution": "COMPILER_RESOLVED",
+      "typedBoundary": "JAVASCRIPT_DECLARATION_TYPED_NOT_CHECKED"
+    },
+    "JAVASCRIPT_SYNTAX_CONDITIONAL": {
+      "publicContextStatus": "CONDITIONAL_UNSURE",
+      "declarationResolution": "SYNTAX_OBSERVED",
+      "shape": "<unchecked>",
+      "typedBoundary": "JAVASCRIPT_UNCHECKED_SYNTAX_ONLY"
+    }
+  },
+  "productDogfood": {
+    "authorityMode": "JAVASCRIPT_DECLARATION_TYPED",
+    "nativeCompilerCheck": "PASS",
+    "taskCount": 10,
+    "expectedCompilerResolvedDeclarations": 10,
+    "expectedDeclarationAccuracy": 1.0,
+    "primaryRelevantFileInTop3": 10,
+    "top10RelevantFileRecall": 1.0,
+    "tasksWithUnmatchedTerms": 0,
+    "falseExactRelations": 0,
+    "warmSeconds": [
+      5.24,
+      5.24,
+      5.18,
+      5.11,
+      5.18,
+      5.45,
+      5.24,
+      5.16,
+      5.29
+    ],
+    "warmP95Seconds": 5.45,
+    "maximumStdoutBytes": 39624,
+    "stdoutLimitBytes": 65536,
+    "projectFacts": {
+      "sourceFiles": 7,
+      "externalDeclarationAuthorities": 63,
+      "compilerFacts": 8420,
+      "typedBoundaries": 613,
+      "boundaryCodes": {
+        "JAVASCRIPT_ANY_TYPE": 286,
+        "JAVASCRIPT_DECLARATION_TYPED_NOT_CHECKED": 1,
+        "UNRESOLVED_CALL_SIGNATURE": 326
+      }
+    }
+  },
+  "qualificationBoundary": {
+    "packageOwnershipInferred": false,
+    "frameworkRoutesInferred": false,
+    "uncheckedShapesPromoted": false,
+    "candidateGeneration": "REJECTED_READ_ONLY"
+  },
+  "focusedVerification": {
+    "authorityModePublicCasesPassed": 3,
+    "projectModelTestsPassed": 3,
+    "adapterTestsPassed": 2,
+    "publicCliLanguageContract": "PASS",
+    "privacyCheck": "PASS"
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsRawLogs": false
+  }
+}
