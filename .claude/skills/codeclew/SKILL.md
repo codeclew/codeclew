@@ -1,87 +1,94 @@
 ---
 name: codeclew
-description: Use Codeclew for bounded Kotlin semantic changes, Python or Rust syntax context, multi-repository analysis threads, session freshness checks, recovery, and privacy-safe incident summaries. Trigger when a task asks to inspect or change code through Codeclew, trace behavior across repositories, or diagnose a Codeclew run.
+description: Use Codeclew for bounded compiler- or syntax-backed code context, safe changes, multi-repository analysis, freshness checks, recovery, and privacy-safe diagnostics. Trigger when a task asks to inspect, explain, trace, or change supported source code through the clew CLI, or to diagnose a Codeclew run.
+license: Apache-2.0
+metadata:
+  author: codeclew
+  version: "0.1.0"
+  repository: https://github.com/codeclew/codeclew-skill
 ---
 
 # Codeclew
 
-Prefer the installed `clew` command. For source development, use the supported
-launcher from the pinned Codeclew checkout; if the current repository is not
-that checkout, require `CODECLEW_ROOT` and use `$CODECLEW_ROOT/clew`. Never
-invoke a capsule binary or edit `CODECLEW_HOME` directly. In the commands below,
-`clew` means the resolved installed or source launcher.
+Use Codeclew to obtain bounded evidence before reading or changing supported
+code. The skill supports Codex, Claude Code, and Agent Skills-compatible agents;
+it requires the `clew` CLI, Git, and the host dependencies reported by doctor.
+Preserve the user's scope and Codeclew's authority boundaries.
 
-Codeclew emits canonical JSON by default. Agents must not use the optional
-`--human` presentation provided by `capabilities` and `doctor`.
+## Resolve and admit
 
-## Admit the task
+1. Prefer `clew` on `PATH`. In a pinned Codeclew source checkout, use its
+   supported `./clew` launcher. Never run a capsule binary or edit
+   `CODECLEW_HOME` directly.
+2. Identify the absolute repository path, exact target ref, language, and exact
+   compilation. Use explicit user input or authoritative project configuration;
+   do not infer them from names. Ask when any remains ambiguous.
+3. Run `clew capabilities`, then
+   `clew doctor --repo <absolute-repo> --target-ref <exact-ref>`. Consume the
+   canonical JSON, not the optional `--human` view.
+4. Continue only when every required doctor check is `PASS` and the support
+   matrix admits the requested language, profile, and operation. A successful
+   process exit does not override `ACTION_REQUIRED` or a read-only profile.
 
-1. Run `clew capabilities` and inspect the JSON support matrix.
-2. Run `clew doctor --repo <absolute-repo> --target-ref <ref>`.
-3. Continue only when every required doctor check is `PASS` and the requested
-   language/profile supports the requested operation.
-4. Require an explicit language and exact compilation. Do not guess them.
+Never describe syntax-only, partial, declared, conditional, or unsure evidence
+as compiler-verified behavior.
 
-Mutation is currently limited to the `kotlin-2.4.10-gradle-single` profile.
-Kotlin 2.3 Maven, Python, Rust, and multi-repository threads are read-only.
-Never turn partial or unsure evidence into a verified claim.
+## Build bounded context
 
-## Work with one repository
+Open one session for the exact repository, ref, language, and compilation. Keep
+the returned session and context identifiers. Use `context create`, and expand
+an existing context only when the task needs additional bounded evidence. Do
+not replace Codeclew context with a broad repository crawl before admission.
 
-For Kotlin mutation, use `change open`, retain the returned session/context
-identities, create a closed immutable edit plan, then use `change prepare`.
-Inspect `change status` and all obligations. Before prepare and again before
-publish, run:
+Use `clew <command> --help` for the installed version's exact arguments. Treat
+session and context output as evidence tied to their recorded base commit.
 
-```bash
-clew change check-freshness --session <session-id>
-```
+## Prepare a change
 
-- `FRESH`: continue.
-- `DIRTY`: stop. Preserve the developer's work; do not clean or reset it.
-- `STALE`: close the old session, open a new session, and rebuild context and
-  plan against the new target commit.
-- `UNAVAILABLE`: stop and repair the repository locator/access.
-- `TERMINAL`: open a new session if more work is required.
+Mutation is allowed only when the active support matrix marks the exact profile
+as mutation-capable.
 
-Publish only after the user explicitly approves publication of the reviewed
-candidate. Conditional validation remains conditional; unresolved obligations
-must stay visible. Close and garbage-collect completed sessions.
+1. Use `change open`, retain its session and context identities, create a closed
+   immutable edit plan, and use `change prepare`.
+2. Run `change check-freshness --session <session-id>` immediately before
+   prepare and again before publish.
+3. Inspect `change status`, the bounded diff, validation results, authority
+   digest, and every obligation. Run the repository's appropriate native tests.
+4. Publish only after the user explicitly approves the reviewed candidate.
+   Conditional publication additionally requires the exact prepared authority
+   digest, `--allow-conditional`, and acknowledgement of every returned
+   obligation.
+5. Close completed sessions and garbage-collect them when no retained evidence
+   is needed.
 
-For Python use `--language python` with
-`--compilation 'python:<import-root>#<source-root>'`. For Rust use
-`--language rust` with an exact Cargo target selector. These contours provide
-bounded read-only syntax evidence; use the repository's own tests and runtime
-checks for dynamic behavior.
+Freshness results are binding: continue on `FRESH`; stop and preserve developer
+work on `DIRTY`; rebuild the session, context, and plan on `STALE`; repair access
+on `UNAVAILABLE`; open a new session for more work after `TERMINAL`. Never clean,
+reset, rebase, or replay user work to make a result fresh.
 
 ## Work across repositories
 
-Open one session per exact repository/language/compilation, then bind two to
-eight sessions with `thread open`. Use `thread context` and, for qualified
-Kotlin members, `thread callables`, `thread impact`, and `thread validate`.
-Treat declared topology as a hypothesis to verify. Thread results are never
-mutation or publication authority. Close and garbage-collect the thread; its
-member sessions remain separately owned.
+Use one exact session per repository, language, and compilation. For durable
+work, bind the sessions to one mission with a canonical ChangeSpec and open a
+workspace from an explicit private catalog. Use workspace context for bounded
+cross-repository evidence. Use a raw thread only for ad-hoc read-only analysis
+or a qualified thread surface not exposed by workspaces.
 
-## Recover and report
+Treat catalog relationships as declared until independent authority proves
+them. Workspace and thread results never authorize mutation or publication.
+Closing them must not close or alter member sessions.
 
-On a worker crash, retry once only when the typed error says it is retryable.
-For `WORKTREE_RECOVERY_REQUIRED`, run `change recover` for the bound session and
-run. For stale target or compare-and-swap failure, open a new session rather
+## Recover and report safely
+
+Retry a worker crash once only when the typed error says it is retryable. For
+`WORKTREE_RECOVERY_REQUIRED`, use `change recover` with the bound session and
+run. For stale targets or compare-and-swap failures, open a new session rather
 than replaying an old plan.
 
 Do not paste raw Codeclew output, source, diffs, symbols, repository paths,
-arguments, or `CODECLEW_HOME` contents into an issue or chat. Capture the one
-JSON result in a caller-owned mode-0600 file, then run:
-
-```bash
-clew support summarize --input /absolute/path/to/private-result.json
-```
-
-Share only the returned `SAFE_TO_SHARE` summary plus separately generated
-`capabilities` and `doctor` JSON. Keep the original artifact local and private.
-If summarization rejects the schema, preserve it locally and escalate without
-transmitting it.
-
-Use `docs/operations/p0-runbook.md` in the Codeclew checkout for exact commands,
-installation, upgrades, and incident runbooks.
+arguments, or `CODECLEW_HOME` contents into external issues or chats. Save the
+single JSON result in a caller-owned mode-0600 file and run
+`clew support summarize --input <absolute-private-result.json>`. Share only a
+returned `SAFE_TO_SHARE` summary plus separately generated capabilities and
+doctor JSON. If summarization rejects the artifact, keep it private and
+escalate without transmitting it.

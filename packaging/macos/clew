@@ -35,6 +35,16 @@ case "$CURRENT_PROFILE" in
     ;;
 esac
 
+if [ "${1:-}" = skill ]; then
+  shift
+  SKILL_INSTALLER=$RELEASE_ROOT/source/scripts/install_agent_skill.py
+  [ -f "$SKILL_INSTALLER" ] && [ ! -L "$SKILL_INSTALLER" ] || {
+    printf '%s\n' 'Codeclew bundled skill installer is unavailable.' >&2
+    exit 7
+  }
+  exec python3 -I -S -B "$SKILL_INSTALLER" "$@"
+fi
+
 installed_context() {
   [ -L "$ENTRYPOINT" ] || {
     printf '%s\n' 'This command is available only through the installed launcher.' >&2

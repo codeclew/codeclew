@@ -32,6 +32,25 @@ clew pack list
 clew pack remove kotlin23
 ```
 
+## Install the agent skill
+
+Install the bundled, version-matched Codeclew skill for both Codex and Claude:
+
+```bash
+clew skill install
+```
+
+Use `--agent codex` or `--agent claude` for one personal installation, or
+`--project /absolute/path/to/repository` to install discovery copies in one
+project. Agent Skills-compatible tools with another discovery root can use
+`--destination /absolute/path/to/skills`. The command is idempotent and refuses
+to replace a different existing skill unless `--force` is explicit.
+
+The portable source package is public at
+[codeclew/codeclew-skill](https://github.com/codeclew/codeclew-skill). It uses
+the open Agent Skills format; `skills/codeclew` in this repository is the exact
+package bundled with releases.
+
 ## Source-build requirements
 
 - macOS or Linux

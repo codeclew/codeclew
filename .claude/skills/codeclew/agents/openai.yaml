@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codeclew"
+  short_description: "Bounded code context and safe changes"
+  default_prompt: "Use $codeclew to inspect or change this code with bounded evidence."
