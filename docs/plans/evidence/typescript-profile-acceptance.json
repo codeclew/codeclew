@@ -1,0 +1,90 @@
+{
+  "schema": "codeclew-typescript-profile-acceptance/1.0",
+  "date": "2026-08-28",
+  "status": "ACCEPTED_T1_READ_ONLY_PREVIEW",
+  "runtimeMode": "RELEASE",
+  "profile": {
+    "language": "TYPESCRIPT",
+    "compilerApi": "typescript-5.x",
+    "compilerVersionsObserved": [
+      "5.9.2",
+      "5.9.3"
+    ],
+    "compilationAuthority": "EXACT_TSCONFIG",
+    "mutationAdvertised": false
+  },
+  "productDogfood": {
+    "taskCount": 10,
+    "expectedCompilerResolvedDeclarations": 10,
+    "expectedDeclarationAccuracy": 1.0,
+    "primaryRelevantFileInTop3": 10,
+    "top10RelevantFileRecall": 1.0,
+    "tasksWithUnmatchedTerms": 0,
+    "falseExactRelations": 0,
+    "warmSeconds": [
+      5.17,
+      5.25,
+      5.23,
+      5.14,
+      5.13,
+      5.27,
+      5.04,
+      5.28,
+      5.36
+    ],
+    "warmP95Seconds": 5.36,
+    "maximumStdoutBytes": 55564,
+    "stdoutLimitBytes": 65536,
+    "projectFacts": {
+      "sourceFiles": 65,
+      "externalDeclarationAuthorities": 641,
+      "compilerFacts": 19277,
+      "typedBoundaries": 184,
+      "boundaryCodes": {
+        "TYPESCRIPT_ANY_TYPE": 182,
+        "UNRESOLVED_CALL_SIGNATURE": 2
+      }
+    }
+  },
+  "authorityCases": {
+    "pathAliasAndProjectDeclaration": {
+      "status": "COMPLETE_VERIFIED",
+      "declarationResolution": "COMPILER_RESOLVED",
+      "typeUseResolution": "COMPILER_RESOLVED",
+      "unmatchedTerms": 0
+    },
+    "projectReference": {
+      "status": "CONDITIONAL_UNSURE",
+      "boundary": "PROJECT_REFERENCE_DECLARED_NOT_MERGED",
+      "boundaryResolution": "DECLARED"
+    },
+    "mixedTypeScriptJavaScript": {
+      "status": "CONDITIONAL_UNSURE",
+      "boundary": "JAVASCRIPT_SOURCE_DEFERRED_TO_JAVASCRIPT_PROFILE",
+      "boundaryResolution": "UNKNOWN"
+    },
+    "missingDependency": {
+      "status": "CONDITIONAL_UNSURE",
+      "boundary": "TYPESCRIPT_DIAGNOSTIC",
+      "boundaryResolution": "UNKNOWN"
+    }
+  },
+  "boundedSelection": {
+    "directNamedFactLane": "PASS",
+    "highFanoutDirectDeclarationCases": 4,
+    "highFanoutDirectDeclarationsSelected": 4,
+    "outputBudgetRaised": false
+  },
+  "focusedVerification": {
+    "queryIndexTestsPassed": 11,
+    "typescriptAdapterTestsPassed": 2,
+    "publicSessionAuthorityCasesPassed": 4,
+    "nativeProductBuild": "PASS",
+    "privacyCheck": "PASS"
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsRawLogs": false
+  }
+}

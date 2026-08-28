@@ -3,7 +3,7 @@
 ## Document authority
 
 - **Status:** M1, M2, W1, L1, J1, C1, W2, W3, and the W4 local
-  publication core are complete; T1 TypeScript is next. W4 remains deliberately
+  publication core and T1 TypeScript are complete; T2 JavaScript is next. W4 remains deliberately
   unadvertised for JVM multi-service mutation until its three-case JVM gate.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
@@ -584,6 +584,23 @@ authority must degrade when the project lacks checked types.
 - One Kotlin/Java/TypeScript workspace task produces a coherent bounded record.
 - Mutation stays disabled until three independent prepare/test/publish/recover
   cases pass for that exact profile.
+
+### T1 accepted result
+
+The TypeScript 5 read-only preview is accepted through exact project-local
+`tsconfig` and compiler-module authority. Ten bounded product tasks returned the
+expected compiler-resolved declaration and a primary relevant file for every
+task, with zero unmatched terms, zero false exact relations, 5.36-second warm
+p95, and a maximum 55,564-byte response. A direct-name posting lane prevents
+high-fanout references from evicting the declaration requested by the agent
+without raising the fact or stdout budgets.
+
+Path aliases and a repository declaration file remain complete and verified.
+Project references, mixed unchecked JavaScript, and a missing dependency each
+produce a named conditional boundary instead of a false exact claim. Mutation
+remains disabled. The checked aggregate is
+`docs/plans/evidence/typescript-profile-acceptance.json`; T2 now qualifies the
+three JavaScript authority modes against the same bounded product metrics.
 
 ## CS0/CS1 — C# artifact-fit gate and optional Roslyn profile
 
