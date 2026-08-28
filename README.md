@@ -203,6 +203,49 @@ stdout. A failed or conditional run remains failed or conditional in the
 mission record; mission status never upgrades its certainty or substitutes for
 the existing publication checks.
 
+Once the mission has a context/plan/run binding, the agent may submit a typed
+`codeclew-development-record-input/1.0`. Claims can be `EXACT`, `OBSERVED`,
+`DECLARED`, `CONDITIONAL`, or `UNSURE`; Codeclew resolves JSON pointers against
+the bound immutable context evidence, resolves operation IDs against the bound
+plan, and resolves validation against the bound run. Missing requirement,
+acceptance, changed-file, or documentation links remain explicit obligations:
+
+```json
+{
+  "claims": [
+    {
+      "acceptanceCriterionIds": ["A1"],
+      "certainty": "UNSURE",
+      "documentation": [],
+      "evidence": [],
+      "id": "C1",
+      "obligations": ["Verify the scenario before treating the claim as exact"],
+      "operations": [],
+      "requirementIds": ["R1"],
+      "text": "The scenario remains compatible",
+      "validationSessionIds": []
+    }
+  ],
+  "schema": "codeclew-development-record-input/1.0"
+}
+```
+
+Keep the canonical compact JSON input mode `0600`, then create and review the
+immutable record:
+
+```bash
+./clew mission develop --mission mission:... --record /absolute/private/record.json
+./clew mission dossier --mission mission:... --record development-record:sha256:... --format markdown
+./clew mission dossier --mission mission:... --record development-record:sha256:... --format dot
+./clew mission dossier --mission mission:... --record development-record:sha256:... --node claim:...
+```
+
+The full dossier and DOT graph are deterministic projections. Selecting a node
+returns that node and its own evidence only; it never substitutes one shared
+graph-level evidence block. If a retained context, plan, or run authority later
+becomes unavailable or changes, only claims that depend on it are downgraded
+and aggregate readiness becomes `CONDITIONAL`.
+
 ### Read-only multi-service threads
 
 An immutable thread can bind two to eight already-open local sessions and

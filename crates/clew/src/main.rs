@@ -97,6 +97,10 @@ enum ChangeCommand {
 enum MissionCommand {
     Open(MissionOpenArgs),
     Record(MissionRecordArgs),
+    /// Create one immutable evidence-native record from current mission bindings.
+    Develop(MissionDevelopArgs),
+    /// Render a deterministic dossier or inspect one graph node's evidence.
+    Dossier(MissionDossierArgs),
     Inspect(MissionIdArgs),
     Status(MissionIdArgs),
     Close(MissionIdArgs),
@@ -200,6 +204,13 @@ enum ExplanationFormatArg {
     Markdown,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DossierFormatArg {
+    Json,
+    Markdown,
+    Dot,
+}
+
 #[derive(Args)]
 struct SessionOpenArgs {
     #[arg(long)]
@@ -287,6 +298,28 @@ struct MissionRecordArgs {
     plan: Option<String>,
     #[arg(long)]
     run: Option<String>,
+}
+
+#[derive(Args)]
+struct MissionDevelopArgs {
+    #[arg(long)]
+    mission: String,
+    /// Closed, canonical codeclew-development-record-input/1.0 JSON file.
+    #[arg(long)]
+    record: PathBuf,
+}
+
+#[derive(Args)]
+struct MissionDossierArgs {
+    #[arg(long)]
+    mission: String,
+    #[arg(long)]
+    record: String,
+    #[arg(long, value_enum, default_value_t = DossierFormatArg::Json)]
+    format: DossierFormatArg,
+    /// Return one node and only its node-specific evidence.
+    #[arg(long)]
+    node: Option<String>,
 }
 
 #[derive(Args)]
@@ -886,6 +919,30 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             args.run.as_deref(),
         )?)
         .map_err(internal),
+        Command::Mission {
+            command: MissionCommand::Develop(args),
+        } => {
+            let source = read_private_diagnostic_input(
+                &args.record,
+                mission::development_record::MAX_INPUT_BYTES,
+            )?;
+            mission::development_record::create(&args.mission, &source)
+        }
+        Command::Mission {
+            command: MissionCommand::Dossier(args),
+        } => {
+            let format = match args.format {
+                DossierFormatArg::Json => mission::development_record::RenderFormat::Json,
+                DossierFormatArg::Markdown => mission::development_record::RenderFormat::Markdown,
+                DossierFormatArg::Dot => mission::development_record::RenderFormat::Dot,
+            };
+            mission::development_record::render(
+                &args.mission,
+                &args.record,
+                format,
+                args.node.as_deref(),
+            )
+        }
         Command::Mission {
             command: MissionCommand::Inspect(args),
         } => serde_json::to_value(mission::inspect(&args.mission)?).map_err(internal),

@@ -1,3 +1,5 @@
+pub mod development_record;
+
 use super::{
     ContextObject, PlanObject, RunRecord, SessionAuthority, SessionLanguage, internal, invalid,
     read_managed_json, unix_ms, write_managed_json_create_new,
@@ -318,6 +320,7 @@ fn create_with_state(
     let root = state.mission_root(&mission_id)?;
     let directory = state.directory_at(&root)?;
     directory.child(Path::new("events"))?;
+    directory.child(Path::new("records"))?;
     let change_spec_digest = canonical::hash_bytes(source);
     let created_unix_ms = unix_ms();
     let mut identity = MissionIdentity {
@@ -515,7 +518,11 @@ fn load_live_members(session_ids: &[String]) -> Result<Vec<MissionMemberAuthorit
 fn require_live_members(members: &[MissionMemberAuthority]) -> Result<(), ClewError> {
     let mut sessions = Vec::with_capacity(members.len());
     for member in members {
-        let (session, _) = SessionAuthority::load(&member.session_id)?;
+        // Mission inspection and closure are authority checks, not new semantic
+        // work. They must remain available after the launcher advances to a
+        // newer capsule, while `open` and `record` still require the active
+        // runtime to match exactly.
+        let (session, _) = SessionAuthority::load_for_cleanup(&member.session_id)?;
         require_same_member(member, &session)?;
         sessions.push(session);
     }

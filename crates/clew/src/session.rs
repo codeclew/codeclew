@@ -818,6 +818,34 @@ impl SessionAuthority {
         Ok(object)
     }
 
+    /// Check the small retained context projection used by higher-level
+    /// authorities without reading the potentially large evidence CAS object.
+    /// The projection binds that object by content digest; full evidence is
+    /// still verified when a claim is first admitted or semantic data is read.
+    pub(crate) fn context_binding_current(
+        &self,
+        context_id: &str,
+        authority_digest: &str,
+        evidence_digest: &str,
+    ) -> Result<bool, ClewError> {
+        reject_thread_context_for_mutation(context_id)?;
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let object: ContextObject = read_managed_json(
+            &state,
+            &root.join("contexts").join(id_filename(context_id)?),
+            MAX_PLAN_BYTES * 2,
+        )?;
+        Ok(object.schema == CONTEXT_SCHEMA
+            && object.context_id == context_id
+            && object.session_id == self.session_id
+            && object.session_authority_digest == self.authority_digest
+            && object.evidence_ref.object_schema == CONTEXT_EVIDENCE_SCHEMA
+            && object.evidence_ref.digest == object.evidence_digest
+            && object.evidence_digest == evidence_digest
+            && canonical::hash(&object).map_err(internal)? == authority_digest)
+    }
+
     pub fn validate_plan(&self, context_id: &str, source: &[u8]) -> Result<PlanObject, ClewError> {
         reject_thread_context_for_mutation(context_id)?;
         if source.len() > MAX_PLAN_BYTES {
@@ -870,6 +898,26 @@ impl SessionAuthority {
     }
 
     pub fn load_plan(&self, plan_id: &str) -> Result<PlanObject, ClewError> {
+        let object = self.load_plan_projection(plan_id)?;
+        let context = self.load_context(&object.context_id)?;
+        self.validate_plan_context_binding(&object, &context)?;
+        Ok(object)
+    }
+
+    /// Load a plan after the caller has already admitted its exact context.
+    /// This avoids re-reading a large context evidence object when one bounded
+    /// higher-level record resolves several links to the same member.
+    pub(crate) fn load_plan_for_context(
+        &self,
+        plan_id: &str,
+        context: &ContextObject,
+    ) -> Result<PlanObject, ClewError> {
+        let object = self.load_plan_projection(plan_id)?;
+        self.validate_plan_context_binding(&object, context)?;
+        Ok(object)
+    }
+
+    fn load_plan_projection(&self, plan_id: &str) -> Result<PlanObject, ClewError> {
         reject_thread_coverage_for_mutation(plan_id)?;
         let state = StateAuthority::process_default()?;
         let root = state.session_root(&self.session_id)?;
@@ -887,11 +935,45 @@ impl SessionAuthority {
         {
             return Err(invalid("plan authority is invalid"));
         }
-        let context = self.load_context(&object.context_id)?;
-        if canonical::hash(&context).map_err(internal)? != object.context_digest {
+        Ok(object)
+    }
+
+    fn validate_plan_context_binding(
+        &self,
+        object: &PlanObject,
+        context: &ContextObject,
+    ) -> Result<(), ClewError> {
+        if context.session_id != self.session_id
+            || object.context_id != context.context_id
+            || canonical::hash(context).map_err(internal)? != object.context_digest
+        {
             return Err(invalid("plan context binding is stale"));
         }
-        Ok(object)
+        Ok(())
+    }
+
+    /// Check the immutable plan projection without recursively reopening its
+    /// context evidence. Full plan admission continues to use `load_plan`.
+    pub(crate) fn plan_binding_current(
+        &self,
+        plan_id: &str,
+        authority_digest: &str,
+    ) -> Result<bool, ClewError> {
+        reject_thread_coverage_for_mutation(plan_id)?;
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let object: PlanObject = read_managed_json(
+            &state,
+            &root.join("plans").join(id_filename(plan_id)?),
+            MAX_PLAN_BYTES * 2,
+        )?;
+        Ok(object.schema == PLAN_SCHEMA
+            && object.plan_id == plan_id
+            && object.session_id == self.session_id
+            && object.session_authority_digest == self.authority_digest
+            && object.base_revision == self.base_revision
+            && object.runtime_key == self.runtime_key
+            && canonical::hash(&object).map_err(internal)? == authority_digest)
     }
 
     pub fn run_identity(

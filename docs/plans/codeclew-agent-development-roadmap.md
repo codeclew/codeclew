@@ -268,10 +268,12 @@ written after the code has changed.
 - A stale source or validation invalidates only dependent claims and the aggregate
   readiness status becomes conditional.
 - Generated Markdown/DOT are deterministic and contain no absolute paths.
-- On a held-out set, first-pass complete development records improve by at least
-  20 percentage points, docs/verification recall reaches 90%, false
-  CURRENT/VERIFIED claims are zero, handoff inspection cost falls 30%, and
-  Codeclew overhead stays within 20%.
+- On the bounded internal product dogfood, one real change has complete
+  requirement/evidence/operation/validation/docs coverage, false CURRENT claims
+  are zero, selected-node inspection returns one node with its own evidence,
+  record admission stays below 20% of the successful change workflow, and warm
+  dossier render stays below 200 ms. Publication-grade held-out comparative
+  metrics remain deferred to Q1.
 
 ## W1 — Thin multi-repository Workspace
 
