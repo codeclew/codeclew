@@ -949,7 +949,7 @@ fn aggregate_completeness(member_rows: &[Value], truncated: bool) -> Result<Valu
     let mut all_verified = true;
     let mut all_supported = true;
     let mut all_query_complete = true;
-    let mut unmatched_terms = BTreeSet::new();
+    let mut unmatched_terms = None::<BTreeSet<String>>;
     for row in member_rows {
         let completeness = row
             .get("completeness")
@@ -975,17 +975,21 @@ fn aggregate_completeness(member_rows: &[Value], truncated: bool) -> Result<Valu
             Some("PARTIAL") => all_query_complete = false,
             _ => return Err(invalid("member completeness coverage is invalid")),
         }
-        for term in completeness
+        let member_unmatched = completeness
             .get("unmatchedTerms")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("member completeness unmatched terms are invalid"))?
-        {
-            unmatched_terms.insert(
+            .iter()
+            .map(|term| {
                 term.as_str()
-                    .ok_or_else(|| invalid("member completeness unmatched term is invalid"))?
-                    .to_owned(),
-            );
-        }
+                    .ok_or_else(|| invalid("member completeness unmatched term is invalid"))
+                    .map(str::to_owned)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        unmatched_terms = Some(match unmatched_terms.take() {
+            Some(previous) => previous.intersection(&member_unmatched).cloned().collect(),
+            None => member_unmatched,
+        });
     }
     let status = if any_incomplete {
         "INCOMPLETE"
@@ -1004,7 +1008,7 @@ fn aggregate_completeness(member_rows: &[Value], truncated: bool) -> Result<Valu
             "UNSURE"
         },
         "coverage":if all_query_complete && !truncated { "QUERY_COMPLETE" } else { "PARTIAL" },
-        "unmatchedTerms":unmatched_terms,
+        "unmatchedTerms":unmatched_terms.unwrap_or_default(),
         "memberCount":member_rows.len(),
     }))
 }
@@ -1713,6 +1717,37 @@ mod tests {
                         .sum::<usize>(),
             )
         })
+    }
+
+    #[test]
+    fn aggregate_unmatched_terms_are_global_not_member_local() {
+        let row = |unmatched: Vec<&str>| {
+            json!({
+                "completeness":{
+                    "status":"COMPLETE_TASK",
+                    "certainty":"VERIFIED",
+                    "support":"SUPPORTED",
+                    "coverage":"QUERY_COMPLETE",
+                    "unmatchedTerms":unmatched,
+                }
+            })
+        };
+        let disjoint = super::aggregate_completeness(
+            &[row(vec!["java-only"]), row(vec!["kotlin-only"])],
+            false,
+        )
+        .unwrap();
+        assert_eq!(disjoint["unmatchedTerms"], json!([]));
+
+        let shared = super::aggregate_completeness(
+            &[
+                row(vec!["missing-everywhere", "java-only"]),
+                row(vec!["kotlin-only", "missing-everywhere"]),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(shared["unmatchedTerms"], json!(["missing-everywhere"]));
     }
 
     #[test]
