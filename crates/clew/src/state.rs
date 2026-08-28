@@ -126,6 +126,7 @@ impl StateAuthority {
             "runtimes",
             "repos",
             "sessions",
+            "missions",
             "threads",
             "runs",
             "locks",
@@ -235,6 +236,13 @@ impl StateAuthority {
         self.ensure_private_directory(&relative)?;
         let path = self.root.join(relative);
         Ok(path)
+    }
+
+    pub fn mission_root(&self, mission_id: &str) -> Result<PathBuf, ClewError> {
+        let name = managed_id_component(mission_id, "mission:")?;
+        let relative = Path::new("missions").join(name);
+        self.ensure_private_directory(&relative)?;
+        Ok(self.root.join(relative))
     }
 
     pub fn thread_root(&self, thread_id: &str) -> Result<PathBuf, ClewError> {

@@ -1,3 +1,5 @@
+pub mod mission;
+
 use crate::canonical;
 use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};

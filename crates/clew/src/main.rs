@@ -3,6 +3,7 @@ use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::operations::{capabilities, doctor, support_summary};
 use clew::runtime::RuntimeAuthority;
+use clew::session::mission;
 use clew::session::{
     ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, SessionLanguage,
     bounded_context_stdout, validate_context_request,
@@ -41,6 +42,10 @@ enum Command {
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
+    },
+    Mission {
+        #[command(subcommand)]
+        command: MissionCommand,
     },
     Session {
         #[command(subcommand)]
@@ -86,6 +91,15 @@ enum ChangeCommand {
     Status(RunIdArgs),
     Publish(SessionPublishArgs),
     Recover(SessionRunArgs),
+}
+
+#[derive(Subcommand)]
+enum MissionCommand {
+    Open(MissionOpenArgs),
+    Record(MissionRecordArgs),
+    Inspect(MissionIdArgs),
+    Status(MissionIdArgs),
+    Close(MissionIdArgs),
 }
 
 #[derive(Subcommand)]
@@ -251,6 +265,34 @@ struct ChangePrepareArgs {
     context: String,
     #[arg(long)]
     plan: PathBuf,
+}
+
+#[derive(Args)]
+struct MissionOpenArgs {
+    #[arg(long = "session", required = true)]
+    sessions: Vec<String>,
+    #[arg(long)]
+    spec: PathBuf,
+}
+
+#[derive(Args)]
+struct MissionRecordArgs {
+    #[arg(long)]
+    mission: String,
+    #[arg(long)]
+    session: String,
+    #[arg(long)]
+    context: Option<String>,
+    #[arg(long)]
+    plan: Option<String>,
+    #[arg(long)]
+    run: Option<String>,
+}
+
+#[derive(Args)]
+struct MissionIdArgs {
+    #[arg(long)]
+    mission: String,
 }
 
 #[derive(Args)]
@@ -828,6 +870,31 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             "codeclew-change-recover/1.0",
             recover_task_run(&args.session, &args.run)?,
         ),
+        Command::Mission {
+            command: MissionCommand::Open(args),
+        } => {
+            let source = read_private_diagnostic_input(&args.spec, mission::MAX_CHANGE_SPEC_BYTES)?;
+            serde_json::to_value(mission::open(&args.sessions, &source)?).map_err(internal)
+        }
+        Command::Mission {
+            command: MissionCommand::Record(args),
+        } => serde_json::to_value(mission::record(
+            &args.mission,
+            &args.session,
+            args.context.as_deref(),
+            args.plan.as_deref(),
+            args.run.as_deref(),
+        )?)
+        .map_err(internal),
+        Command::Mission {
+            command: MissionCommand::Inspect(args),
+        } => serde_json::to_value(mission::inspect(&args.mission)?).map_err(internal),
+        Command::Mission {
+            command: MissionCommand::Status(args),
+        } => serde_json::to_value(mission::status(&args.mission)?).map_err(internal),
+        Command::Mission {
+            command: MissionCommand::Close(args),
+        } => serde_json::to_value(mission::close(&args.mission)?).map_err(internal),
         Command::Session {
             command: SessionCommand::Open(args),
         } => {
