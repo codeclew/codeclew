@@ -3,7 +3,7 @@
 ## Document authority
 
 - **Status:** M1, M2, W1, L1, J1, C1, W2, W3, and the W4 local
-  publication core and T1/T2 ECMAScript profiles are complete; P1 is next. W4 remains deliberately
+  publication core, T1/T2 ECMAScript profiles, and P1 polyglot composition are complete; CS0 is next. W4 remains deliberately
   unadvertised for JVM multi-service mutation until its three-case JVM gate.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
@@ -619,6 +619,25 @@ their distinct certainty. The checked aggregate is
 `docs/plans/evidence/javascript-profile-acceptance.json`; P1 now composes one
 Kotlin/Java/TypeScript workspace record without inventing cross-language
 relations.
+
+## P1 — Polyglot workspace record
+
+### Accepted result
+
+One mission-bound workspace composed three independent Kotlin, Java, and
+TypeScript sessions. A single bounded task returned selected compiler facts and
+sources from every member in 56,807 bytes, retained exact member/language/
+compilation provenance, and left topology at `DECLARED_CATALOG` while contract,
+artifact ownership, and runtime authority remained `UNKNOWN`. The result stayed
+`CONDITIONAL/UNSURE` because real member boundaries and projection truncation
+were preserved; no cross-language relation was invented.
+
+Dogfooding removed one composition bug: aggregate `unmatchedTerms` previously
+unioned every member-local miss, so a symbol intended for one service appeared
+globally missing because the other services did not contain it. Workspace
+unmatched terms are now the intersection of member misses—empty when any member
+finds the term—without changing member completeness or certainty. The checked
+aggregate is `docs/plans/evidence/polyglot-workspace-acceptance.json`.
 
 ## CS0/CS1 — C# artifact-fit gate and optional Roslyn profile
 

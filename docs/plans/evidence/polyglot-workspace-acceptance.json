@@ -1,0 +1,59 @@
+{
+  "schema": "codeclew-polyglot-workspace-acceptance/1.0",
+  "date": "2026-08-28",
+  "status": "ACCEPTED_P1",
+  "runtimeMode": "RELEASE",
+  "workspace": {
+    "memberCount": 3,
+    "languages": [
+      "JAVA",
+      "KOTLIN",
+      "TYPESCRIPT"
+    ],
+    "distinctRepositories": 3,
+    "declaredEdgeCount": 2,
+    "missionBound": true,
+    "mutationAttempted": false
+  },
+  "boundedContext": {
+    "requestedTerms": 3,
+    "globallyUnmatchedTerms": 0,
+    "membersWithSelectedFacts": 3,
+    "membersWithSelectedSources": 3,
+    "selectedFacts": 14,
+    "selectedSources": 7,
+    "stdoutBytes": 56807,
+    "stdoutLimitBytes": 65536,
+    "status": "CONDITIONAL_TASK",
+    "certainty": "UNSURE",
+    "coverage": "PARTIAL",
+    "obligationCount": 3,
+    "truncated": true
+  },
+  "certainty": {
+    "declaredTopology": "DECLARED_CATALOG",
+    "compilerShape": "UNKNOWN",
+    "artifactOwnership": "UNKNOWN",
+    "contract": "UNKNOWN",
+    "runtime": "UNKNOWN",
+    "inventedCrossLanguageRelations": 0,
+    "certaintyPromotions": 0
+  },
+  "productFix": {
+    "issue": "MEMBER_LOCAL_UNMATCHED_TERMS_WERE_UNIONED",
+    "resolution": "WORKSPACE_UNMATCHED_ONLY_IF_ALL_MEMBERS_MISS",
+    "memberCompletenessPreserved": true,
+    "focusedTest": "PASS"
+  },
+  "qualificationBoundary": {
+    "readOnlyComposition": "ACCEPTED",
+    "crossLanguageContractInference": false,
+    "frameworkSemantics": false,
+    "runtimeIntegrationClaim": false
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsRawLogs": false
+  }
+}
