@@ -1,0 +1,59 @@
+{
+  "schema": "codeclew-csharp-artifact-fit-gate/1.0",
+  "date": "2026-08-28",
+  "status": "DEFER",
+  "decision": {
+    "scheduleCs1": false,
+    "nextPhase": "Q1",
+    "reason": "NO_REPRODUCIBLE_COMPILER_AUTHORITY"
+  },
+  "inventory": {
+    "candidateArtifactRoots": 4,
+    "gitValidRepositoryRoots": 2,
+    "projectFiles": 60,
+    "solutionFiles": 21,
+    "testProjectFiles": 12,
+    "sourceFiles": 3835,
+    "repositoryIdentitiesPublished": false
+  },
+  "selectedCandidate": {
+    "selectionKind": "SOLUTION",
+    "solutionProjectReferences": 1,
+    "projectFilesInRepository": 3,
+    "testProjectFilesInRepository": 1,
+    "sourceFilesInRepository": 14,
+    "restore": "PASS",
+    "build": "FAIL",
+    "buildFailureCode": "MSB4019"
+  },
+  "toolchain": {
+    "dotnetSdk": "6.0.136",
+    "dotnetMsbuild": "17.0.4.46801",
+    "standaloneMsbuild": false,
+    "requiredTargetsAvailable": false
+  },
+  "taskFit": {
+    "minimumRequiredTasks": 10,
+    "typeDeclarationCandidates": 12,
+    "methodCandidates": 32,
+    "result": "PASS"
+  },
+  "dimensions": {
+    "localRepositoryInventory": "PASS",
+    "sdkAvailability": "PASS",
+    "exactSolutionSelection": "PASS",
+    "dependencyRestore": "PASS",
+    "realisticTaskCapacity": "PASS",
+    "compilerBuildAuthority": "FAIL_MISSING_MSBUILD_TARGET"
+  },
+  "boundary": {
+    "csharpQualified": false,
+    "roslynProfileImplemented": false,
+    "promotionRequirement": "A git-valid local SDK-style candidate must restore and build with an explicitly selected supported SDK/MSBuild authority."
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsRawLogs": false
+  }
+}

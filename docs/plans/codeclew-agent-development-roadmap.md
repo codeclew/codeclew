@@ -3,7 +3,8 @@
 ## Document authority
 
 - **Status:** M1, M2, W1, L1, J1, C1, W2, W3, and the W4 local
-  publication core, T1/T2 ECMAScript profiles, and P1 polyglot composition are complete; CS0 is next. W4 remains deliberately
+  publication core, T1/T2 ECMAScript profiles, P1 polyglot composition, and the
+  CS0 C# fit gate are complete; CS0 concluded `DEFER`, so Q1 is next. W4 remains deliberately
   unadvertised for JVM multi-service mutation until its three-case JVM gate.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
@@ -655,6 +656,18 @@ projects and toolchain authority would repeat the failed OpenAPI-profile mistake
 
 Only `PASS` schedules CS1. `STOP` or `DEFER` proceeds directly to Q1 and records
 C# as secondary backlog, not as a hidden completion gap.
+
+### CS0 accepted outcome
+
+`DEFER`. The privacy-safe inventory found four C# artifact roots, of which two
+were valid Git repositories. A selected solution in a clean temporary clone
+restored successfully with .NET SDK 6.0.136 and `dotnet msbuild` 17.0.4, and its
+12 type plus 32 method candidates exceed the ten-task fit threshold. The exact
+build nevertheless failed with `MSB4019`: the available MSBuild authority lacks
+a required target/workload. Therefore no locally reproducible compiler authority
+exists for this corpus, CS1 is not scheduled, and C# remains explicit secondary
+backlog. The retained decision is
+`docs/plans/evidence/csharp-artifact-fit-gate.json`.
 
 ### CS1 Definition of Done
 
