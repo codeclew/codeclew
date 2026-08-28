@@ -10,6 +10,7 @@ use clew::session::{
 };
 use clew::thread::{ThreadAuthority, ThreadMemberRequest};
 use clew::thread_context::{bounded_thread_context_stdout, create as create_thread_context};
+use clew::workspace;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
@@ -46,6 +47,10 @@ enum Command {
     Mission {
         #[command(subcommand)]
         command: MissionCommand,
+    },
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
     },
     Session {
         #[command(subcommand)]
@@ -104,6 +109,16 @@ enum MissionCommand {
     Inspect(MissionIdArgs),
     Status(MissionIdArgs),
     Close(MissionIdArgs),
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    /// Resolve an explicit private catalog into one deterministic authority.
+    Open(WorkspaceOpenArgs),
+    Inspect(WorkspaceIdArgs),
+    /// Reuse the globally bounded multi-repository context engine.
+    Context(WorkspaceContextArgs),
+    Close(WorkspaceIdArgs),
 }
 
 #[derive(Subcommand)]
@@ -326,6 +341,31 @@ struct MissionDossierArgs {
 struct MissionIdArgs {
     #[arg(long)]
     mission: String,
+}
+
+#[derive(Args)]
+struct WorkspaceOpenArgs {
+    /// Closed, canonical codeclew-workspace-catalog-input/1.0 JSON file.
+    #[arg(long)]
+    catalog: PathBuf,
+}
+
+#[derive(Args)]
+struct WorkspaceIdArgs {
+    #[arg(long)]
+    workspace: String,
+}
+
+#[derive(Args)]
+struct WorkspaceContextArgs {
+    #[arg(long)]
+    workspace: String,
+    #[arg(long)]
+    intent: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long, default_value_t = 2)]
+    max_roots: usize,
 }
 
 #[derive(Args)]
@@ -952,6 +992,24 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Mission {
             command: MissionCommand::Close(args),
         } => serde_json::to_value(mission::close(&args.mission)?).map_err(internal),
+        Command::Workspace {
+            command: WorkspaceCommand::Open(args),
+        } => {
+            let source = read_private_diagnostic_input(
+                &args.catalog,
+                workspace::MAX_WORKSPACE_CATALOG_BYTES,
+            )?;
+            serde_json::to_value(workspace::open(&source)?).map_err(internal)
+        }
+        Command::Workspace {
+            command: WorkspaceCommand::Inspect(args),
+        } => serde_json::to_value(workspace::inspect(&args.workspace)?).map_err(internal),
+        Command::Workspace {
+            command: WorkspaceCommand::Context(args),
+        } => workspace::context(&args.workspace, &args.intent, &args.terms, args.max_roots),
+        Command::Workspace {
+            command: WorkspaceCommand::Close(args),
+        } => serde_json::to_value(workspace::close(&args.workspace)?).map_err(internal),
         Command::Session {
             command: SessionCommand::Open(args),
         } => {
@@ -2842,6 +2900,42 @@ mod tests {
             panic!("expected thread validate command");
         };
         assert_eq!(args.member_correspondence.len(), 2);
+    }
+
+    #[test]
+    fn workspace_surface_is_thin_and_manifest_driven() {
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "workspace",
+            "open",
+            "--catalog",
+            "/private/catalog.json",
+        ])
+        .unwrap();
+        let Command::Workspace {
+            command: WorkspaceCommand::Open(args),
+        } = parsed.command
+        else {
+            panic!("expected workspace open command");
+        };
+        assert_eq!(args.catalog, PathBuf::from("/private/catalog.json"));
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "workspace",
+                "context",
+                "--workspace",
+                "workspace:authority",
+                "--intent",
+                "inspect both repositories",
+                "--term",
+                "Service",
+            ])
+            .is_ok()
+        );
+        for command in ["publish", "prepare", "gc"] {
+            assert!(Cli::try_parse_from(["clew", "workspace", command]).is_err());
+        }
     }
 
     #[test]

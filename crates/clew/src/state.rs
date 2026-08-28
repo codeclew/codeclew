@@ -127,6 +127,7 @@ impl StateAuthority {
             "repos",
             "sessions",
             "missions",
+            "workspaces",
             "threads",
             "runs",
             "locks",
@@ -241,6 +242,13 @@ impl StateAuthority {
     pub fn mission_root(&self, mission_id: &str) -> Result<PathBuf, ClewError> {
         let name = managed_id_component(mission_id, "mission:")?;
         let relative = Path::new("missions").join(name);
+        self.ensure_private_directory(&relative)?;
+        Ok(self.root.join(relative))
+    }
+
+    pub fn workspace_root(&self, workspace_id: &str) -> Result<PathBuf, ClewError> {
+        let name = managed_id_component(workspace_id, "workspace:")?;
+        let relative = Path::new("workspaces").join(name);
         self.ensure_private_directory(&relative)?;
         Ok(self.root.join(relative))
     }

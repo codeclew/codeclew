@@ -335,11 +335,37 @@ validation evidence, then publish only with all returned authorities:
 The final status is `PUBLISHED_CONDITIONAL`; native validation and acknowledgement
 do not turn syntax evidence into compiler-backed certainty.
 
-## 7. Multi-repository threads
+## 7. Mission-bound workspaces and analysis threads
 
-Open a separate session for every exact repository, language, and compilation.
-One repository may have multiple analysis units. Then connect two to eight
-sessions:
+For one durable task across two to four repositories, open independent sessions
+and bind them to one mission/ChangeSpec. Put the same session IDs plus safe local
+aliases and declared edges in a canonical mode-0600
+`codeclew-workspace-catalog-input/1.0`, then use:
+
+```bash
+"$CODECLEW_ROOT/clew" workspace open \
+  --catalog /absolute/private/workspace-catalog.json
+"$CODECLEW_ROOT/clew" workspace inspect --workspace workspace:...
+"$CODECLEW_ROOT/clew" workspace context \
+  --workspace workspace:... \
+  --intent 'inspect the selected service boundary' \
+  --term Service \
+  --term Repository
+"$CODECLEW_ROOT/clew" workspace close --workspace workspace:...
+```
+
+The catalog must cover every mission member exactly once and every member must
+refer to a distinct repository. Reordering members or edges preserves workspace
+identity; changing a bound session, revision, edge, mission, or ChangeSpec does
+not. A declared edge proves topology declaration only. Workspace close affects
+its internal analysis view and never closes, mutates, publishes, or collects a
+member session.
+
+For an ad-hoc read-only view, or for the Kotlin callable/impact surfaces not yet
+exposed through workspace, open a separate session for every exact repository,
+language, and compilation and connect two to eight sessions with a thread.
+
+One repository may contribute multiple thread analysis units:
 
 ```bash
 "$CODECLEW_ROOT/clew" thread open \

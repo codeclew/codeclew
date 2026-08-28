@@ -1,6 +1,6 @@
 ---
 name: codeclew
-description: Use Codeclew for bounded Kotlin semantic changes, conditional Python or Rust syntax-backed changes, multi-repository analysis threads, session freshness checks, recovery, and privacy-safe incident summaries. Trigger when a task asks to inspect or change code through Codeclew, trace behavior across repositories, or diagnose a Codeclew run.
+description: Use Codeclew for bounded Kotlin semantic changes, conditional Python or Rust syntax-backed changes, mission-bound local workspaces, multi-repository analysis threads, session freshness checks, recovery, and privacy-safe incident summaries. Trigger when a task asks to inspect or change code through Codeclew, coordinate or trace behavior across repositories, or diagnose a Codeclew run.
 ---
 
 # Codeclew
@@ -63,12 +63,20 @@ bounded diff and successful project-native validation.
 
 ## Work across repositories
 
-Open one session per exact repository/language/compilation, then bind two to
-eight sessions with `thread open`. Use `thread context` and, for qualified
-Kotlin members, `thread callables`, `thread impact`, and `thread validate`.
-Treat declared topology as a hypothesis to verify. Thread results are never
-mutation or publication authority. Close and garbage-collect the thread; its
-member sessions remain separately owned.
+Open one session per exact repository/language/compilation. For a durable
+development task, create one mission with a canonical ChangeSpec, then create a
+mode-0600 canonical `codeclew-workspace-catalog-input/1.0` that covers exactly
+two to four mission sessions and declares only safe member aliases and edges.
+Use `workspace open`, `workspace inspect`, and `workspace context`. Treat every
+catalog edge as `DECLARED_CATALOG`; compiler shape, artifact ownership, contract,
+and runtime axes remain independently `UNKNOWN` unless a later authority proves
+them. Closing the workspace must leave every member session open and unchanged.
+
+Use raw `thread open` only for an ad-hoc read-only analysis view or for the
+qualified Kotlin `thread callables`, `thread impact`, and `thread validate`
+surfaces that do not yet have workspace facades. Thread and workspace results
+are never mutation or publication authority. Close the analysis view; member
+sessions remain separately owned and must be closed or collected explicitly.
 
 ## Recover and report
 

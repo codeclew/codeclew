@@ -2,7 +2,7 @@
 
 ## Document authority
 
-- **Status:** active product-first sequence; the Development Record track is next.
+- **Status:** M1, M2, and W1 complete; L1 common semantic envelope is next.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
@@ -50,7 +50,12 @@ The target workflow lets an agent:
 - Kotlin 2.4.0 Gradle and Kotlin 2.3.0 Maven are read-only previews.
 - Python and Rust provide conditional syntax-backed mutation with native
   validation and explicit obligations.
-- Multi-repository threads provide read-only composition.
+- Missions and evidence-native Development Records retain a reviewable trace
+  from ChangeSpec requirements through node-specific facts, operations,
+  validation, and canonical documentation.
+- Mission-bound workspaces provide deterministic, globally bounded read-only
+  composition for two to four explicitly selected repositories. Lower-level
+  multi-repository threads remain available for advanced analysis.
 - Three internal warm-path cases demonstrate exact single-repository facts,
   exact two-repository composition, and an honest `UNSURE` fallback with a named
   manual verification obligation.
@@ -60,9 +65,9 @@ The target workflow lets an agent:
   longer available. Their public digests remain historical evidence and must not
   be overwritten or represented as reproducible inputs.
 
-These facts do **not** yet prove an evidence-native development record,
-coordinated multi-repository mutation, Java/TypeScript/C# support, or an overall
-advantage over default agent use.
+These facts do **not** yet prove coordinated multi-repository mutation, a common
+cross-language envelope, Java/TypeScript/C# support, or an overall advantage
+over default agent use.
 
 ## Product and authority invariants
 
@@ -306,6 +311,9 @@ language and transaction work share one composition boundary.
   authorities.
 - Required-member recall is at least 90% with zero critical miss on a small
   frozen local set.
+
+Bounded internal evidence is recorded in
+[`w1-thin-workspace-dogfood-2026-08-28.md`](../product/validation/w1-thin-workspace-dogfood-2026-08-28.md).
 
 ## L1 — Common semantic envelope
 

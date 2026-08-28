@@ -246,6 +246,43 @@ graph-level evidence block. If a retained context, plan, or run authority later
 becomes unavailable or changes, only claims that depend on it are downgraded
 and aggregate readiness becomes `CONDITIONAL`.
 
+### Mission-bound local workspaces
+
+A workspace is the durable two-to-four-repository development boundary above a
+mission. It resolves one explicit private catalog to exact session authorities,
+declared dependency edges, and the mission's immutable ChangeSpec identity. It
+does not discover repositories, clone anything, infer topology, or build a
+combined index.
+
+The canonical compact catalog is a mode-0600 file. Every catalog member must be
+an open session already bound by the mission, every mission member must appear
+exactly once, and members must refer to distinct repositories:
+
+```json
+{"edges":[{"id":"api-client","relation":"depends-on","source":"api","target":"client"}],"members":[{"alias":"api","sessionId":"session:..."},{"alias":"client","sessionId":"session:..."}],"missionId":"mission:...","schema":"codeclew-workspace-catalog-input/1.0"}
+```
+
+```bash
+./clew workspace open --catalog /absolute/private/workspace-catalog.json
+./clew workspace inspect --workspace workspace:...
+./clew workspace context \
+  --workspace workspace:... \
+  --intent 'compare the selected service boundaries' \
+  --term Service \
+  --term Repository
+./clew workspace close --workspace workspace:...
+```
+
+Member and edge order cannot change the workspace identity; changing an alias,
+edge, session, repository revision, mission, or ChangeSpec does. Context reuses
+the existing globally bounded multi-repository composition engine, so each fact
+retains its member/session/revision/evidence authority and no mega-generation is
+created. Catalog edges are only `DECLARED_CATALOG`: compiler shape, artifact
+ownership, contract verification, and observed runtime remain independent
+`UNKNOWN` axes until a later authority proves them. Closing a workspace closes
+only its private analysis view; it never closes, mutates, publishes, or collects
+a member session.
+
 ### Read-only multi-service threads
 
 An immutable thread can bind two to eight already-open local sessions and
@@ -600,6 +637,8 @@ user cache directory):
 runtimes/
 repos/
 sessions/
+missions/
+workspaces/
 threads/
 runs/
 locks/
