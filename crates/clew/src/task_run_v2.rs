@@ -1344,6 +1344,9 @@ fn mutation_profile_for(
     has_gradle_wrapper: bool,
 ) -> Result<MutationProfile, ClewError> {
     match language {
+        SessionLanguage::Java => Err(unsupported_profile(
+            "Java v1 is a read-only compiler-backed profile",
+        )),
         SessionLanguage::Kotlin => {
             if compilations.len() != 1
                 || versions
@@ -2332,6 +2335,15 @@ mod tests {
             .unwrap(),
             MutationProfile::RustSyntax
         );
+        let java_error = mutation_profile_for(
+            SessionLanguage::Java,
+            &[":/main".into()],
+            &versions(json!({":/main":"javac 21"})),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(java_error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(java_error.message.contains("read-only"));
     }
 
     #[test]

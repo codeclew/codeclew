@@ -13,6 +13,8 @@ pub mod explanation_service;
 pub mod generation_service;
 pub mod generation_v2;
 pub mod incremental_v2;
+pub mod java_adapter_v2;
+pub mod java_project_model;
 pub mod kotlin_adapter_v2;
 pub mod kotlin_engine;
 pub mod operations;

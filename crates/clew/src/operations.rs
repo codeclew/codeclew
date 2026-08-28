@@ -451,6 +451,19 @@ mod tests {
         assert_eq!(mutable[1]["status"], "PILOT_READY");
         assert_eq!(mutable[2]["profileId"], "rust-syntax");
         assert_eq!(mutable[2]["status"], "PILOT_READY");
+        let java = matrix["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|profile| profile["language"] == "java")
+            .collect::<Vec<_>>();
+        assert_eq!(java.len(), 2);
+        assert!(java.iter().all(|profile| {
+            profile["analysisAuthority"] == "COMPILER_BACKED_JDK"
+                && profile["compilerVersion"] == "21"
+                && profile["mutation"] == false
+                && profile["status"] == "READ_ONLY_PREVIEW"
+        }));
         let qualified_patch = matrix["profiles"]
             .as_array()
             .unwrap()

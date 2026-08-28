@@ -141,7 +141,7 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
 fn supported_context_language(language: &str) -> bool {
     matches!(
         language,
-        "language:kotlin" | "language:python" | "language:rust"
+        "language:java" | "language:kotlin" | "language:python" | "language:rust"
     )
 }
 
@@ -1279,6 +1279,7 @@ mod tests {
 
     #[test]
     fn context_language_allowlist_is_explicit() {
+        assert!(super::supported_context_language("language:java"));
         assert!(super::supported_context_language("language:kotlin"));
         assert!(super::supported_context_language("language:python"));
         assert!(super::supported_context_language("language:rust"));

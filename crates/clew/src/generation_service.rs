@@ -21,6 +21,11 @@ use crate::incremental_v2::{
     Coverage, FileReceipt, FullAnalysisReason, INCREMENTAL_RECEIPT_SCHEMA, IncrementalPlan,
     IncrementalReceipt, Support, VerificationObligation, plan_incremental,
 };
+use crate::java_adapter_v2::{
+    JAVA_COMPILER_FACTS_CAPABILITY, JAVA_LANGUAGE, JavaAdapterV2, JavaCompilerFact,
+    JavaCompilerIndex, build_java_compiler_index, java_adapter_digest, java_scope_digest,
+};
+use crate::java_project_model::{JAVA_MODEL_SCHEMA, JavaOperationalModel, extract_java_model};
 use crate::kotlin_adapter_v2::{
     KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinGenerationDriver,
     ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace, ProjectNativeKotlinWorkspaceProfile,
@@ -155,6 +160,7 @@ pub enum IncrementalExecutionMode {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AnalysisExecutionAuthority {
     CompilerWorker,
+    CompilerProcess,
     InProcessSyntax,
 }
 
@@ -238,6 +244,18 @@ pub fn ensure_session_generation(
     let compilation_root = session_root.join("compilations");
     state.directory_at(&compilation_root)?;
     match session.language {
+        SessionLanguage::Java => {
+            return ensure_java_generation_set(
+                session,
+                &state,
+                &store,
+                &snapshot,
+                snapshot_object,
+                &compilation_root,
+                &binding_path,
+                "",
+            );
+        }
         SessionLanguage::Rust => {
             return ensure_rust_generation_set(
                 session,
@@ -365,6 +383,383 @@ fn ensure_rust_generation_set(
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(state, binding_path, &ready)?;
     Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_java_generation_set(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot: &RepositoryInputSnapshot,
+    snapshot_object: CasObject,
+    compilation_root: &Path,
+    binding_path: &Path,
+    binding_prefix: &str,
+) -> Result<ReadyGenerationSet, ClewError> {
+    let workspace = ProjectNativeKotlinWorkspace::prepare_language(
+        state,
+        store,
+        snapshot,
+        &session.compilations,
+        "java",
+    )?;
+    let sources = effective_java_sources(snapshot)?;
+    let mut results = Vec::with_capacity(session.compilations.len());
+    for compilation in &session.compilations {
+        let component = digest_component(
+            &canonical::hash(&json!({
+                "schema":"codeclew-session-java-compilation-binding/1.0",
+                "compilation":compilation,
+            }))
+            .map_err(internal)?,
+        )?
+        .to_owned();
+        let model = extract_java_model(workspace.repository(), compilation)?;
+        let source_content_digests = java_source_content_digests(store, &sources, &model)?;
+        results.push(ensure_java_generation(
+            session,
+            state,
+            store,
+            snapshot_object.clone(),
+            workspace.repository(),
+            model,
+            source_content_digests,
+            compilation,
+            &compilation_root.join(format!("{binding_prefix}{component}.json")),
+        )?);
+    }
+    workspace.finish()?;
+    let ready = assemble_ready_set(session, snapshot_object, results)?;
+    write_ready_set(state, binding_path, &ready)?;
+    Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_java_generation(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    snapshot_object: CasObject,
+    repository: &Path,
+    model: JavaOperationalModel,
+    source_content_digests: BTreeMap<String, String>,
+    compilation: &str,
+    binding_path: &Path,
+) -> Result<ReadyGeneration, ClewError> {
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::WorkerPreparationRequired,
+            "generation service must run through ./clew",
+        )
+    })?;
+    let model_object = store.put(
+        JAVA_MODEL_SCHEMA,
+        &canonical::bytes(&model.authority).map_err(internal)?,
+    )?;
+    let toolchain = store.put(
+        "codeclew-java-toolchain-authority/1.0",
+        &canonical::bytes(&json!({
+            "schema":"codeclew-java-toolchain-authority/1.0",
+            "compilerVersion":model.authority.compiler_version,
+            "release":model.authority.release,
+            "analyzer":"jdk.compiler/21",
+        }))
+        .map_err(internal)?,
+    )?;
+    let mut classpath = model
+        .authority
+        .classpath
+        .iter()
+        .map(|authority| {
+            store.put(
+                "codeclew-java-classpath-authority/1.0",
+                &canonical::bytes(authority).map_err(internal)?,
+            )
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    classpath.sort_by(|left, right| left.digest.cmp(&right.digest));
+    classpath.dedup_by(|left, right| left.digest == right.digest);
+    let descriptor = CompilationDescriptor {
+        schema: COMPILATION_SCHEMA.into(),
+        compilation_id: safe_compilation_id(compilation),
+        language_uri: LanguageUri::parse(JAVA_LANGUAGE)?,
+        source_roots: vec![SourceRootDescriptor {
+            logical_name: "project".into(),
+            tree: snapshot_object.clone(),
+        }],
+        generated_source_roots: Vec::new(),
+        classpath,
+        toolchain,
+        plugins: Vec::new(),
+        canonical_options: model_object.clone(),
+        dependency_compilation_ids: Vec::new(),
+        operations: Vec::new(),
+        origin: DescriptorOrigin::ProjectNative,
+        completeness: DescriptorCompleteness::Complete,
+    };
+    let provider = ProviderModel {
+        handshake: ProviderHandshake {
+            protocol: PROVIDER_PROTOCOL.into(),
+            provider_id: "project-native-java".into(),
+            provider_digest: model.authority.model_digest.clone(),
+            build_system_uris: vec![match model.authority.build_system {
+                crate::java_project_model::JavaBuildSystem::Gradle => "build:gradle".into(),
+                crate::java_project_model::JavaBuildSystem::Maven => "build:maven".into(),
+            }],
+        },
+        build_model: BuildModel {
+            provider_id: "project-native-java".into(),
+            model: model_object,
+            compilations: vec![descriptor.clone()],
+        },
+    };
+    let (_, derived_input_manifest) =
+        DerivedAnalysisInputManifest::create(store, snapshot_object.clone(), vec![provider])?;
+    let generation_key = final_generation_key(
+        &runtime.runtime_key,
+        &session.base_revision,
+        &snapshot_object,
+        compilation,
+        &derived_input_manifest,
+    )?;
+    let _lock = GenerationLock::acquire(state, &generation_key)?;
+    if state.private_file_exists(binding_path)? {
+        return load_ready(state, store, binding_path, session, compilation, false);
+    }
+    let adapter_digest = java_adapter_digest()?;
+    let compiler_store =
+        CompilerStoreKey::create("java-compiler-1", adapter_digest.clone(), &descriptor)?;
+    let index = build_java_compiler_index(repository, &model, &source_content_digests)?;
+    let adapter = JavaAdapterV2::new(
+        adapter_digest,
+        descriptor.toolchain.digest.clone(),
+        descriptor.compilation_id.clone(),
+        store.clone(),
+        index.clone(),
+    )?;
+    let mut registry = AdapterRegistry::default();
+    registry.register_adapter(Arc::new(adapter))?;
+    let mut journal = AttemptJournal::create(state.clone(), &generation_key, 0)?;
+    journal.transition(AttemptState::Snapshotted, snapshot_object.digest.clone())?;
+    journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
+    journal.transition(AttemptState::Analyzing, "Java compiler adapter DAG started")?;
+    let request = AnalyzeGenerationRequest {
+        schema: ANALYSIS_REQUEST_SCHEMA.into(),
+        attempt_id: journal.attempt().attempt_id.clone(),
+        generation_key: generation_key.clone(),
+        capability: CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY)?,
+        compilation: descriptor,
+        derived_input_manifest: derived_input_manifest.clone(),
+        parent_generation: None,
+    };
+    let analysis = match HostResources::detect().and_then(|resources| {
+        execute_analysis_dag_with_jobs(state, Arc::new(registry), request, resources, 1)
+    }) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "Java compiler adapter DAG failed")?;
+            return Err(error);
+        }
+    };
+    journal.transition(AttemptState::Finalizing, "Java deterministic merge started")?;
+    let result = (|| {
+        let (generation, generation_object) = finalize_generation(
+            store,
+            derived_input_manifest.clone(),
+            vec![AttemptAuthority {
+                compilation_id: safe_compilation_id(compilation),
+                capability: CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY)?,
+                completion: analysis.completion,
+            }],
+            analysis.runs,
+        )?;
+        let (_, query_index) = build_query_index(store, &generation, generation_object.clone())?;
+        let scope_digest = java_scope_digest(&index)?;
+        let completeness = java_completeness(&index, &scope_digest)?;
+        let incremental_receipt = java_incremental_receipt(
+            store,
+            &index,
+            &source_content_digests,
+            &compiler_store,
+            &generation,
+            completeness.clone(),
+        )?;
+        let ready = ReadyGeneration {
+            schema: READY_GENERATION_SCHEMA.into(),
+            generation_key,
+            runtime_key: runtime.runtime_key.clone(),
+            base_revision: session.base_revision.clone(),
+            compilation: compilation.into(),
+            compiler_version: model.authority.compiler_version.clone(),
+            completeness: completeness.clone(),
+            coverage: coverage_label(&completeness).into(),
+            certainty: certainty_label(&completeness).into(),
+            obligations: obligation_codes(&completeness),
+            incremental: full_execution_evidence(
+                IncrementalPlan::Full {
+                    reason: FullAnalysisReason::NoParent,
+                },
+                WorkerRequestCounters {
+                    open_project_requests: 0,
+                    index_files_requests: 0,
+                },
+                AnalysisExecutionAuthority::CompilerProcess,
+            ),
+            incremental_receipt,
+            repository_snapshot: snapshot_object,
+            derived_input_manifest,
+            generation: generation_object,
+            query_index,
+        };
+        verify_ready(store, &ready, session, compilation, true)?;
+        Ok(ready)
+    })();
+    match result {
+        Ok(ready) => {
+            journal.transition(AttemptState::Ready, ready.generation.digest.clone())?;
+            write_private_atomic(state, binding_path, &ready)?;
+            Ok(ready)
+        }
+        Err(error) => {
+            journal.transition(AttemptState::Failed, "Java generation finalization failed")?;
+            Err(error)
+        }
+    }
+}
+
+fn effective_java_sources(
+    snapshot: &RepositoryInputSnapshot,
+) -> Result<BTreeMap<String, CasObject>, ClewError> {
+    let mut sources = snapshot
+        .index
+        .iter()
+        .filter(|entry| entry.stage == 0 && entry.path.ends_with(".java"))
+        .map(|entry| (entry.path.clone(), entry.content.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for entry in snapshot
+        .worktree
+        .iter()
+        .filter(|entry| entry.path.ends_with(".java"))
+    {
+        match entry.kind {
+            WorktreeKind::Missing => {
+                sources.remove(&entry.path);
+            }
+            WorktreeKind::Regular => {
+                sources.insert(
+                    entry.path.clone(),
+                    entry
+                        .content
+                        .clone()
+                        .ok_or_else(|| corrupt("Java source has no content authority"))?,
+                );
+            }
+            WorktreeKind::Symlink => {
+                return Err(ClewError::new(
+                    ErrorCode::UnsupportedProjectConfiguration,
+                    "Java source symlinks are unsupported",
+                ));
+            }
+        }
+    }
+    Ok(sources)
+}
+
+fn java_source_content_digests(
+    store: &CasStore,
+    sources: &BTreeMap<String, CasObject>,
+    model: &JavaOperationalModel,
+) -> Result<BTreeMap<String, String>, ClewError> {
+    model
+        .authority
+        .source_files
+        .iter()
+        .map(|path| {
+            let source = sources.get(path).ok_or_else(|| {
+                ClewError::new(
+                    ErrorCode::InputMutated,
+                    "Java model selected a source outside the sealed snapshot",
+                )
+            })?;
+            Ok((path.clone(), source_content_digest(store, source)?))
+        })
+        .collect()
+}
+
+fn java_completeness(
+    index: &JavaCompilerIndex,
+    scope_digest: &str,
+) -> Result<CompletenessVector, ClewError> {
+    let boundaries = index
+        .facts
+        .iter()
+        .filter(|fact| matches!(fact, JavaCompilerFact::Boundary { .. }))
+        .count();
+    if boundaries == 0 {
+        return CompletenessVector::verified_complete(scope_digest.into());
+    }
+    let value = CompletenessVector {
+        schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+        support: Support::Supported,
+        coverage: Coverage::Partial {
+            observed_scopes: vec![scope_digest.into()],
+            boundaries: vec!["JAVA_COMPILER_BOUNDARY".into()],
+        },
+        certainty: Certainty::Unsure {
+            check_set: vec!["java-classpath-and-diagnostics".into()],
+        },
+        obligations: vec![VerificationObligation {
+            code: "FIX_JAVA_CLASSPATH_OR_DIAGNOSTIC".into(),
+            subject: vec![scope_digest.into()],
+            publication_blocking: true,
+        }],
+    };
+    value.validate()?;
+    Ok(value)
+}
+
+fn java_incremental_receipt(
+    store: &CasStore,
+    index: &JavaCompilerIndex,
+    source_content_digests: &BTreeMap<String, String>,
+    compiler_store: &CompilerStoreKey,
+    generation: &GenerationManifest,
+    completeness: CompletenessVector,
+) -> Result<CasObject, ClewError> {
+    let mut surfaces = BTreeMap::<String, Vec<&JavaCompilerFact>>::new();
+    for fact in &index.facts {
+        if let JavaCompilerFact::Declaration { file, .. } = fact {
+            surfaces.entry(file.clone()).or_default().push(fact);
+        }
+    }
+    let files = source_content_digests
+        .iter()
+        .map(|(path, content_digest)| {
+            let surface = surfaces.remove(path).unwrap_or_default();
+            Ok(FileReceipt {
+                path: path.clone(),
+                content_digest: content_digest.clone(),
+                exported_surface_digest: canonical::hash(&surface).map_err(internal)?,
+                dependencies: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    let receipt = IncrementalReceipt {
+        schema: INCREMENTAL_RECEIPT_SCHEMA.into(),
+        compiler_store_key: compiler_store.key.clone(),
+        generation_id: generation.generation_id.clone(),
+        files,
+        boundaries: Vec::<BoundaryReceipt>::new(),
+        completeness,
+    };
+    receipt.validate()?;
+    store.put(
+        INCREMENTAL_RECEIPT_SCHEMA,
+        &canonical::bytes(&receipt).map_err(internal)?,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -959,6 +1354,12 @@ pub fn ensure_candidate_generation(
             false,
             "staged-generation-",
         );
+    }
+    if session.language == SessionLanguage::Java {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "Java v1 is read-only and has no candidate generation path",
+        ));
     }
     let pool = generation_pool(&candidate)?;
     let workspace =
@@ -2815,6 +3216,14 @@ fn verify_ready_authority(
         {
             return Err(corrupt(
                 "in-process generation request counters are invalid",
+            ));
+        }
+        (IncrementalExecutionMode::Full, AnalysisExecutionAuthority::CompilerProcess)
+            if ready.incremental.worker_requests.open_project_requests != 0
+                || ready.incremental.worker_requests.index_files_requests != 0 =>
+        {
+            return Err(corrupt(
+                "compiler-process generation request counters are invalid",
             ));
         }
         (IncrementalExecutionMode::UnchangedHit, authority)

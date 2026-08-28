@@ -224,10 +224,21 @@ impl ProjectNativeKotlinWorkspace {
         snapshot: &RepositoryInputSnapshot,
         compilations: &[String],
     ) -> Result<Self, ClewError> {
+        Self::prepare_language(state, store, snapshot, compilations, "kotlin")
+    }
+
+    pub(crate) fn prepare_language(
+        state: &StateAuthority,
+        store: &CasStore,
+        snapshot: &RepositoryInputSnapshot,
+        compilations: &[String],
+        language: &str,
+    ) -> Result<Self, ClewError> {
         if compilations.is_empty()
             || compilations
                 .windows(2)
                 .any(|pair| pair[0].as_str() >= pair[1].as_str())
+            || !matches!(language, "kotlin" | "java")
         {
             return Err(invalid(
                 "workspace-set compilations must be non-empty, sorted, and unique",
@@ -237,7 +248,7 @@ impl ProjectNativeKotlinWorkspace {
         let workspace_set_authority_digest = canonical::hash(&json!({
             "schema":WORKSPACE_SET_AUTHORIZATION_SCHEMA,
             "compilations":compilations,
-            "language":"kotlin",
+            "language":language,
             "providerMode":"PROJECT_NATIVE_LEGACY_BRIDGE",
             "repositorySnapshot":snapshot.snapshot_id,
         }))
@@ -268,6 +279,10 @@ impl ProjectNativeKotlinWorkspace {
             model_extraction_gate: Mutex::new(()),
             legacy_open_project_calls: AtomicU64::new(0),
         })
+    }
+
+    pub(crate) fn repository(&self) -> &std::path::Path {
+        &self.repo
     }
 
     pub(crate) fn open_compilation_from_set(

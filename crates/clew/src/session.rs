@@ -69,6 +69,7 @@ pub struct SessionAuthority {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionLanguage {
+    Java,
     Kotlin,
     Python,
     Rust,
@@ -77,6 +78,7 @@ pub enum SessionLanguage {
 impl SessionLanguage {
     pub fn uri(self) -> &'static str {
         match self {
+            Self::Java => "language:java",
             Self::Kotlin => "language:kotlin",
             Self::Python => "language:python",
             Self::Rust => "language:rust",
@@ -2705,6 +2707,14 @@ fn valid_compilation(language: SessionLanguage, compilation: &str) -> bool {
             return crate::python_project_model::PythonCompilationSelector::parse(compilation)
                 .is_ok();
         }
+        SessionLanguage::Java => {
+            let Some((_, source_set)) = compilation.split_once('/') else {
+                return false;
+            };
+            if !matches!(source_set, "main" | "test") {
+                return false;
+            }
+        }
         SessionLanguage::Kotlin => {}
     }
     if compilation.len() > 256 || !compilation.starts_with(':') {
@@ -3427,6 +3437,13 @@ mod tests {
         );
         assert!(canonical_compilations(rust, &[":/main".into()]).is_err());
 
+        let java = SessionLanguage::Java;
+        assert_eq!(
+            canonical_compilations(java, &[":/main".into(), ":app/test".into()]).unwrap(),
+            [":/main", ":app/test"]
+        );
+        assert!(canonical_compilations(java, &[":/integrationTest".into()]).is_err());
+
         let python = SessionLanguage::Python;
         let selector = "python:.#backend".to_owned();
         assert_eq!(
@@ -3447,7 +3464,11 @@ mod tests {
 
     #[test]
     fn read_only_languages_accept_only_non_cacheable_model_authority() {
-        for language in [SessionLanguage::Python, SessionLanguage::Rust] {
+        for language in [
+            SessionLanguage::Java,
+            SessionLanguage::Python,
+            SessionLanguage::Rust,
+        ] {
             assert!(model_cache_policy_is_valid(
                 language,
                 ModelCachePolicy::NonCacheable

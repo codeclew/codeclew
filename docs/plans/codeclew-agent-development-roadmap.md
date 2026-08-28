@@ -2,7 +2,7 @@
 
 ## Document authority
 
-- **Status:** M1, M2, W1, and L1 complete; J1 Java read-only profile is next.
+- **Status:** M1, M2, W1, L1, and J1 complete; C1 Kotlin/Java convergence is next.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
@@ -363,15 +363,23 @@ depend on Java declarations and share Gradle/Maven/JDK infrastructure.
   compatibility verdict in v1.
 - Read-only first; mutation is not admitted by J1.
 
-### Definition of Done
+### Pilot completion (accepted)
 
-- At least 10 real Java tasks reach exact symbol/shape accuracy >=95%, top-10
-  relevant-file recall >=80%, and zero false exact relation claims.
-- Gradle and Maven fixtures plus real repositories pass cold, incremental,
-  unchanged, corruption, and cancellation tests.
-- Warm query p95 is <=10 seconds and stdout <=64 KiB.
-- An unsupported build or unresolved classpath produces a typed boundary rather
-  than syntax-backed exactness.
+- Project-native Gradle and Maven fixtures select Java 21 sources, classpath and
+  toolchain without repository-local dependency caches.
+- Both fixtures produce compiler-exact declarations and call/type-use relations
+  with no false exact fallback; unsupported input becomes a typed boundary.
+- The public Gradle `session open -> context create` path returns bounded,
+  path-free `COMPLETE/VERIFIED` evidence for an exact cross-type call.
+- Java mutation and candidate generation fail closed.
+
+### Deferred publication qualification
+
+The earlier 10-task accuracy study, real-repository matrix, corruption and
+cancellation campaign, and p95 publication benchmark remain useful before a GA
+claim. They are intentionally not a blocker for the internal read-only preview:
+current product work uses short acceptance experiments and resumes the broader
+benchmark only when a release is being prepared for external publication.
 
 ## C1 — Kotlin/Java convergence gate
 

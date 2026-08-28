@@ -77,6 +77,17 @@ compilations, Android/KMP and `EXTERNAL` remain unqualified until they have
 their own acceptance tests. Rust and Python are operationally `PILOT_READY` for
 conditional mutation, with the weaker evidence boundaries described below.
 
+Java 21 has a compiler-backed read-only preview for project-native Gradle and
+Maven builds. Open a session with `--language java` and an exact `:/main`,
+`:/test`, `:module/main`, or `:module/test` compilation. Codeclew uses the JDK
+Compiler API to return resolved declarations, JVM descriptors, annotations,
+calls and type-use relations with source anchors. A clean Gradle fixture has
+passed the public `session open -> context create` path with `COMPLETE/VERIFIED`
+evidence; the same fact contour is qualified on both Gradle and Maven fixtures.
+J1 deliberately does not infer Spring meaning, analyze generated sources, or
+admit Java mutation. Unsupported toolchains and unresolved compiler diagnostics
+remain typed boundaries instead of exact claims.
+
 Rust has a bounded syntax contour. Open it with `--language rust`
 and an exact target selector such as
 `cargo:crates/clew/Cargo.toml#clew#lib#clew`. The repository must have a regular

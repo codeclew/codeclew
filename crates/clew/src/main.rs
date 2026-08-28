@@ -182,6 +182,7 @@ enum ModelCachePolicyArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SessionLanguageArg {
+    Java,
     Kotlin,
     Python,
     Rust,
@@ -846,6 +847,7 @@ fn platform_label(value: &str) -> &str {
 
 fn language_label(value: &str) -> &str {
     match value {
+        "java" => "Java",
         "kotlin" => "Kotlin",
         "python" => "Python",
         "rust" => "Rust",
@@ -1396,6 +1398,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
         &absolute(&args.repo)?,
         &args.target_ref,
         match args.language {
+            SessionLanguageArg::Java => SessionLanguage::Java,
             SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
             SessionLanguageArg::Python => SessionLanguage::Python,
             SessionLanguageArg::Rust => SessionLanguage::Rust,
@@ -2349,6 +2352,20 @@ mod tests {
             .is_ok()
         );
         assert!(Cli::try_parse_from(["clew", "support", "summarize"]).is_err());
+        let java = Cli::try_parse_from([
+            "clew",
+            "session",
+            "open",
+            "--repo",
+            ".",
+            "--target-ref",
+            "refs/heads/main",
+            "--language",
+            "java",
+            "--compilation",
+            ":/main",
+        ]);
+        assert!(java.is_ok());
     }
 
     #[test]
@@ -2381,6 +2398,13 @@ mod tests {
                         "language":"python",
                         "mutation":true,
                         "status":"PILOT_READY"
+                    },
+                    {
+                        "buildSystem":"MAVEN",
+                        "compilerVersion":"21",
+                        "language":"java",
+                        "mutation":false,
+                        "status":"READ_ONLY_PREVIEW"
                     }
                 ],
                 "threads":{
@@ -2397,6 +2421,7 @@ mod tests {
         assert!(report.contains("Codeclew capabilities"));
         assert!(report.contains("Kotlin 2.4.10 / Gradle wrapper: read and change"));
         assert!(report.contains("Python tree-sitter-python-0.25.0: read and change"));
+        assert!(report.contains("Java 21 / Maven: read only (read only preview)"));
         assert!(report.contains("2-8 members"));
         assert!(report.contains("Run without --human for canonical JSON"));
         assert!(!report.contains("codeclew-capabilities/1.0"));
