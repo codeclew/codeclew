@@ -191,6 +191,8 @@ enum ModelCachePolicyArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SessionLanguageArg {
     Java,
+    #[value(name = "javascript")]
+    JavaScript,
     Kotlin,
     Python,
     Rust,
@@ -896,6 +898,7 @@ fn platform_label(value: &str) -> &str {
 fn language_label(value: &str) -> &str {
     match value {
         "java" => "Java",
+        "javascript" => "JavaScript",
         "kotlin" => "Kotlin",
         "python" => "Python",
         "rust" => "Rust",
@@ -1489,6 +1492,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
         &args.target_ref,
         match args.language {
             SessionLanguageArg::Java => SessionLanguage::Java,
+            SessionLanguageArg::JavaScript => SessionLanguage::JavaScript,
             SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
             SessionLanguageArg::Python => SessionLanguage::Python,
             SessionLanguageArg::Rust => SessionLanguage::Rust,
@@ -2912,6 +2916,22 @@ mod tests {
             [":workers:kotlin/main", ":workers:kotlin23/main"]
         );
         assert!(matches!(args.language, SessionLanguageArg::Kotlin));
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "session",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--language",
+                "javascript",
+                "--compilation",
+                "tsconfig:jsconfig.json",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "clew",

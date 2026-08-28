@@ -20,10 +20,26 @@ pub const TYPESCRIPT_LANGUAGE: &str = "language:typescript";
 pub const TYPESCRIPT_COMPILER_FACTS_CAPABILITY: &str = "analysis:typescript-compiler-facts";
 pub const TYPESCRIPT_INDEX_SCHEMA: &str = "codeclew-typescript-compiler-index/1.0";
 pub const TYPESCRIPT_FACT_SCHEMA: &str = "codeclew-typescript-compiler-fact/1.0";
+pub const JAVASCRIPT_LANGUAGE: &str = "language:javascript";
+pub const JAVASCRIPT_COMPILER_FACTS_CAPABILITY: &str = "analysis:javascript-compiler-facts";
+pub const JAVASCRIPT_INDEX_SCHEMA: &str = "codeclew-javascript-compiler-index/1.0";
+pub const JAVASCRIPT_FACT_SCHEMA: &str = "codeclew-javascript-compiler-fact/1.0";
 const TYPESCRIPT_RECEIPT_SCHEMA: &str = "codeclew-typescript-compiler-completeness/1.0";
+const JAVASCRIPT_RECEIPT_SCHEMA: &str = "codeclew-javascript-compiler-completeness/1.0";
 const TYPESCRIPT_ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-typescript-compiler-adapter/1.0";
 const MAX_TYPESCRIPT_FACTS: usize = 262_144;
 const MAX_FACT_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy)]
+struct EcmaScriptProfile {
+    language: &'static str,
+    capability: &'static str,
+    index_schema: &'static str,
+    fact_schema: &'static str,
+    receipt_schema: &'static str,
+    adapter_id: &'static str,
+    fact_key_prefix: &'static str,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -138,6 +154,9 @@ pub fn typescript_adapter_digest() -> Result<String, ClewError> {
         "indexSchema":TYPESCRIPT_INDEX_SCHEMA,
         "factSchema":TYPESCRIPT_FACT_SCHEMA,
         "capability":TYPESCRIPT_COMPILER_FACTS_CAPABILITY,
+        "javascriptCapability":JAVASCRIPT_COMPILER_FACTS_CAPABILITY,
+        "javascriptIndexSchema":JAVASCRIPT_INDEX_SCHEMA,
+        "javascriptFactSchema":JAVASCRIPT_FACT_SCHEMA,
         "analyzerDigest":analyzer_digest(),
         "compilerApi":"typescript-5.x",
     }))
@@ -149,10 +168,11 @@ pub fn build_typescript_compiler_index(
     source_content_digests: &BTreeMap<String, String>,
 ) -> Result<TypeScriptCompilerIndex, ClewError> {
     verify_model(&operational.authority)?;
+    let profile = profile_for(&operational.authority)?;
     let mut facts = operational.facts;
     for (path, digest) in source_content_digests {
         facts.push(TypeScriptCompilerFact::SourceFile {
-            schema: TYPESCRIPT_FACT_SCHEMA.into(),
+            schema: profile.fact_schema.into(),
             file: path.clone(),
             source_content_digest: digest.clone(),
             resolution: "SOURCE_MEMBERSHIP_EXACT".into(),
@@ -163,7 +183,7 @@ pub fn build_typescript_compiler_index(
     });
     facts.dedup();
     let index = TypeScriptCompilerIndex {
-        schema: TYPESCRIPT_INDEX_SCHEMA.into(),
+        schema: profile.index_schema.into(),
         compilation: operational.authority.compilation.clone(),
         model: operational.authority,
         analyzer_digest: analyzer_digest(),
@@ -226,12 +246,13 @@ impl TypeScriptAdapterV2 {
 
 impl LanguageAdapter for TypeScriptAdapterV2 {
     fn handshake(&self) -> Result<AdapterHandshake, ClewError> {
+        let profile = profile_for(&self.index.model)?;
         Ok(AdapterHandshake {
             protocol: ADAPTER_PROTOCOL.into(),
-            adapter_id: "typescript-compiler-1".into(),
+            adapter_id: profile.adapter_id.into(),
             adapter_digest: self.adapter_digest.clone(),
-            languages: vec![LanguageUri::parse(TYPESCRIPT_LANGUAGE)?],
-            capabilities: vec![CapabilityUri::parse(TYPESCRIPT_COMPILER_FACTS_CAPABILITY)?],
+            languages: vec![LanguageUri::parse(profile.language)?],
+            capabilities: vec![CapabilityUri::parse(profile.capability)?],
             toolchains: vec![ToolchainConstraint {
                 authority_digest: self.toolchain_digest.clone(),
                 minimum_version: Some("5.0".into()),
@@ -246,6 +267,7 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
         sink: &mut dyn AnalysisSink,
         cancelled: &AtomicBool,
     ) -> Result<(), ClewError> {
+        let profile = profile_for(&self.index.model)?;
         if self.stopped.load(Ordering::Acquire)
             || cancelled.load(Ordering::Acquire)
             || self
@@ -256,8 +278,8 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
         {
             return Err(cancelled_error());
         }
-        if request.compilation.language_uri.as_str() != TYPESCRIPT_LANGUAGE
-            || request.capability.as_str() != TYPESCRIPT_COMPILER_FACTS_CAPABILITY
+        if request.compilation.language_uri.as_str() != profile.language
+            || request.capability.as_str() != profile.capability
             || request.compilation.toolchain.digest != self.toolchain_digest
             || request.compilation.compilation_id != self.compilation_id
         {
@@ -266,7 +288,7 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
                 "TypeScript request differs from its compiler authority",
             ));
         }
-        let capability = CapabilityUri::parse(TYPESCRIPT_COMPILER_FACTS_CAPABILITY)?;
+        let capability = CapabilityUri::parse(profile.capability)?;
         let prepared = self
             .index
             .facts
@@ -274,7 +296,8 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
             .map(|fact| {
                 let bytes = canonical::bytes(fact).map_err(internal)?;
                 let key = format!(
-                    "typescript:{}:{}",
+                    "{}:{}:{}",
+                    profile.fact_key_prefix,
                     fact.query_family(),
                     canonical::hash_bytes(&bytes).trim_start_matches("sha256:")
                 );
@@ -284,7 +307,7 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
         let payloads = self.store.put_batch(
             prepared
                 .iter()
-                .map(|(_, bytes)| (TYPESCRIPT_FACT_SCHEMA.into(), bytes.clone()))
+                .map(|(_, bytes)| (profile.fact_schema.into(), bytes.clone()))
                 .collect(),
         )?;
         let mut records = prepared
@@ -315,9 +338,9 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
             .filter(|fact| fact.boundary_code().is_some())
             .count();
         let receipt = self.store.put(
-            TYPESCRIPT_RECEIPT_SCHEMA,
+            profile.receipt_schema,
             &canonical::bytes(&json!({
-                "schema":TYPESCRIPT_RECEIPT_SCHEMA,
+                "schema":profile.receipt_schema,
                 "scopeDigest":scope_digest,
                 "coverage":if boundary_count == 0 { "COMPLETE_SUPPORTED_SUBSET" } else { "PARTIAL" },
                 "certainty":if boundary_count == 0 { "VERIFIED" } else { "UNSURE" },
@@ -352,7 +375,8 @@ impl LanguageAdapter for TypeScriptAdapterV2 {
 
 fn validate_index(index: &TypeScriptCompilerIndex) -> Result<(), ClewError> {
     verify_model(&index.model)?;
-    if index.schema != TYPESCRIPT_INDEX_SCHEMA
+    let profile = profile_for(&index.model)?;
+    if index.schema != profile.index_schema
         || index.compilation != index.model.compilation
         || index.analyzer_digest != analyzer_digest()
         || index.facts.len() > MAX_TYPESCRIPT_FACTS
@@ -361,7 +385,7 @@ fn validate_index(index: &TypeScriptCompilerIndex) -> Result<(), ClewError> {
     }
     let mut previous = None;
     for fact in &index.facts {
-        if fact.schema() != TYPESCRIPT_FACT_SCHEMA
+        if fact.schema() != profile.fact_schema
             || fact.path().is_some_and(|path| !safe_relative_path(path))
         {
             return Err(corrupt("TypeScript compiler fact authority is invalid"));
@@ -375,6 +399,30 @@ fn validate_index(index: &TypeScriptCompilerIndex) -> Result<(), ClewError> {
         previous = Some(bytes);
     }
     Ok(())
+}
+
+fn profile_for(model: &TypeScriptProjectModel) -> Result<EcmaScriptProfile, ClewError> {
+    match model.language.as_str() {
+        TYPESCRIPT_LANGUAGE => Ok(EcmaScriptProfile {
+            language: TYPESCRIPT_LANGUAGE,
+            capability: TYPESCRIPT_COMPILER_FACTS_CAPABILITY,
+            index_schema: TYPESCRIPT_INDEX_SCHEMA,
+            fact_schema: TYPESCRIPT_FACT_SCHEMA,
+            receipt_schema: TYPESCRIPT_RECEIPT_SCHEMA,
+            adapter_id: "typescript-compiler-1",
+            fact_key_prefix: "typescript",
+        }),
+        JAVASCRIPT_LANGUAGE => Ok(EcmaScriptProfile {
+            language: JAVASCRIPT_LANGUAGE,
+            capability: JAVASCRIPT_COMPILER_FACTS_CAPABILITY,
+            index_schema: JAVASCRIPT_INDEX_SCHEMA,
+            fact_schema: JAVASCRIPT_FACT_SCHEMA,
+            receipt_schema: JAVASCRIPT_RECEIPT_SCHEMA,
+            adapter_id: "javascript-compiler-1",
+            fact_key_prefix: "javascript",
+        }),
+        _ => Err(corrupt("ECMAScript compiler profile is invalid")),
+    }
 }
 
 fn safe_relative_path(value: &str) -> bool {

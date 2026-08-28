@@ -4,10 +4,17 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 
-const FACT_SCHEMA = 'codeclew-typescript-compiler-fact/1.0'
 const repository = fs.realpathSync(process.argv[2])
 const configRelative = process.argv[3]
 const typescriptModule = fs.realpathSync(process.argv[4])
+const languageProfile = process.argv[5]
+if (languageProfile !== 'typescript' && languageProfile !== 'javascript') {
+  process.stderr.write('ECMAScript language profile is invalid\n')
+  process.exit(2)
+}
+const FACT_SCHEMA = languageProfile === 'typescript'
+  ? 'codeclew-typescript-compiler-fact/1.0'
+  : 'codeclew-javascript-compiler-fact/1.0'
 const ts = require(typescriptModule)
 const configPath = path.resolve(repository, configRelative)
 const repositoryPrefix = repository.endsWith(path.sep) ? repository : repository + path.sep
@@ -72,6 +79,21 @@ const program = ts.createProgram({
   projectReferences: parsed.projectReferences,
 })
 const checker = program.getTypeChecker()
+const hasProjectDeclarationAuthority = program.getSourceFiles().some(source => {
+  if (!source.isDeclarationFile) return false
+  const resolved = path.resolve(source.fileName)
+  return !resolved.startsWith(typescriptPrefix)
+})
+const authorityMode = languageProfile === 'typescript'
+  ? 'TYPESCRIPT_CHECKED'
+  : options.checkJs
+    ? 'JAVASCRIPT_CHECKED'
+    : hasProjectDeclarationAuthority
+      ? 'JAVASCRIPT_DECLARATION_TYPED'
+      : 'JAVASCRIPT_SYNTAX_CONDITIONAL'
+const factResolution = authorityMode === 'JAVASCRIPT_SYNTAX_CONDITIONAL'
+  ? 'SYNTAX_OBSERVED'
+  : 'COMPILER_RESOLVED'
 const facts = []
 const externalFiles = []
 const sourceFiles = []
@@ -197,7 +219,7 @@ function addRelation(kind, node, sourceIdentityValue, targetSymbol) {
     file,
     start: offsets.start,
     end: offsets.end,
-    resolution: 'COMPILER_RESOLVED',
+    resolution: factResolution,
   })
 }
 
@@ -222,15 +244,19 @@ function visit(node, currentIdentity) {
         symbolIdentity: identity,
         ownerIdentity: ownerIdentity(node),
         exported: isExported(node),
-        typeText: normalizeText(checker.typeToString(type, node, ts.TypeFormatFlags.NoTruncation)),
-        signature: signature ? normalizeText(checker.signatureToString(signature, node, ts.TypeFormatFlags.NoTruncation)) : undefined,
+        typeText: authorityMode === 'JAVASCRIPT_SYNTAX_CONDITIONAL'
+          ? '<unchecked>'
+          : normalizeText(checker.typeToString(type, node, ts.TypeFormatFlags.NoTruncation)),
+        signature: authorityMode === 'JAVASCRIPT_SYNTAX_CONDITIONAL'
+          ? undefined
+          : signature ? normalizeText(checker.signatureToString(signature, node, ts.TypeFormatFlags.NoTruncation)) : undefined,
         file,
         start: offsets.start,
         end: offsets.end,
-        resolution: 'COMPILER_RESOLVED',
+        resolution: factResolution,
       })
       if (kind !== 'CONSTRUCTOR' && (type.flags & ts.TypeFlags.Any) !== 0) {
-        addBoundary('TYPESCRIPT_ANY_TYPE', node)
+        addBoundary(languageProfile === 'typescript' ? 'TYPESCRIPT_ANY_TYPE' : 'JAVASCRIPT_ANY_TYPE', node)
       }
     }
   }
@@ -279,14 +305,38 @@ for (const source of program.getSourceFiles()) {
   const relative = repositoryRelative(source.fileName)
   if (relative && !isDependencyRelative(relative)) {
     const lower = relative.toLowerCase()
-    if (/\.(ts|tsx|mts|cts)$/.test(lower)) {
+    if (source.isDeclarationFile) {
       sourceFiles.push(relative)
       visit(source, sourceIdentity(source))
+    } else if (/\.(ts|tsx|mts|cts)$/.test(lower)) {
+      if (languageProfile === 'typescript') {
+        sourceFiles.push(relative)
+        visit(source, sourceIdentity(source))
+      } else {
+        addBoundary('TYPESCRIPT_SOURCE_DEFERRED_TO_TYPESCRIPT_PROFILE', source)
+      }
     } else if (/\.(js|jsx|mjs|cjs)$/.test(lower)) {
-      addBoundary('JAVASCRIPT_SOURCE_DEFERRED_TO_JAVASCRIPT_PROFILE', source)
+      if (languageProfile === 'javascript') {
+        sourceFiles.push(relative)
+        visit(source, sourceIdentity(source))
+      } else {
+        addBoundary('JAVASCRIPT_SOURCE_DEFERRED_TO_JAVASCRIPT_PROFILE', source)
+      }
     }
   } else if (source.isDeclarationFile || isDependencyRelative(relative)) {
     externalFiles.push({ logicalName: logicalExternal(source.fileName), physicalPath: source.fileName })
+  }
+}
+
+if (languageProfile === 'javascript') {
+  const firstJavaScript = program.getSourceFiles().find(source => {
+    const relative = repositoryRelative(source.fileName)
+    return relative && !isDependencyRelative(relative) && /\.(js|jsx|mjs|cjs)$/.test(relative.toLowerCase())
+  })
+  if (authorityMode === 'JAVASCRIPT_DECLARATION_TYPED') {
+    addBoundary('JAVASCRIPT_DECLARATION_TYPED_NOT_CHECKED', firstJavaScript)
+  } else if (authorityMode === 'JAVASCRIPT_SYNTAX_CONDITIONAL') {
+    addBoundary('JAVASCRIPT_UNCHECKED_SYNTAX_ONLY', firstJavaScript)
   }
 }
 
@@ -298,7 +348,7 @@ for (const diagnostic of diagnostics) {
   const node = diagnostic.file && diagnostic.start != null
     ? findNodeAt(diagnostic.file, diagnostic.start)
     : null
-  addBoundary('TYPESCRIPT_DIAGNOSTIC', node, diagnostic.code)
+  addBoundary(languageProfile === 'typescript' ? 'TYPESCRIPT_DIAGNOSTIC' : 'JAVASCRIPT_DIAGNOSTIC', node, diagnostic.code)
 }
 
 function findNodeAt(source, position) {
@@ -352,7 +402,9 @@ facts.push(...projectReferences.map(reference => ({
 })))
 
 process.stdout.write(JSON.stringify({
-  schema: 'codeclew-typescript-analyzer-output/1.0',
+  schema: 'codeclew-ecmascript-analyzer-output/1.0',
+  language: languageProfile,
+  authorityMode,
   compilerVersion: ts.version,
   nodeVersion: process.version,
   configPath: configRelative,

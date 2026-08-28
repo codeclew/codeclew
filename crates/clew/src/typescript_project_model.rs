@@ -9,7 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub const TYPESCRIPT_MODEL_SCHEMA: &str = "codeclew-typescript-project-model/1.0";
-const ANALYZER_OUTPUT_SCHEMA: &str = "codeclew-typescript-analyzer-output/1.0";
+pub const JAVASCRIPT_MODEL_SCHEMA: &str = "codeclew-javascript-project-model/1.0";
+const ANALYZER_OUTPUT_SCHEMA: &str = "codeclew-ecmascript-analyzer-output/1.0";
 const ANALYZER_SOURCE: &str = include_str!("typescript_analyzer.cjs");
 const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ANALYZER_ERROR_BYTES: usize = 4 * 1024 * 1024;
@@ -31,6 +32,8 @@ pub struct TypeScriptExternalAuthority {
 pub struct TypeScriptProjectModel {
     pub schema: String,
     pub model_digest: String,
+    pub language: String,
+    pub authority_mode: String,
     pub compilation: String,
     pub config_path: String,
     pub config_digest: String,
@@ -92,6 +95,8 @@ struct AnalyzerExternalFile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AnalyzerOutput {
     schema: String,
+    language: String,
+    authority_mode: String,
     compiler_version: String,
     node_version: String,
     config_path: String,
@@ -109,6 +114,21 @@ pub fn analyzer_digest() -> String {
 pub fn extract_typescript_model(
     repository: &Path,
     compilation: &str,
+) -> Result<TypeScriptOperationalModel, ClewError> {
+    extract_ecmascript_model(repository, compilation, "typescript")
+}
+
+pub fn extract_javascript_model(
+    repository: &Path,
+    compilation: &str,
+) -> Result<TypeScriptOperationalModel, ClewError> {
+    extract_ecmascript_model(repository, compilation, "javascript")
+}
+
+fn extract_ecmascript_model(
+    repository: &Path,
+    compilation: &str,
+    language: &str,
 ) -> Result<TypeScriptOperationalModel, ClewError> {
     let repository = repository.canonicalize().map_err(io_error)?;
     let selector = TypeScriptCompilationSelector::parse(compilation)?;
@@ -155,6 +175,7 @@ pub fn extract_typescript_model(
             typescript_module
                 .to_str()
                 .ok_or_else(|| unsupported("TypeScript module path is not UTF-8"))?,
+            language,
         ])
         .current_dir(&repository)
         .env_remove("NODE_OPTIONS")
@@ -177,6 +198,8 @@ pub fn extract_typescript_model(
     let mut observed: AnalyzerOutput = serde_json::from_slice(&output.stdout)
         .map_err(|_| corrupt("TypeScript analyzer output schema is invalid"))?;
     if observed.schema != ANALYZER_OUTPUT_SCHEMA
+        || observed.language != language
+        || !authority_mode_is_valid(language, &observed.authority_mode)
         || observed.config_path != selector.config_path
         || observed.compiler_version != package_version
         || observed.source_files.is_empty()
@@ -211,8 +234,10 @@ pub fn extract_typescript_model(
     let config_digest = canonical::hash_bytes(&bounded_file(&config, 4 * 1024 * 1024)?);
     let compiler_module_digest = canonical::hash_bytes(&module_bytes);
     let mut authority = TypeScriptProjectModel {
-        schema: TYPESCRIPT_MODEL_SCHEMA.into(),
+        schema: model_schema(language)?.into(),
         model_digest: String::new(),
+        language: format!("language:{language}"),
+        authority_mode: observed.authority_mode,
         compilation: selector.canonical(),
         config_path: selector.config_path,
         config_digest,
@@ -244,7 +269,12 @@ pub fn extract_typescript_model(
 pub fn verify_model(model: &TypeScriptProjectModel) -> Result<(), ClewError> {
     let mut source_files = BTreeSet::new();
     let mut external_files = BTreeSet::new();
-    if model.schema != TYPESCRIPT_MODEL_SCHEMA
+    let language = model
+        .language
+        .strip_prefix("language:")
+        .ok_or_else(|| corrupt("ECMAScript project model language is invalid"))?;
+    if model.schema != model_schema(language)?
+        || !authority_mode_is_valid(language, &model.authority_mode)
         || model.model_digest != model_digest(model)?
         || TypeScriptCompilationSelector::parse(&model.compilation)?.config_path
             != model.config_path
@@ -272,6 +302,25 @@ pub fn verify_model(model: &TypeScriptProjectModel) -> Result<(), ClewError> {
         return Err(corrupt("TypeScript project model authority is invalid"));
     }
     Ok(())
+}
+
+fn model_schema(language: &str) -> Result<&'static str, ClewError> {
+    match language {
+        "typescript" => Ok(TYPESCRIPT_MODEL_SCHEMA),
+        "javascript" => Ok(JAVASCRIPT_MODEL_SCHEMA),
+        _ => Err(corrupt("ECMAScript project model language is invalid")),
+    }
+}
+
+fn authority_mode_is_valid(language: &str, mode: &str) -> bool {
+    match language {
+        "typescript" => mode == "TYPESCRIPT_CHECKED",
+        "javascript" => matches!(
+            mode,
+            "JAVASCRIPT_CHECKED" | "JAVASCRIPT_DECLARATION_TYPED" | "JAVASCRIPT_SYNTAX_CONDITIONAL"
+        ),
+        _ => false,
+    }
 }
 
 fn locate_typescript(repository: &Path, config: &Path) -> Result<PathBuf, ClewError> {
@@ -439,5 +488,19 @@ mod tests {
             analyzer_digest(),
             canonical::hash_bytes(include_str!("typescript_analyzer.cjs").as_bytes())
         );
+    }
+
+    #[test]
+    fn javascript_authority_modes_are_explicit_and_closed() {
+        for mode in [
+            "JAVASCRIPT_CHECKED",
+            "JAVASCRIPT_DECLARATION_TYPED",
+            "JAVASCRIPT_SYNTAX_CONDITIONAL",
+        ] {
+            assert!(authority_mode_is_valid("javascript", mode));
+        }
+        assert!(!authority_mode_is_valid("javascript", "TYPESCRIPT_CHECKED"));
+        assert!(!authority_mode_is_valid("javascript", "UNKNOWN"));
+        assert!(authority_mode_is_valid("typescript", "TYPESCRIPT_CHECKED"));
     }
 }

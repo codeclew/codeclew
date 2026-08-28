@@ -142,6 +142,7 @@ fn supported_context_language(language: &str) -> bool {
     matches!(
         language,
         "language:java"
+            | "language:javascript"
             | "language:kotlin"
             | "language:python"
             | "language:rust"
@@ -1332,6 +1333,7 @@ mod tests {
     #[test]
     fn context_language_allowlist_is_explicit() {
         assert!(super::supported_context_language("language:java"));
+        assert!(super::supported_context_language("language:javascript"));
         assert!(super::supported_context_language("language:kotlin"));
         assert!(super::supported_context_language("language:python"));
         assert!(super::supported_context_language("language:rust"));

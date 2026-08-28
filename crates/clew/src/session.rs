@@ -70,6 +70,7 @@ pub struct SessionAuthority {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionLanguage {
     Java,
+    JavaScript,
     Kotlin,
     Python,
     Rust,
@@ -81,6 +82,7 @@ impl SessionLanguage {
     pub fn uri(self) -> &'static str {
         match self {
             Self::Java => "language:java",
+            Self::JavaScript => "language:javascript",
             Self::Kotlin => "language:kotlin",
             Self::Python => "language:python",
             Self::Rust => "language:rust",
@@ -2710,7 +2712,7 @@ fn valid_compilation(language: SessionLanguage, compilation: &str) -> bool {
             return crate::python_project_model::PythonCompilationSelector::parse(compilation)
                 .is_ok();
         }
-        SessionLanguage::TypeScript => {
+        SessionLanguage::JavaScript | SessionLanguage::TypeScript => {
             return crate::typescript_project_model::TypeScriptCompilationSelector::parse(
                 compilation,
             )
@@ -3442,7 +3444,7 @@ mod tests {
         let selector = "cargo:crates/clew/Cargo.toml#clew#lib#clew".to_owned();
         assert_eq!(
             canonical_compilations(rust, std::slice::from_ref(&selector)).unwrap(),
-            [selector]
+            [selector.as_str()]
         );
         assert!(canonical_compilations(rust, &[":/main".into()]).is_err());
 
@@ -3465,9 +3467,14 @@ mod tests {
         let selector = "tsconfig:packages/api/tsconfig.json".to_owned();
         assert_eq!(
             canonical_compilations(typescript, std::slice::from_ref(&selector)).unwrap(),
-            [selector]
+            [selector.as_str()]
         );
         assert!(canonical_compilations(typescript, &["tsconfig:../tsconfig.json".into()]).is_err());
+        let javascript = SessionLanguage::JavaScript;
+        assert_eq!(
+            canonical_compilations(javascript, std::slice::from_ref(&selector)).unwrap(),
+            [selector.as_str()]
+        );
     }
 
     #[test]
@@ -3483,6 +3490,7 @@ mod tests {
     fn read_only_languages_accept_only_non_cacheable_model_authority() {
         for language in [
             SessionLanguage::Java,
+            SessionLanguage::JavaScript,
             SessionLanguage::Python,
             SessionLanguage::Rust,
             SessionLanguage::TypeScript,

@@ -61,12 +61,14 @@ use crate::rust_project_model::{CargoProjectModel, CargoTargetModel, extract_car
 use crate::session::{ModelCachePolicy, SessionAuthority, SessionLanguage};
 use crate::state::StateAuthority;
 use crate::typescript_adapter_v2::{
+    JAVASCRIPT_COMPILER_FACTS_CAPABILITY, JAVASCRIPT_LANGUAGE,
     TYPESCRIPT_COMPILER_FACTS_CAPABILITY, TYPESCRIPT_LANGUAGE, TypeScriptAdapterV2,
     TypeScriptCompilerFact, TypeScriptCompilerIndex, build_typescript_compiler_index,
     typescript_adapter_digest, typescript_scope_digest,
 };
 use crate::typescript_project_model::{
-    TYPESCRIPT_MODEL_SCHEMA, TypeScriptOperationalModel, extract_typescript_model,
+    JAVASCRIPT_MODEL_SCHEMA, TYPESCRIPT_MODEL_SCHEMA, TypeScriptOperationalModel,
+    extract_javascript_model, extract_typescript_model,
 };
 use crate::worker::WorkerRequestCounters;
 use rayon::prelude::*;
@@ -247,11 +249,14 @@ pub fn ensure_session_generation(
             "",
         );
     }
-    if session.language == SessionLanguage::TypeScript {
+    if matches!(
+        session.language,
+        SessionLanguage::JavaScript | SessionLanguage::TypeScript
+    ) {
         if session.freshness()?.status != "FRESH" {
             return Err(ClewError::new(
                 ErrorCode::InputMutated,
-                "TypeScript target is no longer fresh for this session",
+                "ECMAScript target is no longer fresh for this session",
             ));
         }
         let target_repo = session.target_repository_path()?;
@@ -286,6 +291,9 @@ pub fn ensure_session_generation(
                 &binding_path,
                 "",
             );
+        }
+        SessionLanguage::JavaScript => {
+            unreachable!("JavaScript generation returned above")
         }
         SessionLanguage::Rust => {
             return ensure_rust_generation_set(
@@ -813,7 +821,7 @@ fn ensure_typescript_generation_set(
             "TypeScript target differs from the sealed session snapshot",
         ));
     }
-    let sources = effective_typescript_sources(snapshot)?;
+    let sources = effective_typescript_sources(snapshot, session.language)?;
     let mut results = Vec::with_capacity(session.compilations.len());
     for compilation in &session.compilations {
         let component = digest_component(
@@ -824,7 +832,11 @@ fn ensure_typescript_generation_set(
             .map_err(internal)?,
         )?
         .to_owned();
-        let model = extract_typescript_model(repository, compilation)?;
+        let model = match session.language {
+            SessionLanguage::JavaScript => extract_javascript_model(repository, compilation)?,
+            SessionLanguage::TypeScript => extract_typescript_model(repository, compilation)?,
+            _ => unreachable!("ECMAScript generation requires an ECMAScript session"),
+        };
         let source_content_digests = typescript_source_content_digests(store, &sources, &model)?;
         results.push(ensure_typescript_generation(
             session,
@@ -869,14 +881,40 @@ fn ensure_typescript_generation(
             "generation service must run through ./clew",
         )
     })?;
+    let javascript = session.language == SessionLanguage::JavaScript;
+    let language_uri = if javascript {
+        JAVASCRIPT_LANGUAGE
+    } else {
+        TYPESCRIPT_LANGUAGE
+    };
+    let capability = if javascript {
+        JAVASCRIPT_COMPILER_FACTS_CAPABILITY
+    } else {
+        TYPESCRIPT_COMPILER_FACTS_CAPABILITY
+    };
+    let model_schema = if javascript {
+        JAVASCRIPT_MODEL_SCHEMA
+    } else {
+        TYPESCRIPT_MODEL_SCHEMA
+    };
+    let profile_name = if javascript {
+        "javascript"
+    } else {
+        "typescript"
+    };
+    if model.authority.language != language_uri {
+        return Err(corrupt(
+            "ECMAScript model language differs from its session",
+        ));
+    }
     let model_object = store.put(
-        TYPESCRIPT_MODEL_SCHEMA,
+        model_schema,
         &canonical::bytes(&model.authority).map_err(internal)?,
     )?;
     let toolchain = store.put(
-        "codeclew-typescript-toolchain-authority/1.0",
+        &format!("codeclew-{profile_name}-toolchain-authority/1.0"),
         &canonical::bytes(&json!({
-            "schema":"codeclew-typescript-toolchain-authority/1.0",
+            "schema":format!("codeclew-{profile_name}-toolchain-authority/1.0"),
             "compilerVersion":model.authority.compiler_version,
             "compilerModuleDigest":model.authority.compiler_module_digest,
             "nodeVersion":model.authority.node_version,
@@ -890,7 +928,7 @@ fn ensure_typescript_generation(
         .iter()
         .map(|authority| {
             store.put(
-                "codeclew-typescript-declaration-authority/1.0",
+                &format!("codeclew-{profile_name}-declaration-authority/1.0"),
                 &canonical::bytes(authority).map_err(internal)?,
             )
         })
@@ -900,7 +938,7 @@ fn ensure_typescript_generation(
     let descriptor = CompilationDescriptor {
         schema: COMPILATION_SCHEMA.into(),
         compilation_id: safe_compilation_id(compilation),
-        language_uri: LanguageUri::parse(TYPESCRIPT_LANGUAGE)?,
+        language_uri: LanguageUri::parse(language_uri)?,
         source_roots: vec![SourceRootDescriptor {
             logical_name: "project".into(),
             tree: snapshot_object.clone(),
@@ -922,12 +960,12 @@ fn ensure_typescript_generation(
     let provider = ProviderModel {
         handshake: ProviderHandshake {
             protocol: PROVIDER_PROTOCOL.into(),
-            provider_id: "project-native-typescript".into(),
+            provider_id: format!("project-native-{profile_name}"),
             provider_digest: model.authority.model_digest.clone(),
             build_system_uris: vec!["build:tsconfig".into()],
         },
         build_model: BuildModel {
-            provider_id: "project-native-typescript".into(),
+            provider_id: format!("project-native-{profile_name}"),
             model: model_object,
             compilations: vec![descriptor.clone()],
         },
@@ -946,8 +984,11 @@ fn ensure_typescript_generation(
         return load_ready(state, store, binding_path, session, compilation, false);
     }
     let adapter_digest = typescript_adapter_digest()?;
-    let compiler_store =
-        CompilerStoreKey::create("typescript-compiler-1", adapter_digest.clone(), &descriptor)?;
+    let compiler_store = CompilerStoreKey::create(
+        format!("{profile_name}-compiler-1"),
+        adapter_digest.clone(),
+        &descriptor,
+    )?;
     let index = build_typescript_compiler_index(model, &source_content_digests)?;
     let adapter = TypeScriptAdapterV2::new(
         adapter_digest,
@@ -963,13 +1004,13 @@ fn ensure_typescript_generation(
     journal.transition(AttemptState::Modeled, derived_input_manifest.digest.clone())?;
     journal.transition(
         AttemptState::Analyzing,
-        "TypeScript compiler adapter DAG started",
+        "ECMAScript compiler adapter DAG started",
     )?;
     let request = AnalyzeGenerationRequest {
         schema: ANALYSIS_REQUEST_SCHEMA.into(),
         attempt_id: journal.attempt().attempt_id.clone(),
         generation_key: generation_key.clone(),
-        capability: CapabilityUri::parse(TYPESCRIPT_COMPILER_FACTS_CAPABILITY)?,
+        capability: CapabilityUri::parse(capability)?,
         compilation: descriptor,
         derived_input_manifest: derived_input_manifest.clone(),
         parent_generation: None,
@@ -981,14 +1022,14 @@ fn ensure_typescript_generation(
         Err(error) => {
             journal.transition(
                 AttemptState::Failed,
-                "TypeScript compiler adapter DAG failed",
+                "ECMAScript compiler adapter DAG failed",
             )?;
             return Err(error);
         }
     };
     journal.transition(
         AttemptState::Finalizing,
-        "TypeScript deterministic merge started",
+        "ECMAScript deterministic merge started",
     )?;
     let result = (|| {
         let (generation, generation_object) = finalize_generation(
@@ -996,7 +1037,7 @@ fn ensure_typescript_generation(
             derived_input_manifest.clone(),
             vec![AttemptAuthority {
                 compilation_id: safe_compilation_id(compilation),
-                capability: CapabilityUri::parse(TYPESCRIPT_COMPILER_FACTS_CAPABILITY)?,
+                capability: CapabilityUri::parse(capability)?,
                 completion: analysis.completion,
             }],
             analysis.runs,
@@ -1060,22 +1101,30 @@ fn ensure_typescript_generation(
 
 fn effective_typescript_sources(
     snapshot: &RepositoryInputSnapshot,
+    language: SessionLanguage,
 ) -> Result<BTreeMap<String, CasObject>, ClewError> {
-    fn is_typescript(path: &str) -> bool {
-        [".ts", ".tsx", ".mts", ".cts"]
-            .iter()
-            .any(|extension| path.ends_with(extension))
+    fn is_source(path: &str, language: SessionLanguage) -> bool {
+        path.ends_with(".d.ts")
+            || match language {
+                SessionLanguage::JavaScript => [".js", ".jsx", ".mjs", ".cjs"]
+                    .iter()
+                    .any(|extension| path.ends_with(extension)),
+                SessionLanguage::TypeScript => [".ts", ".tsx", ".mts", ".cts"]
+                    .iter()
+                    .any(|extension| path.ends_with(extension)),
+                _ => false,
+            }
     }
     let mut sources = snapshot
         .index
         .iter()
-        .filter(|entry| entry.stage == 0 && is_typescript(&entry.path))
+        .filter(|entry| entry.stage == 0 && is_source(&entry.path, language))
         .map(|entry| (entry.path.clone(), entry.content.clone()))
         .collect::<BTreeMap<_, _>>();
     for entry in snapshot
         .worktree
         .iter()
-        .filter(|entry| is_typescript(&entry.path))
+        .filter(|entry| is_source(&entry.path, language))
     {
         match entry.kind {
             WorktreeKind::Missing => {
@@ -1093,7 +1142,7 @@ fn effective_typescript_sources(
             WorktreeKind::Symlink => {
                 return Err(ClewError::new(
                     ErrorCode::UnsupportedProjectConfiguration,
-                    "TypeScript source symlinks are unsupported",
+                    "ECMAScript source symlinks are unsupported",
                 ));
             }
         }
@@ -1791,6 +1840,12 @@ pub fn ensure_candidate_generation(
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
             "Java v1 is read-only and has no candidate generation path",
+        ));
+    }
+    if session.language == SessionLanguage::JavaScript {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "JavaScript v1 is read-only and has no candidate generation path",
         ));
     }
     if session.language == SessionLanguage::TypeScript {
