@@ -304,6 +304,16 @@ exactly once, and members must refer to distinct repositories:
 ./clew workspace prepare \
   --workspace workspace:... \
   --request /absolute/private/workspace-prepare.json
+./clew workspace observe \
+  --workspace workspace:... \
+  --request /absolute/private/scenario-observation.json \
+  --evidence /absolute/private/scenario-raw-evidence.bin
+./clew workspace publish \
+  --workspace workspace:... \
+  --request /absolute/private/workspace-publication.json
+./clew workspace recover \
+  --workspace workspace:... \
+  --publication workspace-publication:sha256:...
 ./clew workspace close --workspace workspace:...
 ```
 
@@ -320,6 +330,23 @@ passed its own validation. It never updates a target ref. Declared edges bind
 both exact candidate OIDs for later combined checks without replacing member
 authority or promoting catalog certainty. An identical repeat returns the same
 retained authority without starting task runners.
+
+`workspace observe` adds provider-neutral runtime evidence without promoting it
+to compiler or contract certainty. Its canonical request binds the exact
+`AfterWorkspace`, provider/action/config digests, time window, aggregate status,
+and checks. Every check digest must match the exact private raw evidence file;
+stdout contains only the path-free CAS reference and certainty axes. Identical
+input is idempotent, while a genuinely new observation has a new content
+identity.
+
+`workspace publish` seals every member, its reviewed prepared digest,
+conditional obligation acknowledgements, the publication order, and
+`ROLL_FORWARD_ONLY` policy before the first ref update. The append-only ledger
+can stop at `RECOVERY_REQUIRED` after a partial publication, but never rolls a
+published candidate back. `workspace recover` resumes only the sealed suffix.
+Both commands are idempotent at `PUBLISHED_ALL`. This local saga is intentionally
+not advertised as a cross-repository atomic transaction, and JVM multi-service
+mutation remains gated by three independent qualification cases.
 
 Member and edge order cannot change the workspace identity; changing an alias,
 edge, session, repository revision, mission, or ChangeSpec does. Context reuses

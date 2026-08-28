@@ -2,7 +2,9 @@
 
 ## Document authority
 
-- **Status:** M1, M2, W1, L1, J1, C1, and W2 complete; W3 scenario receipts is next.
+- **Status:** M1, M2, W1, L1, J1, C1, W2, W3, and the W4 local
+  publication core are complete; T1 TypeScript is next. W4 remains deliberately
+  unadvertised for JVM multi-service mutation until its three-case JVM gate.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
@@ -459,6 +461,8 @@ or GC. The checked aggregate is
 
 ## W3 — Scenario receipts
 
+**Status:** Complete for provider-neutral retained local observations.
+
 ### Practical purpose
 
 Compiler facts prove code shape, not deployed behavior. Scenario receipts let a
@@ -487,7 +491,24 @@ of core or upgrading it to compiler certainty.
 - Provider absence leaves an explicit unverified obligation and does not block
   compiler-only preparation unless the ChangeSpec requires the scenario.
 
+### Accepted result
+
+One RELEASE experiment ran native tests against the two exact candidate commits
+from a retained `AfterWorkspace`. `workspace observe` stored 746 private raw
+evidence bytes in CAS and returned a path-free receipt bound to both candidate
+OIDs and their candidate-set digest. The identical request and evidence returned
+the identical receipt. Runtime certainty became `OBSERVED_RUNTIME`; contract and
+artifact ownership remained `UNKNOWN`, and compiler shape was only the explicit
+`BOUND_AFTER_WORKSPACE_MEMBER_AUTHORITIES` binding. Each check digest must equal
+the SHA-256 of the submitted private evidence bytes, so a check cannot be
+reattached to different raw evidence. Optional and required provider absence
+remain distinct obligations. The checked aggregate is
+`docs/plans/evidence/scenario-receipt-acceptance.json`.
+
 ## W4 — Ordered local publish saga and recovery
+
+**Status:** Local publication/recovery core complete. JVM multi-service mutation
+advertising remains gated by three independent JVM cases.
 
 ### Practical purpose
 
@@ -515,6 +536,25 @@ claim.
 - Recovery reaches a terminal truthful state in 100% of controlled cases.
 - At least three independent JVM multi-service cases complete
   prepare/validate/publish/recover before mutation is advertised.
+
+### Accepted result
+
+One controlled two-repository RELEASE experiment sealed the order `api`, then
+`worker`, and the policy `ROLL_FORWARD_ONLY` before either ref moved. A fault
+inserted only after the first ref update produced `RECOVERY_REQUIRED`: the ledger
+retained the published API candidate, named `worker` as the only remaining
+member, and performed no rollback. Removing the deliberate dirty-worktree fault
+and invoking `workspace recover` published the exact worker candidate and
+reached `PUBLISHED_ALL`. Repeating both the original publish request and recover
+returned the same terminal ledger head in 2 ms without another ref update.
+
+This experiment also removed a real recovery blocker: source-session freshness
+is now checked exactly once at publication admission. Continuation reads sealed
+publication and `AfterWorkspace` authorities, because the first successful ref
+update intentionally makes the original workspace stale. Individual session,
+run, candidate, target-ref, and conditional-approval checks remain in force for
+every member. The checked aggregate is
+`docs/plans/evidence/workspace-publication-acceptance.json`.
 
 ## T1/T2 — TypeScript and JavaScript profiles
 

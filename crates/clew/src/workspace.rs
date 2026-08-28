@@ -347,6 +347,17 @@ pub(crate) fn load_open_authority(
     Ok((authority, root))
 }
 
+/// Load immutable workspace authority without re-evaluating source-session
+/// freshness. This is reserved for an already admitted publication/recovery
+/// contour: its first successful ref update intentionally makes the original
+/// workspace freshness predicate false.
+pub(crate) fn load_retained_authority(
+    workspace_id: &str,
+) -> Result<(WorkspaceAuthority, std::path::PathBuf), ClewError> {
+    let state = StateAuthority::process_default()?;
+    load_with_state(&state, workspace_id)
+}
+
 pub fn context(
     workspace_id: &str,
     intent: &str,

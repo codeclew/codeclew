@@ -122,6 +122,10 @@ enum WorkspaceCommand {
     Prepare(WorkspacePrepareArgs),
     /// Retain one provider-neutral runtime observation against prepared candidates.
     Observe(WorkspaceObserveArgs),
+    /// Publish every prepared member in one pre-sealed roll-forward order.
+    Publish(WorkspacePublishArgs),
+    /// Resume the unpublished suffix of an interrupted workspace publication.
+    Recover(WorkspaceRecoverArgs),
     Close(WorkspaceIdArgs),
 }
 
@@ -392,6 +396,23 @@ struct WorkspaceObserveArgs {
     /// Private bounded raw provider evidence retained in CAS and never printed.
     #[arg(long)]
     evidence: PathBuf,
+}
+
+#[derive(Args)]
+struct WorkspacePublishArgs {
+    #[arg(long)]
+    workspace: String,
+    /// Closed canonical codeclew-workspace-publish-input/1.0 JSON file.
+    #[arg(long)]
+    request: PathBuf,
+}
+
+#[derive(Args)]
+struct WorkspaceRecoverArgs {
+    #[arg(long)]
+    workspace: String,
+    #[arg(long)]
+    publication: String,
 }
 
 #[derive(Args)]
@@ -1062,6 +1083,18 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             .map_err(internal)
         }
         Command::Workspace {
+            command: WorkspaceCommand::Publish(args),
+        } => {
+            let request = read_private_diagnostic_input(
+                &args.request,
+                clew::workspace_publish::MAX_WORKSPACE_PUBLISH_INPUT_BYTES,
+            )?;
+            publish_workspace(&args.workspace, Some(&request), None)
+        }
+        Command::Workspace {
+            command: WorkspaceCommand::Recover(args),
+        } => publish_workspace(&args.workspace, None, Some(&args.publication)),
+        Command::Workspace {
             command: WorkspaceCommand::Close(args),
         } => serde_json::to_value(workspace::close(&args.workspace)?).map_err(internal),
         Command::Session {
@@ -1585,6 +1618,96 @@ fn bounded_after_workspace(
         return Err(ClewError::new(
             ErrorCode::SliceBudgetExceeded,
             "AfterWorkspace stdout exceeds 64 KiB",
+        ));
+    }
+    Ok(value)
+}
+
+fn publish_workspace(
+    workspace_id: &str,
+    request: Option<&[u8]>,
+    publication_id: Option<&str>,
+) -> Result<Value, ClewError> {
+    let mut projection = match (request, publication_id) {
+        (Some(source), None) => clew::workspace_publish::resolve(workspace_id, source)?,
+        (None, Some(publication_id)) => {
+            clew::workspace_publish::load(workspace_id, publication_id)?.1
+        }
+        _ => return Err(invalid("workspace publication authority is ambiguous")),
+    };
+    for _ in 0..16 {
+        if projection.status == clew::workspace_publish::WorkspacePublicationStatus::PublishedAll {
+            return bounded_workspace_publication(projection);
+        }
+        let (authority, latest) =
+            clew::workspace_publish::load(workspace_id, &projection.publication_id)?;
+        projection = latest;
+        if projection.status != clew::workspace_publish::WorkspacePublicationStatus::Publishing {
+            projection = clew::workspace_publish::begin_next(
+                workspace_id,
+                &authority.publication_id,
+                &projection.ledger_head,
+            )?;
+        }
+        let member = clew::workspace_publish::active_member(&authority, &projection)?
+            .ok_or_else(|| internal("publication has no active member"))?
+            .clone();
+        let record = RunRecord::load(&member.run_id)?;
+        let result = if matches!(
+            record.status,
+            RunStatus::Publishing | RunStatus::WorktreeRecoveryRequired
+        ) {
+            recover_task_run(&member.session_id, &member.run_id)
+        } else {
+            publish_task_run(
+                &member.session_id,
+                &member.run_id,
+                member.allow_conditional,
+                member
+                    .allow_conditional
+                    .then_some(member.prepared_authority_digest.as_str()),
+                &member.acknowledge_obligations,
+            )
+        };
+        if let Err(error) = result {
+            projection = clew::workspace_publish::record_failure(
+                workspace_id,
+                &authority.publication_id,
+                &projection.ledger_head,
+                &member.alias,
+                error.code,
+            )?;
+            return bounded_workspace_publication(projection);
+        }
+        let published = RunRecord::load(&member.run_id)?;
+        if matches!(
+            published.status,
+            RunStatus::Published | RunStatus::PublishedConditional
+        ) && published.final_commit.as_deref() == Some(member.candidate_oid.as_str())
+        {
+            projection = clew::workspace_publish::record_published(
+                workspace_id,
+                &authority.publication_id,
+                &projection.ledger_head,
+                &member.alias,
+                &member.candidate_oid,
+            )?;
+        }
+    }
+    Err(ClewError::new(
+        ErrorCode::ResourceLimit,
+        "workspace publication exceeded its bounded recovery transitions",
+    ))
+}
+
+fn bounded_workspace_publication(
+    projection: clew::workspace_publish::WorkspacePublicationProjection,
+) -> Result<Value, ClewError> {
+    let value = serde_json::to_value(projection).map_err(internal)?;
+    if canonical::bytes(&value).map_err(internal)?.len() > 64 * 1024 {
+        return Err(ClewError::new(
+            ErrorCode::SliceBudgetExceeded,
+            "workspace publication stdout exceeds 64 KiB",
         ));
     }
     Ok(value)
@@ -3068,9 +3191,31 @@ mod tests {
             ])
             .is_ok()
         );
-        for command in ["publish", "gc"] {
-            assert!(Cli::try_parse_from(["clew", "workspace", command]).is_err());
-        }
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "workspace",
+                "publish",
+                "--workspace",
+                "workspace:authority",
+                "--request",
+                "/private/publication.json",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "workspace",
+                "recover",
+                "--workspace",
+                "workspace:authority",
+                "--publication",
+                "workspace-publication:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ])
+            .is_ok()
+        );
+        assert!(Cli::try_parse_from(["clew", "workspace", "gc"]).is_err());
     }
 
     #[test]

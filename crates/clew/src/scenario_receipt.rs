@@ -10,7 +10,7 @@ use crate::cas::{CasObject, CasStore};
 use crate::error::{ClewError, ErrorCode};
 use crate::state::StateAuthority;
 use crate::workspace::WorkspaceEvidenceAuthority;
-use crate::workspace_prepare::{AfterWorkspace, load_after_for_receipt};
+use crate::workspace_prepare::{AfterWorkspace, load_retained_after_workspace};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -166,7 +166,7 @@ fn record_provider(
         ));
     }
     validate_input(input, provider.raw_evidence())?;
-    let after = load_after_for_receipt(
+    let after = load_retained_after_workspace(
         workspace_id,
         &input.preparation_id,
         &input.after_workspace_id,

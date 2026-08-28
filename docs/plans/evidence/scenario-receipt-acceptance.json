@@ -1,0 +1,39 @@
+{
+  "schema": "codeclew-scenario-receipt-acceptance/1.0",
+  "date": "2026-08-28",
+  "runtimeMode": "RELEASE",
+  "profile": "two-local-python-candidates",
+  "afterWorkspaceId": "after-workspace:sha256:c6a3b30927e5bf5f4a310424cb01d2c47c4b475665725042202d3484a551762a",
+  "afterWorkspaceAuthorityDigest": "sha256:9f456a853293883e48c97d7a4107d9760e8e598414c78965d0b086a1a01cf847",
+  "candidateSetDigest": "sha256:98eaaa889ed4f1b933b69147e029fb79381885ac06a7cb38ee7bdff61b6965ab",
+  "receiptId": "scenario-receipt:sha256:865453d62d80bcc2d7b1bcd39f26dbf6d679ef22d182e94214c6c82f5809d9a3",
+  "receiptAuthorityDigest": "sha256:0ed11fecac8c4b86f33fd9c6cb86b5ab2eb1929a0b1b013fa4b3d9c8a2f33be9",
+  "rawEvidence": {
+    "private": true,
+    "size": 746,
+    "casDigest": "sha256:dc0d140b345b1f0a11b675451e206985ed5c3c93e8c3467c1c04940170b0145e",
+    "checkContentDigestBound": true
+  },
+  "result": {
+    "status": "PASSED",
+    "satisfaction": "OBSERVED_PASSED",
+    "identicalRepeatSameReceipt": true,
+    "certainty": {
+      "compilerShape": "BOUND_AFTER_WORKSPACE_MEMBER_AUTHORITIES",
+      "artifactOwnership": "UNKNOWN",
+      "contract": "UNKNOWN",
+      "runtime": "OBSERVED_RUNTIME"
+    }
+  },
+  "focusedVerification": {
+    "scenarioReceiptTestsPassed": 4,
+    "workspacePrepareTestsPassed": 3,
+    "clippyAllTargets": "PASS",
+    "diffCheck": "PASS"
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsRawEvidence": false
+  }
+}

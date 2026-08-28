@@ -14,7 +14,9 @@ use crate::task_run_v2::{
     PreparedCandidateV2, QualifiedObligation, ValidationEvidence, load_prepared_for_workspace,
     require_mutation_request,
 };
-use crate::workspace::{WorkspaceAuthority, WorkspaceEdgeAuthority, load_open_authority};
+use crate::workspace::{
+    WorkspaceAuthority, WorkspaceEdgeAuthority, load_open_authority, load_retained_authority,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -313,13 +315,43 @@ pub fn retained_after(
     load_after_workspace(authority)
 }
 
-pub fn load_after_for_receipt(
+pub fn load_bound_after_workspace(
     workspace_id: &str,
     preparation_id: &str,
     after_workspace_id: &str,
     after_workspace_authority_digest: &str,
 ) -> Result<AfterWorkspace, ClewError> {
     let (workspace, _) = load_open_authority(workspace_id)?;
+    load_after_for_workspace(
+        &workspace,
+        preparation_id,
+        after_workspace_id,
+        after_workspace_authority_digest,
+    )
+}
+
+pub fn load_retained_after_workspace(
+    workspace_id: &str,
+    preparation_id: &str,
+    after_workspace_id: &str,
+    after_workspace_authority_digest: &str,
+) -> Result<AfterWorkspace, ClewError> {
+    let (workspace, _) = load_retained_authority(workspace_id)?;
+    load_after_for_workspace(
+        &workspace,
+        preparation_id,
+        after_workspace_id,
+        after_workspace_authority_digest,
+    )
+}
+
+fn load_after_for_workspace(
+    workspace: &WorkspaceAuthority,
+    preparation_id: &str,
+    after_workspace_id: &str,
+    after_workspace_authority_digest: &str,
+) -> Result<AfterWorkspace, ClewError> {
+    let workspace_id = &workspace.workspace_id;
     let directory = preparation_directory_at(workspace_id, preparation_id)?;
     let authority_bytes = directory.read_file(
         OsStr::new("authority.json"),
@@ -331,11 +363,11 @@ pub fn load_after_for_receipt(
         return Err(corrupt("workspace prepare authority is not canonical"));
     }
     validate_prepare_authority(&authority)?;
-    require_workspace_binding(&workspace, &authority)?;
+    require_workspace_binding(workspace, &authority)?;
     let after = load_after_workspace(&authority)?.ok_or_else(|| {
         ClewError::new(
             ErrorCode::PreconditionFailed,
-            "scenario receipt requires a completed AfterWorkspace",
+            "operation requires a completed AfterWorkspace",
         )
     })?;
     if after.after_workspace_id != after_workspace_id
@@ -343,7 +375,7 @@ pub fn load_after_for_receipt(
     {
         return Err(ClewError::new(
             ErrorCode::BindingChanged,
-            "scenario request differs from retained AfterWorkspace authority",
+            "operation request differs from retained AfterWorkspace authority",
         ));
     }
     Ok(after)

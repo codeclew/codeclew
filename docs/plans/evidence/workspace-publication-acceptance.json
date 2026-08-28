@@ -1,0 +1,51 @@
+{
+  "schema": "codeclew-workspace-publication-acceptance/1.0",
+  "date": "2026-08-28",
+  "runtimeMode": "RELEASE",
+  "publicationId": "workspace-publication:sha256:bcfb62adfd2eae82947aea2db0fa914caac57a6c3792114bfa46ee20ca83a086",
+  "publicationAuthorityDigest": "sha256:44c7abdf74c4694d4cf03c73b0cf57242aac70fd8fde9ba405de636cb5e8e1e9",
+  "policy": "ROLL_FORWARD_ONLY",
+  "order": ["api", "worker"],
+  "faultResult": {
+    "status": "RECOVERY_REQUIRED",
+    "completedAliases": ["api"],
+    "activeAlias": "worker",
+    "remainingAliases": ["worker"],
+    "errorCode": "PRECONDITION_FAILED",
+    "sequence": 4,
+    "rollbackAttempted": false
+  },
+  "recoveredResult": {
+    "status": "PUBLISHED_ALL",
+    "completed": [
+      {"alias": "api", "candidateOid": "8d504d5bbb36fbf4a34e5c51a1cfd01e3fc6a326"},
+      {"alias": "worker", "candidateOid": "9da02c46eaa3ea22e1ad4349b8e594b948001645"}
+    ],
+    "remainingAliases": [],
+    "sequence": 6,
+    "ledgerHead": "sha256:c827ee7aa99509669967a00218f5ef3843aa527e6c6db41a946111d76ad48187"
+  },
+  "idempotency": {
+    "repeatPublishMillis": 2,
+    "repeatRecoverMillis": 2,
+    "sameTerminalLedgerHead": true,
+    "unintendedRefUpdates": 0
+  },
+  "focusedVerification": {
+    "publicationTransitionTestsPassed": 2,
+    "scenarioReceiptTestsPassed": 4,
+    "workspacePrepareTestsPassed": 3,
+    "clippyAllTargets": "PASS",
+    "diffCheck": "PASS"
+  },
+  "qualificationBoundary": {
+    "localSagaCore": "ACCEPTED",
+    "jvmMultiServiceMutationAdvertised": false,
+    "remainingJVMQualificationCases": 3
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsRawLogs": false
+  }
+}

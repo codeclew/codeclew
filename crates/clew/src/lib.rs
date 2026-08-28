@@ -49,6 +49,7 @@ pub mod thread_impact_service;
 pub mod worker;
 pub mod workspace;
 pub mod workspace_prepare;
+pub mod workspace_publish;
 
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/semantic_thread.worker.v1.rs"));
