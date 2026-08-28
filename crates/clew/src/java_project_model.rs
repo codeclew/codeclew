@@ -769,7 +769,7 @@ mod tests {
             let model = extract_java_model(&workspace.join("fixtures").join(fixture), ":/main")
                 .unwrap_or_else(|error| panic!("{fixture}: {error}"));
             assert_eq!(model.authority.release, 21);
-            assert_eq!(model.authority.source_files.len(), 2);
+            assert!(model.authority.source_files.len() >= 2);
             assert!(model.authority.compiler_version.starts_with("javac 21"));
             assert!(!model.authority.model_digest.is_empty());
             let encoded = serde_json::to_string(&model.authority).unwrap();

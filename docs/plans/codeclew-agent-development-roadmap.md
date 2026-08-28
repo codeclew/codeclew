@@ -2,7 +2,7 @@
 
 ## Document authority
 
-- **Status:** M1, M2, W1, L1, and J1 complete; C1 Kotlin/Java convergence is next.
+- **Status:** M1, M2, W1, L1, J1, and C1 complete; W2 prepare-all is next.
 - **Date:** 2026-08-28.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
@@ -383,6 +383,10 @@ benchmark only when a release is being prepared for external publication.
 
 ## C1 — Kotlin/Java convergence gate
 
+**Status:** Complete for independent local repositories joined by an exact
+consumer classpath. Joint Kotlin/Java source compilation remains unsupported
+and is not part of this qualification.
+
 ### Practical purpose
 
 The JVM value is cross-language navigation, not two isolated indexes. C1 proves
@@ -397,6 +401,18 @@ syntax with callable or binary compatibility.
   generated/local declaration gaps remain explicit.
 - At least three mixed-JVM tasks pass exact navigation with zero false ownership
   or compatibility claims.
+
+### Accepted result
+
+Two path-free RELEASE experiments used four independent local Git repositories.
+Kotlin callers resolved two Java constructor uses, and a Java caller resolved a
+Kotlin class use and method call. Three source-level tasks therefore contain an
+exact cross-language target. The selected overload remained
+`OVERLOAD_TARGET_AMBIGUOUS` with two candidates; local/generated gaps remain
+`TARGET_DECLARATION_NOT_FOUND`. Consumer classpath and provider declaration are
+exact, while artifact ownership and nullability remain `UNVERIFIED` and binary
+compatibility remains `NOT_ASSESSED`. The checked aggregate is
+`docs/plans/evidence/jvm-convergence-acceptance.json`.
 
 ## W2 — Prepare-all and candidate AfterWorkspace
 

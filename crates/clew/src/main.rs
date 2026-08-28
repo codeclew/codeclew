@@ -1114,7 +1114,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ThreadCommand::Callables(args),
         } => {
             let (thread, _) = ThreadAuthority::load(&args.thread)?;
-            let root = clew::thread_callables_service::create(
+            clew::thread_callables_service::create_bounded(
                 &thread,
                 &args.context,
                 clew::thread_callables_service::ThreadCallablesRequest {
@@ -1124,8 +1124,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     consumer_member: args.consumer,
                     terms: args.terms,
                 },
-            )?;
-            clew::thread_callables_service::bounded_stdout(&root)
+            )
         }
         Command::Thread {
             command: ThreadCommand::Flow(args),

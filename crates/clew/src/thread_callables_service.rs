@@ -44,6 +44,37 @@ pub struct ThreadCallablesRequest {
     pub terms: Vec<String>,
 }
 
+/// Keep one public product entry while selecting the strongest profile the two
+/// bound language units can honestly support.
+pub fn create_bounded(
+    thread: &ThreadAuthority,
+    context_id: &str,
+    request: ThreadCallablesRequest,
+) -> Result<Value, ClewError> {
+    let selected = selected_members(thread, &request)?;
+    if selected
+        .iter()
+        .all(|member| member.session.language == SessionLanguage::Kotlin)
+    {
+        let root = create(thread, context_id, request)?;
+        return bounded_stdout(&root);
+    }
+    if selected.len() == 2
+        && selected
+            .iter()
+            .any(|member| member.session.language == SessionLanguage::Kotlin)
+        && selected
+            .iter()
+            .any(|member| member.session.language == SessionLanguage::Java)
+    {
+        return crate::jvm_navigation_service::create(thread, context_id, request);
+    }
+    Err(ClewError::new(
+        ErrorCode::UnsupportedLanguage,
+        "thread callables supports Kotlin pairs or one Kotlin/Java pair",
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThreadCallableRoot {

@@ -12,3 +12,7 @@ fun captured(values: List<Int>): Int {
 fun javaBoundary(value: String): Int = java.util.Objects.hash(value)
 suspend fun suspendBoundary(value: Int): Int = suspendIdentity(value)
 suspend fun suspendIdentity(value: Int): Int = value
+
+class KotlinFormatter {
+    fun format(input: String): String = input.trim()
+}

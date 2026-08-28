@@ -420,6 +420,16 @@ proved descriptor shape. Cross-repository relationships remain
 `DECLARED_TOPOLOGY`: exact shape evidence is not service ownership, routing, or
 compatibility evidence.
 
+When the selected pair contains one Kotlin and one Java member, the same command
+selects the bounded JVM Navigation v1 projection instead. It resolves only
+compiler-emitted declarations and references under the consumer's exact
+classpath authority. Exact descriptors win directly; a descriptor-less Kotlin
+callable family wins only when the provider has exactly one candidate. Overloads,
+missing generated/local declarations, Kotlin nullability, artifact ownership,
+and binary compatibility remain explicit boundaries or obligations. This
+qualified contour joins independent repositories through built artifacts; a
+joint Kotlin/Java source compilation is not yet supported.
+
 Experimental `thread flow` consumes only that retained fact-set closure and
 starts no compiler, build, repository discovery, or target process. It accepts
 one exact `FULL_SYMBOL` root in one selected-pair member and deterministically

@@ -1,0 +1,69 @@
+{
+  "schema": "codeclew-jvm-convergence-acceptance/1.0",
+  "status": "PASS",
+  "profile": "KOTLIN_JAVA_JVM_NAVIGATION_V1",
+  "authority": {
+    "runtimeMode": "RELEASE",
+    "productVersion": "0.2.4",
+    "supportMatrixDigest": "sha256:8efb2a20b701f902349c1cd9ad372c34efb3f59ac98b93feaf6c4d881be2e802"
+  },
+  "fixture": {
+    "repositoryCount": 4,
+    "scenarioCount": 2,
+    "independentLocalGitRepositories": true,
+    "kotlinCompilerVersion": "2.4.10",
+    "javaRelease": 21,
+    "privateLocatorIncluded": false
+  },
+  "acceptedTasks": [
+    {
+      "id": "KOTLIN_TO_JAVA_CONSTRUCTION_ONE",
+      "relation": "REFERENCES",
+      "identityAuthority": "EXACT_UNIQUE_CALLABLE_FAMILY",
+      "memberMode": "CONSTRUCTOR"
+    },
+    {
+      "id": "KOTLIN_TO_JAVA_CONSTRUCTION_TWO",
+      "relation": "REFERENCES",
+      "identityAuthority": "EXACT_UNIQUE_CALLABLE_FAMILY",
+      "memberMode": "CONSTRUCTOR"
+    },
+    {
+      "id": "JAVA_TO_KOTLIN_METHOD_CALL",
+      "relation": "CALLS",
+      "identityAuthority": "EXACT_DESCRIPTOR",
+      "memberMode": "UNKNOWN"
+    }
+  ],
+  "semanticResult": {
+    "exactNavigationTaskCount": 3,
+    "kotlinToJavaMatchCount": 2,
+    "javaToKotlinMatchCount": 2,
+    "overloadBoundary": "OVERLOAD_TARGET_AMBIGUOUS",
+    "overloadCandidateCount": 2,
+    "localOrGeneratedGapBoundary": "TARGET_DECLARATION_NOT_FOUND",
+    "consumerClasspath": "EXACT",
+    "providerDeclaration": "EXACT",
+    "artifactOwnership": "UNVERIFIED",
+    "nullabilityContract": "UNVERIFIED",
+    "compatibility": "NOT_ASSESSED",
+    "frameworkSemantics": "NOT_ASSESSED",
+    "falseOwnershipClaimCount": 0,
+    "falseCompatibilityClaimCount": 0
+  },
+  "supportContour": {
+    "independentRepositoryArtifactNavigation": "QUALIFIED",
+    "jointMixedSourceCompilation": "UNSUPPORTED",
+    "jointMixedSourceObligation": "VERIFY_K2_MIXED_SOURCE_PROTOCOL_BEFORE_CLAIM"
+  },
+  "outputProjectionDigests": {
+    "kotlinToJava": "sha256:dc112c07fdbc3fa6ca3e92705db5a9e17f0cda80b59adbffa9a42042e29e2faf",
+    "javaToKotlin": "sha256:fb924b644874802b68b3a75e2276be118522d3d0e55acbf85bbcb620092b916a"
+  },
+  "verification": {
+    "focusedRustTests": 7,
+    "fixtureBuilds": 4,
+    "clippyAllTargets": "PASS",
+    "formatCheck": "PASS"
+  }
+}
