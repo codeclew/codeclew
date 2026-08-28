@@ -1994,10 +1994,10 @@ fn commit_candidate(root: &Path, plan_id: &str) -> Result<(), ClewError> {
                     &plan_id[plan_id.len().saturating_sub(16)..]
                 ),
             ])
-            .env("GIT_AUTHOR_NAME", "Codeclew")
-            .env("GIT_AUTHOR_EMAIL", "noreply@example.invalid")
-            .env("GIT_COMMITTER_NAME", "Codeclew")
-            .env("GIT_COMMITTER_EMAIL", "noreply@example.invalid")
+            .env("GIT_AUTHOR_NAME", "Codeclew Maintainers")
+            .env("GIT_AUTHOR_EMAIL", "maintainers@codeclew.invalid")
+            .env("GIT_COMMITTER_NAME", "Codeclew Maintainers")
+            .env("GIT_COMMITTER_EMAIL", "maintainers@codeclew.invalid")
             .env("GIT_TERMINAL_PROMPT", "0")
             .current_dir(root),
         "candidate commit failed",
@@ -2743,7 +2743,7 @@ mod tests {
                 &["show", "-s", "--format=%an <%ae>|%cn <%ce>", "HEAD"]
             )
             .unwrap(),
-            "Codeclew <noreply@example.invalid>|Codeclew <noreply@example.invalid>"
+            "Codeclew Maintainers <maintainers@codeclew.invalid>|Codeclew Maintainers <maintainers@codeclew.invalid>"
         );
     }
 
