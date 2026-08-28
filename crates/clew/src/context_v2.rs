@@ -315,12 +315,8 @@ pub fn create(
             }
         })
         .collect::<Vec<_>>();
-    lexical_candidates.sort_by(|left, right| {
-        right
-            .0
-            .cmp(&left.0)
-            .then_with(|| left.1.cmp(&right.1))
-    });
+    lexical_candidates
+        .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
     lexical_candidates.truncate(max_roots);
     let lexical_fallback = lexical_candidates
         .into_iter()
