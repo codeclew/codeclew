@@ -1042,17 +1042,22 @@ fn rank_fact_evidence(
         let mut decorated = std::mem::take(facts)
             .into_iter()
             .map(|fact| {
-                let direct_name_coverage = fact["payload"]
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(|name| {
-                        let name = name
-                            .chars()
-                            .flat_map(char::to_lowercase)
-                            .collect::<String>();
-                        usize::from(lowered.iter().any(|term| term == &name))
-                    })
-                    .unwrap_or(0);
+                let direct_name_coverage =
+                    if fact["payload"].get("kind").and_then(Value::as_str) == Some("DECLARATION") {
+                        fact["payload"]
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(|name| {
+                                let name = name
+                                    .chars()
+                                    .flat_map(char::to_lowercase)
+                                    .collect::<String>();
+                                usize::from(lowered.iter().any(|term| term == &name))
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
                 let identities = exact_identity_terms(&fact["payload"]);
                 let exact_coverage = lowered
                     .iter()
