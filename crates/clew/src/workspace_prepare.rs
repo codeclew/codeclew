@@ -313,6 +313,42 @@ pub fn retained_after(
     load_after_workspace(authority)
 }
 
+pub fn load_after_for_receipt(
+    workspace_id: &str,
+    preparation_id: &str,
+    after_workspace_id: &str,
+    after_workspace_authority_digest: &str,
+) -> Result<AfterWorkspace, ClewError> {
+    let (workspace, _) = load_open_authority(workspace_id)?;
+    let directory = preparation_directory_at(workspace_id, preparation_id)?;
+    let authority_bytes = directory.read_file(
+        OsStr::new("authority.json"),
+        MAX_WORKSPACE_PREPARE_STATE_BYTES,
+    )?;
+    let authority: WorkspacePrepareAuthority = serde_json::from_slice(&authority_bytes)
+        .map_err(|_| corrupt("workspace prepare authority is not valid JSON"))?;
+    if canonical::bytes(&authority).map_err(internal)? != authority_bytes {
+        return Err(corrupt("workspace prepare authority is not canonical"));
+    }
+    validate_prepare_authority(&authority)?;
+    require_workspace_binding(&workspace, &authority)?;
+    let after = load_after_workspace(&authority)?.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "scenario receipt requires a completed AfterWorkspace",
+        )
+    })?;
+    if after.after_workspace_id != after_workspace_id
+        || after.authority_digest != after_workspace_authority_digest
+    {
+        return Err(ClewError::new(
+            ErrorCode::BindingChanged,
+            "scenario request differs from retained AfterWorkspace authority",
+        ));
+    }
+    Ok(after)
+}
+
 fn parse_input(source: &[u8]) -> Result<WorkspacePrepareInput, ClewError> {
     if source.is_empty() || source.len() > MAX_WORKSPACE_PREPARE_INPUT_BYTES {
         return Err(invalid(

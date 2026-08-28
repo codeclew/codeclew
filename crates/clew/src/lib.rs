@@ -28,6 +28,7 @@ pub mod repository_snapshot;
 pub mod runtime;
 pub mod rust_adapter_v2;
 pub mod rust_project_model;
+pub mod scenario_receipt;
 pub mod semantic_envelope;
 pub(crate) mod semantic_validation;
 pub mod session;

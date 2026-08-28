@@ -120,6 +120,8 @@ enum WorkspaceCommand {
     Context(WorkspaceContextArgs),
     /// Prepare every independently planned member before any ref can publish.
     Prepare(WorkspacePrepareArgs),
+    /// Retain one provider-neutral runtime observation against prepared candidates.
+    Observe(WorkspaceObserveArgs),
     Close(WorkspaceIdArgs),
 }
 
@@ -378,6 +380,18 @@ struct WorkspacePrepareArgs {
     /// Closed canonical codeclew-workspace-prepare-input/1.0 JSON file.
     #[arg(long)]
     request: PathBuf,
+}
+
+#[derive(Args)]
+struct WorkspaceObserveArgs {
+    #[arg(long)]
+    workspace: String,
+    /// Closed canonical codeclew-scenario-observation-input/1.0 JSON file.
+    #[arg(long)]
+    request: PathBuf,
+    /// Private bounded raw provider evidence retained in CAS and never printed.
+    #[arg(long)]
+    evidence: PathBuf,
 }
 
 #[derive(Args)]
@@ -1028,6 +1042,24 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 clew::workspace_prepare::MAX_WORKSPACE_PREPARE_INPUT_BYTES,
             )?;
             prepare_workspace(&args.workspace, &source)
+        }
+        Command::Workspace {
+            command: WorkspaceCommand::Observe(args),
+        } => {
+            let request = read_private_diagnostic_input(
+                &args.request,
+                clew::scenario_receipt::MAX_SCENARIO_INPUT_BYTES,
+            )?;
+            let evidence = read_private_diagnostic_input(
+                &args.evidence,
+                clew::scenario_receipt::MAX_SCENARIO_RAW_EVIDENCE_BYTES,
+            )?;
+            serde_json::to_value(clew::scenario_receipt::record(
+                &args.workspace,
+                &request,
+                &evidence,
+            )?)
+            .map_err(internal)
         }
         Command::Workspace {
             command: WorkspaceCommand::Close(args),
@@ -3019,6 +3051,20 @@ mod tests {
                 "workspace:authority",
                 "--request",
                 "/private/prepare.json",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "workspace",
+                "observe",
+                "--workspace",
+                "workspace:authority",
+                "--request",
+                "/private/scenario.json",
+                "--evidence",
+                "/private/raw.json",
             ])
             .is_ok()
         );
