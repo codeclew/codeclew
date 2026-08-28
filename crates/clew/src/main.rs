@@ -378,6 +378,10 @@ struct ThreadImpactArgs {
     subject: String,
     #[arg(long, required_if_eq("subject_kind", "full-symbol"))]
     member: Option<String>,
+    #[arg(long)]
+    declarations_only: bool,
+    #[arg(long)]
+    declaration_name_only: bool,
 }
 
 #[derive(Args)]
@@ -842,7 +846,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Close(args),
         } => {
-            let (session, _) = SessionAuthority::load(&args.session)?;
+            let (session, _) = SessionAuthority::load_for_cleanup(&args.session)?;
             let lifecycle = session.close()?;
             Ok(json!({"schema":"codeclew-session-lifecycle-result/1.0","lifecycle":lifecycle}))
         }
@@ -866,7 +870,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Gc(args),
         } => {
-            let (session, _) = SessionAuthority::load(&args.session)?;
+            let (session, _) = SessionAuthority::load_for_cleanup(&args.session)?;
             let lifecycle = session.gc(args.force)?;
             Ok(json!({"schema":"codeclew-session-gc-result/1.0","lifecycle":lifecycle}))
         }
@@ -1026,16 +1030,28 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         } => {
             let subject = match args.subject_kind {
                 ThreadImpactSubjectKindArg::FullSymbol => {
+                    if args.declarations_only || args.declaration_name_only {
+                        return Err(ClewError::new(
+                            ErrorCode::InvalidInput,
+                            "thread impact declaration filters are accepted only for token subjects",
+                        ));
+                    }
                     clew::thread_impact::KotlinImpactSubject::FullSymbol {
                         symbol_identity: args.subject,
                         member_alias: args.member,
                     }
                 }
                 ThreadImpactSubjectKindArg::CallableFamily => {
+                    if args.declarations_only || args.declaration_name_only {
+                        return Err(ClewError::new(
+                            ErrorCode::InvalidInput,
+                            "thread impact declaration filters are accepted only for token subjects",
+                        ));
+                    }
                     if args.member.is_some() {
                         return Err(ClewError::new(
                             ErrorCode::InvalidInput,
-                            "thread impact --member is accepted only for full-symbol subjects",
+                            "thread impact --member is not accepted for callable-family subjects",
                         ));
                     }
                     clew::thread_impact::KotlinImpactSubject::CallableFamily {
@@ -1043,13 +1059,12 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                     }
                 }
                 ThreadImpactSubjectKindArg::Token => {
-                    if args.member.is_some() {
-                        return Err(ClewError::new(
-                            ErrorCode::InvalidInput,
-                            "thread impact --member is accepted only for full-symbol subjects",
-                        ));
+                    clew::thread_impact::KotlinImpactSubject::Token {
+                        term: args.subject,
+                        member_alias: args.member,
+                        declarations_only: args.declarations_only,
+                        declaration_name_only: args.declaration_name_only,
                     }
-                    clew::thread_impact::KotlinImpactSubject::Token { term: args.subject }
                 }
             };
             let (thread, _) = ThreadAuthority::load(&args.thread)?;
@@ -2634,6 +2649,39 @@ mod tests {
                 .is_ok()
             );
         }
+        let parsed = Cli::try_parse_from([
+            "clew",
+            "thread",
+            "impact",
+            "--thread",
+            "thread:one",
+            "--fact-set",
+            "thread-callables:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--pair-id",
+            "pair-01",
+            "--subject-kind",
+            "token",
+            "--subject",
+            "Api",
+            "--member",
+            "api",
+            "--declarations-only",
+            "--declaration-name-only",
+        ])
+        .unwrap();
+        let Command::Thread {
+            command: ThreadCommand::Impact(args),
+        } = parsed.command
+        else {
+            panic!("expected thread impact command");
+        };
+        assert!(matches!(
+            args.subject_kind,
+            ThreadImpactSubjectKindArg::Token
+        ));
+        assert_eq!(args.member.as_deref(), Some("api"));
+        assert!(args.declarations_only);
+        assert!(args.declaration_name_only);
 
         let parsed = Cli::try_parse_from([
             "clew",

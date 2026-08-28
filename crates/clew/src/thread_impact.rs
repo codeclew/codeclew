@@ -91,6 +91,10 @@ pub enum KotlinImpactSubject {
     },
     Token {
         term: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        member_alias: Option<String>,
+        declarations_only: bool,
+        declaration_name_only: bool,
     },
 }
 
@@ -646,6 +650,29 @@ pub(crate) fn select_verified(
 ) -> Result<ImpactQuerySelection, ClewError> {
     let pair = selected_pair(prepared, &request.pair_id)?;
     let members = pair_members(prepared, &pair)?;
+    let selected_member_alias = match &request.subject {
+        KotlinImpactSubject::FullSymbol {
+            member_alias: Some(member_alias),
+            ..
+        }
+        | KotlinImpactSubject::Token {
+            member_alias: Some(member_alias),
+            ..
+        } => Some(member_alias.as_str()),
+        _ => None,
+    };
+    let (declarations_only, declaration_name_only) = match &request.subject {
+        KotlinImpactSubject::Token {
+            term,
+            declarations_only,
+            declaration_name_only,
+            ..
+        } => (
+            *declarations_only || *declaration_name_only,
+            declaration_name_only.then_some(term.as_str()),
+        ),
+        _ => (false, None),
+    };
     let binding_digest = canonical::hash(&ImpactBindingMaterial {
         schema: "codeclew-kotlin-thread-impact-binding/1.0",
         fact_set_authority_digest: &prepared.authority.authority_digest,
@@ -669,6 +696,9 @@ pub(crate) fn select_verified(
         .collect::<BTreeSet<_>>();
     let mut candidates = Vec::new();
     for (side, member) in &members {
+        if selected_member_alias.is_some_and(|selected| selected != member.member_alias.as_str()) {
+            continue;
+        }
         let related_declarations = entries
             .iter()
             .filter_map(|entry| match &entry.fact {
@@ -683,6 +713,17 @@ pub(crate) fn select_verified(
             .collect::<Vec<_>>();
         for entry in &entries {
             if fact_provenance(&entry.fact).member_alias != member.member_alias {
+                continue;
+            }
+            if declarations_only && !matches!(entry.fact, CallableFact::Declaration(_)) {
+                continue;
+            }
+            if declaration_name_only.is_some_and(|term| {
+                !matches!(
+                    &entry.fact,
+                    CallableFact::Declaration(row) if declaration_name_matches(row, term)
+                )
+            }) {
                 continue;
             }
             if fact_matches(
@@ -1472,7 +1513,7 @@ fn subject_lookup(
             repository_namespace: None,
             callable_id: callable_id.clone(),
         },
-        KotlinImpactSubject::Token { term } => CallableLookup::Token { term: term.clone() },
+        KotlinImpactSubject::Token { term, .. } => CallableLookup::Token { term: term.clone() },
     })
 }
 
@@ -1505,6 +1546,17 @@ fn fact_matches(
             }
         },
     }
+}
+
+fn declaration_name_matches(row: &thread_callables::DeclarationFact, term: &str) -> bool {
+    let compiler_id = if row.declaration_kind == thread_callables::DeclarationKind::Class {
+        row.compiler_class_id.as_deref()
+    } else {
+        row.compiler_callable_id.as_deref()
+    };
+    compiler_id
+        .and_then(|value| value.rsplit(['.', '/', '$']).next())
+        .is_some_and(|name| name.chars().flat_map(char::to_lowercase).eq(term.chars()))
 }
 
 fn boundary_matches_declarations(
@@ -1628,7 +1680,15 @@ fn normalize_request(
                 ));
             }
         }
-        KotlinImpactSubject::Token { term } => {
+        KotlinImpactSubject::Token {
+            term,
+            member_alias,
+            declarations_only,
+            declaration_name_only,
+        } => {
+            if *declaration_name_only {
+                *declarations_only = true;
+            }
             validate_text(term, "impact token", 256)?;
             if !term
                 .chars()
@@ -1639,6 +1699,16 @@ fn normalize_request(
             *term = term.chars().flat_map(char::to_lowercase).collect();
             if term.len() < 2 || !crate::text_authority::is_nfc(term) {
                 return Err(invalid("impact token must contain at least two bytes"));
+            }
+            if let Some(alias) = member_alias {
+                validate_text(alias, "impact member alias", 4_096)?;
+                if alias.as_str() != pair.provider_member.as_str()
+                    && alias.as_str() != pair.consumer_member.as_str()
+                {
+                    return Err(invalid(
+                        "impact TOKEN member is not part of the selected pair",
+                    ));
+                }
             }
         }
     }
@@ -2149,6 +2219,9 @@ mod tests {
                 &prepared,
                 KotlinImpactSubject::Token {
                     term: "FIND".into(),
+                    member_alias: None,
+                    declarations_only: false,
+                    declaration_name_only: false,
                 },
             ),
         )
@@ -2156,7 +2229,10 @@ mod tests {
         assert_eq!(
             impact.subject,
             KotlinImpactSubject::Token {
-                term: "find".into()
+                term: "find".into(),
+                member_alias: None,
+                declarations_only: false,
+                declaration_name_only: false,
             }
         );
         assert_eq!(impact.shape_status, ImpactShapeStatus::NotComparable);
@@ -2167,6 +2243,133 @@ mod tests {
             obligation.code == ImpactObligationCode::SubjectNotObservedInMember
                 && obligation.member_alias.as_deref() == Some("right")
         }));
+    }
+
+    #[test]
+    fn token_member_scope_filters_candidates_before_public_projection() {
+        let rows = |file: &str, base: u64| {
+            let mut rows = Vec::new();
+            for index in 0..20 {
+                let callable = format!("p/Orders.findOrder{index}");
+                rows.push(descriptor(
+                    &callable,
+                    "()Ljava/lang/String;",
+                    "kotlin/String",
+                    file,
+                    base + index * 16,
+                ));
+                rows.push(boundary(
+                    &format!("callable:{callable}#jvm:()Ljava/lang/String;"),
+                    file,
+                    base + index * 16 + 8,
+                ));
+            }
+            rows
+        };
+        let prepared = fact_set(rows("src/Left.kt", 0), rows("src/Right.kt", 1_000));
+
+        let unscoped = select(
+            &prepared,
+            request(
+                &prepared,
+                KotlinImpactSubject::Token {
+                    term: "FIND".into(),
+                    member_alias: None,
+                    declarations_only: false,
+                    declaration_name_only: false,
+                },
+            ),
+        )
+        .unwrap();
+        assert!(unscoped.findings.len() > 32);
+        assert!(
+            unscoped
+                .findings
+                .iter()
+                .any(|finding| finding.fact_kind == CallableFactKind::Boundary)
+        );
+
+        let scoped = select(
+            &prepared,
+            request(
+                &prepared,
+                KotlinImpactSubject::Token {
+                    term: "FIND".into(),
+                    member_alias: Some("left".into()),
+                    declarations_only: true,
+                    declaration_name_only: false,
+                },
+            ),
+        )
+        .unwrap();
+        assert_eq!(scoped.findings.len(), 20);
+        assert!(!scoped.findings_truncated);
+        assert!(scoped.findings.iter().all(|finding| {
+            finding.member_alias == "left" && finding.fact_kind == CallableFactKind::Declaration
+        }));
+        assert_eq!(
+            scoped.subject,
+            KotlinImpactSubject::Token {
+                term: "find".into(),
+                member_alias: Some("left".into()),
+                declarations_only: true,
+                declaration_name_only: false,
+            }
+        );
+    }
+
+    #[test]
+    fn token_declaration_name_scope_excludes_owner_name_matches() {
+        let mut left = vec![descriptor(
+            "p/Root.PriceService",
+            "()Ljava/lang/String;",
+            "kotlin/String",
+            "src/PriceService.kt",
+            0,
+        )];
+        for index in 0..30 {
+            left.push(descriptor(
+                &format!("p/PriceService.member{index}"),
+                "()Ljava/lang/String;",
+                "kotlin/String",
+                "src/PriceService.kt",
+                16 + index * 16,
+            ));
+        }
+        let prepared = fact_set(left, Vec::new());
+
+        let scoped = select(
+            &prepared,
+            request(
+                &prepared,
+                KotlinImpactSubject::Token {
+                    term: "PriceService".into(),
+                    member_alias: Some("left".into()),
+                    declarations_only: false,
+                    declaration_name_only: true,
+                },
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(scoped.findings.len(), 1);
+        let ImpactFindingDetail::Declaration {
+            compiler_callable_id,
+            ..
+        } = &scoped.findings[0].detail
+        else {
+            panic!("declaration finding expected")
+        };
+        assert_eq!(compiler_callable_id.as_deref(), Some("p/Root.PriceService"));
+        assert_eq!(
+            scoped.subject,
+            KotlinImpactSubject::Token {
+                term: "priceservice".into(),
+                member_alias: Some("left".into()),
+                declarations_only: true,
+                declaration_name_only: true,
+            }
+        );
     }
 
     #[test]
@@ -2672,5 +2875,12 @@ mod tests {
         };
         assert!(select(&prepared, request(&prepared, full)).is_err());
         assert!(select(&prepared, request(&prepared, family("../../private/path"))).is_err());
+        let token = KotlinImpactSubject::Token {
+            term: "find".into(),
+            member_alias: Some("outside-pair".into()),
+            declarations_only: false,
+            declaration_name_only: false,
+        };
+        assert!(select(&prepared, request(&prepared, token)).is_err());
     }
 }

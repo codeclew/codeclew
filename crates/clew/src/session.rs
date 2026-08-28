@@ -394,6 +394,17 @@ impl SessionAuthority {
     }
 
     pub fn load(session_id: &str) -> Result<(Self, PathBuf), ClewError> {
+        Self::load_with_runtime_policy(session_id, true)
+    }
+
+    pub fn load_for_cleanup(session_id: &str) -> Result<(Self, PathBuf), ClewError> {
+        Self::load_with_runtime_policy(session_id, false)
+    }
+
+    fn load_with_runtime_policy(
+        session_id: &str,
+        require_runtime_match: bool,
+    ) -> Result<(Self, PathBuf), ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(session_id)?;
         let authority: Self =
@@ -412,7 +423,10 @@ impl SessionAuthority {
                 "session commands must be launched through ./clew",
             )
         })?;
-        if runtime.runtime_key != authority.runtime_key || runtime.mode != authority.runtime_mode {
+        if require_runtime_match
+            && (runtime.runtime_key != authority.runtime_key
+                || runtime.mode != authority.runtime_mode)
+        {
             return Err(ClewError::new(
                 ErrorCode::ProjectModelChanged,
                 "session runtime authority does not match the active capsule",
@@ -1281,12 +1295,31 @@ fn garbage_collect_session_with_state(
         .canonicalize()
         .map_err(io_error)?;
     let expected_target_oid = session_terminal_target_oid(authority, &runs)?;
-    if state.repository(&target)?.key != authority.repository_key
-        || git_output(&target, &["rev-parse", &authority.target_ref])? != expected_target_oid
-    {
+    let current_target_oid = git_output(&target, &["rev-parse", &authority.target_ref])?;
+    let expected_is_ancestor = if current_target_oid == expected_target_oid {
+        true
+    } else {
+        let output = Command::new("git")
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                &expected_target_oid,
+                &current_target_oid,
+            ])
+            .current_dir(&target)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(io_error)?;
+        match output.status.code() {
+            Some(0) => true,
+            Some(1) => false,
+            _ => return Err(invalid("Git target ancestry is unavailable")),
+        }
+    };
+    if state.repository(&target)?.key != authority.repository_key || !expected_is_ancestor {
         return Err(ClewError::new(
             ErrorCode::PreconditionFailed,
-            "session target authority changed before GC",
+            "session target authority diverged before GC",
         ));
     }
 

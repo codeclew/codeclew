@@ -32,12 +32,13 @@ from typing import Any, Callable
 sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
 
 import run_thread_kotlin_descriptor_gate as descriptor_gate
+import maven_distribution_authority
 import thread_kotlin_pilot_broker as broker
 import verify_thread_kotlin_descriptor_gate as g1k_verifier
 import verify_thread_kotlin_pilot as public_verifier
 
 
-PRIVATE_AUTHORITY_SCHEMA = "codeclew-private-kotlin-descriptor-pilot-protocol/1.0"
+PRIVATE_AUTHORITY_SCHEMA = "codeclew-private-kotlin-descriptor-pilot-protocol/2.0"
 PRIVATE_ORACLE_SCHEMA = "codeclew-private-kotlin-descriptor-pilot-oracle/1.0"
 PRIVATE_SHAPE_ORACLE_SCHEMA = "codeclew-private-kotlin-descriptor-shape-oracle/1.0"
 PRIVATE_SHAPE_ATTESTATION_SCHEMA = "codeclew-private-kotlin-descriptor-shape-attestation/1.0"
@@ -50,9 +51,11 @@ IMPLEMENTATION_REVIEW_SCHEMA = "codeclew-kotlin-pilot-implementation-review/1.0"
 VALUE_REVIEW_SCHEMA = "codeclew-kotlin-pilot-value-review/1.0"
 PREPARE_PUBLICATION_SCHEMA = "codeclew-kotlin-pilot-prepare-publication/1.0"
 EXECUTE_ADMISSION_SCHEMA = "codeclew-kotlin-pilot-execute-admission/1.0"
+CODEX_AUTH_LEASE_SCHEMA = "codeclew-kotlin-pilot-codex-auth-lease/1.0"
+CODEX_AUTH_INCIDENT_SCHEMA = "codeclew-kotlin-pilot-codex-auth-incident/1.0"
 LOCAL_MODULE_MANIFEST_SCHEMA = "codeclew-kotlin-pilot-local-modules/1.0"
 ANSWER_SCHEMA = "codeclew-kotlin-descriptor-pilot-answer/1.0"
-FROZEN_AT = "2026-08-25"
+FROZEN_AT = "2026-08-27"
 MAX_PRIVATE_BYTES = 16 * 1024 * 1024
 MAX_JSONL_BYTES = 64 * 1024 * 1024
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -75,6 +78,7 @@ SEMANTIC_ENVIRONMENT_KEYS = {
     "PATH",
 }
 LOCAL_MODULE_FILES = (
+    ("maven_distribution_authority", "maven_distribution_authority.py"),
     ("run_thread_kotlin_descriptor_gate", "run_thread_kotlin_descriptor_gate.py"),
     ("verify_thread_kotlin_descriptor_gate", "verify_thread_kotlin_descriptor_gate.py"),
     ("verify_thread_kotlin_pilot", "verify_thread_kotlin_pilot.py"),
@@ -666,6 +670,49 @@ def executable(path: Path, code: str) -> tuple[Path, str]:
     return resolved, file_digest(resolved)
 
 
+def _python_framework_executable(python: Path) -> tuple[Path, str] | None:
+    candidate = (
+        python.parent.parent
+        / "Resources"
+        / "Python.app"
+        / "Contents"
+        / "MacOS"
+        / "Python"
+    )
+    try:
+        candidate.resolve(strict=True)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise PilotError("INVALID_PYTHON_FRAMEWORK_EXECUTABLE") from error
+    return executable(candidate, "INVALID_PYTHON_FRAMEWORK_EXECUTABLE")
+
+
+def _require_python_runtime_authority(executables: dict[str, Any]) -> None:
+    python, python_digest = executable(
+        Path(executables["python"]), "INVALID_PYTHON_EXECUTABLE"
+    )
+    declared_framework = executables.get("pythonFramework")
+    declared_framework_digest = executables.get("pythonFrameworkDigest")
+    observed_framework = _python_framework_executable(python)
+    if (
+        os.fspath(python) != executables["python"]
+        or python_digest != executables["pythonDigest"]
+        or (
+            observed_framework is None
+            and (declared_framework is not None or declared_framework_digest is not None)
+        )
+        or (
+            observed_framework is not None
+            and (
+                os.fspath(observed_framework[0]) != declared_framework
+                or observed_framework[1] != declared_framework_digest
+            )
+        )
+    ):
+        raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
+
+
 def git_executable() -> tuple[Path, str]:
     raw: str | None = None
     if sys.platform == "darwin" and Path("/usr/bin/xcrun").is_file():
@@ -689,6 +736,21 @@ def git_executable() -> tuple[Path, str]:
     if not raw:
         raise PilotError("INVALID_GIT_EXECUTABLE")
     return executable(Path(raw), "INVALID_GIT_EXECUTABLE")
+
+
+def maven_executable() -> tuple[Path, str]:
+    try:
+        authority = maven_distribution_authority.discover()
+    except maven_distribution_authority.MavenAuthorityError as error:
+        raise PilotError("INVALID_MAVEN_EXECUTABLE") from error
+    return authority.executable, authority.digest
+
+
+def _require_maven_authority(expected_digest: str) -> Path:
+    executable_path, observed_digest = maven_executable()
+    if observed_digest != expected_digest:
+        raise PilotError("MAVEN_AUTHORITY_CHANGED")
+    return executable_path
 
 
 def _seatbelt_path(path: Path) -> str:
@@ -1145,6 +1207,7 @@ def _broker_audit(
     clew: Path,
     git: Path,
     python: Path,
+    python_framework: tuple[Path, str] | None,
     semantic_environment: dict[str, str],
     repositories: list[Path],
     sessions: list[dict[str, str]],
@@ -1156,6 +1219,9 @@ def _broker_audit(
     cache_roots = _effective_cache_roots(
         semantic_environment, state_root, "BROKER_AUDIT_CACHE_AUTHORITY_INVALID"
     )
+    observed_framework = _python_framework_executable(python)
+    if observed_framework != python_framework:
+        raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
     allowed = {
         clew,
         git,
@@ -1173,6 +1239,8 @@ def _broker_audit(
             allowed.add(python_link)
     except OSError:
         pass
+    if python_framework is not None:
+        allowed.add(python_framework[0])
     for session in sessions:
         runtime_key = session.get("runtimeKey")
         if not isinstance(runtime_key, str) or SHA256.fullmatch(runtime_key) is None:
@@ -1261,9 +1329,10 @@ def _broker_audit(
                 raise PilotError("BROKER_AUDIT_CANARY_FAILED") from error
 
         network_script = (
-            "import errno,socket,sys; s=socket.socket(); "
-            "\ntry: s.connect(('127.0.0.1',9))"
-            "\nexcept PermissionError as e: sys.exit(0 if e.errno==errno.EPERM else 3)"
+            "import errno,socket,sys; "
+            "\ntry: s=socket.socket(); s.connect(('127.0.0.1',9))"
+            "\nexcept PermissionError as e: "
+            "sys.exit(0 if e.errno in {errno.EPERM,errno.EACCES} else 3)"
             "\nexcept OSError: sys.exit(4)"
             "\nsys.exit(5)"
         )
@@ -1316,10 +1385,18 @@ def _broker_audit(
         and managed_state_write
     ):
         raise PilotError("BROKER_AUDIT_CANARY_FAILED")
+    if _python_framework_executable(python) != python_framework:
+        raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
     return {
         "adapter": "MACOS_SEATBELT_V1",
         "profilePolicy": "GLOBAL_WRITE_DENY_MANAGED_STATE_ONLY_V1",
         "sandboxExecutable": os.fspath(sandbox_exec),
+        "pythonFrameworkExecutable": (
+            os.fspath(python_framework[0]) if python_framework is not None else None
+        ),
+        "pythonFrameworkDigest": (
+            python_framework[1] if python_framework is not None else None
+        ),
         "profile": profile,
         "profileDigest": authority_digest(profile),
         "allowedProcessCanaryPassed": True,
@@ -1412,6 +1489,7 @@ def validate_shape_oracle(
     git_digest: str,
     git_environment_digest: str,
     local_module_manifest_digest: str,
+    maven_digest: str,
 ) -> dict[str, Any]:
     closed(value, {"schema", "authorityDigest", "sourceAuthority", "fixture", "tasks"}, "INVALID_SHAPE_ORACLE")
     unsigned = dict(value)
@@ -1424,7 +1502,7 @@ def validate_shape_oracle(
             "privateCorpusDigest", "benchmarkDigest", "g1kEvidenceDigest",
             "runtimeDigest", "runtimeKey", "compilerProjectionSchema", "publicFixtureTreeOid",
             "publicFixtureContentDigest", "compilerEnvironmentDigest", "gitDigest",
-            "gitEnvironmentDigest", "localModuleManifestDigest",
+            "gitEnvironmentDigest", "localModuleManifestDigest", "mavenDigest",
         },
         "INVALID_SHAPE_ORACLE",
     )
@@ -1441,6 +1519,7 @@ def validate_shape_oracle(
         "publicFixtureTreeOid": public_fixture_tree_oid,
         "publicFixtureContentDigest": public_fixture_content_digest,
         "compilerEnvironmentDigest": compiler_environment_digest,
+        "mavenDigest": maven_digest,
     } or any(
         not isinstance(source[key], str) or SHA256.fullmatch(source[key]) is None
         for key in {"runtimeDigest", "runtimeKey"}
@@ -1540,12 +1619,55 @@ def _validate_exact_declaration(value: Any, *, private: bool) -> dict[str, Any]:
     return row
 
 
-def _semantic_environment(python: Path) -> dict[str, str]:
+def _semantic_tool_executable(
+    name: str, source: dict[str, str], code: str
+) -> tuple[Path, str]:
+    search_path = source.get("PATH")
+    if (
+        not isinstance(search_path, str)
+        or not search_path
+        or "\0" in search_path
+    ):
+        raise PilotError(code)
+    try:
+        raw = shutil.which(name, path=search_path)
+    except (OSError, ValueError) as error:
+        raise PilotError(code) from error
+    if raw is None:
+        raise PilotError(code)
+    return executable(Path(raw), code)
+
+
+def _semantic_path(
+    python: Path, maven: Path, rustc: Path, cargo: Path
+) -> str:
+    return ":".join(
+        dict.fromkeys(
+            [
+                os.fspath(python.parent),
+                os.fspath(maven.parent),
+                os.fspath(rustc.parent),
+                os.fspath(cargo.parent),
+                "/usr/bin",
+                "/bin",
+            ]
+        )
+    )
+
+
+def _semantic_environment(python: Path, maven: Path) -> dict[str, str]:
     """Build the only environment allowed to influence private preparation."""
 
+    ambient = dict(os.environ)
+    rustc = _semantic_tool_executable(
+        "rustc", ambient, "INVALID_RUSTC_EXECUTABLE"
+    )
+    cargo = _semantic_tool_executable(
+        "cargo", ambient, "INVALID_CARGO_EXECUTABLE"
+    )
     result = {
         key: value
-        for key, value in os.environ.items()
+        for key, value in ambient.items()
         if key in SEMANTIC_ENVIRONMENT_KEYS - {"PATH", "LANG", "LC_ALL"}
     }
     for key in SEMANTIC_PATH_KEYS & set(result):
@@ -1553,11 +1675,55 @@ def _semantic_environment(python: Path) -> dict[str, str]:
         if not path.is_absolute():
             raise PilotError("INVALID_SEMANTIC_ENVIRONMENT")
         result[key] = os.fspath(path.resolve(strict=False))
-    result["PATH"] = f"{python.parent}:/usr/bin:/bin"
+    result["PATH"] = _semantic_path(python, maven, rustc[0], cargo[0])
+    if (
+        _semantic_tool_executable(
+            "rustc", result, "INVALID_RUSTC_EXECUTABLE"
+        )
+        != rustc
+        or _semantic_tool_executable(
+            "cargo", result, "INVALID_CARGO_EXECUTABLE"
+        )
+        != cargo
+    ):
+        raise PilotError("RUST_TOOLCHAIN_AUTHORITY_CHANGED")
     result["LANG"] = "C"
     result["LC_ALL"] = "C"
     _validate_semantic_environment(result, "INVALID_SEMANTIC_ENVIRONMENT")
     return result
+
+
+def _verify_semantic_environment_authority(
+    environment: dict[str, str], executables: dict[str, Any], code: str
+) -> None:
+    expected: dict[str, Path] = {}
+    for name, unavailable_code in (
+        ("rustc", "INVALID_RUSTC_EXECUTABLE"),
+        ("cargo", "INVALID_CARGO_EXECUTABLE"),
+    ):
+        path_key = name
+        digest_key = f"{name}Digest"
+        path_value = executables.get(path_key)
+        digest_value = executables.get(digest_key)
+        if not isinstance(path_value, str) or not isinstance(digest_value, str):
+            raise PilotError(code)
+        path, digest = executable(Path(path_value), unavailable_code)
+        if (
+            os.fspath(path) != path_value
+            or digest != digest_value
+            or _semantic_tool_executable(name, environment, unavailable_code)
+            != (path, digest)
+        ):
+            raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
+        expected[name] = path
+    python = executables.get("python")
+    maven = executables.get("maven")
+    if not isinstance(python, str) or not isinstance(maven, str):
+        raise PilotError(code)
+    if environment.get("PATH") != _semantic_path(
+        Path(python), Path(maven), expected["rustc"], expected["cargo"]
+    ):
+        raise PilotError(code)
 
 
 def _validate_semantic_environment(value: Any, code: str) -> dict[str, str]:
@@ -1611,8 +1777,611 @@ def _codex_environment(python: Path) -> dict[str, str]:
     return result
 
 
+def _private_codex_auth_snapshot(
+    auth_path: Path,
+) -> tuple[bytes, dict[str, int]]:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            auth_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        identity = _private_identity(metadata)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or identity["mode"] != 0o600
+            or identity["uid"] != os.geteuid()
+            or not 0 < identity["size"] <= 1024 * 1024
+        ):
+            raise PilotError("INVALID_CODEX_AUTHORITY")
+        raw = bytearray()
+        while len(raw) < identity["size"]:
+            chunk = os.read(descriptor, identity["size"] - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        if (
+            len(raw) != identity["size"]
+            or _private_identity(os.fstat(descriptor)) != identity
+        ):
+            raise PilotError("INVALID_CODEX_AUTHORITY")
+    except OSError as error:
+        raise PilotError("CODEX_AUTH_UNAVAILABLE") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        value = json.loads(bytes(raw), object_pairs_hook=_duplicates)
+    except (json.JSONDecodeError, UnicodeDecodeError, PilotError) as error:
+        raise PilotError("INVALID_CODEX_AUTHORITY") from error
+    if not isinstance(value, dict):
+        raise PilotError("INVALID_CODEX_AUTHORITY")
+    return bytes(raw), identity
+
+
+def _private_codex_auth(auth_path: Path) -> bytes:
+    return _private_codex_auth_snapshot(auth_path)[0]
+
+
+def _raw_digest(raw: bytes) -> str:
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _remove_private_codex_node(path: Path) -> None:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise PilotError("CODEX_AUTH_CLEANUP_FAILED") from error
+    if metadata.st_uid != os.geteuid():
+        raise PilotError("CODEX_AUTH_CLEANUP_FAILED")
+    try:
+        if stat.S_ISDIR(metadata.st_mode):
+            for child in path.iterdir():
+                _remove_private_codex_node(child)
+            path.rmdir()
+        else:
+            path.unlink()
+    except OSError as error:
+        raise PilotError("CODEX_AUTH_CLEANUP_FAILED") from error
+
+
+def _private_codex_home_identity(private_home: Path) -> dict[str, int]:
+    try:
+        metadata = os.lstat(private_home)
+        resolved = private_home.resolve(strict=True)
+    except OSError as error:
+        raise PilotError("INVALID_CODEX_AUTHORITY") from error
+    private_identity = _private_identity(metadata)
+    identity = {
+        key: private_identity[key] for key in ("device", "inode", "mode", "uid")
+    }
+    if (
+        resolved != private_home
+        or not stat.S_ISDIR(metadata.st_mode)
+        or identity["mode"] != 0o700
+        or identity["uid"] != os.geteuid()
+    ):
+        raise PilotError("INVALID_CODEX_AUTHORITY")
+    return identity
+
+
+def _prune_private_codex_home(
+    private_home: Path, expected_identity: dict[str, int]
+) -> None:
+    if _private_codex_home_identity(private_home) != expected_identity:
+        raise PilotError("INVALID_CODEX_AUTHORITY")
+    for child in private_home.iterdir():
+        if child.name != "auth.json":
+            _remove_private_codex_node(child)
+    _private_codex_auth(private_home / "auth.json")
+    if _private_codex_home_identity(private_home) != expected_identity:
+        raise PilotError("INVALID_CODEX_AUTHORITY")
+
+
+def _codex_auth_link_identity(identity: dict[str, int]) -> dict[str, int]:
+    return {
+        key: identity[key] for key in ("device", "inode", "mode", "uid")
+    }
+
+
+def _codex_auth_lease(lease_path: Path) -> dict[str, Any]:
+    _, value, _ = private_json(
+        lease_path, "CODEX_AUTH_LEASE", 256 * 1024
+    )
+    row = closed(
+        value,
+        {
+            "schema", "status", "ownerPid", "sourceAuthPath",
+            "sourceIdentity", "sourceDigest", "privateHomePath",
+            "privateHomeIdentity", "authorityDigest",
+        },
+        "CODEX_AUTH_LEASE_INVALID",
+    )
+    unsigned = dict(row)
+    declared = unsigned.pop("authorityDigest")
+    source_path = Path(row["sourceAuthPath"])
+    private_home = Path(row["privateHomePath"])
+    if (
+        row["schema"] != CODEX_AUTH_LEASE_SCHEMA
+        or row["status"] != "ACTIVE"
+        or type(row["ownerPid"]) is not int
+        or row["ownerPid"] <= 0
+        or not source_path.is_absolute()
+        or not private_home.is_absolute()
+        or private_home.parent != lease_path.parent
+        or not private_home.name.startswith(".codeclew-s4k-codex-")
+        or not isinstance(row["sourceIdentity"], dict)
+        or set(row["sourceIdentity"])
+        != {"device", "inode", "mode", "uid"}
+        or not isinstance(row["privateHomeIdentity"], dict)
+        or set(row["privateHomeIdentity"])
+        != {"device", "inode", "mode", "uid"}
+        or not isinstance(row["sourceDigest"], str)
+        or SHA256.fullmatch(row["sourceDigest"]) is None
+        or declared != authority_digest(unsigned)
+    ):
+        raise PilotError("CODEX_AUTH_LEASE_INVALID")
+    return row
+
+
+def _remove_codex_auth_lease(lease_path: Path) -> None:
+    try:
+        metadata = os.lstat(lease_path)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise PilotError("CODEX_AUTH_LEASE_INVALID")
+        lease_path.unlink()
+        _fsync_directory(lease_path.parent, "CODEX_AUTH_CLEANUP_FAILED")
+    except OSError as error:
+        raise PilotError("CODEX_AUTH_CLEANUP_FAILED") from error
+
+
+def _codex_auth_incident_path(lease_path: Path) -> Path:
+    return lease_path.with_name(f".{lease_path.name}.incident.json")
+
+
+def _record_codex_auth_incident(
+    lease_path: Path,
+    lease: dict[str, Any],
+    code: str,
+    private_raw: bytes | None,
+    private_identity: dict[str, int] | None,
+    private_error: str | None,
+    source_raw: bytes | None,
+    source_identity: dict[str, int] | None,
+    source_error: str | None,
+) -> Path:
+    incident_path = _codex_auth_incident_path(lease_path)
+    unsigned = {
+        "schema": CODEX_AUTH_INCIDENT_SCHEMA,
+        "code": code,
+        "cleanupPolicy": "REMOVE_PRIVATE_HOME_AND_LEASE",
+        "leaseAuthorityDigest": lease["authorityDigest"],
+        "expectedSourceIdentity": lease["sourceIdentity"],
+        "observedSourceIdentity": (
+            _codex_auth_link_identity(source_identity)
+            if source_identity is not None
+            else None
+        ),
+        "privateLinkIdentity": (
+            _codex_auth_link_identity(private_identity)
+            if private_identity is not None
+            else None
+        ),
+        "expectedSourceDigest": lease["sourceDigest"],
+        "observedSourceDigest": (
+            _raw_digest(source_raw) if source_raw is not None else None
+        ),
+        "privateDigest": (
+            _raw_digest(private_raw) if private_raw is not None else None
+        ),
+        "privateError": private_error,
+        "sourceError": source_error,
+    }
+    value = {**unsigned, "authorityDigest": authority_digest(unsigned)}
+    try:
+        os.lstat(incident_path)
+    except FileNotFoundError:
+        _create_private_once(
+            incident_path, value, "CODEX_AUTH_INCIDENT_CREATE_FAILED"
+        )
+    except OSError as error:
+        raise PilotError("CODEX_AUTH_INCIDENT_CREATE_FAILED") from error
+    else:
+        _, existing, _ = private_json(
+            incident_path, "CODEX_AUTH_INCIDENT", 256 * 1024
+        )
+        existing_unsigned = dict(existing)
+        declared = existing_unsigned.pop("authorityDigest", None)
+        if (
+            existing.get("schema") != CODEX_AUTH_INCIDENT_SCHEMA
+            or existing.get("leaseAuthorityDigest") != lease["authorityDigest"]
+            or declared != authority_digest(existing_unsigned)
+        ):
+            raise PilotError("CODEX_AUTH_INCIDENT_INVALID")
+    return incident_path
+
+
+def _terminate_codex_auth_recovery(
+    lease_path: Path,
+    lease: dict[str, Any],
+    private_home: Path,
+    code: str,
+    private_raw: bytes | None,
+    private_identity: dict[str, int] | None,
+    private_error: str | None,
+    source_raw: bytes | None,
+    source_identity: dict[str, int] | None,
+    source_error: str | None,
+) -> None:
+    incident_error: PilotError | None = None
+    try:
+        _record_codex_auth_incident(
+            lease_path,
+            lease,
+            code,
+            private_raw,
+            private_identity,
+            private_error,
+            source_raw,
+            source_identity,
+            source_error,
+        )
+    except PilotError as error:
+        incident_error = error
+    _remove_private_codex_node(private_home)
+    _fsync_directory(private_home.parent, "CODEX_AUTH_CLEANUP_FAILED")
+    _remove_codex_auth_lease(lease_path)
+    if incident_error is not None:
+        raise incident_error
+    raise PilotError(code)
+
+
+def _create_private_codex_home(
+    source_home: Path, lease_path: Path
+) -> tuple[Path, dict[str, int]]:
+    if not source_home.is_absolute() or not lease_path.is_absolute():
+        raise PilotError("INVALID_CODEX_ENVIRONMENT")
+    source_auth = source_home / "auth.json"
+    raw, source_identity = _private_codex_auth_snapshot(source_auth)
+    source_link_identity = _codex_auth_link_identity(source_identity)
+    source_digest = _raw_digest(raw)
+    fresh_output_target(lease_path)
+    private_home = Path(
+        tempfile.mkdtemp(
+            prefix=".codeclew-s4k-codex-",
+            dir=os.fspath(lease_path.parent),
+        )
+    ).resolve(strict=True)
+    lease_created = False
+    try:
+        os.chmod(private_home, 0o700)
+        identity = _private_codex_home_identity(private_home)
+        lease_unsigned = {
+            "schema": CODEX_AUTH_LEASE_SCHEMA,
+            "status": "ACTIVE",
+            "ownerPid": os.getpid(),
+            "sourceAuthPath": os.fspath(source_auth),
+            "sourceIdentity": source_link_identity,
+            "sourceDigest": source_digest,
+            "privateHomePath": os.fspath(private_home),
+            "privateHomeIdentity": identity,
+        }
+        _create_private_once(
+            lease_path,
+            {
+                **lease_unsigned,
+                "authorityDigest": authority_digest(lease_unsigned),
+            },
+            "CODEX_AUTH_LEASE_CREATE_FAILED",
+        )
+        lease_created = True
+        try:
+            os.link(
+                source_auth,
+                private_home / "auth.json",
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            raise PilotError("CODEX_AUTH_LINK_FAILED") from error
+        _fsync_directory(private_home, "CODEX_AUTH_COPY_FAILED")
+        linked_raw, linked_identity = _private_codex_auth_snapshot(
+            private_home / "auth.json"
+        )
+        current_raw, current_identity = _private_codex_auth_snapshot(source_auth)
+        if (
+            linked_raw != raw
+            or current_raw != raw
+            or _codex_auth_link_identity(linked_identity)
+            != source_link_identity
+            or _codex_auth_link_identity(current_identity)
+            != source_link_identity
+        ):
+            raise PilotError("CODEX_AUTH_CONCURRENT_UPDATE")
+        _prune_private_codex_home(private_home, identity)
+        return private_home, identity
+    except Exception as primary:
+        try:
+            _remove_private_codex_node(private_home)
+            if lease_created:
+                _remove_codex_auth_lease(lease_path)
+        except PilotError as cleanup_error:
+            raise cleanup_error from primary
+        raise
+
+
+def _recover_private_codex_home(lease_path: Path) -> None:
+    lease = _codex_auth_lease(lease_path)
+    if lease["ownerPid"] != os.getpid():
+        try:
+            os.kill(lease["ownerPid"], 0)
+        except ProcessLookupError:
+            pass
+        except (PermissionError, OSError) as error:
+            raise PilotError("CODEX_AUTH_RECOVERY_BUSY") from error
+        else:
+            raise PilotError("CODEX_AUTH_RECOVERY_BUSY")
+    private_home = Path(lease["privateHomePath"])
+    expected_identity = lease["privateHomeIdentity"]
+    try:
+        current_private_home_identity = _private_codex_home_identity(private_home)
+    except PilotError as error:
+        if error.code != "INVALID_CODEX_AUTHORITY" or private_home.exists():
+            raise
+        _remove_codex_auth_lease(lease_path)
+        return
+    if current_private_home_identity != expected_identity:
+        raise PilotError("CODEX_AUTH_CLEANUP_FAILED")
+    for child in private_home.iterdir():
+        if child.name != "auth.json":
+            _remove_private_codex_node(child)
+    if _private_codex_home_identity(private_home) != expected_identity:
+        raise PilotError("CODEX_AUTH_CLEANUP_FAILED")
+    private_raw: bytes | None = None
+    private_identity: dict[str, int] | None = None
+    private_error: str | None = None
+    source_raw: bytes | None = None
+    source_identity: dict[str, int] | None = None
+    source_error: str | None = None
+    try:
+        private_raw, private_identity = _private_codex_auth_snapshot(
+            private_home / "auth.json"
+        )
+    except PilotError as error:
+        private_error = error.code
+    try:
+        source_raw, source_identity = _private_codex_auth_snapshot(
+            Path(lease["sourceAuthPath"])
+        )
+    except PilotError as error:
+        source_error = error.code
+    if private_error is not None or source_error is not None:
+        _terminate_codex_auth_recovery(
+            lease_path,
+            lease,
+            private_home,
+            "CODEX_AUTH_RECOVERY_MATERIAL_INVALID",
+            private_raw,
+            private_identity,
+            private_error,
+            source_raw,
+            source_identity,
+            source_error,
+        )
+    if (
+        private_raw is None
+        or private_identity is None
+        or source_raw is None
+        or source_identity is None
+    ):
+        raise PilotError("CODEX_AUTH_RECOVERY_MATERIAL_INVALID")
+    if (
+        private_raw != source_raw
+        or _codex_auth_link_identity(private_identity)
+        != lease["sourceIdentity"]
+        or _codex_auth_link_identity(source_identity)
+        != lease["sourceIdentity"]
+    ):
+        _terminate_codex_auth_recovery(
+            lease_path,
+            lease,
+            private_home,
+            "CODEX_AUTH_CONCURRENT_UPDATE",
+            private_raw,
+            private_identity,
+            None,
+            source_raw,
+            source_identity,
+            None,
+        )
+    _remove_private_codex_node(private_home)
+    _fsync_directory(private_home.parent, "CODEX_AUTH_CLEANUP_FAILED")
+    _remove_codex_auth_lease(lease_path)
+
+
+def _recover_codex_auth_lease_for_output(output: Path) -> Path:
+    lease = output.with_name(f".{output.name}.codex-auth-lease.json")
+    try:
+        os.lstat(lease)
+    except FileNotFoundError:
+        return lease
+    except OSError as error:
+        raise PilotError("CODEX_AUTH_LEASE_INVALID") from error
+    _recover_private_codex_home(lease)
+    return lease
+
+
+def _codex_permission_arguments(python: Path) -> list[str]:
+    try:
+        runtime_root = python.parent.parent.resolve(strict=True)
+    except OSError as error:
+        raise PilotError("INVALID_PYTHON_EXECUTABLE") from error
+    if not runtime_root.is_dir() or not python.is_relative_to(runtime_root):
+        raise PilotError("INVALID_PYTHON_EXECUTABLE")
+    filesystem = {
+        ":root": "deny",
+        ":minimal": "read",
+        ":workspace_roots": "write",
+        os.fspath(runtime_root): "read",
+    }
+    inline = "{" + ",".join(
+        f"{json.dumps(path)}={json.dumps(access)}"
+        for path, access in filesystem.items()
+    ) + "}"
+    return [
+        "-c", f"permissions.s4k.filesystem={inline}",
+        "-c", "permissions.s4k.network.enabled=false",
+        "-c", 'default_permissions="s4k"',
+    ]
+
+
+def _codex_permission_canary(
+    codex: Path,
+    python: Path,
+    experiment_root: Path,
+    base_environment: dict[str, str],
+) -> dict[str, Any]:
+    script = """
+import errno
+import pathlib
+import socket
+import sys
+
+secret, marker = map(pathlib.Path, sys.argv[1:])
+
+def denied_read(path):
+    try:
+        path.read_bytes()
+    except PermissionError:
+        return True
+    return False
+
+def denied_write(path):
+    try:
+        path.write_bytes(b"altered")
+    except PermissionError:
+        return True
+    return False
+
+network_denied = False
+connection = socket.socket()
+try:
+    connection.connect(("127.0.0.1", 9))
+except PermissionError:
+    network_denied = True
+except OSError as error:
+    network_denied = error.errno == errno.EPERM
+finally:
+    connection.close()
+marker.write_bytes(b"ok")
+raise SystemExit(
+    0 if denied_read(secret) and denied_write(secret) and network_denied else 47
+)
+"""
+    with tempfile.TemporaryDirectory(
+        prefix=".codeclew-s4k-canary-workspace-",
+        dir=os.fspath(experiment_root),
+    ) as workspace_directory, tempfile.TemporaryDirectory(
+        prefix=".codeclew-s4k-canary-secret-",
+        dir=os.fspath(experiment_root),
+    ) as secret_directory:
+        workspace = Path(workspace_directory).resolve(strict=True)
+        secret_root = Path(secret_directory).resolve(strict=True)
+        os.chmod(workspace, 0o700)
+        os.chmod(secret_root, 0o700)
+        secret = secret_root / "auth-canary.json"
+        secret_raw = b'{"canary":"not-a-credential"}'
+        secret.write_bytes(secret_raw)
+        os.chmod(secret, 0o600)
+        marker = workspace / "workspace-write"
+        environment = dict(base_environment)
+        environment["HOME"] = os.fspath(workspace)
+        environment["TMPDIR"] = os.fspath(workspace)
+        command = [
+            os.fspath(codex),
+            "sandbox",
+            *_codex_permission_arguments(python),
+            "-P", "s4k",
+            "-C", os.fspath(workspace),
+            os.fspath(python), "-I", "-S", "-c", script,
+            os.fspath(secret), os.fspath(marker),
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+                env=environment,
+            )
+            try:
+                return_code = process.wait(timeout=10)
+            except subprocess.TimeoutExpired as error:
+                _kill_group(process)
+                raise PilotError("CODEX_PERMISSION_CANARY_FAILED") from error
+        except OSError as error:
+            raise PilotError("CODEX_PERMISSION_CANARY_FAILED") from error
+        if (
+            return_code != 0
+            or _process_group_exists(process.pid)
+            or secret.read_bytes() != secret_raw
+            or marker.read_bytes() != b"ok"
+        ):
+            _kill_group(process)
+            raise PilotError("CODEX_PERMISSION_CANARY_FAILED")
+    arguments = _codex_permission_arguments(python)
+    return {
+        "profile": "S4K_RESTRICTED_WORKSPACE_V1",
+        "profileDigest": authority_digest(arguments),
+        "credentialReadDenied": True,
+        "credentialWriteDenied": True,
+        "networkDenied": True,
+        "workspaceWritePassed": True,
+    }
+
+
+def _codex_exec_command(
+    authority: dict[str, Any],
+    scratch: Path,
+    schema_path: Path,
+    answer_path: Path,
+) -> list[str]:
+    model = authority["model"]
+    return [
+        authority["executables"]["codex"],
+        "-a", "never", "exec",
+        "--strict-config", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+        "--skip-git-repo-check", "--json", "--color", "never",
+        *_codex_permission_arguments(
+            Path(authority["executables"]["python"])
+        ),
+        "-c", "project_doc_max_bytes=0",
+        "-c", "skills.include_instructions=false",
+        "-c", "skills.bundled.enabled=false",
+        "-c", "include_apps_instructions=false",
+        "-c", "include_collaboration_mode_instructions=false",
+        "-c", f'model_reasoning_effort="{model["reasoningEffort"]}"',
+        "--model", model["modelId"],
+        "--cd", os.fspath(scratch),
+        "--output-schema", os.fspath(schema_path),
+        "--output-last-message", os.fspath(answer_path),
+        "-",
+    ]
+
+
 def _private_arm_environment(
-    base_environment: dict[str, str], scratch: Path
+    base_environment: dict[str, str],
+    scratch: Path,
+    private_codex_home: Path,
+    private_codex_home_identity: dict[str, int],
 ) -> dict[str, str]:
     try:
         metadata = scratch.stat()
@@ -1624,11 +2393,18 @@ def _private_arm_environment(
         or not stat.S_ISDIR(metadata.st_mode)
         or stat.S_IMODE(metadata.st_mode) != 0o700
         or metadata.st_uid != os.geteuid()
+        or private_codex_home == scratch
+        or private_codex_home.is_relative_to(scratch)
+        or scratch.is_relative_to(private_codex_home)
     ):
         raise PilotError("INVALID_ARM_SCRATCH")
+    _prune_private_codex_home(
+        private_codex_home, private_codex_home_identity
+    )
     environment = dict(base_environment)
     environment["HOME"] = os.fspath(scratch)
     environment["TMPDIR"] = os.fspath(scratch)
+    environment["CODEX_HOME"] = os.fspath(private_codex_home)
     return environment
 
 
@@ -2922,7 +3698,15 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     python, python_digest = executable(Path(sys.executable), "INVALID_PYTHON_EXECUTABLE")
     if sys.version_info < (3, 11):
         raise PilotError("INVALID_PYTHON_EXECUTABLE")
-    semantic_environment = _semantic_environment(python)
+    python_framework = _python_framework_executable(python)
+    maven, maven_digest = maven_executable()
+    semantic_environment = _semantic_environment(python, maven)
+    rustc, rustc_digest = _semantic_tool_executable(
+        "rustc", semantic_environment, "INVALID_RUSTC_EXECUTABLE"
+    )
+    cargo, cargo_digest = _semantic_tool_executable(
+        "cargo", semantic_environment, "INVALID_CARGO_EXECUTABLE"
+    )
     codex_environment = _codex_environment(python)
     builder, builder_digest = executable(
         args.shape_oracle_builder, "INVALID_SHAPE_ORACLE_BUILDER"
@@ -2955,7 +3739,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     review_input_fields = {
         "schema", "builderDigest", "pilotRunnerDigest", "g1kEvidenceDigest",
         "publicFixtureTreeOid", "publicFixtureContentDigest", "testDigest",
-        "localModuleManifest", "gitDigest", "gitEnvironmentDigest",
+        "localModuleManifest", "gitDigest", "gitEnvironmentDigest", "mavenDigest",
     }
     if (
         set(review_inputs) != review_input_fields
@@ -2973,6 +3757,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         or SHA256.fullmatch(review_inputs["testDigest"]) is None
         or review_inputs.get("localModuleManifest") != module_manifest
         or review_inputs.get("gitDigest") != git_digest
+        or review_inputs.get("mavenDigest") != maven_digest
         or not isinstance(review_inputs.get("gitEnvironmentDigest"), str)
         or SHA256.fullmatch(review_inputs["gitEnvironmentDigest"]) is None
     ):
@@ -2984,7 +3769,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         == {
             "schema", "builderDigest", "pilotRunnerDigest", "g1kEvidenceDigest",
             "publicFixtureTreeOid", "publicFixtureContentDigest", "testDigest",
-            "localModuleManifest", "gitDigest", "gitEnvironmentDigest",
+            "localModuleManifest", "gitDigest", "gitEnvironmentDigest", "mavenDigest",
             "verdict", "findings",
         }
         and review_manifest.get("schema")
@@ -3023,6 +3808,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         git_digest,
         review_inputs["gitEnvironmentDigest"],
         module_manifest["authorityDigest"],
+        maven_digest,
     )
     attestation_unsigned = dict(attestation)
     attestation_digest = attestation_unsigned.pop("authorityDigest", None)
@@ -3032,7 +3818,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "schema", "shapeOracleDigest", "g1kEvidenceDigest", "runtimeDigest",
             "runtimeKey", "gitDigest", "gitEnvironmentDigest",
             "localModuleManifestDigest", "builderDigest", "compilerVerification",
-            "reviewManifestDigest", "compilerEnvironmentDigest",
+            "reviewManifestDigest", "compilerEnvironmentDigest", "mavenDigest",
         }
         or attestation.get("schema") != PRIVATE_SHAPE_ATTESTATION_SCHEMA
         or attestation_digest != authority_digest(attestation_unsigned)
@@ -3050,6 +3836,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         or attestation.get("reviewManifestDigest") != review_manifest_digest
         or attestation.get("compilerEnvironmentDigest")
         != authority_digest(semantic_environment)
+        or attestation.get("mavenDigest") != maven_digest
     ):
         raise PilotError("COMPILER_SHAPE_ORACLE_ATTESTATION_INVALID")
     builder_result = _run_json(
@@ -3077,6 +3864,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
         "attestationDigest": attestation_digest,
     }:
         raise PilotError("COMPILER_SHAPE_ORACLE_BUILDER_FAILED")
+    _require_maven_authority(maven_digest)
 
     codex, codex_digest = executable(args.codex, "INVALID_CODEX_EXECUTABLE")
     sandbox_exec, sandbox_exec_digest = executable(
@@ -3125,17 +3913,23 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise PilotError("WARM_FIXTURE_AUTHORITY_FAILED")
     warm_fixture_digest = warm_fixture["fixtureDigest"]
+    _require_maven_authority(maven_digest)
     if args.model is None or SAFE_MODEL.fullmatch(args.model) is None or args.reasoning_effort not in SAFE_REASONING:
         raise PilotError("INVALID_MODEL_CONFIGURATION")
+    permission_canary = _codex_permission_canary(
+        codex, python, experiment_root, codex_environment
+    )
     model_configuration = {
         "modelId": args.model,
         "reasoningEffort": args.reasoning_effort,
-        "sandbox": "WORKSPACE_WRITE_NETWORK_DENIED",
+        "sandbox": "S4K_RESTRICTED_WORKSPACE_NETWORK_DENIED",
         "approvalPolicy": "NEVER",
         "ephemeral": True,
         "userConfigIgnored": True,
         "rulesIgnored": True,
-        "armHomePolicy": "PRIVATE_HOME_TMPDIR_SCRATCH_0700",
+        "armHomePolicy": "MANAGED_ROOT_SCRATCH_0700",
+        "credentialPolicy": "PRIVATE_HARDLINK_HOME_SOURCE_INODE",
+        "permissionCanary": permission_canary,
         "environmentDigest": authority_digest(codex_environment),
     }
     model_digest = authority_digest(model_configuration)
@@ -3201,6 +3995,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             clew=clew,
             git=git,
             python=python,
+            python_framework=python_framework,
             semantic_environment=semantic_environment,
             repositories=[service.repository for service in corpus.services],
             sessions=sessions,
@@ -3299,8 +4094,20 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
             "codexDigest": codex_digest,
             "git": os.fspath(git),
             "gitDigest": git_digest,
+            "maven": os.fspath(maven),
+            "mavenDigest": maven_digest,
             "python": os.fspath(python),
             "pythonDigest": python_digest,
+            "pythonFramework": (
+                os.fspath(python_framework[0]) if python_framework is not None else None
+            ),
+            "pythonFrameworkDigest": (
+                python_framework[1] if python_framework is not None else None
+            ),
+            "rustc": os.fspath(rustc),
+            "rustcDigest": rustc_digest,
+            "cargo": os.fspath(cargo),
+            "cargoDigest": cargo_digest,
             "sandboxExec": os.fspath(sandbox_exec),
             "sandboxExecDigest": sandbox_exec_digest,
         },
@@ -3321,6 +4128,7 @@ def prepare(args: argparse.Namespace) -> dict[str, Any]:
     authority = dict(authority_unsigned)
     authority["authorityDigest"] = authority_digest(authority_unsigned)
     try:
+        _require_maven_authority(maven_digest)
         _publish_prepare_pair(
             authority_target,
             authority,
@@ -3371,19 +4179,44 @@ def verify_authority(value: dict[str, Any]) -> dict[str, Any]:
     if value["armOrder"] != expected_order or not isinstance(value["tasks"], list) or len(value["tasks"]) != 10:
         raise PilotError("INVALID_PILOT_AUTHORITY")
     model = value["model"]
+    executable_rows = value.get("executables")
+    python_value = (
+        executable_rows.get("python")
+        if isinstance(executable_rows, dict)
+        else None
+    )
+    if not isinstance(python_value, str):
+        raise PilotError("INVALID_PILOT_AUTHORITY")
+    try:
+        permission_profile_digest = authority_digest(
+            _codex_permission_arguments(Path(python_value))
+        )
+    except PilotError as error:
+        raise PilotError("INVALID_PILOT_AUTHORITY") from error
     if (
         not isinstance(model, dict)
         or set(model)
         != {
             "modelId", "reasoningEffort", "sandbox", "approvalPolicy", "ephemeral",
-            "userConfigIgnored", "rulesIgnored", "armHomePolicy", "environmentDigest",
+            "userConfigIgnored", "rulesIgnored", "armHomePolicy", "credentialPolicy",
+            "permissionCanary", "environmentDigest",
         }
         or not isinstance(model["modelId"], str)
         or SAFE_MODEL.fullmatch(model["modelId"]) is None
         or model["reasoningEffort"] not in SAFE_REASONING
-        or model["sandbox"] != "WORKSPACE_WRITE_NETWORK_DENIED"
+        or model["sandbox"] != "S4K_RESTRICTED_WORKSPACE_NETWORK_DENIED"
         or model["approvalPolicy"] != "NEVER"
-        or model["armHomePolicy"] != "PRIVATE_HOME_TMPDIR_SCRATCH_0700"
+        or model["armHomePolicy"] != "MANAGED_ROOT_SCRATCH_0700"
+        or model["credentialPolicy"] != "PRIVATE_HARDLINK_HOME_SOURCE_INODE"
+        or model["permissionCanary"]
+        != {
+            "profile": "S4K_RESTRICTED_WORKSPACE_V1",
+            "profileDigest": permission_profile_digest,
+            "credentialReadDenied": True,
+            "credentialWriteDenied": True,
+            "networkDenied": True,
+            "workspaceWritePassed": True,
+        }
         or any(model[key] is not True for key in {"ephemeral", "userConfigIgnored", "rulesIgnored"})
         or value["modelConfigurationDigest"] != authority_digest(model)
     ):
@@ -3442,6 +4275,7 @@ def verify_authority(value: dict[str, Any]) -> dict[str, Any]:
         not isinstance(broker_audit, dict)
         or set(broker_audit) != {
             "adapter", "profilePolicy", "sandboxExecutable", "profile", "profileDigest",
+            "pythonFrameworkExecutable", "pythonFrameworkDigest",
             "allowedProcessCanaryPassed",
             "networkCanaryDenied", "processCanaryDenied", "cacheCanaryDenied",
             "cacheRootCanaryCount", "cacheSentinelDigest", "writeCanaryDenied",
@@ -3520,20 +4354,33 @@ def verify_authority(value: dict[str, Any]) -> dict[str, Any]:
     executables = value["executables"]
     if not isinstance(executables, dict) or set(executables) != {
         "clew", "clewDigest", "codex", "codexDigest", "git", "gitDigest",
-        "python", "pythonDigest", "sandboxExec", "sandboxExecDigest",
+        "maven", "mavenDigest", "python", "pythonDigest", "pythonFramework",
+        "pythonFrameworkDigest", "rustc",
+        "rustcDigest", "cargo", "cargoDigest", "sandboxExec",
+        "sandboxExecDigest",
     }:
         raise PilotError("INVALID_PILOT_AUTHORITY")
-    for name in ["clew", "codex", "git", "python", "sandboxExec"]:
+    for name in ["clew", "codex", "git", "sandboxExec"]:
         path, digest = executable(Path(executables[name]), f"INVALID_{name.upper()}_EXECUTABLE")
         if os.fspath(path) != executables[name] or digest != executables[f"{name}Digest"]:
             raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
-    expected_path = f"{Path(executables['python']).parent}:/usr/bin:/bin"
-    if (
-        semantic_environment.get("PATH") != expected_path
-        or codex_environment.get("PATH") != expected_path
-    ):
+    _require_python_runtime_authority(executables)
+    maven_path = _require_maven_authority(executables["mavenDigest"])
+    if os.fspath(maven_path) != executables["maven"]:
+        raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
+    _verify_semantic_environment_authority(
+        semantic_environment, executables, "INVALID_PILOT_AUTHORITY"
+    )
+    codex_path = f"{Path(executables['python']).parent}:/usr/bin:/bin"
+    if codex_environment.get("PATH") != codex_path:
         raise PilotError("INVALID_PILOT_AUTHORITY")
-    if broker_audit["sandboxExecutable"] != executables["sandboxExec"]:
+    if (
+        broker_audit["sandboxExecutable"] != executables["sandboxExec"]
+        or broker_audit["pythonFrameworkExecutable"]
+        != executables["pythonFramework"]
+        or broker_audit["pythonFrameworkDigest"]
+        != executables["pythonFrameworkDigest"]
+    ):
         raise PilotError("EXECUTABLE_AUTHORITY_CHANGED")
     sessions = value["sessions"]
     if (
@@ -4268,10 +5115,13 @@ def run_arm(
     oracle: dict[str, Any],
     task: dict[str, Any],
     arm: str,
+    private_codex_home: Path,
+    private_codex_home_identity: dict[str, int],
     on_scratch: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     global _ACTIVE_PROCESS, _ACTIVE_BROKER_STOP
     global _ACTIVE_BROKER_THREAD, _ACTIVE_BROKER_SESSION
+    _require_python_runtime_authority(authority["executables"])
     oracle_task = next(row for row in oracle["tasks"] if row["taskId"] == task["taskId"])
     started = time.monotonic_ns()
     tool_starts = 0
@@ -4282,7 +5132,11 @@ def run_arm(
     failure: str | None = None
     return_code: int | None = None
     scratch_locator: dict[str, Any] | None = None
-    with tempfile.TemporaryDirectory(prefix="codeclew-s4k-arm-") as directory:
+    experiment_root = Path(authority["experimentRoot"]["path"])
+    with tempfile.TemporaryDirectory(
+        prefix=".codeclew-s4k-arm-",
+        dir=os.fspath(experiment_root),
+    ) as directory:
         scratch = Path(directory).resolve(strict=True)
         os.chmod(scratch, 0o700)
         scratch_locator = _arm_scratch_locator(scratch, task["taskId"], arm)
@@ -4325,28 +5179,21 @@ def run_arm(
         server.start()
         _ACTIVE_BROKER_THREAD = server
         _ACTIVE_BROKER_SESSION = broker_session
-        environment = _private_arm_environment(authority["codexEnvironment"], scratch)
+        environment = _private_arm_environment(
+            authority["codexEnvironment"],
+            scratch,
+            private_codex_home,
+            private_codex_home_identity,
+        )
         python_directory = Path(authority["executables"]["python"]).parent
         environment["PATH"] = f"{scratch}:{python_directory}:/usr/bin:/bin"
         environment["ZDOTDIR"] = os.fspath(scratch)
         environment["CODECLEW_PILOT_BROKER_REQUESTS"] = os.fspath(request_directory)
         environment["CODECLEW_PILOT_BROKER_RESPONSES"] = os.fspath(response_directory)
         environment["CODECLEW_PILOT_BROKER_TOKEN"] = token
-        model = authority["model"]
-        command = [
-            authority["executables"]["codex"],
-            "-a", "never", "exec",
-            "--ephemeral", "--ignore-user-config", "--ignore-rules",
-            "--skip-git-repo-check", "--json", "--color", "never",
-            "--sandbox", "workspace-write",
-            "-c", "sandbox_workspace_write.network_access=false",
-            "-c", f'model_reasoning_effort="{model["reasoningEffort"]}"',
-            "--model", model["modelId"],
-            "--cd", os.fspath(scratch),
-            "--output-schema", os.fspath(schema_path),
-            "--output-last-message", os.fspath(answer_path),
-            "-",
-        ]
+        command = _codex_exec_command(
+            authority, scratch, schema_path, answer_path
+        )
         with _arm_execution_guard(stop, server, broker_session, server_failure):
             try:
                 process = subprocess.Popen(
@@ -4620,7 +5467,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             args.private_output,
         ],
     )
-    output = fresh_output_target(args.private_output)
+    output_locator = _output_locator(args.private_output)
+    codex_auth_lease = _recover_codex_auth_lease_for_output(output_locator)
+    output = fresh_output_target(output_locator)
     authority_path, authority_value, _ = private_json(args.private_authority, "PILOT_AUTHORITY")
     oracle_path, oracle_value, _ = private_json(args.private_oracle, "PILOT_ORACLE")
     implementation_path, _, _ = checked_json(
@@ -4661,6 +5510,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         {**created_unsigned, "runDigest": authority_digest(created_unsigned)},
         "PRIVATE_RUN_CREATE_FAILED",
     )
+    private_codex_home, private_codex_home_identity = (
+        _create_private_codex_home(
+            Path(authority["codexEnvironment"]["CODEX_HOME"]),
+            codex_auth_lease,
+        )
+    )
     try:
         for order in authority["armOrder"]:
             for arm in order["arms"]:
@@ -4695,6 +5550,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                         oracle,
                         tasks[order["taskId"]],
                         arm,
+                        private_codex_home,
+                        private_codex_home_identity,
                         checkpoint_arm,
                     )
                 )
@@ -4747,6 +5604,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         _ACTIVE_BROKER_SESSION = None
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
+        _recover_private_codex_home(codex_auth_lease)
     complete_unsigned = {
         "schema": PRIVATE_RUN_SCHEMA,
         "status": "COMPLETE",

@@ -546,21 +546,23 @@ fn bounded_source(
     }
     let mut selected = Vec::new();
     let mut bytes = 0usize;
+    let mut window_truncated = false;
     for window in windows {
         let text = window
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("member source window text is invalid"))?;
-        if text.len() > max_snippet_bytes {
-            return Err(invalid(
-                "member source window exceeds the thread snippet limit",
-            ));
-        }
         if !selected.is_empty() && bytes.saturating_add(text.len()) > max_snippet_bytes {
             break;
         }
-        bytes = bytes.saturating_add(text.len());
-        selected.push(window.clone());
+        let (bounded_window, bounded_bytes, truncated) =
+            bound_source_window(window, max_snippet_bytes)?;
+        bytes = bytes.saturating_add(bounded_bytes);
+        selected.push(bounded_window);
+        window_truncated |= truncated;
+        if truncated {
+            break;
+        }
     }
     if selected.is_empty() {
         return Err(invalid("member source cannot fit the thread snippet limit"));
@@ -599,11 +601,51 @@ fn bounded_source(
     object.insert("endLine".into(), json!(end));
     object.insert("text".into(), Value::String(text));
     object.insert("windows".into(), Value::Array(selected.clone()));
-    let truncated = selected.len() != windows.len();
+    let truncated = window_truncated || selected.len() != windows.len();
     if truncated {
         object.insert("completeFile".into(), Value::Bool(false));
     }
     Ok((bounded, selected.len(), bytes, truncated))
+}
+
+fn bound_source_window(
+    window: &Value,
+    max_snippet_bytes: usize,
+) -> Result<(Value, usize, bool), ClewError> {
+    let text = window
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("member source window text is invalid"))?;
+    if text.len() <= max_snippet_bytes {
+        return Ok((window.clone(), text.len(), false));
+    }
+    if max_snippet_bytes == 0 {
+        return Err(invalid("thread snippet limit cannot fit source text"));
+    }
+    let mut end = max_snippet_bytes.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return Err(invalid(
+            "thread snippet limit cannot fit one source character",
+        ));
+    }
+    let bounded_text = &text[..end];
+    let start_line = window
+        .get("startLine")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid("member source start line is invalid"))?;
+    let bounded_end_line = start_line
+        .checked_add(bounded_text.lines().count().max(1) as u64 - 1)
+        .ok_or_else(|| invalid("member source end line overflow"))?;
+    let mut bounded = window.clone();
+    let object = bounded
+        .as_object_mut()
+        .ok_or_else(|| invalid("member source window is not an object"))?;
+    object.insert("endLine".into(), json!(bounded_end_line));
+    object.insert("text".into(), Value::String(bounded_text.to_owned()));
+    Ok((bounded, bounded_text.len(), true))
 }
 
 fn collect_obligations(contexts: &[MemberContext]) -> Result<Vec<Value>, ClewError> {
@@ -1906,7 +1948,24 @@ mod tests {
             "fileId":"src/main.py",
             "windows":[{"startLine":1,"endLine":1,"text":"x".repeat(MAX_THREAD_SNIPPET_BYTES + 1)}],
         });
-        assert!(bounded_source(&oversized, MAX_THREAD_SNIPPET_BYTES).is_err());
+        let (bounded, windows, bytes, truncated) =
+            bounded_source(&oversized, MAX_THREAD_SNIPPET_BYTES).unwrap();
+        assert_eq!(windows, 1);
+        assert_eq!(bytes, MAX_THREAD_SNIPPET_BYTES);
+        assert_eq!(bounded["windows"][0]["endLine"], 1);
+        assert_eq!(bounded["windows"][0]["text"].as_str().unwrap().len(), bytes);
+        assert!(truncated);
+
+        let unicode = json!({
+            "fileId":"src/unicode.py",
+            "windows":[{"startLine":7,"endLine":7,"text":"é".repeat(MAX_THREAD_SNIPPET_BYTES)}],
+        });
+        let (bounded, _, bytes, truncated) =
+            bounded_source(&unicode, MAX_THREAD_SNIPPET_BYTES).unwrap();
+        assert!(bytes <= MAX_THREAD_SNIPPET_BYTES);
+        assert_eq!(bounded["windows"][0]["endLine"], 7);
+        assert!(bounded["windows"][0]["text"].as_str().is_some());
+        assert!(truncated);
 
         let split = json!({
             "fileId":"src/main.py",

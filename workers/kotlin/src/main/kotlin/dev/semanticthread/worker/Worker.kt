@@ -1354,6 +1354,72 @@ internal class Worker(
         }
     }
 
+    internal fun sourceComposedTestProjectModel(
+        repo: Path,
+        compilation: String?,
+        selectedModel: JsonObject,
+        mainModel: () -> JsonObject,
+    ): JsonObject {
+        if (compilation?.substringAfterLast('/') != "test") return selectedModel
+
+        val selectedSources = selectedModel["sourceFiles"] as? JsonArray ?: throw WorkerFailure(
+            "UNSUPPORTED_PROJECT_CONFIGURATION",
+            "Kotlin test build model has no selected source files",
+        )
+        val declaredAnalysisSources = selectedModel["analysisSourceFiles"] as? JsonArray
+        val analysisSources = (declaredAnalysisSources ?: run {
+            val main = mainModel()
+            val mainSources = (main["analysisSourceFiles"] ?: main["sourceFiles"]) as? JsonArray
+                ?: throw WorkerFailure(
+                    "UNSUPPORTED_PROJECT_CONFIGURATION",
+                    "Kotlin main build model has no source files for test analysis",
+                )
+            JsonArray(mainSources + selectedSources)
+        }).distinctBy { it.jsonPrimitive.content }.sortedBy { it.jsonPrimitive.content }
+
+        val declaredFriendPaths = (selectedModel["friendPaths"] as? JsonArray).orEmpty()
+        val retainedFriendPaths = declaredFriendPaths.filter { value ->
+            val parsed = runCatching { Path.of(value.jsonPrimitive.content) }.getOrNull()
+                ?: return@filter false
+            val path = (if (parsed.isAbsolute) parsed else repo.resolve(parsed)).normalize()
+            !Files.isSymbolicLink(path) && (
+                Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS) ||
+                    Files.isDirectory(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            )
+        }
+        val omittedFriendOutput = retainedFriendPaths.size != declaredFriendPaths.size
+        val boundaries = selectedModel["buildModelBoundaries"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty() + listOfNotNull(
+            "KOTLIN_TEST_ANALYSIS_INCLUDES_MAIN_SOURCES",
+            "KOTLIN_TEST_FRIEND_OUTPUT_UNAVAILABLE_SOURCE_COMPOSED"
+                .takeIf { omittedFriendOutput },
+        )
+        val fieldBoundaries = selectedModel["fieldBoundaries"]?.jsonObject
+
+        return buildJsonObject {
+            selectedModel.forEach { (key, value) ->
+                if (key !in setOf("sourceFiles", "analysisSourceFiles", "friendPaths", "buildModelBoundaries", "fieldBoundaries")) {
+                    put(key, value)
+                }
+            }
+            putJsonArray("sourceFiles") { analysisSources.forEach(::add) }
+            putJsonArray("analysisSourceFiles") { analysisSources.forEach(::add) }
+            putJsonArray("friendPaths") { retainedFriendPaths.forEach(::add) }
+            putJsonArray("buildModelBoundaries") { boundaries.distinct().sorted().forEach(::add) }
+            putJsonObject("fieldBoundaries") {
+                fieldBoundaries?.forEach { (key, value) ->
+                    if (key != "friendPaths") put(key, value)
+                }
+                put(
+                    "friendPaths",
+                    if (omittedFriendOutput) JsonPrimitive("SOURCE_COMPOSED_MAIN_SOURCES")
+                    else fieldBoundaries?.get("friendPaths")
+                        ?: JsonPrimitive("AVAILABLE_EXISTING_ONLY"),
+                )
+            }
+        }
+    }
+
     private fun projectModel(repo: Path, compilation: String?): JsonObject {
         val hasGradle = Files.isRegularFile(repo.resolve("gradlew"), java.nio.file.LinkOption.NOFOLLOW_LINKS)
         val hasMaven = Files.isRegularFile(repo.resolve("pom.xml"), java.nio.file.LinkOption.NOFOLLOW_LINKS)
@@ -1370,7 +1436,11 @@ internal class Worker(
             hasMaven -> MavenProjectModelExtractor(stateFor(repo)).extract(repo, compilation)
             else -> throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle Wrapper or Maven pom.xml is required")
         }
-        return applyCompilerPluginCompatibility(model)
+        val compatible = applyCompilerPluginCompatibility(model)
+        val module = compilation?.substringBeforeLast('/')?.ifBlank { ":" } ?: ":"
+        return sourceComposedTestProjectModel(repo, compilation, compatible) {
+            projectModel(repo, "$module/main")
+        }
     }
 
     private fun cachedProjectModel(repo: Path, compilation: String?, extract: (() -> JsonObject)? = null): JsonObject {

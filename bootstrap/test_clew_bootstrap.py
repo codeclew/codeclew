@@ -203,6 +203,30 @@ class BootstrapAuthorityTest(unittest.TestCase):
         self.assertTrue(supervisor.cancelled())
         terminate.assert_called_once_with([process])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIs(popen.call_args.kwargs["stderr"], subprocess.DEVNULL)
+
+    def test_build_stage_keeps_tool_output_out_of_typed_telemetry(self) -> None:
+        program = (
+            "import os\n"
+            "os.write(1,b'untyped-stdout\\n')\n"
+            "os.write(2,b'untyped-stderr\\n')\n"
+        )
+        telemetry = io.StringIO()
+        with contextlib.redirect_stderr(telemetry):
+            bootstrap.run_build_stage(
+                [sys.executable, "-c", program],
+                Path("/"),
+                {},
+                "TELEMETRY_TEST",
+            )
+        rows = [json.loads(line) for line in telemetry.getvalue().splitlines()]
+        self.assertEqual(
+            [(row["event"], row["stage"]) for row in rows],
+            [
+                ("STAGE_STARTED", "TELEMETRY_TEST"),
+                ("STAGE_COMPLETED", "TELEMETRY_TEST"),
+            ],
+        )
 
     @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process groups required")
     def test_successful_build_stage_refuses_and_stops_residual_descendant(self) -> None:
@@ -1266,9 +1290,16 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 inputs,
                 fast_tools,
             )
+            checkpoint = json.loads(path.read_bytes())
+            self.assertNotIn("PATH", checkpoint["environment"])
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             bootstrap.reset_audit_counters()
             with (
+                mock.patch.dict(
+                    os.environ,
+                    {"PATH": str(root / "no-toolchain-bin")},
+                    clear=False,
+                ),
                 mock.patch.object(
                     bootstrap,
                     "digest_file",
@@ -1290,6 +1321,11 @@ class BootstrapAuthorityTest(unittest.TestCase):
             output = io.StringIO()
             try:
                 with (
+                    mock.patch.dict(
+                        os.environ,
+                        {"PATH": str(root / "no-toolchain-bin")},
+                        clear=False,
+                    ),
                     mock.patch.object(
                         bootstrap,
                         "digest_file",
@@ -1344,6 +1380,100 @@ class BootstrapAuthorityTest(unittest.TestCase):
                     bootstrap.read_valid_checkpoint(path, source, state)
                 )
             self.assertIsNone(bootstrap.read_checkpoint_candidate_key(path, state))
+
+    def test_checkpoint_miss_revalidates_sealed_capsule_without_toolchain_routes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            state = root / "state"
+            locks = state / "locks"
+            checkpoints = state / "runtimes" / "checkpoints"
+            source.mkdir()
+            locks.mkdir(parents=True)
+            checkpoints.mkdir(parents=True)
+            inputs = [{
+                "mode": 0,
+                "path": "Cargo.toml",
+                "sha256": "sha256:" + "0" * 64,
+                "size": 12,
+            }]
+            tools = {
+                "jdk": {"releaseSha256": "sha256:" + "1" * 64},
+                "platform": {"machine": "test", "system": "test"},
+                "python": {"version": "3.14"},
+                "rust": {"cargoVersion": "cargo test"},
+            }
+            key = bootstrap.runtime_key("RELEASE", inputs, tools)
+            capsule = state / "runtimes" / key.removeprefix("sha256:")
+            capsule.mkdir()
+            checkpoint = bootstrap.checkpoint_path(state, source)
+            checkpoint.write_bytes(bootstrap.canonical({
+                "capsule": str(capsule),
+                "runtimeKey": key,
+                "schema": "codeclew-runtime-checkpoint/3.0",
+            }) + bytes([10]))
+            checkpoint.chmod(0o600)
+            manifest = {
+                "inputDigest": bootstrap.digest_bytes(bootstrap.canonical(inputs)),
+                "mode": "RELEASE",
+                "platformAuthority": tools["platform"],
+                "toolchainAuthority": {
+                    name: tools[name] for name in ("python", "rust", "jdk")
+                },
+            }
+            state_descriptor = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+            output = io.StringIO()
+            try:
+                with (
+                    mock.patch.object(
+                        bootstrap, "verify_capsule", return_value=manifest
+                    ) as verify,
+                    mock.patch.object(
+                        bootstrap, "source_manifest", return_value=(inputs, False)
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "fast_toolchain_locator_authority",
+                        side_effect=AssertionError("warm miss probed toolchain routes"),
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "toolchain_authority",
+                        side_effect=AssertionError("warm miss invoked toolchains"),
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "state_root",
+                        return_value=(state, state_descriptor),
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "garbage_collect_runtime_capsules",
+                        side_effect=AssertionError("revalidated capsule ran GC"),
+                    ),
+                    mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "clew_bootstrap.py",
+                            "--source-root",
+                            str(source),
+                            "--bootstrap-warm-audit",
+                        ],
+                    ),
+                    contextlib.redirect_stdout(output),
+                ):
+                    self.assertEqual(bootstrap.main(), 0)
+            finally:
+                os.close(state_descriptor)
+            audit = json.loads(output.getvalue())
+            self.assertEqual(audit["status"], "PASSED")
+            self.assertFalse(audit["coldToolchainInvoked"])
+            self.assertFalse(audit["capsuleBuildInvoked"])
+            self.assertEqual(audit["counters"]["checkpointMisses"], 1)
+            verify.assert_called_once_with(capsule, key)
 
     def test_metadata_checkpoint_invalidates_source_and_capsule_mutations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1609,6 +1739,23 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 ):
                     bootstrap.require_cold_build_capacity(root)
 
+    def test_cold_build_reclaims_unreachable_capsules_before_capacity_gate(self) -> None:
+        events: list[str] = []
+        with (
+            mock.patch.object(
+                bootstrap,
+                "garbage_collect_runtime_capsules",
+                side_effect=lambda _root, _key: events.append("gc"),
+            ),
+            mock.patch.object(
+                bootstrap,
+                "require_cold_build_capacity",
+                side_effect=lambda _root: events.append("capacity"),
+            ),
+        ):
+            bootstrap.prepare_cold_build_capacity(Path("/private/state"), "sha256:" + "1" * 64)
+        self.assertEqual(events, ["gc", "capacity"])
+
     def test_runtime_gc_retains_leases_and_two_newest_capsules(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -1725,7 +1872,7 @@ class BootstrapAuthorityTest(unittest.TestCase):
             runtime_key = "sha256:" + "8" * 64
             authority_digest = "sha256:" + "9" * 64
             (session / "authority.json").write_bytes(bootstrap.canonical({
-                "schema": "codeclew-session/3.0",
+                "schema": "codeclew-session/5.0",
                 "sessionId": session_id,
                 "authorityDigest": authority_digest,
                 "runtimeKey": runtime_key,
@@ -1750,6 +1897,14 @@ class BootstrapAuthorityTest(unittest.TestCase):
             lifecycle["eventHash"] = bootstrap.digest_bytes(bootstrap.canonical(lifecycle))
             (session / "lifecycle.json").write_bytes(bootstrap.canonical(lifecycle))
             self.assertEqual(bootstrap._session_runtime_roots(root), set())
+
+            legacy_authority = json.loads((session / "authority.json").read_bytes())
+            legacy_authority["schema"] = "codeclew-session/3.0"
+            (session / "authority.json").write_bytes(bootstrap.canonical(legacy_authority))
+            self.assertEqual(bootstrap._session_runtime_roots(root), set())
+
+            legacy_authority["schema"] = "codeclew-session/5.0"
+            (session / "authority.json").write_bytes(bootstrap.canonical(legacy_authority))
 
             lifecycle["status"] = "ABORTED"
             (session / "lifecycle.json").write_bytes(bootstrap.canonical(lifecycle))

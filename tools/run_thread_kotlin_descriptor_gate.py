@@ -23,9 +23,9 @@ sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
 import verify_thread_kotlin_descriptor_gate as checked_verifier
 
 
-PRIVATE_CORPUS_SCHEMA = "codeclew-private-thread-contract-corpus/1.0"
-PRIVATE_BENCHMARK_SCHEMA = "codeclew-private-kotlin-descriptor-benchmark/1.0"
-PRIVATE_OUTPUT_SCHEMA = "codeclew-private-thread-kotlin-descriptor-gate/2.0"
+PRIVATE_CORPUS_SCHEMA = "codeclew-private-thread-contract-corpus/2.0"
+PRIVATE_BENCHMARK_SCHEMA = "codeclew-private-kotlin-descriptor-benchmark/2.0"
+PRIVATE_OUTPUT_SCHEMA = "codeclew-private-thread-kotlin-descriptor-gate/3.0"
 COMPILER_AUTHORITY_SCHEMA = "codeclew-kotlin-descriptor-compiler-authority/1.0"
 REVISION_AUTHORITY_SCHEMA = "codeclew-kotlin-descriptor-revision-authority/1.0"
 FAILURE_AUTHORITY_SCHEMA = "codeclew-kotlin-descriptor-failure-authority/1.0"
@@ -97,10 +97,19 @@ class Task:
 
 
 @dataclass(frozen=True)
+class TopologyAuthority:
+    repository: Path
+    revision: str
+    relative_file: str
+    blob_oid: str
+
+
+@dataclass(frozen=True)
 class Corpus:
     frozen_at: str
     services: tuple[Service, ...]
     tasks: tuple[Task, ...]
+    topology_authorities: tuple[TopologyAuthority, ...]
 
 
 @dataclass(frozen=True)
@@ -234,20 +243,50 @@ def parse_corpus(value: Any, *, validate_paths: bool = True) -> Corpus:
     if not isinstance(value["selectionRule"], str) or not value["selectionRule"]:
         raise GateError("INVALID_PRIVATE_CORPUS")
     topology = value["topologyAuthorities"]
-    if not isinstance(topology, list) or len(topology) != 3:
+    if not isinstance(topology, list) or len(topology) != 1:
         raise GateError("INVALID_PRIVATE_CORPUS")
+    topology_authorities: list[TopologyAuthority] = []
     for authority in topology:
-        checked_verifier.require_keys(authority, {"path", "revision"}, "topology authority")
+        checked_verifier.require_keys(
+            authority,
+            {"blobOid", "relativeFile", "repositoryPath", "revision"},
+            "topology authority",
+        )
+        repository_raw = authority["repositoryPath"]
+        relative_file = safe_relative_file(authority["relativeFile"])
         if (
-            not isinstance(authority["path"], str)
-            or not authority["path"].startswith("/")
+            not isinstance(repository_raw, str)
+            or not repository_raw.startswith("/")
             or not isinstance(authority["revision"], str)
             or GIT_OID.fullmatch(authority["revision"]) is None
+            or not isinstance(authority["blobOid"], str)
+            or GIT_BLOB_OID.fullmatch(authority["blobOid"]) is None
         ):
             raise GateError("INVALID_PRIVATE_CORPUS")
+        repository = Path(repository_raw)
+        if validate_paths:
+            try:
+                resolved = repository.resolve(strict=True)
+                metadata = os.lstat(repository)
+            except OSError as error:
+                raise GateError("INVALID_PRIVATE_CORPUS") from error
+            if (
+                resolved != repository
+                or stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+            ):
+                raise GateError("INVALID_PRIVATE_CORPUS")
+        topology_authorities.append(
+            TopologyAuthority(
+                repository,
+                authority["revision"],
+                relative_file,
+                authority["blobOid"],
+            )
+        )
 
     rows = value["services"]
-    if not isinstance(rows, list) or len(rows) != 11:
+    if not isinstance(rows, list) or len(rows) != 2:
         raise GateError("INVALID_PRIVATE_CORPUS")
     services: list[Service] = []
     for index, row in enumerate(rows, 1):
@@ -283,9 +322,9 @@ def parse_corpus(value: Any, *, validate_paths: bool = True) -> Corpus:
                 raise GateError("INVALID_PRIVATE_CORPUS")
         services.append(Service(alias, service_id, repository, revision))
 
-    if len({service.service_id for service in services}) != 11 or len(
+    if len({service.service_id for service in services}) != 2 or len(
         {service.repository for service in services}
-    ) != 11:
+    ) != 2:
         raise GateError("INVALID_PRIVATE_CORPUS")
 
     task_rows = value["tasks"]
@@ -325,9 +364,29 @@ def parse_corpus(value: Any, *, validate_paths: bool = True) -> Corpus:
             raise GateError("INVALID_PRIVATE_CORPUS")
         pair_bindings[pair_id] = binding
         tasks.append(Task(task_id, pair_id, provider, consumer, scenario))
-    if len(pair_bindings) != 8:
+    if len(pair_bindings) != 1:
         raise GateError("INVALID_PRIVATE_CORPUS")
-    return Corpus(value["frozenAt"], tuple(services), tuple(tasks))
+    return Corpus(
+        value["frozenAt"],
+        tuple(services),
+        tuple(tasks),
+        tuple(topology_authorities),
+    )
+
+
+def safe_relative_file(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value.encode("utf-8")) > 4096
+        or value.startswith("/")
+        or "\\" in value
+        or "\0" in value
+    ):
+        raise GateError("INVALID_PRIVATE_CORPUS")
+    parts = value.split("/")
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise GateError("INVALID_PRIVATE_CORPUS")
+    return value
 
 
 def safe_relative_kotlin_file(value: Any) -> str:
@@ -401,7 +460,7 @@ def parse_benchmark(value: Any, raw: bytes, corpus: Corpus, corpus_digest: str) 
     )
     if source != {
         "canonicalDigest": corpus_digest,
-        "pairIds": [f"pair-{index:02}" for index in range(1, 9)],
+        "pairIds": ["pair-01"],
         "schema": PRIVATE_CORPUS_SCHEMA,
         "taskIds": checked_verifier.EXPECTED_TASKS,
     }:
@@ -418,7 +477,7 @@ def parse_benchmark(value: Any, raw: bytes, corpus: Corpus, corpus_digest: str) 
         "benchmark self-check",
     )
     if (
-        self_check["expectedPairCount"] != 8
+        self_check["expectedPairCount"] != 1
         or self_check["expectedTaskCount"] != 10
         or not isinstance(self_check["canonicalization"], str)
         or not isinstance(self_check["determinismChecks"], list)
@@ -786,6 +845,31 @@ def validate_oracle_files(git: Path, corpus: Corpus, benchmark: Benchmark) -> No
                 raise GateError("ORACLE_BLOB_AUTHORITY_INVALID")
 
 
+def validate_topology_authorities(git: Path, corpus: Corpus) -> None:
+    for authority in corpus.topology_authorities:
+        revision = git_output(
+            git,
+            authority.repository,
+            ["rev-parse", "--verify", f"{authority.revision}^{{commit}}"],
+        )
+        observed = git_output(
+            git,
+            authority.repository,
+            [
+                "rev-parse",
+                "--verify",
+                f"{authority.revision}:{authority.relative_file}",
+            ],
+        )
+        if (
+            revision != authority.revision
+            or observed != authority.blob_oid
+            or git_output(git, authority.repository, ["cat-file", "-t", observed])
+            != "blob"
+        ):
+            raise GateError("TOPOLOGY_BLOB_AUTHORITY_INVALID")
+
+
 def run_json_process(
     command: list[str],
     timeout_seconds: int,
@@ -905,23 +989,73 @@ def validate_k2_match(match: Any) -> tuple[str, str, set[str], str | None] | Non
         raise GateError("K2_MATCH_INVALID")
     fact_key = match.get("factKey")
     fact_match = KOTLIN_FACT_KEY.fullmatch(fact_key) if isinstance(fact_key, str) else None
+    ignored_fact_match = (
+        re.fullmatch(r"kotlin:(local-cfg|local-cfg-boundary):[0-9a-f]{64}", fact_key)
+        if isinstance(fact_key, str)
+        else None
+    )
     if (
-        fact_match is None
+        (fact_match is None and ignored_fact_match is None)
         or match.get("compilation") != COMPILATION
         or match.get("domainUri") != KOTLIN_FACT_DOMAIN
         or not isinstance(match.get("payload"), dict)
     ):
         raise GateError("K2_MATCH_INVALID")
     require_cas(match.get("payloadRef"), FACT_PAYLOAD_SCHEMA, "K2_MATCH_INVALID")
-    category = fact_match.group(1)
-    if category in {"metadata", "file"}:
+    category = (
+        fact_match.group(1) if fact_match is not None else ignored_fact_match.group(1)
+    )
+    if category in {"metadata", "file", "local-cfg", "local-cfg-boundary"}:
         return None
+
     payload = match["payload"]
+    if category.endswith("-boundary"):
+        if payload.get("code") == "SYNTAX_ONLY":
+            raise GateError("SYNTAX_FALLBACK_REJECTED")
+        if category == "descriptor-boundary":
+            valid_boundary = (
+                payload.get("schema") == "declaration-descriptor-boundary/0.1"
+                and payload.get("resolution") == "UNKNOWN"
+                and payload.get("provider")
+                in {
+                    "K2_FIR",
+                    "COMPILER_DESCRIPTOR_NORMALIZER",
+                    "CODECLEW_DESCRIPTOR_NORMALIZER",
+                    "WORKER",
+                }
+                and payload.get("compilerAuthority") == "fir-facts-extractor/0.6"
+            )
+        else:
+            valid_boundary = (
+                payload.get("schema") == "declaration-relation-boundary/0.1"
+                and payload.get("resolution") == "UNKNOWN"
+                and payload.get("provider")
+                in {
+                    "K2_FIR",
+                    "K2_FIR_CFG",
+                    "COMPILER_RELATION_NORMALIZER",
+                    "CODECLEW_RELATION_NORMALIZER",
+                    "WORKER",
+                }
+            )
+        if not valid_boundary or not isinstance(payload.get("code"), str):
+            raise GateError("K2_MATCH_INVALID")
+        relative_file = (
+            safe_match_file(payload.get("file"))
+            if payload.get("file") is not None
+            else ""
+        )
+        start = payload.get("start")
+        end = payload.get("end")
+        if (start is None) != (end is None):
+            raise GateError("K2_MATCH_INVALID")
+        if start is not None and not valid_source_range(payload):
+            raise GateError("K2_MATCH_INVALID")
+        return category, relative_file, set(), None
+
     relative_file = safe_match_file(payload.get("file"))
     if not valid_source_range(payload):
         raise GateError("K2_MATCH_INVALID")
-    if category.endswith("-boundary") and payload.get("code") == "SYNTAX_ONLY":
-        raise GateError("SYNTAX_FALLBACK_REJECTED")
     declaration_kind: str | None = None
     if category == "descriptor":
         declaration_kind = payload.get("declarationKind")
@@ -940,7 +1074,7 @@ def validate_k2_match(match: Any) -> tuple[str, str, set[str], str | None] | Non
             payload.get("compilerClassId"),
             payload.get("symbolIdentity"),
         )
-    elif category == "relation":
+    else:
         if (
             payload.get("schema") != "declaration-relation/0.1"
             or payload.get("resolution") != "PROVEN"
@@ -951,39 +1085,6 @@ def validate_k2_match(match: Any) -> tuple[str, str, set[str], str | None] | Non
         ):
             raise GateError("K2_MATCH_INVALID")
         names = symbol_tokens(payload.get("owner"), payload.get("target"))
-    elif category == "descriptor-boundary":
-        if (
-            payload.get("schema") != "declaration-descriptor-boundary/0.1"
-            or payload.get("resolution") != "UNKNOWN"
-            or payload.get("provider")
-            not in {"K2_FIR", "COMPILER_DESCRIPTOR_NORMALIZER", "WORKER"}
-            or payload.get("compilerAuthority") != "fir-facts-extractor/0.6"
-        ):
-            raise GateError("K2_MATCH_INVALID")
-        names = symbol_tokens(
-            payload.get("symbolIdentity"),
-            payload.get("compilerCallableId"),
-            payload.get("compilerClassId"),
-        )
-    else:
-        if (
-            payload.get("schema") != "declaration-relation-boundary/0.1"
-            or payload.get("resolution") != "UNKNOWN"
-            or payload.get("provider")
-            not in {
-                "K2_FIR",
-                "K2_FIR_CFG",
-                "COMPILER_RELATION_NORMALIZER",
-                "CODECLEW_RELATION_NORMALIZER",
-                "WORKER",
-            }
-        ):
-            raise GateError("K2_MATCH_INVALID")
-        names = symbol_tokens(
-            payload.get("owner"),
-            payload.get("target"),
-            payload.get("symbol"),
-        )
     if not names:
         raise GateError("K2_MATCH_INVALID")
     return category, relative_file, names, declaration_kind
@@ -1528,23 +1629,23 @@ def build_checked_evidence(
     type_tasks = sum(task["typeDescriptorNavigation"] is True for task in tasks)
     pair_count = len({task["pairId"] for task in tasks})
     passed = (
-        ready_units == 11
+        ready_units == 2
         and covered_tasks == 10
         and callable_tasks == 10
         and type_tasks == 10
-        and pair_count == 8
+        and pair_count == 1
     )
     return {
         "schema": checked_verifier.SCHEMA,
         "frozenAt": corpus.frozen_at,
         "selectionAuthority": {
             "kind": "PINNED_KOTLIN_DESCRIPTOR_CORPUS",
-            "ruleId": "REUSE_G1_TASKS_AND_PAIRS_V1",
+            "ruleId": "LOCAL_DECLARED_PAIR_R2",
             "privateCorpusDigest": corpus_digest,
             "benchmarkDigest": benchmark_digest,
-            "unitCount": 11,
+            "unitCount": 2,
             "taskCount": 10,
-            "pairCount": 8,
+            "pairCount": 1,
         },
         "executionAuthority": {
             "clewAuthority": clew_authority,
@@ -1554,7 +1655,7 @@ def build_checked_evidence(
         "units": units,
         "tasks": tasks,
         "summary": {
-            "unitCount": 11,
+            "unitCount": 2,
             "readyUnits": ready_units,
             "taskCount": 10,
             "taskSideCount": len(result_by_side),
@@ -1670,6 +1771,7 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
         raise GateError("RESOURCE_BUDGET_INVALID")
     oracles = side_oracles(benchmark)
     git = pinned_git_executable(args.git)
+    validate_topology_authorities(git, corpus)
     validate_oracle_files(git, corpus, benchmark)
     benchmark_digest = benchmark.authority_digest
     clew, clew_authority = executable_authority(args.clew)
@@ -1722,7 +1824,7 @@ def run_gate(args: argparse.Namespace) -> dict[str, Any]:
 def synthetic_corpus() -> Corpus:
     services = tuple(
         Service(f"service-{index:02}", f"private-{index}", Path(f"/private/{index}"), "a" * 40)
-        for index in range(1, 12)
+        for index in range(1, 3)
     )
     tasks = tuple(
         Task(task_id, pair_id, provider, consumer, "PROVIDER_CONTRACT_CHANGE")
@@ -1733,7 +1835,10 @@ def synthetic_corpus() -> Corpus:
             strict=True,
         )
     )
-    return Corpus(FROZEN_AT, services, tasks)
+    topology = (
+        TopologyAuthority(Path("/private/topology"), "c" * 40, "catalog.yaml", "d" * 40),
+    )
+    return Corpus(FROZEN_AT, services, tasks, topology)
 
 
 def synthetic_context() -> tuple[dict[str, Any], dict[str, Any], OracleSide]:

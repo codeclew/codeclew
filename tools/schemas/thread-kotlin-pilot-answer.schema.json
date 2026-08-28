@@ -17,6 +17,7 @@
   ],
   "properties": {
     "schema": {
+      "type": "string",
       "const": "codeclew-kotlin-descriptor-pilot-answer/1.0"
     },
     "taskId": {
@@ -28,6 +29,7 @@
       "pattern": "^pair-[0-9]{2}$"
     },
     "arm": {
+      "type": "string",
       "enum": ["DEFAULT", "CODECLEW"]
     },
     "members": {
@@ -51,6 +53,7 @@
       "required": ["authority", "status"],
       "properties": {
         "authority": {
+          "type": "string",
           "enum": [
             "DECLARED_TOPOLOGY",
             "UNBOUND",
@@ -58,14 +61,17 @@
           ]
         },
         "status": {
+          "type": "string",
           "enum": ["UNSURE", "EXACT"]
         }
       }
     },
     "httpEndpointEquivalence": {
+      "type": "string",
       "enum": ["NOT_CLAIMED", "EXACT_CLAIMED"]
     },
     "compatibility": {
+      "type": "string",
       "enum": ["NOT_CLAIMED", "EXACT_CLAIMED"]
     }
   },
@@ -82,6 +88,7 @@
       ],
       "properties": {
         "role": {
+          "type": "string",
           "enum": ["provider", "consumer"]
         },
         "serviceAlias": {
@@ -143,9 +150,11 @@
       ],
       "properties": {
         "descriptorClass": {
+          "type": "string",
           "enum": ["CALLABLE", "TYPE"]
         },
         "declarationKind": {
+          "type": "string",
           "enum": [
             "FUNCTION",
             "CONSTRUCTOR",
@@ -169,6 +178,7 @@
           "maxLength": 4096
         },
         "shapeStatus": {
+          "type": "string",
           "enum": ["EXACT_PROJECTED_DECLARATION", "UNSURE"]
         },
         "shapeDigest": {
@@ -198,6 +208,7 @@
           "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
         },
         "status": {
+          "type": "string",
           "const": "UNSURE"
         },
         "requiredCheck": {
@@ -225,7 +236,7 @@
     },
     "relativeKotlinFile": {
       "type": "string",
-      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)(?!.*\\u0000).+\\.kts?$",
+      "pattern": "^[^/\\\\][^\\\\]*\\.kts?$",
       "maxLength": 4096
     },
     "gitOid": {

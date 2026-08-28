@@ -329,7 +329,15 @@ fn validate_partial_jvm_signature(signature: &str) -> Result<(), ClewError> {
     Ok(())
 }
 
-fn validate_raw_compiler_identity(identity: &str, label: &str) -> Result<(), ClewError> {
+fn validate_raw_compiler_identity(
+    identity: &str,
+    label: &str,
+    allow_root_package_callable: bool,
+) -> Result<(), ClewError> {
+    let identity = match identity.strip_prefix('/') {
+        Some(root) if allow_root_package_callable && !root.contains('/') => root,
+        _ => identity,
+    };
     if identity.is_empty()
         || identity.chars().any(char::is_control)
         || identity.starts_with('/')
@@ -365,14 +373,14 @@ fn validate_relation_endpoint(identity: &str, label: &str) -> Result<(), ClewErr
         let (callable, signature) = tagged.split_once("#jvm:").ok_or_else(|| {
             payload_invalid(format!("{label} callable symbol has no JVM signature"))
         })?;
-        validate_raw_compiler_identity(callable, label)?;
+        validate_raw_compiler_identity(callable, label, true)?;
         return validate_jvm_function_signature(signature);
     }
     if let Some(tagged) = identity.strip_prefix("constructor:") {
         let (callable, descriptor) = tagged.split_once("#jvm:").ok_or_else(|| {
             payload_invalid(format!("{label} constructor symbol has no JVM descriptor"))
         })?;
-        validate_raw_compiler_identity(callable, label)?;
+        validate_raw_compiler_identity(callable, label, false)?;
         if !parse_jvm_method_descriptor(descriptor)?.returns_void {
             return Err(payload_invalid(format!(
                 "{label} constructor descriptor does not return void"
@@ -380,12 +388,18 @@ fn validate_relation_endpoint(identity: &str, label: &str) -> Result<(), ClewErr
         }
         return Ok(());
     }
-    for prefix in ["property:", "class:", "package:"] {
+    if let Some(raw) = identity.strip_prefix("property:") {
+        return validate_raw_compiler_identity(raw, label, true);
+    }
+    for prefix in ["class:", "package:"] {
         if let Some(raw) = identity.strip_prefix(prefix) {
-            return validate_raw_compiler_identity(raw, label);
+            return validate_raw_compiler_identity(raw, label, false);
         }
     }
-    validate_raw_compiler_identity(identity, label)
+    // K2 renders a callable or class in the root package as `/name` in raw
+    // relation endpoints. A single segment is compiler identity syntax; a
+    // second slash still makes the value fail closed as a path lookalike.
+    validate_raw_compiler_identity(identity, label, true)
 }
 
 pub(crate) fn validate_kotlin_full_symbol_identity(identity: &str) -> Result<(), ClewError> {
@@ -505,7 +519,7 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
     match kind {
         "FUNCTION" => {
             let callable = payload_string(value, "compilerCallableId")?;
-            validate_raw_compiler_identity(callable, "function compilerCallableId")?;
+            validate_raw_compiler_identity(callable, "function compilerCallableId", true)?;
             let prefix = format!("callable:{callable}#jvm:");
             let signature = payload_string(value, "symbolIdentity")?
                 .strip_prefix(&prefix)
@@ -520,8 +534,8 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
             let callable = payload_string(value, "compilerCallableId")?;
             let class = payload_string(value, "compilerClassId")?;
             let descriptor = payload_string(value, "jvmDescriptor")?;
-            validate_raw_compiler_identity(callable, "constructor compilerCallableId")?;
-            validate_raw_compiler_identity(class, "constructor compilerClassId")?;
+            validate_raw_compiler_identity(callable, "constructor compilerCallableId", false)?;
+            validate_raw_compiler_identity(class, "constructor compilerClassId", false)?;
             if payload_string(value, "symbolIdentity")?
                 != format!("constructor:{callable}#jvm:{descriptor}")
                 || payload_string(value, "ownerIdentity")? != format!("class:{class}")
@@ -540,7 +554,7 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
         }
         "PROPERTY" | "MUTABLE_PROPERTY" => {
             let callable = payload_string(value, "compilerCallableId")?;
-            validate_raw_compiler_identity(callable, "property compilerCallableId")?;
+            validate_raw_compiler_identity(callable, "property compilerCallableId", true)?;
             if payload_string(value, "symbolIdentity")? != format!("property:{callable}") {
                 return Err(payload_invalid(
                     "property compiler identity is inconsistent",
@@ -549,7 +563,7 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
         }
         "CLASS" => {
             let class = payload_string(value, "compilerClassId")?;
-            validate_raw_compiler_identity(class, "class compilerClassId")?;
+            validate_raw_compiler_identity(class, "class compilerClassId", false)?;
             if payload_string(value, "symbolIdentity")? != format!("class:{class}") {
                 return Err(payload_invalid("class compiler identity is inconsistent"));
             }
@@ -3147,6 +3161,8 @@ mod tests {
             "callable:p/Api.read#jvm:read()I",
             "constructor:p/Box.<init>#jvm:(I)V",
             "property:p/Box.value",
+            "callable:/toLocalDateTime#jvm:(Ljava/lang/String;)Ljava/time/LocalDateTime;",
+            "property:/rootFlag",
             "class:p/Box",
         ] {
             validate_kotlin_full_symbol_identity(identity).unwrap();
@@ -3157,6 +3173,8 @@ mod tests {
             "package:p",
             concat!("callable:https://user:", "secret", "@example/x#jvm:()I"),
             concat!("class:git", "@example.com:private/repository"),
+            "class:/Users",
+            concat!("callable:/", "Users/alice#jvm:()V"),
             concat!("class:/", "Users/alice/private"),
             concat!("callable:/", "Users/alice/Foo.read#jvm:()I"),
             "property:..\\private",
@@ -3379,6 +3397,11 @@ mod tests {
         full_symbols["owner"] = json!("callable:p/Derived.read#jvm:read()I");
         full_symbols["target"] = json!("callable:p/Base.read#jvm:()I");
         validate_declaration_relation_fact(&full_symbols).unwrap();
+
+        let mut root_package_symbols = relation.clone();
+        root_package_symbols["owner"] = json!("/rootFunction");
+        root_package_symbols["target"] = json!("/rootDependency");
+        validate_declaration_relation_fact(&root_package_symbols).unwrap();
 
         for endpoint in [
             "callable:p/Derived.read#jvm:read(V)I",

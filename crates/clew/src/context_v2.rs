@@ -271,9 +271,87 @@ pub fn create(
         selection_terms,
         max_roots.saturating_mul(4),
     )?;
-    let paths = ordered_paths_in_evidence(&evidence_facts);
+    let mut paths = ordered_paths_in_evidence(&evidence_facts);
+    let semantic_paths = paths.iter().cloned().collect::<BTreeSet<_>>();
+    let mut visible_paths = snapshot
+        .index
+        .iter()
+        .filter(|entry| entry.stage == 0)
+        .map(|entry| entry.path.clone())
+        .collect::<BTreeSet<_>>();
+    for entry in &snapshot.worktree {
+        match entry.kind {
+            WorktreeKind::Regular => {
+                visible_paths.insert(entry.path.clone());
+            }
+            WorktreeKind::Missing | WorktreeKind::Symlink => {
+                visible_paths.remove(&entry.path);
+            }
+        }
+    }
+    let mut lexical_candidates = visible_paths
+        .into_iter()
+        .filter(|path| !semantic_paths.contains(path))
+        .filter_map(|path| {
+            let file_name = path.rsplit('/').next().unwrap_or(path.as_str());
+            let stem = file_name
+                .rsplit_once('.')
+                .map_or(file_name, |(stem, _)| stem)
+                .to_lowercase();
+            let matched_terms = query_context
+                .unmatched_terms
+                .iter()
+                .filter(|term| stem.contains(term.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            if matched_terms.is_empty() {
+                None
+            } else {
+                let exact_matches = matched_terms
+                    .iter()
+                    .filter(|term| stem == term.as_str())
+                    .count();
+                Some((exact_matches, path, matched_terms))
+            }
+        })
+        .collect::<Vec<_>>();
+    lexical_candidates.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    lexical_candidates.truncate(max_roots);
+    let lexical_fallback = lexical_candidates
+        .into_iter()
+        .map(|(_, path, terms)| (path, terms))
+        .collect::<BTreeMap<_, _>>();
+    let semantic_paths_in_order = std::mem::take(&mut paths);
+    paths.extend(lexical_fallback.keys().cloned());
+    paths.extend(semantic_paths_in_order);
+
     let source_hints = source_offset_hints(&evidence_facts, selection_terms);
-    let sources = load_source_snippets(&store, &snapshot, &paths, selection_terms, &source_hints)?;
+    let mut sources =
+        load_source_snippets(&store, &snapshot, &paths, selection_terms, &source_hints)?;
+    for source in &mut sources {
+        let Some(file) = source.get("fileId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(matched_terms) = lexical_fallback.get(file) else {
+            continue;
+        };
+        source
+            .as_object_mut()
+            .ok_or_else(|| invalid("context source row is invalid"))?
+            .insert(
+                "selectionAuthority".into(),
+                json!({
+                    "mode":"REPOSITORY_PATH_LEXICAL",
+                    "certainty":"UNSURE",
+                    "matchedTerms":matched_terms,
+                }),
+            );
+    }
     let verified = query_selection_verified(&ready.certainty, &query_context, &evidence_facts);
     let conditional = !verified && !query_context.facts.is_empty();
     let mut obligations = ready
@@ -287,6 +365,20 @@ pub fn create(
             "publicationBlocking":true,
         }))
         .collect::<Vec<_>>();
+    if !lexical_fallback.is_empty() {
+        let lexical_terms = lexical_fallback
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        obligations.push(json!({
+            "id":"verify-lexical-path-fallback",
+            "code":"VERIFY_LEXICAL_SOURCE_SELECTION",
+            "subject":lexical_terms,
+            "requiredCheckSet":["confirm the selected tracked files are relevant and verify their semantic relationship to the task"],
+            "publicationBlocking":true,
+        }));
+    }
     if conditional && obligations.is_empty() {
         obligations.push(json!({
             "id":"verify-query-selection",
@@ -850,10 +942,20 @@ fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usi
                 .count()
         })
         .or_else(|| {
-            lines.iter().position(|line| {
+            let mut best = None;
+            let mut best_score = 0usize;
+            for (index, line) in lines.iter().enumerate() {
                 let line = line.to_lowercase();
-                lowered_terms.iter().any(|term| line.contains(term))
-            })
+                let score = lowered_terms
+                    .iter()
+                    .filter(|term| line.contains(term.as_str()))
+                    .count();
+                if score > best_score {
+                    best = Some(index);
+                    best_score = score;
+                }
+            }
+            best
         })
         .unwrap_or(0);
     let start = hit.saturating_sub(20);
@@ -888,6 +990,12 @@ fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
     // selected can be returned.
     for key in ["matches", "sources"] {
         for value in context[key].as_array().into_iter().flatten() {
+            if key == "matches"
+                && value.pointer("/payload/kind").and_then(Value::as_str) == Some("source-file")
+            {
+                projection["truncated"] = Value::Bool(true);
+                continue;
+            }
             let item_bytes = canonical::bytes(value).map_err(internal)?.len();
             let separator_bytes =
                 usize::from(!projection[key].as_array().expect("known array").is_empty());
@@ -1027,7 +1135,11 @@ fn collect_exact_identity_terms(
             if key.is_some_and(|key| {
                 matches!(
                     key,
-                    "symbolIdentity" | "compilerCallableId" | "compilerClassId" | "ownerIdentity"
+                    "symbolIdentity"
+                        | "compilerCallableId"
+                        | "compilerClassId"
+                        | "ownerIdentity"
+                        | "identifierTerms"
                 )
             }) =>
         {

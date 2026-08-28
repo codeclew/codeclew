@@ -52,6 +52,11 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_CHECKPOINT_BYTES = 16 * 1024 * 1024
 MAX_CHECKPOINT_NODES = 100_000
 MIN_COLD_BUILD_FREE_BYTES = 6 * 1024 * 1024 * 1024
+GC_SESSION_SCHEMAS = {
+    "codeclew-session/3.0",
+    "codeclew-session/4.0",
+    "codeclew-session/5.0",
+}
 GRADLE_MIN_HEAP_BYTES = 2 * 1024**3
 GRADLE_MAX_HEAP_BYTES = 8 * 1024**3
 GRADLE_NON_HEAP_BYTES = 2 * 1024**3
@@ -294,7 +299,6 @@ def _metadata_matches(row: dict[str, object]) -> bool:
 
 def _environment_checkpoint() -> dict[str, object]:
     return {
-        "PATH": os.environ.get("PATH"),
         "JAVA_HOME": os.environ.get("JAVA_HOME"),
         "HOME": os.environ.get("HOME"),
         "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME"),
@@ -332,7 +336,7 @@ def run_build_stage(
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=None,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
         supervisor.register(process)
@@ -579,6 +583,11 @@ def require_cold_build_capacity(root: Path) -> None:
             f"cold runtime build requires at least {required_gib} GiB free "
             f"on the CODECLEW_HOME volume; available={available_mib} MiB"
         )
+
+
+def prepare_cold_build_capacity(root: Path, runtime_key_value: str) -> None:
+    garbage_collect_runtime_capsules(root, runtime_key_value)
+    require_cold_build_capacity(root)
 
 
 def sanitized_environment() -> dict[str, str]:
@@ -1293,6 +1302,44 @@ def read_checkpoint_candidate_key(path: Path, root: Path) -> str | None:
     if _runtime_capsule_directory(root, key) is None:
         return None
     return str(key)
+
+
+def revalidate_checkpoint_capsule(
+    source: Path, root: Path, key: str
+) -> dict[str, object] | None:
+    capsule = _runtime_capsule_directory(root, key)
+    if capsule is None:
+        return None
+    try:
+        manifest = verify_capsule(capsule, key)
+    except Exception as error:
+        quarantine(root, capsule, type(error).__name__)
+        return None
+    inputs, development = source_manifest(source)
+    mode = "DEVELOPMENT" if development else "RELEASE"
+    toolchain = manifest.get("toolchainAuthority")
+    platform_authority = manifest.get("platformAuthority")
+    if (
+        not isinstance(toolchain, dict)
+        or set(toolchain) != {"python", "rust", "jdk"}
+        or any(not isinstance(toolchain[name], dict) for name in toolchain)
+        or not isinstance(platform_authority, dict)
+    ):
+        raise BootstrapError("runtime manifest toolchain authority is invalid")
+    tools = {**toolchain, "platform": platform_authority}
+    if (
+        manifest.get("mode") != mode
+        or manifest.get("inputDigest") != digest_bytes(canonical(inputs))
+        or runtime_key(mode, inputs, tools) != key
+    ):
+        return None
+    return {
+        "capsule": str(capsule),
+        "inputs": inputs,
+        "mode": mode,
+        "revalidated": True,
+        "runtimeKey": key,
+    }
 
 
 def runtime_key(mode: str, inputs: list[dict[str, object]], tools: dict[str, object]) -> str:
@@ -3047,7 +3094,7 @@ def _session_runtime_roots(root: Path) -> set[str]:
                     # may release a session root. Every questionable record
                     # fails open by retaining the referenced runtime.
                     if not (
-                        value.get("schema") == "codeclew-session/3.0"
+                        value.get("schema") in GC_SESSION_SCHEMAS
                         and value.get("sessionId") == session_id
                         and _session_lifecycle_is_collected(
                             session_fd,
@@ -3210,6 +3257,10 @@ def main() -> int:
             os.chmod(checkpoint_lock, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
             checkpoint = read_valid_checkpoint(path_to_checkpoint, source, root)
+            if checkpoint is None:
+                checkpoint = revalidate_checkpoint_capsule(
+                    source, root, checkpoint_key
+                )
             if checkpoint is not None:
                 key = str(checkpoint["runtimeKey"])
                 capsule = Path(str(checkpoint["capsule"]))
@@ -3244,7 +3295,7 @@ def main() -> int:
                 except Exception as error:
                     quarantine(root, capsule, type(error).__name__)
             if not capsule.exists():
-                require_cold_build_capacity(root)
+                prepare_cold_build_capacity(root, key)
                 if tools is None:
                     tools = toolchain_authority(source)
                     cold_toolchain_invoked = True

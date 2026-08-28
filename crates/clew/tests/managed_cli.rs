@@ -743,7 +743,7 @@ fn fd_authority_opens_session_but_forged_paths_fail_without_observing_legacy_sta
 }
 
 #[test]
-fn managed_python_fixture_produces_read_only_partial_context_without_project_processes() {
+fn managed_python_context_rejects_missing_plan_without_project_processes() {
     let temporary = tempfile::tempdir().unwrap();
     let repo = temporary.path().join("python-project");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/python-mixed");
@@ -919,7 +919,7 @@ fn managed_python_fixture_produces_read_only_partial_context_without_project_pro
     );
     assert!(!mutation.status.success());
     let mutation: Value = serde_json::from_slice(&mutation.stdout).unwrap();
-    assert_eq!(mutation["error"]["code"], "UNSUPPORTED_LANGUAGE");
+    assert_eq!(mutation["error"]["code"], "INVALID_INPUT");
 
     for operation in ["close", "gc"] {
         let output = run_managed(

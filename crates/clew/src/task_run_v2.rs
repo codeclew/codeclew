@@ -2096,6 +2096,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ClewError> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid("edit path has no parent"))?;
+    let original_permissions = match fs::symlink_metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error(error)),
+    };
     let temporary = parent.join(format!(".codeclew-edit-{}", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
@@ -2105,8 +2110,12 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ClewError> {
     file.write_all(bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
     fs::rename(&temporary, path).map_err(io_error)?;
-    #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o644)).map_err(io_error)?;
+    if let Some(permissions) = original_permissions {
+        fs::set_permissions(path, permissions).map_err(io_error)?;
+    } else {
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).map_err(io_error)?;
+    }
     Ok(())
 }
 
@@ -2356,6 +2365,8 @@ mod tests {
             .status()
             .unwrap();
         fs::write(root.path().join("A.kt"), "before\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(root.path().join("A.kt"), fs::Permissions::from_mode(0o755)).unwrap();
         let state_root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(state_root.path().join("v2")).unwrap();
         let store = CasStore::open(&state).unwrap();
@@ -2380,6 +2391,15 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.path().join("A.kt")).unwrap(),
             "after\n"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::symlink_metadata(root.path().join("A.kt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
         );
     }
 
@@ -2681,6 +2701,49 @@ mod tests {
                 &[obligation.approval_id.clone(), obligation.approval_id],
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn candidate_commit_uses_generic_identity() {
+        let repository = tempfile::tempdir().unwrap();
+        git_status(
+            Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(repository.path()),
+            "test init failed",
+        )
+        .unwrap();
+        git_status(
+            Command::new("git")
+                .args(["config", "user.name", "Private Developer"])
+                .current_dir(repository.path()),
+            "test Git name setup failed",
+        )
+        .unwrap();
+        git_status(
+            Command::new("git")
+                .args(["config", "user.email", "private@example.invalid"])
+                .current_dir(repository.path()),
+            "test Git email setup failed",
+        )
+        .unwrap();
+        fs::write(repository.path().join("tracked"), b"candidate\n").unwrap();
+        git_status(
+            Command::new("git")
+                .args(["add", "tracked"])
+                .current_dir(repository.path()),
+            "test add failed",
+        )
+        .unwrap();
+        commit_candidate(repository.path(), "plan:generic-identity").unwrap();
+        assert_eq!(
+            git(
+                repository.path(),
+                &["show", "-s", "--format=%an <%ae>|%cn <%ce>", "HEAD"]
+            )
+            .unwrap(),
+            "Codeclew <noreply@example.invalid>|Codeclew <noreply@example.invalid>"
         );
     }
 

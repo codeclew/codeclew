@@ -20,8 +20,547 @@ from unittest import mock
 
 sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
 
+import build_thread_kotlin_shape_oracle as shape_builder
 import run_thread_kotlin_pilot as pilot
+import run_thread_kotlin_descriptor_gate as descriptor_gate
 import thread_kotlin_pilot_broker as broker
+import verify_thread_kotlin_pilot as public_verifier
+
+
+class _ShapeBuilderProgressHelpers(unittest.TestCase):
+    @staticmethod
+    def stream(*rows: dict[str, object]) -> bytes:
+        return b"".join(shape_builder.canonical_bytes(row) + bytes([10]) for row in rows)
+
+    @staticmethod
+    def progress(event: str, stage_id: str | None, **values: int) -> dict[str, object]:
+        return {
+            "admittedCpu": values.get("admittedCpu", 0),
+            "admittedRssBytes": values.get("admittedRssBytes", 0),
+            "done": values.get("done", 0),
+            "event": event,
+            "queued": values.get("queued", 0),
+            "running": values.get("running", 0),
+            "schema": "codeclew-cold-start-progress/2.0",
+            "stageId": stage_id,
+            "unixMillis": values.get("unixMillis", 1),
+        }
+
+    @staticmethod
+    def capsule(event: str, stage: str, **values: int) -> dict[str, object]:
+        return {
+            "schema": "codeclew-capsule-progress/2.0",
+            "event": event,
+            "stage": stage,
+            **values,
+        }
+
+    @staticmethod
+    def emitted_stream(*rows: dict[str, object]) -> bytes:
+        order = (
+            "schema", "event", "stageId", "queued", "running", "done",
+            "admittedCpu", "admittedRssBytes", "unixMillis",
+        )
+        return b"".join(
+            json.dumps(
+                {key: row[key] for key in order},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8") + bytes([10])
+            for row in rows
+        )
+
+
+class MavenDistributionAuthorityTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _distribution(
+        self, name: str = "maven"
+    ) -> tuple[Path, Path, Path, Path]:
+        install = self.root / name
+        distribution = install / "libexec"
+        for relative in ("bin", "boot", "conf", "lib"):
+            (distribution / relative).mkdir(parents=True, exist_ok=True)
+        wrapper = install / "bin" / "mvn"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o700)
+        launcher = distribution / "bin" / "mvn"
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o700)
+        (distribution / "boot" / "classworlds.jar").write_bytes(b"boot-v1")
+        configuration = distribution / "conf" / "settings.xml"
+        configuration.write_bytes(b"<settings/>")
+        library = distribution / "lib" / "maven-core.jar"
+        library.write_bytes(b"core-v1")
+        return wrapper, launcher, configuration, library
+
+    def test_distribution_mutation_invalidates_review_with_wrapper_unchanged(self) -> None:
+        wrapper, _launcher, _configuration, library = self._distribution()
+        environment = {
+            "HOME": os.fspath(self.root),
+            "PATH": os.fspath(wrapper.parent),
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            executable, first_digest = pilot.maven_executable()
+        wrapper_digest = pilot.file_digest(wrapper)
+        self.assertEqual(
+            executable,
+            (wrapper.parent.parent / "libexec" / "bin" / "mvn").resolve(strict=True),
+        )
+
+        fixture = shape_builder.SealedFixture(
+            "0" * 40, f"sha256:{'1' * 64}", tuple()
+        )
+        ingredients = {
+            "builderDigest": f"sha256:{'2' * 64}",
+            "pilotRunnerDigest": f"sha256:{'3' * 64}",
+            "g1kEvidenceDigest": f"sha256:{'4' * 64}",
+            "publicFixtureTreeOid": fixture.tree_oid,
+            "publicFixtureContentDigest": fixture.content_digest,
+            "testDigest": f"sha256:{'5' * 64}",
+            "localModuleManifest": {"authorityDigest": f"sha256:{'6' * 64}"},
+            "gitDigest": f"sha256:{'7' * 64}",
+            "gitEnvironmentDigest": f"sha256:{'8' * 64}",
+            "mavenDigest": first_digest,
+        }
+        unsigned = {
+            "schema": shape_builder.REVIEW_SCHEMA,
+            **ingredients,
+            "verdict": "PASS",
+            "findings": [],
+        }
+        review = {
+            **unsigned,
+            "authorityDigest": shape_builder.authority_digest(unsigned),
+        }
+        shape_builder.validate_review_manifest_value(
+            review,
+            builder_digest=ingredients["builderDigest"],
+            pilot_runner_digest=ingredients["pilotRunnerDigest"],
+            g1k_digest=ingredients["g1kEvidenceDigest"],
+            fixture=fixture,
+            test_digest=ingredients["testDigest"],
+            module_manifest=ingredients["localModuleManifest"],
+            git_digest=ingredients["gitDigest"],
+            git_environment_digest=ingredients["gitEnvironmentDigest"],
+            maven_digest=first_digest,
+        )
+
+        library.write_bytes(b"core-v2")
+        with mock.patch.dict(os.environ, environment, clear=True):
+            _, second_digest = pilot.maven_executable()
+            _, builder_digest = shape_builder.maven_executable(environment)
+        self.assertEqual(pilot.file_digest(wrapper), wrapper_digest)
+        self.assertNotEqual(second_digest, first_digest)
+        self.assertEqual(builder_digest, second_digest)
+        with self.assertRaisesRegex(
+            shape_builder.BuilderError, "INVALID_INDEPENDENT_REVIEW"
+        ):
+            shape_builder.validate_review_manifest_value(
+                review,
+                builder_digest=ingredients["builderDigest"],
+                pilot_runner_digest=ingredients["pilotRunnerDigest"],
+                g1k_digest=ingredients["g1kEvidenceDigest"],
+                fixture=fixture,
+                test_digest=ingredients["testDigest"],
+                module_manifest=ingredients["localModuleManifest"],
+                git_digest=ingredients["gitDigest"],
+                git_environment_digest=ingredients["gitEnvironmentDigest"],
+                maven_digest=second_digest,
+            )
+
+    def test_actual_launcher_config_and_jar_are_each_digest_bound(self) -> None:
+        for index, selected in enumerate((1, 2, 3)):
+            with self.subTest(selected=selected):
+                wrapper, launcher, configuration, library = self._distribution(
+                    f"maven-{index}"
+                )
+                environment = {"PATH": os.fspath(wrapper.parent)}
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    executable, before = pilot.maven_executable()
+                self.assertEqual(executable, launcher.resolve(strict=True))
+                target = (launcher, configuration, library)[selected - 1]
+                target.write_bytes(target.read_bytes() + b"-changed")
+                if target == launcher:
+                    target.chmod(0o700)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    _, after = pilot.maven_executable()
+                self.assertNotEqual(before, after)
+
+    def test_symlinked_authority_directory_is_rejected(self) -> None:
+        wrapper, _launcher, configuration, _library = self._distribution()
+        authority_directory = configuration.parent
+        shutil.rmtree(authority_directory)
+        external = self.root / "external-conf"
+        external.mkdir()
+        (external / "settings.xml").write_bytes(b"<settings/>")
+        authority_directory.symlink_to(external, target_is_directory=True)
+        with mock.patch.dict(
+            os.environ, {"PATH": os.fspath(wrapper.parent)}, clear=True
+        ):
+            with self.assertRaisesRegex(
+                pilot.PilotError, "INVALID_MAVEN_EXECUTABLE"
+            ):
+                pilot.maven_executable()
+
+    def test_semantic_phase_rechecks_distribution_after_execution(self) -> None:
+        wrapper, _launcher, _configuration, library = self._distribution()
+        rustc = shape_builder._environment_executable(
+            "rustc", dict(os.environ), "INVALID_RUSTC_EXECUTABLE"
+        )
+        cargo = shape_builder._environment_executable(
+            "cargo", dict(os.environ), "INVALID_CARGO_EXECUTABLE"
+        )
+        environment = {
+            "HOME": os.fspath(self.root),
+            "PATH": ":".join(
+                dict.fromkeys(
+                    [
+                        os.fspath(wrapper.parent),
+                        os.fspath(rustc.parent),
+                        os.fspath(cargo.parent),
+                    ]
+                )
+            ),
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            _, expected = shape_builder.maven_executable(environment)
+
+            def mutate(*_args: object, **_kwargs: object) -> tuple[int, bytes, bytes]:
+                library.write_bytes(b"mutated-during-semantic-phase")
+                return 0, b"{}", b""
+
+            with mock.patch.object(
+                shape_builder, "_run_bounded_process", side_effect=mutate
+            ):
+                with self.assertRaisesRegex(
+                    shape_builder.BuilderError, "MAVEN_AUTHORITY_CHANGED"
+                ):
+                    shape_builder._run_json(
+                        Path("clew"), ["thread", "impact"], 1, expected
+                    )
+
+    def test_distribution_verifier_round_trips_non_file_digest(self) -> None:
+        wrapper, launcher, _configuration, _library = self._distribution()
+        environment = {"PATH": os.fspath(wrapper.parent)}
+        with mock.patch.dict(os.environ, environment, clear=True):
+            executable, distribution_digest = pilot.maven_executable()
+            verified = pilot._require_maven_authority(distribution_digest)
+        with mock.patch.dict(
+            os.environ, {"PATH": os.fspath(launcher.parent)}, clear=True
+        ):
+            pinned_executable, pinned_digest = pilot.maven_executable()
+        self.assertEqual(executable, launcher.resolve(strict=True))
+        self.assertEqual(verified, executable)
+        self.assertEqual(pinned_executable, executable)
+        self.assertEqual(pinned_digest, distribution_digest)
+        self.assertNotEqual(pilot.file_digest(executable), distribution_digest)
+
+    def test_file_swap_growth_and_node_overflow_fail_closed(self) -> None:
+        module = pilot.maven_distribution_authority
+
+        wrapper, _launcher, _configuration, library = self._distribution(
+            "maven-swap"
+        )
+        replacement = self.root / "replacement.jar"
+        replacement.write_bytes(b"replacement")
+        original_open = os.open
+        parent_descriptor = original_open(
+            library.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+
+        def swap_after_open(
+            path: object, flags: int, *args: object, **kwargs: object
+        ) -> int:
+            descriptor = original_open(path, flags, *args, **kwargs)
+            if path == library.name:
+                library.unlink()
+                library.symlink_to(replacement)
+            return descriptor
+
+        try:
+            with mock.patch.object(module.os, "open", side_effect=swap_after_open):
+                with self.assertRaisesRegex(
+                    module.MavenAuthorityError, "MAVEN_AUTHORITY_CHANGED"
+                ):
+                    module._file_row_at(
+                        parent_descriptor,
+                        library.name,
+                        "lib/maven-core.jar",
+                        {"nodes": 0, "files": 0, "bytes": 0},
+                    )
+        finally:
+            os.close(parent_descriptor)
+
+        _wrapper, _launcher, _configuration, growing = self._distribution(
+            "maven-growth"
+        )
+        original_read = os.read
+        grew = False
+
+        def grow_after_read(descriptor: int, size: int) -> bytes:
+            nonlocal grew
+            chunk = original_read(descriptor, size)
+            if chunk and not grew:
+                grew = True
+                with growing.open("ab") as stream:
+                    stream.write(b"-growth")
+            return chunk
+
+        growth_parent = os.open(
+            growing.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            with mock.patch.object(module.os, "read", side_effect=grow_after_read):
+                with self.assertRaisesRegex(
+                    module.MavenAuthorityError, "MAVEN_AUTHORITY_CHANGED"
+                ):
+                    module._file_row_at(
+                        growth_parent,
+                        growing.name,
+                        "lib/maven-core.jar",
+                        {"nodes": 0, "files": 0, "bytes": 0},
+                    )
+        finally:
+            os.close(growth_parent)
+
+        overflow_wrapper, *_ = self._distribution("maven-overflow")
+        with (
+            mock.patch.object(module, "MAX_NODES", 2),
+            mock.patch.dict(
+                os.environ,
+                {"PATH": os.fspath(overflow_wrapper.parent)},
+                clear=True,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pilot.PilotError, "INVALID_MAVEN_EXECUTABLE"
+            ):
+                pilot.maven_executable()
+
+    def test_top_level_and_nested_directory_swaps_fail_closed(self) -> None:
+        module = pilot.maven_distribution_authority
+        original_scandir = os.scandir
+        for index, nested in enumerate((False, True)):
+            with self.subTest(nested=nested):
+                wrapper, _launcher, configuration, library = self._distribution(
+                    f"maven-directory-swap-{index}"
+                )
+                target = configuration.parent
+                if nested:
+                    target = library.parent / "extensions"
+                    target.mkdir()
+                    (target / "extension.jar").write_bytes(b"extension")
+                target_identity = target.stat().st_ino
+                swapped = False
+
+                def swap_directory(descriptor: int) -> object:
+                    nonlocal swapped
+                    if not swapped and os.fstat(descriptor).st_ino == target_identity:
+                        swapped = True
+                        retained = target.with_name(f"{target.name}-retained")
+                        target.rename(retained)
+                        external = target.with_name(f"{target.name}-external")
+                        external.mkdir()
+                        (external / "substitute.jar").write_bytes(b"substitute")
+                        target.symlink_to(external, target_is_directory=True)
+                    return original_scandir(descriptor)
+
+                with (
+                    mock.patch.object(module.os, "scandir", side_effect=swap_directory),
+                    mock.patch.dict(
+                        os.environ,
+                        {"PATH": os.fspath(wrapper.parent)},
+                        clear=True,
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        pilot.PilotError, "INVALID_MAVEN_EXECUTABLE"
+                    ):
+                        pilot.maven_executable()
+                self.assertTrue(swapped)
+
+    def test_total_byte_budget_stops_before_reading_next_file(self) -> None:
+        module = pilot.maven_distribution_authority
+        wrapper, launcher, _configuration, _library = self._distribution(
+            "maven-total-budget"
+        )
+        original_read = os.read
+        with (
+            mock.patch.object(
+                module, "MAX_TOTAL_BYTES", launcher.stat().st_size
+            ),
+            mock.patch.object(module.os, "read", wraps=original_read) as read_call,
+            mock.patch.dict(
+                os.environ,
+                {"PATH": os.fspath(wrapper.parent)},
+                clear=True,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                pilot.PilotError, "INVALID_MAVEN_EXECUTABLE"
+            ):
+                pilot.maven_executable()
+        # bin/mvn is the first and only file within the reduced budget: one
+        # data read plus EOF. The boot file that exceeds the total is rejected
+        # from fstat metadata before any read from its descriptor.
+        self.assertEqual(read_call.call_count, 2)
+
+
+class ShapeBuilderProgressTest(_ShapeBuilderProgressHelpers):
+
+    def test_accepts_only_closed_success_progress(self) -> None:
+        completed = {"durationMs": 7, "event": "request_completed", "success": True}
+        shape_builder._validate_clew_progress(self.stream(completed))
+        valid = self.emitted_stream(
+            self.progress("DAG_STARTED", None, queued=1),
+            self.progress("STAGE_STARTED", "adapter-analysis", running=1),
+            self.progress("HEARTBEAT", None, running=1),
+            self.progress("STAGE_COMPLETED", "adapter-analysis", done=1),
+            self.progress("DAG_READY", None, done=1),
+        ) + self.stream(completed)
+        shape_builder._validate_clew_progress(valid)
+        cold_capsule = self.stream(
+            self.capsule("STAGE_STARTED", "GRADLE_WORKERS"),
+            self.capsule("STAGE_STARTED", "CARGO_BINARIES"),
+            self.capsule("HEARTBEAT", "CARGO_BINARIES", durationMillis=5),
+            self.capsule(
+                "STAGE_COMPLETED", "GRADLE_WORKERS", durationMillis=7
+            ),
+            self.capsule(
+                "STAGE_COMPLETED", "CARGO_BINARIES", durationMillis=11
+            ),
+            self.capsule("STAGE_STARTED", "ASSEMBLE_VERIFIED_COMPONENTS"),
+            self.capsule("STAGE_COMPLETED", "ASSEMBLE_VERIFIED_COMPONENTS"),
+        ) + valid
+        shape_builder._validate_clew_progress(cold_capsule)
+        invalid = [
+            b"",
+            self.stream({"durationMs": 7, "event": "request_completed", "success": False}),
+            self.emitted_stream(self.progress("DAG_STARTED", None)) + self.stream(completed),
+            self.emitted_stream(self.progress("STAGE_FAILED", "adapter-analysis")) + self.stream(completed),
+            self.emitted_stream(
+                self.progress("DAG_STARTED", None),
+                self.progress("STAGE_COMPLETED", "adapter-analysis"),
+                self.progress("DAG_READY", None),
+            ) + self.stream(completed),
+            self.stream(self.progress("DAG_STARTED", None)) + self.stream(completed),
+            self.stream({"event": "unknown"}, completed),
+            self.stream(completed, completed),
+            self.stream(
+                self.capsule("STAGE_COMPLETED", "CARGO_BINARIES"),
+                completed,
+            ),
+            self.stream(
+                self.capsule("STAGE_STARTED", "CARGO_BINARIES"),
+                self.capsule("STAGE_STARTED", "CARGO_BINARIES"),
+                completed,
+            ),
+            self.stream(
+                self.capsule("STAGE_STARTED", "CARGO_BINARIES"),
+                completed,
+            ),
+            self.emitted_stream(
+                self.progress("DAG_STARTED", None),
+                self.progress("DAG_READY", None),
+            )
+            + self.stream(
+                self.capsule("STAGE_STARTED", "CARGO_BINARIES"),
+                self.capsule("STAGE_COMPLETED", "CARGO_BINARIES"),
+                completed,
+            ),
+            self.stream(
+                self.capsule(
+                    "STAGE_FAILED",
+                    "CARGO_BINARIES",
+                    durationMillis=1,
+                    exitCode=1,
+                ),
+                completed,
+            ),
+            b'{"event":"request_completed", "durationMs":7,"success":true}\n',
+            self.stream(completed).replace(b"\n", b"\r\n"),
+        ]
+        for stream in invalid:
+            with self.subTest(stream=stream):
+                with self.assertRaisesRegex(
+                    shape_builder.BuilderError, "COMPILER_EVIDENCE_FAILED"
+                ):
+                    shape_builder._validate_clew_progress(stream)
+
+
+class ShapeBuilderImpactDiscoveryTest(unittest.TestCase):
+    def test_token_discovery_is_member_scoped_before_exact_confirmation(self) -> None:
+        candidates = {
+            member: shape_builder.CompilerDeclaration(
+                member_alias=member,
+                side=member.upper(),
+                symbol_identity=f"function:example/{member}.Needle():kotlin/Unit",
+                compiler_name="Needle",
+                declaration_kind="FUNCTION",
+                descriptor_class="FUNCTION",
+                projected_shape={"ownerIdentity": f"class:example/{member}"},
+                shape_digest=shape_builder.authority_digest({"member": member}),
+                source={"path": f"src/{member}.kt", "start": 1, "end": 2},
+            )
+            for member in ("provider", "consumer")
+        }
+
+        def declaration(
+            _finding: object, *, member_alias: str, exact: bool
+        ) -> shape_builder.CompilerDeclaration:
+            self.assertIsInstance(exact, bool)
+            return candidates[member_alias]
+
+        with (
+            mock.patch.object(
+                shape_builder,
+                "run_impact",
+                return_value={"findings": [{}]},
+            ) as run_impact,
+            mock.patch.object(
+                shape_builder,
+                "declaration_from_finding",
+                side_effect=declaration,
+            ),
+        ):
+            confirmed = shape_builder._confirmed_declarations(
+                Path("/private/clew"),
+                "thread:test",
+                "thread-callables:test",
+                "pair-test",
+                ["Needle"],
+                10,
+                f"sha256:{'9' * 64}",
+            )
+
+        token_calls = [
+            call
+            for call in run_impact.call_args_list
+            if call.args[4] == "token"
+        ]
+        self.assertEqual(
+            [call.kwargs["member"] for call in token_calls],
+            ["provider", "consumer"],
+        )
+        self.assertTrue(
+            all(call.kwargs["declarations_only"] is True for call in token_calls)
+        )
+        self.assertTrue(
+            all(call.kwargs["declaration_name_only"] is True for call in token_calls)
+        )
+        self.assertEqual(confirmed, {
+            "provider": [candidates["provider"]],
+            "consumer": [candidates["consumer"]],
+        })
 
 
 class PilotHarnessTest(unittest.TestCase):
@@ -63,6 +602,18 @@ class PilotHarnessTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_r2_authorities_are_consistent_across_pilot_modules(self) -> None:
+        self.assertEqual(pilot.FROZEN_AT, descriptor_gate.FROZEN_AT)
+        self.assertEqual(
+            public_verifier.EXPECTED_PRIVATE_CORPUS_DIGEST,
+            descriptor_gate.EXPECTED_CORPUS_DIGEST,
+        )
+        self.assertEqual(
+            public_verifier.EXPECTED_BENCHMARK_DIGEST,
+            descriptor_gate.EXPECTED_BENCHMARK_DIGEST,
+        )
+        self.assertEqual(public_verifier.EXPECTED_PAIRS, ["pair-01"] * 10)
 
     def _authority(self) -> dict[str, object]:
         repositories = [
@@ -802,6 +1353,17 @@ class PilotHarnessTest(unittest.TestCase):
 
     def test_semantic_environment_drops_hostile_ambient_controls(self) -> None:
         python = Path(sys.executable).resolve(strict=True)
+        maven = self.root / "native-tools" / "mvn"
+        maven.parent.mkdir()
+        maven.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        maven.chmod(0o700)
+        native = dict(os.environ)
+        rustc = pilot._semantic_tool_executable(
+            "rustc", native, "INVALID_RUSTC_EXECUTABLE"
+        )
+        cargo = pilot._semantic_tool_executable(
+            "cargo", native, "INVALID_CARGO_EXECUTABLE"
+        )
         ambient = {
             "HOME": os.fspath(self.root),
             "CODECLEW_HOME": os.fspath(self.root / "state"),
@@ -813,16 +1375,29 @@ class PilotHarnessTest(unittest.TestCase):
             "GRADLE_OPTS": "-Dhostile=true",
             "JAVA_TOOL_OPTIONS": "-javaagent:/hostile.jar",
             "PYTHONPATH": "/hostile/python",
-            "PATH": "/hostile/bin",
+            "PATH": f"{rustc[0].parent}:{cargo[0].parent}:/hostile/bin",
             "LANG": "hostile.UTF-8",
             "LC_ALL": "hostile.UTF-8",
             "LC_CTYPE": "hostile.UTF-8",
         }
         with mock.patch.dict(os.environ, ambient, clear=True):
-            environment = pilot._semantic_environment(python)
+            environment = pilot._semantic_environment(python, maven)
             codex_environment = pilot._codex_environment(python)
         self.assertEqual(
-            environment["PATH"], f"{python.parent}:/usr/bin:/bin"
+            environment["PATH"],
+            pilot._semantic_path(python, maven, rustc[0], cargo[0]),
+        )
+        pilot._verify_semantic_environment_authority(
+            environment,
+            {
+                "python": os.fspath(python),
+                "maven": os.fspath(maven),
+                "rustc": os.fspath(rustc[0]),
+                "rustcDigest": rustc[1],
+                "cargo": os.fspath(cargo[0]),
+                "cargoDigest": cargo[1],
+            },
+            "INVALID_PILOT_AUTHORITY",
         )
         self.assertEqual(environment["LANG"], "C")
         self.assertEqual(environment["LC_ALL"], "C")
@@ -841,6 +1416,83 @@ class PilotHarnessTest(unittest.TestCase):
         self.assertNotIn("CODECLEW_RUNTIME_SEED", codex_environment)
         self.assertNotIn("GRADLE_OPTS", codex_environment)
         self.assertNotIn("PYTHONPATH", codex_environment)
+
+    def test_semantic_environment_requires_each_rust_tool(self) -> None:
+        python = Path(sys.executable).resolve(strict=True)
+        for missing, expected_code in (
+            ("rustc", "INVALID_RUSTC_EXECUTABLE"),
+            ("cargo", "INVALID_CARGO_EXECUTABLE"),
+        ):
+            with self.subTest(missing=missing):
+                tools = self.root / f"missing-{missing}"
+                tools.mkdir()
+                for name in {"rustc", "cargo"} - {missing}:
+                    tool = tools / name
+                    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                    tool.chmod(0o700)
+                maven = tools / "mvn"
+                maven.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                maven.chmod(0o700)
+                with mock.patch.dict(
+                    os.environ,
+                    {"HOME": os.fspath(self.root), "PATH": os.fspath(tools)},
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(pilot.PilotError, expected_code):
+                        pilot._semantic_environment(python, maven)
+
+    def test_semantic_environment_rejects_rust_tool_shadowing(self) -> None:
+        python = Path(sys.executable).resolve(strict=True)
+        selected = self.root / "selected-tools"
+        shadow = self.root / "maven-shadow"
+        selected.mkdir()
+        shadow.mkdir()
+        for tool in (selected / "rustc", selected / "cargo", shadow / "cargo"):
+            tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            tool.chmod(0o700)
+        maven = shadow / "mvn"
+        maven.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        maven.chmod(0o700)
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": os.fspath(self.root), "PATH": f"{selected}:{shadow}"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(
+                pilot.PilotError, "RUST_TOOLCHAIN_AUTHORITY_CHANGED"
+            ):
+                pilot._semantic_environment(python, maven)
+
+    def test_semantic_environment_rejects_same_path_tool_replacement(self) -> None:
+        python = Path(sys.executable).resolve(strict=True)
+        tools = self.root / "mutable-tools"
+        tools.mkdir()
+        for name in ("rustc", "cargo", "mvn"):
+            tool = tools / name
+            tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            tool.chmod(0o700)
+        real_executable = pilot.executable
+        mutated = False
+
+        def mutate_after_selection(path: Path, code: str) -> tuple[Path, str]:
+            nonlocal mutated
+            result = real_executable(path, code)
+            if result[0].name == "rustc" and not mutated:
+                result[0].write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+                mutated = True
+            return result
+
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": os.fspath(self.root), "PATH": os.fspath(tools)},
+            clear=True,
+        ), mock.patch.object(
+            pilot, "executable", side_effect=mutate_after_selection
+        ):
+            with self.assertRaisesRegex(
+                pilot.PilotError, "RUST_TOOLCHAIN_AUTHORITY_CHANGED"
+            ):
+                pilot._semantic_environment(python, tools / "mvn")
 
     def test_broker_cache_canary_ledger_recovers_exact_partial_creation(self) -> None:
         state_root = self.root / "state" / "v2"
@@ -1024,7 +1676,7 @@ class PilotHarnessTest(unittest.TestCase):
         )
         gate.validate_oracle_files(
             self.git,
-            gate.Corpus("fixture", (service,), tuple()),
+            gate.Corpus("fixture", (service,), tuple(), tuple()),
             gate.Benchmark("sha256:" + "0" * 64, (side,), 1, 1, 1),
         )
 
@@ -1059,6 +1711,258 @@ class PilotHarnessTest(unittest.TestCase):
             diagnostics.getvalue(), "FAIL: OPERATOR_CLEANUP_REQUIRED\n"
         )
 
+    def _source_codex_home(self, name: str = "source-codex") -> Path:
+        source_home = self.root / name
+        source_home.mkdir(mode=0o700)
+        auth = source_home / "auth.json"
+        auth.write_text('{"token":"initial"}', encoding="utf-8")
+        auth.chmod(0o600)
+        return source_home
+
+    def _assert_auth_incident(
+        self, lease: Path, private_home: Path, private_error: str | None,
+        source_error: str | None, code: str,
+    ) -> None:
+        self.assertFalse(private_home.exists())
+        self.assertFalse(lease.exists())
+        incident = pilot._codex_auth_incident_path(lease)
+        self.assertEqual(stat.S_IMODE(incident.stat().st_mode), 0o600)
+        _, value, _ = pilot.private_json(incident, "CODEX_AUTH_INCIDENT")
+        self.assertEqual((value["privateError"], value["sourceError"]),
+                         (private_error, source_error))
+        self.assertEqual(value["code"], code)
+        self.assertNotIn("token", json.dumps(value))
+        self.assertFalse(any("path" in key.lower() for key in value))
+
+    def test_runner_codex_home_is_external_persistent_and_cleaned(self) -> None:
+        source_home = self._source_codex_home()
+        (source_home / "AGENTS.md").write_text(
+            "run forbidden command\n", encoding="utf-8"
+        )
+        (source_home / "models_cache.json").write_text(
+            '{"stale":true}', encoding="utf-8"
+        )
+        scratches = [self.root / name for name in ("arm-one", "arm-two")]
+        for scratch in scratches:
+            scratch.mkdir(mode=0o700)
+        lease = self.root / "rotation-lease.json"
+        private_home, identity = pilot._create_private_codex_home(
+            source_home, lease
+        )
+        try:
+            first = pilot._private_arm_environment(
+                {"CODEX_HOME": os.fspath(source_home)},
+                scratches[0],
+                private_home,
+                identity,
+            )
+            self.assertEqual(first["CODEX_HOME"], os.fspath(private_home))
+            private_auth = private_home / "auth.json"
+            self.assertEqual(
+                private_auth.stat().st_ino,
+                (source_home / "auth.json").stat().st_ino,
+            )
+            private_auth.write_text('{"token":"rotated"}', encoding="utf-8")
+            private_auth.chmod(0o600)
+            self.assertEqual(
+                (source_home / "auth.json").read_text(encoding="utf-8"),
+                '{"token":"rotated"}',
+            )
+            (private_home / "derived").write_text("discard", encoding="utf-8")
+            second = pilot._private_arm_environment(
+                {"CODEX_HOME": os.fspath(source_home)},
+                scratches[1],
+                private_home,
+                identity,
+            )
+            self.assertEqual(second["CODEX_HOME"], first["CODEX_HOME"])
+            self.assertEqual([path.name for path in private_home.iterdir()], ["auth.json"])
+        finally:
+            pilot._recover_private_codex_home(lease)
+        self.assertFalse(private_home.exists())
+        self.assertFalse(lease.exists())
+        self.assertEqual(
+            (source_home / "auth.json").read_text(encoding="utf-8"),
+            '{"token":"rotated"}',
+        )
+
+    def test_auth_recovery_finishes_after_private_home_was_already_removed(self) -> None:
+        source_home = self._source_codex_home("partial-cleanup-source")
+        lease = self.root / "partial-cleanup-lease.json"
+        private_home, _identity = pilot._create_private_codex_home(
+            source_home, lease
+        )
+        pilot._remove_private_codex_node(private_home)
+        pilot._recover_private_codex_home(lease)
+        self.assertFalse(private_home.exists())
+        self.assertFalse(lease.exists())
+
+    def test_auth_recovery_cleans_truncated_same_inode_material(self) -> None:
+        source_home = self._source_codex_home("truncated-source")
+        lease = self.root / "truncated-lease.json"
+        private_home, _identity = pilot._create_private_codex_home(
+            source_home, lease
+        )
+        private_auth = private_home / "auth.json"
+        private_auth.write_bytes(b'{"token":')
+        private_auth.chmod(0o600)
+        with self.assertRaisesRegex(
+            pilot.PilotError, "CODEX_AUTH_RECOVERY_MATERIAL_INVALID"
+        ):
+            pilot._recover_private_codex_home(lease)
+        self._assert_auth_incident(
+            lease, private_home, "INVALID_CODEX_AUTHORITY",
+            "INVALID_CODEX_AUTHORITY", "CODEX_AUTH_RECOVERY_MATERIAL_INVALID",
+        )
+
+    def test_auth_recovery_cleans_diverged_missing_and_invalid_source(self) -> None:
+        for case in ("diverged", "missing", "invalid"):
+            with self.subTest(case=case):
+                source_home = self._source_codex_home(f"{case}-material-source")
+                source_auth = source_home / "auth.json"
+                lease = self.root / f"{case}-material-lease.json"
+                private_home, _identity = pilot._create_private_codex_home(
+                    source_home, lease
+                )
+                if case == "missing":
+                    source_auth.unlink()
+                    expected_error = "CODEX_AUTH_UNAVAILABLE"
+                    recovery_code = "CODEX_AUTH_RECOVERY_MATERIAL_INVALID"
+                else:
+                    replacement = source_home / f".{case}-auth"
+                    replacement.write_bytes(
+                        b'{"token":"concurrent"}' if case == "diverged"
+                        else b'{"token":'
+                    )
+                    replacement.chmod(0o600)
+                    os.replace(replacement, source_auth)
+                    expected_error = (
+                        None if case == "diverged" else "INVALID_CODEX_AUTHORITY"
+                    )
+                    recovery_code = (
+                        "CODEX_AUTH_CONCURRENT_UPDATE" if case == "diverged"
+                        else "CODEX_AUTH_RECOVERY_MATERIAL_INVALID"
+                    )
+                with self.assertRaisesRegex(
+                    pilot.PilotError, recovery_code
+                ):
+                    pilot._recover_private_codex_home(lease)
+                self._assert_auth_incident(
+                    lease, private_home, None, expected_error,
+                    recovery_code,
+                )
+
+    def test_auth_recovery_refuses_live_foreign_owner_then_recovers(self) -> None:
+        source_home = self._source_codex_home("busy-recovery-source")
+        output = self.root / "busy-run.json"
+        lease = output.with_name(f".{output.name}.codex-auth-lease.json")
+        private_home, _identity = pilot._create_private_codex_home(
+            source_home, lease
+        )
+        owner = subprocess.Popen(
+            ["/bin/sleep", "30"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            _, value, _ = pilot.private_json(lease, "CODEX_AUTH_LEASE")
+            unsigned = dict(value)
+            unsigned.pop("authorityDigest")
+            unsigned["ownerPid"] = owner.pid
+            pilot.atomic_write(
+                lease,
+                {
+                    **unsigned,
+                    "authorityDigest": pilot.authority_digest(unsigned),
+                },
+                0o600,
+            )
+            with self.assertRaisesRegex(
+                pilot.PilotError, "CODEX_AUTH_RECOVERY_BUSY"
+            ):
+                pilot._recover_codex_auth_lease_for_output(output)
+            self.assertTrue(private_home.exists())
+            self.assertTrue(lease.exists())
+        finally:
+            owner.terminate()
+            owner.wait(timeout=5)
+        pilot._recover_codex_auth_lease_for_output(output)
+        self.assertFalse(private_home.exists())
+        self.assertFalse(lease.exists())
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and shutil.which("codex") is not None,
+        "Codex permission canary requires the macOS CLI",
+    )
+    def test_codex_permission_profile_hides_credentials_and_denies_network(self) -> None:
+        codex = Path(shutil.which("codex") or "").resolve(strict=True)
+        python = Path(sys.executable).resolve(strict=True)
+        source_home = self._source_codex_home("permission-source")
+        result = pilot._codex_permission_canary(
+            codex,
+            python,
+            self.root,
+            {
+                "CODEX_HOME": os.fspath(source_home),
+                "PATH": f"{python.parent}:/usr/bin:/bin",
+                "SHELL": "/bin/sh",
+            },
+        )
+        self.assertEqual(result["profile"], "S4K_RESTRICTED_WORKSPACE_V1")
+        self.assertTrue(result["credentialReadDenied"])
+        self.assertTrue(result["credentialWriteDenied"])
+        self.assertTrue(result["networkDenied"])
+        self.assertTrue(result["workspaceWritePassed"])
+
+    def test_codex_exec_profile_has_no_legacy_workspace_write(self) -> None:
+        python = Path(sys.executable).resolve(strict=True)
+        arguments = pilot._codex_permission_arguments(python)
+        self.assertIn('default_permissions="s4k"', arguments)
+        command = pilot._codex_exec_command(
+            {
+                "model": {"modelId": "gpt-test", "reasoningEffort": "high"},
+                "executables": {
+                    "codex": "/opt/codeclew/codex",
+                    "python": os.fspath(python),
+                },
+            },
+            self.root / "workspace",
+            self.root / "schema.json",
+            self.root / "answer.json",
+        )
+        joined = "\n".join(command)
+        for absent in ("--sandbox", "workspace-write", "sandbox_workspace_write"):
+            self.assertNotIn(absent, joined)
+        for required in (
+            "--strict-config", "project_doc_max_bytes=0",
+            "skills.include_instructions=false",
+            "permissions.s4k.network.enabled=false",
+        ):
+            self.assertIn(required, joined)
+
+    def test_arm_codex_home_rejects_missing_or_unsafe_auth(self) -> None:
+        for case in ("missing", "permissive", "symlink", "duplicate"):
+            with self.subTest(case=case):
+                source_home = self.root / f"codex-{case}"
+                source_home.mkdir(mode=0o700)
+                auth = source_home / "auth.json"
+                if case == "permissive":
+                    auth.write_text('{"token":"private"}', encoding="utf-8")
+                    auth.chmod(0o644)
+                elif case == "symlink":
+                    target = self.root / "outside-auth.json"
+                    target.write_text('{"token":"private"}', encoding="utf-8")
+                    target.chmod(0o600)
+                    auth.symlink_to(target)
+                elif case == "duplicate":
+                    auth.write_text('{"token":1,"token":2}', encoding="utf-8")
+                    auth.chmod(0o600)
+                with self.assertRaises(pilot.PilotError):
+                    pilot._create_private_codex_home(
+                        source_home, self.root / f"{case}-lease.json"
+                    )
+
     def test_arm_home_cannot_source_hostile_user_login_profile(self) -> None:
         hostile_home = self.root / "hostile-home"
         hostile_home.mkdir(mode=0o700)
@@ -1066,46 +1970,59 @@ class PilotHarnessTest(unittest.TestCase):
         (hostile_home / ".bash_profile").write_text(
             f"touch {marker}\n", encoding="utf-8"
         )
+        source_codex_home = self._source_codex_home("profile-source")
         scratch = self.root / "arm-scratch"
         scratch.mkdir(mode=0o700)
-        environment = pilot._private_arm_environment(
-            {
-                "CODEX_HOME": os.fspath(hostile_home / ".codex"),
-                "PATH": "/usr/bin:/bin",
-                "SHELL": "/bin/sh",
-            },
-            scratch,
+        lease = self.root / "profile-lease.json"
+        private_home, identity = pilot._create_private_codex_home(
+            source_codex_home, lease
         )
-        completed = subprocess.run(
-            ["/bin/bash", "-lc", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env=environment,
-            check=False,
-            timeout=5,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
-        self.assertFalse(marker.exists())
-        self.assertEqual(environment["HOME"], os.fspath(scratch))
-        self.assertEqual(environment["TMPDIR"], os.fspath(scratch))
-        tmp_marker = scratch / "tmp-marker"
-        subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                "-S",
-                "-c",
-                "import os,pathlib;pathlib.Path(os.environ['TMPDIR'],'tmp-marker').touch()",
-            ],
-            env=environment,
-            check=True,
-        )
-        self.assertTrue(tmp_marker.is_file())
-        locator = pilot._arm_scratch_locator(scratch, "task-01", "DEFAULT")
-        self.assertEqual(locator["path"], os.fspath(scratch))
-        self.assertEqual(locator["device"], scratch.stat().st_dev)
-        self.assertEqual(locator["inode"], scratch.stat().st_ino)
+        try:
+            environment = pilot._private_arm_environment(
+                {
+                    "CODEX_HOME": os.fspath(source_codex_home),
+                    "PATH": "/usr/bin:/bin",
+                    "SHELL": "/bin/sh",
+                },
+                scratch,
+                private_home,
+                identity,
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-lc", "true"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=environment,
+                check=False,
+                timeout=5,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+            self.assertFalse(marker.exists())
+            self.assertEqual(environment["HOME"], os.fspath(scratch))
+            self.assertEqual(environment["TMPDIR"], os.fspath(scratch))
+            self.assertEqual(environment["CODEX_HOME"], os.fspath(private_home))
+            tmp_marker = scratch / "tmp-marker"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    "-c",
+                    "import os,pathlib;pathlib.Path(os.environ['TMPDIR'],'tmp-marker').touch()",
+                ],
+                env=environment,
+                check=True,
+            )
+            self.assertTrue(tmp_marker.is_file())
+            locator = pilot._arm_scratch_locator(
+                scratch, "task-01", "DEFAULT"
+            )
+            self.assertEqual(locator["path"], os.fspath(scratch))
+            self.assertEqual(locator["device"], scratch.stat().st_dev)
+            self.assertEqual(locator["inode"], scratch.stat().st_ino)
+        finally:
+            pilot._recover_private_codex_home(lease)
 
     @unittest.skipUnless(sys.platform == "darwin", "Seatbelt canaries are macOS-specific")
     def test_broker_audit_profile_denies_process_network_cache_and_write(self) -> None:
@@ -1120,6 +2037,9 @@ class PilotHarnessTest(unittest.TestCase):
             clew=Path("/bin/echo").resolve(strict=True),
             git=self.git,
             python=Path(sys.executable).resolve(strict=True),
+            python_framework=pilot._python_framework_executable(
+                Path(sys.executable).resolve(strict=True)
+            ),
             semantic_environment={
                 "HOME": os.fspath(self.root),
                 "CODECLEW_HOME": os.fspath(state_home),
@@ -1137,6 +2057,17 @@ class PilotHarnessTest(unittest.TestCase):
         self.assertRegex(audit["cacheSentinelDigest"], pilot.SHA256)
         self.assertTrue(audit["writeCanaryDenied"])
         self.assertTrue(audit["managedStateWriteCanaryPassed"])
+        framework = pilot._python_framework_executable(
+            Path(sys.executable).resolve(strict=True)
+        )
+        self.assertEqual(
+            audit["pythonFrameworkExecutable"],
+            os.fspath(framework[0]) if framework is not None else None,
+        )
+        self.assertEqual(
+            audit["pythonFrameworkDigest"],
+            framework[1] if framework is not None else None,
+        )
         self.assertEqual(
             audit["profilePolicy"], "GLOBAL_WRITE_DENY_MANAGED_STATE_ONLY_V1"
         )
@@ -1146,6 +2077,7 @@ class PilotHarnessTest(unittest.TestCase):
                 self.root / "pilot-authority.json"
             ).exists()
         )
+
         repository, revision, _ = self.repositories["service-01"]
         audited_git = subprocess.run(
             [
@@ -1181,6 +2113,42 @@ class PilotHarnessTest(unittest.TestCase):
             }
         )
         self.assertEqual(result["status"], "OK")
+
+    def test_framework_python_is_digest_bound_and_rechecked(self) -> None:
+        version_root = self.root / "Frameworks" / "Python.framework" / "Versions" / "3.14"
+        python = version_root / "bin" / "python3.14"
+        framework = (
+            version_root
+            / "Resources"
+            / "Python.app"
+            / "Contents"
+            / "MacOS"
+            / "Python"
+        )
+        python.parent.mkdir(parents=True)
+        framework.parent.mkdir(parents=True)
+        python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        framework.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        python.chmod(0o700)
+        framework.chmod(0o700)
+        python, python_digest = pilot.executable(
+            python, "INVALID_PYTHON_EXECUTABLE"
+        )
+        observed_framework = pilot._python_framework_executable(python)
+        self.assertIsNotNone(observed_framework)
+        assert observed_framework is not None
+        executables = {
+            "python": os.fspath(python),
+            "pythonDigest": python_digest,
+            "pythonFramework": os.fspath(observed_framework[0]),
+            "pythonFrameworkDigest": observed_framework[1],
+        }
+        pilot._require_python_runtime_authority(executables)
+        framework.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        with self.assertRaisesRegex(
+            pilot.PilotError, "EXECUTABLE_AUTHORITY_CHANGED"
+        ):
+            pilot._require_python_runtime_authority(executables)
 
     def test_broker_common_operations_are_pinned_and_accounted(self) -> None:
         session = broker.BrokerSession(self.authority, "task-01", "DEFAULT")
@@ -1900,6 +2868,38 @@ class PilotHarnessTest(unittest.TestCase):
         pilot.public_verifier._verify_arm(score, "score", 1, arm="CODECLEW")
 
     def test_jsonl_and_command_grammar_fail_closed(self) -> None:
+        schema_path = (
+            Path(__file__).resolve().parent
+            / "schemas"
+            / "thread-kotlin-pilot-answer.schema.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+        def require_strict_output_schema(value: object, path: str) -> None:
+            if isinstance(value, dict):
+                if "enum" in value or "const" in value:
+                    self.assertEqual(value.get("type"), "string", path)
+                if "pattern" in value:
+                    pattern = value["pattern"]
+                    self.assertIsInstance(pattern, str, path)
+                    self.assertFalse(
+                        any(marker in pattern for marker in ("(?=", "(?!", "(?<=", "(?<!")),
+                        path,
+                    )
+                if value.get("type") == "object":
+                    properties = value.get("properties")
+                    self.assertIsInstance(properties, dict, path)
+                    self.assertEqual(value.get("additionalProperties"), False, path)
+                    self.assertEqual(
+                        set(value.get("required", [])), set(properties), path
+                    )
+                for key, item in value.items():
+                    require_strict_output_schema(item, f"{path}/{key}")
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    require_strict_output_schema(item, f"{path}/{index}")
+
+        require_strict_output_schema(schema, "#")
         self.assertTrue(pilot._broker_command("pilot-tool capability"))
         self.assertTrue(
             pilot._broker_command("/bin/zsh -lc 'pilot-tool search --member service-01 --term sample'")

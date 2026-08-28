@@ -16,8 +16,8 @@ use tree_sitter::{Node, Parser};
 
 pub const PYTHON_LANGUAGE: &str = "language:python";
 pub const PYTHON_SYNTAX_FACTS_CAPABILITY: &str = "analysis:python-syntax-facts";
-pub const PYTHON_INDEX_SCHEMA: &str = "codeclew-python-syntax-index/1.0";
-const FACT_SCHEMA: &str = "codeclew-python-syntax-fact/1.0";
+pub const PYTHON_INDEX_SCHEMA: &str = "codeclew-python-syntax-index/2.0";
+const FACT_SCHEMA: &str = "codeclew-python-syntax-fact/2.0";
 const RECEIPT_SCHEMA: &str = "codeclew-python-syntax-completeness/1.0";
 const ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-python-syntax-adapter/1.0";
 pub(crate) const MAX_SOURCE_FILES: usize = 4096;
@@ -30,6 +30,8 @@ const MAX_TOTAL_NODES: usize = 4_000_000;
 const MAX_BOUNDARIES: usize = 4096;
 const MAX_FACT_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_FACT_BATCH_INPUT_BYTES: usize = 128 * 1024 * 1024;
+const MAX_FILE_IDENTIFIER_TERMS: usize = 2048;
+const MAX_FILE_IDENTIFIER_TERM_BYTES: usize = 16 * 1024;
 
 pub fn python_adapter_digest() -> Result<String, ClewError> {
     canonical::hash(&json!({
@@ -192,6 +194,8 @@ pub fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord
                 "path":file["path"],
                 "module":file["module"],
                 "contentHash":file["contentHash"],
+                "identifierTerms":file["identifierTerms"],
+                "identifierTermsTruncated":file["identifierTermsTruncated"],
                 "resolution":"SOURCE_MEMBERSHIP_EXACT",
             }),
         )?;
@@ -336,6 +340,8 @@ pub fn build_syntax_index(
                     "path":path,
                     "module":module,
                     "contentHash":object.digest,
+                    "identifierTerms":[],
+                    "identifierTermsTruncated":false,
                 }));
                 add_boundary(&mut boundaries, "PYTHON_SOURCE_SYMLINK", Some(path), None)?;
             }
@@ -343,12 +349,14 @@ pub fn build_syntax_index(
                 node_budget.start_file();
                 let lease = store.read(object, MAX_SOURCE_FILE_BYTES)?;
                 let bytes = lease.bytes();
-                files.push(json!({
-                    "path":path,
-                    "module":module,
-                    "contentHash":canonical::hash_bytes(bytes),
-                }));
                 let Ok(source) = std::str::from_utf8(bytes) else {
+                    files.push(json!({
+                        "path":path,
+                        "module":module,
+                        "contentHash":canonical::hash_bytes(bytes),
+                        "identifierTerms":[],
+                        "identifierTermsTruncated":false,
+                    }));
                     add_boundary(&mut boundaries, "PYTHON_SOURCE_NOT_UTF8", Some(path), None)?;
                     continue;
                 };
@@ -358,6 +366,7 @@ pub fn build_syntax_index(
                 if tree.root_node().has_error() {
                     add_boundary(&mut boundaries, "PYTHON_PARSE_ERROR", Some(path), None)?;
                 }
+                let mut identifier_terms = IdentifierTerms::default();
                 let mut context = SyntaxContext {
                     path,
                     module: &module,
@@ -365,8 +374,24 @@ pub fn build_syntax_index(
                     descriptors: &mut descriptors,
                     syntax_facts: &mut syntax_facts,
                     boundaries: &mut boundaries,
+                    identifier_terms: &mut identifier_terms,
                 };
                 visit_node(tree.root_node(), &[], 0, &mut node_budget, &mut context)?;
+                if identifier_terms.truncated {
+                    add_boundary(
+                        &mut boundaries,
+                        "PYTHON_IDENTIFIER_TERMS_TRUNCATED",
+                        Some(path),
+                        None,
+                    )?;
+                }
+                files.push(json!({
+                    "path":path,
+                    "module":module,
+                    "contentHash":canonical::hash_bytes(bytes),
+                    "identifierTerms":identifier_terms.terms,
+                    "identifierTermsTruncated":identifier_terms.truncated,
+                }));
             }
         }
     }
@@ -475,6 +500,31 @@ struct SyntaxContext<'a> {
     descriptors: &'a mut BTreeMap<String, Value>,
     syntax_facts: &'a mut BTreeMap<String, Value>,
     boundaries: &'a mut BTreeSet<String>,
+    identifier_terms: &'a mut IdentifierTerms,
+}
+
+#[derive(Default)]
+struct IdentifierTerms {
+    terms: BTreeSet<String>,
+    bytes: usize,
+    truncated: bool,
+}
+
+impl IdentifierTerms {
+    fn observe(&mut self, value: &str) {
+        if self.truncated || self.terms.contains(value) {
+            return;
+        }
+        let next_bytes = self.bytes.saturating_add(value.len());
+        if self.terms.len() == MAX_FILE_IDENTIFIER_TERMS
+            || next_bytes > MAX_FILE_IDENTIFIER_TERM_BYTES
+        {
+            self.truncated = true;
+            return;
+        }
+        self.bytes = next_bytes;
+        self.terms.insert(value.to_owned());
+    }
 }
 
 struct NodeBudget {
@@ -522,6 +572,10 @@ fn visit_node(
     context: &mut SyntaxContext<'_>,
 ) -> Result<(), ClewError> {
     node_budget.visit()?;
+    if node.kind() == "identifier" {
+        let identifier = identifier_text(node, context.source)?;
+        context.identifier_terms.observe(&identifier);
+    }
     if depth > MAX_NESTING {
         add_boundary(
             context.boundaries,
@@ -821,6 +875,22 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
                     .get("contentHash")
                     .and_then(Value::as_str)
                     .is_none_or(|digest| require_digest(digest).is_err())
+                || file
+                    .get("identifierTerms")
+                    .and_then(Value::as_array)
+                    .is_none_or(|terms| {
+                        terms.len() > MAX_FILE_IDENTIFIER_TERMS
+                            || terms
+                                .iter()
+                                .any(|term| term.as_str().is_none_or(|term| !safe_identifier(term)))
+                            || terms
+                                .windows(2)
+                                .any(|pair| pair[0].as_str() >= pair[1].as_str())
+                    })
+                || file
+                    .get("identifierTermsTruncated")
+                    .and_then(Value::as_bool)
+                    .is_none()
         })
         || descriptors.len() + syntax_facts.len() + files.len() + boundaries.len() > MAX_FACTS
         || descriptors.iter().any(|row| !valid_located_fact(row, true))
@@ -983,6 +1053,7 @@ from lib.service import execute as run
 @router.post("/private-route")
 class Handler:
     async def apply(self):
+        local_focus = self.current_focus
         return run()
 "#;
         let snapshot = snapshot(&store, &[("backend/api.py", source)]);
@@ -1009,7 +1080,23 @@ class Handler:
         assert!(encoded.contains("router.post"));
         assert!(encoded.contains("execute"));
         assert!(encoded.contains("run"));
+        assert!(encoded.contains("local_focus"));
+        assert!(encoded.contains("current_focus"));
         assert!(!encoded.contains("private-route"));
+        let facts = translate_facts(&store, &index).unwrap();
+        let source_fact = facts
+            .iter()
+            .find(|fact| fact.fact_key.starts_with("python:source:"))
+            .unwrap();
+        let source_payload = store
+            .read(
+                &source_fact.payload,
+                usize::try_from(source_fact.payload.size).unwrap(),
+            )
+            .unwrap();
+        let source_payload = String::from_utf8(source_payload.bytes().to_vec()).unwrap();
+        assert!(source_payload.contains("local_focus"));
+        assert!(!source_payload.contains("private-route"));
     }
 
     #[test]
@@ -1157,6 +1244,7 @@ class Handler:
         let mut descriptors = BTreeMap::new();
         let mut syntax_facts = BTreeMap::new();
         let mut boundaries = BTreeSet::new();
+        let mut identifier_terms = IdentifierTerms::default();
         let mut context = SyntaxContext {
             path: "src/bounded.py",
             module: "src.bounded",
@@ -1164,6 +1252,7 @@ class Handler:
             descriptors: &mut descriptors,
             syntax_facts: &mut syntax_facts,
             boundaries: &mut boundaries,
+            identifier_terms: &mut identifier_terms,
         };
         let mut budget = NodeBudget::new(2, 2);
         budget.start_file();

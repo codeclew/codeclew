@@ -33,6 +33,7 @@ from unittest import mock
 sys.path.insert(0, os.fspath(Path(__file__).resolve().parent))
 
 import run_thread_kotlin_descriptor_gate as descriptor_gate
+import maven_distribution_authority
 import verify_thread_kotlin_descriptor_gate as g1k_verifier
 
 
@@ -132,6 +133,8 @@ class Authorities:
     runtime_digest: str
     git: Path
     git_digest: str
+    maven: Path
+    maven_digest: str
     experiment_root_digest: str
 
 
@@ -343,6 +346,64 @@ def executable(path: Path) -> tuple[Path, str]:
     ):
         raise BuilderError("INVALID_CLEW_EXECUTABLE")
     return resolved, file_digest(resolved)
+
+
+def maven_executable(
+    source: dict[str, str] | None = None,
+) -> tuple[Path, str]:
+    try:
+        authority = maven_distribution_authority.discover(source)
+    except maven_distribution_authority.MavenAuthorityError as error:
+        raise BuilderError("INVALID_MAVEN_EXECUTABLE") from error
+    return authority.executable, authority.digest
+
+
+def _environment_executable(
+    name: str,
+    source: dict[str, str],
+    code: str,
+) -> Path:
+    search_path = source.get("PATH")
+    if (
+        not isinstance(search_path, str)
+        or not search_path
+        or "\0" in search_path
+    ):
+        raise BuilderError(code)
+    try:
+        raw = shutil.which(name, path=search_path)
+        if raw is None:
+            raise BuilderError(code)
+        resolved = Path(raw).resolve(strict=True)
+        metadata = resolved.stat()
+    except (OSError, ValueError) as error:
+        raise BuilderError(code) from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or not os.access(resolved, os.X_OK)
+        or not 0 < metadata.st_size <= MAX_CLEW_BYTES
+    ):
+        raise BuilderError(code)
+    return resolved
+
+
+def _require_environment_executable(
+    name: str,
+    source: dict[str, str],
+    expected: Path,
+    unavailable_code: str,
+) -> None:
+    if _environment_executable(name, source, unavailable_code) != expected:
+        raise BuilderError("RUST_TOOLCHAIN_AUTHORITY_CHANGED")
+
+
+def _require_maven_authority(
+    expected_digest: str, source: dict[str, str] | None = None
+) -> Path:
+    executable_path, observed_digest = maven_executable(source)
+    if observed_digest != expected_digest:
+        raise BuilderError("MAVEN_AUTHORITY_CHANGED")
+    return executable_path
 
 
 def regular_file(path: Path, code: str) -> tuple[Path, str]:
@@ -913,6 +974,7 @@ def load_authorities(
     clew, runtime_digest = executable(clew_path)
     git = git_executable(git_path)
     git_digest = file_digest(git)
+    maven, maven_digest = maven_executable()
     _, experiment_root_digest = _experiment_root(experiment_root_path)
     if g1k_value["executionAuthority"]["clewAuthority"] != runtime_digest:
         raise BuilderError("G1K_RUNTIME_AUTHORITY_CHANGED")
@@ -938,6 +1000,7 @@ def load_authorities(
             benchmark = descriptor_gate.parse_benchmark(
                 benchmark_value, benchmark_raw, corpus, corpus_digest
             )
+            descriptor_gate.validate_topology_authorities(git, corpus)
             descriptor_gate.validate_oracle_files(git, corpus, benchmark)
         except descriptor_gate.GateError as error:
             raise BuilderError(error.code) from error
@@ -958,6 +1021,8 @@ def load_authorities(
         runtime_digest,
         git,
         git_digest,
+        maven,
+        maven_digest,
         experiment_root_digest,
     )
 
@@ -1067,6 +1132,7 @@ def local_module_manifest() -> dict[str, Any]:
         }
         for module in sorted(
             {
+                "maven_distribution_authority",
                 "run_thread_kotlin_descriptor_gate",
                 "verify_thread_kotlin_descriptor_gate",
                 "verify_thread_kotlin_pilot",
@@ -1094,6 +1160,7 @@ def validate_review_manifest_value(
     module_manifest: dict[str, Any],
     git_digest: str,
     git_environment_digest: str,
+    maven_digest: str,
 ) -> tuple[dict[str, Any], str]:
     root = closed(
         value,
@@ -1109,6 +1176,7 @@ def validate_review_manifest_value(
             "localModuleManifest",
             "gitDigest",
             "gitEnvironmentDigest",
+            "mavenDigest",
             "verdict",
             "findings",
         },
@@ -1128,6 +1196,7 @@ def validate_review_manifest_value(
         or root["localModuleManifest"] != module_manifest
         or root["gitDigest"] != git_digest
         or root["gitEnvironmentDigest"] != git_environment_digest
+        or root["mavenDigest"] != maven_digest
         or root["verdict"] != "PASS"
         or root["findings"] != []
     ):
@@ -1158,6 +1227,7 @@ def load_review_authority(
         module_manifest=module_manifest,
         git_digest=authorities.git_digest,
         git_environment_digest=authority_digest(_isolated_git_environment()),
+        maven_digest=maven_executable()[1],
     )
     return ReviewAuthority(
         root, declared, pilot_runner, pilot_runner_digest, test_digest
@@ -1396,6 +1466,13 @@ def declaration_from_finding(
     detail = value.get("detail")
     if not isinstance(detail, dict) or detail.get("kind") != "DECLARATION":
         return None
+    # TOKEN discovery intentionally returns every matching declaration, including
+    # navigation-only rows whose compiler adapter could not retain a complete
+    # projected shape. Such rows have no shapeDigest and cannot become an exact
+    # oracle candidate. Ignore them before applying the complete-projection
+    # validator; FULL_SYMBOL confirmation remains fail-closed below.
+    if not exact and "shapeDigest" not in value:
+        return None
     finding = closed(
         value,
         {
@@ -1585,6 +1662,7 @@ def validate_shape_oracle(
             "gitEnvironmentDigest",
             "localModuleManifestDigest",
             "compilerEnvironmentDigest",
+            "mavenDigest",
             "compilerProjectionSchema",
             "publicFixtureTreeOid",
             "publicFixtureContentDigest",
@@ -1601,7 +1679,10 @@ def validate_shape_oracle(
         "gitDigest": authorities.git_digest,
         "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
         "localModuleManifestDigest": local_module_manifest()["authorityDigest"],
-        "compilerEnvironmentDigest": authority_digest(_clew_environment()),
+        "compilerEnvironmentDigest": authority_digest(
+            _clew_environment(expected_maven_digest=authorities.maven_digest)
+        ),
+        "mavenDigest": authorities.maven_digest,
         "compilerProjectionSchema": PROJECTION_SCHEMA,
         "publicFixtureTreeOid": fixture_authority.tree_oid,
         "publicFixtureContentDigest": fixture_authority.content_digest,
@@ -1609,6 +1690,7 @@ def validate_shape_oracle(
         raise BuilderError("INVALID_SHAPE_ORACLE")
     digest(source["runtimeKey"], "INVALID_SHAPE_ORACLE")
     digest(source["compilerEnvironmentDigest"], "INVALID_SHAPE_ORACLE")
+    digest(source["mavenDigest"], "INVALID_SHAPE_ORACLE")
 
     fixture = root["fixture"]
     if not isinstance(fixture, list) or len(fixture) != 5:
@@ -1786,7 +1868,10 @@ def validate_shape_oracle(
     return root
 
 
-def _clew_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+def _clew_environment(
+    source: dict[str, str] | None = None,
+    expected_maven_digest: str | None = None,
+) -> dict[str, str]:
     ambient = os.environ if source is None else source
     environment: dict[str, str] = {}
     for key in sorted(CLEW_ENV_ALLOW - {"PATH"}):
@@ -1803,23 +1888,238 @@ def _clew_environment(source: dict[str, str] | None = None) -> dict[str, str]:
     if "HOME" not in environment:
         raise BuilderError("COMPILER_ENVIRONMENT_INVALID")
     python = Path(sys.executable).resolve(strict=True)
-    environment["PATH"] = f"{python.parent}:/usr/bin:/bin"
+    maven, observed_maven_digest = maven_executable(ambient)
+    rustc = _environment_executable(
+        "rustc", ambient, "INVALID_RUSTC_EXECUTABLE"
+    )
+    cargo = _environment_executable(
+        "cargo", ambient, "INVALID_CARGO_EXECUTABLE"
+    )
+    if (
+        expected_maven_digest is not None
+        and observed_maven_digest != expected_maven_digest
+    ):
+        raise BuilderError("MAVEN_AUTHORITY_CHANGED")
+    path_entries = dict.fromkeys(
+        [
+            os.fspath(python.parent),
+            os.fspath(maven.parent),
+            os.fspath(rustc.parent),
+            os.fspath(cargo.parent),
+            "/usr/bin",
+            "/bin",
+        ]
+    )
+    environment["PATH"] = ":".join(path_entries)
+    _require_environment_executable(
+        "rustc", environment, rustc, "INVALID_RUSTC_EXECUTABLE"
+    )
+    _require_environment_executable(
+        "cargo", environment, cargo, "INVALID_CARGO_EXECUTABLE"
+    )
     environment["LANG"] = "C"
     environment["LC_ALL"] = "C"
     return environment
 
 
-def _run_json(clew: Path, arguments: list[str], timeout_seconds: int) -> dict[str, Any]:
-    return_code, raw, stderr = _run_bounded_process(
-        [os.fspath(clew), *arguments],
-        environment=_clew_environment(),
-        timeout=timeout_seconds,
-        stdout_limit=descriptor_gate.MAX_CLEW_STDOUT_BYTES,
-        stderr_limit=descriptor_gate.MAX_CLEW_STDOUT_BYTES,
-        code="COMPILER_EVIDENCE_FAILED",
-    )
-    if return_code != 0 or stderr or not raw:
+def _validate_clew_progress(raw: bytes) -> None:
+    if not raw or not raw.endswith(b"\n") or b"\r" in raw:
         raise BuilderError("COMPILER_EVIDENCE_FAILED")
+    lines = raw[:-1].split(b"\n")
+    dag_open = False
+    active_stages: set[str] = set()
+    seen_stages: set[str] = set()
+    active_capsule_stages: set[str] = set()
+    seen_capsule_stages: set[str] = set()
+    semantic_progress_started = False
+    request_completed = False
+    for index, line in enumerate(lines):
+        if not line:
+            raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        try:
+            value = json.loads(
+                line.decode("utf-8"), object_pairs_hook=_duplicates
+            )
+        except (json.JSONDecodeError, UnicodeDecodeError, BuilderError) as error:
+            raise BuilderError("COMPILER_EVIDENCE_FAILED") from error
+        if not isinstance(value, dict):
+            raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        if value.get("event") == "request_completed":
+            if (
+                set(value) != {"durationMs", "event", "success"}
+                or type(value["durationMs"]) is not int
+                or value["durationMs"] < 0
+                or value["success"] is not True
+                or request_completed
+                or dag_open
+                or active_capsule_stages
+                or index != len(lines) - 1
+                or canonical_bytes(value) != line
+            ):
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            request_completed = True
+            continue
+        if value.get("schema") == "codeclew-capsule-progress/2.0":
+            event = value.get("event")
+            stage = value.get("stage")
+            base_fields = {"event", "schema", "stage"}
+            duration_fields = base_fields | {"durationMillis"}
+            if (
+                semantic_progress_started
+                or canonical_bytes(value) != line
+                or not isinstance(stage, str)
+                or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", stage) is None
+            ):
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            if event == "STAGE_STARTED":
+                if (
+                    set(value) != base_fields
+                    or stage in seen_capsule_stages
+                    or stage in active_capsule_stages
+                ):
+                    raise BuilderError("COMPILER_EVIDENCE_FAILED")
+                seen_capsule_stages.add(stage)
+                active_capsule_stages.add(stage)
+            elif event == "HEARTBEAT":
+                if (
+                    set(value) != duration_fields
+                    or stage not in active_capsule_stages
+                    or type(value["durationMillis"]) is not int
+                    or value["durationMillis"] < 0
+                ):
+                    raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            elif event == "STAGE_COMPLETED":
+                if (
+                    frozenset(value)
+                    not in {frozenset(base_fields), frozenset(duration_fields)}
+                    or stage not in active_capsule_stages
+                    or (
+                        "durationMillis" in value
+                        and (
+                            type(value["durationMillis"]) is not int
+                            or value["durationMillis"] < 0
+                        )
+                    )
+                ):
+                    raise BuilderError("COMPILER_EVIDENCE_FAILED")
+                active_capsule_stages.remove(stage)
+            else:
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            continue
+        semantic_progress_started = True
+        if active_capsule_stages:
+            raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        if set(value) != {
+            "admittedCpu",
+            "admittedRssBytes",
+            "done",
+            "event",
+            "queued",
+            "running",
+            "schema",
+            "stageId",
+            "unixMillis",
+        } or value.get("schema") != "codeclew-cold-start-progress/2.0":
+            raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        emitter_value = {
+            "schema": value["schema"],
+            "event": value["event"],
+            "stageId": value["stageId"],
+            "queued": value["queued"],
+            "running": value["running"],
+            "done": value["done"],
+            "admittedCpu": value["admittedCpu"],
+            "admittedRssBytes": value["admittedRssBytes"],
+            "unixMillis": value["unixMillis"],
+        }
+        try:
+            emitted = json.dumps(
+                emitter_value, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise BuilderError("COMPILER_EVIDENCE_FAILED") from error
+        if emitted != line:
+            raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        event = value["event"]
+        stage_id = value["stageId"]
+        for key in (
+            "admittedCpu",
+            "admittedRssBytes",
+            "done",
+            "queued",
+            "running",
+            "unixMillis",
+        ):
+            if type(value[key]) is not int or value[key] < 0:
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        if event == "DAG_STARTED":
+            if dag_open or stage_id is not None or active_stages:
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            dag_open = True
+            seen_stages.clear()
+        elif event == "DAG_READY":
+            if (
+                not dag_open
+                or stage_id is not None
+                or value["running"] != 0
+                or active_stages
+            ):
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            dag_open = False
+        elif event == "STAGE_STARTED":
+            if (
+                not dag_open
+                or not isinstance(stage_id, str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", stage_id)
+                or stage_id in seen_stages
+            ):
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            seen_stages.add(stage_id)
+            active_stages.add(stage_id)
+        elif event == "STAGE_COMPLETED":
+            if (
+                not dag_open
+                or not isinstance(stage_id, str)
+                or stage_id not in active_stages
+            ):
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+            active_stages.remove(stage_id)
+        elif event == "HEARTBEAT":
+            if not dag_open or stage_id is not None:
+                raise BuilderError("COMPILER_EVIDENCE_FAILED")
+        else:
+            raise BuilderError("COMPILER_EVIDENCE_FAILED")
+    if (
+        not request_completed
+        or dag_open
+        or active_stages
+        or active_capsule_stages
+    ):
+        raise BuilderError("COMPILER_EVIDENCE_FAILED")
+
+
+def _run_json(
+    clew: Path,
+    arguments: list[str],
+    timeout_seconds: int,
+    expected_maven_digest: str,
+) -> dict[str, Any]:
+    try:
+        return_code, raw, stderr = _run_bounded_process(
+            [os.fspath(clew), *arguments],
+            environment=_clew_environment(
+                expected_maven_digest=expected_maven_digest
+            ),
+            timeout=timeout_seconds,
+            stdout_limit=descriptor_gate.MAX_CLEW_STDOUT_BYTES,
+            stderr_limit=descriptor_gate.MAX_CLEW_STDOUT_BYTES,
+            code="COMPILER_EVIDENCE_FAILED",
+        )
+    finally:
+        _require_maven_authority(expected_maven_digest)
+    if return_code != 0 or not raw:
+        raise BuilderError("COMPILER_EVIDENCE_FAILED")
+    _validate_clew_progress(stderr)
     try:
         return _json_value(raw, "COMPILER_EVIDENCE_FAILED")
     except BuilderError as error:
@@ -1899,18 +2199,24 @@ def _validate_session_aborted(value: Any, session_id: str) -> None:
         raise BuilderError("SEMANTIC_CLEANUP_FAILED")
 
 
-def _strict_thread_close(clew: Path, thread_id: str) -> None:
+def _strict_thread_close(
+    clew: Path, thread_id: str, maven_digest: str
+) -> None:
     try:
         try:
             value = _run_json(
-                clew, ["thread", "close", "--thread", thread_id], 120
+                clew, ["thread", "close", "--thread", thread_id], 120,
+                maven_digest,
             )
             _validate_thread_closed(value, thread_id)
         except BuilderError:
             # Recovery can observe a resource already collected after a crash
             # between the product mutation and the private-ledger checkpoint.
             pass
-        collected = _run_json(clew, ["thread", "gc", "--thread", thread_id], 120)
+        collected = _run_json(
+            clew, ["thread", "gc", "--thread", thread_id], 120,
+            maven_digest,
+        )
         _validate_garbage_collected(collected, "thread", thread_id)
     except ResidualProcessError:
         raise
@@ -1918,17 +2224,21 @@ def _strict_thread_close(clew: Path, thread_id: str) -> None:
         raise BuilderError("SEMANTIC_CLEANUP_FAILED") from error
 
 
-def _strict_session_abort(clew: Path, session_id: str) -> None:
+def _strict_session_abort(
+    clew: Path, session_id: str, maven_digest: str
+) -> None:
     try:
         try:
             value = _run_json(
-                clew, ["session", "abort", "--session", session_id], 120
+                clew, ["session", "abort", "--session", session_id], 120,
+                maven_digest,
             )
             _validate_session_aborted(value, session_id)
         except BuilderError:
             pass
         collected = _run_json(
-            clew, ["session", "gc", "--session", session_id], 120
+            clew, ["session", "gc", "--session", session_id], 120,
+            maven_digest,
         )
         _validate_garbage_collected(collected, "session", session_id)
     except ResidualProcessError:
@@ -2093,7 +2403,9 @@ def _remove_private_ledger(path: Path) -> None:
         raise BuilderError("SEMANTIC_RECOVERY_FAILED") from error
 
 
-def recover_resource_ledger(clew: Path, path: Path, runtime_digest: str) -> None:
+def recover_resource_ledger(
+    clew: Path, path: Path, runtime_digest: str, maven_digest: str
+) -> None:
     try:
         os.lstat(path)
     except FileNotFoundError:
@@ -2184,7 +2496,7 @@ def recover_resource_ledger(clew: Path, path: Path, runtime_digest: str) -> None
     remaining_threads = list(threads)
     try:
         while remaining_threads:
-            _strict_thread_close(clew, remaining_threads[-1])
+            _strict_thread_close(clew, remaining_threads[-1], maven_digest)
             remaining_threads.pop()
             atomic_private_replace(
                 path,
@@ -2199,7 +2511,7 @@ def recover_resource_ledger(clew: Path, path: Path, runtime_digest: str) -> None
                 ),
             )
         while remaining_sessions:
-            _strict_session_abort(clew, remaining_sessions[-1])
+            _strict_session_abort(clew, remaining_sessions[-1], maven_digest)
             remaining_sessions.pop()
             atomic_private_replace(
                 path,
@@ -2238,12 +2550,14 @@ class SemanticResources:
         clew: Path,
         ledger: Path,
         runtime_digest: str,
+        maven_digest: str,
         runtime_witness: RuntimeWitness,
         temporary_root: dict[str, Any] | None = None,
     ):
         self.clew = clew
         self.ledger = ledger
         self.runtime_digest = runtime_digest
+        self.maven_digest = maven_digest
         self.runtime_witness = runtime_witness
         self.sessions: list[str] = []
         self.threads: list[str] = []
@@ -2319,11 +2633,15 @@ class SemanticResources:
 
     def close(self) -> None:
         while self.threads:
-            _strict_thread_close(self.clew, self.threads[-1])
+            _strict_thread_close(
+                self.clew, self.threads[-1], self.maven_digest
+            )
             self.threads.pop()
             self._persist()
         while self.sessions:
-            _strict_session_abort(self.clew, self.sessions[-1])
+            _strict_session_abort(
+                self.clew, self.sessions[-1], self.maven_digest
+            )
             self.sessions.pop()
             self._persist()
         if self.open_in_flight is not None:
@@ -2387,6 +2705,7 @@ def open_session(
             "1",
         ],
         timeout_seconds,
+        authorities.maven_digest,
     )
     try:
         session = descriptor_gate.parse_session_open(value, service, target_ref)
@@ -2437,6 +2756,7 @@ def open_thread(
             f"consumer={consumer_service}",
         ],
         min(timeout_seconds, 300),
+        resources.maven_digest,
     )
     root = closed(value, {"schema", "status", "thread"}, "INVALID_COMPILER_THREAD")
     thread = root["thread"]
@@ -2459,6 +2779,7 @@ def create_thread_context(
     thread_id: str,
     terms: list[str],
     timeout_seconds: int,
+    maven_digest: str,
 ) -> str:
     value = _run_json(
         clew,
@@ -2474,6 +2795,7 @@ def create_thread_context(
             "2",
         ],
         min(timeout_seconds, 300),
+        maven_digest,
     )
     root = closed(
         value,
@@ -2522,6 +2844,7 @@ def create_callables(
     pair_id: str,
     terms: list[str],
     timeout_seconds: int,
+    maven_digest: str,
 ) -> str:
     value = _run_json(
         clew,
@@ -2543,6 +2866,7 @@ def create_callables(
             *[part for term in terms for part in ("--term", term)],
         ],
         min(timeout_seconds, 300),
+        maven_digest,
     )
     root = closed(
         value,
@@ -2636,7 +2960,12 @@ def run_impact(
     timeout_seconds: int,
     *,
     member: str | None = None,
+    declarations_only: bool = False,
+    declaration_name_only: bool = False,
+    maven_digest: str,
 ) -> dict[str, Any]:
+    if (declarations_only or declaration_name_only) and subject_kind != "token":
+        raise BuilderError("INVALID_COMPILER_IMPACT")
     command = [
         "thread",
         "impact",
@@ -2653,7 +2982,13 @@ def run_impact(
     ]
     if member is not None:
         command.extend(["--member", member])
-    value = _run_json(clew, command, min(timeout_seconds, 180))
+    if declarations_only:
+        command.append("--declarations-only")
+    if declaration_name_only:
+        command.append("--declaration-name-only")
+    value = _run_json(
+        clew, command, min(timeout_seconds, 180), maven_digest
+    )
     root = closed(
         value,
         {
@@ -2773,19 +3108,24 @@ def _confirmed_declarations(
     pair_id: str,
     terms: list[str],
     timeout_seconds: int,
+    maven_digest: str,
 ) -> dict[str, list[CompilerDeclaration]]:
     discovered: dict[tuple[str, str], CompilerDeclaration] = {}
     for term in terms:
-        impact = run_impact(
-            clew,
-            thread_id,
-            fact_set_id,
-            pair_id,
-            "token",
-            term,
-            timeout_seconds,
-        )
         for member_alias in ("provider", "consumer"):
+            impact = run_impact(
+                clew,
+                thread_id,
+                fact_set_id,
+                pair_id,
+                "token",
+                term,
+                timeout_seconds,
+                member=member_alias,
+                declarations_only=True,
+                declaration_name_only=True,
+                maven_digest=maven_digest,
+            )
             for finding in impact["findings"]:
                 candidate = declaration_from_finding(
                     finding, member_alias=member_alias, exact=False
@@ -2816,6 +3156,7 @@ def _confirmed_declarations(
             symbol_identity,
             timeout_seconds,
             member=member_alias,
+            maven_digest=maven_digest,
         )
         exact_rows: list[CompilerDeclaration] = []
         for finding in impact["findings"]:
@@ -2997,6 +3338,7 @@ def build_task_oracles(
         authorities.clew,
         resource_ledger,
         authorities.runtime_digest,
+        authorities.maven_digest,
         runtime_witness,
     ) as resources:
         sessions: dict[str, str] = {}
@@ -3022,7 +3364,8 @@ def build_task_oracles(
                 timeout_seconds,
             )
             context_id = create_thread_context(
-                authorities.clew, thread_id, terms, timeout_seconds
+                authorities.clew, thread_id, terms, timeout_seconds,
+                authorities.maven_digest,
             )
             fact_set_id = create_callables(
                 authorities.clew,
@@ -3032,6 +3375,7 @@ def build_task_oracles(
                 task.pair_id,
                 terms,
                 timeout_seconds,
+                authorities.maven_digest,
             )
             confirmed = _confirmed_declarations(
                 authorities.clew,
@@ -3040,6 +3384,7 @@ def build_task_oracles(
                 task.pair_id,
                 terms,
                 timeout_seconds,
+                authorities.maven_digest,
             )
             sides: list[dict[str, Any]] = []
             slot_classes: set[str] = set()
@@ -3199,6 +3544,7 @@ def build_public_fixture(
             authorities.clew,
             resource_ledger,
             authorities.runtime_digest,
+            authorities.maven_digest,
             runtime_witness,
             temporary_root,
         )
@@ -3253,7 +3599,8 @@ def build_public_fixture(
                 timeout_seconds,
             )
             context_id = create_thread_context(
-                authorities.clew, thread_id, terms, timeout_seconds
+                authorities.clew, thread_id, terms, timeout_seconds,
+                authorities.maven_digest,
             )
             fact_set_id = create_callables(
                 authorities.clew,
@@ -3263,6 +3610,7 @@ def build_public_fixture(
                 "public-pair",
                 terms,
                 timeout_seconds,
+                authorities.maven_digest,
             )
             confirmed = _confirmed_declarations(
                 authorities.clew,
@@ -3271,6 +3619,7 @@ def build_public_fixture(
                 "public-pair",
                 terms,
                 timeout_seconds,
+                authorities.maven_digest,
             )
             semantic = lambda candidate: canonical_bytes(  # noqa: E731
                 {
@@ -3368,6 +3717,7 @@ def validate_attestation(
             "gitEnvironmentDigest",
             "localModuleManifestDigest",
             "compilerEnvironmentDigest",
+            "mavenDigest",
             "builderDigest",
             "compilerVerification",
             "reviewManifestDigest",
@@ -3390,12 +3740,16 @@ def validate_attestation(
         != local_module_manifest()["authorityDigest"]
         or root["compilerEnvironmentDigest"]
         != shape["sourceAuthority"]["compilerEnvironmentDigest"]
+        or root["mavenDigest"] != shape["sourceAuthority"]["mavenDigest"]
+        or root["mavenDigest"] != authorities.maven_digest
+        or root["mavenDigest"] != review.value["mavenDigest"]
         or SHA256.fullmatch(str(root["runtimeKey"])) is None
         or root["builderDigest"] != file_digest(Path(__file__).resolve())
         or root["compilerVerification"] != "PASS"
         or root["reviewManifestDigest"] != review.digest
     ):
         raise BuilderError("INVALID_SHAPE_ATTESTATION")
+    _require_maven_authority(authorities.maven_digest)
     digest(declared, "INVALID_SHAPE_ATTESTATION")
     return declared
 
@@ -3436,7 +3790,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         f".{shape_candidate.name}.resources-pending.json"
     )
     recover_resource_ledger(
-        authorities.clew, resource_ledger, authorities.runtime_digest
+        authorities.clew,
+        resource_ledger,
+        authorities.runtime_digest,
+        authorities.maven_digest,
     )
     recover_private_pair(shape_candidate, attestation_candidate)
     shape_target = _output_target(args.shape_oracle, require_absent=True)
@@ -3474,7 +3831,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "gitDigest": authorities.git_digest,
             "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
             "localModuleManifestDigest": local_module_manifest()["authorityDigest"],
-            "compilerEnvironmentDigest": authority_digest(_clew_environment()),
+            "compilerEnvironmentDigest": authority_digest(
+                _clew_environment(
+                    expected_maven_digest=authorities.maven_digest
+                )
+            ),
+            "mavenDigest": authorities.maven_digest,
             "compilerProjectionSchema": PROJECTION_SCHEMA,
             "publicFixtureTreeOid": fixture_authority.tree_oid,
             "publicFixtureContentDigest": fixture_authority.content_digest,
@@ -3496,7 +3858,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "gitDigest": authorities.git_digest,
         "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
         "localModuleManifestDigest": local_module_manifest()["authorityDigest"],
-        "compilerEnvironmentDigest": authority_digest(_clew_environment()),
+        "compilerEnvironmentDigest": authority_digest(
+            _clew_environment(expected_maven_digest=authorities.maven_digest)
+        ),
+        "mavenDigest": authorities.maven_digest,
         "builderDigest": file_digest(Path(__file__).resolve()),
         "compilerVerification": "PASS",
         "reviewManifestDigest": review.digest,
@@ -3505,6 +3870,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         **unsigned_attestation,
         "authorityDigest": authority_digest(unsigned_attestation),
     }
+    _require_maven_authority(authorities.maven_digest)
     attestation_digest = validate_attestation(attestation, shape, authorities, review)
     publish_private_pair(shape_target, shape, attestation_target, attestation)
 
@@ -3584,6 +3950,7 @@ def review_inputs(args: argparse.Namespace) -> dict[str, Any]:
         "localModuleManifest": local_module_manifest(),
         "gitDigest": authorities.git_digest,
         "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
+        "mavenDigest": maven_executable()[1],
     }
 
 
@@ -3645,6 +4012,24 @@ def _synthetic_row(name: str, *, kind: str = "FUNCTION", marker: str = "0") -> d
 
 def self_test() -> dict[str, Any]:
     checks = 0
+    native_maven, native_maven_digest = maven_executable()
+    native_rustc = _environment_executable(
+        "rustc", dict(os.environ), "INVALID_RUSTC_EXECUTABLE"
+    )
+    native_cargo = _environment_executable(
+        "cargo", dict(os.environ), "INVALID_CARGO_EXECUTABLE"
+    )
+    native_path = ":".join(
+        dict.fromkeys(
+            [
+                os.fspath(native_maven.parent),
+                os.fspath(native_rustc.parent),
+                os.fspath(native_cargo.parent),
+                "/usr/bin",
+                "/bin",
+            ]
+        )
+    )
     for descriptor in (1, 2):
         try:
             _run_bounded_process(
@@ -3659,7 +4044,10 @@ def self_test() -> dict[str, Any]:
                     ),
                 ],
                 environment=_clew_environment(
-                    {"HOME": os.fspath(Path(tempfile.gettempdir()).resolve())}
+                    {
+                        "HOME": os.fspath(Path(tempfile.gettempdir()).resolve()),
+                        "PATH": native_path,
+                    }
                 ),
                 timeout=5,
                 stdout_limit=1024,
@@ -3693,7 +4081,10 @@ def self_test() -> dict[str, Any]:
                     os.fspath(child_pid_path),
                 ],
                 environment=_clew_environment(
-                    {"HOME": os.fspath(Path(tempfile.gettempdir()).resolve())}
+                    {
+                        "HOME": os.fspath(Path(tempfile.gettempdir()).resolve()),
+                        "PATH": native_path,
+                    }
                 ),
                 timeout=5,
                 stdout_limit=1024,
@@ -3718,7 +4109,7 @@ def self_test() -> dict[str, Any]:
     hostile_environment = {
         "HOME": "/tmp/codeclew-shape-home",
         "CODECLEW_HOME": "/tmp/codeclew-shape-state",
-        "PATH": "/usr/bin:/bin",
+        "PATH": native_path,
         "LANG": "hostile-locale",
         "LC_ALL": "hostile-locale",
         "LC_CTYPE": "hostile-locale",
@@ -3741,7 +4132,14 @@ def self_test() -> dict[str, Any]:
         "CODECLEW_HOME": os.fspath(
             Path(hostile_environment["CODECLEW_HOME"]).resolve(strict=False)
         ),
-        "PATH": f"{Path(sys.executable).resolve(strict=True).parent}:/usr/bin:/bin",
+        "PATH": ":".join(dict.fromkeys([
+            os.fspath(Path(sys.executable).resolve(strict=True).parent),
+            os.fspath(native_maven.parent),
+            os.fspath(native_rustc.parent),
+            os.fspath(native_cargo.parent),
+            "/usr/bin",
+            "/bin",
+        ])),
         "JAVA_HOME": os.fspath(Path(hostile_environment["JAVA_HOME"]).resolve(strict=False)),
         "GRADLE_USER_HOME": os.fspath(
             Path(hostile_environment["GRADLE_USER_HOME"]).resolve(strict=False)
@@ -3755,10 +4153,68 @@ def self_test() -> dict[str, Any]:
         "LC_ALL": "C",
     }:
         raise BuilderError("SELF_TEST_FAILED")
+    native_which = shutil.which
+    for missing, expected_code in (
+        ("rustc", "INVALID_RUSTC_EXECUTABLE"),
+        ("cargo", "INVALID_CARGO_EXECUTABLE"),
+    ):
+        with mock.patch.object(
+            shutil,
+            "which",
+            side_effect=lambda name, path=None, missing=missing: (
+                None if name == missing else native_which(name, path=path)
+            ),
+        ):
+            try:
+                _clew_environment(
+                    {"HOME": "/tmp/codeclew-shape-home", "PATH": native_path}
+                )
+            except BuilderError as error:
+                if error.code != expected_code:
+                    raise
+            else:
+                raise BuilderError("SELF_TEST_FAILED")
+        checks += 1
+    with tempfile.TemporaryDirectory(
+        prefix="codeclew-shape-rust-shadow-self-test-"
+    ) as shadow_directory:
+        first = Path(shadow_directory) / "first"
+        second = Path(shadow_directory) / "second"
+        first.mkdir(mode=0o700)
+        second.mkdir(mode=0o700)
+        for tool in (first / "cargo", second / "cargo", second / "rustc"):
+            tool.write_bytes(b"#!/bin/sh\nexit 0\n")
+            tool.chmod(0o700)
+        ambient_shadow_path = f"{first}:{second}"
+        selected_cargo = _environment_executable(
+            "cargo",
+            {"PATH": ambient_shadow_path},
+            "INVALID_CARGO_EXECUTABLE",
+        )
+        _require_environment_executable(
+            "cargo",
+            {"PATH": ambient_shadow_path},
+            selected_cargo,
+            "INVALID_CARGO_EXECUTABLE",
+        )
+        try:
+            _require_environment_executable(
+                "cargo",
+                {"PATH": f"{second}:{first}"},
+                selected_cargo,
+                "INVALID_CARGO_EXECUTABLE",
+            )
+        except BuilderError as error:
+            if error.code != "RUST_TOOLCHAIN_AUTHORITY_CHANGED":
+                raise
+        else:
+            raise BuilderError("SELF_TEST_FAILED")
+        checks += 1
     for locale_environment in (
-        {"HOME": "/tmp/codeclew-shape-home"},
+        {"HOME": "/tmp/codeclew-shape-home", "PATH": native_path},
         {
             "HOME": "/tmp/codeclew-shape-home",
+            "PATH": native_path,
             "LANG": "ambient",
             "LC_CTYPE": "ambient",
         },
@@ -3821,6 +4277,21 @@ def self_test() -> dict[str, Any]:
     }
     declaration = declaration_from_finding(finding, member_alias="provider", exact=True)
     if declaration is None or declaration.compiler_name != "publicDescriptor":
+        raise BuilderError("SELF_TEST_FAILED")
+    checks += 1
+    navigation_only = json.loads(canonical_bytes(finding))
+    navigation_only["authority"] = "NAVIGATION_ONLY"
+    del navigation_only["shapeDigest"]
+    navigation_only["detail"]["detail"]["projectedShape"] = {
+        "compilerCallableId": function["compilerCallableId"],
+        "containment": function["containment"],
+        "declarationKind": function["declarationKind"],
+        "ownerIdentity": function["ownerIdentity"],
+        "symbolIdentity": function["symbolIdentity"],
+    }
+    if declaration_from_finding(
+        navigation_only, member_alias="provider", exact=False
+    ) is not None:
         raise BuilderError("SELF_TEST_FAILED")
     checks += 1
     tampered = json.loads(canonical_bytes(finding))
@@ -3894,6 +4365,8 @@ def self_test() -> dict[str, Any]:
         runtime_digest,
         self_test_git,
         file_digest(self_test_git),
+        native_maven,
+        native_maven_digest,
         authority_digest("synthetic-experiment-root"),
     )
     fixture_authority = load_sealed_public_fixture(authorities.git)
@@ -3960,7 +4433,10 @@ def self_test() -> dict[str, Any]:
             "gitDigest": authorities.git_digest,
             "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
             "localModuleManifestDigest": local_module_manifest()["authorityDigest"],
-            "compilerEnvironmentDigest": authority_digest(_clew_environment()),
+            "compilerEnvironmentDigest": authority_digest(
+                _clew_environment(expected_maven_digest=authorities.maven_digest)
+            ),
+            "mavenDigest": authorities.maven_digest,
             "compilerProjectionSchema": PROJECTION_SCHEMA,
             "publicFixtureTreeOid": fixture_authority.tree_oid,
             "publicFixtureContentDigest": fixture_authority.content_digest,
@@ -3993,6 +4469,7 @@ def self_test() -> dict[str, Any]:
         "localModuleManifest": local_module_manifest(),
         "gitDigest": authorities.git_digest,
         "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
+        "mavenDigest": authorities.maven_digest,
         "verdict": "PASS",
         "findings": [],
     }
@@ -4017,6 +4494,7 @@ def self_test() -> dict[str, Any]:
         module_manifest=review.value["localModuleManifest"],
         git_digest=authorities.git_digest,
         git_environment_digest=authority_digest(_isolated_git_environment()),
+        maven_digest=authorities.maven_digest,
     )
     if validated_review != review.value or validated_review_digest != review.digest:
         raise BuilderError("SELF_TEST_FAILED")
@@ -4037,6 +4515,7 @@ def self_test() -> dict[str, Any]:
             module_manifest=review.value["localModuleManifest"],
             git_digest=authorities.git_digest,
             git_environment_digest=authority_digest(_isolated_git_environment()),
+            maven_digest=authorities.maven_digest,
         )
     except BuilderError:
         checks += 1
@@ -4052,6 +4531,7 @@ def self_test() -> dict[str, Any]:
         "gitEnvironmentDigest": authority_digest(_isolated_git_environment()),
         "localModuleManifestDigest": local_module_manifest()["authorityDigest"],
         "compilerEnvironmentDigest": shape["sourceAuthority"]["compilerEnvironmentDigest"],
+        "mavenDigest": shape["sourceAuthority"]["mavenDigest"],
         "builderDigest": file_digest(Path(__file__).resolve()),
         "compilerVerification": "PASS",
         "reviewManifestDigest": review.digest,
@@ -4145,6 +4625,7 @@ def self_test() -> dict[str, Any]:
             Path(sys.executable).resolve(strict=True),
             resource_ledger,
             runtime_digest,
+            native_maven_digest,
             resource_witness,
             temporary_identity,
         )
@@ -4153,6 +4634,7 @@ def self_test() -> dict[str, Any]:
             Path(sys.executable).resolve(strict=True),
             resource_ledger,
             runtime_digest,
+            native_maven_digest,
             RuntimeWitness(),
             temporary_identity,
         )
@@ -4192,6 +4674,7 @@ def self_test() -> dict[str, Any]:
                 Path(sys.executable).resolve(strict=True),
                 resource_ledger,
                 runtime_digest,
+                native_maven_digest,
             )
         except BuilderError as error:
             if error.code != "OPERATOR_CLEANUP_REQUIRED":

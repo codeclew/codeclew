@@ -13,40 +13,26 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "codeclew-thread-kotlin-descriptor-gate/2.0"
+SCHEMA = "codeclew-thread-kotlin-descriptor-gate/3.0"
 UNIT_AUTHORITY_SCHEMA = "codeclew-kotlin-descriptor-unit-authority/2.0"
 TASK_AUTHORITY_SCHEMA = "codeclew-kotlin-descriptor-task-authority/2.0"
 SIDE_AUTHORITY_SCHEMA = "codeclew-kotlin-descriptor-side-authority/2.0"
 UNIT_AGGREGATE_SCHEMA = "codeclew-kotlin-descriptor-unit-aggregate/1.0"
-FROZEN_AT = "2026-08-25"
+FROZEN_AT = "2026-08-27"
 EXPECTED_PRIVATE_CORPUS_DIGEST = (
-    "sha256:7b49161fb1c1c322c47b318f002d7ea9ae9efb024e7d7be33a7427295668969c"
+    "sha256:49c48bdea73bb26afabe7e730f327861d146adca0f9e49db80fb6d86fd6743f2"
 )
 EXPECTED_BENCHMARK_DIGEST = (
-    "sha256:0793f3020fb3b58cce97d78598f8c75944a2ffa29bd72bf061b86d6e4ee0a54c"
+    "sha256:3bd5d0e8d27fca5edfa236699f98322a68c4e74b845317d4e831e90a4679a815"
 )
 MAX_EVIDENCE_BYTES = 256 * 1024
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 SAFE_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 ABSOLUTE_PATH = re.compile(r"^(?:/|~[/\\]|[A-Za-z]:[/\\])")
-EXPECTED_SERVICES = [f"service-{index:02}" for index in range(1, 12)]
+EXPECTED_SERVICES = ["service-01", "service-02"]
 EXPECTED_TASKS = [f"task-{index:02}" for index in range(1, 11)]
-EXPECTED_PAIRS = [
-    "pair-01", "pair-02", "pair-03", "pair-04", "pair-05",
-    "pair-06", "pair-07", "pair-08", "pair-01", "pair-05",
-]
-EXPECTED_BINDINGS = [
-    ("service-01", "service-02"),
-    ("service-04", "service-01"),
-    ("service-04", "service-02"),
-    ("service-04", "service-03"),
-    ("service-05", "service-08"),
-    ("service-06", "service-07"),
-    ("service-08", "service-09"),
-    ("service-10", "service-11"),
-    ("service-01", "service-02"),
-    ("service-05", "service-08"),
-]
+EXPECTED_PAIRS = ["pair-01"] * 10
+EXPECTED_BINDINGS = [("service-01", "service-02")] * 10
 
 
 class EvidenceError(ValueError):
@@ -269,10 +255,10 @@ def verify_value(evidence: Any) -> dict[str, Any]:
     )
     if (
         selection["kind"] != "PINNED_KOTLIN_DESCRIPTOR_CORPUS"
-        or selection["ruleId"] != "REUSE_G1_TASKS_AND_PAIRS_V1"
-        or selection["unitCount"] != 11
+        or selection["ruleId"] != "LOCAL_DECLARED_PAIR_R2"
+        or selection["unitCount"] != 2
         or selection["taskCount"] != 10
-        or selection["pairCount"] != 8
+        or selection["pairCount"] != 1
     ):
         raise EvidenceError("selection authority is invalid")
     require_digest(selection["privateCorpusDigest"], "private corpus digest")
@@ -296,8 +282,8 @@ def verify_value(evidence: Any) -> dict[str, Any]:
         raise EvidenceError("parallelism authority is invalid")
 
     units = evidence["units"]
-    if not isinstance(units, list) or len(units) != 11:
-        raise EvidenceError("gate must contain eleven unit authorities")
+    if not isinstance(units, list) or len(units) != 2:
+        raise EvidenceError("gate must contain two unit authorities")
     aliases: list[str] = []
     unit_by_alias: dict[str, dict[str, Any]] = {}
     for unit in units:
@@ -439,8 +425,8 @@ def verify_value(evidence: Any) -> dict[str, Any]:
         require_digest(task["taskAuthority"], "task authority digest")
         if task["taskAuthority"] != authority_digest(task_authority_payload(task)):
             raise EvidenceError("task authority digest is inconsistent")
-    if len(pair_bindings) != 8:
-        raise EvidenceError("gate must contain eight distinct service pairs")
+    if len(pair_bindings) != 1:
+        raise EvidenceError("gate must contain one distinct service pair")
 
     for alias, unit in unit_by_alias.items():
         task_sides = task_sides_by_alias[alias]
@@ -460,14 +446,14 @@ def verify_value(evidence: Any) -> dict[str, Any]:
             raise EvidenceError("unit task-side authority aggregate is inconsistent")
 
     expected_summary = {
-        "unitCount": 11,
-        "readyUnits": 11,
+        "unitCount": 2,
+        "readyUnits": 2,
         "taskCount": 10,
         "taskSideCount": 20,
         "coveredTasks": 10,
         "callableNavigableTasks": 10,
         "typeNavigableTasks": 10,
-        "distinctServicePairs": 8,
+        "distinctServicePairs": 1,
         "declaredTopologyTasks": 10,
         "manualVerificationProfilesBound": 10,
         "resourceBudgetAuthoritiesBound": 10,
@@ -593,12 +579,12 @@ def _valid_fixture() -> dict[str, Any]:
         "frozenAt": FROZEN_AT,
         "selectionAuthority": {
             "kind": "PINNED_KOTLIN_DESCRIPTOR_CORPUS",
-            "ruleId": "REUSE_G1_TASKS_AND_PAIRS_V1",
+            "ruleId": "LOCAL_DECLARED_PAIR_R2",
             "privateCorpusDigest": EXPECTED_PRIVATE_CORPUS_DIGEST,
             "benchmarkDigest": EXPECTED_BENCHMARK_DIGEST,
-            "unitCount": 11,
+            "unitCount": 2,
             "taskCount": 10,
-            "pairCount": 8,
+            "pairCount": 1,
         },
         "executionAuthority": {
             "clewAuthority": authority_digest("clew"),
@@ -608,14 +594,14 @@ def _valid_fixture() -> dict[str, Any]:
         "units": units,
         "tasks": tasks,
         "summary": {
-            "unitCount": 11,
-            "readyUnits": 11,
+            "unitCount": 2,
+            "readyUnits": 2,
             "taskCount": 10,
             "taskSideCount": 20,
             "coveredTasks": 10,
             "callableNavigableTasks": 10,
             "typeNavigableTasks": 10,
-            "distinctServicePairs": 8,
+            "distinctServicePairs": 1,
             "declaredTopologyTasks": 10,
             "manualVerificationProfilesBound": 10,
             "resourceBudgetAuthoritiesBound": 10,

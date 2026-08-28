@@ -19,6 +19,11 @@ export S4K_EXPERIMENT_PARENT=/absolute/private/parent
 export CODEX_BIN=/absolute/path/to/codex
 export GIT_BIN="$(/usr/bin/xcrun --find git)"
 
+# The frozen R2 services intentionally have no Maven wrapper. The runner
+# resolves `mvn` from this ambient PATH once, pins its resolved executable and
+# byte digest, then admits only that parent directory to semantic preparation.
+command -v mvn >/dev/null
+
 umask 077
 install -d -m 0700 "$S4K_EXPERIMENT_PARENT"
 export S4K_EXPERIMENT_ROOT="$(mktemp -d "$S4K_EXPERIMENT_PARENT/codeclew-s4k.XXXXXXXX")"
@@ -52,9 +57,10 @@ authority, never regenerated or edited for an arm.
 First emit the review ingredients. An independent reviewer compares these
 ingredients and the builder implementation, then creates
 `$S4K_SHAPE_REVIEW_MANIFEST`. The builder never creates its own PASS review.
-The closed review binds the emitted `localModuleManifest`, pinned `gitDigest`,
-closed `gitEnvironmentDigest`, builder/runner/G1K/test digests, and public
-fixture authority. Any changed byte requires a new independent review.
+The closed review binds the emitted `localModuleManifest`, pinned `gitDigest`
+and `mavenDigest`, closed `gitEnvironmentDigest`, builder/runner/G1K/test
+digests, and public fixture authority. Any changed byte requires a new
+independent review.
 
 ```sh
 python3 -I -S "$S4K_BUILDER" review-inputs \

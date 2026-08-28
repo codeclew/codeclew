@@ -19,8 +19,9 @@ use crate::thread_callables::{
     CallableFactSetAuthority, CallableFactSetEvidence, CallableFactSetProjection,
     CallableFactSetRequest, CallableMemberAuthority, CallablePairBinding,
     CallableQueryIndexManifest, CallableSelectedCompilation, CallableTaskBinding, GraphCoverage,
-    KOTLIN_SEMANTIC_FACT_SCHEMA, MAX_CALLABLE_SHARD_BYTES, MAX_INPUT_PAYLOAD_BYTES,
-    PreparedCallableFactSet, PreparedCasObject, QualifiedCallablePayload, RelationshipAuthority,
+    KOTLIN_SEMANTIC_FACT_SCHEMA, MAX_CALLABLE_EVIDENCE_OBJECT_BYTES, MAX_CALLABLE_SHARD_BYTES,
+    MAX_INPUT_PAYLOAD_BYTES, MAX_SELECTED_SOURCE_BYTES, PreparedCallableFactSet, PreparedCasObject,
+    QualifiedCallablePayload, RelationshipAuthority, validate_direct_cas_closure_size,
 };
 use crate::thread_context::{MAX_THREAD_STDOUT_BYTES, ThreadContextObject};
 use serde::{Deserialize, Serialize};
@@ -310,6 +311,7 @@ pub(crate) fn load_verified(
         return Err(corrupt("thread callable root authority is invalid"));
     }
     validate_root(&root)?;
+    validate_retained_closure_size(&root.authority)?;
     let prepared = load_prepared_from_root(store, &root)?;
     verify_retained_closure(store, &root.authority)?;
     Ok((root, prepared))
@@ -608,7 +610,7 @@ impl SourceVerifier {
             self.cached_bytes = checked_add_budget(
                 self.cached_bytes,
                 size,
-                CallableBudgets::frozen().max_direct_cas_closure_bytes,
+                MAX_SELECTED_SOURCE_BYTES,
                 "selected Kotlin source authority exceeds 64 MiB",
             )?;
             let lease = store.read(&source, size)?;
@@ -692,6 +694,7 @@ fn publish_prepared(
     prepared: &PreparedCallableFactSet,
     root: &ThreadCallableRoot,
 ) -> Result<(), ClewError> {
+    validate_retained_closure_size(&root.authority)?;
     let root_path = callable_root_path(state, thread, &root.fact_set_id)?;
     if state.private_file_exists(&root_path)? {
         let existing = state.read_private_file(&root_path, MAX_THREAD_CALLABLE_ROOT_BYTES)?;
@@ -751,6 +754,7 @@ pub(crate) fn publish_prepared_loose_for_test(
         projection: prepared.projection.clone(),
     };
     validate_root(&root)?;
+    validate_retained_closure_size(&root.authority)?;
     for object in prepared
         .fact_shards
         .iter()
@@ -816,7 +820,7 @@ fn load_prepared_from_root(
     let evidence_object = read_prepared_object(
         store,
         &root.authority.evidence_ref,
-        CallableBudgets::frozen().max_direct_cas_closure_bytes,
+        MAX_CALLABLE_EVIDENCE_OBJECT_BYTES,
     )?;
     let evidence: CallableFactSetEvidence = serde_json::from_slice(&evidence_object.bytes)
         .map_err(|_| corrupt("callable fact-set evidence is invalid"))?;
@@ -886,18 +890,20 @@ fn verify_retained_closure(
     {
         return Err(corrupt("callable retained closure omits derived evidence"));
     }
-    let mut total = 0usize;
+    validate_retained_closure_size(authority)?;
     for object in &authority.direct_cas_closure {
         let size = usize::try_from(object.size)
             .map_err(|_| budget("retained CAS object exceeds host size"))?;
-        total = checked_add_budget(
-            total,
-            size,
-            CallableBudgets::frozen().max_direct_cas_closure_bytes,
-            "callable retained CAS closure exceeds 64 MiB",
-        )?;
         store.read(object, size)?;
     }
+    Ok(())
+}
+
+fn validate_retained_closure_size(authority: &CallableFactSetAuthority) -> Result<(), ClewError> {
+    validate_direct_cas_closure_size(
+        &authority.direct_cas_closure,
+        CallableBudgets::frozen().max_direct_cas_closure_bytes,
+    )?;
     Ok(())
 }
 

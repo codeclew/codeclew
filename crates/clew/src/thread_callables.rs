@@ -48,7 +48,9 @@ pub const MAX_CONTAINMENT_DEPTH: usize = 64;
 pub const MAX_CALLABLE_TEXT_BYTES: usize = 4_096;
 pub const MAX_CALLABLE_SHARD_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_DERIVED_CAS_OBJECTS: usize = 64;
-pub const MAX_DIRECT_CAS_CLOSURE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_CALLABLE_EVIDENCE_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_DIRECT_CAS_CLOSURE_BYTES: usize = 96 * 1024 * 1024;
+pub const MAX_SELECTED_SOURCE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CALLABLE_QUERY_TERMS: usize = 256;
 pub const MAX_CALLABLE_QUERY_RESULTS: usize = 4_096;
 pub const MAX_CALLABLE_STDOUT_BYTES: usize = 64 * 1024;
@@ -2652,17 +2654,35 @@ fn canonical_cas_closure(
         }
     }
     let closure = unique.into_values().collect::<Vec<_>>();
+    validate_direct_cas_closure_size(&closure, budgets.max_direct_cas_closure_bytes)?;
+    Ok(closure)
+}
+
+pub(crate) fn validate_direct_cas_closure_size(
+    closure: &[CasObject],
+    max_bytes: usize,
+) -> Result<usize, ClewError> {
     let bytes = closure.iter().try_fold(0usize, |total, reference| {
+        validate_cas_object(reference)?;
         let size = usize::try_from(reference.size)
             .map_err(|_| budget("direct CAS closure object exceeds host size"))?;
         total
             .checked_add(size)
             .ok_or_else(|| budget("direct CAS closure size overflowed"))
     })?;
-    if bytes > budgets.max_direct_cas_closure_bytes {
-        return Err(budget("direct CAS closure exceeds 64 MiB"));
+    if bytes > max_bytes {
+        let mut bytes_by_schema = BTreeMap::<String, u64>::new();
+        for reference in closure {
+            *bytes_by_schema
+                .entry(reference.object_schema.clone())
+                .or_default() += reference.size;
+        }
+        return Err(budget(format!(
+            "direct CAS closure uses {bytes} bytes, exceeding {}-byte limit; bytes by schema: {bytes_by_schema:?}",
+            max_bytes
+        )));
     }
-    Ok(closure)
+    Ok(bytes)
 }
 
 pub fn query_prepared(
@@ -2924,7 +2944,7 @@ pub fn verify_prepared(prepared: &PreparedCallableFactSet) -> Result<(), ClewErr
     verify_prepared_object(
         &prepared.evidence_object,
         CALLABLE_FACT_SET_EVIDENCE_SCHEMA,
-        prepared.authority.budgets.max_direct_cas_closure_bytes,
+        MAX_CALLABLE_EVIDENCE_OBJECT_BYTES,
     )?;
     if canonical::bytes(&prepared.query_index).map_err(internal)?
         != prepared.query_index_object.bytes
@@ -4891,6 +4911,9 @@ mod tests {
     #[test]
     fn frozen_shape_text_and_storage_limits_accept_exact_and_reject_plus_one() {
         let budgets = CallableBudgets::frozen();
+        assert_eq!(MAX_CALLABLE_EVIDENCE_OBJECT_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_SELECTED_SOURCE_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_DIRECT_CAS_CLOSURE_BYTES, 96 * 1024 * 1024);
         assert_exact_limit(
             "parameters per callable",
             MAX_PARAMETERS_PER_CALLABLE,
@@ -4978,6 +5001,79 @@ mod tests {
                 accepted
             );
         }
+    }
+
+    #[test]
+    fn direct_closure_accounting_is_deduplicated_bounded_and_actionable() {
+        let budgets = CallableBudgets::frozen();
+        let mut duplicate = object("codeclew-test-retained/1.0", "duplicate");
+        duplicate.size = 41;
+        let closure =
+            canonical_cas_closure(vec![duplicate.clone(), duplicate.clone()], &budgets).unwrap();
+        assert_eq!(closure, vec![duplicate.clone()]);
+
+        let mut conflicting = duplicate.clone();
+        conflicting.size += 1;
+        let conflict = canonical_cas_closure(vec![duplicate, conflicting], &budgets).unwrap_err();
+        assert_eq!(conflict.code, ErrorCode::InvalidInput);
+        assert!(conflict.message.contains("conflicting metadata"));
+
+        let measured = [
+            ("codeclew-generation-manifest/2.0", 2_043u64),
+            ("codeclew-kotlin-callable-fact-set-evidence/1.0", 132_930),
+            ("codeclew-kotlin-callable-fact-shard/1.0", 10_427_357),
+            ("codeclew-kotlin-callable-query-index/1.0", 3_520),
+            ("codeclew-kotlin-callable-query-shard/1.0", 54_351_953),
+            ("codeclew-kotlin-semantic-fact/3.0", 2_825_511),
+            ("codeclew-repository-input-blob/2.0", 98_512),
+            ("codeclew-repository-input-snapshot/2.0", 78_904),
+        ];
+        assert_eq!(
+            measured.iter().map(|(_, size)| size).sum::<u64>(),
+            67_920_730
+        );
+        let references = measured
+            .iter()
+            .map(|(schema, size)| {
+                let mut reference = object(schema, schema);
+                reference.size = *size;
+                reference
+            })
+            .collect::<Vec<_>>();
+        let mut legacy_budget = budgets.clone();
+        legacy_budget.max_direct_cas_closure_bytes = 64 * 1024 * 1024;
+        let measured_error = canonical_cas_closure(references, &legacy_budget).unwrap_err();
+        assert_eq!(measured_error.code, ErrorCode::SliceBudgetExceeded);
+        assert!(measured_error.message.contains("uses 67920730 bytes"));
+        for (schema, size) in measured {
+            assert!(
+                measured_error
+                    .message
+                    .contains(&format!("\"{schema}\": {size}"))
+            );
+        }
+
+        let mut first = object("codeclew-test-retained/1.0", "overflow-first");
+        first.size = u64::MAX;
+        let mut second = object("codeclew-test-retained/1.0", "overflow-second");
+        second.size = 1;
+        let overflow = canonical_cas_closure(vec![first, second], &budgets).unwrap_err();
+        assert_eq!(overflow.code, ErrorCode::SliceBudgetExceeded);
+        assert!(overflow.message.contains("overflowed"));
+    }
+
+    #[test]
+    fn callable_authority_rejects_the_previous_closure_budget() {
+        let (request, input) = fixture("p/Orders.findOrder", "p/Consumer.call");
+        let mut prepared = build(request, input).unwrap();
+        prepared.authority.budgets.max_direct_cas_closure_bytes = 64 * 1024 * 1024;
+        let error = verify_prepared(&prepared).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(
+            error
+                .message
+                .contains("budgets differ from the frozen profile")
+        );
     }
 
     #[test]

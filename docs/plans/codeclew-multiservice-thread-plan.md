@@ -222,7 +222,7 @@ compatibility or breakage verdicts.
 | Identifier/type/path bytes | 4,096 |
 | Fact shard | 8 MiB |
 | Fact/evidence CAS objects per derived authority | 64 |
-| Retained derived-evidence closure | 64 MiB |
+| Retained derived-evidence closure | 96 MiB |
 | Query terms | 256 |
 | Query results | 4,096 |
 | Impact findings | 4,096 |

@@ -13,21 +13,18 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA = "codeclew-thread-kotlin-descriptor-pilot/1.0"
+SCHEMA = "codeclew-thread-kotlin-descriptor-pilot/2.0"
 EXPECTED_PRIVATE_CORPUS_DIGEST = (
-    "sha256:7b49161fb1c1c322c47b318f002d7ea9ae9efb024e7d7be33a7427295668969c"
+    "sha256:49c48bdea73bb26afabe7e730f327861d146adca0f9e49db80fb6d86fd6743f2"
 )
 EXPECTED_BENCHMARK_DIGEST = (
-    "sha256:0793f3020fb3b58cce97d78598f8c75944a2ffa29bd72bf061b86d6e4ee0a54c"
+    "sha256:3bd5d0e8d27fca5edfa236699f98322a68c4e74b845317d4e831e90a4679a815"
 )
 MAX_EVIDENCE_BYTES = 256 * 1024
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 ABSOLUTE_PATH = re.compile(r"^(?:/|~[/\\]|[A-Za-z]:[/\\])")
 EXPECTED_TASKS = [f"task-{index:02}" for index in range(1, 11)]
-EXPECTED_PAIRS = [
-    "pair-01", "pair-02", "pair-03", "pair-04", "pair-05",
-    "pair-06", "pair-07", "pair-08", "pair-01", "pair-05",
-]
+EXPECTED_PAIRS = ["pair-01"] * 10
 EXPECTED_MANUAL_COUNTS = [8, 8, 8, 8, 8, 8, 8, 8, 5, 5]
 CRITERIA = {
     "exactAuthority",
