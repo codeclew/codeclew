@@ -592,7 +592,7 @@ impl SessionAuthority {
                 None,
             ));
         }
-        let runs = load_session_runs(&state, &root, self)?;
+        let runs = load_session_runs(state, root, self)?;
         let expected = session_terminal_target_oid(self, &runs)?;
         let repository = self.target_repository_path()?;
         let head = isolated_git_text(&repository, &["rev-parse", "--verify", "HEAD^{commit}"]);

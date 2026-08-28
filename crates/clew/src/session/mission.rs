@@ -1149,10 +1149,9 @@ mod tests {
     fn foreign_session_binding_is_rejected_by_member_lookup() {
         let members = [member("one")];
         assert!(
-            members
+            !members
                 .iter()
-                .find(|member| member.session_id == "session:foreign")
-                .is_none()
+                .any(|member| member.session_id == "session:foreign")
         );
     }
 
