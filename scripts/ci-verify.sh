@@ -17,6 +17,7 @@ python3 -I -S scripts/test_pilot_release_gate.py
 python3 -I -S scripts/test_language_mutation_pilot.py
 python3 -I -S scripts/test_check_repository_privacy.py
 python3 -I -S scripts/check_english_content.py
+python3 -I -S scripts/test_agent_skill.py
 python3 -I -S scripts/test_macos_distribution.py
 python3 -I -S scripts/test_build_macos_release.py
 cargo fmt --all --check

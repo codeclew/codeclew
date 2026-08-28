@@ -4,6 +4,10 @@ set -eu
 unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT PYTHONWARNINGS PYTHONSAFEPATH
 
 SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+if [ "${1:-}" = skill ]; then
+  shift
+  exec python3 -I -S -B "$SOURCE_ROOT/scripts/install_agent_skill.py" "$@"
+fi
 if [ "${1:-}" = upgrade ] && [ "$#" -eq 1 ]; then
   printf '%s\n' 'Codeclew upgrade'
   printf '%s\n' 'Status: FAILED'

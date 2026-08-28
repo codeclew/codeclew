@@ -99,7 +99,10 @@ MINIMAL_SOURCE_FILES = (
     "bootstrap/host_resources.py",
     "clew",
     "packaging/macos/upgrade",
+    "scripts/install_agent_skill.py",
     "site/install.sh",
+    "skills/codeclew/SKILL.md",
+    "skills/codeclew/agents/openai.yaml",
 )
 
 

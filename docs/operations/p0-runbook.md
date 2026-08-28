@@ -155,37 +155,38 @@ The command can exit with code 0 and `status: ACTION_REQUIRED`. Automation must
 inspect the JSON and proceed only when every item with `required: true` has
 `status: PASS`.
 
-## 3. Connecting Codex and Claude
+## 3. Connecting Codex, Claude, and other agents
 
-The Codeclew checkout includes project skills for both agents:
-
-- Codex: `.agents/skills/codeclew/SKILL.md`;
-- Claude: `.claude/skills/codeclew/SKILL.md`.
-
-If the agent runs from the target repository, copy the appropriate skill into
-that repository. Do not create a machine-specific symlink or commit an absolute
-Codeclew path:
+Install the version-matched skill bundled with Codeclew into the personal Codex
+and Claude discovery roots:
 
 ```bash
-export CODECLEW_ROOT=/absolute/path/to/codeclew
-export TARGET_REPO=/absolute/path/to/target-repository
-
-install -d "$TARGET_REPO/.agents/skills/codeclew"
-install -m 0644 \
-  "$CODECLEW_ROOT/.agents/skills/codeclew/SKILL.md" \
-  "$TARGET_REPO/.agents/skills/codeclew/SKILL.md"
-
-install -d "$TARGET_REPO/.claude/skills/codeclew"
-install -m 0644 \
-  "$CODECLEW_ROOT/.claude/skills/codeclew/SKILL.md" \
-  "$TARGET_REPO/.claude/skills/codeclew/SKILL.md"
+clew skill install
 ```
 
-Set `CODECLEW_ROOT` in the agent's local environment before starting it. The
-skill requires `$CODECLEW_ROOT/clew`, runs `capabilities` and `doctor`, forbids
-guessing the language or compilation, checks freshness, and prevents publication
-without explicit user approval. Copy the skill again after updating Codeclew.
-In a controlled environment, verify that its hash matches the approved version.
+The command installs the same portable package into
+`~/.agents/skills/codeclew` for Codex and `~/.claude/skills/codeclew` for Claude.
+Limit it to one agent with `--agent codex` or `--agent claude`. For repository
+scope, install both discovery copies below one existing project:
+
+```bash
+clew skill install --project /absolute/path/to/target-repository
+```
+
+Any Agent Skills-compatible client can use the public package at
+`https://github.com/codeclew/codeclew-skill` or install it into a client-specific
+skills root:
+
+```bash
+clew skill install --destination /absolute/path/to/client-skills
+```
+
+Installation is atomic and idempotent. A different existing `codeclew` skill is
+preserved unless `--force` is explicit. The skill prefers `clew` on `PATH`, runs
+canonical `capabilities` and `doctor`, forbids guessing the language or exact
+compilation, checks freshness, and prevents publication without explicit user
+approval. Run the installer again after upgrading Codeclew so the skill remains
+version-matched.
 
 To test discovery, explicitly ask the agent to apply `codeclew` to a safe,
 read-only task. A correctly configured agent reports admission results
