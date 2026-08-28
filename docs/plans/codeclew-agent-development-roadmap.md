@@ -2,9 +2,10 @@
 
 ## Document authority
 
-- **Status:** approved execution sequence; G0 is in progress.
-- **Date:** 2026-08-27.
-- **Baseline:** `59cde2cf114f9bf46af5e112704514725ed981ac` on `main`.
+- **Status:** active product-first sequence; the Development Record track is next.
+- **Date:** 2026-08-28.
+- **Baseline:** released tag `v0.2.4` at
+  `ddfc9436033b72fe3218939227f5a630750092d4`.
 - **Objective:** prove a locally useful agent-development workflow that preserves
   evidence from intent through documentation, coordinates changes across local
   repositories, and adds compiler-backed language profiles without overstating
@@ -19,6 +20,9 @@
 This document is the execution authority for work after the completed Kotlin
 multi-service descriptor implementation. Existing plans remain historical design
 and evidence records; they do not override the ordering or completion gates below.
+The active sequence starts with the minimal M1 foundation required by the M2
+Development Record. G0/S4K is retained as a future publication-qualification
+protocol, not as a product-development gate.
 
 ## Product result
 
@@ -40,11 +44,16 @@ The target workflow lets an agent:
 ## Current proven baseline
 
 - The `./clew` RELEASE launcher reports version `0.2.4` and `PILOT_READY`.
+- `v0.2.4` is published for macOS arm64 and x86_64 with checksum assets after a
+  green repository CI run and a green release qualification workflow.
 - Kotlin 2.4.10 Gradle supports compiler-backed mutation.
 - Kotlin 2.4.0 Gradle and Kotlin 2.3.0 Maven are read-only previews.
 - Python and Rust provide conditional syntax-backed mutation with native
   validation and explicit obligations.
 - Multi-repository threads provide read-only composition.
+- Three internal warm-path cases demonstrate exact single-repository facts,
+  exact two-repository composition, and an honest `UNSURE` fallback with a named
+  manual verification obligation.
 - The S4K harness, its fast self-tests, macOS Seatbelt adapter, descriptor gate,
   and shape-oracle builder exist. No measured S4K pilot has completed.
 - The original private S4K-R1 corpus and benchmark were never tracked and are no
@@ -90,8 +99,7 @@ digraph codeclew_agent_development_roadmap {
   rankdir=LR;
   node [shape=box];
 
-  G0 [label="G0\nS4K-R2 benchmark gate"];
-  M1 [label="M1\nMissionAuthority + ChangeSpec"];
+  M1 [label="M1\nDevelopment Record foundation\nMissionAuthority + ChangeSpec"];
   M2 [label="M2\nEvidence-native Development Record"];
   W1 [label="W1\nThin Workspace\n2-4 local repositories"];
   L1 [label="L1\nCommon semantic envelope"];
@@ -107,7 +115,7 @@ digraph codeclew_agent_development_roadmap {
   CS1 [label="CS1\nRoslyn profile"];
   Q1 [label="Q1\nDefault-vs-Codeclew qualification"];
 
-  G0 -> M1 -> M2 -> W1;
+  M1 -> M2 -> W1;
   M2 -> L1 -> J1;
   W1 -> C1;
   J1 -> C1;
@@ -122,14 +130,15 @@ digraph codeclew_agent_development_roadmap {
 }
 ```
 
-## G0 — Re-freeze and run S4K once
+## Historical G0 — Re-freeze and run S4K once
 
-### Why this comes first
+### Why this is retained but deferred
 
-The existing Kotlin thread is the only implemented compiler-backed
-multi-repository analysis contour. Measuring it once prevents the roadmap from
-building record, workspace, and language abstractions around an unproven value
-hypothesis.
+The protocol remains available if publication-grade Default-vs-Codeclew evidence
+is later required. It is not a prerequisite for product work: the smaller 2026-08-28
+warm-path dogfood already established enough internal value to choose the next
+product blocker. G0 must not consume product-development time unless a separate
+user decision reactivates it.
 
 ### S4K-R1 disposition
 

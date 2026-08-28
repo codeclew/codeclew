@@ -65,7 +65,7 @@ mutation, publication, or a general cross-service call graph. The next product
 slice should improve how an agent consumes and records these mixed exact and
 conditional facts, rather than adding a broad benchmark harness.
 
-## v0.2.4 release-candidate gate
+## v0.2.4 release gate
 
 - Canonical capabilities reported product version `0.2.4`, runtime mode
   `RELEASE`, and status `PILOT_READY`.
@@ -74,16 +74,22 @@ conditional facts, rather than adding a broad benchmark harness.
 - The bounded language-mutation pilot passed 6/6 isolated cases in `RELEASE`
   mode: 3/3 Rust and 3/3 Python. Each case completed native validation and
   explicit conditional publication.
+- Repository CI passed on the tagged revision, including the history privacy
+  gate and the complete `ci-verify.sh` suite.
+- The release workflow repeated the conditional-mutation qualification and
+  published checksum-backed macOS arm64 and x86_64 bundles.
 
-These checks qualify the small release candidate; they do not turn the three
+These checks qualify the published small release; they do not turn the three
 warm-path cases above into a publication benchmark.
 
 ## Next product priority
 
-The next roadmap slice is the evidence-native Development Record. It should
-present claim-level authority so an agent can distinguish exact requested facts
-from unrelated partial boundaries, retain named verification obligations, and
-carry the resulting checked record into implementation and documentation.
+The next product priority is the evidence-native Development Record. Its first
+implementation slice is the minimal M1 `MissionAuthority`/`ChangeSpec` foundation;
+M1 is not a standalone product detour. It immediately enables M2 to present
+claim-level authority so an agent can distinguish exact requested facts from
+unrelated partial boundaries, retain named verification obligations, and carry
+the resulting checked record into implementation and documentation.
 
 This is higher leverage than immediately adding another language: the current
 Kotlin, Rust, and Python contours already produce useful evidence, while the
