@@ -1064,6 +1064,8 @@ impl CasStore {
         ] {
             scan_managed_roots(
                 &authority.directory(Path::new(name))?,
+                name,
+                Path::new(""),
                 0,
                 &mut root_files_scanned,
                 &mut root_bytes_scanned,
@@ -1273,6 +1275,8 @@ pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageRepo
 
 fn scan_managed_roots(
     directory: &ManagedDirectory,
+    root: &str,
+    relative: &Path,
     depth: usize,
     files_scanned: &mut u64,
     bytes_scanned: &mut u64,
@@ -1286,13 +1290,21 @@ fn scan_managed_roots(
     }
     for name in directory.entries()? {
         match directory.entry_kind(&name)? {
-            ManagedEntryKind::Directory => scan_managed_roots(
-                &directory.existing_child(&name)?,
-                depth + 1,
-                files_scanned,
-                bytes_scanned,
-                references,
-            )?,
+            ManagedEntryKind::Directory => {
+                let child_relative = relative.join(&name);
+                if is_opaque_reachability_subtree(root, &child_relative) {
+                    continue;
+                }
+                scan_managed_roots(
+                    &directory.existing_child(&name)?,
+                    root,
+                    &child_relative,
+                    depth + 1,
+                    files_scanned,
+                    bytes_scanned,
+                    references,
+                )?;
+            }
             ManagedEntryKind::File => {
                 let extension = Path::new(&name).extension();
                 if extension != Some(OsStr::new("json")) && extension != Some(OsStr::new("jsonl")) {
@@ -1334,6 +1346,26 @@ fn scan_managed_roots(
         }
     }
     Ok(())
+}
+
+fn is_opaque_reachability_subtree(root: &str, relative: &Path) -> bool {
+    let components = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match root {
+        "sessions" => {
+            (components.len() == 2 && components[1] == OsStr::new("source"))
+                || (components.len() == 4
+                    && components[1] == OsStr::new("candidates")
+                    && components[3] == OsStr::new("worktree"))
+        }
+        "generations" => components.len() == 1 && components[0] == OsStr::new("compiler-store"),
+        _ => false,
+    }
 }
 
 fn collect_root_cas_references(
@@ -1677,7 +1709,7 @@ mod tests {
     use std::sync::Arc;
 
     #[cfg(unix)]
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn store() -> (tempfile::TempDir, CasStore) {
         let root = tempfile::tempdir().unwrap();
@@ -2204,6 +2236,47 @@ mod tests {
                 b"{not-json",
             )
             .unwrap();
+
+        assert_eq!(
+            storage_status(&authority).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_gc_ignores_known_opaque_derived_subtrees() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&authority).unwrap();
+        store.put("test/opaque-derived/1", b"unrooted").unwrap();
+
+        for relative in [
+            "sessions/example/source/project.json",
+            "sessions/example/candidates/candidate/worktree/project.json",
+            "generations/compiler-store/authority/objects/object.json",
+        ] {
+            let path = authority.root().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"{not-managed-state").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let report = storage_status(&authority).unwrap();
+        assert_eq!(report.root_files_scanned, 0);
+        assert_eq!(report.reachable_objects, 0);
+        assert_eq!(report.reclaimable_loose_objects, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_gc_still_fails_closed_for_unsafe_managed_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let _store = CasStore::open(&authority).unwrap();
+        let path = authority.root().join("sessions/unsafe.json");
+        fs::write(&path, b"{}").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
         assert_eq!(
             storage_status(&authority).unwrap_err().code,

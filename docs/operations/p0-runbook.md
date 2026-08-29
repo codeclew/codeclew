@@ -491,10 +491,12 @@ reclaimable bytes, apply that same reachability policy explicitly:
 Physical GC waits for active CAS readers/writers, follows retained CAS roots
 transitively, and deletes only wholly unreachable packs, redundant/unreachable
 loose objects, and publication-orphan pack files. A pack containing even one
-reachable object is retained. Session/thread `gc` remains the command for
-owned worktrees and terminal metadata; it is not physical CAS deletion. Never
-remove managed objects manually. If state corruption is reported, retain a
-local incident and stop writing rather than forcing cleanup.
+reachable object is retained. Repository source trees, candidate worktrees, and
+compiler-store payloads are intentionally opaque: only Codeclew-owned metadata
+around them participates in reachability. Session/thread `gc` remains the
+command for owned worktrees and terminal metadata; it is not physical CAS
+deletion. Never remove managed objects manually. If state corruption is
+reported, retain a local incident and stop writing rather than forcing cleanup.
 
 ### Dirty worktree
 

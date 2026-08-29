@@ -261,10 +261,12 @@ Managed CAS space is accounted separately from session/worktree cleanup:
 ```
 
 GC follows every retained repository, session, mission, workspace, thread,
-run, and generation CAS reference transitively. In-progress CAS work holds the
-shared world lease, so an exclusive collector cannot race an unpublished
-attempt. It removes a pack only when every member is unreachable; mixed packs
-remain intact. An
+run, and generation metadata CAS reference transitively. Repository source
+trees, candidate worktrees, and the compiler store are opaque derived payloads,
+not metadata roots; GC never parses project JSON inside them. In-progress CAS
+work holds the shared world lease, so an exclusive collector cannot race an
+unpublished attempt. It removes a pack only when every member is unreachable;
+mixed packs remain intact. An
 exclusive CAS lease delays physical deletion while any Codeclew reader or
 writer is active.
 
