@@ -1,0 +1,48 @@
+{
+  "schema": "codeclew-q1-runtime-attach-baseline/1.0",
+  "date": "2026-08-29",
+  "status": "REPRODUCED",
+  "authority": {
+    "sourceRevision": "0618f5beb677e8a0cc421ad111023b567070145a",
+    "sourceCheckoutClean": true,
+    "runtimeMode": "RELEASE",
+    "coldStartScored": false
+  },
+  "observation": {
+    "launcherClass": "PINNED_SOURCE_LAUNCHER",
+    "commandClass": "CAPABILITIES",
+    "existingCompatibleInstalledReleaseSelected": false,
+    "coldBuildStageStarted": "CARGO_BINARIES",
+    "coldBuildStageDurationMillis": 54438,
+    "requestDurationMillisAfterBootstrap": 40,
+    "parallelDoctorWaitedForSameBootstrap": true
+  },
+  "doctor": {
+    "schema": "codeclew-doctor/1.0",
+    "requiredChecks": [
+      "platform.posix",
+      "tool.git",
+      "tool.python3",
+      "tool.java",
+      "tool.rustc",
+      "tool.cargo",
+      "state.free-space",
+      "runtime.kotlin24",
+      "repository.git",
+      "repository.clean",
+      "repository.target-ref-at-head"
+    ],
+    "coldBuildMinimumFreeBytes": 6442450944
+  },
+  "finding": {
+    "code": "SOURCE_ADMISSION_TRIGGERED_COLD_BOOTSTRAP",
+    "summary": "A clean pinned source launcher executed a cold Cargo build before the capabilities admission result instead of attaching through a matching installed RELEASE authority.",
+    "nextGate": "Build a matching installed RELEASE candidate, then compare direct capsule, installed locator, pinned source locator, and stale PATH selectors in one controlled canary."
+  },
+  "privacy": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSourceBodies": false,
+    "containsRawModelOutput": false
+  }
+}
