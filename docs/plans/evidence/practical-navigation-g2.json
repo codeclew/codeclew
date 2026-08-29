@@ -1,0 +1,48 @@
+{
+  "schema": "codeclew-practical-navigation-g2/1.0",
+  "status": "PASS",
+  "revision": "17ef51e",
+  "focusedTests": {
+    "navigationUnitTests": 4,
+    "cliUnitTests": 20,
+    "status": "PASS"
+  },
+  "crateSuite": {
+    "passedInMainRun": 415,
+    "ignoredQualificationTests": 5,
+    "parallelWorkerEnvironmentFailures": 4,
+    "failedTestsPassedSequentially": 4,
+    "interpretation": "The four failures shared one packaged-worker installDist environment and all passed unchanged with exact sequential isolation. No navigation or query test failed."
+  },
+  "overflowFixture": {
+    "test": "query_v2::tests::high_fanout_term_is_bounded_and_reported_as_truncated",
+    "facts": 50000,
+    "status": "PASS"
+  },
+  "secondQuestion": {
+    "term": "rank_fact_evidence",
+    "candidateCount": 1,
+    "file": "crates/clew/src/context_v2.rs",
+    "startLine": 1024,
+    "boundedSourceBytes": 2976,
+    "requestedCallers": "UNSUPPORTED",
+    "reason": "The Rust syntax generation contains no resolved relation facts."
+  },
+  "expand": {
+    "elapsedSeconds": 8.63,
+    "parentTerms": [
+      "rank_fact_evidence"
+    ],
+    "addedTerms": [
+      "fair_fact_selection"
+    ],
+    "candidateCount": 2,
+    "stdoutBytes": 11978,
+    "stdoutMode": "0600",
+    "buildToolMarkers": 0,
+    "callers": "UNSUPPORTED",
+    "tests": "UNSUPPORTED",
+    "truncated": false
+  },
+  "decision": "The practical navigation slice is accepted. Do not add nav export or a new navigation index without two measured exhaustive-enumeration cases."
+}
