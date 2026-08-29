@@ -1,0 +1,65 @@
+{
+  "cases": [
+    {
+      "caseId": "release-attach",
+      "definitionOfDone": [
+        "matching RELEASE runtime authority",
+        "attach status PASS",
+        "zero Cargo, Rustc, Gradle, Maven process starts",
+        "duration below 1000 milliseconds"
+      ]
+    },
+    {
+      "caseId": "python-self-analysis",
+      "compilation": "python:.#scripts",
+      "definitionOfDone": [
+        "context open status OPEN with admission PASS",
+        "verify_distribution_manifest is retrieved from the exact tracked file",
+        "selected evidence states NON_IMPORTABLE_FILE",
+        "bounded output below 65536 bytes",
+        "no broad source fallback"
+      ],
+      "intent": "explain how trusted worker distribution manifests are verified",
+      "language": "python",
+      "operation": "analysis",
+      "profileId": "python-syntax",
+      "terms": [
+        "verify_distribution_manifest"
+      ]
+    },
+    {
+      "caseId": "python-managed-mutation",
+      "definitionOfDone": [
+        "mutation task is admitted through context open",
+        "change prepare returns an actionable conditional state without caller polling",
+        "native unittest validation passes in an isolated candidate",
+        "source ref is unchanged before publish",
+        "strict publish refuses unresolved obligations",
+        "acknowledged conditional publish reaches PUBLISHED_CONDITIONAL",
+        "repeated prepare and publish are idempotent"
+      ],
+      "fixture": "fixtures/python-basic",
+      "operation": "add Counter.decrement with a focused test"
+    },
+    {
+      "caseId": "ordered-recovery-contract",
+      "definitionOfDone": [
+        "every prepared-to-partial-publication boundary preserves an ordered recoverable prefix",
+        "live supervisor identity cannot be admitted for resume",
+        "no automatic rollback or hard reset is introduced"
+      ]
+    }
+  ],
+  "decision": {
+    "failure": "LOCAL_Q1_FOUNDATION_FAIL",
+    "pass": "LOCAL_Q1_FOUNDATION_PASS",
+    "superiorityClaim": "REQUIRES_SEPARATE_HELD_OUT_SAME_MODEL_COMPARISON"
+  },
+  "frozenBeforeExecution": true,
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSource": false
+  },
+  "schema": "codeclew-q1-local-qualification-protocol/1.0"
+}
