@@ -2,7 +2,9 @@ use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
 use crate::repository_snapshot::isolated_git_command;
 use crate::runtime::RuntimeAuthority;
+use crate::session::SessionLanguage;
 use crate::state::StateAuthority;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::ffi::CString;
 use std::fs;
@@ -75,6 +77,28 @@ struct DoctorCheck {
     remediation: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DoctorScope {
+    Attach,
+    Task,
+    Provision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DoctorOperation {
+    Analysis,
+    Mutation,
+}
+
+pub struct DoctorTask<'a> {
+    pub language: SessionLanguage,
+    pub profile_id: &'a str,
+    pub operation: DoctorOperation,
+    pub compilations: &'a [String],
+}
+
 impl DoctorCheck {
     fn value(&self) -> Value {
         json!({
@@ -88,17 +112,71 @@ impl DoctorCheck {
 
 pub fn doctor(
     runtime: &RuntimeAuthority,
+    scope: DoctorScope,
     repository: Option<&Path>,
     target_ref: Option<&str>,
+    task: Option<DoctorTask<'_>>,
 ) -> Result<Value, ClewError> {
-    let state = StateAuthority::process_default()?;
-    let mut checks = vec![
+    let matrix = support_matrix()?;
+    let mut checks = attach_checks();
+    let task_authority = match scope {
+        DoctorScope::Attach => None,
+        DoctorScope::Task => {
+            let repository = repository.ok_or_else(|| invalid("task doctor requires --repo"))?;
+            let task = task.ok_or_else(|| invalid("task doctor requires exact task authority"))?;
+            checks.extend(task_checks(runtime, &matrix, repository, target_ref, &task));
+            Some(json!({
+                "compilationCount":task.compilations.len(),
+                "language":task.language,
+                "operation":task.operation,
+                "profileId":task.profile_id,
+            }))
+        }
+        DoctorScope::Provision => {
+            checks.extend(provision_checks()?);
+            None
+        }
+    };
+    let required_passed = checks.iter().all(|row| !row.required || row.passed);
+    let next_action = checks
+        .iter()
+        .find(|row| row.required && !row.passed)
+        .and_then(|row| row.remediation)
+        .unwrap_or("NONE");
+    Ok(json!({
+        "schema":"codeclew-doctor/2.0",
+        "status":if required_passed { "PASS" } else { "ACTION_REQUIRED" },
+        "scope":scope,
+        "nextAction":next_action,
+        "runtimeMode":runtime.mode,
+        "runtimeKey":runtime.runtime_key,
+        "runtimeManifestDigest":runtime.manifest_digest,
+        "taskAuthority":task_authority,
+        "checks":checks.iter().map(DoctorCheck::value).collect::<Vec<_>>(),
+        "supportMatrixDigest":canonical::hash(&matrix).map_err(internal)?,
+        "privacyAssertions":{
+            "containsAbsolutePaths":false,
+            "containsRepositoryIdentity":false,
+            "containsSource":false,
+        },
+    }))
+}
+
+fn attach_checks() -> Vec<DoctorCheck> {
+    vec![
         check(
             "platform.posix",
             cfg!(unix),
             true,
             "USE_SUPPORTED_POSIX_HOST",
         ),
+        check("runtime.capsule", true, true, "INSTALL_QUALIFIED_RUNTIME"),
+    ]
+}
+
+fn provision_checks() -> Result<Vec<DoctorCheck>, ClewError> {
+    let state = StateAuthority::process_default()?;
+    Ok(vec![
         check("tool.git", executable_available("git"), true, "INSTALL_GIT"),
         check(
             "tool.python3",
@@ -137,41 +215,128 @@ pub fn doctor(
             true,
             "FREE_6_GIB_ON_STATE_VOLUME",
         ),
+    ])
+}
+
+fn task_checks(
+    runtime: &RuntimeAuthority,
+    matrix: &Value,
+    repository: &Path,
+    target_ref: Option<&str>,
+    task: &DoctorTask<'_>,
+) -> Vec<DoctorCheck> {
+    let profiles = matrix["profiles"].as_array();
+    let profile = profiles.and_then(|rows| {
+        rows.iter()
+            .find(|row| row["profileId"].as_str() == Some(task.profile_id))
+    });
+    let language = task.language.uri().trim_start_matches("language:");
+    let profile_exists = profile.is_some();
+    let profile_matches_language = profile
+        .and_then(|row| row["language"].as_str())
+        .is_some_and(|value| value == language);
+    let operation_supported = profile.is_some_and(|row| {
+        task.operation == DoctorOperation::Analysis || row["mutation"].as_bool() == Some(true)
+    });
+    let mut checks = vec![
+        check("tool.git", executable_available("git"), true, "INSTALL_GIT"),
         check(
-            "runtime.kotlin24",
-            runtime
-                .workers
-                .values()
-                .any(|worker| worker.compiler_version == "2.4.10"),
+            "task.profile",
+            profile_exists && profile_matches_language,
             true,
-            "INSTALL_QUALIFIED_RUNTIME",
+            "SELECT_SUPPORTED_PROFILE",
         ),
         check(
-            "runtime.kotlin23",
-            runtime
-                .workers
-                .values()
-                .any(|worker| worker.compiler_version == "2.3.0"),
-            false,
-            "INSTALL_KOTLIN23_PREVIEW_COMPONENT",
+            "task.operation",
+            operation_supported,
+            true,
+            "SELECT_SUPPORTED_OPERATION",
+        ),
+        check(
+            "task.compilation-authority",
+            !task.compilations.is_empty()
+                && task.compilations.len() <= 32
+                && task.compilations.iter().all(|value| !value.is_empty()),
+            true,
+            "SELECT_EXACT_COMPILATION",
         ),
     ];
-    if let Some(repository) = repository {
-        checks.extend(repository_checks(repository, target_ref));
+    match task.language {
+        SessionLanguage::Java | SessionLanguage::Kotlin => checks.push(check(
+            "tool.java",
+            executable_available("java"),
+            true,
+            "INSTALL_JDK_21",
+        )),
+        SessionLanguage::Rust => {
+            checks.push(check(
+                "tool.rustc",
+                executable_available("rustc"),
+                true,
+                "INSTALL_RUST_1_92",
+            ));
+            checks.push(check(
+                "tool.cargo",
+                executable_available("cargo"),
+                true,
+                "INSTALL_RUST_1_92",
+            ));
+        }
+        SessionLanguage::Python if task.operation == DoctorOperation::Mutation => {
+            checks.push(check(
+                "tool.python3",
+                executable_available("python3"),
+                true,
+                "INSTALL_PYTHON_3_11",
+            ));
+        }
+        SessionLanguage::JavaScript | SessionLanguage::TypeScript => checks.push(check(
+            "tool.node",
+            executable_available("node"),
+            true,
+            "INSTALL_NODE",
+        )),
+        SessionLanguage::Python => {}
     }
-    let required_passed = checks.iter().all(|row| !row.required || row.passed);
-    Ok(json!({
-        "schema":"codeclew-doctor/1.0",
-        "status":if required_passed { "PASS" } else { "ACTION_REQUIRED" },
-        "runtimeMode":runtime.mode,
-        "checks":checks.iter().map(DoctorCheck::value).collect::<Vec<_>>(),
-        "supportMatrixDigest":canonical::hash(&support_matrix()?).map_err(internal)?,
-        "privacyAssertions":{
-            "containsAbsolutePaths":false,
-            "containsRepositoryIdentity":false,
-            "containsSource":false,
-        },
-    }))
+    if task.language == SessionLanguage::Kotlin {
+        let compiler_version = profile.and_then(|row| {
+            if row["semanticEngine"].as_str() == Some("kotlin-engine-2.4.10") {
+                Some("2.4.10")
+            } else {
+                row["compilerVersion"].as_str()
+            }
+        });
+        checks.push(check(
+            "runtime.language-adapter",
+            compiler_version.is_some_and(|expected| {
+                runtime
+                    .workers
+                    .values()
+                    .any(|worker| worker.compiler_version == expected)
+            }),
+            true,
+            "INSTALL_QUALIFIED_RUNTIME",
+        ));
+    }
+    if let Some(build_system) = profile.and_then(|row| row["buildSystem"].as_str()) {
+        match build_system {
+            "GRADLE_WRAPPER" => checks.push(check(
+                "project.gradle-wrapper",
+                executable_file(&repository.join("gradlew")),
+                true,
+                "INSTALL_PROJECT_WRAPPER",
+            )),
+            "MAVEN" => checks.push(check(
+                "project.maven-launcher",
+                executable_file(&repository.join("mvnw")) || executable_available("mvn"),
+                true,
+                "INSTALL_PROJECT_LAUNCHER",
+            )),
+            _ => {}
+        }
+    }
+    checks.extend(repository_checks(repository, target_ref));
+    checks
 }
 
 fn repository_checks(repository: &Path, target_ref: Option<&str>) -> Vec<DoctorCheck> {
@@ -258,6 +423,21 @@ fn isolated_git(repository: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
 fn regular_non_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path)
         .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+fn executable_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.is_file() && !metadata.file_type().is_symlink() && {
+            #[cfg(unix)]
+            {
+                metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        }
+    })
 }
 
 fn executable_available(name: &str) -> bool {

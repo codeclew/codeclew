@@ -1,7 +1,9 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
-use clew::operations::{capabilities, doctor, support_summary};
+use clew::operations::{
+    DoctorOperation, DoctorScope, DoctorTask, capabilities, doctor, support_summary,
+};
 use clew::runtime::RuntimeAuthority;
 use clew::session::mission;
 use clew::session::{
@@ -201,6 +203,19 @@ enum SessionLanguageArg {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
+enum DoctorScopeArg {
+    Attach,
+    Task,
+    Provision,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DoctorOperationArg {
+    Analysis,
+    Mutation,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum ThreadImpactSubjectKindArg {
     FullSymbol,
     CallableFamily,
@@ -266,12 +281,27 @@ struct SessionOpenArgs {
 
 #[derive(Args)]
 struct DoctorArgs {
-    /// Optional target repository to check without opening a session.
+    /// Readiness contour to inspect. Attach never probes project toolchains.
+    #[arg(value_enum)]
+    scope: DoctorScopeArg,
+    /// Exact target repository for task readiness.
     #[arg(long)]
     repo: Option<PathBuf>,
-    /// Optional ref that must resolve to the checked-out HEAD.
+    /// Exact ref that must resolve to the checked-out HEAD.
     #[arg(long, requires = "repo")]
     target_ref: Option<String>,
+    /// Exact language authority for task readiness.
+    #[arg(long, value_enum)]
+    language: Option<SessionLanguageArg>,
+    /// Exact support-matrix profile for task readiness.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Exact compilation authority. Repeat for multi-compilation tasks.
+    #[arg(long)]
+    compilation: Vec<String>,
+    /// Analysis or mutation readiness.
+    #[arg(long, value_enum)]
+    operation: Option<DoctorOperationArg>,
     /// Render an actionable human-readable report instead of canonical JSON.
     #[arg(long)]
     human: bool,
@@ -831,6 +861,7 @@ fn human_capabilities(value: &Value) -> String {
 fn human_doctor(value: &Value) -> String {
     let status = value["status"].as_str().unwrap_or("UNKNOWN");
     let runtime_mode = value["runtimeMode"].as_str().unwrap_or("UNKNOWN");
+    let scope = value["scope"].as_str().unwrap_or("UNKNOWN");
     let mut report = String::new();
     let _ = writeln!(report, "Codeclew doctor");
     let _ = writeln!(
@@ -842,6 +873,7 @@ fn human_doctor(value: &Value) -> String {
             "ACTION REQUIRED"
         }
     );
+    let _ = writeln!(report, "Scope: {scope}");
     let _ = writeln!(report, "Runtime: {runtime_mode}");
     let _ = writeln!(report, "\nChecks:");
 
@@ -867,6 +899,12 @@ fn human_doctor(value: &Value) -> String {
         }
     } else {
         let _ = writeln!(report, "  No check information available");
+    }
+
+    if let Some(next_action) = value["nextAction"].as_str()
+        && next_action != "NONE"
+    {
+        let _ = writeln!(report, "\nNext action: {}", remediation_label(next_action));
     }
 
     let _ = write!(
@@ -928,6 +966,13 @@ fn doctor_check_label(id: &str) -> &str {
         "state.free-space" => "At least 6 GiB is free in Codeclew state",
         "runtime.kotlin24" => "Qualified Kotlin 2.4 runtime is installed",
         "runtime.kotlin23" => "Kotlin 2.3 preview runtime is installed",
+        "runtime.capsule" => "Runtime capsule identity is verified",
+        "runtime.language-adapter" => "Required language adapter is installed",
+        "task.profile" => "Requested support profile is admitted",
+        "task.operation" => "Requested operation is admitted",
+        "task.compilation-authority" => "Compilation authority is explicit",
+        "project.gradle-wrapper" => "Project Gradle wrapper is executable",
+        "project.maven-launcher" => "Project Maven launcher is available",
         "repository.available" => "Target repository is available",
         "repository.git" => "Target is a Git repository",
         "repository.clean" => "Target worktree is clean",
@@ -947,6 +992,11 @@ fn remediation_label(id: &str) -> &str {
         "FREE_6_GIB_ON_STATE_VOLUME" => "free at least 6 GiB on the state volume",
         "INSTALL_QUALIFIED_RUNTIME" => "install or rebuild the qualified runtime",
         "INSTALL_KOTLIN23_PREVIEW_COMPONENT" => "install the optional Kotlin 2.3 preview component",
+        "SELECT_SUPPORTED_PROFILE" => "select a profile listed by clew capabilities",
+        "SELECT_SUPPORTED_OPERATION" => "select an operation admitted by the exact profile",
+        "SELECT_EXACT_COMPILATION" => "provide the exact project compilation selector",
+        "INSTALL_PROJECT_WRAPPER" => "restore the executable project Gradle wrapper",
+        "INSTALL_PROJECT_LAUNCHER" => "restore the Maven wrapper or install Maven",
         "SELECT_EXISTING_REPOSITORY" => "select an existing repository",
         "SELECT_GIT_REPOSITORY" => "select a valid Git repository",
         "CLEAN_TARGET_WORKTREE" => "commit, stash, or use a separate clean worktree",
@@ -958,11 +1008,7 @@ fn remediation_label(id: &str) -> &str {
 fn run(cli: Cli) -> Result<Value, ClewError> {
     match cli.command {
         Command::Capabilities(_) => capabilities(&active_runtime()?),
-        Command::Doctor(args) => doctor(
-            &active_runtime()?,
-            args.repo.as_deref(),
-            args.target_ref.as_deref(),
-        ),
+        Command::Doctor(args) => run_doctor(&args),
         Command::Upgrade => Err(ClewError::new(
             ErrorCode::InvalidInput,
             "this is a source checkout; update it through the approved Git commit or tag",
@@ -1481,6 +1527,89 @@ fn active_runtime() -> Result<RuntimeAuthority, ClewError> {
     })
 }
 
+fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
+    let runtime = active_runtime()?;
+    let has_task_arguments = args.repo.is_some()
+        || args.target_ref.is_some()
+        || args.language.is_some()
+        || args.profile.is_some()
+        || !args.compilation.is_empty()
+        || args.operation.is_some();
+    match args.scope {
+        DoctorScopeArg::Attach => {
+            if has_task_arguments {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "attach doctor does not accept task or provision arguments",
+                ));
+            }
+            doctor(&runtime, DoctorScope::Attach, None, None, None)
+        }
+        DoctorScopeArg::Provision => {
+            if has_task_arguments {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "provision doctor does not accept task arguments",
+                ));
+            }
+            doctor(&runtime, DoctorScope::Provision, None, None, None)
+        }
+        DoctorScopeArg::Task => {
+            let repository = args.repo.as_deref().ok_or_else(|| {
+                ClewError::new(ErrorCode::InvalidInput, "task doctor requires --repo")
+            })?;
+            let target_ref = args.target_ref.as_deref().ok_or_else(|| {
+                ClewError::new(ErrorCode::InvalidInput, "task doctor requires --target-ref")
+            })?;
+            let language = args.language.ok_or_else(|| {
+                ClewError::new(ErrorCode::InvalidInput, "task doctor requires --language")
+            })?;
+            let profile = args
+                .profile
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ClewError::new(ErrorCode::InvalidInput, "task doctor requires --profile")
+                })?;
+            let operation = args.operation.ok_or_else(|| {
+                ClewError::new(ErrorCode::InvalidInput, "task doctor requires --operation")
+            })?;
+            if args.compilation.is_empty() {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "task doctor requires --compilation",
+                ));
+            }
+            doctor(
+                &runtime,
+                DoctorScope::Task,
+                Some(repository),
+                Some(target_ref),
+                Some(DoctorTask {
+                    language: session_language(language),
+                    profile_id: profile,
+                    operation: match operation {
+                        DoctorOperationArg::Analysis => DoctorOperation::Analysis,
+                        DoctorOperationArg::Mutation => DoctorOperation::Mutation,
+                    },
+                    compilations: &args.compilation,
+                }),
+            )
+        }
+    }
+}
+
+fn session_language(language: SessionLanguageArg) -> SessionLanguage {
+    match language {
+        SessionLanguageArg::Java => SessionLanguage::Java,
+        SessionLanguageArg::JavaScript => SessionLanguage::JavaScript,
+        SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
+        SessionLanguageArg::Python => SessionLanguage::Python,
+        SessionLanguageArg::Rust => SessionLanguage::Rust,
+        SessionLanguageArg::TypeScript => SessionLanguage::TypeScript,
+    }
+}
+
 fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
     let policy = match args.model_cache {
         ModelCachePolicyArg::NonCacheable => ModelCachePolicy::NonCacheable,
@@ -1490,14 +1619,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
     SessionAuthority::open(
         &absolute(&args.repo)?,
         &args.target_ref,
-        match args.language {
-            SessionLanguageArg::Java => SessionLanguage::Java,
-            SessionLanguageArg::JavaScript => SessionLanguage::JavaScript,
-            SessionLanguageArg::Kotlin => SessionLanguage::Kotlin,
-            SessionLanguageArg::Python => SessionLanguage::Python,
-            SessionLanguageArg::Rust => SessionLanguage::Rust,
-            SessionLanguageArg::TypeScript => SessionLanguage::TypeScript,
-        },
+        session_language(args.language),
         &args.compilation,
         args.generation_jobs,
         policy,
@@ -2543,12 +2665,33 @@ mod tests {
     fn operational_entrypoints_require_explicit_closed_arguments() {
         assert!(Cli::try_parse_from(["clew", "capabilities"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "capabilities", "--human"]).is_ok());
-        assert!(Cli::try_parse_from(["clew", "doctor"]).is_ok());
-        assert!(Cli::try_parse_from(["clew", "doctor", "--human"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "doctor"]).is_err());
+        assert!(Cli::try_parse_from(["clew", "doctor", "attach"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "doctor", "attach", "--human"]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "doctor",
+                "task",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--language",
+                "python",
+                "--profile",
+                "python-syntax",
+                "--compilation",
+                "python:.#src",
+                "--operation",
+                "analysis",
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["clew", "upgrade"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "upgrade", "--human"]).is_err());
         assert!(Cli::try_parse_from(["clew", "--json", "capabilities"]).is_err());
-        assert!(Cli::try_parse_from(["clew", "doctor", "--json"]).is_err());
+        assert!(Cli::try_parse_from(["clew", "doctor", "attach", "--json"]).is_err());
         assert!(
             Cli::try_parse_from([
                 "clew",
@@ -2649,6 +2792,8 @@ mod tests {
     fn human_doctor_explains_required_remediation_without_private_identity() {
         let value = json!({
             "status":"ACTION_REQUIRED",
+            "scope":"TASK",
+            "nextAction":"CLEAN_TARGET_WORKTREE",
             "runtimeMode":"RELEASE",
             "checks":[
                 {
@@ -2667,6 +2812,7 @@ mod tests {
         });
         let report = human_doctor(&value);
         assert!(report.contains("Status: ACTION REQUIRED"));
+        assert!(report.contains("Scope: TASK"));
         assert!(report.contains("[PASS] Git is available (required)"));
         assert!(report.contains("[ACTION_REQUIRED] Target worktree is clean (required)"));
         assert!(report.contains("commit, stash, or use a separate clean worktree"));

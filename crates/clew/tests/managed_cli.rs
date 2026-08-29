@@ -2340,6 +2340,30 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
     assert!(capabilities_report.contains("Kotlin 2.4.10"));
     assert!(!capabilities_report.contains("codeclew-capabilities/1.0"));
 
+    let attach = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &["doctor", "attach"],
+        None,
+    );
+    assert!(attach.status.success());
+    let attach_value: Value = serde_json::from_slice(&attach.stdout).unwrap();
+    assert_eq!(attach_value["schema"], "codeclew-doctor/2.0");
+    assert_eq!(attach_value["scope"], "ATTACH");
+    assert_eq!(attach_value["nextAction"], "NONE");
+    assert!(
+        attach_value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|check| {
+                !check["checkId"].as_str().unwrap().starts_with("tool.")
+                    && check["checkId"] != "state.free-space"
+            })
+    );
+
     let doctor = run_managed(
         &runtime_binary,
         &state_root,
@@ -2347,16 +2371,40 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         &lease,
         &[
             "doctor",
+            "task",
             "--repo",
             repository.to_str().unwrap(),
             "--target-ref",
             "main",
+            "--language",
+            "python",
+            "--profile",
+            "python-syntax",
+            "--compilation",
+            "python:.#.",
+            "--operation",
+            "analysis",
         ],
         None,
     );
     assert!(doctor.status.success());
     let doctor_value: Value = serde_json::from_slice(&doctor.stdout).unwrap();
-    assert_eq!(doctor_value["schema"], "codeclew-doctor/1.0");
+    assert_eq!(doctor_value["schema"], "codeclew-doctor/2.0");
+    assert_eq!(doctor_value["scope"], "TASK");
+    assert_eq!(doctor_value["status"], "PASS");
+    assert_eq!(doctor_value["nextAction"], "NONE");
+    assert!(
+        doctor_value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|check| {
+                !matches!(
+                    check["checkId"].as_str().unwrap(),
+                    "tool.java" | "tool.rustc" | "tool.cargo" | "state.free-space"
+                )
+            })
+    );
     assert!(
         doctor_value["checks"]
             .as_array()
@@ -2373,10 +2421,19 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         &lease,
         &[
             "doctor",
+            "task",
             "--repo",
             repository.to_str().unwrap(),
             "--target-ref",
             "main",
+            "--language",
+            "python",
+            "--profile",
+            "python-syntax",
+            "--compilation",
+            "python:.#.",
+            "--operation",
+            "analysis",
             "--human",
         ],
         None,
@@ -2385,7 +2442,8 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
     assert!(doctor_human.stderr.is_empty());
     let doctor_report = String::from_utf8(doctor_human.stdout).unwrap();
     assert!(doctor_report.contains("Codeclew doctor"));
-    assert!(doctor_report.contains("Status: ACTION REQUIRED"));
+    assert!(doctor_report.contains("Status: READY"));
+    assert!(doctor_report.contains("Scope: TASK"));
     assert!(doctor_report.contains("Target ref points to HEAD"));
     assert!(!doctor_report.contains(repository.to_str().unwrap()));
 
@@ -2455,6 +2513,7 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
 
     for output in [
         &capabilities.stdout,
+        &attach.stdout,
         &doctor.stdout,
         &fresh.stdout,
         &dirty.stdout,
