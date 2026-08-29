@@ -48,6 +48,10 @@ impl PythonCompilationSelector {
     }
 
     pub fn module_name(&self, path: &str) -> Result<String, ClewError> {
+        Ok(self.module_identity(path)?.0)
+    }
+
+    pub fn module_identity(&self, path: &str) -> Result<(String, bool), ClewError> {
         if !self.contains(path) || !below(&self.import_root, path) {
             return Err(invalid("Python source is outside its selector authority"));
         }
@@ -65,15 +69,19 @@ impl PythonCompilationSelector {
             components.pop();
         }
         if components.is_empty() {
-            return Ok("__root__".into());
+            return Ok(("__root__".into(), true));
         }
         if components
             .iter()
-            .any(|component| !safe_module_component(component))
+            .all(|component| safe_module_component(component))
         {
-            return Err(invalid("Python module identity is not representable"));
+            return Ok((components.join("."), true));
         }
-        Ok(components.join("."))
+        let path_digest = canonical::hash_bytes(relative.as_bytes());
+        Ok((
+            format!("__file__.{}", path_digest.trim_start_matches("sha256:")),
+            false,
+        ))
     }
 }
 
@@ -201,6 +209,23 @@ mod tests {
         ] {
             assert!(PythonCompilationSelector::parse(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn non_importable_file_name_gets_stable_bounded_identity() {
+        let selector = PythonCompilationSelector::parse("python:.#scripts").unwrap();
+        let (identity, importable) = selector
+            .module_identity("scripts/build-trusted-worker.py")
+            .unwrap();
+        assert!(!importable);
+        assert!(identity.starts_with("__file__."));
+        assert_eq!(identity.len(), "__file__.".len() + 64);
+        assert_eq!(
+            identity,
+            selector
+                .module_name("scripts/build-trusted-worker.py")
+                .unwrap()
+        );
     }
 
     #[test]

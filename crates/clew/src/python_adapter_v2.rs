@@ -193,6 +193,7 @@ pub fn translate_facts(store: &CasStore, index: &Value) -> Result<Vec<FactRecord
                 "kind":"source-file",
                 "path":file["path"],
                 "module":file["module"],
+                "moduleResolution":file["moduleResolution"],
                 "contentHash":file["contentHash"],
                 "identifierTerms":file["identifierTerms"],
                 "identifierTermsTruncated":file["identifierTermsTruncated"],
@@ -333,12 +334,26 @@ pub fn build_syntax_index(
     let mut boundaries = BTreeSet::new();
     let mut node_budget = NodeBudget::new(MAX_NODES_PER_FILE, MAX_TOTAL_NODES);
     for (path, input) in &inputs {
-        let module = authority.selector.module_name(path)?;
+        let (module, importable_module) = authority.selector.module_identity(path)?;
+        let module_resolution = if importable_module {
+            "IMPORTABLE_MODULE"
+        } else {
+            "NON_IMPORTABLE_FILE"
+        };
+        if !importable_module {
+            add_boundary(
+                &mut boundaries,
+                "PYTHON_NON_IMPORTABLE_MODULE_PATH",
+                Some(path),
+                None,
+            )?;
+        }
         match input {
             SourceInput::Symlink(object) => {
                 files.push(json!({
                     "path":path,
                     "module":module,
+                    "moduleResolution":module_resolution,
                     "contentHash":object.digest,
                     "identifierTerms":[],
                     "identifierTermsTruncated":false,
@@ -353,6 +368,7 @@ pub fn build_syntax_index(
                     files.push(json!({
                         "path":path,
                         "module":module,
+                        "moduleResolution":module_resolution,
                         "contentHash":canonical::hash_bytes(bytes),
                         "identifierTerms":[],
                         "identifierTermsTruncated":false,
@@ -370,6 +386,7 @@ pub fn build_syntax_index(
                 let mut context = SyntaxContext {
                     path,
                     module: &module,
+                    module_resolution,
                     source,
                     descriptors: &mut descriptors,
                     syntax_facts: &mut syntax_facts,
@@ -388,6 +405,7 @@ pub fn build_syntax_index(
                 files.push(json!({
                     "path":path,
                     "module":module,
+                    "moduleResolution":module_resolution,
                     "contentHash":canonical::hash_bytes(bytes),
                     "identifierTerms":identifier_terms.terms,
                     "identifierTermsTruncated":identifier_terms.truncated,
@@ -496,6 +514,7 @@ fn effective_tracked_sources(
 struct SyntaxContext<'a> {
     path: &'a str,
     module: &'a str,
+    module_resolution: &'a str,
     source: &'a str,
     descriptors: &'a mut BTreeMap<String, Value>,
     syntax_facts: &'a mut BTreeMap<String, Value>,
@@ -622,6 +641,7 @@ fn visit_node(
                     "name":name,
                     "qualifiedName":qualified.join("."),
                     "module":context.module,
+                    "moduleResolution":context.module_resolution,
                     "declarationKind":kind,
                     "file":context.path,
                     "rangeStart":node.start_byte(),
@@ -640,6 +660,7 @@ fn visit_node(
                 "kind":"import",
                 "file":context.path,
                 "module":context.module,
+                "moduleResolution":context.module_resolution,
                 "names":identifiers,
                 "rangeStart":node.start_byte(),
                 "rangeEnd":node.end_byte(),
@@ -659,6 +680,7 @@ fn visit_node(
                     "kind":"call",
                     "file":context.path,
                     "module":context.module,
+                    "moduleResolution":context.module_resolution,
                     "callee":callee,
                     "lexicalOwner":lexical_scope.join("."),
                     "rangeStart":node.start_byte(),
@@ -678,6 +700,7 @@ fn visit_node(
                     "kind":"decorator",
                     "file":context.path,
                     "module":context.module,
+                    "moduleResolution":context.module_resolution,
                     "name":name,
                     "rangeStart":node.start_byte(),
                     "rangeEnd":node.end_byte(),
@@ -871,6 +894,10 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
                 .and_then(Value::as_str)
                 .is_none_or(|path| !safe_path(path) || !path.ends_with(".py"))
                 || file.get("module").and_then(Value::as_str).is_none()
+                || !matches!(
+                    file.get("moduleResolution").and_then(Value::as_str),
+                    Some("IMPORTABLE_MODULE" | "NON_IMPORTABLE_FILE")
+                )
                 || file
                     .get("contentHash")
                     .and_then(Value::as_str)
@@ -932,6 +959,10 @@ fn valid_located_fact(row: &Value, declaration: bool) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|path| safe_path(path) && path.ends_with(".py"))
         && row.get("module").and_then(Value::as_str).is_some()
+        && matches!(
+            row.get("moduleResolution").and_then(Value::as_str),
+            Some("IMPORTABLE_MODULE" | "NON_IMPORTABLE_FILE")
+        )
         && row.get("rangeStart").and_then(Value::as_u64).is_some()
         && row.get("rangeEnd").and_then(Value::as_u64).is_some()
         && row["rangeStart"].as_u64() <= row["rangeEnd"].as_u64()
@@ -1100,6 +1131,34 @@ class Handler:
     }
 
     #[test]
+    fn non_importable_script_name_is_indexed_with_an_explicit_boundary() {
+        let (_root, store) = store();
+        let snapshot = snapshot(
+            &store,
+            &[(
+                "scripts/build-trusted-worker.py",
+                b"def build_worker():\n    return compile_worker()\n",
+            )],
+        );
+        let selector = PythonCompilationSelector::parse("python:.#scripts").unwrap();
+        let index = build_syntax_index(
+            &store,
+            &snapshot,
+            &PythonSyntaxAuthority {
+                compilation_id: "python-scripts",
+                model_digest: &format!("sha256:{}", "a".repeat(64)),
+                selector: &selector,
+            },
+        )
+        .unwrap();
+        let encoded = String::from_utf8(canonical::bytes(&index).unwrap()).unwrap();
+        assert!(encoded.contains("PYTHON_NON_IMPORTABLE_MODULE_PATH"));
+        assert!(encoded.contains("build_worker"));
+        assert!(encoded.contains("compile_worker"));
+        assert!(encoded.contains("__file__."));
+    }
+
+    #[test]
     fn dirty_tracked_overlay_wins_and_untracked_python_is_excluded() {
         let (_root, store) = store();
         let mut snapshot = snapshot(&store, &[("src/tracked.py", b"def old(): pass\n")]);
@@ -1248,6 +1307,7 @@ class Handler:
         let mut context = SyntaxContext {
             path: "src/bounded.py",
             module: "src.bounded",
+            module_resolution: "IMPORTABLE_MODULE",
             source,
             descriptors: &mut descriptors,
             syntax_facts: &mut syntax_facts,

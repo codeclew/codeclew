@@ -748,6 +748,11 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
     let repo = temporary.path().join("python-project");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/python-mixed");
     copy_tree(&fixture, &repo);
+    fs::write(
+        repo.join("src/example/build-trusted-worker.py"),
+        b"def build_worker():\n    return compile_worker()\n",
+    )
+    .unwrap();
     fs::write(repo.join("private.env"), vec![b's'; 5 * 1024 * 1024]).unwrap();
     fs::write(
         repo.join(".gitattributes"),
@@ -875,6 +880,8 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
             "Service",
             "--term",
             "normalize",
+            "--term",
+            "build_worker",
         ],
         Some(&poison_bin),
     );
@@ -888,6 +895,8 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
     assert!(encoded.contains("language:python"));
     assert!(encoded.contains("Service"));
     assert!(encoded.contains("normalize"));
+    assert!(encoded.contains("build_worker"));
+    assert!(encoded.contains("NON_IMPORTABLE_FILE"));
     assert!(encoded.contains("PARTIAL"));
     assert!(encoded.contains("UNSURE"));
     assert!(!encoded.contains("Codeclew must never execute"));
