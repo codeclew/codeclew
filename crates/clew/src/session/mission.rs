@@ -9,7 +9,7 @@ use crate::error::{ClewError, ErrorCode};
 use crate::runtime::RuntimeMode;
 use crate::state::StateAuthority;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::File;
@@ -196,10 +196,16 @@ pub struct MissionRecordResult {
 }
 
 pub fn open(session_ids: &[String], source: &[u8]) -> Result<MissionInspection, ClewError> {
-    let spec = parse_change_spec(source)?;
+    let (spec, source) = normalize_change_spec(source)?;
     let state = StateAuthority::process_default()?;
     let members = load_live_members(session_ids)?;
-    create_with_state(&state, source, spec, members)
+    create_with_state(&state, &source, spec, members)
+}
+
+fn normalize_change_spec(source: &[u8]) -> Result<(ChangeSpec, Vec<u8>), ClewError> {
+    let spec = parse_change_spec(source)?;
+    let canonical_source = canonical::bytes(&spec).map_err(internal)?;
+    Ok((spec, canonical_source))
 }
 
 pub fn inspect(mission_id: &str) -> Result<MissionInspection, ClewError> {
@@ -380,7 +386,9 @@ fn load_with_state_unlocked(
         .read_private_file(&root.join("change-spec.json"), MAX_CHANGE_SPEC_BYTES)
         .map_err(|_| invalid("mission ChangeSpec is missing or exceeds its limit"))?;
     let spec = parse_change_spec(&source)?;
-    if canonical::hash_bytes(&source) != identity.change_spec_digest {
+    if canonical::bytes(&spec).map_err(internal)? != source
+        || canonical::hash_bytes(&source) != identity.change_spec_digest
+    {
         return Err(invalid("mission ChangeSpec authority changed"));
     }
     let events = load_events(state, &root, mission_id)?;
@@ -397,16 +405,20 @@ fn parse_change_spec(source: &[u8]) -> Result<ChangeSpec, ClewError> {
     if source.is_empty() || source.len() > MAX_CHANGE_SPEC_BYTES {
         return Err(invalid("ChangeSpec is empty or exceeds 256 KiB"));
     }
-    let value: Value = serde_json::from_slice(source)
-        .map_err(|error| invalid(&format!("ChangeSpec JSON is invalid: {error}")))?;
+    let value = canonical::parse_json_strict(source).map_err(|error| {
+        invalid(&format!(
+            "ChangeSpec JSON is invalid: {error}; run `clew mission open --help` for the bounded input shape"
+        ))
+    })?;
     if !crate::text_authority::json_strings_are_nfc(&value, 0) {
         return Err(invalid("ChangeSpec keys and strings must use NFC Unicode"));
     }
     let spec: ChangeSpec = serde_json::from_value(value)
-        .map_err(|error| invalid(&format!("ChangeSpec schema is invalid: {error}")))?;
-    if canonical::bytes(&spec).map_err(internal)? != source {
-        return Err(invalid("ChangeSpec must use canonical JSON bytes"));
-    }
+        .map_err(|error| {
+            invalid(&format!(
+                "ChangeSpec schema is invalid: {error}; run `clew mission open --help` for the bounded input shape"
+            ))
+        })?;
     validate_change_spec(&spec)?;
     Ok(spec)
 }
@@ -1003,12 +1015,19 @@ mod tests {
     }
 
     #[test]
-    fn changespec_requires_canonical_bytes_and_stable_ids() {
+    fn changespec_accepts_ordinary_json_but_requires_stable_ids() {
         let source = canonical_spec();
         assert!(parse_change_spec(&source).is_ok());
         let mut with_newline = source.clone();
         with_newline.push(b'\n');
-        assert!(parse_change_spec(&with_newline).is_err());
+        assert_eq!(
+            parse_change_spec(&with_newline).unwrap(),
+            parse_change_spec(&source).unwrap()
+        );
+        assert_eq!(normalize_change_spec(&with_newline).unwrap().1, source);
+        let duplicate_intent = br#"{"schema":"codeclew-change-spec/1.0","intent":"first","intent":"second","requirements":[{"id":"REQ-1","text":"requirement"}],"acceptanceCriteria":[{"id":"AC-1","text":"criterion"}],"docsPolicy":{}}"#;
+        let error = parse_change_spec(duplicate_intent).unwrap_err();
+        assert!(error.message.contains("duplicate JSON object key"));
         let duplicate = ChangeSpec {
             schema: CHANGE_SPEC_SCHEMA.into(),
             intent: "intent".into(),

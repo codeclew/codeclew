@@ -1030,6 +1030,10 @@ fn rank_fact_evidence(
         .iter()
         .map(|term| term.to_lowercase())
         .collect::<Vec<_>>();
+    let direct_names = lowered
+        .iter()
+        .map(|term| normalized_direct_name(term))
+        .collect::<BTreeSet<_>>();
     let mut lanes = BTreeMap::<String, Vec<Value>>::new();
     for fact in facts {
         let compilation = fact
@@ -1042,22 +1046,21 @@ fn rank_fact_evidence(
         let mut decorated = std::mem::take(facts)
             .into_iter()
             .map(|fact| {
-                let direct_name_coverage =
-                    if fact["payload"].get("kind").and_then(Value::as_str) == Some("DECLARATION") {
-                        fact["payload"]
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .map(|name| {
-                                let name = name
-                                    .chars()
-                                    .flat_map(char::to_lowercase)
-                                    .collect::<String>();
-                                usize::from(lowered.iter().any(|term| term == &name))
-                            })
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    };
+                let direct_name_coverage = if fact["payload"]
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("declaration"))
+                {
+                    fact["payload"]
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(|name| {
+                            usize::from(direct_names.contains(&normalized_direct_name(name)))
+                        })
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
                 let identities = exact_identity_terms(&fact["payload"]);
                 let exact_coverage = lowered
                     .iter()
@@ -1098,6 +1101,14 @@ fn rank_fact_evidence(
         }
     }
     Ok(ranked)
+}
+
+fn normalized_direct_name(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|character| *character != '_')
+        .collect()
 }
 
 fn fact_score(value: &Value, terms: &[String], key: Option<&str>, depth: usize) -> usize {
@@ -1552,6 +1563,34 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let ranked = rank_fact_evidence(vec![reference, declaration], &terms, 2).unwrap();
+        assert_eq!(ranked[0]["factKey"], "declaration");
+    }
+
+    #[test]
+    fn lowercase_declaration_kind_and_snake_case_query_prioritize_the_named_symbol() {
+        let declaration = json!({
+            "compilation":"cargo:clew",
+            "factKey":"declaration",
+            "payload":{
+                "kind":"declaration",
+                "name":"aggregateCompleteness",
+                "symbolIdentity":"rust-syntax:src/context.rs#function:aggregateCompleteness@10-80",
+            },
+        });
+        let reference = json!({
+            "compilation":"cargo:clew",
+            "factKey":"reference",
+            "payload":{
+                "kind":"relation",
+                "operation":"aggregate_completeness aggregate_completeness",
+            },
+        });
+        let ranked = rank_fact_evidence(
+            vec![reference, declaration],
+            &["aggregate_completeness".into()],
+            2,
+        )
+        .unwrap();
         assert_eq!(ranked[0]["factKey"], "declaration");
     }
 

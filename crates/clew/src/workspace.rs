@@ -456,17 +456,26 @@ fn parse_catalog(source: &[u8]) -> Result<WorkspaceCatalogInput, ClewError> {
     if source.is_empty() || source.len() > MAX_WORKSPACE_CATALOG_BYTES {
         return Err(invalid("workspace catalog is empty or exceeds 256 KiB"));
     }
-    let value: Value = serde_json::from_slice(source)
-        .map_err(|_| invalid("workspace catalog is not valid JSON"))?;
-    if canonical::bytes(&value).map_err(internal)? != source {
+    let value = canonical::parse_json_strict(source).map_err(|error| {
+        invalid(&format!(
+            "workspace catalog JSON is invalid: {error}; run `clew workspace open --help` for the bounded input shape"
+        ))
+    })?;
+    if !crate::text_authority::json_strings_are_nfc(&value, 0) {
         return Err(invalid(
-            "workspace catalog must be canonical compact JSON with NFC strings",
+            "workspace catalog keys and strings must use NFC Unicode",
         ));
     }
     let input: WorkspaceCatalogInput = serde_json::from_value(value)
-        .map_err(|_| invalid("workspace catalog schema is invalid"))?;
+        .map_err(|error| {
+            invalid(&format!(
+                "workspace catalog schema is invalid: {error}; run `clew workspace open --help` for the bounded input shape"
+            ))
+        })?;
     if input.schema != WORKSPACE_CATALOG_SCHEMA {
-        return Err(invalid("workspace catalog schema is unsupported"));
+        return Err(invalid(&format!(
+            "workspace catalog schema is unsupported; expected {WORKSPACE_CATALOG_SCHEMA}"
+        )));
     }
     if input.members.len() < MIN_WORKSPACE_MEMBERS
         || input.members.len() > MAX_WORKSPACE_MEMBERS
@@ -1043,13 +1052,31 @@ mod tests {
     }
 
     #[test]
-    fn catalog_requires_canonical_path_free_identifiers() {
+    fn catalog_accepts_ordinary_json_and_requires_path_free_identifiers() {
         let canonical = br#"{"edges":[],"members":[{"alias":"left","sessionId":"session:a"},{"alias":"right","sessionId":"session:b"}],"missionId":"mission:fixed","schema":"codeclew-workspace-catalog-input/1.0"}"#;
         let parsed = parse_catalog(canonical).unwrap();
         assert_eq!(parsed.members.len(), 2);
 
-        let pretty = br#"{ "schema": "codeclew-workspace-catalog-input/1.0", "missionId": "mission:fixed", "members": [], "edges": [] }"#;
-        assert!(parse_catalog(pretty).is_err());
+        let pretty = br#"{
+          "schema": "codeclew-workspace-catalog-input/1.0",
+          "missionId": "mission:fixed",
+          "members": [
+            {"alias":"left","sessionId":"session:a"},
+            {"alias":"right","sessionId":"session:b"}
+          ],
+          "edges": []
+        }"#;
+        assert_eq!(parse_catalog(pretty).unwrap(), parsed);
+        let duplicate_mission = br#"{"edges":[],"members":[{"alias":"left","sessionId":"session:a"},{"alias":"right","sessionId":"session:b"}],"missionId":"mission:first","missionId":"mission:second","schema":"codeclew-workspace-catalog-input/1.0"}"#;
+        assert!(parse_catalog(duplicate_mission).is_err());
+        let decomposed = format!(
+            r#"{{"edges":[],"members":[{{"alias":"left","sessionId":"session:a"}},{{"alias":"right","sessionId":"session:b"}}],"missionId":"mission:Cafe{}","schema":"{}"}}"#,
+            '\u{301}', WORKSPACE_CATALOG_SCHEMA
+        );
+        assert!(parse_catalog(decomposed.as_bytes()).is_err());
+        let wrong_schema = br#"{"edges":[],"members":[{"alias":"left","sessionId":"session:a"},{"alias":"right","sessionId":"session:b"}],"missionId":"mission:fixed","schema":"future"}"#;
+        let error = parse_catalog(wrong_schema).unwrap_err();
+        assert!(error.message.contains(WORKSPACE_CATALOG_SCHEMA));
         assert!(!safe_alias("/private/repository"));
         assert!(!safe_alias("left;touch"));
     }

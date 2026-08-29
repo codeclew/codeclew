@@ -20,6 +20,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
 
+const PLAN_INPUT_HELP: &str = r#"Task plan JSON. Minimal REPLACE_TEXT shape: {"schema":"codeclew-task-plan/2.0","operations":[{"kind":"REPLACE_TEXT","opId":"edit-1","target":{"fileId":"src/file","contentRef":{"schema":"codeclew-cas-object/2.0","objectSchema":"codeclew-repository-input-blob/2.0","digest":"sha256:<copy exact digest from context source>","size":0}},"oldText":"exact existing text","newText":"replacement text"}],"validation":[{"launcher":"CARGO","args":["test"]}]}. Copy the complete contentRef object from the matching context source. The CLI supplies the current schema when it is omitted; run the repository-appropriate launcher."#;
+const MISSION_SPEC_HELP: &str = r#"ChangeSpec JSON. Minimal shape: {"schema":"codeclew-change-spec/1.0","intent":"intent","requirements":[{"id":"REQ-1","text":"requirement"}],"nonGoals":[],"acceptanceCriteria":[{"id":"AC-1","text":"acceptance"}],"docsPolicy":{"requiredRequirementIds":[]}}. Whitespace and object-key order need not be canonical; the CLI canonicalizes validated input before hashing."#;
+const WORKSPACE_CATALOG_HELP: &str = r#"Workspace catalog JSON in a caller-owned mode-0600 file at an absolute path. Minimal two-member shape: {"schema":"codeclew-workspace-catalog-input/1.0","missionId":"mission:<from mission open>","members":[{"alias":"api","sessionId":"session:<first>"},{"alias":"client","sessionId":"session:<second>"}],"edges":[{"id":"api-client","source":"api","target":"client","relation":"depends-on"}]}. Bind every open mission session exactly once (2-4 distinct local repositories); edges are optional and remain declared evidence. Whitespace and object-key order need not be canonical; validated authority is canonicalized before hashing."#;
+
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
@@ -371,7 +375,7 @@ struct ChangePrepareArgs {
     session: String,
     #[arg(long)]
     context: String,
-    #[arg(long)]
+    #[arg(long, help = PLAN_INPUT_HELP)]
     plan: PathBuf,
 }
 
@@ -379,7 +383,7 @@ struct ChangePrepareArgs {
 struct MissionOpenArgs {
     #[arg(long = "session", required = true)]
     sessions: Vec<String>,
-    #[arg(long)]
+    #[arg(long, help = MISSION_SPEC_HELP)]
     spec: PathBuf,
 }
 
@@ -427,8 +431,7 @@ struct MissionIdArgs {
 
 #[derive(Args)]
 struct WorkspaceOpenArgs {
-    /// Closed, canonical codeclew-workspace-catalog-input/1.0 JSON file.
-    #[arg(long)]
+    #[arg(long, help = WORKSPACE_CATALOG_HELP)]
     catalog: PathBuf,
 }
 
@@ -766,7 +769,7 @@ struct PlanValidateArgs {
     session: String,
     #[arg(long)]
     context: String,
-    #[arg(long)]
+    #[arg(long, help = PLAN_INPUT_HELP)]
     plan: PathBuf,
 }
 
@@ -1884,6 +1887,8 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
 
 fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(&args.session)?;
+    let parent = session.load_context(&args.context)?;
+    let requested_terms = args.terms.clone();
     let context = expand_context_object(
         &session,
         args.context,
@@ -1891,7 +1896,12 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let navigation = clew::navigation::query(&context, &navigation_facets(&args.facets))?;
+    let navigation = clew::navigation::expand_delta(
+        &parent,
+        &context,
+        &requested_terms,
+        &navigation_facets(&args.facets),
+    )?;
     let result = json!({
         "schema":clew::navigation::NAV_EXPAND_SCHEMA,
         "status":"EXPANDED",
@@ -2991,6 +3001,32 @@ mod tests {
     fn removed_entrypoints_are_unparseable() {
         for removed in ["project", "index", "resolve", "thread", "task-apply"] {
             assert!(Cli::try_parse_from(["clew", removed]).is_err());
+        }
+    }
+
+    #[test]
+    fn authoring_help_exposes_bounded_input_shapes_without_source_discovery() {
+        for (args, needles) in [
+            (
+                vec!["clew", "mission", "open", "--help"],
+                vec!["codeclew-change-spec/1.0", "acceptanceCriteria"],
+            ),
+            (
+                vec!["clew", "workspace", "open", "--help"],
+                vec!["codeclew-workspace-catalog-input/1.0", "missionId"],
+            ),
+            (
+                vec!["clew", "change", "prepare", "--help"],
+                vec!["codeclew-task-plan/2.0", "REPLACE_TEXT"],
+            ),
+        ] {
+            let error = Cli::try_parse_from(args).err().unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            let help = error.to_string();
+            assert!(help.len() < 8 * 1024);
+            for needle in needles {
+                assert!(help.contains(needle), "help must contain {needle}: {help}");
+            }
         }
     }
 

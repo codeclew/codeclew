@@ -91,6 +91,13 @@ clew nav expand \
 
 The facet is optional. There is no `--all`; use another bounded expansion when
 the response reports truncation. Do not expand merely to collect every match.
+`nav expand` is a patch against its exact `parentContextId`: apply candidate
+upserts and removals to the retained parent result. An empty upsert list means
+that no candidate changed; it does not mean that the cumulative child context
+has no candidates. Reorder the reconstructed result by `candidateOrder`, since
+ranking can change without changing card bytes. `unchangedCount` is the number
+intentionally omitted from stdout. Requested facets and child completeness remain full, and the returned
+child `contextId`/`evidenceDigest` bind the complete immutable evidence in CAS.
 
 ## Build bounded context
 

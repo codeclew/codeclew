@@ -2,11 +2,12 @@ use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
 use crate::session::ContextObject;
 use serde_json::{Map, Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const NAV_QUERY_SCHEMA: &str = "codeclew-nav-query/1.0";
-pub const NAV_EXPAND_SCHEMA: &str = "codeclew-nav-expand/1.0";
+pub const NAV_EXPAND_SCHEMA: &str = "codeclew-nav-expand/2.0";
 pub const NAV_RESULT_SCHEMA: &str = "codeclew-navigation-result/1.0";
+pub const NAV_DELTA_SCHEMA: &str = "codeclew-navigation-delta/1.0";
 pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
 
@@ -18,14 +19,95 @@ pub enum NavigationFacet {
 }
 
 pub fn query(context: &ContextObject, facets: &[NavigationFacet]) -> Result<Value, ClewError> {
-    assemble(
+    let result = assemble(
         &context.session_id,
         &context.context_id,
         &context.intent,
         &context.terms,
         &context.projection,
         facets,
-    )
+    )?;
+    validate_stdout(&result)?;
+    Ok(result)
+}
+
+pub fn expand_delta(
+    parent: &ContextObject,
+    child: &ContextObject,
+    requested_terms: &[String],
+    facets: &[NavigationFacet],
+) -> Result<Value, ClewError> {
+    if requested_terms.is_empty()
+        || parent.session_id != child.session_id
+        || child.parent_context_id.as_deref() != Some(parent.context_id.as_str())
+    {
+        return Err(invalid(
+            "navigation delta requires a direct child context in the same session",
+        ));
+    }
+    let parent_view = assemble(
+        &parent.session_id,
+        &parent.context_id,
+        &parent.intent,
+        &parent.terms,
+        &parent.projection,
+        &[],
+    )?;
+    let child_view = assemble(
+        &child.session_id,
+        &child.context_id,
+        &child.intent,
+        &child.terms,
+        &child.projection,
+        facets,
+    )?;
+    let parent_candidates = candidate_map(&parent_view)?;
+    let child_candidates = candidate_map(&child_view)?;
+    let mut upserts = Vec::new();
+    let mut unchanged_count = 0usize;
+    for (key, candidate) in &child_candidates {
+        match parent_candidates.get(key) {
+            None => upserts.push(candidate_upsert(candidate, "ADDED")?),
+            Some(previous) if *previous == *candidate => unchanged_count += 1,
+            Some(_) => upserts.push(candidate_upsert(candidate, "UPDATED")?),
+        }
+    }
+    let removals = parent_candidates
+        .keys()
+        .filter(|key| !child_candidates.contains_key(*key))
+        .map(|(compilation, fact_key)| json!({"compilation":compilation,"factKey":fact_key}))
+        .collect::<Vec<_>>();
+    let candidate_order = child_view["candidates"]
+        .as_array()
+        .ok_or_else(|| invalid("navigation result has no candidate array"))?
+        .iter()
+        .map(|candidate| {
+            let (compilation, fact_key) = candidate_key(candidate)?;
+            Ok(json!({"compilation":compilation,"factKey":fact_key}))
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    let result = json!({
+        "schema":NAV_DELTA_SCHEMA,
+        "sessionId":child.session_id,
+        "parentContextId":parent.context_id,
+        "parentEvidenceDigest":parent.evidence_digest,
+        "contextId":child.context_id,
+        "evidenceDigest":child.evidence_digest,
+        "intent":child.intent,
+        "requestedTerms":requested_terms,
+        "contextTerms":child.terms,
+        "candidateDelta":{
+            "upserts":upserts,
+            "removals":removals,
+            "unchangedCount":unchanged_count,
+            "candidateOrder":candidate_order,
+        },
+        "facets":child_view["facets"],
+        "completeness":child_view["completeness"],
+        "truncated":child_view["truncated"],
+    });
+    validate_stdout(&result)?;
+    Ok(result)
 }
 
 pub fn validate_stdout(value: &Value) -> Result<(), ClewError> {
@@ -66,6 +148,7 @@ fn assemble(
             continue;
         }
         let fact_key = required_string(matched, "factKey")?;
+        let compilation = required_string(matched, "compilation")?;
         if let Some(identity) = payload.get("symbolIdentity").and_then(Value::as_str) {
             candidate_identities.insert(identity);
         }
@@ -73,6 +156,7 @@ fn assemble(
         let source = file.and_then(|file| best_source(sources, file, payload));
         candidates.push(json!({
             "candidateId":fact_key,
+            "candidateKey":{"compilation":compilation,"factKey":fact_key},
             "displayName":display_name(payload).unwrap_or(fact_key),
             "declarationKind":payload.get("declarationKind"),
             "symbolIdentity":payload.get("symbolIdentity"),
@@ -130,8 +214,38 @@ fn assemble(
         "completeness":projection.get("completeness"),
         "truncated":projection.get("truncated").and_then(Value::as_bool).unwrap_or(false),
     });
-    validate_stdout(&result)?;
     Ok(result)
+}
+
+type CandidateKey = (String, String);
+
+fn candidate_map(value: &Value) -> Result<BTreeMap<CandidateKey, &Value>, ClewError> {
+    value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("navigation result has no candidate array"))?
+        .iter()
+        .map(|candidate| Ok((candidate_key(candidate)?, candidate)))
+        .collect()
+}
+
+fn candidate_key(candidate: &Value) -> Result<CandidateKey, ClewError> {
+    let key = candidate
+        .get("candidateKey")
+        .ok_or_else(|| invalid("navigation candidate has no stable key"))?;
+    Ok((
+        required_string(key, "compilation")?.to_owned(),
+        required_string(key, "factKey")?.to_owned(),
+    ))
+}
+
+fn candidate_upsert(candidate: &Value, change: &str) -> Result<Value, ClewError> {
+    let mut upsert = candidate.clone();
+    upsert
+        .as_object_mut()
+        .ok_or_else(|| invalid("navigation candidate is not an object"))?
+        .insert("change".into(), Value::String(change.into()));
+    Ok(upsert)
 }
 
 fn relation_facet(
@@ -156,6 +270,8 @@ fn relation_facet(
             }
             let source = payload.get("sourceIdentity")?.as_str()?;
             let target = payload.get("targetIdentity")?.as_str()?;
+            let compilation = matched.get("compilation")?.as_str()?;
+            let fact_key = matched.get("factKey")?.as_str()?;
             let relation_kind = payload
                 .get("relationKind")
                 .and_then(Value::as_str)
@@ -171,7 +287,9 @@ fn relation_facet(
             };
             selected.then(|| {
                 json!({
-                    "factKey":matched.get("factKey"),
+                    "edgeKey":{"compilation":compilation,"factKey":fact_key},
+                    "compilation":compilation,
+                    "factKey":fact_key,
                     "domainUri":matched.get("domainUri"),
                     "payloadRef":matched.get("payloadRef"),
                     "relation":payload,
@@ -263,6 +381,7 @@ mod tests {
         json!({
             "matches":[
                 {
+                    "compilation":"cargo:Cargo.toml#demo#lib#demo",
                     "factKey":"fact:target",
                     "domainUri":"analysis:syntax",
                     "payloadRef":{"digest":"sha256:target"},
@@ -279,6 +398,7 @@ mod tests {
                     }
                 },
                 {
+                    "compilation":"cargo:Cargo.toml#demo#lib#demo",
                     "factKey":"fact:namesake-call",
                     "domainUri":"analysis:syntax",
                     "payload":{"kind":"call","callee":"Target","file":"src/other.rs"}
@@ -315,6 +435,7 @@ mod tests {
     fn accepts_compiler_declaration_shape_without_guessing_a_name() {
         let projection = json!({
             "matches":[{
+                "compilation":"cargo:Cargo.toml#demo#lib#demo",
                 "factKey":"fact:java",
                 "domainUri":"analysis:java-compiler-facts",
                 "payload":{
@@ -348,6 +469,7 @@ mod tests {
         let mut projection = projection();
         projection["matches"].as_array_mut().unwrap().extend([
             json!({
+                "compilation":"cargo:Cargo.toml#demo#lib#demo",
                 "factKey":"fact:caller",
                 "domainUri":"analysis:compiler",
                 "payload":{
@@ -358,6 +480,7 @@ mod tests {
                 }
             }),
             json!({
+                "compilation":"cargo:Cargo.toml#demo#lib#demo",
                 "factKey":"fact:namesake-relation",
                 "domainUri":"analysis:compiler",
                 "payload":{
@@ -398,5 +521,286 @@ mod tests {
         let value = json!({"text":"x".repeat(MAX_NAV_STDOUT_BYTES)});
         let error = validate_stdout(&value).unwrap_err();
         assert_eq!(error.code, ErrorCode::SliceBudgetExceeded);
+    }
+
+    fn context(
+        id: &str,
+        parent: Option<&str>,
+        evidence_digest: &str,
+        projection: Value,
+    ) -> ContextObject {
+        ContextObject {
+            schema: "codeclew-context/4.0".into(),
+            context_id: id.into(),
+            session_id: "session:test".into(),
+            session_authority_digest: "sha256:session".into(),
+            parent_context_id: parent.map(str::to_owned),
+            intent: NAV_QUERY_INTENT.into(),
+            terms: vec![id.into()],
+            evidence_digest: evidence_digest.into(),
+            evidence_ref: crate::cas::CasObject {
+                schema: "codeclew-cas-object/2.0".into(),
+                object_schema: "codeclew-context-evidence/4.0".into(),
+                digest: evidence_digest.into(),
+                size: 1,
+            },
+            projection,
+            evidence: json!({}),
+        }
+    }
+
+    fn apply_candidate_delta(parent: &Value, delta: &Value) -> Vec<Value> {
+        let mut reconstructed = candidate_map(parent)
+            .unwrap()
+            .into_iter()
+            .map(|(key, value)| (key, value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for removal in delta["candidateDelta"]["removals"].as_array().unwrap() {
+            reconstructed.remove(&(
+                removal["compilation"].as_str().unwrap().to_owned(),
+                removal["factKey"].as_str().unwrap().to_owned(),
+            ));
+        }
+        for upsert in delta["candidateDelta"]["upserts"].as_array().unwrap() {
+            let mut candidate = upsert.clone();
+            candidate.as_object_mut().unwrap().remove("change");
+            reconstructed.insert(candidate_key(&candidate).unwrap(), candidate);
+        }
+        delta["candidateDelta"]["candidateOrder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| {
+                reconstructed
+                    .get(&(
+                        key["compilation"].as_str().unwrap().to_owned(),
+                        key["factKey"].as_str().unwrap().to_owned(),
+                    ))
+                    .unwrap()
+                    .clone()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn expand_delta_omits_byte_identical_parent_candidates() {
+        let parent = context("context:parent", None, "sha256:parent", projection());
+        let child = context(
+            "context:child",
+            Some("context:parent"),
+            "sha256:child",
+            projection(),
+        );
+        let result = expand_delta(&parent, &child, &["new-term".into()], &[]).unwrap();
+        assert_eq!(result["schema"], NAV_DELTA_SCHEMA);
+        assert!(
+            result["candidateDelta"]["upserts"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            result["candidateDelta"]["removals"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(result["candidateDelta"]["unchangedCount"], 1);
+        assert_eq!(result["parentEvidenceDigest"], "sha256:parent");
+        assert_eq!(result["evidenceDigest"], "sha256:child");
+    }
+
+    #[test]
+    fn expand_delta_reports_updates_additions_and_evictions() {
+        let parent_projection = projection();
+        let mut child_projection = projection();
+        child_projection["matches"][0]["payload"]["endLine"] = json!(15);
+        child_projection["matches"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "compilation":"cargo:Cargo.toml#demo#lib#demo",
+                "factKey":"fact:added",
+                "domainUri":"analysis:syntax",
+                "payload":{
+                    "kind":"declaration",
+                    "name":"Added",
+                    "declarationKind":"function",
+                    "symbolIdentity":"symbol:Added",
+                    "file":"src/added.rs",
+                    "startLine":1,
+                    "endLine":2
+                }
+            }));
+        child_projection["sources"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "fileId":"src/added.rs","startLine":1,"endLine":2,"text":"added"
+            }));
+        let parent = context("context:parent", None, "sha256:parent", parent_projection);
+        let child = context(
+            "context:child",
+            Some("context:parent"),
+            "sha256:child",
+            child_projection,
+        );
+        let result = expand_delta(&parent, &child, &["Added".into()], &[]).unwrap();
+        let upserts = result["candidateDelta"]["upserts"].as_array().unwrap();
+        assert_eq!(upserts.len(), 2);
+        assert_eq!(upserts[0]["change"], "ADDED");
+        assert_eq!(upserts[1]["change"], "UPDATED");
+        let parent_view = query(&parent, &[]).unwrap();
+        let child_view = query(&child, &[]).unwrap();
+        let expected = child_view["candidates"].as_array().unwrap().clone();
+        assert_eq!(apply_candidate_delta(&parent_view, &result), expected);
+
+        let mut evicted_projection = child.projection.clone();
+        evicted_projection["matches"] = json!([]);
+        let evicted = context(
+            "context:evicted",
+            Some("context:child"),
+            "sha256:evicted",
+            evicted_projection,
+        );
+        let removal = expand_delta(&child, &evicted, &["other".into()], &[]).unwrap();
+        assert_eq!(
+            removal["candidateDelta"]["removals"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn expand_delta_preserves_reordered_unchanged_candidates() {
+        let mut parent_projection = projection();
+        parent_projection["matches"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "compilation":"cargo:Cargo.toml#demo#lib#demo",
+                "factKey":"fact:second",
+                "domainUri":"analysis:syntax",
+                "payload":{
+                    "kind":"declaration",
+                    "name":"Second",
+                    "declarationKind":"function",
+                    "symbolIdentity":"symbol:Second",
+                    "file":"src/lib.rs",
+                    "startLine":20,
+                    "endLine":21
+                }
+            }));
+        let mut child_projection = parent_projection.clone();
+        child_projection["matches"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        let parent = context("context:parent", None, "sha256:parent", parent_projection);
+        let child = context(
+            "context:child",
+            Some("context:parent"),
+            "sha256:child",
+            child_projection,
+        );
+        let delta = expand_delta(&parent, &child, &["Second".into()], &[]).unwrap();
+        assert!(
+            delta["candidateDelta"]["upserts"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            delta["candidateDelta"]["removals"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(delta["candidateDelta"]["unchangedCount"], 2);
+        let parent_view = query(&parent, &[]).unwrap();
+        let child_view = query(&child, &[]).unwrap();
+        assert_eq!(
+            apply_candidate_delta(&parent_view, &delta),
+            child_view["candidates"].as_array().unwrap().clone()
+        );
+    }
+
+    #[test]
+    fn expand_delta_keys_equal_fact_keys_by_compilation() {
+        let parent = context("context:parent", None, "sha256:parent", projection());
+        let mut child_projection = projection();
+        child_projection["matches"][0]["compilation"] = json!("cargo:other#lib#other");
+        let child = context(
+            "context:child",
+            Some("context:parent"),
+            "sha256:child",
+            child_projection,
+        );
+        let result = expand_delta(&parent, &child, &["Target".into()], &[]).unwrap();
+        assert_eq!(
+            result["candidateDelta"]["upserts"][0]["candidateKey"]["compilation"],
+            "cargo:other#lib#other"
+        );
+        assert_eq!(
+            result["candidateDelta"]["removals"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn expand_delta_keeps_requested_facets_and_rejects_unrelated_contexts() {
+        let parent = context("context:parent", None, "sha256:parent", projection());
+        let mut child_projection = projection();
+        child_projection["matches"].as_array_mut().unwrap().extend([
+            json!({
+                "compilation":"cargo:Cargo.toml#demo#lib#demo",
+                "factKey":"fact:caller",
+                "domainUri":"analysis:compiler",
+                "payload":{
+                    "kind":"RELATION",
+                    "relationKind":"CALL",
+                    "sourceIdentity":"symbol:Caller",
+                    "targetIdentity":"symbol:Target"
+                }
+            }),
+            json!({
+                "compilation":"cargo:other#lib#other",
+                "factKey":"fact:caller",
+                "domainUri":"analysis:compiler",
+                "payload":{
+                    "kind":"RELATION",
+                    "relationKind":"CALL",
+                    "sourceIdentity":"symbol:OtherCaller",
+                    "targetIdentity":"symbol:Target"
+                }
+            }),
+        ]);
+        child_projection["truncated"] = json!(true);
+        let child = context(
+            "context:child",
+            Some("context:parent"),
+            "sha256:child",
+            child_projection,
+        );
+        let result = expand_delta(
+            &parent,
+            &child,
+            &["caller".into()],
+            &[NavigationFacet::Callers],
+        )
+        .unwrap();
+        assert_eq!(result["facets"]["callers"]["status"], "PARTIAL");
+        let edges = result["facets"]["callers"]["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 2);
+        assert_ne!(edges[0]["edgeKey"], edges[1]["edgeKey"]);
+        assert_eq!(result["truncated"], true);
+
+        let unrelated = context("context:unrelated", None, "sha256:unrelated", projection());
+        assert!(expand_delta(&unrelated, &child, &["caller".into()], &[]).is_err());
     }
 }

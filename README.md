@@ -96,6 +96,16 @@ next missing term without reopening the repository:
   --facet callers
 ```
 
+`nav expand` returns a delta against its exact `parentContextId`, not another
+copy of the cumulative candidate list. Apply `candidateDelta.upserts` and
+`candidateDelta.removals` to the retained parent candidates; an empty upsert
+array means that no candidate card changed, not that the child context has no
+candidates. Then order the reconstructed cards by `candidateOrder`; ranking
+can change even when card bytes do not. `unchangedCount` reports the cards
+deliberately omitted from stdout. The child `contextId` and `evidenceDigest` still bind the complete
+immutable context in managed CAS, while requested facets and completeness are
+returned in full.
+
 `--intent` is optional provenance and never changes retrieval or ranking.
 `--facet callers`, `--facet callees`, and `--facet tests` return only direct,
 identity-bound relation facts already present in the bounded context. A missing

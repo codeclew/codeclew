@@ -868,9 +868,7 @@ impl SessionAuthority {
             ));
         }
         let context = self.load_context(context_id)?;
-        let plan: Value = serde_json::from_slice(source).map_err(parse_error)?;
-        validate_plan_shape(&plan)?;
-        let source_digest = canonical::hash_bytes(source);
+        let (plan, source_digest) = normalize_plan_source(source)?;
         let context_digest = canonical::hash(&context).map_err(internal)?;
         let binding = json!({
             "schema":PLAN_SCHEMA,
@@ -2157,6 +2155,30 @@ fn validate_plan_shape(plan: &Value) -> Result<(), ClewError> {
     Ok(())
 }
 
+fn normalize_plan_source(source: &[u8]) -> Result<(Value, String), ClewError> {
+    let mut plan = canonical::parse_json_strict(source).map_err(|error| {
+        invalid(&format!(
+            "task plan JSON is invalid: {error}; run `clew change prepare --help` for the bounded task-plan shape"
+        ))
+    })?;
+    if let Some(object) = plan.as_object_mut() {
+        object
+            .entry("schema")
+            .or_insert_with(|| Value::String(crate::task_run_v2::PLAN_V2_SCHEMA.into()));
+    }
+    validate_plan_shape(&plan).map_err(|error| {
+        ClewError::new(
+            error.code,
+            format!(
+                "{}; run `clew change prepare --help` for the bounded task-plan shape",
+                error.message
+            ),
+        )
+    })?;
+    let digest = canonical::hash(&plan).map_err(internal)?;
+    Ok((plan, digest))
+}
+
 pub fn validate_context_request(intent: &str, terms: &[String]) -> Result<(), ClewError> {
     if intent.trim().is_empty()
         || intent.len() > 32 * 1024
@@ -2860,6 +2882,34 @@ mod tests {
             .map(|index| json!({"target":{"fileId":format!("src/{index}.kt")}}))
             .collect::<Vec<_>>();
         assert!(validate_plan_shape(&json!({"operations":operations})).is_err());
+    }
+
+    #[test]
+    fn plan_source_defaults_the_current_schema_and_has_format_independent_identity() {
+        let without_schema = json!({
+            "operations":[{
+                "kind":"CREATE_FILE",
+                "opId":"create-file",
+                "target":{"fileId":"src/generated.rs"},
+                "text":"pub fn generated() {}\n"
+            }],
+            "validation":[{"launcher":"CARGO","args":["test"]}]
+        });
+        let compact = serde_json::to_vec(&without_schema).unwrap();
+        let pretty = serde_json::to_vec_pretty(&without_schema).unwrap();
+        let (normalized, compact_digest) = normalize_plan_source(&compact).unwrap();
+        let (_, pretty_digest) = normalize_plan_source(&pretty).unwrap();
+        assert_eq!(normalized["schema"], crate::task_run_v2::PLAN_V2_SCHEMA);
+        assert_eq!(compact_digest, pretty_digest);
+
+        let mut wrong_schema = without_schema;
+        wrong_schema["schema"] = json!("codeclew-task-plan/999.0");
+        let error = normalize_plan_source(&serde_json::to_vec(&wrong_schema).unwrap()).unwrap_err();
+        assert!(error.message.contains("clew change prepare --help"));
+
+        let duplicate_schema = br#"{"schema":"codeclew-task-plan/2.0","schema":"codeclew-task-plan/999.0","operations":[],"validation":[]}"#;
+        let error = normalize_plan_source(duplicate_schema).unwrap_err();
+        assert!(error.message.contains("duplicate JSON object key"));
     }
 
     #[test]
