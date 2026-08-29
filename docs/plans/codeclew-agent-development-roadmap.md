@@ -5,12 +5,13 @@
 - **Status:** roadmap execution is complete through Q1. M1, M2, W1, L1, J1,
   C1, W2, W3, the W4 local publication core, T1/T2 ECMAScript profiles, P1
   polyglot composition, and CS0 are accepted. CS0 concluded `DEFER`; the latest
-  worktree-enabled Q1 rerun concluded `NOT_QUALIFIED` and identified agent plan
-  and mission authoring as the next product blocker. W4 remains deliberately
-  unadvertised for JVM multi-service mutation until its three-case JVM gate.
-- **Date:** 2026-08-29.
-- **Baseline:** released tag `v0.2.4` at
-  `ddfc9436033b72fe3218939227f5a630750092d4`.
+  warm Q1 on released `v0.2.5` concluded `NOT_QUALIFIED`: all five task classes
+  now pass, but navigation cost still fails the token-efficiency gate. W4 remains
+  deliberately unadvertised for JVM multi-service mutation until its three-case
+  JVM gate.
+- **Date:** 2026-08-30.
+- **Baseline:** released tag `v0.2.5` at
+  `998aa5bbb1852e6424fbf312ad5e91b914a49cf1`.
 - **Objective:** prove a locally useful agent-development workflow that preserves
   evidence from intent through documentation, coordinates changes across local
   repositories, and adds compiler-backed language profiles without overstating
@@ -713,30 +714,29 @@ an agent materially better on realistic local development tasks.
 
 ### Measured outcome
 
-`NOT_QUALIFIED`. The latest internal rerun used the same five frozen task classes
-and ten same-model arms. At the user's direction, both arms ran against disposable
-repositories with Git worktrees allowed; strict agent-sandbox publication was
-removed from this product-value gate. Default passed 5/5 tasks and Codeclew
-passed 4/5. The installed RELEASE fixes removed the earlier attach blocker:
-stateless capabilities, single-repository analysis and change, documentation,
-and three-repository analysis all completed.
+`NOT_QUALIFIED`. The `v0.2.5` warm run used the same five frozen task classes and
+ten same-model arms. Cold initialization was excluded, Git worktrees and managed
+state writes were allowed, and the exact frozen Default results were reused.
+Default and Codeclew both passed 5/5 tasks. Codeclew completed documentation,
+single-repository publication, three-repository analysis, and controlled
+multi-repository roll-forward; native verification passed and no false exact
+claim was observed. Failed Codeclew calls fell from 40 to 5 and recovery
+terminality improved from 0% to 100%.
 
-The remaining failure is the agent-facing managed-change interface. The
-single-repository Codeclew change reached the correct published result, but 19
-failed commands were spent discovering internal plan fields. Multi-repository
-recovery stopped after 21 failed schema/canonicalization attempts without opening
-the mission or changing either repository. Default rolled the same recovery
-forward and compiled both repositories. Median noncached tokens were 118,152 for
-Codeclew versus 35,189 for Default, so the required 30% reduction was not met.
-Documentation recall passed and no false exact claim was observed; recovery
-terminality remained 0%.
+The remaining failure is efficiency. Median noncached tokens improved by 28.1%
+from the previous Codeclew run, from 118,152 to 84,894, but Default used 35,189.
+Codeclew therefore consumed 2.41 times the Default median instead of the required
+30% less. The largest measured waste was a 1,048,606-byte broad schema search in
+the recovery arm after non-canonical ChangeSpec bytes were rejected. Navigation
+expansion also returned accumulated contexts rather than only the requested
+delta.
 
-The next slice is generated plan and mission authoring: versioned machine-readable
-schemas, official valid templates or a high-level builder, and CLI-side JSON
-canonicalization. Only the one-repository change and multi-repository recovery
-cases should run during that slice. The full frozen cohort should run again only
-after both pass without schema-discovery failures. The privacy-safe aggregate is
-retained in `docs/plans/evidence/q1-worktree-enabled-rerun.json` and summarized in
+The next slice is bounded to generated plan/mission inputs with complete CLI-side
+canonicalization and delta-only navigation expansion. Only single-analysis and
+multi-repository recovery should be rerun during that slice. The full frozen
+cohort should run again only after those two cases demonstrate lower repeated
+context cost. The privacy-safe aggregate is retained in
+`docs/plans/evidence/q1-v0.2.5-warm-result.json` and summarized in
 `docs/plans/evidence/agent-development-qualification.json`.
 
 ## Deferred until evidence promotes them

@@ -1,0 +1,230 @@
+{
+  "schema": "codeclew-q1-warm-result/1.0",
+  "date": "2026-08-30",
+  "status": "Q1_NOT_QUALIFIED",
+  "authority": {
+    "tag": "v0.2.5",
+    "sourceRevision": "998aa5bbb1852e6424fbf312ad5e91b914a49cf1",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:9f467927953caa6aa0d93d84d419a556496399915c6f4c3f5c925c57266e396c",
+    "runtimeManifestDigest": "sha256:bd6c3682e07a7ca8734e16cc16af417c8a5eb08ee0e444583f7743de675ca45f",
+    "supportMatrixDigest": "sha256:5e8aaffd8af12be0ec06d0c0cde544a37e6c8383009df20aa1f646dfbdeb1e3d",
+    "skillPackageVersion": "0.2.1",
+    "skillDigest": "sha256:6965fce385e680e523b3c77ea02d180fddaefbf5e9f2df2c10af231e8a594f83",
+    "releaseWorkflow": "https://github.com/codeclew/codeclew/actions/runs/33277312584",
+    "release": "https://github.com/codeclew/codeclew/releases/tag/v0.2.5"
+  },
+  "execution": {
+    "taskCount": 5,
+    "newCodeclewArmCount": 5,
+    "comparisonArmCount": 10,
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "high",
+    "runner": "codex-cli-0.147.0",
+    "coldStartScored": false,
+    "sharedPrimedManagedState": true,
+    "gitWorktreesAllowed": true,
+    "managedStateWritesAllowed": true,
+    "defaultArms": "REUSED_EXACT_FROZEN_RESULTS",
+    "defaultReuseAuthority": "Same frozen corpus, response schema, model, reasoning effort, runner version, and task prompts; Default is independent of the Codeclew release change.",
+    "rawPrivateEvidenceRetained": true,
+    "rawEvidenceProtectedFromAccidentalDeletion": true,
+    "excludedAttempts": [
+      {
+        "arm": "Q1-DOCUMENTATION",
+        "classification": "HARNESS_FIXTURE_MISMATCH",
+        "reason": "An early incomplete fixture was selected instead of the frozen complete checkout; it was retained but not scored, and only this arm was rerun."
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "id": "Q1-SINGLE-ANALYSIS",
+      "default": {
+        "outcome": "PASS",
+        "elapsedSeconds": 45,
+        "toolCalls": 3,
+        "failedToolCalls": 0,
+        "noncachedInputTokens": 35655
+      },
+      "codeclew": {
+        "outcome": "PASS",
+        "elapsedSeconds": 167,
+        "toolCalls": 13,
+        "failedToolCalls": 1,
+        "toolOutputBytes": 240632,
+        "noncachedInputTokens": 84894,
+        "filesConsulted": 3,
+        "repairLoops": 0,
+        "certainty": "CONDITIONAL_RUST_SYNTAX"
+      }
+    },
+    {
+      "id": "Q1-DOCUMENTATION",
+      "default": {
+        "outcome": "PASS",
+        "elapsedSeconds": 124,
+        "toolCalls": 6,
+        "failedToolCalls": 1,
+        "noncachedInputTokens": 43252,
+        "nativeTests": "115_PASS_2_SKIPPED"
+      },
+      "codeclew": {
+        "outcome": "PASS",
+        "elapsedSeconds": 218,
+        "toolCalls": 12,
+        "failedToolCalls": 0,
+        "toolOutputBytes": 177591,
+        "noncachedInputTokens": 73496,
+        "filesConsulted": 4,
+        "repairLoops": 0,
+        "nativeTests": "115_PASS_2_SKIPPED",
+        "certainty": "CONDITIONAL_TYPESCRIPT"
+      }
+    },
+    {
+      "id": "Q1-ONE-REPO-CHANGE",
+      "default": {
+        "outcome": "PASS",
+        "elapsedSeconds": 72,
+        "toolCalls": 5,
+        "failedToolCalls": 0,
+        "noncachedInputTokens": 28726,
+        "nativeCompile": "PASS"
+      },
+      "codeclew": {
+        "outcome": "PASS",
+        "elapsedSeconds": 286,
+        "toolCalls": 36,
+        "failedToolCalls": 1,
+        "toolOutputBytes": 80416,
+        "noncachedInputTokens": 77406,
+        "filesConsulted": 2,
+        "repairLoops": 0,
+        "nativeCompile": "PASS",
+        "publication": "PUBLISHED_CONDITIONAL"
+      }
+    },
+    {
+      "id": "Q1-CROSS-REPO-ANALYSIS",
+      "default": {
+        "outcome": "PASS",
+        "elapsedSeconds": 113,
+        "toolCalls": 18,
+        "failedToolCalls": 2,
+        "noncachedInputTokens": 35189
+      },
+      "codeclew": {
+        "outcome": "PASS",
+        "elapsedSeconds": 265,
+        "toolCalls": 35,
+        "failedToolCalls": 1,
+        "toolOutputBytes": 157715,
+        "noncachedInputTokens": 125623,
+        "filesConsulted": 5,
+        "repairLoops": 0,
+        "memberCertainty": "EXACT_JAVA_CONDITIONAL_KOTLIN_TYPESCRIPT"
+      }
+    },
+    {
+      "id": "Q1-MULTI-REPO-RECOVERY",
+      "default": {
+        "outcome": "PASS",
+        "elapsedSeconds": 81,
+        "toolCalls": 7,
+        "failedToolCalls": 1,
+        "noncachedInputTokens": 28863,
+        "recovery": "ROLLED_FORWARD"
+      },
+      "codeclew": {
+        "outcome": "PASS",
+        "elapsedSeconds": 493,
+        "toolCalls": 66,
+        "failedToolCalls": 2,
+        "toolOutputBytes": 1308753,
+        "noncachedInputTokens": 172170,
+        "filesConsulted": 4,
+        "repairLoops": 0,
+        "recovery": "ROLLED_FORWARD",
+        "providerUnchanged": true,
+        "nativeCompiles": "PASS"
+      }
+    }
+  ],
+  "aggregate": {
+    "defaultPassRate": 1.0,
+    "codeclewPassRate": 1.0,
+    "defaultMedianElapsedSeconds": 81,
+    "codeclewMedianElapsedSeconds": 265,
+    "defaultMedianToolCalls": 6,
+    "codeclewMedianToolCalls": 35,
+    "defaultMedianNoncachedInputTokens": 35189,
+    "codeclewMedianNoncachedInputTokens": 84894,
+    "codeclewToDefaultMedianTokenRatio": 2.412515,
+    "medianNoncachedTokenReduction": -1.412515,
+    "defaultTotalNoncachedInputTokens": 171685,
+    "codeclewTotalNoncachedInputTokens": 533589,
+    "codeclewToDefaultTotalTokenRatio": 3.107954,
+    "codeclewTotalToolCalls": 162,
+    "codeclewTotalFailedToolCalls": 5,
+    "codeclewTotalToolOutputBytes": 1965107,
+    "documentationVerificationRecall": 1.0,
+    "defaultRecoveryTerminality": 1.0,
+    "codeclewRecoveryTerminality": 1.0,
+    "falseExactClaims": 0
+  },
+  "changeFromPreviousCodeclewQ1": {
+    "passRate": {
+      "previous": 0.8,
+      "current": 1.0
+    },
+    "recoveryTerminality": {
+      "previous": 0.0,
+      "current": 1.0
+    },
+    "medianNoncachedInputTokens": {
+      "previous": 118152,
+      "current": 84894,
+      "reduction": 0.281485
+    },
+    "failedToolCalls": {
+      "previous": 40,
+      "current": 5
+    }
+  },
+  "gates": {
+    "passRateNotLower": "PASS",
+    "zeroCriticalMisses": "PASS",
+    "zeroFalseExactClaims": "PASS",
+    "noncachedTokensAtLeastThirtyPercentLower": "FAIL",
+    "documentationVerificationRecallAtLeastNinetyPercent": "PASS",
+    "recoveryTerminalityOneHundredPercent": "PASS",
+    "privacySafeAggregate": "PASS",
+    "rawReplayRetained": "PASS"
+  },
+  "primaryFinding": {
+    "code": "FUNCTIONAL_CONTOUR_PASSES_BUT_AGENT_NAVIGATION_IS_TOO_EXPENSIVE",
+    "summary": "Codeclew now completes all five practical task classes, including publication and multi-repository roll-forward, but it still requires too many commands and too much repeated context to beat Default.",
+    "largestMeasuredWaste": "The recovery arm emitted 1048606 bytes from one broad schema-discovery search after the public mission interface rejected non-canonical ChangeSpec bytes.",
+    "secondaryWaste": "Navigation expansion returns accumulated contexts; three Rust expansions each emitted about 58 KiB instead of returning only the newly requested delta.",
+    "failedCallClasses": [
+      "missing task-plan schema field",
+      "non-canonical ChangeSpec bytes",
+      "unsupported cross-repository thread provenance",
+      "two non-matching broad searches"
+    ]
+  },
+  "decision": {
+    "q1Qualified": false,
+    "productFunctionalityAccepted": true,
+    "repeatFullQ1Now": false,
+    "nextSlice": "Provide generated plan/mission templates and CLI-side canonicalization, then make nav expansion return only deltas. Re-run only the recovery and single-analysis arms before another full Q1."
+  },
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSourceBodies": false,
+    "containsRawModelOutput": false,
+    "containsPersonalData": false
+  }
+}

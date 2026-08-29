@@ -1,61 +1,65 @@
 {
   "schema": "codeclew-agent-development-qualification/2.0",
-  "date": "2026-08-29",
+  "date": "2026-08-30",
   "status": "Q1_NOT_QUALIFIED",
-  "latestEvidence": "docs/plans/evidence/q1-worktree-enabled-rerun.json",
+  "latestEvidence": "docs/plans/evidence/q1-v0.2.5-warm-result.json",
   "historicalEvidence": [
-    "docs/plans/evidence/q1-installed-release-agent-sandbox-gate.json"
+    "docs/plans/evidence/q1-installed-release-agent-sandbox-gate.json",
+    "docs/plans/evidence/q1-worktree-enabled-rerun.json"
   ],
   "authority": {
     "corpusDigest": "fa4176cc1539940c08027a0ae920d3de6b39c9b57132287bd4c6268dcdb34634",
     "benchmarkDigest": "f30d673a7b0f255c009ea42c2c791621327c6d33bfc75ec688cbdfb7583210d0",
     "model": "gpt-5.6-sol",
     "reasoningEffort": "high",
-    "installedReleaseCandidate": "e828519aa4dfa0447a6a10c155310d0a2bc2e243",
+    "installedRelease": "v0.2.5",
+    "sourceRevision": "998aa5bbb1852e6424fbf312ad5e91b914a49cf1",
     "runtimeMode": "RELEASE"
   },
   "latestAggregate": {
     "defaultPassRate": 1.0,
-    "codeclewPassRate": 0.8,
+    "codeclewPassRate": 1.0,
     "defaultMedianNoncachedTokens": 35189,
-    "codeclewMedianNoncachedTokens": 118152,
-    "medianNoncachedTokenReduction": -2.35764,
+    "codeclewMedianNoncachedTokens": 84894,
+    "medianNoncachedTokenReduction": -1.412515,
     "documentationVerificationRecall": 1.0,
     "defaultRecoveryTerminality": 1.0,
-    "codeclewRecoveryTerminality": 0.0,
+    "codeclewRecoveryTerminality": 1.0,
     "falseExactClaims": 0
   },
   "gates": {
-    "passRateNotLower": "FAIL",
-    "zeroCriticalMisses": "FAIL_MULTI_REPOSITORY_RECOVERY",
+    "passRateNotLower": "PASS",
+    "zeroCriticalMisses": "PASS",
     "zeroFalseExactClaims": "PASS",
     "noncachedTokensAtLeastThirtyPercentLower": "FAIL",
     "documentationVerificationRecallAtLeastNinetyPercent": "PASS",
-    "recoveryTerminalityOneHundredPercent": "FAIL",
+    "recoveryTerminalityOneHundredPercent": "PASS",
     "privacySafeAggregate": "PASS"
   },
   "resolvedSinceHistoricalQualification": [
     "Installed RELEASE shared seed leases no longer require writes inside the release.",
     "Installed RELEASE capabilities no longer creates mutable Codeclew state.",
-    "The internal Q1 permits Git worktrees in disposable repositories, so worktree creation is not a product gate."
+    "The internal Q1 permits Git worktrees in disposable repositories, so worktree creation is not a product gate.",
+    "Generated authoring inputs and canonicalization reduced failed tool calls from 40 to 5.",
+    "All five task classes now pass, including multi-repository roll-forward with both repositories compiling."
   ],
   "primaryBlocker": {
-    "code": "AGENT_PLAN_AUTHORING_INTERFACE_NOT_USABLE",
-    "summary": "Managed-change agents must reverse-engineer internal plan and mission JSON plus canonical byte encoding.",
-    "requiredProductChange": "Generate valid plan and mission inputs, publish versioned schemas, and canonicalize JSON inside the CLI."
+    "code": "AGENT_NAVIGATION_TOO_EXPENSIVE",
+    "summary": "The functional contour passes, but repeated accumulated context and broad schema discovery make the agent use 2.41 times the Default median noncached tokens.",
+    "requiredProductChange": "Return navigation expansion deltas and remove remaining schema discovery through generated templates and complete CLI-side canonicalization."
   },
   "qualifiedProductClaim": {
-    "singleRepositoryAnalysis": "Useful evidence was produced, but the measured workflow did not beat Default on time or tokens.",
-    "factBackedDocumentation": "Complete facts and native verification passed; TypeScript certainty remains conditional.",
-    "singleRepositoryMutation": "Functionally passed for Kotlin 2.4.10 but the authoring workflow is not efficient enough.",
+    "singleRepositoryAnalysis": "Functionally passed with conditional Rust syntax evidence, but did not beat Default on time or tokens.",
+    "factBackedDocumentation": "Functionally passed with complete native verification; TypeScript certainty remains conditional.",
+    "singleRepositoryMutation": "Functionally passed for Kotlin 2.4.10 with one published file and a clean source checkout.",
     "multiRepositoryAnalysis": "Functionally passed for the measured Kotlin, Java, and TypeScript workspace.",
-    "multiRepositoryMutationRecovery": "Not qualified for agent use.",
+    "multiRepositoryMutationRecovery": "Functionally passed the controlled roll-forward case with both native compiles green.",
     "strictAgentSandboxPublication": "Not evaluated by the worktree-enabled internal rerun."
   },
   "nextSlice": {
-    "name": "GENERATED_PLAN_AND_MISSION_AUTHORING",
+    "name": "DELTA_NAVIGATION_AND_AUTHORING_COMPLETION",
     "validationCases": [
-      "Q1-ONE-REPO-CHANGE",
+      "Q1-SINGLE-ANALYSIS",
       "Q1-MULTI-REPO-RECOVERY"
     ],
     "fullQ1AfterSliceOnly": true
