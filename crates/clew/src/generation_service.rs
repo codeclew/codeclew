@@ -379,6 +379,20 @@ fn ensure_rust_generation_set(
     publish_head: bool,
     binding_prefix: &str,
 ) -> Result<ReadyGenerationSet, ClewError> {
+    if publish_head
+        && let Some(ready) = bind_exact_rust_incremental_heads(
+            session,
+            state,
+            store,
+            repo,
+            &snapshot_object,
+            compilation_root,
+            binding_path,
+            binding_prefix,
+        )?
+    {
+        return Ok(ready);
+    }
     let model = extract_cargo_model(repo, &session.compilations)?;
     let (_, observed_snapshot) = capture(repo, store)?;
     if observed_snapshot != snapshot_object {
@@ -423,6 +437,69 @@ fn ensure_rust_generation_set(
     let ready = assemble_ready_set(session, snapshot_object, results)?;
     write_ready_set(state, binding_path, &ready)?;
     Ok(ready)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bind_exact_rust_incremental_heads(
+    session: &SessionAuthority,
+    state: &StateAuthority,
+    store: &CasStore,
+    repo: &Path,
+    snapshot: &CasObject,
+    compilation_root: &Path,
+    binding_path: &Path,
+    binding_prefix: &str,
+) -> Result<Option<ReadyGenerationSet>, ClewError> {
+    let repository = state.repository(repo)?;
+    if repository.key != session.repository_key {
+        return Err(corrupt(
+            "Rust generation repository differs from session Git authority",
+        ));
+    }
+    let mut compilations = Vec::with_capacity(session.compilations.len());
+    for compilation in &session.compilations {
+        let head_path = incremental_head_path(&repository.root, compilation)?;
+        let head = load_incremental_head_for_planning(state, store, &head_path)?;
+        let Some(head) = head.ready() else {
+            return Ok(None);
+        };
+        if !rust_head_matches_session(&head.ready, session, snapshot, compilation) {
+            return Ok(None);
+        }
+        verify_ready(store, &head.ready, session, compilation, true)?;
+        compilations.push(head.ready.clone());
+    }
+
+    let ready = assemble_ready_set(session, snapshot.clone(), compilations.clone())?;
+    for (compilation, ready) in session.compilations.iter().zip(compilations) {
+        let component = digest_component(
+            &canonical::hash(&json!({
+                "schema":"codeclew-session-rust-compilation-binding/1.0",
+                "compilation":compilation,
+            }))
+            .map_err(internal)?,
+        )?
+        .to_owned();
+        write_private_atomic(
+            state,
+            &compilation_root.join(format!("{binding_prefix}{component}.json")),
+            &ready,
+        )?;
+    }
+    write_ready_set(state, binding_path, &ready)?;
+    Ok(Some(ready))
+}
+
+fn rust_head_matches_session(
+    ready: &ReadyGeneration,
+    session: &SessionAuthority,
+    snapshot: &CasObject,
+    compilation: &str,
+) -> bool {
+    ready.runtime_key == session.runtime_key
+        && ready.base_revision == session.base_revision
+        && ready.repository_snapshot == *snapshot
+        && ready.compilation == compilation
 }
 
 #[allow(clippy::too_many_arguments)]
