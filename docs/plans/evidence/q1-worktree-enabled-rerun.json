@@ -1,0 +1,122 @@
+{
+  "schema": "codeclew-q1-worktree-enabled-rerun/1.0",
+  "date": "2026-08-29",
+  "status": "Q1_NOT_QUALIFIED",
+  "authority": {
+    "corpusDigest": "fa4176cc1539940c08027a0ae920d3de6b39c9b57132287bd4c6268dcdb34634",
+    "benchmarkDigest": "f30d673a7b0f255c009ea42c2c791621327c6d33bfc75ec688cbdfb7583210d0",
+    "responseSchemaDigest": "50bab6285c25acd5e5a3013ac4c97132b09d336a955a530f0ffa8c7801967494",
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "high",
+    "runner": "codex-cli-0.147.0",
+    "productVersion": "0.2.4",
+    "candidateSourceRevision": "e828519aa4dfa0447a6a10c155310d0a2bc2e243",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:284dbb691f0ab187dd5b53f3fb54303779a51b4b6576b7836d50bd32f6aec34f",
+    "runtimeManifestDigest": "sha256:fe4c545ee6aa48337d06a59b02f6f6ce740fba5094208908d483e6b58e3ae1d1",
+    "launcherAuthority": "INSTALLED_RELEASE",
+    "sourceFallbackAllowed": false
+  },
+  "execution": {
+    "taskCount": 5,
+    "armCount": 10,
+    "fullCohortCompleted": true,
+    "coldStartScored": false,
+    "frozenCorpusRetuned": false,
+    "executionContractChangedAfterHistoricalGate": true,
+    "sandboxOverride": "DANGER_FULL_ACCESS_FOR_BOTH_ARMS_ON_DISPOSABLE_REPOSITORIES",
+    "gitWorktreesAllowed": true,
+    "sandboxOverrideReason": "The internal product-value Q1 explicitly allows Git worktrees; strict agent-sandbox publication is a separate integration concern.",
+    "defaultTaskOneReused": "Exact prior raw arm at the same task, revision, model, and reasoning effort; its read-only sandbox was stricter than this rerun.",
+    "codeclewDocumentationArmCorrection": "The first replacement fixture omitted ignored frontend dependencies. It was not scored; the retained arm used the same complete checkout as Default.",
+    "rawPrivateEvidenceRetained": true,
+    "rawEvidenceManifest": "MANIFEST.sha256"
+  },
+  "tasks": [
+    {
+      "id": "Q1-SINGLE-ANALYSIS",
+      "default": {"outcome": "PASS", "elapsedSeconds": 45, "toolCalls": 3, "failedToolCalls": 0, "noncachedTokens": 35655},
+      "codeclew": {"outcome": "PASS", "elapsedSeconds": 150, "toolCalls": 12, "failedToolCalls": 0, "noncachedTokens": 58058}
+    },
+    {
+      "id": "Q1-DOCUMENTATION",
+      "default": {"outcome": "PASS", "elapsedSeconds": 124, "toolCalls": 6, "failedToolCalls": 1, "noncachedTokens": 43252, "nativeTests": "115_PASS_2_SKIPPED"},
+      "codeclew": {"outcome": "PASS", "elapsedSeconds": 212, "toolCalls": 19, "failedToolCalls": 0, "noncachedTokens": 79917, "nativeTests": "115_PASS_2_SKIPPED", "certainty": "CONDITIONAL_UNSURE_GENERATION_AUTHORITY"}
+    },
+    {
+      "id": "Q1-ONE-REPO-CHANGE",
+      "default": {"outcome": "PASS", "elapsedSeconds": 72, "toolCalls": 5, "failedToolCalls": 0, "noncachedTokens": 28726, "nativeCompile": "PASS"},
+      "codeclew": {"outcome": "PASS", "elapsedSeconds": 430, "toolCalls": 45, "failedToolCalls": 19, "noncachedTokens": 118152, "nativeCompile": "PASS", "publication": "PUBLISHED_CONDITIONAL"}
+    },
+    {
+      "id": "Q1-CROSS-REPO-ANALYSIS",
+      "default": {"outcome": "PASS", "elapsedSeconds": 113, "toolCalls": 18, "failedToolCalls": 2, "noncachedTokens": 35189},
+      "codeclew": {"outcome": "PASS", "elapsedSeconds": 211, "toolCalls": 32, "failedToolCalls": 0, "noncachedTokens": 134328, "memberCertainty": "EXACT_JAVA_CONDITIONAL_KOTLIN_TYPESCRIPT"}
+    },
+    {
+      "id": "Q1-MULTI-REPO-RECOVERY",
+      "default": {"outcome": "PASS", "elapsedSeconds": 81, "toolCalls": 7, "failedToolCalls": 1, "noncachedTokens": 28863, "recovery": "ROLLED_FORWARD", "providerUnchanged": true, "nativeCompiles": "PASS"},
+      "codeclew": {"outcome": "FAIL", "elapsedSeconds": 552, "toolCalls": 50, "failedToolCalls": 21, "noncachedTokens": 175410, "recovery": "RECOVERY_REQUIRED", "repositoriesChanged": false, "terminal": "CHANGE_SPEC_NOT_OPENED"}
+    }
+  ],
+  "aggregate": {
+    "defaultPassRate": 1.0,
+    "codeclewPassRate": 0.8,
+    "defaultMedianElapsedSeconds": 81,
+    "codeclewMedianElapsedSeconds": 212,
+    "defaultMedianToolCalls": 6,
+    "codeclewMedianToolCalls": 32,
+    "defaultMedianNoncachedTokens": 35189,
+    "codeclewMedianNoncachedTokens": 118152,
+    "medianNoncachedTokenReduction": -2.35764,
+    "codeclewToDefaultMedianTokenRatio": 3.35764,
+    "defaultTotalNoncachedTokens": 171685,
+    "codeclewTotalNoncachedTokens": 565865,
+    "documentationVerificationRecall": 1.0,
+    "defaultRecoveryTerminality": 1.0,
+    "codeclewRecoveryTerminality": 0.0,
+    "falseExactClaims": 0
+  },
+  "gates": {
+    "passRateNotLower": "FAIL",
+    "zeroCriticalMisses": "FAIL_MULTI_REPOSITORY_RECOVERY",
+    "zeroFalseExactClaims": "PASS",
+    "noncachedTokensAtLeastThirtyPercentLower": "FAIL",
+    "documentationVerificationRecallAtLeastNinetyPercent": "PASS",
+    "recoveryTerminalityOneHundredPercent": "FAIL",
+    "privacySafeAggregate": "PASS",
+    "rawReplayRetained": "PASS"
+  },
+  "productChangesValidatedBeforeRerun": {
+    "installedReleaseSeedLease": "READ_ONLY_NO_CREATE",
+    "packagedLease": "PRECREATED_PRIVATE_REGULAR_FILE",
+    "installedReleaseCapabilities": "STATELESS_NO_MUTABLE_CODECLEW_HOME",
+    "bootstrapTests": "42_PASS",
+    "releasePackagingTests": "4_PASS"
+  },
+  "primaryFinding": {
+    "code": "AGENT_PLAN_AUTHORING_INTERFACE_NOT_USABLE",
+    "summary": "Codeclew evidence was useful on four tasks, but managed change required agents to reverse-engineer internal JSON schemas and canonical byte encoding.",
+    "singleRepositoryConsequence": "The correct one-file change passed, but plan construction caused 19 failed commands and made the arm substantially slower and more expensive than Default.",
+    "multiRepositoryConsequence": "After 21 failed schema attempts, mission open still rejected ChangeSpec canonicalization; no candidate was created and recovery remained incomplete.",
+    "requiredProductChange": "Provide machine-generated change and mission templates or a high-level builder, expose versioned schemas, and canonicalize accepted JSON inside the CLI. Agents must never discover required fields by repeated rejection."
+  },
+  "secondaryFindings": [
+    "Doctor does not reject an invalid Rust compilation selector before context admission.",
+    "Doctor does not verify the project-local TypeScript dependency needed by context admission.",
+    "Kotlin and TypeScript generation authority remains UNSURE in cases where focused native verification passes.",
+    "Strict sandbox publication remains a separate integration boundary and was not claimed by this worktree-enabled internal Q1."
+  ],
+  "decision": {
+    "q1Qualified": false,
+    "nextSlice": "GENERATED_PLAN_AND_MISSION_AUTHORING",
+    "repeatFullQ1BeforeNextSlice": false,
+    "nextValidation": "Run the one-repository change and multi-repository recovery cases only; rerun the full frozen cohort only after both pass without schema-discovery failures."
+  },
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSourceBodies": false,
+    "containsRawModelOutput": false
+  }
+}

@@ -4,11 +4,11 @@
 
 - **Status:** roadmap execution is complete through Q1. M1, M2, W1, L1, J1,
   C1, W2, W3, the W4 local publication core, T1/T2 ECMAScript profiles, P1
-  polyglot composition, and CS0 are accepted. CS0 concluded `DEFER`; Q1
-  concluded `NOT_QUALIFIED` and identified sandbox runtime attach as the next
-  product blocker. W4 remains deliberately
+  polyglot composition, and CS0 are accepted. CS0 concluded `DEFER`; the latest
+  worktree-enabled Q1 rerun concluded `NOT_QUALIFIED` and identified agent plan
+  and mission authoring as the next product blocker. W4 remains deliberately
   unadvertised for JVM multi-service mutation until its three-case JVM gate.
-- **Date:** 2026-08-28.
+- **Date:** 2026-08-29.
 - **Baseline:** released tag `v0.2.4` at
   `ddfc9436033b72fe3218939227f5a630750092d4`.
 - **Objective:** prove a locally useful agent-development workflow that preserves
@@ -713,25 +713,30 @@ an agent materially better on realistic local development tasks.
 
 ### Measured outcome
 
-`NOT_QUALIFIED`. One frozen internal experiment used five task classes and ten
-same-model arms after one dry run. Default passed 5/5 tasks; Codeclew passed 2/5,
-failed both managed-change tasks at admission, and timed out on the cross-
-repository analysis arm. Codeclew's median noncached tokens among completed
-arms were 125,089 versus Default's 72,097, so the required 30% reduction was not
-met. Oracle recall was 41.4%, recovery terminality was 0%, and no false exact
-claim was observed.
+`NOT_QUALIFIED`. The latest internal rerun used the same five frozen task classes
+and ten same-model arms. At the user's direction, both arms ran against disposable
+repositories with Git worktrees allowed; strict agent-sandbox publication was
+removed from this product-value gate. Default passed 5/5 tasks and Codeclew
+passed 4/5. The installed RELEASE fixes removed the earlier attach blocker:
+stateless capabilities, single-repository analysis and change, documentation,
+and three-repository analysis all completed.
 
-The dominant failure was not missing language evidence. Within the agent's
-workspace sandbox, the pinned source launcher did not attach to the already
-primed compatible RELEASE capsule and sessions. It attempted a new Gradle worker
-bootstrap, whose local DatagramChannel was denied by sandbox policy. Read arms
-then spent time on honest fallback; managed mutations correctly failed closed.
+The remaining failure is the agent-facing managed-change interface. The
+single-repository Codeclew change reached the correct published result, but 19
+failed commands were spent discovering internal plan fields. Multi-repository
+recovery stopped after 21 failed schema/canonicalization attempts without opening
+the mission or changing either repository. Default rolled the same recovery
+forward and compiled both repositories. Median noncached tokens were 118,152 for
+Codeclew versus 35,189 for Default, so the required 30% reduction was not met.
+Documentation recall passed and no false exact claim was observed; recovery
+terminality remained 0%.
 
-The next product slice is therefore a stable installed RELEASE entrypoint with
-typed, build-free warm attach to a compatible capsule. Adding another language,
-framework semantics, or benchmark infrastructure before that fix would not
-improve the measured agent workflow. The complete privacy-safe aggregate and
-qualified-scope statement are retained in
+The next slice is generated plan and mission authoring: versioned machine-readable
+schemas, official valid templates or a high-level builder, and CLI-side JSON
+canonicalization. Only the one-repository change and multi-repository recovery
+cases should run during that slice. The full frozen cohort should run again only
+after both pass without schema-discovery failures. The privacy-safe aggregate is
+retained in `docs/plans/evidence/q1-worktree-enabled-rerun.json` and summarized in
 `docs/plans/evidence/agent-development-qualification.json`.
 
 ## Deferred until evidence promotes them
