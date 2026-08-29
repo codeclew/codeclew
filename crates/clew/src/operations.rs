@@ -54,6 +54,8 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
         "productVersion":env!("CARGO_PKG_VERSION"),
         "status":"PILOT_READY",
         "runtimeMode":runtime.mode,
+        "runtimeKey":runtime.runtime_key,
+        "runtimeManifestDigest":runtime.manifest_digest,
         "supportMatrix":matrix,
         "supportMatrixDigest":canonical::hash(&matrix).map_err(internal)?,
         "packagedWorkers":packaged_workers,
