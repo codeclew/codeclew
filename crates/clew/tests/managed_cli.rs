@@ -833,7 +833,7 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
         &runtime,
         &lease,
         &[
-            "session",
+            "context",
             "open",
             "--repo",
             repo.to_str().unwrap(),
@@ -843,37 +843,10 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
             "python",
             "--compilation",
             "python:.#src",
-        ],
-        Some(&poison_bin),
-    );
-    assert!(
-        opened.status.success(),
-        "{}",
-        String::from_utf8_lossy(&opened.stdout)
-    );
-    let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
-    let session = opened["session"]["sessionId"].as_str().unwrap();
-    let session_component = session.strip_prefix("session:").unwrap();
-    assert!(
-        !state_root
-            .join("sessions")
-            .join(session_component)
-            .join("source")
-            .exists()
-    );
-    assert!(!git_poison.with_extension("executed").exists());
-    assert!(!checkout_hook.with_extension("executed").exists());
-
-    let context = run_managed(
-        &runtime_binary,
-        &state_root,
-        &runtime,
-        &lease,
-        &[
-            "context",
-            "create",
-            "--session",
-            session,
+            "--profile",
+            "python-syntax",
+            "--operation",
+            "analysis",
             "--intent",
             "Find service normalization behavior",
             "--term",
@@ -886,12 +859,31 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
         Some(&poison_bin),
     );
     assert!(
-        context.status.success(),
+        opened.status.success(),
         "{}",
-        String::from_utf8_lossy(&context.stdout)
+        String::from_utf8_lossy(&opened.stdout)
     );
-    assert!(context.stdout.len() <= 64 * 1024);
-    let encoded = String::from_utf8(context.stdout.clone()).unwrap();
+    let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
+    assert_eq!(opened["schema"], "codeclew-context-open/1.0");
+    assert_eq!(opened["admission"]["status"], "PASS");
+    assert_eq!(
+        opened["admission"]["agentContract"]["schema"],
+        "codeclew-agent-contract/1.0"
+    );
+    let session = opened["session"]["sessionId"].as_str().unwrap();
+    let session_component = session.strip_prefix("session:").unwrap();
+    assert!(
+        !state_root
+            .join("sessions")
+            .join(session_component)
+            .join("source")
+            .exists()
+    );
+    assert!(!git_poison.with_extension("executed").exists());
+    assert!(!checkout_hook.with_extension("executed").exists());
+
+    assert!(opened["context"].to_string().len() <= 64 * 1024);
+    let encoded = String::from_utf8(canonical::bytes(&opened).unwrap()).unwrap();
     assert!(encoded.contains("language:python"));
     assert!(encoded.contains("Service"));
     assert!(encoded.contains("normalize"));
@@ -906,8 +898,7 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
     assert!(!poison_bin.join("python3.executed").exists());
     assert!(!git_poison.with_extension("executed").exists());
     assert!(!checkout_hook.with_extension("executed").exists());
-    let context: Value = serde_json::from_slice(&context.stdout).unwrap();
-    let context_id = context["contextId"].as_str().unwrap();
+    let context_id = opened["context"]["contextId"].as_str().unwrap();
 
     let mutation = run_managed(
         &runtime_binary,

@@ -151,6 +151,8 @@ enum SessionCommand {
 
 #[derive(Subcommand)]
 enum ContextCommand {
+    /// Admit one exact task, open its session, and create the first bounded context.
+    Open(ContextOpenArgs),
     Create(ContextCreateArgs),
     Expand(ContextExpandArgs),
 }
@@ -497,6 +499,24 @@ struct SessionGcArgs {
 struct ContextCreateArgs {
     #[arg(long)]
     session: String,
+    #[arg(long)]
+    intent: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long, default_value_t = 2)]
+    max_roots: usize,
+}
+
+#[derive(Args)]
+struct ContextOpenArgs {
+    #[command(flatten)]
+    session: SessionOpenArgs,
+    /// Exact support-matrix profile for this task.
+    #[arg(long)]
+    profile: String,
+    /// Analysis or mutation authority required by the task.
+    #[arg(long, value_enum)]
+    operation: DoctorOperationArg,
     #[arg(long)]
     intent: String,
     #[arg(long = "term", required = true)]
@@ -1199,6 +1219,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             Ok(json!({"schema":"codeclew-session-gc-result/1.0","lifecycle":lifecycle}))
         }
         Command::Context {
+            command: ContextCommand::Open(args),
+        } => context_open(args),
+        Command::Context {
             command: ContextCommand::Create(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
@@ -1638,6 +1661,65 @@ fn create_context(
     let (projection, evidence) =
         clew::context_v2::create(session, &intent, &terms, max_roots, None)?;
     bounded_context_stdout(&session.store_context(None, intent, terms, projection, evidence)?)
+}
+
+fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
+    let runtime = active_runtime()?;
+    let repository = absolute(&args.session.repo)?;
+    let readiness = doctor(
+        &runtime,
+        DoctorScope::Task,
+        Some(&repository),
+        Some(&args.session.target_ref),
+        Some(DoctorTask {
+            language: session_language(args.session.language),
+            profile_id: &args.profile,
+            operation: match args.operation {
+                DoctorOperationArg::Analysis => DoctorOperation::Analysis,
+                DoctorOperationArg::Mutation => DoctorOperation::Mutation,
+            },
+            compilations: &args.session.compilation,
+        }),
+    )?;
+    require_task_ready(&readiness)?;
+    let readiness_digest = canonical::hash(&readiness).map_err(internal)?;
+    let product = capabilities(&runtime)?;
+    let session = open_session(&args.session)?;
+    match create_context(&session, args.intent, args.terms, args.max_roots) {
+        Ok(context) => Ok(json!({
+            "schema":"codeclew-context-open/1.0",
+            "status":"OPEN",
+            "admission":{
+                "agentContract":product["agentContract"],
+                "readinessDigest":readiness_digest,
+                "readinessSchema":readiness["schema"],
+                "runtimeKey":runtime.runtime_key,
+                "runtimeManifestDigest":runtime.manifest_digest,
+                "status":"PASS",
+                "taskAuthority":readiness["taskAuthority"],
+            },
+            "session":session,
+            "context":context,
+        })),
+        Err(error) => Err(change_open_failure(error, &session.session_id, || {
+            session.abort()?;
+            session.gc(false)?;
+            Ok(())
+        })),
+    }
+}
+
+fn require_task_ready(readiness: &Value) -> Result<(), ClewError> {
+    if readiness["status"] == "PASS" {
+        return Ok(());
+    }
+    let next_action = readiness["nextAction"]
+        .as_str()
+        .unwrap_or("REVIEW_TASK_READINESS");
+    Err(ClewError::new(
+        ErrorCode::PreconditionFailed,
+        format!("task readiness requires action: {next_action}"),
+    ))
 }
 
 fn change_open(args: ChangeOpenArgs) -> Result<Value, ClewError> {
@@ -2695,6 +2777,30 @@ mod tests {
         assert!(
             Cli::try_parse_from([
                 "clew",
+                "context",
+                "open",
+                "--repo",
+                ".",
+                "--target-ref",
+                "main",
+                "--language",
+                "python",
+                "--compilation",
+                "python:.#src",
+                "--profile",
+                "python-syntax",
+                "--operation",
+                "analysis",
+                "--intent",
+                "Inspect worker bootstrap",
+                "--term",
+                "build_worker",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
                 "change",
                 "check-freshness",
                 "--session",
@@ -2737,6 +2843,18 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidInput);
         assert!(error.message.contains("source checkout"));
         assert!(error.message.contains("Git"));
+    }
+
+    #[test]
+    fn orchestrated_context_open_fails_closed_on_task_readiness() {
+        require_task_ready(&json!({"status":"PASS","nextAction":"NONE"})).unwrap();
+        let error = require_task_ready(&json!({
+            "status":"ACTION_REQUIRED",
+            "nextAction":"SELECT_SUPPORTED_OPERATION",
+        }))
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert!(error.message.contains("SELECT_SUPPORTED_OPERATION"));
     }
 
     #[test]

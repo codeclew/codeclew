@@ -82,8 +82,10 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
         "supportMatrixDigest":support_matrix_digest,
         "agentContract":{
             "schema":"codeclew-agent-contract/1.0",
-            "admissionCommands":["capabilities", "doctor attach", "doctor task"],
+            "admissionCommands":["capabilities", "context open"],
+            "diagnosticCommands":["doctor attach", "doctor task"],
             "launcherAuthority":"INSTALLED_RELEASE",
+            "primaryOpenCommand":"context open",
             "readinessSchema":"codeclew-doctor/2.0",
             "skillDigest":agent_skill_digest(),
             "skillPackageVersion":"0.2.0",
@@ -658,7 +660,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:bdb3e6bee7cc6244c00d1d4da788b7e4b816982955f6a4365b70cdad65fe53ea"
+            "sha256:1690cc9c3a64ee86fadb764363a39278d937a2d8cd5deeb7ebdc725eb041bea5"
         );
     }
 

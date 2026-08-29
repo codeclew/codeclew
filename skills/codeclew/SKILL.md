@@ -30,17 +30,19 @@ Preserve the user's scope and Codeclew's authority boundaries.
    `agentContract.launcherAuthority=INSTALLED_RELEASE`, and
    `agentContract.sourceFallbackAllowed=false`. Stop on a missing or mismatched
    contract instead of trying another launcher.
-4. Run `clew doctor attach` once, then run the exact task gate:
-   `clew doctor task --repo <absolute-repo> --target-ref <exact-ref> --language
+4. Open the admitted task and first bounded context atomically:
+   `clew context open --repo <absolute-repo> --target-ref <exact-ref> --language
    <language> --profile <profile-id> --compilation <compilation> --operation
-   <analysis-or-mutation>`. Repeat `--compilation` only for an explicitly
-   multi-compilation task. Consume canonical JSON, not the optional `--human`
-   view. `doctor provision` is a maintainer/bootstrap diagnostic and is not an
-   admission step for an installed product task.
-5. Continue only when both doctor results are `PASS`, every required check is
-   `PASS`, and the support matrix admits the requested language, profile, and
-   operation. A successful process exit does not override `ACTION_REQUIRED` or
-   a read-only profile.
+   <analysis-or-mutation> --intent <intent> --term <term>`. Repeat
+   `--compilation` and `--term` only for explicit additional authorities and
+   roots. Require `admission.status=PASS` and retain the returned session and
+   context identifiers.
+5. On a typed readiness failure, run only the named diagnostic (`clew doctor
+   attach` or the same exact `clew doctor task ...`) once, report its
+   `nextAction`, and stop. `doctor provision` is a maintainer/bootstrap
+   diagnostic and is not an admission step for an installed product task. A
+   successful process exit never overrides `ACTION_REQUIRED` or a read-only
+   profile.
 
 Never describe syntax-only, partial, declared, conditional, or unsure evidence
 as compiler-verified behavior.
