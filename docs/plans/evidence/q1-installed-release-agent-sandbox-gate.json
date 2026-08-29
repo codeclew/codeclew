@@ -1,0 +1,92 @@
+{
+  "schema": "codeclew-q1-installed-release-agent-sandbox-gate/1.0",
+  "date": "2026-08-29",
+  "status": "Q1_NOT_QUALIFIED_EARLY_STOP",
+  "authority": {
+    "corpusDigest": "fa4176cc1539940c08027a0ae920d3de6b39c9b57132287bd4c6268dcdb34634",
+    "benchmarkDigest": "f30d673a7b0f255c009ea42c2c791621327c6d33bfc75ec688cbdfb7583210d0",
+    "responseSchemaDigest": "50bab6285c25acd5e5a3013ac4c97132b09d336a955a530f0ffa8c7801967494",
+    "model": "gpt-5.6-sol",
+    "reasoningEffort": "high",
+    "runner": "codex-cli-0.147.0",
+    "productVersion": "0.2.4",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:5560ff126540a77125e7edc3d89b825a498b2c34f3e58163415f218f16f4ca07",
+    "agentContractSchema": "codeclew-agent-contract/1.0",
+    "launcherAuthority": "INSTALLED_RELEASE",
+    "sourceFallbackAllowed": false
+  },
+  "preflight": {
+    "initialAttemptCounted": false,
+    "initialFailure": "STALE_INSTALLED_LAUNCHER",
+    "correctiveAction": "ACTIVATE_MATCHING_RELEASE",
+    "agentShellResolvedMatchingRelease": true,
+    "hostAttach": "PASS"
+  },
+  "execution": {
+    "plannedTaskCount": 5,
+    "plannedArmCount": 10,
+    "measuredTaskCount": 1,
+    "measuredArmCount": 2,
+    "earlyStopReason": "PASS_RATE_AND_ZERO_CRITICAL_MISS_GATES_BECAME_UNREACHABLE",
+    "retunedAfterMeasuredStart": false,
+    "rawPrivateEvidenceRetained": true
+  },
+  "measuredPair": {
+    "taskId": "Q1-SINGLE-ANALYSIS",
+    "taskClass": "SINGLE_REPOSITORY_ANALYSIS",
+    "default": {
+      "outcome": "PASS",
+      "oracleRecall": 1.0,
+      "criticalMisses": 0,
+      "falseExactClaims": 0,
+      "elapsedSeconds": 61,
+      "toolCalls": 5,
+      "toolOutputBytes": 37470,
+      "noncachedTokens": 32422
+    },
+    "codeclew": {
+      "outcome": "PARTIAL",
+      "terminal": "ADMISSION_FAILED",
+      "oracleRecall": 0.0,
+      "criticalMisses": 5,
+      "falseExactClaims": 0,
+      "elapsedSeconds": 57,
+      "toolCalls": 2,
+      "failedToolCalls": 2,
+      "toolOutputBytes": 6074,
+      "noncachedTokens": 23225,
+      "reportedObligationCount": 3
+    },
+    "noncachedTokenReduction": 0.283665,
+    "tokenGateInterpretation": "NOT_SCORED_BECAUSE_CODECLEW_DID_NOT_COMPLETE_THE_TASK"
+  },
+  "gates": {
+    "passRateNotLower": "FAIL_DECISIVE",
+    "zeroCriticalMisses": "FAIL_DECISIVE",
+    "zeroFalseExactClaims": "PASS_ON_EXECUTED_PAIR",
+    "noncachedTokensAtLeastThirtyPercentLower": "NOT_SCORED_INCOMPLETE_ARM",
+    "documentationVerificationRecallAtLeastNinetyPercent": "NOT_RUN",
+    "recoveryTerminalityOneHundredPercent": "NOT_RUN",
+    "privacySafeAggregate": "PASS"
+  },
+  "primaryFinding": {
+    "code": "INSTALLED_SEED_LEASE_REQUIRES_SANDBOX_WRITE",
+    "summary": "The matching installed RELEASE attaches on the host but fails closed inside the agent workspace sandbox before capabilities or context admission.",
+    "observedError": "sealed runtime seed lease is unsafe",
+    "sourceAnchor": "bootstrap/clew_bootstrap.py",
+    "mechanism": "The sealed seed path opens or creates its shared runtime lease with write authority inside the installed release tree, which is outside the agent sandbox writable roots.",
+    "requiredProductChange": "Package the lease as an existing private file and acquire the shared lease through a read-only no-follow descriptor; fail closed if it is absent or replaced, and add an installed-launcher agent-sandbox regression test."
+  },
+  "decision": {
+    "q1Qualified": false,
+    "fullCohortRunUsefulBeforeFix": false,
+    "nextGate": "INSTALLED_RELEASE_AGENT_SANDBOX_ATTACH_PASS"
+  },
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSourceBodies": false,
+    "containsRawModelOutput": false
+  }
+}
