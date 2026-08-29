@@ -1223,6 +1223,59 @@ class BootstrapAuthorityTest(unittest.TestCase):
             finally:
                 lease.close()
 
+            process_lease = lease_path.open("rb")
+            execute = mock.Mock()
+            state_descriptor = None
+            runtime_descriptor = None
+            try:
+                with (
+                    mock.patch.dict(
+                        os.environ,
+                        {
+                            "CODECLEW_HOME": str(root / "trial-state"),
+                            "CODECLEW_RUNTIME_SEED": str(seed_path),
+                        },
+                        clear=False,
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "sealed_runtime_seed",
+                        return_value=(key, capsule, process_lease),
+                    ),
+                    mock.patch.object(
+                        bootstrap,
+                        "state_root",
+                        side_effect=AssertionError("capabilities opened mutable state"),
+                    ),
+                    mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "clew_bootstrap.py",
+                            "--source-root",
+                            str(source),
+                            "capabilities",
+                        ],
+                    ),
+                    mock.patch.object(os, "execve", execute),
+                ):
+                    self.assertEqual(bootstrap.main(), 1)
+                execute.assert_called_once()
+                environment = execute.call_args.args[2]
+                state_descriptor = int(environment[bootstrap.STATE_ROOT_FD_ENV])
+                runtime_descriptor = int(environment[bootstrap.RUNTIME_ROOT_FD_ENV])
+                self.assertEqual(
+                    os.fstat(state_descriptor).st_ino,
+                    state.stat().st_ino,
+                )
+                self.assertFalse((root / "trial-state").exists())
+            finally:
+                if state_descriptor is not None:
+                    os.close(state_descriptor)
+                if runtime_descriptor is not None:
+                    os.close(runtime_descriptor)
+                process_lease.close()
+
             def wrong_git_authority(arguments, _source):
                 return ("c" * 40 if arguments[-1] == "HEAD" else "b" * 40).encode() + b"\n"
 

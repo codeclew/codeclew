@@ -3321,28 +3321,45 @@ def main() -> int:
             "status": "PASS",
         }).decode())
         return 0
-    root, state_fd = state_root()
+    external_seed = os.environ.get("CODECLEW_RUNTIME_SEED") is not None
+    if external_seed and cold_evidence_profile is not None:
+        raise BootstrapError("cold build evidence cannot use a sealed runtime seed")
+    seed_capabilities = external_seed and command[:1] == ["capabilities"]
+    checkpoint = None
+    lease = None
+    cold_toolchain_invoked = False
+    capsule_build_invoked = False
+    cold_build_evidence: dict[str, object] = {}
+    if seed_capabilities:
+        key, capsule, lease = sealed_runtime_seed(source)
+        seed_path = Path(os.environ["CODECLEW_RUNTIME_SEED"])
+        root = seed_path.parent / "parallel-state" / "v2"
+        state_fd = os.open(root, _directory_flags())
+        state_metadata = os.fstat(state_fd)
+        if (
+            not stat.S_ISDIR(state_metadata.st_mode)
+            or state_metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(state_metadata.st_mode) != 0o700
+            or root.resolve(strict=True) != root
+        ):
+            os.close(state_fd)
+            raise BootstrapError("sealed runtime seed state is unsafe")
+        checkpoint = {"externalSeed": True, "runtimeKey": key}
+    else:
+        root, state_fd = state_root()
     if dependency_prime:
         try:
             print(canonical(prime_dependency_cache(source, root)).decode())
         finally:
             os.close(state_fd)
         return 0
-    external_seed = os.environ.get("CODECLEW_RUNTIME_SEED") is not None
-    if external_seed and cold_evidence_profile is not None:
-        raise BootstrapError("cold build evidence cannot use a sealed runtime seed")
     path_to_checkpoint = checkpoint_path(root, source)
     checkpoint_key = (
         None
-        if cold_evidence_profile is not None
+        if seed_capabilities or cold_evidence_profile is not None
         else read_checkpoint_candidate_key(path_to_checkpoint, root)
     )
-    checkpoint = None
-    lease = None
-    cold_toolchain_invoked = False
-    capsule_build_invoked = False
-    cold_build_evidence: dict[str, object] = {}
-    if external_seed:
+    if external_seed and not seed_capabilities:
         key, capsule, lease = sealed_runtime_seed(source)
         checkpoint = {"externalSeed": True, "runtimeKey": key}
     elif checkpoint_key is not None:
