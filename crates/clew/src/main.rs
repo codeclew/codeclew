@@ -7,7 +7,7 @@ use clew::operations::{
 use clew::runtime::RuntimeAuthority;
 use clew::session::mission;
 use clew::session::{
-    ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, SessionLanguage,
+    ContextObject, ModelCachePolicy, RunRecord, RunStatus, SessionAuthority, SessionLanguage,
     bounded_context_stdout, validate_context_request,
 };
 use clew::thread::{ThreadAuthority, ThreadMemberRequest};
@@ -61,6 +61,11 @@ enum Command {
     Context {
         #[command(subcommand)]
         command: ContextCommand,
+    },
+    /// Find compact, fact-bound code candidates without opening a session first.
+    Nav {
+        #[command(subcommand)]
+        command: NavCommand,
     },
     Thread {
         #[command(subcommand)]
@@ -155,6 +160,12 @@ enum ContextCommand {
     Open(ContextOpenArgs),
     Create(ContextCreateArgs),
     Expand(ContextExpandArgs),
+}
+
+#[derive(Subcommand)]
+enum NavCommand {
+    /// Admit the repository and return declaration candidates with bounded source.
+    Query(NavQueryArgs),
 }
 
 #[derive(Subcommand)]
@@ -536,6 +547,22 @@ struct ContextExpandArgs {
     #[arg(long)]
     intent: Option<String>,
     #[arg(long, default_value_t = 4)]
+    max_roots: usize,
+}
+
+#[derive(Args)]
+struct NavQueryArgs {
+    #[command(flatten)]
+    session: SessionOpenArgs,
+    /// Exact support-matrix profile for this repository.
+    #[arg(long)]
+    profile: String,
+    /// Optional provenance only. It never changes retrieval or ranking.
+    #[arg(long)]
+    intent: Option<String>,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    #[arg(long, default_value_t = 2)]
     max_roots: usize,
 }
 
@@ -1255,6 +1282,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 evidence,
             )?)
         }
+        Command::Nav {
+            command: NavCommand::Query(args),
+        } => nav_query(args),
         Command::Thread {
             command: ThreadCommand::Open(args),
         } => {
@@ -1656,40 +1686,60 @@ fn create_context(
     terms: Vec<String>,
     max_roots: usize,
 ) -> Result<Value, ClewError> {
+    bounded_context_stdout(&create_context_object(session, intent, terms, max_roots)?)
+}
+
+fn create_context_object(
+    session: &SessionAuthority,
+    intent: String,
+    terms: Vec<String>,
+    max_roots: usize,
+) -> Result<ContextObject, ClewError> {
     validate_context_request(&intent, &terms)?;
     session.require_open()?;
     let (projection, evidence) =
         clew::context_v2::create(session, &intent, &terms, max_roots, None)?;
-    bounded_context_stdout(&session.store_context(None, intent, terms, projection, evidence)?)
+    session.store_context(None, intent, terms, projection, evidence)
 }
 
-fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
+struct AdmittedContext {
+    admission: Value,
+    session: SessionAuthority,
+    context: ContextObject,
+}
+
+fn admit_and_open_context(
+    session_args: &SessionOpenArgs,
+    profile: &str,
+    operation: DoctorOperationArg,
+    intent: String,
+    terms: Vec<String>,
+    max_roots: usize,
+) -> Result<AdmittedContext, ClewError> {
     let runtime = active_runtime()?;
-    let repository = absolute(&args.session.repo)?;
+    let repository = absolute(&session_args.repo)?;
     let readiness = doctor(
         &runtime,
         DoctorScope::Task,
         Some(&repository),
-        Some(&args.session.target_ref),
+        Some(&session_args.target_ref),
         Some(DoctorTask {
-            language: session_language(args.session.language),
-            profile_id: &args.profile,
-            operation: match args.operation {
+            language: session_language(session_args.language),
+            profile_id: profile,
+            operation: match operation {
                 DoctorOperationArg::Analysis => DoctorOperation::Analysis,
                 DoctorOperationArg::Mutation => DoctorOperation::Mutation,
             },
-            compilations: &args.session.compilation,
+            compilations: &session_args.compilation,
         }),
     )?;
     require_task_ready(&readiness)?;
     let readiness_digest = canonical::hash(&readiness).map_err(internal)?;
     let product = capabilities(&runtime)?;
-    let session = open_session(&args.session)?;
-    match create_context(&session, args.intent, args.terms, args.max_roots) {
-        Ok(context) => Ok(json!({
-            "schema":"codeclew-context-open/1.0",
-            "status":"OPEN",
-            "admission":{
+    let session = open_session(session_args)?;
+    match create_context_object(&session, intent, terms, max_roots) {
+        Ok(context) => Ok(AdmittedContext {
+            admission: json!({
                 "agentContract":product["agentContract"],
                 "readinessDigest":readiness_digest,
                 "readinessSchema":readiness["schema"],
@@ -1697,16 +1747,76 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
                 "runtimeManifestDigest":runtime.manifest_digest,
                 "status":"PASS",
                 "taskAuthority":readiness["taskAuthority"],
-            },
-            "session":session,
-            "context":context,
-        })),
+            }),
+            session,
+            context,
+        }),
         Err(error) => Err(change_open_failure(error, &session.session_id, || {
             session.abort()?;
             session.gc(false)?;
             Ok(())
         })),
     }
+}
+
+fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
+    let opened = admit_and_open_context(
+        &args.session,
+        &args.profile,
+        args.operation,
+        args.intent,
+        args.terms,
+        args.max_roots,
+    )?;
+    let context = bounded_context_stdout(&opened.context)
+        .map_err(|error| compensate_opened_context(error, &opened))?;
+    Ok(json!({
+            "schema":"codeclew-context-open/1.0",
+            "status":"OPEN",
+            "admission":opened.admission,
+            "session":opened.session,
+            "context":context,
+    }))
+}
+
+fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
+    let intent = args
+        .intent
+        .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());
+    let opened = admit_and_open_context(
+        &args.session,
+        &args.profile,
+        DoctorOperationArg::Analysis,
+        intent,
+        args.terms,
+        args.max_roots,
+    )?;
+    let navigation = clew::navigation::query(&opened.context)
+        .map_err(|error| compensate_opened_context(error, &opened))?;
+    let result = json!({
+        "schema":clew::navigation::NAV_QUERY_SCHEMA,
+        "status":"OPEN",
+        "admission":opened.admission,
+        "session":{
+            "sessionId":opened.session.session_id,
+            "baseRevision":opened.session.base_revision,
+            "targetRef":opened.session.target_ref,
+            "language":opened.session.language,
+            "compilations":opened.session.compilations,
+        },
+        "navigation":navigation,
+    });
+    clew::navigation::validate_stdout(&result)
+        .map_err(|error| compensate_opened_context(error, &opened))?;
+    Ok(result)
+}
+
+fn compensate_opened_context(error: ClewError, opened: &AdmittedContext) -> ClewError {
+    change_open_failure(error, &opened.session.session_id, || {
+        opened.session.abort()?;
+        opened.session.gc(false)?;
+        Ok(())
+    })
 }
 
 fn require_task_ready(readiness: &Value) -> Result<(), ClewError> {
@@ -3591,6 +3701,31 @@ mod tests {
             assert!(read_bounded_regular_file(&fifo, 4, "unsafe input").is_err());
             assert!(started.elapsed() < std::time::Duration::from_secs(1));
         }
+    }
+
+    #[test]
+    fn nav_query_is_one_command_analysis_and_has_no_unbounded_mode() {
+        let base = [
+            "clew",
+            "nav",
+            "query",
+            "--repo",
+            ".",
+            "--target-ref",
+            "main",
+            "--language",
+            "rust",
+            "--compilation",
+            "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+            "--profile",
+            "rust-syntax",
+            "--term",
+            "Target",
+        ];
+        assert!(Cli::try_parse_from(base).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--intent", "find Target"])).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--all"])).is_err());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--operation", "mutation"])).is_err());
     }
 
     #[cfg(unix)]

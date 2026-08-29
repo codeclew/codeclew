@@ -19,6 +19,7 @@ pub mod jvm_navigation;
 pub mod jvm_navigation_service;
 pub mod kotlin_adapter_v2;
 pub mod kotlin_engine;
+pub mod navigation;
 pub mod operations;
 pub mod process_isolation;
 pub mod python_adapter_v2;

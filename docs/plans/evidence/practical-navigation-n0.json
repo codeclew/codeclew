@@ -1,0 +1,56 @@
+{
+  "schema": "codeclew-practical-navigation-n0/1.0",
+  "status": "PASS",
+  "scope": {
+    "language": "rust",
+    "profile": "rust-syntax",
+    "compilation": "cargo:crates/clew/Cargo.toml#clew#lib#clew",
+    "coldStartExcludedFromProductGate": true
+  },
+  "questions": [
+    {
+      "term": "fair_fact_selection",
+      "expectedDeclaration": "crates/clew/src/query_v2.rs:318",
+      "observedSourceBytes": 935,
+      "observedCandidateCount": 1
+    },
+    {
+      "term": "rank_fact_evidence",
+      "expectedDeclaration": "crates/clew/src/context_v2.rs:1024",
+      "observedSourceBytes": 2976,
+      "observedCandidateCount": 1
+    }
+  ],
+  "factContract": {
+    "declaration": "SUPPORTED",
+    "boundedSource": "SUPPORTED",
+    "callers": "UNSUPPORTED",
+    "callees": "UNSUPPORTED",
+    "tests": "UNSUPPORTED",
+    "reason": "The retained rust-syntax generation has exact declaration facts and bounded source windows, but no resolved declaration relations. Navigation must not infer those relations from names."
+  },
+  "queryContract": {
+    "oneCommandAdmission": true,
+    "reusesManagedSessionAndContext": true,
+    "intentAffectsRetrieval": false,
+    "defaultIntent": "NAVIGATION_QUERY",
+    "stdoutContains": [
+      "sessionId",
+      "contextId",
+      "candidate cards",
+      "bounded source",
+      "completeness",
+      "unsupported facets"
+    ],
+    "newIndex": false,
+    "newPersistentState": false,
+    "allFlag": false
+  },
+  "overflowAuthority": {
+    "fixture": "query_v2::tests::high_fanout_term_is_bounded_and_reported_as_truncated",
+    "facts": 50000,
+    "behavior": "BOUNDED_AND_TRUNCATED",
+    "enumeration": "NOT_SUPPORTED"
+  },
+  "goDecision": "Implement declaration-and-source nav query, then run the warm value gate before adding relation facets or nav expand."
+}
