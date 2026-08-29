@@ -1,0 +1,90 @@
+{
+  "schema": "codeclew-q1-navigation-slice/1.0",
+  "date": "2026-08-29",
+  "status": "USEFUL_NOT_Q1_QUALIFIED",
+  "productAuthority": {
+    "sourceRevision": "3eb30a662943c8c6c8c26dbe9b545c1323b797e7",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:7651bb8228887b352a15ab101e6defbcc4b1f4de06c44861c964092097e68954",
+    "productVersion": "0.2.4"
+  },
+  "warmGate": {
+    "coldPrimeExcluded": true,
+    "querySeconds": 1.03,
+    "expandSeconds": 0.21,
+    "storageDryRunSeconds": 0.45,
+    "repeatQuerySeconds": 1.03,
+    "forbiddenBuildProcessStarts": 0,
+    "stateDiskUsageApproximateBytes": 62685184,
+    "reclaimableBytes": 0,
+    "status": "PASS"
+  },
+  "fixedAnalysisCase": {
+    "taskCount": 1,
+    "default": {
+      "outcome": "PASS",
+      "toolCalls": 6,
+      "failedToolCalls": 0,
+      "toolOutputBytes": 84818,
+      "noncachedInputTokens": 46550,
+      "filesConsulted": 4,
+      "oracleFactsRecovered": 5,
+      "falseExactClaims": 0
+    },
+    "codeclew": {
+      "outcome": "PASS",
+      "toolCalls": 6,
+      "failedToolCalls": 0,
+      "toolOutputBytes": 67196,
+      "noncachedInputTokens": 41076,
+      "filesConsulted": 1,
+      "oracleFactsRecovered": 5,
+      "falseExactClaims": 0,
+      "evidenceCertainty": "CONDITIONAL"
+    },
+    "noncachedInputTokenReduction": 0.117594,
+    "toolOutputByteReduction": 0.207763,
+    "interpretation": "Codeclew recovered the same five required facts from one source file with honest syntax-backed uncertainty, but did not reach the thirty-percent token gate."
+  },
+  "excludedInvalidAttempts": [
+    {
+      "reason": "STALE_STANDARD_LAUNCHER",
+      "classification": "HARNESS_MISCONFIGURATION"
+    },
+    {
+      "reason": "SANDBOX_BLOCKED_REQUIRED_GIT_WORKTREE_METADATA",
+      "classification": "HARNESS_MISCONFIGURATION"
+    }
+  ],
+  "environmentAdmission": {
+    "standardLauncherMatchesRelease": true,
+    "codeclewHomeWrites": "REQUIRED_AND_ALLOWED",
+    "gitWorktreeMetadataWrites": "REQUIRED_AND_ALLOWED",
+    "sourceAndCandidateWorktreeUse": "REQUIRED_AND_ALLOWED",
+    "implicitUserCheckoutMutation": false,
+    "implicitTargetRefMutation": false
+  },
+  "largeRetainedStateFinding": {
+    "status": "NOT_MUTATED",
+    "catalogObjects": 1130399,
+    "catalogSnapshotBytes": 237188252,
+    "retainedSessions": 310,
+    "garbageCollectedSessions": 195,
+    "openSessions": 112,
+    "danglingRootReferences": 9533,
+    "warmQuerySecondsAfterIncrementalCatalogOptimization": 11.88,
+    "decision": "Do not use or delete the retained evidence archive for the product-value slice; require an explicit retention/forget policy before physical cleanup."
+  },
+  "decision": {
+    "navigationSliceAccepted": true,
+    "q1Qualified": false,
+    "repeatFullCohortNow": false,
+    "nextMeasuredProductSlice": "Remove avoidable skill/help discovery and return only expansion deltas before repeating this one fixed case."
+  },
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSourceBodies": false,
+    "containsRawModelOutput": false
+  }
+}

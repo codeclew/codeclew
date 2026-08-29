@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.0"
+  version: "0.2.1"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -30,7 +30,9 @@ Preserve the user's scope and Codeclew's authority boundaries.
    `agentContract.launcherAuthority=INSTALLED_RELEASE`, and
    `agentContract.sourceFallbackAllowed=false`. Stop on a missing or mismatched
    contract instead of trying another launcher.
-4. Open the admitted task and first bounded context atomically:
+4. Admit the task through one of the two public paths below. For bounded
+   read-only navigation, prefer `nav query`. For broader analysis or mutation,
+   open the admitted task and first bounded context atomically:
    `clew context open --repo <absolute-repo> --target-ref <exact-ref> --language
    <language> --profile <profile-id> --compilation <compilation> --operation
    <analysis-or-mutation> --intent <intent> --term <term>`. Repeat
@@ -47,15 +49,61 @@ Preserve the user's scope and Codeclew's authority boundaries.
 Never describe syntax-only, partial, declared, conditional, or unsure evidence
 as compiler-verified behavior.
 
+Codeclew sessions require write access to private `CODECLEW_HOME` managed state
+and to Codeclew-owned Git worktree administration under the repository's Git
+common directory. The source and candidate worktrees themselves may be used for
+analysis and validation. These writes are expected even for a read-only task;
+an agent sandbox or benchmark harness must allow them. They do not authorize
+editing the user's checkout or changing the bound target ref. Only an explicit
+mutation workflow may edit a candidate, and only `change publish` may update
+the target ref. Treat a sandbox that blocks required managed-state or worktree
+metadata writes as an environment admission failure, not an evidence failure.
+
+## Navigate to relevant code
+
+Use the public atomic query when a task starts from names or search terms:
+
+```bash
+clew nav query \
+  --repo <absolute-repo> \
+  --target-ref <exact-ref> \
+  --language <language> \
+  --profile <profile-id> \
+  --compilation <compilation> \
+  --term <term>
+```
+
+Repeat `--term` only for explicit additional terms. `--intent` is optional and
+does not affect retrieval. Do not pass a positional search phrase. Retain the
+returned session and context identifiers. When these arguments are already
+known, run the command directly instead of spending a call on `--help`.
+
+If the bounded result is insufficient, expand only the missing term or direct
+relation from the retained context:
+
+```bash
+clew nav expand \
+  --session <session-id> \
+  --from <context-id> \
+  --term <term> \
+  --facet <callers-or-callees-or-tests>
+```
+
+The facet is optional. There is no `--all`; use another bounded expansion when
+the response reports truncation. Do not expand merely to collect every match.
+
 ## Build bounded context
 
 Open one session for the exact repository, ref, language, and compilation. Keep
-the returned session and context identifiers. Use `context create`, and expand
-an existing context only when the task needs additional bounded evidence. Do
-not replace Codeclew context with a broad repository crawl before admission.
+the returned session and context identifiers. Use the atomic navigation path
+above for name-led read-only work; use `context create` for a broader admitted
+session. Expand an existing context only when the task needs additional bounded
+evidence. Do not replace Codeclew context with a broad repository crawl before
+admission.
 
-Use `clew <command> --help` for the installed version's exact arguments. Treat
-session and context output as evidence tied to their recorded base commit.
+Use `clew <command> --help` only when the relevant syntax is not already given
+by this skill or the installed command rejects it. Treat session and context
+output as evidence tied to their recorded base commit.
 
 ## Prepare a change
 
@@ -79,10 +127,9 @@ as mutation-capable.
 
 Session/thread GC removes only proven-owned worktrees and terminal derived
 metadata. For managed CAS space, use the default dry-run `clew storage gc`;
-run `clew storage gc --apply` only when physical
-reclamation is explicitly in scope. Never delete `CODECLEW_HOME` objects by
-path. Physical GC preserves every transitively reachable retained root and
-waits for active readers/writers.
+run `clew storage gc --apply` only when physical reclamation is explicitly in
+scope. Never delete `CODECLEW_HOME` objects by path. Physical GC preserves every
+transitively reachable retained root and waits for active readers/writers.
 
 Freshness results are binding: continue on `FRESH`; stop and preserve developer
 work on `DIRTY`; rebuild the session, context, and plan on `STALE`; repair access

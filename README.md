@@ -800,6 +800,14 @@ tmp/
 quarantine/
 ```
 
+Opening a session also creates Codeclew-owned Git worktree administration under
+the repository's Git common directory and may create source or candidate
+worktrees inside managed state. Sandboxes and benchmark harnesses must allow
+those writes, including for read-only analysis. This authority does not permit
+implicit edits to the user's checkout or target ref: candidates change only in
+an admitted mutation workflow, and the target ref changes only through explicit
+`change publish`.
+
 The pack catalog is not rebuilt on every request. One append-only immutable
 record publishes each pack addition or removal. Every 64 records Codeclew
 atomically advances an immutable snapshot, then deletes only the records and
