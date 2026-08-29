@@ -41,6 +41,15 @@ class AgentSkillTest(unittest.TestCase):
                     (CANONICAL_SKILL / relative).read_bytes(),
                 )
 
+    def test_agent_contract_is_installed_release_only(self) -> None:
+        skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("version: \"0.2.0\"", skill)
+        self.assertIn("codeclew-agent-contract/1.0", skill)
+        self.assertIn("doctor attach", skill)
+        self.assertIn("doctor task", skill)
+        self.assertIn("sourceFallbackAllowed=false", skill)
+        self.assertNotIn("use its supported `./clew` launcher", skill)
+
     def test_source_command_is_idempotent_and_requires_force_for_conflicts(self) -> None:
         with tempfile.TemporaryDirectory() as value:
             destination = Path(value) / "agent-skills"

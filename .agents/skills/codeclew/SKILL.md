@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.1.0"
+  version: "0.2.0"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -17,18 +17,30 @@ Preserve the user's scope and Codeclew's authority boundaries.
 
 ## Resolve and admit
 
-1. Prefer `clew` on `PATH`. In a pinned Codeclew source checkout, use its
-   supported `./clew` launcher. Never run a capsule binary or edit
-   `CODECLEW_HOME` directly.
+1. Resolve `clew` from `PATH` once and use only that installed launcher for the
+   entire task. Never use a source `./clew`, a `target` binary, a capsule binary,
+   or `CODECLEW_RUNTIME_SEED`, and never edit `CODECLEW_HOME` directly. If the
+   installed launcher is absent or rejected, stop the Codeclew workflow; do not
+   build Codeclew or silently fall back to a source checkout.
 2. Identify the absolute repository path, exact target ref, language, and exact
    compilation. Use explicit user input or authoritative project configuration;
    do not infer them from names. Ask when any remains ambiguous.
-3. Run `clew capabilities`, then
-   `clew doctor --repo <absolute-repo> --target-ref <exact-ref>`. Consume the
-   canonical JSON, not the optional `--human` view.
-4. Continue only when every required doctor check is `PASS` and the support
-   matrix admits the requested language, profile, and operation. A successful
-   process exit does not override `ACTION_REQUIRED` or a read-only profile.
+3. Run `clew capabilities` once. Require `runtimeMode=RELEASE`,
+   `agentContract.schema=codeclew-agent-contract/1.0`,
+   `agentContract.launcherAuthority=INSTALLED_RELEASE`, and
+   `agentContract.sourceFallbackAllowed=false`. Stop on a missing or mismatched
+   contract instead of trying another launcher.
+4. Run `clew doctor attach` once, then run the exact task gate:
+   `clew doctor task --repo <absolute-repo> --target-ref <exact-ref> --language
+   <language> --profile <profile-id> --compilation <compilation> --operation
+   <analysis-or-mutation>`. Repeat `--compilation` only for an explicitly
+   multi-compilation task. Consume canonical JSON, not the optional `--human`
+   view. `doctor provision` is a maintainer/bootstrap diagnostic and is not an
+   admission step for an installed product task.
+5. Continue only when both doctor results are `PASS`, every required check is
+   `PASS`, and the support matrix admits the requested language, profile, and
+   operation. A successful process exit does not override `ACTION_REQUIRED` or
+   a read-only profile.
 
 Never describe syntax-only, partial, declared, conditional, or unsure evidence
 as compiler-verified behavior.

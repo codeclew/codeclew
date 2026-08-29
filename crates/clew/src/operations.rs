@@ -17,9 +17,28 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 
 const SUPPORT_MATRIX_BYTES: &[u8] = include_bytes!("../support-matrix.json");
+const AGENT_SKILL_BYTES: &[u8] = include_bytes!("../../../skills/codeclew/SKILL.md");
+const AGENT_SKILL_OPENAI_BYTES: &[u8] =
+    include_bytes!("../../../skills/codeclew/agents/openai.yaml");
 const SUPPORT_MATRIX_SCHEMA: &str = "codeclew-support-matrix/1.0";
 const SUPPORT_SUMMARY_SCHEMA: &str = "codeclew-support-summary/1.0";
 const COLD_BUILD_MINIMUM_FREE_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+
+fn agent_skill_digest() -> String {
+    let mut payload = Vec::new();
+    for (relative, content) in [
+        ("SKILL.md", AGENT_SKILL_BYTES),
+        ("agents/openai.yaml", AGENT_SKILL_OPENAI_BYTES),
+    ] {
+        payload.extend_from_slice(relative.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(b"420");
+        payload.push(0);
+        payload.extend_from_slice(content);
+        payload.push(0);
+    }
+    canonical::hash_bytes(&payload)
+}
 
 pub fn support_matrix() -> Result<Value, ClewError> {
     let matrix: Value = serde_json::from_slice(SUPPORT_MATRIX_BYTES)
@@ -41,6 +60,7 @@ pub fn support_matrix() -> Result<Value, ClewError> {
 
 pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
     let matrix = support_matrix()?;
+    let support_matrix_digest = canonical::hash(&matrix).map_err(internal)?;
     let packaged_workers = runtime
         .workers
         .iter()
@@ -59,7 +79,16 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
         "runtimeKey":runtime.runtime_key,
         "runtimeManifestDigest":runtime.manifest_digest,
         "supportMatrix":matrix,
-        "supportMatrixDigest":canonical::hash(&matrix).map_err(internal)?,
+        "supportMatrixDigest":support_matrix_digest,
+        "agentContract":{
+            "schema":"codeclew-agent-contract/1.0",
+            "admissionCommands":["capabilities", "doctor attach", "doctor task"],
+            "launcherAuthority":"INSTALLED_RELEASE",
+            "readinessSchema":"codeclew-doctor/2.0",
+            "skillDigest":agent_skill_digest(),
+            "skillPackageVersion":"0.2.0",
+            "sourceFallbackAllowed":false,
+        },
         "packagedWorkers":packaged_workers,
         "privacyAssertions":{
             "containsAbsolutePaths":false,
@@ -624,6 +653,14 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_agent_skill_digest_matches_portable_installer_contract() {
+        assert_eq!(
+            agent_skill_digest(),
+            "sha256:bdb3e6bee7cc6244c00d1d4da788b7e4b816982955f6a4365b70cdad65fe53ea"
+        );
+    }
 
     #[test]
     fn embedded_support_matrix_is_canonical_and_keeps_mutation_qualified() {

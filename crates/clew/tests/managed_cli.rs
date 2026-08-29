@@ -2325,6 +2325,27 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         capabilities_value["supportMatrix"]["profiles"][0]["profileId"],
         "kotlin-2.4.10-gradle-single"
     );
+    assert_eq!(
+        capabilities_value["agentContract"]["schema"],
+        "codeclew-agent-contract/1.0"
+    );
+    assert_eq!(
+        capabilities_value["agentContract"]["launcherAuthority"],
+        "INSTALLED_RELEASE"
+    );
+    assert_eq!(
+        capabilities_value["agentContract"]["readinessSchema"],
+        "codeclew-doctor/2.0"
+    );
+    assert_eq!(
+        capabilities_value["agentContract"]["sourceFallbackAllowed"],
+        false
+    );
+    assert!(
+        capabilities_value["agentContract"]["skillDigest"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:") && value.len() == 71)
+    );
     let capabilities_human = run_managed(
         &runtime_binary,
         &state_root,
