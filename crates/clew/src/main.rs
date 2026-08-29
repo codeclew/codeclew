@@ -1771,16 +1771,49 @@ fn change_prepare(args: ChangePrepareArgs) -> Result<Value, ClewError> {
     }
     let plan =
         session.validate_plan(&args.context, &std::fs::read(&args.plan).map_err(io_error)?)?;
-    let status = start_task_run(&args.session, &args.context, &plan.plan_id)?;
+    let started = start_task_run(&args.session, &args.context, &plan.plan_id)?;
+    let run_id = started["run"]["runId"]
+        .as_str()
+        .ok_or_else(|| internal("started task run has no run identity"))?;
+    let status = wait_for_actionable_task_run(run_id)?;
     Ok(json!({
         "schema":"codeclew-change-prepare/1.0",
-        "status":"STARTED",
+        "status":status["run"]["status"],
         "sessionId":args.session,
         "contextId":args.context,
         "planId":plan.plan_id,
         "run":status.get("run").cloned().unwrap_or(Value::Null),
         "candidate":status.get("candidate").cloned().unwrap_or(Value::Null),
     }))
+}
+
+fn wait_for_actionable_task_run(run_id: &str) -> Result<Value, ClewError> {
+    let mut inactive_observations = 0u8;
+    loop {
+        let record = RunRecord::load(run_id)?;
+        match record.status {
+            RunStatus::Created => {
+                inactive_observations = inactive_observations.saturating_add(1);
+            }
+            RunStatus::Preparing => {
+                let active = match (record.process_id, record.process_start_token.as_deref()) {
+                    (Some(pid), Some(token)) => process_is_active(pid, token)?,
+                    _ => false,
+                };
+                inactive_observations = if active {
+                    0
+                } else {
+                    inactive_observations.saturating_add(1)
+                };
+            }
+            _ => return task_run_status(run_id),
+        }
+        if inactive_observations >= 10 {
+            resume_task_run(run_id)?;
+            inactive_observations = 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn with_schema(schema: &str, mut value: Value) -> Result<Value, ClewError> {
@@ -1987,6 +2020,12 @@ fn resume_task_run(run_id: &str) -> Result<Value, ClewError> {
             | RunStatus::PublishedConditional
             | RunStatus::Publishing
     ) {
+        return task_run_status(run_id);
+    }
+    if record.status == RunStatus::Preparing
+        && let (Some(pid), Some(token)) = (record.process_id, record.process_start_token.as_deref())
+        && process_is_active(pid, token)?
+    {
         return task_run_status(run_id);
     }
     if record.candidate_commit.is_some() {
@@ -3552,6 +3591,15 @@ mod tests {
             assert!(read_bounded_regular_file(&fifo, 4, "unsafe input").is_err());
             assert!(started.elapsed() < std::time::Duration::from_secs(1));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_admission_observes_the_live_supervisor_identity() {
+        let pid = std::process::id();
+        let token = process_start_token(pid).unwrap().unwrap();
+        assert!(process_is_active(pid, &token).unwrap());
+        assert!(!process_is_active(pid, "not-the-recorded-start").unwrap());
     }
 
     #[cfg(unix)]

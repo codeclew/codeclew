@@ -2341,6 +2341,14 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         capabilities_value["agentContract"]["sourceFallbackAllowed"],
         false
     );
+    assert_eq!(
+        capabilities_value["agentContract"]["primaryOpenCommand"],
+        "context open"
+    );
+    assert_eq!(
+        capabilities_value["agentContract"]["mutationPrepareWaitsForActionableState"],
+        true
+    );
     assert!(
         capabilities_value["agentContract"]["skillDigest"]
             .as_str()

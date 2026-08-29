@@ -62,8 +62,10 @@ session and context output as evidence tied to their recorded base commit.
 Mutation is allowed only when the active support matrix marks the exact profile
 as mutation-capable.
 
-1. Use `change open`, retain its session and context identities, create a closed
-   immutable edit plan, and use `change prepare`.
+1. Reuse the mutation-admitted session and context returned by `context open`,
+   create a closed immutable edit plan, and use `change prepare`. The high-level
+   prepare call waits for the first actionable run state; do not poll a live
+   `PREPARING` run or restart it from another launcher.
 2. Run `change check-freshness --session <session-id>` immediately before
    prepare and again before publish.
 3. Inspect `change status`, the bounded diff, validation results, authority
