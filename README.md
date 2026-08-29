@@ -69,6 +69,41 @@ workers execute directly from that sealed capsule under its shared lease; the
 runtime warm path does not copy their distributions. Project analysis may still
 invoke the project wrapper under the model-cache policy described below.
 
+## Practical code navigation
+
+`nav query` is the shortest fact-backed path from a search term to code. It
+performs task admission, opens the managed session and returns compact
+declaration cards with bounded source in one command:
+
+```bash
+./clew nav query \
+  --repo . \
+  --target-ref main \
+  --language rust \
+  --profile rust-syntax \
+  --compilation 'cargo:crates/clew/Cargo.toml#clew#lib#clew' \
+  --term fair_fact_selection
+```
+
+The response retains `sessionId` and `contextId`, so an agent can ask for the
+next missing term without reopening the repository:
+
+```bash
+./clew nav expand \
+  --session session:... \
+  --from context:sha256:... \
+  --term rank_fact_evidence \
+  --facet callers
+```
+
+`--intent` is optional provenance and never changes retrieval or ranking.
+`--facet callers`, `--facet callees`, and `--facet tests` return only direct,
+identity-bound relation facts already present in the bounded context. A missing
+relation is reported as `UNSUPPORTED`; a non-empty bounded subset is `PARTIAL`.
+Syntax-only namesakes are never promoted to resolved edges. There is no
+`--all`: narrow or expand the context when the bounded response reports
+truncation.
+
 The strict compiler-backed mutation contour is Kotlin 2.4.10, Gradle,
 `PROJECT_NATIVE`, and one exact compilation. Exact Kotlin 2.3.0 with Maven is a
 read-only compiler-backed context preview: it has real-project context

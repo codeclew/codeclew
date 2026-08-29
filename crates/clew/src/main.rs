@@ -166,6 +166,8 @@ enum ContextCommand {
 enum NavCommand {
     /// Admit the repository and return declaration candidates with bounded source.
     Query(NavQueryArgs),
+    /// Add terms to an existing navigation context without reopening the repository.
+    Expand(NavExpandArgs),
 }
 
 #[derive(Subcommand)]
@@ -226,6 +228,13 @@ enum DoctorScopeArg {
 enum DoctorOperationArg {
     Analysis,
     Mutation,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum NavFacetArg {
+    Callers,
+    Callees,
+    Tests,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -564,6 +573,27 @@ struct NavQueryArgs {
     terms: Vec<String>,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
+    /// Add a direct fact facet. Repeat for multiple facets.
+    #[arg(long = "facet", value_enum)]
+    facets: Vec<NavFacetArg>,
+}
+
+#[derive(Args)]
+struct NavExpandArgs {
+    #[arg(long)]
+    session: String,
+    #[arg(long = "from")]
+    context: String,
+    #[arg(long = "term", required = true)]
+    terms: Vec<String>,
+    /// Optional provenance only. It never changes retrieval or ranking.
+    #[arg(long)]
+    intent: Option<String>,
+    #[arg(long, default_value_t = 4)]
+    max_roots: usize,
+    /// Add a direct fact facet. Repeat for multiple facets.
+    #[arg(long = "facet", value_enum)]
+    facets: Vec<NavFacetArg>,
 }
 
 #[derive(Args)]
@@ -1258,33 +1288,20 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ContextCommand::Expand(args),
         } => {
             let (session, _) = SessionAuthority::load(&args.session)?;
-            session.require_open()?;
-            let parent = session.load_context(&args.context)?;
-            let additional_terms = args.terms;
-            let mut terms = parent.terms.clone();
-            terms.extend(additional_terms.iter().cloned());
-            terms.sort();
-            terms.dedup();
-            let intent = args.intent.unwrap_or_else(|| parent.intent.clone());
-            validate_context_request(&intent, &terms)?;
-            let (projection, evidence) = clew::context_v2::create(
+            bounded_context_stdout(&expand_context_object(
                 &session,
-                &intent,
-                &additional_terms,
+                args.context,
+                args.intent,
+                args.terms,
                 args.max_roots,
-                Some(&parent),
-            )?;
-            bounded_context_stdout(&session.store_context(
-                Some(args.context),
-                intent,
-                terms,
-                projection,
-                evidence,
             )?)
         }
         Command::Nav {
             command: NavCommand::Query(args),
         } => nav_query(args),
+        Command::Nav {
+            command: NavCommand::Expand(args),
+        } => nav_expand(args),
         Command::Thread {
             command: ThreadCommand::Open(args),
         } => {
@@ -1702,6 +1719,31 @@ fn create_context_object(
     session.store_context(None, intent, terms, projection, evidence)
 }
 
+fn expand_context_object(
+    session: &SessionAuthority,
+    parent_context_id: String,
+    intent: Option<String>,
+    additional_terms: Vec<String>,
+    max_roots: usize,
+) -> Result<ContextObject, ClewError> {
+    session.require_open()?;
+    let parent = session.load_context(&parent_context_id)?;
+    let mut terms = parent.terms.clone();
+    terms.extend(additional_terms.iter().cloned());
+    terms.sort();
+    terms.dedup();
+    let intent = intent.unwrap_or_else(|| parent.intent.clone());
+    validate_context_request(&intent, &terms)?;
+    let (projection, evidence) = clew::context_v2::create(
+        session,
+        &intent,
+        &additional_terms,
+        max_roots,
+        Some(&parent),
+    )?;
+    session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
+}
+
 struct AdmittedContext {
     admission: Value,
     session: SessionAuthority,
@@ -1791,7 +1833,8 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let navigation = clew::navigation::query(&opened.context)
+    let facets = navigation_facets(&args.facets);
+    let navigation = clew::navigation::query(&opened.context, &facets)
         .map_err(|error| compensate_opened_context(error, &opened))?;
     let result = json!({
         "schema":clew::navigation::NAV_QUERY_SCHEMA,
@@ -1809,6 +1852,37 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
     clew::navigation::validate_stdout(&result)
         .map_err(|error| compensate_opened_context(error, &opened))?;
     Ok(result)
+}
+
+fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
+    let (session, _) = SessionAuthority::load(&args.session)?;
+    let context = expand_context_object(
+        &session,
+        args.context,
+        args.intent,
+        args.terms,
+        args.max_roots,
+    )?;
+    let navigation = clew::navigation::query(&context, &navigation_facets(&args.facets))?;
+    let result = json!({
+        "schema":clew::navigation::NAV_EXPAND_SCHEMA,
+        "status":"EXPANDED",
+        "sessionId":session.session_id,
+        "navigation":navigation,
+    });
+    clew::navigation::validate_stdout(&result)?;
+    Ok(result)
+}
+
+fn navigation_facets(facets: &[NavFacetArg]) -> Vec<clew::navigation::NavigationFacet> {
+    facets
+        .iter()
+        .map(|facet| match facet {
+            NavFacetArg::Callers => clew::navigation::NavigationFacet::Callers,
+            NavFacetArg::Callees => clew::navigation::NavigationFacet::Callees,
+            NavFacetArg::Tests => clew::navigation::NavigationFacet::Tests,
+        })
+        .collect()
 }
 
 fn compensate_opened_context(error: ClewError, opened: &AdmittedContext) -> ClewError {
@@ -3724,8 +3798,25 @@ mod tests {
         ];
         assert!(Cli::try_parse_from(base).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--intent", "find Target"])).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--all"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--operation", "mutation"])).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Caller",
+                "--facet",
+                "callers",
+            ])
+            .is_ok()
+        );
     }
 
     #[cfg(unix)]

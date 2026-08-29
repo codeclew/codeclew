@@ -1,0 +1,40 @@
+{
+  "schema": "codeclew-practical-navigation-g1/1.0",
+  "status": "GO",
+  "revision": "c9fb442",
+  "case": {
+    "term": "fair_fact_selection",
+    "expectedFile": "crates/clew/src/query_v2.rs",
+    "expectedStartLine": 318
+  },
+  "rgBaseline": {
+    "matchingFiles": 1,
+    "matchingLines": 6,
+    "sourceBytesNeededToReadTheMatchingFile": 57212
+  },
+  "warmNavQuery": {
+    "elapsedSeconds": 9.70,
+    "candidateCount": 1,
+    "candidateCorrect": true,
+    "boundedSourceBytes": 935,
+    "stdoutBytes": 5548,
+    "stdoutMode": "0600",
+    "truncated": false
+  },
+  "warmProcessAudit": {
+    "method": "PATH marker executables",
+    "cargo": false,
+    "rustc": false,
+    "gradle": false,
+    "maven": false,
+    "java": false
+  },
+  "measuredBlockerAndFix": {
+    "initialStatus": "STOP",
+    "blocker": "A new Rust session extracted Cargo metadata before reusing its exact retained generation.",
+    "fix": "Rebind an exact runtime/revision/snapshot/compilation incremental head into the new session before project-model extraction.",
+    "newPersistentState": false,
+    "newIndex": false
+  },
+  "decision": "Proceed to requested direct facets and nav expand only."
+}
