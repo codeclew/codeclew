@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -105,7 +105,7 @@ struct CatalogState {
     snapshot_digest: Option<String>,
     tail_bytes: u64,
     packs: BTreeMap<String, PackManifest>,
-    locations: BTreeMap<String, PackLocation>,
+    locations: HashMap<String, PackLocation>,
 }
 
 type SharedCatalog = Arc<RwLock<CatalogState>>;
@@ -1532,22 +1532,31 @@ fn apply_catalog_record(state: &mut CatalogState, record: &CatalogRecord) -> Res
             {
                 return Err(corrupt("CAS catalog adds an existing pack"));
             }
+            add_pack_to_catalog(
+                &mut state.locations,
+                &record.pack.data_name,
+                &record.pack.manifest,
+            )?;
         }
         CatalogOperation::Remove => {
             if state.packs.get(&record.pack.data_name) != Some(&record.pack.manifest) {
                 return Err(corrupt("CAS catalog removes a different or missing pack"));
             }
             state.packs.remove(&record.pack.data_name);
+            state.locations = locations_from_packs(&state.packs)?;
         }
     }
-    state.locations = locations_from_packs(&state.packs)?;
     Ok(())
 }
 
 fn locations_from_packs(
     packs: &BTreeMap<String, PackManifest>,
-) -> Result<BTreeMap<String, PackLocation>, ClewError> {
-    let mut locations = BTreeMap::new();
+) -> Result<HashMap<String, PackLocation>, ClewError> {
+    let capacity = packs
+        .values()
+        .map(|manifest| manifest.objects.len())
+        .sum::<usize>();
+    let mut locations = HashMap::with_capacity(capacity);
     for (data_name, manifest) in packs {
         add_pack_to_catalog(&mut locations, data_name, manifest)?;
     }
@@ -1597,7 +1606,7 @@ fn catalog_record_sequence(name: &OsStr) -> Option<u64> {
 }
 
 fn add_pack_to_catalog(
-    catalog: &mut BTreeMap<String, PackLocation>,
+    catalog: &mut HashMap<String, PackLocation>,
     data_name: &str,
     manifest: &PackManifest,
 ) -> Result<(), ClewError> {
