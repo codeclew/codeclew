@@ -21,6 +21,7 @@ python3 -I -S scripts/test_agent_skill.py
 python3 -I -S scripts/test_macos_distribution.py
 python3 -I -S scripts/test_build_macos_release.py
 python3 -I -S scripts/test_build_local_release_candidate.py
+python3 -I -S scripts/test_runtime_attach_canary.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1

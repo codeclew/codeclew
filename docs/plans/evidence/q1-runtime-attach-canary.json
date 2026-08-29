@@ -1,0 +1,44 @@
+{
+  "candidateDigest": "sha256:2a29a95b0ffe49d5153f81b366767528a733817ab54746a801fa8b349dfe2095",
+  "forbiddenWarmProcessStarts": [],
+  "negativeControl": {
+    "code": "RUNTIME_ATTACH_MISMATCH",
+    "selector": "stale-path",
+    "status": "EXPECTED_MISMATCH"
+  },
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSource": false
+  },
+  "runtimeKey": "sha256:1ecc1f5a2e62514e83aba7a4e70224f5e587d35598490d44fad81af2cc1ce13a",
+  "runtimeManifestDigest": "sha256:01e36abb41404b2728607f984e181f50672b77a338cecaffd0569264525714bb",
+  "schema": "codeclew-runtime-attach-canary/1.0",
+  "selectors": [
+    {
+      "durationMillis": 23,
+      "productVersion": "0.2.4",
+      "runtimeKey": "sha256:1ecc1f5a2e62514e83aba7a4e70224f5e587d35598490d44fad81af2cc1ce13a",
+      "runtimeManifestDigest": "sha256:01e36abb41404b2728607f984e181f50672b77a338cecaffd0569264525714bb",
+      "selector": "direct-capsule",
+      "status": "ATTACHED"
+    },
+    {
+      "durationMillis": 115,
+      "productVersion": "0.2.4",
+      "runtimeKey": "sha256:1ecc1f5a2e62514e83aba7a4e70224f5e587d35598490d44fad81af2cc1ce13a",
+      "runtimeManifestDigest": "sha256:01e36abb41404b2728607f984e181f50672b77a338cecaffd0569264525714bb",
+      "selector": "installed-locator",
+      "status": "ATTACHED"
+    },
+    {
+      "durationMillis": 107,
+      "productVersion": "0.2.4",
+      "runtimeKey": "sha256:1ecc1f5a2e62514e83aba7a4e70224f5e587d35598490d44fad81af2cc1ce13a",
+      "runtimeManifestDigest": "sha256:01e36abb41404b2728607f984e181f50672b77a338cecaffd0569264525714bb",
+      "selector": "pinned-source-locator",
+      "status": "ATTACHED"
+    }
+  ],
+  "status": "PASS"
+}
