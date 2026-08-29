@@ -1,0 +1,82 @@
+{
+  "authority": {
+    "agentContract": {
+      "launcherAuthority": "INSTALLED_RELEASE",
+      "mutationPrepareWaitsForActionableState": true,
+      "primaryOpenCommand": "context open",
+      "schema": "codeclew-agent-contract/1.0",
+      "skillDigest": "sha256:54a4bee218f06a76da8b7d72d931bd37eb3f5e1cb12ae655f7b01e50ade0cf7b",
+      "sourceFallbackAllowed": false
+    },
+    "candidateDigest": "sha256:8467eb938f4828e9e6ea59b6a9a22814b157341ca0422c720804979edad3c49c",
+    "productVersion": "0.2.4",
+    "runtimeKey": "sha256:5560ff126540a77125e7edc3d89b825a498b2c34f3e58163415f218f16f4ca07",
+    "runtimeManifestDigest": "sha256:4a44dcca241e8e1a3ea2a58572ac6e86a3adeeec481189124dfb70913fb57111",
+    "runtimeMode": "RELEASE",
+    "sourceRevision": "57a2791bec30417d23eec66cead7d05f6b6ccf4a",
+    "supportMatrixDigest": "sha256:5e8aaffd8af12be0ec06d0c0cde544a37e6c8383009df20aa1f646dfbdeb1e3d"
+  },
+  "cases": [
+    {
+      "caseId": "release-attach",
+      "forbiddenWarmProcessStarts": [],
+      "installedDurationMillis": 116,
+      "maximumSelectorDurationMillis": 116,
+      "selectorCount": 3,
+      "status": "PASS"
+    },
+    {
+      "admissionStatus": "PASS",
+      "caseId": "python-self-analysis",
+      "durationMillis": 3109,
+      "exactFileRetrieved": true,
+      "functionRetrieved": true,
+      "moduleBoundaryAttachedToSelectedEvidence": true,
+      "outputBytes": 12404,
+      "sourceFallbackUsed": false,
+      "status": "PASS"
+    },
+    {
+      "caseId": "python-managed-mutation",
+      "conditionalPublishReached": true,
+      "durationsMillis": {
+        "admittedOpen": 1034,
+        "nativeBaseline": 30,
+        "prepareToActionable": 1908,
+        "publish": 728,
+        "total": 4407
+      },
+      "nativeCandidateValidation": "PASS",
+      "prepareRequiredCallerPolling": false,
+      "repeatedPrepareIdempotent": true,
+      "repeatedPublishIdempotent": true,
+      "runtimeMode": "RELEASE",
+      "sourceRefUnchangedBeforePublish": true,
+      "status": "PASS",
+      "strictPublishRefusedUnresolvedObligations": true
+    },
+    {
+      "caseId": "ordered-recovery-contract",
+      "hardResetAbsent": true,
+      "orderedRecoverablePrefixTest": "PASS",
+      "resumeLiveSupervisorRefused": true,
+      "status": "PASS"
+    }
+  ],
+  "date": "2026-08-29",
+  "decision": "LOCAL_Q1_FOUNDATION_PASS",
+  "limits": {
+    "originalQ1StatusRemains": "Q1_NOT_QUALIFIED",
+    "sameModelDefaultComparisonRun": false,
+    "superiorityClaim": false,
+    "superiorityRequires": "SEPARATE_HELD_OUT_SAME_MODEL_COMPARISON"
+  },
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSource": false
+  },
+  "protocol": "codeclew-q1-local-qualification-protocol/1.0",
+  "schema": "codeclew-q1-local-qualification-result/1.0",
+  "status": "PASS"
+}
