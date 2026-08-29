@@ -25,6 +25,15 @@ TERMINAL = {
 }
 
 
+def qualified_launcher() -> Path:
+    configured = os.environ.get("CLEW_SMOKE_LAUNCHER")
+    launcher = Path(configured) if configured else ROOT / "clew"
+    launcher = launcher.resolve(strict=True)
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise AssertionError("qualified Clew smoke launcher is not executable")
+    return launcher
+
+
 def command(
     arguments: list[str],
     *,
@@ -57,7 +66,7 @@ def clew(
     check: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
     completed = command(
-        [str(ROOT / "clew"), *arguments],
+        [str(qualified_launcher()), *arguments],
         cwd=ROOT,
         environment=environment,
         check=check,
@@ -141,7 +150,7 @@ def main() -> int:
         )
         _, opened = clew(
             [
-                "change",
+                "context",
                 "open",
                 "--repo",
                 str(repository),
@@ -151,6 +160,10 @@ def main() -> int:
                 "kotlin",
                 "--compilation",
                 ":/main",
+                "--profile",
+                "kotlin-2.4.10-gradle-single",
+                "--operation",
+                "mutation",
                 "--intent",
                 "define the zero-base total result and add its exact test",
                 "--term",
