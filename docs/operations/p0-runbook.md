@@ -475,10 +475,26 @@ current version. Do not rewrite session JSON.
 
 ### Insufficient disk space
 
-Free at least 6 GiB on the state volume, then repeat `doctor`. Remove only
-terminal sessions and threads through their `gc` commands; manual object removal
-can break authority. If state corruption is suspected, first retain a local
-incident and stop writing.
+First inspect exact managed-state accounting:
+
+```bash
+"$CODECLEW_ROOT/clew" storage gc
+```
+
+The command is a dry-run. If its aggregate report identifies useful
+reclaimable bytes, apply that same reachability policy explicitly:
+
+```bash
+"$CODECLEW_ROOT/clew" storage gc --apply
+```
+
+Physical GC waits for active CAS readers/writers, follows retained CAS roots
+transitively, and deletes only wholly unreachable packs, redundant/unreachable
+loose objects, and publication-orphan pack files. A pack containing even one
+reachable object is retained. Session/thread `gc` remains the command for
+owned worktrees and terminal metadata; it is not physical CAS deletion. Never
+remove managed objects manually. If state corruption is reported, retain a
+local incident and stop writing rather than forcing cleanup.
 
 ### Dirty worktree
 

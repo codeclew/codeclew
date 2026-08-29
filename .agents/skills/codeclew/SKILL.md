@@ -77,6 +77,13 @@ as mutation-capable.
 5. Close completed sessions and garbage-collect them when no retained evidence
    is needed.
 
+Session/thread GC removes only proven-owned worktrees and terminal derived
+metadata. For managed CAS space, use the default dry-run `clew storage gc`;
+run `clew storage gc --apply` only when physical
+reclamation is explicitly in scope. Never delete `CODECLEW_HOME` objects by
+path. Physical GC preserves every transitively reachable retained root and
+waits for active readers/writers.
+
 Freshness results are binding: continue on `FRESH`; stop and preserve developer
 work on `DIRTY`; rebuild the session, context, and plan on `STALE`; repair access
 on `UNAVAILABLE`; open a new session for more work after `TERMINAL`. Never clean,

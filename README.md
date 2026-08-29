@@ -253,6 +253,21 @@ isolated candidate run. The low-level `session`, `context`, `plan`, and
 `task-run` commands remain an advanced protocol for expansion, cancellation,
 relocation, and diagnostics; they are not required for the happy path.
 
+Managed CAS space is accounted separately from session/worktree cleanup:
+
+```bash
+./clew storage gc          # reachability dry-run; changes nothing
+./clew storage gc --apply  # reclaim exactly the reported unreachable bytes
+```
+
+GC follows every retained repository, session, mission, workspace, thread,
+run, and generation CAS reference transitively. In-progress CAS work holds the
+shared world lease, so an exclusive collector cannot race an unpublished
+attempt. It removes a pack only when every member is unreachable; mixed packs
+remain intact. An
+exclusive CAS lease delays physical deletion while any Codeclew reader or
+writer is active.
+
 ### Durable development missions
 
 A mission binds one canonical `codeclew-change-spec/1.0` to one through eight
@@ -772,10 +787,27 @@ missions/
 workspaces/
 threads/
 runs/
+objects/
+  sha256/
+  packs-v3/
+  catalog-v1/
+    snapshots/
+    records/
 locks/
 tmp/
 quarantine/
 ```
+
+The pack catalog is not rebuilt on every request. One append-only immutable
+record publishes each pack addition or removal. Every 64 records Codeclew
+atomically advances an immutable snapshot, then deletes only the records and
+older snapshots covered by the new head. A reader uses its in-memory catalog,
+loads a snapshot once per process, and consults the bounded journal tail only
+on a digest miss or before publication. Pack/object bytes are still checked
+against the requested CAS digest when read. Once a pack is durably present in
+the catalog, its redundant migration index and verification receipt are
+removed; an interrupted pre-catalog publication keeps them for the one-time
+bootstrap/recovery scan.
 
 Codeclew does not discover, read, import, update, or delete `.semantic-thread`.
 Old receipts, indexes, and runs are inert. Absolute repository paths exist only

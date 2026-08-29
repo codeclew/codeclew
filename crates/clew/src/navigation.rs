@@ -204,7 +204,7 @@ fn is_declaration(payload: &Map<String, Value>) -> bool {
         || (payload.contains_key("declarationKind") && payload.contains_key("symbolIdentity"))
 }
 
-fn display_name<'a>(payload: &'a Map<String, Value>) -> Option<&'a str> {
+fn display_name(payload: &Map<String, Value>) -> Option<&str> {
     ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
         .into_iter()
         .find_map(|key| payload.get(key).and_then(Value::as_str))

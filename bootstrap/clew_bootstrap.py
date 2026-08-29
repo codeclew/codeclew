@@ -567,6 +567,7 @@ def state_root() -> tuple[Path, int]:
     for child in [
         "runtimes", "repos", "sessions", "runs", "locks", "tmp", "quarantine",
         "objects", "objects/sha256", "objects/packs-v3", "generations", "attempts", "gc",
+        "objects/catalog-v1", "objects/catalog-v1/snapshots", "objects/catalog-v1/records",
         "dependency-cache", "runtimes/locators", "runtimes/checkpoints",
         "runtimes/components",
     ]:

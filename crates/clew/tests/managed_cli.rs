@@ -1618,6 +1618,66 @@ fn managed_thread_impact_seed_helper() {
 }
 
 #[test]
+fn managed_storage_gc_is_dry_run_until_apply() {
+    let temporary = tempfile::tempdir().unwrap();
+    let state_root = temporary.path().join("state");
+    let object = CasObject::for_bytes("test/managed-storage/1", b"unrooted").unwrap();
+    let component = object.digest.strip_prefix("sha256:").unwrap();
+    let loose = state_root
+        .join("objects/sha256")
+        .join(&component[..2])
+        .join(&component[2..]);
+    fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    fs::write(&loose, b"unrooted").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let runtime_root = temporary.path().join("runtime");
+    let binary = fd_runtime(&runtime_root);
+    let _writable_runtime = WritableTreeOnDrop(runtime_root.clone());
+    let lease = temporary.path().join("runtime.lease");
+
+    let dry_run = run_managed(
+        &binary,
+        &state_root,
+        &runtime_root,
+        &lease,
+        &["storage", "gc"],
+        None,
+    );
+    assert!(
+        dry_run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry_run.stdout)
+    );
+    let dry_run: Value = serde_json::from_slice(&dry_run.stdout).unwrap();
+    assert_eq!(dry_run["action"], "DRY_RUN");
+    assert_eq!(dry_run["reclaimableLooseObjects"], 1);
+    assert_eq!(dry_run["reclaimedBytes"], 0);
+
+    let applied = run_managed(
+        &binary,
+        &state_root,
+        &runtime_root,
+        &lease,
+        &["storage", "gc", "--apply"],
+        None,
+    );
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stdout)
+    );
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(applied["action"], "APPLIED");
+    assert!(applied["reclaimedBytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
 fn managed_thread_impact_uses_seeded_s1_without_project_processes() {
     let temporary = tempfile::tempdir().unwrap();
     let repositories = [

@@ -35,6 +35,12 @@ pub(crate) struct ManagedDirectory {
     handle: Arc<File>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedEntryKind {
+    File,
+    Directory,
+}
+
 pub(crate) struct ManagedTemporaryDirectory {
     parent: ManagedDirectory,
     directory: ManagedDirectory,
@@ -136,6 +142,9 @@ impl StateAuthority {
             "objects",
             "objects/sha256",
             "objects/packs-v3",
+            "objects/catalog-v1",
+            "objects/catalog-v1/snapshots",
+            "objects/catalog-v1/records",
             "generations",
             "attempts",
             "gc",
@@ -359,6 +368,11 @@ impl ManagedDirectory {
         Ok(())
     }
 
+    pub(crate) fn identity(&self) -> Result<(u64, u64), ClewError> {
+        let metadata = self.handle.metadata().map_err(io_error)?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
     pub(crate) fn child(&self, relative: &Path) -> Result<Self, ClewError> {
         validate_relative(relative)?;
         let mut directory = duplicate_file(&self.handle)?;
@@ -372,6 +386,45 @@ impl ManagedDirectory {
             path: self.path.join(relative),
             handle: Arc::new(directory),
         })
+    }
+
+    pub(crate) fn existing_child(&self, name: &std::ffi::OsStr) -> Result<Self, ClewError> {
+        validate_file_name(name)?;
+        let directory = open_private_child_directory(&self.handle, name, false)?;
+        Ok(Self {
+            path: self.path.join(name),
+            handle: Arc::new(directory),
+        })
+    }
+
+    pub(crate) fn entry_kind(&self, name: &std::ffi::OsStr) -> Result<ManagedEntryKind, ClewError> {
+        validate_file_name(name)?;
+        let encoded = component_name(name)?;
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                self.handle.as_raw_fd(),
+                encoded.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        let status = unsafe { status.assume_init() };
+        match status.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => Ok(ManagedEntryKind::Directory),
+            libc::S_IFREG => Ok(ManagedEntryKind::File),
+            _ => Err(invalid(
+                "managed state entry is not a regular file or directory",
+            )),
+        }
+    }
+
+    pub(crate) fn file_len(&self, name: &std::ffi::OsStr) -> Result<u64, ClewError> {
+        let file = self.open_file(name)?;
+        Ok(file.metadata().map_err(io_error)?.len())
     }
 
     pub(crate) fn temporary_child(

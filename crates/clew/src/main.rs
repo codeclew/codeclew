@@ -84,6 +84,11 @@ enum Command {
         #[command(subcommand)]
         command: SupportCommand,
     },
+    /// Account for managed CAS space and reclaim only proven-unreachable data.
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     #[command(name = "__task-run-execute", hide = true)]
     InternalTaskRunExecute(InternalTaskRunArgs),
 }
@@ -140,6 +145,18 @@ enum WorkspaceCommand {
 enum SupportCommand {
     /// Build an allowlist-only summary from a private Codeclew JSON artifact.
     Summarize(SupportSummarizeArgs),
+}
+
+#[derive(Subcommand)]
+enum StorageCommand {
+    /// Plan reclamation by default; mutate only with explicit --apply.
+    Gc(StorageGcArgs),
+}
+
+#[derive(Args)]
+struct StorageGcArgs {
+    #[arg(long)]
+    apply: bool,
 }
 
 #[derive(Subcommand)]
@@ -1583,6 +1600,17 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             let value: Value = serde_json::from_slice(&bytes)
                 .map_err(|_| invalid("diagnostic input is not one JSON object"))?;
             support_summary(&value)
+        }
+        Command::Storage {
+            command: StorageCommand::Gc(args),
+        } => {
+            let state = clew::state::StateAuthority::process_default()?;
+            let report = if args.apply {
+                clew::cas::garbage_collect_storage(&state)?
+            } else {
+                clew::cas::storage_status(&state)?
+            };
+            serde_json::to_value(report).map_err(internal)
         }
         Command::InternalTaskRunExecute(args) => execute_task_run(&args.run),
     }
