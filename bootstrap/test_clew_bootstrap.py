@@ -1183,6 +1183,18 @@ class BootstrapAuthorityTest(unittest.TestCase):
                 return ("a" * 40 if arguments[-1] == "HEAD" else "b" * 40).encode() + b"\n"
 
             lease_path = state / "locks" / f"runtime-{key[7:]}.lease"
+            with (
+                mock.patch.dict(
+                    os.environ, {"CODECLEW_RUNTIME_SEED": str(seed_path)}, clear=False
+                ),
+                mock.patch.object(bootstrap, "run", side_effect=git_authority),
+                mock.patch.object(bootstrap, "verify_capsule", return_value=verified),
+                self.assertRaisesRegex(bootstrap.BootstrapError, "lease is unsafe"),
+            ):
+                bootstrap.sealed_runtime_seed(source)
+            self.assertFalse(lease_path.exists())
+            lease_path.write_bytes(b"")
+            os.chmod(lease_path, 0o600)
 
             def verify_under_lease(_capsule, _key):
                 with lifecycle_path.open("rb") as lifecycle_contender:

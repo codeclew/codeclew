@@ -1133,8 +1133,7 @@ def _sealed_runtime_seed_locked(source: Path, seed_path: Path) -> tuple[str, Pat
     try:
         lease_descriptor = os.open(
             lease_path.name,
-            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=locks_descriptor,
         )
     except OSError as error:
@@ -1149,7 +1148,7 @@ def _sealed_runtime_seed_locked(source: Path, seed_path: Path) -> tuple[str, Pat
     ):
         os.close(lease_descriptor)
         raise BootstrapError("sealed runtime seed lease is unsafe")
-    lease = os.fdopen(lease_descriptor, "a+b")
+    lease = os.fdopen(lease_descriptor, "rb")
     fcntl.flock(lease, fcntl.LOCK_SH)
     try:
         # The shared lease must cover both discovery and verification. Otherwise

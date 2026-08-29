@@ -36,7 +36,7 @@ class ReleaseVersionTest(unittest.TestCase):
                 release.canonical(manifest) + b"\n"
             )
 
-            release.write_seed(
+            seed_path = release.write_seed(
                 package,
                 state,
                 b"evidence",
@@ -49,6 +49,17 @@ class ReleaseVersionTest(unittest.TestCase):
                 stat.S_IMODE((package / "seed").stat().st_mode),
                 0o700,
             )
+            lease = (
+                seed_path.parent
+                / "parallel-state"
+                / "v2"
+                / "locks"
+                / f"runtime-{runtime_key}.lease"
+            )
+            self.assertTrue(lease.is_file())
+            self.assertFalse(lease.is_symlink())
+            self.assertEqual(stat.S_IMODE(lease.stat().st_mode), 0o600)
+            self.assertEqual(lease.stat().st_size, 0)
 
     def test_cli_version_must_match_the_release_tag(self) -> None:
         with tempfile.TemporaryDirectory() as value:

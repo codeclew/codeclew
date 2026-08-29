@@ -316,6 +316,24 @@ def write_seed(
     epoch.mkdir(mode=0o700)
     destination_state = epoch / "parallel-state"
     shutil.copytree(state, destination_state)
+    runtime_locks = destination_state / "v2" / "locks"
+    runtime_locks.mkdir(mode=0o700, parents=True, exist_ok=True)
+    runtime_lease = (
+        runtime_locks
+        / f"runtime-{str(runtime_key).removeprefix('sha256:')}.lease"
+    )
+    try:
+        lease_metadata = runtime_lease.lstat()
+    except FileNotFoundError:
+        runtime_lease.write_bytes(b"")
+    else:
+        if (
+            not stat.S_ISREG(lease_metadata.st_mode)
+            or lease_metadata.st_uid != os.geteuid()
+            or lease_metadata.st_size != 0
+        ):
+            raise ReleaseError("profiled runtime lease is unsafe")
+    runtime_lease.chmod(0o600)
 
     artifact_hashes = {
         name: value["sha256"]
