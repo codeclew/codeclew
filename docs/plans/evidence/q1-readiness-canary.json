@@ -1,0 +1,78 @@
+{
+  "candidate": {
+    "candidateDigest": "sha256:d1b6453253a05a59afa9b633e9818b5c6ad7d785056a1ee9049a66b2ddb874f4",
+    "profile": "core",
+    "runtimeKey": "sha256:aa10b4b3e0f821d5ee4cc64e1cd69c9b3a1b2891820bc915e2424080a9ca087e",
+    "runtimeManifestDigest": "sha256:b9e0f273215fc9144a03d90b8f7c634e85282065bf2ffb87c48cbbc7abec1914",
+    "sourceRevision": "ee046cc8381e3ef9d0dfd7a87f6777b192919325",
+    "version": "v0.2.4"
+  },
+  "cases": [
+    {
+      "checkIds": [
+        "platform.posix",
+        "runtime.capsule"
+      ],
+      "durationMillis": 114,
+      "name": "installed-release-attach",
+      "nextAction": "NONE",
+      "scope": "ATTACH",
+      "status": "PASS"
+    },
+    {
+      "checkIds": [
+        "platform.posix",
+        "runtime.capsule",
+        "tool.git",
+        "task.profile",
+        "task.operation",
+        "task.compilation-authority",
+        "tool.node",
+        "repository.git",
+        "repository.clean",
+        "repository.target-ref-at-head",
+        "repository.recognized-project-marker"
+      ],
+      "durationMillis": 152,
+      "language": "typescript",
+      "name": "installed-release-task-read",
+      "nextAction": "NONE",
+      "operation": "analysis",
+      "profileId": "typescript-5-project-read-only",
+      "scope": "TASK",
+      "status": "PASS"
+    },
+    {
+      "checkIds": [
+        "platform.posix",
+        "runtime.capsule",
+        "tool.git",
+        "tool.python3",
+        "tool.java",
+        "tool.rustc",
+        "tool.cargo",
+        "tool.node",
+        "state.free-space"
+      ],
+      "durationMillis": 113,
+      "name": "installed-release-provision",
+      "nextAction": "FREE_6_GIB_ON_STATE_VOLUME",
+      "scope": "PROVISION",
+      "status": "ACTION_REQUIRED"
+    }
+  ],
+  "conclusions": {
+    "attachRequiresColdBuildFreeSpace": false,
+    "attachRequiresProjectToolchain": false,
+    "provisionIsSeparate": true,
+    "taskChecksOnlyRelevantToolchain": true
+  },
+  "forbiddenWarmProcessStarts": [],
+  "privacyAssertions": {
+    "containsAbsolutePaths": false,
+    "containsRepositoryIdentity": false,
+    "containsSource": false
+  },
+  "schema": "codeclew-q1-readiness-canary/1.0",
+  "status": "PASS"
+}
