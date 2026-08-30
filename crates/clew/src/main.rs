@@ -15,6 +15,7 @@ use clew::thread_context::{bounded_thread_context_stdout, create as create_threa
 use clew::workspace;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -624,11 +625,11 @@ struct NavExpandArgs {
     #[arg(long = "candidate", num_args = 1, action = clap::ArgAction::Append)]
     candidates: Vec<String>,
     /// Include the exact retained source window for the selected candidate.
-    /// With term selection, requires one exact term and --file.
+    /// With term selection, requires one to three exact terms and --file.
     #[arg(long, requires = "source_target")]
     source: bool,
-    /// Select one exact declaration name in this repository-relative file
-    /// before bounded context ranking. Requires --source.
+    /// Select one to three exact declaration names in this repository-relative
+    /// file before bounded context ranking. Requires --source.
     #[arg(
         long,
         requires_all = ["terms", "source"],
@@ -1809,31 +1810,29 @@ fn expand_context_object(
     session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
 }
 
-fn expand_context_exact_file_term_object(
+fn expand_context_exact_file_terms_object(
     session: &SessionAuthority,
     parent_context_id: String,
     intent: Option<String>,
-    term: String,
+    additional_terms: Vec<String>,
     file: &str,
     max_roots: usize,
 ) -> Result<ContextObject, ClewError> {
     session.require_open()?;
     let parent = session.load_context(&parent_context_id)?;
     let mut terms = parent.terms.clone();
-    terms.push(term.clone());
+    terms.extend(additional_terms.iter().cloned());
     terms.sort();
     terms.dedup();
     let intent = intent.unwrap_or_else(|| parent.intent.clone());
     validate_context_request(&intent, &terms)?;
-    let additional_terms = vec![term.clone()];
-    let (projection, evidence) = clew::context_v2::create_exact_file_term(
+    let (projection, evidence) = clew::context_v2::create_exact_file_terms(
         session,
         &intent,
         &additional_terms,
         max_roots,
         &parent,
         file,
-        &term,
     )?;
     session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
 }
@@ -2100,31 +2099,31 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     if args.source && args.file.is_none() {
         return Err(ClewError::new(
             ErrorCode::InvalidInput,
-            "term source selection requires one exact term and --file",
+            "term source selection requires one to three exact terms and --file",
         ));
     }
-    if args.file.is_some() && (!args.source || args.terms.len() != 1) {
+    if args.file.is_some()
+        && (!args.source
+            || !(1..=3).contains(&args.terms.len())
+            || args.terms.iter().collect::<BTreeSet<_>>().len() != args.terms.len())
+    {
         return Err(ClewError::new(
             ErrorCode::InvalidInput,
-            "exact file selection requires --source and one exact term",
+            "exact file selection requires --source and one to three unique exact terms",
         ));
     }
     if let Some(file) = args.file {
         let requested_terms = args.terms.clone();
-        let context = expand_context_exact_file_term_object(
+        let context = expand_context_exact_file_terms_object(
             &session,
             args.context,
             args.intent,
-            args.terms[0].clone(),
+            args.terms,
             &file,
             args.max_roots,
         )?;
-        let navigation = clew::navigation::detail_by_exact_file_term(
-            &context,
-            &file,
-            &requested_terms[0],
-            true,
-        )?;
+        let navigation =
+            clew::navigation::detail_by_exact_file_terms(&context, &file, &requested_terms, true)?;
         let result = json!({
             "schema":clew::navigation::NAV_EXPAND_SCHEMA,
             "status":"EXPANDED_SELECTED",

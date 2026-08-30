@@ -403,9 +403,23 @@ pub fn detail_by_exact_file_term(
     term: &str,
     include_source: bool,
 ) -> Result<Value, ClewError> {
+    detail_by_exact_file_terms(context, file, &[term.to_owned()], include_source)
+}
+
+pub fn detail_by_exact_file_terms(
+    context: &ContextObject,
+    file: &str,
+    terms: &[String],
+    include_source: bool,
+) -> Result<Value, ClewError> {
     validate_file_selector(file)?;
-    if term.is_empty() {
-        return Err(invalid("exact navigation term is empty"));
+    if !(1..=MAX_NAV_CANDIDATES).contains(&terms.len())
+        || terms.iter().any(String::is_empty)
+        || terms.iter().collect::<BTreeSet<_>>().len() != terms.len()
+    {
+        return Err(invalid(
+            "exact navigation requires one to three unique terms",
+        ));
     }
     let retained = retained_context(context)?;
     let matches = retained
@@ -413,32 +427,40 @@ pub fn detail_by_exact_file_term(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("retained navigation context has no match array"))?;
     let mut candidate_ids = Vec::new();
-    for matched in matches {
-        let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
-            continue;
-        };
-        if !is_declaration(payload)
-            || payload.get("file").and_then(Value::as_str) != Some(file)
-            || !exact_candidate_name_matches(payload, term)
-        {
-            continue;
+    for term in terms {
+        let mut term_candidate_ids = Vec::new();
+        for matched in matches {
+            let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
+                continue;
+            };
+            if !is_declaration(payload)
+                || payload.get("file").and_then(Value::as_str) != Some(file)
+                || !exact_candidate_name_matches(payload, term)
+            {
+                continue;
+            }
+            term_candidate_ids.push(candidate_handle(
+                required_string(matched, "compilation")?,
+                required_string(matched, "factKey")?,
+            )?);
         }
-        candidate_ids.push(candidate_handle(
-            required_string(matched, "compilation")?,
-            required_string(matched, "factKey")?,
-        )?);
+        match term_candidate_ids.len() {
+            0 => {
+                return Err(ClewError::new(
+                    ErrorCode::SymbolNotFound,
+                    format!("no exact declaration matches file and term {term}"),
+                ));
+            }
+            1 => candidate_ids.push(term_candidate_ids.remove(0)),
+            _ => {
+                return Err(ClewError::new(
+                    ErrorCode::AmbiguousSymbol,
+                    format!("multiple exact declarations match file and term {term}"),
+                ));
+            }
+        }
     }
-    match candidate_ids.len() {
-        0 => Err(ClewError::new(
-            ErrorCode::SymbolNotFound,
-            "no exact declaration matches the selected file and term",
-        )),
-        1 => detail(context, &candidate_ids, include_source, &[]),
-        _ => Err(ClewError::new(
-            ErrorCode::AmbiguousSymbol,
-            "multiple exact declarations match the selected file and term",
-        )),
-    }
+    detail(context, &candidate_ids, include_source, &[])
 }
 
 pub fn source_by_candidate(
@@ -3418,6 +3440,81 @@ mod tests {
                 .unwrap_err()
                 .code,
             ErrorCode::AmbiguousSymbol
+        );
+    }
+
+    #[test]
+    fn exact_file_terms_select_three_declarations_in_requested_order() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:one",
+                    "payload":{"kind":"declaration","name":"CONST1","file":"src/cas.rs","startLine":1,"endLine":1}
+                },
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:two",
+                    "payload":{"kind":"declaration","name":"CONST2","file":"src/cas.rs","startLine":2,"endLine":2}
+                },
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:three",
+                    "payload":{"kind":"declaration","name":"CONST3","file":"src/cas.rs","startLine":3,"endLine":3}
+                }
+            ],
+            "sources":[{
+                "fileId":"src/cas.rs",
+                "contentRef":{"digest":"sha256:cas"},
+                "windows":[{"startLine":1,"endLine":3,"text":"const CONST1;\nconst CONST2;\nconst CONST3;"}]
+            }],
+            "completeness":{},
+            "truncated":false
+        });
+        let authority = context("context:exact-batch", None, "sha256:evidence", retained);
+        let terms = vec!["CONST3".into(), "CONST1".into(), "CONST2".into()];
+        let selected = detail_by_exact_file_terms(&authority, "src/cas.rs", &terms, true).unwrap();
+        assert_eq!(selected["candidates"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            selected["candidates"][0]["candidateKey"]["factKey"],
+            "fact:three"
+        );
+        assert_eq!(
+            selected["candidates"][1]["candidateKey"]["factKey"],
+            "fact:one"
+        );
+        assert_eq!(
+            selected["candidates"][2]["candidateKey"]["factKey"],
+            "fact:two"
+        );
+        assert!(
+            selected["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|candidate| { candidate["source"]["status"] == "SUPPORTED" })
+        );
+        assert_eq!(
+            detail_by_exact_file_terms(
+                &authority,
+                "src/cas.rs",
+                &["CONST1".into(), "CONST1".into()],
+                true,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            detail_by_exact_file_terms(
+                &authority,
+                "src/cas.rs",
+                &["CONST1".into(), "MISSING".into()],
+                true,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::SymbolNotFound
         );
     }
 

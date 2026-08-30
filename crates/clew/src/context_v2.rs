@@ -22,6 +22,7 @@ const SOURCE_DECLARATION_CONTEXT_AFTER_LINES: usize = 24;
 const MAX_CONTEXTUAL_DECLARATION_LINES: usize = 16;
 const MAX_SUPPORT_TERM_SETS: usize = 32;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
+const MAX_EXACT_SELECTIONS: usize = 3;
 pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-context/1.0";
 pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/4.0";
 pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/4.0";
@@ -29,9 +30,9 @@ pub const BOUNDED_CONTEXT_PROJECTION_SCHEMA: &str = "codeclew-bounded-context-pr
 const EXACT_SELECTION_SCHEMA: &str = "codeclew-exact-declaration-selection/1.0";
 
 #[derive(Debug, Clone, Copy)]
-struct ExactFileTermSelector<'a> {
+struct ExactFileTermsSelector<'a> {
     file: &'a str,
-    term: &'a str,
+    terms: &'a [String],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,12 +90,7 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             .ok_or_else(|| invalid("context has no per-compilation query authority"))?,
     )
     .map_err(parse_error)?;
-    let exact_selection = evidence
-        .get("exactSelection")
-        .map(|value| {
-            serde_json::from_value::<ExactSelectionAuthority>(value.clone()).map_err(parse_error)
-        })
-        .transpose()?;
+    let exact_selections = exact_selection_authorities(evidence)?;
     let compilations = evidence
         .pointer("/context/compilations")
         .and_then(Value::as_array)
@@ -159,15 +155,12 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             "context projection truncation does not match retained omissions",
         ));
     }
-    let required = exact_selection
-        .as_ref()
+    let required = exact_selections
+        .iter()
         .map(|selection| exact_selection_hit(&queries, selection))
-        .transpose()?;
-    let recomputed = merge_query_contexts_with_required(
-        &queries,
-        aggregate.facts.len().max(1),
-        required.as_ref(),
-    )?;
+        .collect::<Result<Vec<_>, _>>()?;
+    let recomputed =
+        merge_query_contexts_with_required(&queries, aggregate.facts.len().max(1), &required)?;
     if aggregate != recomputed {
         return Err(invalid("aggregate query authority cannot be reproduced"));
     }
@@ -199,14 +192,48 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             .get("sources")
             .ok_or_else(|| invalid("projection has no source authority"))?,
     )?;
-    if let Some(selection) = &exact_selection {
-        validate_exact_selection(
-            selection,
-            retained,
-            required.as_ref().expect("selected hit"),
-        )?;
+    for (selection, required) in exact_selections.iter().zip(&required) {
+        validate_exact_selection(selection, retained, required)?;
     }
     Ok(())
+}
+
+fn exact_selection_authorities(
+    evidence: &Value,
+) -> Result<Vec<ExactSelectionAuthority>, ClewError> {
+    let single = evidence.get("exactSelection");
+    let batch = evidence.get("exactSelections");
+    if single.is_some() && batch.is_some() {
+        return Err(invalid("exact selection authority is duplicated"));
+    }
+    let selections = if let Some(value) = single {
+        vec![
+            serde_json::from_value::<ExactSelectionAuthority>(value.clone())
+                .map_err(parse_error)?,
+        ]
+    } else if let Some(value) = batch {
+        let selections = serde_json::from_value::<Vec<ExactSelectionAuthority>>(value.clone())
+            .map_err(parse_error)?;
+        if !(2..=MAX_EXACT_SELECTIONS).contains(&selections.len()) {
+            return Err(invalid("exact selection batch size is invalid"));
+        }
+        selections
+    } else {
+        Vec::new()
+    };
+    let mut terms = BTreeSet::new();
+    let mut facts = BTreeSet::new();
+    let mut file = None;
+    for selection in &selections {
+        if !terms.insert(selection.term.as_str())
+            || !facts.insert((selection.compilation.as_str(), selection.fact_key.as_str()))
+            || file.is_some_and(|file| file != selection.file.as_str())
+        {
+            return Err(invalid("exact selection batch authority is inconsistent"));
+        }
+        file = Some(selection.file.as_str());
+    }
+    Ok(selections)
 }
 
 fn validate_projected_subset(
@@ -478,19 +505,21 @@ pub fn create(
     create_with_selector(session, intent, terms, max_roots, parent, None)
 }
 
-pub fn create_exact_file_term(
+pub fn create_exact_file_terms(
     session: &SessionAuthority,
     intent: &str,
     terms: &[String],
     max_roots: usize,
     parent: &ContextObject,
     file: &str,
-    term: &str,
 ) -> Result<(Value, Value), ClewError> {
     validate_exact_file_selector(file)?;
-    if term.is_empty() || terms.len() != 1 || terms[0] != term {
+    if !(1..=MAX_EXACT_SELECTIONS).contains(&terms.len())
+        || terms.iter().any(String::is_empty)
+        || terms.iter().collect::<BTreeSet<_>>().len() != terms.len()
+    {
         return Err(invalid(
-            "exact context selection requires one matching declaration term",
+            "exact context selection requires one to three unique declaration terms",
         ));
     }
     create_with_selector(
@@ -499,7 +528,7 @@ pub fn create_exact_file_term(
         terms,
         max_roots,
         Some(parent),
-        Some(ExactFileTermSelector { file, term }),
+        Some(ExactFileTermsSelector { file, terms }),
     )
 }
 
@@ -509,7 +538,7 @@ fn create_with_selector(
     terms: &[String],
     max_roots: usize,
     parent: Option<&ContextObject>,
-    exact_selector: Option<ExactFileTermSelector<'_>>,
+    exact_selector: Option<ExactFileTermsSelector<'_>>,
 ) -> Result<(Value, Value), ClewError> {
     crate::session::validate_context_request(intent, terms)?;
     if terms.is_empty() || max_roots == 0 || max_roots > 256 {
@@ -523,11 +552,8 @@ fn create_with_selector(
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let fact_limit = max_roots.saturating_mul(16).min(MAX_EVIDENCE_FACTS);
-    let query_limit = if exact_selector.is_some() {
-        fact_limit.saturating_sub(1).max(1)
-    } else {
-        fact_limit
-    };
+    let required_capacity = exact_selector.map_or(0, |selector| selector.terms.len());
+    let query_limit = fact_limit.saturating_sub(required_capacity).max(1);
     let parent_queries = parent
         .map(|parent| {
             serde_json::from_value::<BTreeMap<String, QueryContext>>(
@@ -541,7 +567,7 @@ fn create_with_selector(
         })
         .transpose()?;
     let mut query_contexts = BTreeMap::new();
-    let mut exact_matches = BTreeSet::new();
+    let mut exact_matches = BTreeMap::<String, BTreeSet<CompilationFactHit>>::new();
     let mut exact_query_truncated = false;
     for compilation in &ready.compilations {
         let index = load_query_index(&store, compilation)?;
@@ -554,49 +580,60 @@ fn create_with_selector(
             query(&store, &index, terms, query_limit)?
         };
         if let Some(selector) = exact_selector {
-            let exact = exact_name_query(&store, &index, selector.term)?;
-            exact_query_truncated |= exact.truncated;
-            context.query_shards_read = context
-                .query_shards_read
-                .checked_add(exact.query_shards_read)
-                .ok_or_else(|| resource("context query shard count overflow"))?;
-            for fact in exact.facts {
-                let payload = load_fact_payload(&store, &fact)?;
-                if exact_declaration_file_term_matches(&payload, selector.file, selector.term) {
-                    exact_matches.insert(CompilationFactHit {
-                        compilation: compilation.compilation.clone(),
-                        fact,
-                    });
+            for term in selector.terms {
+                let exact = exact_name_query(&store, &index, term)?;
+                exact_query_truncated |= exact.truncated;
+                context.query_shards_read = context
+                    .query_shards_read
+                    .checked_add(exact.query_shards_read)
+                    .ok_or_else(|| resource("context query shard count overflow"))?;
+                for fact in exact.facts {
+                    let payload = load_fact_payload(&store, &fact)?;
+                    if exact_declaration_file_term_matches(&payload, selector.file, term) {
+                        exact_matches
+                            .entry(term.clone())
+                            .or_default()
+                            .insert(CompilationFactHit {
+                                compilation: compilation.compilation.clone(),
+                                fact,
+                            });
+                    }
                 }
             }
         }
         query_contexts.insert(compilation.compilation.clone(), context);
     }
-    let exact_match = if exact_selector.is_some() {
-        Some(select_unique_exact_match(
-            exact_matches,
-            exact_query_truncated,
-        )?)
+    let exact_matches = if let Some(selector) = exact_selector {
+        selector
+            .terms
+            .iter()
+            .map(|term| {
+                select_unique_exact_match(
+                    exact_matches.remove(term).unwrap_or_default(),
+                    exact_query_truncated,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?
     } else {
-        None
+        Vec::new()
     };
-    if let Some(selected) = &exact_match {
+    for selected in exact_matches.iter().rev() {
         let context = query_contexts
             .get_mut(&selected.compilation)
             .ok_or_else(|| internal("exact declaration compilation disappeared"))?;
         promote_query_fact(context, &selected.fact, fact_limit);
     }
     let query_context =
-        merge_query_contexts_with_required(&query_contexts, fact_limit, exact_match.as_ref())?;
+        merge_query_contexts_with_required(&query_contexts, fact_limit, &exact_matches)?;
     let snapshot = load_snapshot(&store, &ready)?;
     let selection_terms = &query_context.requested_terms;
     let loaded_facts = load_fact_evidence(&store, &query_context.facts)?;
-    let evidence_facts = if let Some(selected) = &exact_match {
+    let evidence_facts = if !exact_matches.is_empty() {
         rank_fact_evidence_with_required(
             loaded_facts,
             selection_terms,
             max_roots.saturating_mul(4),
-            selected,
+            &exact_matches,
         )?
     } else {
         rank_fact_evidence(loaded_facts, selection_terms, max_roots.saturating_mul(4))?
@@ -778,22 +815,35 @@ fn create_with_selector(
             "certainty":certainty,
         },
     });
-    if let (Some(selected), Some(selector)) = (&exact_match, exact_selector) {
+    if let Some(selector) = exact_selector {
+        let selections = selector
+            .terms
+            .iter()
+            .zip(&exact_matches)
+            .map(|(term, selected)| ExactSelectionAuthority {
+                schema: EXACT_SELECTION_SCHEMA.into(),
+                file: selector.file.into(),
+                term: term.clone(),
+                compilation: selected.compilation.clone(),
+                fact_key: selected.fact.fact_key.clone(),
+                direct_posting_complete: true,
+            })
+            .collect::<Vec<_>>();
+        let (key, value) = if selections.len() == 1 {
+            (
+                "exactSelection",
+                serde_json::to_value(&selections[0]).map_err(internal)?,
+            )
+        } else {
+            (
+                "exactSelections",
+                serde_json::to_value(&selections).map_err(internal)?,
+            )
+        };
         evidence
             .as_object_mut()
             .expect("context evidence is an object")
-            .insert(
-                "exactSelection".into(),
-                serde_json::to_value(ExactSelectionAuthority {
-                    schema: EXACT_SELECTION_SCHEMA.into(),
-                    file: selector.file.into(),
-                    term: selector.term.into(),
-                    compilation: selected.compilation.clone(),
-                    fact_key: selected.fact.fact_key.clone(),
-                    direct_posting_complete: true,
-                })
-                .map_err(internal)?,
-            );
+            .insert(key.into(), value);
     }
     Ok((projection, evidence))
 }
@@ -825,13 +875,13 @@ fn merge_query_contexts(
     contexts: &BTreeMap<String, QueryContext>,
     fact_limit: usize,
 ) -> Result<AggregateQueryContext, ClewError> {
-    merge_query_contexts_with_required(contexts, fact_limit, None)
+    merge_query_contexts_with_required(contexts, fact_limit, &[])
 }
 
 fn merge_query_contexts_with_required(
     contexts: &BTreeMap<String, QueryContext>,
     fact_limit: usize,
-    required: Option<&CompilationFactHit>,
+    required: &[CompilationFactHit],
 ) -> Result<AggregateQueryContext, ClewError> {
     let first = contexts
         .values()
@@ -873,17 +923,20 @@ fn merge_query_contexts_with_required(
         })
         .collect::<Vec<_>>();
     let mut facts = fair_compilation_selection(&lanes, fact_limit);
-    if let Some(required) = required {
-        if !all_facts.contains(required) {
+    if !required.is_empty() {
+        if required.len() > fact_limit
+            || required.iter().collect::<BTreeSet<_>>().len() != required.len()
+            || required.iter().any(|fact| !all_facts.contains(fact))
+        {
             return Err(invalid(
-                "required exact declaration is absent from query authority",
+                "required exact declarations are inconsistent with query authority",
             ));
         }
-        facts.retain(|fact| fact != required);
-        while facts.len() >= fact_limit {
+        facts.retain(|fact| !required.contains(fact));
+        while facts.len().saturating_add(required.len()) > fact_limit {
             facts.pop();
         }
-        facts.insert(0, required.clone());
+        facts.splice(0..0, required.iter().cloned());
     }
     let truncated =
         contexts.values().any(|context| context.truncated) || all_facts.len() > facts.len();
@@ -1705,23 +1758,34 @@ fn rank_fact_evidence_with_required(
     mut facts: Vec<Value>,
     terms: &[String],
     limit: usize,
-    required: &CompilationFactHit,
+    required: &[CompilationFactHit],
 ) -> Result<Vec<Value>, ClewError> {
-    let position = facts
-        .iter()
-        .position(|fact| {
-            fact.get("compilation").and_then(Value::as_str) == Some(required.compilation.as_str())
-                && fact.get("factKey").and_then(Value::as_str)
-                    == Some(required.fact.fact_key.as_str())
-        })
-        .ok_or_else(|| internal("exact declaration is absent from aggregate query authority"))?;
-    let selected = facts.remove(position);
-    let mut ranked = if limit > 1 {
-        rank_fact_evidence(facts, terms, limit - 1)?
+    if required.is_empty() || required.len() > limit {
+        return Err(internal("exact declaration evidence limit is invalid"));
+    }
+    let mut selected = Vec::with_capacity(required.len());
+    for required in required {
+        let position = facts
+            .iter()
+            .position(|fact| {
+                fact.get("compilation").and_then(Value::as_str)
+                    == Some(required.compilation.as_str())
+                    && fact.get("factKey").and_then(Value::as_str)
+                        == Some(required.fact.fact_key.as_str())
+            })
+            .ok_or_else(|| {
+                internal("exact declaration is absent from aggregate query authority")
+            })?;
+        selected.push(facts.remove(position));
+    }
+    let remaining = limit - required.len();
+    let mut ranked = if remaining > 0 {
+        rank_fact_evidence(facts, terms, remaining)?
     } else {
         Vec::new()
     };
-    ranked.insert(0, selected);
+    selected.append(&mut ranked);
+    let ranked = selected;
     Ok(ranked)
 }
 
@@ -1925,10 +1989,10 @@ mod tests {
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, EXACT_SELECTION_SCHEMA,
         ExactSelectionAuthority, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES, PROJECTION_TARGET_BYTES,
         best_lexical_support, bounded_projection, exact_declaration_file_term_matches,
-        load_fact_evidence, merge_query_contexts, merge_query_contexts_with_required,
-        ordered_paths_in_evidence, promote_query_fact, rank_fact_evidence,
-        rank_fact_evidence_with_required, select_unique_exact_match, source_offset_hints,
-        source_windows, validate_exact_selection, validate_source_rows,
+        exact_selection_authorities, load_fact_evidence, merge_query_contexts,
+        merge_query_contexts_with_required, ordered_paths_in_evidence, promote_query_fact,
+        rank_fact_evidence, rank_fact_evidence_with_required, select_unique_exact_match,
+        source_offset_hints, source_windows, validate_exact_selection, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -1949,10 +2013,13 @@ mod tests {
             domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
             payload: payload.clone(),
         };
-        let required = CompilationFactHit {
-            compilation: "cargo:demo".into(),
-            fact: fact("z:required"),
-        };
+        let required = ["x:first-required", "y:second-required", "z:third-required"]
+            .into_iter()
+            .map(|key| CompilationFactHit {
+                compilation: "cargo:demo".into(),
+                fact: fact(key),
+            })
+            .collect::<Vec<_>>();
         let mut query = QueryContext {
             schema: QUERY_CONTEXT_SCHEMA.into(),
             index_id: "sha256:index".into(),
@@ -1962,30 +2029,41 @@ mod tests {
             query_shards_read: 1,
             truncated: false,
         };
-        promote_query_fact(&mut query, &required.fact, 2);
-        assert_eq!(query.facts[0], required.fact);
-        assert!(query.truncated);
+        for selected in required.iter().rev() {
+            promote_query_fact(&mut query, &selected.fact, 5);
+        }
+        assert_eq!(
+            &query.facts[..required.len()],
+            required
+                .iter()
+                .map(|selected| selected.fact.clone())
+                .collect::<Vec<_>>()
+        );
 
         let aggregate = merge_query_contexts_with_required(
             &BTreeMap::from([("cargo:demo".into(), query)]),
-            1,
-            Some(&required),
+            3,
+            &required,
         )
         .unwrap();
-        assert_eq!(aggregate.facts, vec![required.clone()]);
+        assert_eq!(aggregate.facts, required);
 
         let ranked = rank_fact_evidence_with_required(
             vec![
                 json!({"compilation":"cargo:demo","factKey":"a:first","payload":{}}),
-                json!({"compilation":"cargo:demo","factKey":"z:required","payload":{}}),
+                json!({"compilation":"cargo:demo","factKey":"x:first-required","payload":{}}),
+                json!({"compilation":"cargo:demo","factKey":"y:second-required","payload":{}}),
+                json!({"compilation":"cargo:demo","factKey":"z:third-required","payload":{}}),
             ],
             &["value".into()],
-            1,
-            &required,
+            3,
+            &aggregate.facts,
         )
         .unwrap();
-        assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0]["factKey"], "z:required");
+        assert_eq!(ranked.len(), 3);
+        assert_eq!(ranked[0]["factKey"], "x:first-required");
+        assert_eq!(ranked[1]["factKey"], "y:second-required");
+        assert_eq!(ranked[2]["factKey"], "z:third-required");
     }
 
     #[test]
@@ -2109,6 +2187,43 @@ mod tests {
         retained["matches"][0]["payloadRef"]["digest"] =
             json!(format!("sha256:{}", "f".repeat(64)));
         assert!(validate_exact_selection(&selection, &retained, &required).is_err());
+    }
+
+    #[test]
+    fn exact_selection_batch_authority_is_bounded_and_unique() {
+        let selection = |term: &str| {
+            json!({
+                "schema":EXACT_SELECTION_SCHEMA,
+                "file":"src/cas.rs",
+                "term":term,
+                "compilation":"cargo:demo",
+                "factKey":format!("fact:{term}"),
+                "directPostingComplete":true
+            })
+        };
+        let evidence = json!({
+            "exactSelections":[selection("CONST1"), selection("CONST2"), selection("CONST3")]
+        });
+        let selections = exact_selection_authorities(&evidence).unwrap();
+        assert_eq!(
+            selections
+                .iter()
+                .map(|selection| selection.term.as_str())
+                .collect::<Vec<_>>(),
+            vec!["CONST1", "CONST2", "CONST3"]
+        );
+
+        let duplicate = json!({"exactSelections":[selection("CONST1"), selection("CONST1")]});
+        assert!(exact_selection_authorities(&duplicate).is_err());
+        let oversized = json!({
+            "exactSelections":[
+                selection("CONST1"),
+                selection("CONST2"),
+                selection("CONST3"),
+                selection("CONST4")
+            ]
+        });
+        assert!(exact_selection_authorities(&oversized).is_err());
     }
 
     #[test]
