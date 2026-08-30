@@ -52,6 +52,17 @@ def write_minimal_registry(
 
 
 class BootstrapAuthorityTest(unittest.TestCase):
+    def test_product_options_never_abbreviate_bootstrap_authority(self) -> None:
+        known, command = bootstrap.parse_bootstrap_arguments([
+            "--source-root",
+            "/private/source",
+            "nav",
+            "query",
+            "--source",
+        ])
+        self.assertEqual(known.source_root, Path("/private/source"))
+        self.assertEqual(command, ["nav", "query", "--source"])
+
     def test_session_cleanup_uses_its_retained_capsule_without_source_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
