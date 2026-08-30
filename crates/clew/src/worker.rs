@@ -2607,7 +2607,7 @@ impl WorkerClient {
         normalize_invalid_jvm_descriptors(&mut facts).map_err(|error| {
             attach_verified_index_failure(error, "DESCRIPTOR_NORMALIZATION", Some(&facts))
         })?;
-        verify_descriptor_line_coordinates(&self.workspace, &facts).map_err(|error| {
+        verify_descriptor_line_coordinates(&repo, &facts).map_err(|error| {
             attach_verified_index_failure(error, "DESCRIPTOR_LINE_PROOF", Some(&facts))
         })?;
         let descriptor = crate::semantic_validation::validate_declaration_descriptor_snapshot(
