@@ -258,18 +258,20 @@ fn assemble(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("retained navigation context has no source array"))?;
 
-    let mut candidates = Vec::new();
-    let mut candidate_identities = BTreeSet::new();
+    let normalized_terms = terms
+        .iter()
+        .map(|term| term.to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut ranked_candidates = Vec::new();
     let mut handles = BTreeMap::new();
-    let mut total_candidates = 0usize;
-    for matched in matches {
+    for (ordinal, matched) in matches.iter().enumerate() {
         let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
             continue;
         };
         if !is_declaration(payload) {
             continue;
         }
-        total_candidates += 1;
         let fact_key = required_string(matched, "factKey")?;
         let compilation = required_string(matched, "compilation")?;
         let candidate_id = candidate_handle(compilation, fact_key)?;
@@ -279,9 +281,34 @@ fn assemble(
         {
             return Err(invalid("navigation candidate handle collision"));
         }
-        if candidates.len() == MAX_NAV_CANDIDATES {
-            continue;
-        }
+        let (term_coverage, name_coverage, occurrences) =
+            candidate_relevance(payload, sources, &normalized_terms);
+        ranked_candidates.push((
+            term_coverage,
+            name_coverage,
+            occurrences,
+            ordinal,
+            candidate_id,
+            matched,
+            payload,
+        ));
+    }
+    ranked_candidates.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    let total_candidates = ranked_candidates.len();
+    let mut candidates = Vec::new();
+    let mut candidate_identities = BTreeSet::new();
+    for (_, _, _, _, candidate_id, matched, payload) in
+        ranked_candidates.into_iter().take(MAX_NAV_CANDIDATES)
+    {
+        let fact_key = required_string(matched, "factKey")?;
+        let compilation = required_string(matched, "compilation")?;
         if let Some(identity) = payload.get("symbolIdentity").and_then(Value::as_str) {
             candidate_identities.insert(identity);
         }
@@ -475,6 +502,59 @@ fn display_name(payload: &Map<String, Value>) -> Option<&str> {
     ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
         .into_iter()
         .find_map(|key| payload.get(key).and_then(Value::as_str))
+}
+
+fn candidate_relevance(
+    payload: &Map<String, Value>,
+    sources: &[Value],
+    terms: &BTreeSet<String>,
+) -> (usize, usize, usize) {
+    let name_text = ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase();
+    let source_text = exact_declaration_text(sources, payload)
+        .unwrap_or_default()
+        .to_lowercase();
+    let mut term_coverage = 0usize;
+    let mut name_coverage = 0usize;
+    let mut occurrences = 0usize;
+    for term in terms {
+        let name_occurrences = name_text.matches(term).count();
+        let source_occurrences = source_text.matches(term).count();
+        if name_occurrences + source_occurrences > 0 {
+            term_coverage += 1;
+        }
+        if name_occurrences > 0 {
+            name_coverage += 1;
+        }
+        occurrences = occurrences.saturating_add(name_occurrences + source_occurrences);
+    }
+    (term_coverage, name_coverage, occurrences)
+}
+
+fn exact_declaration_text(sources: &[Value], payload: &Map<String, Value>) -> Option<String> {
+    let source = exact_source(sources, payload)?;
+    let window_start = source.window.get("startLine").and_then(Value::as_u64)?;
+    let declaration_start = payload.get("startLine").and_then(Value::as_u64)?;
+    let declaration_end = payload.get("endLine").and_then(Value::as_u64)?;
+    let start = usize::try_from(declaration_start.checked_sub(window_start)?).ok()?;
+    let count = usize::try_from(
+        declaration_end
+            .checked_sub(declaration_start)?
+            .checked_add(1)?,
+    )
+    .ok()?;
+    let lines = source
+        .window
+        .get("text")
+        .and_then(Value::as_str)?
+        .split('\n')
+        .collect::<Vec<_>>();
+    let end = start.checked_add(count)?;
+    (end <= lines.len()).then(|| lines[start..end].join("\n"))
 }
 
 fn retained_context(context: &ContextObject) -> Result<&Value, ClewError> {
@@ -1221,6 +1301,121 @@ mod tests {
         let edges = result["facets"]["callers"]["edges"].as_array().unwrap();
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0]["factKey"], "edge:A");
+    }
+
+    #[test]
+    fn decision_cards_rank_exact_retained_source_coverage_before_generic_names() {
+        let declaration = |name: &str, line: u64| {
+            json!({
+                "compilation":"cargo:demo",
+                "factKey":format!("fact:{name}"),
+                "payload":{
+                    "kind":"declaration",
+                    "name":name,
+                    "symbolIdentity":format!("symbol:{name}"),
+                    "file":"src/lib.rs",
+                    "startLine":line,
+                    "endLine":line,
+                }
+            })
+        };
+        let retained = json!({
+            "matches":[
+                declaration("AlphaBeta", 1),
+                declaration("Alpha", 3),
+                declaration("Work", 5),
+                declaration("Gamma", 7),
+            ],
+            "sources":[{
+                "fileId":"src/lib.rs",
+                "contentRef":{"digest":"sha256:source"},
+                "windows":[
+                    {"startLine":1,"endLine":1,"text":"fn AlphaBeta() {}"},
+                    {"startLine":3,"endLine":3,"text":"fn Alpha() {}"},
+                    {"startLine":5,"endLine":5,"text":"fn Work() { alpha(beta, gamma); }"},
+                    {"startLine":7,"endLine":7,"text":"fn Gamma() {}"}
+                ]
+            }],
+            "completeness":{},
+            "truncated":false,
+        });
+        let result = assemble(
+            "session:test",
+            "context:test",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &["alpha".into(), "beta".into(), "gamma".into()],
+            &retained,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result["candidates"][0]["displayName"], "Work");
+        assert_eq!(result["candidates"][1]["displayName"], "AlphaBeta");
+        assert_eq!(result["candidateCount"]["omitted"], 1);
+    }
+
+    #[test]
+    fn decision_card_source_score_cannot_leak_across_a_merged_window() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:neighbor",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"Neighbor",
+                        "symbolIdentity":"symbol:Neighbor",
+                        "file":"src/lib.rs",
+                        "startLine":4,
+                        "endLine":6
+                    }
+                },
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:target",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"Target",
+                        "symbolIdentity":"symbol:Target",
+                        "file":"src/lib.rs",
+                        "startLine":1,
+                        "endLine":3
+                    }
+                }
+            ],
+            "sources":[{
+                "fileId":"src/lib.rs",
+                "contentRef":{"digest":"sha256:source"},
+                "windows":[{
+                    "startLine":1,
+                    "endLine":6,
+                    "text":"fn Target() {\n alpha(beta, gamma);\n}\nfn Neighbor() {\n unrelated();\n}"
+                }]
+            }],
+            "completeness":{},
+            "truncated":false,
+        });
+        let result = assemble(
+            "session:test",
+            "context:test",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &["alpha".into(), "beta".into(), "gamma".into()],
+            &retained,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result["candidates"][0]["displayName"], "Target");
+        assert_eq!(
+            candidate_relevance(
+                retained["matches"][0]["payload"].as_object().unwrap(),
+                retained["sources"].as_array().unwrap(),
+                &BTreeSet::from(["alpha".into(), "beta".into(), "gamma".into()]),
+            ),
+            (0, 0, 0)
+        );
     }
 
     #[test]
