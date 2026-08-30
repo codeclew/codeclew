@@ -1941,6 +1941,61 @@ mod tests {
     }
 
     #[test]
+    fn kotlin_descriptor_lines_enable_exact_preview_and_decision_source() {
+        let retained = json!({
+            "matches":[{
+                "compilation":":/main",
+                "factKey":"descriptor:engine-policy",
+                "domainUri":"analysis:kotlin",
+                "payloadRef":{"digest":"sha256:descriptor"},
+                "payload":{
+                    "schema":"declaration-descriptor/0.1",
+                    "declarationKind":"FUNCTION",
+                    "symbolIdentity":"callable:dev/semanticthread/worker/kotlinEngineCompatibilityDecision#jvm:()V",
+                    "file":"Worker.kt",
+                    "start":20,
+                    "end":100,
+                    "startLine":2,
+                    "endLine":4,
+                    "lineProvenance":"UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE"
+                }
+            }],
+            "sources":[{
+                "fileId":"Worker.kt",
+                "contentRef":{"digest":"sha256:kotlin-source"},
+                "startLine":1,
+                "endLine":5,
+                "windows":[{
+                    "startLine":1,
+                    "endLine":5,
+                    "text":"package demo\nfun kotlinEngineCompatibilityDecision() {\n  check(true)\n}\n"
+                }],
+                "completeFile":false
+            }],
+            "completeness":{"support":"SUPPORTED","certainty":"UNSURE"},
+            "truncated":false
+        });
+        let mut authority = context(
+            "context:kotlin-lines",
+            None,
+            "sha256:kotlin-evidence",
+            retained,
+        );
+        authority.terms = vec!["kotlinEngineCompatibilityDecision".into()];
+
+        let cards = query(&authority, &[]).unwrap();
+        assert_eq!(cards["candidates"][0]["preview"]["status"], "EXACT");
+        assert_eq!(cards["candidates"][0]["location"]["startLine"], 2);
+        let candidate = cards["candidates"][0]["candidateId"].as_str().unwrap();
+        let source = source_envelope_by_candidate(&authority, candidate).unwrap();
+        assert_eq!(source["source"]["status"], "SUPPORTED");
+        assert_eq!(
+            source["source"]["contentRef"]["digest"],
+            "sha256:kotlin-source"
+        );
+    }
+
+    #[test]
     fn decision_card_is_compact_and_detail_preserves_exact_fact_and_window() {
         let retained = json!({
             "matches":[{

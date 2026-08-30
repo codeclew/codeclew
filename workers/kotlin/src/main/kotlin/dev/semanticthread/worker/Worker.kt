@@ -254,6 +254,36 @@ internal fun compilerRangeToUtf8Bytes(source: String, start: Int, end: Int): Int
     return byteStart until byteEnd
 }
 
+internal data class Utf8LineIndex(
+    val byteSize: Int,
+    val lineStarts: IntArray,
+)
+
+internal fun utf8LineIndex(source: String): Utf8LineIndex {
+    val bytes = source.toByteArray(Charsets.UTF_8)
+    val starts = ArrayList<Int>()
+    starts += 0
+    bytes.forEachIndexed { index, byte ->
+        if (byte == '\n'.code.toByte()) starts += index + 1
+    }
+    return Utf8LineIndex(bytes.size, starts.toIntArray())
+}
+
+internal fun utf8ByteRangeToOneBasedLines(
+    index: Utf8LineIndex,
+    start: Int,
+    end: Int,
+): IntRange? {
+    if (start < 0 || end < start || end > index.byteSize) return null
+    fun lineAt(offset: Int): Int {
+        val found = index.lineStarts.binarySearch(offset)
+        val lineIndex = if (found >= 0) found else -found - 2
+        return lineIndex + 1
+    }
+    val inclusiveEnd = if (end > start) end - 1 else start
+    return lineAt(start)..lineAt(inclusiveEnd)
+}
+
 internal fun stableBoundaryDigest(value: JsonElement): String = sha(canonicalJson(value).toByteArray())
 
 internal fun repositoryRelativeCompilerPath(repo: Path, raw: String): String? {
@@ -2140,6 +2170,7 @@ internal class Worker(
             return repositoryRelativeCompilerPath(repo, raw)
         }
         val sourceTextByFile = projectSourceTextByRelativePath(repo, compilation)
+        val lineIndexByFile = mutableMapOf<String, Utf8LineIndex>()
         fun boundary(
             code: String,
             raw: JsonObject,
@@ -2175,6 +2206,16 @@ internal class Worker(
                     return@mapNotNull null
                 }
                 val provenByteRange = byteRange!!
+                val byteEnd = provenByteRange.last + 1
+                val provenLineRange = utf8ByteRangeToOneBasedLines(
+                    lineIndexByFile.getOrPut(file) { utf8LineIndex(source) },
+                    provenByteRange.first,
+                    byteEnd,
+                )
+                if (provenLineRange == null) {
+                    generatedBoundaries += boundary("INVALID_DESCRIPTOR_SOURCE_RANGE", raw, file)
+                    return@mapNotNull null
+                }
                 val sourceRowHash = canonicalCompilerRowDigest(raw, file)
                 val descriptorPayload = if (attributeBoundary != null) {
                     descriptorCorePayload(raw, sourceRowHash)
@@ -2187,7 +2228,10 @@ internal class Worker(
                     }
                     put("file", file)
                     put("start", provenByteRange.first)
-                    put("end", provenByteRange.last + 1)
+                    put("end", byteEnd)
+                    put("startLine", provenLineRange.first)
+                    put("endLine", provenLineRange.last)
+                    put("lineProvenance", "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE")
                     put("module", module)
                     put("sourceSet", sourceSet)
                     put("sourceProvenance", "COMPILER_UTF16_RANGE_TO_UTF8_BYTES")

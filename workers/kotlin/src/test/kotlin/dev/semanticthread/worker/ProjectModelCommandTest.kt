@@ -753,6 +753,44 @@ class ProjectModelCommandTest {
         val bytes = compilerRangeToUtf8Bytes(source, functionStart, functionEnd)
         assertEquals(source.substring(0, functionStart).toByteArray().size, bytes?.first)
         assertEquals(source.toByteArray().size, bytes?.last?.plus(1))
+        val provenBytes = requireNotNull(bytes)
+        assertEquals(
+            2..2,
+            utf8ByteRangeToOneBasedLines(
+                utf8LineIndex(source),
+                provenBytes.first,
+                provenBytes.last + 1,
+            ),
+        )
+
+        val multiline = "val marker = \"😀\"\r\nfun answer() =\r\n    42\r\n"
+        val multilineStart = multiline.indexOf("fun")
+        val multilineBytes = compilerRangeToUtf8Bytes(multiline, multilineStart, multiline.length)!!
+        val multilineIndex = utf8LineIndex(multiline)
+        assertEquals(
+            2..3,
+            utf8ByteRangeToOneBasedLines(
+                multilineIndex,
+                multilineBytes.first,
+                multilineBytes.last + 1,
+            ),
+        )
+        assertEquals(
+            4..4,
+            utf8ByteRangeToOneBasedLines(
+                multilineIndex,
+                multilineIndex.byteSize,
+                multilineIndex.byteSize,
+            ),
+        )
+        assertNull(utf8ByteRangeToOneBasedLines(multilineIndex, -1, 0))
+        assertNull(
+            utf8ByteRangeToOneBasedLines(
+                multilineIndex,
+                0,
+                multilineIndex.byteSize + 1,
+            ),
+        )
 
         val emojiStart = source.indexOf("😀")
         assertNull(compilerRangeToUtf8Bytes(source, emojiStart + 1, emojiStart + 2))
