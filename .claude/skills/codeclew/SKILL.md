@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.5"
+  version: "0.2.6"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -112,11 +112,21 @@ clew nav expand \
   --from <context-id> \
   --candidate <candidate-id> \
   --candidate <candidate-id> \
-  --source \
+  --source
+```
+
+Source is optional. Request a facet in a separate command only when the user
+explicitly needs that relation:
+
+```bash
+clew nav expand \
+  --session <session-id> \
+  --from <context-id> \
+  --candidate <candidate-id> \
   --facet <callers-or-callees-or-tests>
 ```
 
-Both source and facet are optional. Never reread a returned exact source window
+Never reread a returned exact source window
 with `sed`, `nl`, or another search tool unless a later observation contradicts
 its bound digest. If none of the cards is sufficient, add only the missing
 identifier with `nav expand --session <session-id> --from <context-id> --term
@@ -128,6 +138,35 @@ refinement and selection in one call: `nav expand --session <session-id> --from
 merely to collect every match. Term expansion returns a reconstructable patch:
 apply upserts and removals, then `candidateOrder`; unchanged cards are omitted.
 The child `contextId` and `evidenceDigest` bind the complete immutable evidence.
+
+Use this command-selection loop while checklist items remain open:
+
+1. After every exact-source result, update the checklist before issuing another
+   command. Harvest every requested fact already visible there, including exact
+   constants, predicates, typed outcomes, order, and retained-reference choices.
+2. Stop navigation as soon as the checklist is closed.
+3. When one to three still-needed exact declarations are established in the
+   same file, fetch them together with repeated `--term`, one `--file`, and
+   `--source`:
+
+   ```bash
+   clew nav expand \
+     --session <session-id> \
+     --from <context-id> \
+     --term <exact-identifier> \
+     --term <exact-identifier> \
+     --file <repository-relative-file> \
+     --source
+   ```
+
+4. Otherwise follow a supported retained reference that can close an open item;
+   otherwise refine only the missing identifier. Always use the newest context.
+5. Request `callers`, `callees`, or `tests` only for an explicit relation
+   subclaim. Never request a facet to rediscover helpers or reread source, and do
+   not retry an `UNSUPPORTED` facet.
+6. Do not descend below the abstraction boundary in the request. A discovered
+   helper is not a new checklist item. Reserve the remaining command budget for
+   explicit open items; if it cannot close one, report that item as unproven.
 
 Automatic `nav query --follow-references` follows lexical overlap from the
 automatically ranked top card. Omit it when candidate identity matters; select
@@ -157,10 +196,10 @@ resolved call edge. When `targetResolution=UNRESOLVED` or
 `semanticRelation=UNKNOWN`, treat returned name matches as bounded discovery
 candidates. Exact source returned for such a candidate may prove facts about
 that declaration, but not that the observed reference targets it. Do not
-re-query source already returned. If a supported choice can close an open
-checklist item, the next navigation command must follow that retained reference
-with the returned candidate and newest context; do not replace it with a term
-search. Use exact `--term ... --file ... --source`
+re-query source already returned. At the retained-reference step of the ordered
+loop above, a supported choice that can close an open item must be followed with
+the returned candidate and newest context; do not replace it with a term search.
+Use exact `--term ... --file ... --source`
 only when the retained-name result lacks sufficient exact source and both the
 identifier and file are already established by evidence. Recurse only when the
 returned helper body delegates an open checklist item; prioritize the bounded
@@ -178,7 +217,10 @@ command or output budget prevents closing an item, return the remaining item as
 an obligation instead of guessing. A guard, limit, failure, or transition item
 remains open until the evidence records its comparison predicate, typed outcome,
 and relative order to any requested digest, publication, or mutation; a constant
-or helper name alone is insufficient.
+or helper name alone is insufficient. For a structured multi-part response,
+emit one evidence or claim entry per checklist item in the request's order; if
+the output schema has no such array, use one explicit clause per item. Every
+requested exact fact already visible in returned source must appear there.
 
 Admission already binds the exact base revision. Do not run a preliminary
 `git rev-parse` or cleanliness check for read-only analysis; use one final
