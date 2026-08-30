@@ -10,6 +10,7 @@ pub const NAV_RESULT_SCHEMA: &str = "codeclew-navigation-result/2.0";
 pub const NAV_DELTA_SCHEMA: &str = "codeclew-navigation-delta/2.0";
 pub const NAV_DETAIL_SCHEMA: &str = "codeclew-navigation-detail/1.1";
 pub const NAV_AGENT_CARD_SCHEMA: &str = "codeclew-navigation-agent-card/1.0";
+pub const NAV_ACTION_SCHEMA: &str = "codeclew-navigation-actions/1.0";
 pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_NAV_CANDIDATES: usize = 3;
@@ -102,6 +103,11 @@ pub fn agent_card(result: &Value) -> Result<Value, ClewError> {
         "truncated":truncated,
         "nextAction":next_action,
     });
+    if let Some(next_actions) = result.get("nextActions") {
+        card.as_object_mut()
+            .expect("agent card is an object")
+            .insert("nextActions".into(), next_actions.clone());
+    }
     if let Some(reference_follow) = result.get("referenceFollow") {
         card.as_object_mut()
             .expect("agent card is an object")
@@ -196,6 +202,10 @@ fn compact_decision_source(decision: &Value) -> Result<Value, ClewError> {
             let binding_count = decision
                 .get("sourceBindingCount")
                 .ok_or_else(|| invalid("supported decision source has no binding count"))?;
+            let returned_candidate_ids = bindings
+                .iter()
+                .map(|binding| required_value_string(binding, "candidateId"))
+                .collect::<Result<Vec<_>, _>>()?;
             let windows = source
                 .get("windows")
                 .and_then(Value::as_array)
@@ -205,6 +215,12 @@ fn compact_decision_source(decision: &Value) -> Result<Value, ClewError> {
                 "selectionAuthority":required_value_string(decision, "selectionAuthority")?,
                 "sourceBindingCount":binding_count,
                 "sourceBindings":bindings,
+                "sourceDelivery":{
+                    "status":"RETURNED",
+                    "candidateIds":returned_candidate_ids,
+                    "reuse":"CURRENT_RESULT",
+                    "repeatSameRequest":false,
+                },
                 "source":{
                     "status":"SUPPORTED",
                     "authority":required_value_string(source, "authority")?,
@@ -227,6 +243,11 @@ fn compact_decision_source(decision: &Value) -> Result<Value, ClewError> {
         }
         Some(status @ ("UNSUPPORTED" | "UNAVAILABLE")) => Ok(json!({
             "candidateId":required_value_string(decision, "candidateId")?,
+            "sourceDelivery":{
+                "status":status,
+                "reason":required_value_string(source, "reason")?,
+                "repeatSameRequest":false,
+            },
             "source":{
                 "status":status,
                 "reason":required_value_string(source, "reason")?,
@@ -1338,6 +1359,7 @@ fn selected_candidate_detail(
     } else {
         json!({"status":"NOT_REQUESTED"})
     };
+    let source_delivery = source_delivery(&source)?;
     let reference_choices = bounded_reference_choices(payload, candidate_id)?;
     Ok(json!({
         "candidateId":candidate_id,
@@ -1350,6 +1372,7 @@ fn selected_candidate_detail(
             "payload":payload,
         },
         "source":source,
+        "sourceDelivery":source_delivery,
         "referenceChoices":reference_choices,
         "facets":{
             "callers":relation_facet(matches, &identities, NavigationFacet::Callers, requested_facets.contains(&NavigationFacet::Callers)),
@@ -1441,7 +1464,40 @@ fn bounded_reference_choices(
         "nextAction":format!(
             "nav expand --session <sessionId> --from <contextId> --candidate {candidate_id} --reference <terminal-or-full-path> --source"
         ),
+        "followAction":{
+            "kind":"RETAINED_REFERENCE_FOLLOW",
+            "candidateId":candidate_id,
+            "maxReferences":MAX_REFERENCE_FOLLOW_TERMS,
+            "onePathPerTerminal":true,
+            "includeSource":true,
+            "includeFacet":false,
+            "requiresNewestContext":true,
+            "choiceAuthority":"RETAINED_DIRECT_REFERENCE_FACT",
+            "resultSelectionAuthority":"USER_SELECTED_RETAINED_REFERENCE",
+            "targetResolution":"UNRESOLVED",
+            "semanticRelation":"UNKNOWN",
+        },
     }))
+}
+
+fn source_delivery(source: &Value) -> Result<Value, ClewError> {
+    match source.get("status").and_then(Value::as_str) {
+        Some("SUPPORTED") => Ok(json!({
+            "status":"RETURNED",
+            "reuse":"CURRENT_RESULT",
+            "repeatSameRequest":false,
+        })),
+        Some("NOT_REQUESTED") => Ok(json!({
+            "status":"NOT_RETURNED",
+            "requestAction":"candidateSource",
+        })),
+        Some("UNSUPPORTED") => Ok(json!({
+            "status":"UNAVAILABLE",
+            "reason":required_value_string(source, "reason")?,
+            "repeatSameRequest":false,
+        })),
+        _ => Err(invalid("navigation candidate source has an invalid status")),
+    }
 }
 
 fn supports_explicit_direct_references(payload: &Map<String, Value>) -> bool {
@@ -1615,6 +1671,31 @@ fn assemble(
             "detail":"nav expand --session <sessionId> --from <contextId> --candidate <candidateId> [--candidate <candidateId> ...] [--source] [--facet callers|callees|tests]",
             "refine":"nav expand --session <sessionId> --from <contextId> --term <additional-term>",
             "exactSource":"nav expand --session <sessionId> --from <contextId> --term <exact-identifier> --file <repository-relative-file> --source",
+        },
+        "nextActions":{
+            "schema":NAV_ACTION_SCHEMA,
+            "candidateSource":{
+                "kind":"CANDIDATE_SOURCE",
+                "maxCandidates":MAX_NAV_CANDIDATES,
+                "includeSource":true,
+                "includeFacet":false,
+            },
+            "exactSource":{
+                "kind":"EXACT_FILE_SOURCE",
+                "maxTerms":MAX_NAV_CANDIDATES,
+                "sameFileRequired":true,
+                "includeSource":true,
+            },
+            "facet":{
+                "kind":"CANDIDATE_FACET",
+                "allowedValues":["callers","callees","tests"],
+                "includeSource":false,
+                "explicitRelationOnly":true,
+            },
+            "refine":{
+                "kind":"TERM_REFINEMENT",
+                "includeSource":false,
+            },
         },
     });
     Ok(result)
@@ -2279,6 +2360,42 @@ mod tests {
         assert_eq!(result["intent"], NAV_QUERY_INTENT);
         assert!(result["candidates"][0].get("fact").is_none());
         assert!(result["candidates"][0].get("source").is_none());
+        assert_eq!(
+            result["nextAction"],
+            json!({
+                "detail":"nav expand --session <sessionId> --from <contextId> --candidate <candidateId> [--candidate <candidateId> ...] [--source] [--facet callers|callees|tests]",
+                "refine":"nav expand --session <sessionId> --from <contextId> --term <additional-term>",
+                "exactSource":"nav expand --session <sessionId> --from <contextId> --term <exact-identifier> --file <repository-relative-file> --source",
+            })
+        );
+        assert_eq!(
+            result["nextActions"],
+            json!({
+                "schema":NAV_ACTION_SCHEMA,
+                "candidateSource":{
+                    "kind":"CANDIDATE_SOURCE",
+                    "maxCandidates":3,
+                    "includeSource":true,
+                    "includeFacet":false,
+                },
+                "exactSource":{
+                    "kind":"EXACT_FILE_SOURCE",
+                    "maxTerms":3,
+                    "sameFileRequired":true,
+                    "includeSource":true,
+                },
+                "facet":{
+                    "kind":"CANDIDATE_FACET",
+                    "allowedValues":["callers","callees","tests"],
+                    "includeSource":false,
+                    "explicitRelationOnly":true,
+                },
+                "refine":{
+                    "kind":"TERM_REFINEMENT",
+                    "includeSource":false,
+                },
+            })
+        );
     }
 
     #[test]
@@ -2302,6 +2419,7 @@ mod tests {
             .insert("decisionSource".into(), source);
 
         let card = agent_card(&result).unwrap();
+        assert_eq!(card["nextActions"], result["nextActions"]);
         assert_eq!(card["decisionSource"]["source"]["status"], "SUPPORTED");
         assert_eq!(
             card["decisionSource"]["source"]["contentDigest"],
@@ -2314,6 +2432,15 @@ mod tests {
         assert_eq!(
             card["decisionSource"]["sourceBindings"][0]["candidateId"],
             candidate_id
+        );
+        assert_eq!(
+            card["decisionSource"]["sourceDelivery"],
+            json!({
+                "status":"RETURNED",
+                "candidateIds":[candidate_id],
+                "reuse":"CURRENT_RESULT",
+                "repeatSameRequest":false,
+            })
         );
     }
 
@@ -2426,8 +2553,53 @@ mod tests {
             1
         );
         assert!(selected["candidates"][0]["source"].get("text").is_none());
+        assert_eq!(
+            selected["candidates"][0]["sourceDelivery"],
+            json!({
+                "status":"RETURNED",
+                "reuse":"CURRENT_RESULT",
+                "repeatSameRequest":false,
+            })
+        );
         let rendered = canonical::compact(&selected).unwrap();
         assert_eq!(rendered.matches("TARGET_MARKER").count(), 1);
+    }
+
+    #[test]
+    fn source_delivery_distinguishes_returned_not_requested_and_unsupported() {
+        assert_eq!(
+            source_delivery(&json!({"status":"SUPPORTED"})).unwrap(),
+            json!({
+                "status":"RETURNED",
+                "reuse":"CURRENT_RESULT",
+                "repeatSameRequest":false,
+            })
+        );
+        assert_eq!(
+            source_delivery(&json!({"status":"NOT_REQUESTED"})).unwrap(),
+            json!({
+                "status":"NOT_RETURNED",
+                "requestAction":"candidateSource",
+            })
+        );
+        assert_eq!(
+            source_delivery(&json!({
+                "status":"UNSUPPORTED",
+                "reason":"NO_EXACT_DECLARATION_WINDOW",
+            }))
+            .unwrap(),
+            json!({
+                "status":"UNAVAILABLE",
+                "reason":"NO_EXACT_DECLARATION_WINDOW",
+                "repeatSameRequest":false,
+            })
+        );
+        assert_eq!(
+            source_delivery(&json!({"status":"MAYBE"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
     }
 
     #[test]
@@ -2521,6 +2693,10 @@ mod tests {
             card["decisionSource"]["sourceBindings"][1]["windowIndex"],
             1
         );
+        assert_eq!(
+            card["decisionSource"]["sourceDelivery"]["candidateIds"],
+            json!(["c:one", "c:helper"])
+        );
         assert!(
             card["decisionSource"]["sourceBindings"][0]
                 .get("candidateKey")
@@ -2563,7 +2739,22 @@ mod tests {
             card["decisionSource"]["source"]["reason"],
             "NO_EXACT_DECLARATION_WINDOW"
         );
+        assert_eq!(
+            card["decisionSource"]["sourceDelivery"]["status"],
+            "UNSUPPORTED"
+        );
         assert!(!canonical::compact(&card).unwrap().contains(":null"));
+
+        result["decisionSource"]["source"]["status"] = json!("UNAVAILABLE");
+        let unavailable = agent_card(&result).unwrap();
+        assert_eq!(
+            unavailable["decisionSource"]["sourceDelivery"],
+            json!({
+                "status":"UNAVAILABLE",
+                "reason":"NO_EXACT_DECLARATION_WINDOW",
+                "repeatSameRequest":false,
+            })
+        );
 
         result["decisionSource"]["source"]["status"] = json!("MAYBE");
         assert_eq!(
@@ -3154,6 +3345,22 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("--reference")
+        );
+        assert_eq!(
+            candidate["candidates"][0]["referenceChoices"]["followAction"],
+            json!({
+                "kind":"RETAINED_REFERENCE_FOLLOW",
+                "candidateId":candidate_id,
+                "maxReferences":3,
+                "onePathPerTerminal":true,
+                "includeSource":true,
+                "includeFacet":false,
+                "requiresNewestContext":true,
+                "choiceAuthority":"RETAINED_DIRECT_REFERENCE_FACT",
+                "resultSelectionAuthority":"USER_SELECTED_RETAINED_REFERENCE",
+                "targetResolution":"UNRESOLVED",
+                "semanticRelation":"UNKNOWN",
+            })
         );
         let mut foreign = parent.clone();
         foreign.evidence["context"]["matches"][0]["payload"]["schema"] =
@@ -3899,6 +4106,43 @@ mod tests {
                 &authority,
                 "src/cas.rs",
                 &["CONST1".into(), "MISSING".into()],
+                true,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::SymbolNotFound
+        );
+        assert_eq!(
+            detail_by_exact_file_terms(
+                &authority,
+                "src/cas.rs",
+                &[
+                    "CONST1".into(),
+                    "CONST2".into(),
+                    "CONST3".into(),
+                    "CONST4".into(),
+                ],
+                true,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidInput
+        );
+
+        let mut cross_file = authority.clone();
+        cross_file.evidence["context"]["matches"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "compilation":"cargo:demo",
+                "factKey":"fact:other",
+                "payload":{"kind":"declaration","name":"OTHER","file":"src/other.rs","startLine":1,"endLine":1}
+            }));
+        assert_eq!(
+            detail_by_exact_file_terms(
+                &cross_file,
+                "src/cas.rs",
+                &["CONST1".into(), "OTHER".into()],
                 true,
             )
             .unwrap_err()

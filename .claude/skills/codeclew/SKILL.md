@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.6"
+  version: "0.2.7"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -102,6 +102,14 @@ card, attested previews for alternatives, and only anchors outside that source
 window. Treat its `completeness` and `truncated` fields as authoritative; the
 full immutable evidence remains bound by `evidenceDigest`. Omit `--source` when
 names and locations are enough.
+Treat `nextActions.schema=codeclew-navigation-actions/1.0` as the structured
+command contract while legacy `nextAction` strings remain compatible. In
+particular, `exactSource.sameFileRequired=true` means every repeated term must have
+one already established shared file; never combine terms whose files differ or
+are unknown. Use the separate candidate-source and facet actions for their
+stated purposes. When `decisionSource` or a selected detail reports
+`sourceDelivery.status=RETURNED`, reuse that source from the current result and
+do not issue the same source request again.
 Select up to three other useful cards in one call by repeating `--candidate`;
 each returns its retained fact and exact source window. Request relations only
 when they are needed for those selected symbols:
@@ -142,12 +150,19 @@ The child `contextId` and `evidenceDigest` bind the complete immutable evidence.
 Use this command-selection loop while checklist items remain open:
 
 1. After every exact-source result, update the checklist before issuing another
-   command. Harvest every requested fact already visible there, including exact
-   constants, predicates, typed outcomes, order, and retained-reference choices.
-2. Stop navigation as soon as the checklist is closed.
-3. When one to three still-needed exact declarations are established in the
-   same file, fetch them together with repeated `--term`, one `--file`, and
-   `--source`:
+   command. Record every requested visible fact as a separate per-item ledger
+   atom: mechanism or value, qualifiers or conditions, typed outcome,
+   order/timing relation, source anchor, and certainty. Track evidence as
+   `PROVEN` or `UNPROVEN` separately from final output as `PENDING` or `EMITTED`;
+   navigation updates only the evidence state. Harvest retained-reference
+   choices at the same time.
+2. Stop navigation as soon as every atom is `PROVEN` or retained as an explicit
+   obligation.
+3. Before batching repeated `--term` values, require one already established
+   repository-relative file shared by every term; `--file` scopes the entire
+   batch. If a term belongs to another or an unknown file, split by file or
+   establish its file first. Fetch one to three same-file declarations with one
+   `--file` and `--source`:
 
    ```bash
    clew nav expand \
@@ -221,6 +236,9 @@ or helper name alone is insufficient. For a structured multi-part response,
 emit one evidence or claim entry per checklist item in the request's order; if
 the output schema has no such array, use one explicit clause per item. Every
 requested exact fact already visible in returned source must appear there.
+Answer only after every `PROVEN` ledger atom is marked `EMITTED` in that item’s
+final clause. Summarization must not discard a qualifier, ordering, or timing
+atom.
 
 Admission already binds the exact base revision. Do not run a preliminary
 `git rev-parse` or cleanliness check for read-only analysis; use one final

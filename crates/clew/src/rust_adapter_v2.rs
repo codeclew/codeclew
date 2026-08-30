@@ -1612,7 +1612,7 @@ mod tests {
         let source = r#"pub fn aggregate_completeness() {}
 mod child {
     pub fn caller() {
-        let _label = "кириллица🙂"; super::aggregate_completeness();
+        let _label = "__UNICODE_LABEL__"; super::aggregate_completeness();
         alpha::same();
         beta::same();
         let callable = super::aggregate_completeness;
@@ -1631,8 +1631,12 @@ mod child {
         fn method(&self) {}
     }
 }
-"#;
-        let index = syntax_index_for_source(&temporary, source, "direct-reference-state-v2");
+"#
+        .replace(
+            "__UNICODE_LABEL__",
+            "\u{043a}\u{0438}\u{0440}\u{0438}\u{043b}\u{043b}\u{0438}\u{0446}\u{0430}\u{1f642}",
+        );
+        let index = syntax_index_for_source(&temporary, &source, "direct-reference-state-v2");
         let descriptors = index["declarationDescriptors"]["descriptors"]
             .as_array()
             .unwrap();

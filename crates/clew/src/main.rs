@@ -639,7 +639,8 @@ struct NavExpandArgs {
     #[arg(long, requires = "source_target")]
     source: bool,
     /// Select one to three exact declaration names in this repository-relative
-    /// file before bounded context ranking. Requires --source.
+    /// file before bounded context ranking. Every repeated --term is scoped to
+    /// this same file. Requires --source.
     #[arg(
         long,
         requires_all = ["terms", "source"],
@@ -2023,17 +2024,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
                 .insert("referenceFollow".into(), reference_follow);
         }
     }
-    let admission = if include_top_source {
-        json!({
-            "status":opened.admission.get("status"),
-            "runtimeKey":opened.admission.get("runtimeKey"),
-            "runtimeManifestDigest":opened.admission.get("runtimeManifestDigest"),
-            "runtimeMode":opened.admission.get("runtimeMode"),
-            "taskAuthority":opened.admission.get("taskAuthority"),
-        })
-    } else {
-        opened.admission.clone()
-    };
+    let admission = navigation_admission(&opened.admission, include_top_source);
     if include_top_source {
         navigation = clew::navigation::agent_card(&navigation)
             .map_err(|error| compensate_opened_context(error, &opened))?;
@@ -2054,6 +2045,21 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
     validate_nav_query_stdout(&mut result, follow_references)
         .map_err(|error| compensate_opened_context(error, &opened))?;
     Ok(result)
+}
+
+fn navigation_admission(admission: &Value, compact: bool) -> Value {
+    if compact {
+        json!({
+            "status":admission.get("status"),
+            "runtimeKey":admission.get("runtimeKey"),
+            "runtimeManifestDigest":admission.get("runtimeManifestDigest"),
+            "runtimeMode":admission.get("runtimeMode"),
+            "taskAuthority":admission.get("taskAuthority"),
+            "agentContract":admission.get("agentContract"),
+        })
+    } else {
+        admission.clone()
+    }
 }
 
 fn validate_nav_query_stdout(
@@ -3547,6 +3553,30 @@ mod tests {
     }
 
     #[test]
+    fn compact_navigation_admission_preserves_the_agent_contract() {
+        let admission = json!({
+            "status":"PASS",
+            "readinessDigest":"sha256:readiness",
+            "readinessSchema":"codeclew-doctor/1.0",
+            "runtimeKey":"sha256:runtime",
+            "runtimeManifestDigest":"sha256:manifest",
+            "runtimeMode":"RELEASE",
+            "taskAuthority":{"profileId":"rust-syntax"},
+            "agentContract":{
+                "schema":"codeclew-agent-contract/1.0",
+                "launcherAuthority":"INSTALLED_RELEASE",
+                "sourceFallbackAllowed":false,
+            },
+        });
+
+        let compact = navigation_admission(&admission, true);
+
+        assert_eq!(compact["agentContract"], admission["agentContract"].clone());
+        assert!(compact.get("readinessDigest").is_none());
+        assert_eq!(navigation_admission(&admission, false), admission);
+    }
+
+    #[test]
     fn human_capabilities_is_readable_and_preserves_the_support_boundary() {
         let value = json!({
             "status":"PILOT_READY",
@@ -4414,18 +4444,67 @@ mod tests {
             "terms":["target"],
             "candidates":[],
             "candidateCount":{"returned":0,"total":0,"omitted":0},
-            "decisionSource":{"status":"UNAVAILABLE","reason":"NO_CANDIDATE"},
+            "decisionSource":{
+                "candidateId":"c:source",
+                "selectionAuthority":"TOP_CANDIDATE",
+                "sourceBindingCount":{"eligible":1,"returned":1,"omitted":0},
+                "sourceBindings":[{
+                    "candidateId":"c:source",
+                    "displayName":"target",
+                    "declarationStartLine":1,
+                    "declarationEndLine":1,
+                    "windowIndex":0
+                }],
+                "source":{
+                    "status":"SUPPORTED",
+                    "authority":"EXACT_SNAPSHOT_TEXT",
+                    "fileId":"src/lib.rs",
+                    "contentRef":{"digest":"sha256:source"},
+                    "completeFile":false,
+                    "truncated":false,
+                    "windows":[{"startLine":1,"endLine":1,"text":"fn target() {}"}]
+                }
+            },
             "termAnchors":[],
             "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
             "truncated":false,
             "nextAction":{"refine":"nav expand ..."},
+            "nextActions":{
+                "schema":clew::navigation::NAV_ACTION_SCHEMA,
+                "candidateSource":{"kind":"CANDIDATE_SOURCE","maxCandidates":3,"includeSource":true,"includeFacet":false},
+                "exactSource":{"kind":"EXACT_FILE_SOURCE","maxTerms":3,"sameFileRequired":true,"includeSource":true},
+                "facet":{"kind":"CANDIDATE_FACET","allowedValues":["callers","callees","tests"],"includeSource":false,"explicitRelationOnly":true},
+                "refine":{"kind":"TERM_REFINEMENT","includeSource":false},
+            },
             "referenceFollow":{
                 "status":"SUPPORTED",
+                "followAction":{
+                    "kind":"RETAINED_REFERENCE_FOLLOW",
+                    "candidateId":"c:source",
+                    "maxReferences":3,
+                    "onePathPerTerminal":true,
+                    "includeSource":true,
+                    "includeFacet":false,
+                    "requiresNewestContext":true,
+                    "choiceAuthority":"RETAINED_DIRECT_REFERENCE_FACT",
+                    "resultSelectionAuthority":"USER_SELECTED_RETAINED_REFERENCE",
+                    "targetResolution":"UNRESOLVED",
+                    "semanticRelation":"UNKNOWN"
+                },
                 "payload":"x".repeat(clew::navigation::MAX_NAV_STDOUT_BYTES),
             }
         }))
         .unwrap();
         let mut result = json!({
+            "admission":{
+                "status":"PASS",
+                "runtimeMode":"RELEASE",
+                "agentContract":{
+                    "schema":"codeclew-agent-contract/1.0",
+                    "launcherAuthority":"INSTALLED_RELEASE",
+                    "sourceFallbackAllowed":false,
+                },
+            },
             "navigation":navigation,
         });
         validate_nav_query_stdout(&mut result, true).unwrap();
@@ -4440,6 +4519,18 @@ mod tests {
         assert_eq!(
             result["navigation"]["referenceFollow"]["semanticRelation"],
             "UNKNOWN"
+        );
+        assert_eq!(
+            result["navigation"]["nextActions"]["exactSource"]["maxTerms"],
+            3
+        );
+        assert_eq!(
+            result["navigation"]["decisionSource"]["sourceDelivery"]["status"],
+            "RETURNED"
+        );
+        assert_eq!(
+            result["admission"]["agentContract"]["launcherAuthority"],
+            "INSTALLED_RELEASE"
         );
     }
 
