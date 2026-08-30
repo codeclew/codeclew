@@ -883,13 +883,18 @@ fn collect_source_offset_hints(
                     let end = end
                         .and_then(|end| usize::try_from(end).ok())
                         .filter(|end| *end > offset);
-                    let observed = output
-                        .entry(file.to_owned())
-                        .or_default()
-                        .entry(offset)
-                        .or_insert(None);
-                    if let Some(end) = end {
-                        *observed = Some(observed.map_or(end, |current| current.max(end)));
+                    let ranges = output.entry(file.to_owned()).or_default();
+                    if let Some(observed) = ranges.get_mut(&offset) {
+                        if let Some(end) = end {
+                            *observed = Some(observed.map_or(end, |current| current.max(end)));
+                        }
+                    } else if ranges.len() < MAX_SOURCE_WINDOWS {
+                        // Facts arrive in deterministic task-relevance and
+                        // fairness order. Preserve that authority before the
+                        // range map sorts by byte offset, otherwise four early
+                        // broad matches can evict an exact
+                        // declaration requested later in a large source file.
+                        ranges.insert(offset, end);
                     }
                 }
             }
@@ -2487,6 +2492,50 @@ mod tests {
         assert!(
             windows.iter().map(|window| window.2.len()).sum::<usize>() <= super::MAX_SOURCE_BYTES
         );
+    }
+
+    #[test]
+    fn source_range_hints_keep_the_highest_ranked_late_declaration() {
+        let mut source = String::new();
+        let mut ranges = Vec::new();
+        for marker in [
+            "EARLY_ONE",
+            "EARLY_TWO",
+            "EARLY_THREE",
+            "EARLY_FOUR",
+            "TARGET",
+        ] {
+            let start = source.len();
+            source.push_str(&format!("fn Target() {{ let marker = \"{marker}\"; }}\n"));
+            ranges.push((start, source.len()));
+            source.push_str(&"padding\n".repeat(40));
+        }
+        let facts = std::iter::once(ranges[4])
+            .chain(ranges[..4].iter().copied())
+            .map(|(start, end)| {
+                json!({
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"Target",
+                        "file":"src/target.rs",
+                        "rangeStart":start,
+                        "rangeEnd":end,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let hints = source_offset_hints(&facts, &["Target".into()]);
+        let windows = source_windows(&source, &["Target".into()], hints.get("src/target.rs"));
+        let retained = windows
+            .iter()
+            .map(|window| window.2.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(retained.contains("TARGET"));
+        assert!(!retained.contains("EARLY_FOUR"));
+        assert!(windows.len() <= super::MAX_SOURCE_WINDOWS);
     }
 
     #[test]
