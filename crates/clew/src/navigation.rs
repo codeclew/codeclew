@@ -891,6 +891,38 @@ fn term_anchors(sources: &[Value], terms: &[String]) -> Vec<Value> {
         selected.push(line);
     }
 
+    if !selected.is_empty() && selected.len() < MAX_TERM_ANCHORS {
+        let mut denser = lines
+            .values()
+            .filter(|line| !used.contains(&(line.file.clone(), line.line)))
+            .filter_map(|line| {
+                let score = (line.matches.len(), line.matches.values().sum::<usize>());
+                let selected_score = selected
+                    .iter()
+                    .map(|selected| {
+                        line.matches.keys().fold((0usize, 0usize), |score, term| {
+                            selected.matches.get(term).map_or(score, |occurrences| {
+                                (score.0 + 1, score.1.saturating_add(*occurrences))
+                            })
+                        })
+                    })
+                    .max()
+                    .unwrap_or((0, 0));
+                (score > selected_score).then_some((line, score))
+            })
+            .collect::<Vec<_>>();
+        denser.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| left.0.file.cmp(&right.0.file))
+                .then_with(|| left.0.line.cmp(&right.0.line))
+        });
+        if let Some((line, _)) = denser.first() {
+            selected.push((*line).clone());
+        }
+    }
+
     selected
         .into_iter()
         .map(|line| {
@@ -1203,6 +1235,38 @@ mod tests {
         );
         assert_eq!(anchors[0]["authority"], "EXACT_SNAPSHOT_TEXT_LEXICAL");
         assert_eq!(anchors[0]["truncated"], false);
+    }
+
+    #[test]
+    fn term_anchor_adds_one_denser_subset_after_covering_every_term() {
+        let sources = vec![json!({
+            "fileId":"src/lib.rs",
+            "contentRef":{"digest":"sha256:source"},
+            "windows":[{
+                "startLine":10,
+                "endLine":12,
+                "text":"let member_unmatched = completeness;\nfn global_member_unmatched() {}\n\"memberCompleteness\": member_completeness,"
+            }]
+        })];
+        let anchors = term_anchors(
+            &sources,
+            &[
+                "unmatched".into(),
+                "global".into(),
+                "member".into(),
+                "completeness".into(),
+            ],
+        );
+        assert_eq!(anchors.len(), 3);
+        assert_eq!(anchors[2]["line"], 12);
+        assert_eq!(
+            anchors[2]["text"],
+            "\"memberCompleteness\": member_completeness,"
+        );
+        assert_eq!(
+            anchors[2]["matchedTerms"],
+            json!(["completeness", "member"])
+        );
     }
 
     #[test]
