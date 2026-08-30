@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.1"
+  version: "0.2.2"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -25,12 +25,14 @@ Preserve the user's scope and Codeclew's authority boundaries.
 2. Identify the absolute repository path, exact target ref, language, and exact
    compilation. Use explicit user input or authoritative project configuration;
    do not infer them from names. Ask when any remains ambiguous.
-3. Run `clew capabilities` once. Require `runtimeMode=RELEASE`,
+3. Admit the task through one of the two public atomic paths below. Their
+   `admission` object is the runtime authority; do not spend a separate call on
+   `clew capabilities` during an ordinary task. Require `runtimeMode=RELEASE`,
    `agentContract.schema=codeclew-agent-contract/1.0`,
    `agentContract.launcherAuthority=INSTALLED_RELEASE`, and
-   `agentContract.sourceFallbackAllowed=false`. Stop on a missing or mismatched
-   contract instead of trying another launcher.
-4. Admit the task through one of the two public paths below. For bounded
+   `agentContract.sourceFallbackAllowed=false`. Use standalone capabilities
+   only when the user explicitly asks about product support or runtime status.
+4. For bounded
    read-only navigation, prefer `nav query`. For broader analysis or mutation,
    open the admitted task and first bounded context atomically:
    `clew context open --repo <absolute-repo> --target-ref <exact-ref> --language
@@ -73,31 +75,40 @@ clew nav query \
   --term <term>
 ```
 
-Repeat `--term` only for explicit additional terms. `--intent` is optional and
-does not affect retrieval. Do not pass a positional search phrase. Retain the
-returned session and context identifiers. When these arguments are already
-known, run the command directly instead of spending a call on `--help`.
+Pass two to four discriminative code tokens from the request together when they
+are available. These are agent-selected lexical identifiers, not requirements
+inferred by Codeclew. `--intent` is optional and does not affect retrieval. Do
+not pass a positional search phrase. Retain the returned session and context
+identifiers. When these arguments are already known, run the command directly
+instead of spending a call on `--help`.
 
-If the bounded result is insufficient, expand only the missing term or direct
-relation from the retained context:
+The first response contains at most three fact-bound decision cards with exact
+one-line previews. Select up to three useful cards in one call by repeating
+`--candidate`; each returns its retained fact and exact source window. Request
+relations only when they are needed for those selected symbols:
 
 ```bash
 clew nav expand \
   --session <session-id> \
   --from <context-id> \
-  --term <term> \
+  --candidate <candidate-id> \
+  --candidate <candidate-id> \
+  --source \
   --facet <callers-or-callees-or-tests>
 ```
 
-The facet is optional. There is no `--all`; use another bounded expansion when
-the response reports truncation. Do not expand merely to collect every match.
-`nav expand` is a patch against its exact `parentContextId`: apply candidate
-upserts and removals to the retained parent result. An empty upsert list means
-that no candidate changed; it does not mean that the cumulative child context
-has no candidates. Reorder the reconstructed result by `candidateOrder`, since
-ranking can change without changing card bytes. `unchangedCount` is the number
-intentionally omitted from stdout. Requested facets and child completeness remain full, and the returned
-child `contextId`/`evidenceDigest` bind the complete immutable evidence in CAS.
+Both source and facet are optional. Never reread a returned exact source window
+with `sed`, `nl`, or another search tool unless a later observation contradicts
+its bound digest. If none of the cards is sufficient, add only the missing
+identifier with `nav expand --session <session-id> --from <context-id> --term
+<term>`. There is no `--all`; narrow a reported truncation and do not expand
+merely to collect every match. Term expansion returns a reconstructable patch:
+apply upserts and removals, then `candidateOrder`; unchanged cards are omitted.
+The child `contextId` and `evidenceDigest` bind the complete immutable evidence.
+
+Admission already binds the exact base revision. Do not run a preliminary
+`git rev-parse` or cleanliness check for read-only analysis; use one final
+`git status --short` only when proving that the task made no repository change.
 
 ## Build bounded context
 

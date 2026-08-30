@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::operations::{
@@ -593,26 +593,40 @@ struct NavQueryArgs {
     terms: Vec<String>,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
-    /// Add a direct fact facet. Repeat for multiple facets.
-    #[arg(long = "facet", value_enum)]
-    facets: Vec<NavFacetArg>,
 }
 
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("selection")
+        .required(true)
+        .multiple(false)
+        .args(["terms", "candidates"])
+))]
 struct NavExpandArgs {
     #[arg(long)]
     session: String,
     #[arg(long = "from")]
     context: String,
-    #[arg(long = "term", required = true)]
+    #[arg(long = "term", num_args = 1..)]
     terms: Vec<String>,
+    /// Select one to three fact-bound decision cards. Repeat for a batch.
+    #[arg(long = "candidate", num_args = 1, action = clap::ArgAction::Append)]
+    candidates: Vec<String>,
+    /// Include the exact retained source window for the selected candidate.
+    #[arg(long, requires = "candidates", conflicts_with = "terms")]
+    source: bool,
     /// Optional provenance only. It never changes retrieval or ranking.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "candidates")]
     intent: Option<String>,
     #[arg(long, default_value_t = 4)]
     max_roots: usize,
     /// Add a direct fact facet. Repeat for multiple facets.
-    #[arg(long = "facet", value_enum)]
+    #[arg(
+        long = "facet",
+        value_enum,
+        requires = "candidates",
+        conflicts_with = "terms"
+    )]
     facets: Vec<NavFacetArg>,
 }
 
@@ -1816,6 +1830,7 @@ fn admit_and_open_context(
                 "agentContract":product["agentContract"],
                 "readinessDigest":readiness_digest,
                 "readinessSchema":readiness["schema"],
+                "runtimeMode":runtime.mode,
                 "runtimeKey":runtime.runtime_key,
                 "runtimeManifestDigest":runtime.manifest_digest,
                 "status":"PASS",
@@ -1864,8 +1879,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let facets = navigation_facets(&args.facets);
-    let navigation = clew::navigation::query(&opened.context, &facets)
+    let navigation = clew::navigation::query(&opened.context, &[])
         .map_err(|error| compensate_opened_context(error, &opened))?;
     let result = json!({
         "schema":clew::navigation::NAV_QUERY_SCHEMA,
@@ -1888,6 +1902,22 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
 fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(&args.session)?;
     let parent = session.load_context(&args.context)?;
+    if !args.candidates.is_empty() {
+        let navigation = clew::navigation::detail(
+            &parent,
+            &args.candidates,
+            args.source,
+            &navigation_facets(&args.facets),
+        )?;
+        let result = json!({
+            "schema":clew::navigation::NAV_EXPAND_SCHEMA,
+            "status":"SELECTED",
+            "sessionId":session.session_id,
+            "navigation":navigation,
+        });
+        clew::navigation::validate_stdout(&result)?;
+        return Ok(result);
+    }
     let requested_terms = args.terms.clone();
     let context = expand_context_object(
         &session,
@@ -3057,6 +3087,23 @@ mod tests {
             ])
             .is_ok()
         );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--candidate",
+                "c:fedcba9876543210",
+                "--source",
+            ])
+            .is_ok()
+        );
         assert!(Cli::try_parse_from(["clew", "upgrade"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "upgrade", "--human"]).is_err());
         assert!(Cli::try_parse_from(["clew", "--json", "capabilities"]).is_err());
@@ -3862,7 +3909,7 @@ mod tests {
         ];
         assert!(Cli::try_parse_from(base).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--intent", "find Target"])).is_ok());
-        assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--all"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--operation", "mutation"])).is_err());
         assert!(
@@ -3876,11 +3923,84 @@ mod tests {
                 "context:authority",
                 "--term",
                 "Caller",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--source",
                 "--facet",
                 "callers",
             ])
             .is_ok()
         );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Caller",
+                "--source",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+            ])
+            .is_ok()
+        );
+        for conflicting in [
+            vec!["--term", "Caller", "--candidate", "c:0123456789abcdef"],
+            vec!["--candidate", "c:0123456789abcdef", "--intent", "inspect"],
+            vec!["--term", "Caller", "--facet", "callers"],
+        ] {
+            let mut args = vec![
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+            ];
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[cfg(unix)]

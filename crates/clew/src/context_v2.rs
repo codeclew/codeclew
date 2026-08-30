@@ -103,6 +103,34 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             "context compilation or query authority is inconsistent",
         ));
     }
+    let retained = evidence
+        .get("context")
+        .ok_or_else(|| invalid("context evidence has no retained context"))?;
+    for key in [
+        "language",
+        "snapshot",
+        "task",
+        "compilations",
+        "compilerVersions",
+        "generationAuthority",
+        "completeness",
+        "verificationObligations",
+    ] {
+        if projection.get(key) != retained.get(key) {
+            return Err(invalid(
+                "context projection authority differs from evidence",
+            ));
+        }
+    }
+    let omitted_matches = validate_projected_subset(projection, retained, "matches")?;
+    let omitted_sources = validate_projected_subset(projection, retained, "sources")?;
+    if projection.get("truncated").and_then(Value::as_bool)
+        != Some(omitted_matches || omitted_sources)
+    {
+        return Err(invalid(
+            "context projection truncation does not match retained omissions",
+        ));
+    }
     let recomputed = merge_query_contexts(&queries, aggregate.facts.len().max(1))?;
     if aggregate != recomputed {
         return Err(invalid("aggregate query authority cannot be reproduced"));
@@ -136,6 +164,39 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             .ok_or_else(|| invalid("projection has no source authority"))?,
     )?;
     Ok(())
+}
+
+fn validate_projected_subset(
+    projection: &Value,
+    retained: &Value,
+    key: &str,
+) -> Result<bool, ClewError> {
+    let projected = projection
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("context projection array is missing"))?;
+    let retained = retained
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained context array is missing"))?;
+    let mut seen = BTreeSet::new();
+    let mut retained_cursor = 0usize;
+    for value in projected {
+        let digest = canonical::hash(value).map_err(internal)?;
+        let Some(offset) = retained[retained_cursor..]
+            .iter()
+            .position(|candidate| candidate == value)
+        else {
+            return Err(invalid(
+                "context projection is not an exact subset of retained evidence",
+            ));
+        };
+        if !seen.insert(digest) {
+            return Err(invalid("context projection contains duplicate evidence"));
+        }
+        retained_cursor += offset + 1;
+    }
+    Ok(projected.len() < retained.len())
 }
 
 fn supported_context_language(language: &str) -> bool {
@@ -788,9 +849,8 @@ fn collect_source_offset_hints(
                 .get("name")
                 .and_then(Value::as_str)
                 .is_some_and(|name| terms.contains(&name.to_lowercase()));
-            let exact_identity_match = terms
-                .iter()
-                .any(|term| exact_identity_match(value, term, None, 0));
+            let identity_terms = exact_identity_terms(value);
+            let exact_identity_match = terms.iter().any(|term| identity_terms.contains(term));
             if exact_name_match || exact_identity_match {
                 let file = values
                     .get("sourceOrigin")
@@ -876,6 +936,7 @@ fn source_windows(
     terms: &[String],
     source_ranges: Option<&BTreeMap<usize, Option<usize>>>,
 ) -> Vec<(usize, usize, String)> {
+    let has_declaration_ranges = source_ranges.is_some_and(|ranges| !ranges.is_empty());
     let ranges = source_ranges
         .filter(|ranges| !ranges.is_empty())
         .map(|ranges| {
@@ -921,7 +982,49 @@ fn source_windows(
         projected_bytes = projected_bytes.saturating_add(window.2.len());
         windows.push(window);
     }
+    if has_declaration_ranges && windows.len() < MAX_SOURCE_WINDOWS {
+        let lowered_terms = terms
+            .iter()
+            .map(|term| term.to_lowercase())
+            .collect::<Vec<_>>();
+        let retained_score = windows
+            .iter()
+            .flat_map(|window| window.2.lines())
+            .map(|line| lexical_line_score(line, &lowered_terms))
+            .max()
+            .unwrap_or((0, 0));
+        let best_support = lines
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                let line = index + 1;
+                !windows
+                    .iter()
+                    .any(|window| window.0 <= line && line <= window.1)
+            })
+            .map(|(index, line)| (lexical_line_score(line, &lowered_terms), index + 1, *line))
+            .filter(|(score, _, _)| *score > retained_score)
+            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)));
+        if let Some((_, line, text)) = best_support
+            && projected_bytes.saturating_add(text.len()) <= MAX_SOURCE_BYTES
+        {
+            windows.push((line, line, text.to_owned()));
+            windows.sort_by_key(|window| (window.0, window.1));
+        }
+    }
     windows
+}
+
+fn lexical_line_score(line: &str, terms: &[String]) -> (usize, usize) {
+    let lowered = line.to_lowercase();
+    let mut coverage = 0usize;
+    let mut occurrences = 0usize;
+    for term in terms {
+        let count = lowered.matches(term).count();
+        coverage += usize::from(count > 0);
+        occurrences = occurrences.saturating_add(count);
+    }
+    (coverage, occurrences)
 }
 
 fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usize, usize, String) {
@@ -1046,11 +1149,13 @@ fn rank_fact_evidence(
         let mut decorated = std::mem::take(facts)
             .into_iter()
             .map(|fact| {
-                let direct_name_coverage = if fact["payload"]
+                let is_declaration = fact["payload"]
                     .get("kind")
                     .and_then(Value::as_str)
                     .is_some_and(|kind| kind.eq_ignore_ascii_case("declaration"))
-                {
+                    || (fact["payload"].get("declarationKind").is_some()
+                        && fact["payload"].get("symbolIdentity").is_some());
+                let direct_name_coverage = if is_declaration {
                     fact["payload"]
                         .get("name")
                         .and_then(Value::as_str)
@@ -1067,7 +1172,13 @@ fn rank_fact_evidence(
                     .filter(|term| identities.contains(term.as_str()))
                     .count();
                 let score = fact_score(&fact["payload"], &lowered, None, 0);
-                (direct_name_coverage, exact_coverage, score, fact)
+                (
+                    exact_coverage,
+                    direct_name_coverage,
+                    usize::from(is_declaration),
+                    score,
+                    fact,
+                )
             })
             .collect::<Vec<_>>();
         decorated.sort_by(|left, right| {
@@ -1076,9 +1187,13 @@ fn rank_fact_evidence(
                 .cmp(&left.0)
                 .then_with(|| right.1.cmp(&left.1))
                 .then_with(|| right.2.cmp(&left.2))
-                .then_with(|| left.3["factKey"].as_str().cmp(&right.3["factKey"].as_str()))
+                .then_with(|| right.3.cmp(&left.3))
+                .then_with(|| left.4["factKey"].as_str().cmp(&right.4["factKey"].as_str()))
         });
-        *facts = decorated.into_iter().map(|(_, _, _, fact)| fact).collect();
+        *facts = decorated
+            .into_iter()
+            .map(|(_, _, _, _, fact)| fact)
+            .collect();
     }
     let lanes = lanes.into_values().collect::<Vec<_>>();
     let mut ranked = Vec::new();
@@ -1197,6 +1312,12 @@ fn collect_exact_identity_terms(
 
 fn insert_identity_component_terms(component: &str, output: &mut BTreeSet<String>) {
     output.insert(component.chars().flat_map(char::to_lowercase).collect());
+    for segment in component.split('_').filter(|segment| !segment.is_empty()) {
+        insert_camel_component_terms(segment, output);
+    }
+}
+
+fn insert_camel_component_terms(component: &str, output: &mut BTreeSet<String>) {
     let characters = component.chars().collect::<Vec<_>>();
     let mut start = 0usize;
     for index in 1..characters.len() {
@@ -1231,6 +1352,7 @@ fn insert_identity_component_terms(component: &str, output: &mut BTreeSet<String
     }
 }
 
+#[cfg(test)]
 fn exact_identity_match(value: &Value, term: &str, key: Option<&str>, depth: usize) -> bool {
     if depth > 32 {
         return false;
@@ -1595,6 +1717,65 @@ mod tests {
     }
 
     #[test]
+    fn multi_term_snake_identity_coverage_beats_generic_direct_name() {
+        let target = json!({
+            "compilation":"cargo:clew",
+            "factKey":"target",
+            "payload":{
+                "kind":"declaration",
+                "name":"aggregate_unmatched_terms_are_global_not_member_local",
+                "symbolIdentity":"rust-syntax:src/context.rs#function:aggregate_unmatched_terms_are_global_not_member_local@100-200",
+            },
+        });
+        let generic = json!({
+            "compilation":"cargo:clew",
+            "factKey":"generic",
+            "payload":{
+                "kind":"declaration",
+                "name":"member",
+                "symbolIdentity":"rust-syntax:src/context.rs#function:member@10-20",
+            },
+        });
+        let reference = json!({
+            "compilation":"cargo:clew",
+            "factKey":"reference",
+            "payload":{
+                "kind":"relation",
+                "targetIdentity":"rust-syntax:src/context.rs#function:aggregate_unmatched_terms_are_global_not_member_local@100-200",
+            },
+        });
+        let terms = ["aggregate", "unmatched", "global", "member"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let ranked = rank_fact_evidence(vec![generic, reference, target], &terms, 3).unwrap();
+        assert_eq!(ranked[0]["factKey"], "target");
+    }
+
+    #[test]
+    fn snake_identity_component_selects_its_declaration_range() {
+        let mut source = "const global = \"early lexical occurrence\";\n".to_owned();
+        source.push_str(&"padding\n".repeat(100));
+        let declaration_start = source.len();
+        source.push_str("fn aggregate_unmatched_terms_are_global_not_member_local() {\n");
+        source.push_str("    let marker = \"DECLARATION_BODY\";\n}\n");
+        let facts = vec![json!({
+            "payload":{
+                "kind":"declaration",
+                "symbolIdentity":"rust-syntax:src/context.rs#function:aggregate_unmatched_terms_are_global_not_member_local@100-200",
+                "file":"src/context.rs",
+                "rangeStart":declaration_start,
+                "rangeEnd":source.len(),
+            },
+        })];
+        let hints = source_offset_hints(&facts, &["global".into()]);
+        let windows = source_windows(&source, &["global".into()], hints.get("src/context.rs"));
+        assert_eq!(windows.len(), 1);
+        assert!(windows[0].2.contains("DECLARATION_BODY"));
+        assert!(!windows[0].2.contains("early lexical occurrence"));
+    }
+
+    #[test]
     fn exact_identity_navigation_never_upgrades_unsure_generation_authority() {
         let query = super::AggregateQueryContext {
             schema: AGGREGATE_QUERY_CONTEXT_SCHEMA.into(),
@@ -1712,6 +1893,7 @@ mod tests {
         assert_eq!(evidence[0]["compilation"], ":a/main");
         assert_eq!(evidence[1]["compilation"], ":b/main");
         assert_eq!(evidence[0]["factKey"], evidence[1]["factKey"]);
+        let source_ref = store.put("test/source/1", b"Shared").unwrap();
         let context = json!({
             "schema":super::BOUNDED_CONTEXT_SCHEMA,
             "language":"language:kotlin",
@@ -1721,7 +1903,15 @@ mod tests {
             "compilerVersions":{},
             "generationAuthority":{},
             "matches":evidence,
-            "sources":[],
+            "sources":[{
+                "fileId":"src/Shared.kt",
+                "contentRef":source_ref,
+                "startLine":1,
+                "endLine":1,
+                "text":"Shared",
+                "windows":[{"startLine":1,"endLine":1,"text":"Shared"}],
+                "completeFile":false,
+            }],
             "completeness":{},
             "verificationObligations":[],
         });
@@ -1734,11 +1924,37 @@ mod tests {
             "stdoutCompleteness":{},
         });
         super::validate_context_payload(&projection, &envelope).unwrap();
+        let original = projection.clone();
+
+        let mut proper_subset = original.clone();
+        proper_subset["matches"].as_array_mut().unwrap().pop();
+        proper_subset["truncated"] = json!(true);
+        super::validate_context_payload(&proper_subset, &envelope).unwrap();
+        proper_subset["truncated"] = json!(false);
+        assert!(super::validate_context_payload(&proper_subset, &envelope).is_err());
+
+        let mut reordered = original.clone();
+        reordered["matches"].as_array_mut().unwrap().reverse();
+        assert!(super::validate_context_payload(&reordered, &envelope).is_err());
+
         projection["matches"][0]
             .as_object_mut()
             .unwrap()
             .remove("compilation");
         assert!(super::validate_context_payload(&projection, &envelope).is_err());
+
+        let mut tampered_payload = original.clone();
+        tampered_payload["matches"][0]["payload"]["name"] = json!("Changed");
+        assert!(super::validate_context_payload(&tampered_payload, &envelope).is_err());
+
+        let mut tampered_source = original.clone();
+        tampered_source["sources"][0]["contentRef"]["size"] = json!(999);
+        assert!(super::validate_context_payload(&tampered_source, &envelope).is_err());
+
+        let mut duplicate = original;
+        let repeated = duplicate["matches"][0].clone();
+        duplicate["matches"].as_array_mut().unwrap().push(repeated);
+        assert!(super::validate_context_payload(&duplicate, &envelope).is_err());
     }
 
     #[test]
@@ -1975,6 +2191,42 @@ mod tests {
         assert!(text.contains("DECLARATION_TAIL"));
         assert!(!text.contains("padding"));
         assert!(text.len() <= MAX_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn denser_lexical_support_is_retained_beside_declaration_windows() {
+        let mut source = "fn evidence_value(member_completeness: &[Value]) {\n".to_owned();
+        source.push_str("    json!({\"memberCompleteness\":member_completeness});\n}\n");
+        source.push_str(&"padding\n".repeat(40));
+        let aggregate_start = source.len();
+        source.push_str("fn aggregate_completeness(member_rows: &[Value]) {\n    body();\n}\n");
+        let aggregate_end = source.len();
+        source.push_str(&"padding\n".repeat(40));
+        let test_start = source.len();
+        source.push_str(
+            "fn aggregate_unmatched_terms_are_global_not_member_local() {\n    assert!(true);\n}\n",
+        );
+        let test_end = source.len();
+        let ranges = BTreeMap::from([
+            (aggregate_start, Some(aggregate_end)),
+            (test_start, Some(test_end)),
+        ]);
+        let windows = source_windows(
+            &source,
+            &["member".into(), "completeness".into()],
+            Some(&ranges),
+        );
+        assert_eq!(windows.len(), 3);
+        assert_eq!(
+            windows[0].2,
+            "    json!({\"memberCompleteness\":member_completeness});"
+        );
+        assert!(windows[1].2.contains("fn aggregate_completeness"));
+        assert!(
+            windows[2]
+                .2
+                .contains("aggregate_unmatched_terms_are_global_not_member_local")
+        );
     }
 
     #[test]

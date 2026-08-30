@@ -72,8 +72,8 @@ invoke the project wrapper under the model-cache policy described below.
 ## Practical code navigation
 
 `nav query` is the shortest fact-backed path from a search term to code. It
-performs task admission, opens the managed session and returns compact
-declaration cards with bounded source in one command:
+performs task admission, opens the managed session and returns at most three
+fact-bound decision cards with exact one-line source previews in one command:
 
 ```bash
 ./clew nav query \
@@ -85,16 +85,23 @@ declaration cards with bounded source in one command:
   --term fair_fact_selection
 ```
 
-The response retains `sessionId` and `contextId`, so an agent can ask for the
-next missing term without reopening the repository:
+The response retains `sessionId`, `contextId`, and the full evidence digest.
+Select one to three cards in one call to receive each complete retained fact
+and its single exact source window without retransmitting every alternative:
 
 ```bash
 ./clew nav expand \
   --session session:... \
   --from context:sha256:... \
-  --term rank_fact_evidence \
+  --candidate c:0123456789abcdef \
+  --candidate c:fedcba9876543210 \
+  --source \
   --facet callers
 ```
+
+If the decision cards are insufficient, add one discriminative identifier with
+`--term rank_fact_evidence` instead. Term selection and candidate selection are
+mutually exclusive.
 
 `nav expand` returns a delta against its exact `parentContextId`, not another
 copy of the cumulative candidate list. Apply `candidateDelta.upserts` and
@@ -103,13 +110,14 @@ array means that no candidate card changed, not that the child context has no
 candidates. Then order the reconstructed cards by `candidateOrder`; ranking
 can change even when card bytes do not. `unchangedCount` reports the cards
 deliberately omitted from stdout. The child `contextId` and `evidenceDigest` still bind the complete
-immutable context in managed CAS, while requested facets and completeness are
-returned in full.
+immutable context in managed CAS. Candidate detail returns the exact selected
+payload and only the overlapping retained source window; it fails closed when
+there is no exact line mapping.
 
 `--intent` is optional provenance and never changes retrieval or ranking.
-`--facet callers`, `--facet callees`, and `--facet tests` return only direct,
-identity-bound relation facts already present in the bounded context. A missing
-relation is reported as `UNSUPPORTED`; a non-empty bounded subset is `PARTIAL`.
+On candidate detail, `--facet callers`, `--facet callees`, and `--facet tests`
+return only direct, identity-bound relation facts for that selected symbol. A
+missing relation is reported as `UNSUPPORTED`; a non-empty bounded subset is `PARTIAL`.
 Syntax-only namesakes are never promoted to resolved edges. There is no
 `--all`: narrow or expand the context when the bounded response reports
 truncation.
