@@ -594,8 +594,8 @@ struct NavQueryArgs {
     /// Include the exact retained source of the highest-ranked decision card.
     #[arg(long)]
     source: bool,
-    /// Follow one lexically related unresolved direct call path and return
-    /// bounded exact declaration-name candidates. Requires --source.
+    /// Follow up to three lexically related unresolved direct call paths and
+    /// return bounded exact declaration-name candidates. Requires --source.
     #[arg(long, requires = "source")]
     follow_references: bool,
     #[arg(long, default_value_t = 4)]

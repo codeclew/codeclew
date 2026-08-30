@@ -14,7 +14,7 @@ pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_NAV_CANDIDATES: usize = 3;
 const MAX_TERM_ANCHORS: usize = 4;
-const MAX_REFERENCE_FOLLOW_TERMS: usize = 1;
+const MAX_REFERENCE_FOLLOW_TERMS: usize = 3;
 const MAX_REFERENCE_MATCHES_PER_TERM: usize = 3;
 const MAX_REFERENCE_FOLLOW_SOURCE_BYTES: usize = 16 * 1024;
 const MAX_REFERENCE_OBSERVATIONS_PER_TERM: usize = 4;
@@ -936,7 +936,7 @@ pub fn direct_reference_detail(
         || eligible_count < selections.len()
     {
         return Err(invalid(
-            "direct reference detail requires exactly one bounded selection",
+            "direct reference detail requires a nonempty bounded selection",
         ));
     }
     let retained = retained_context(context)?;
@@ -2782,6 +2782,26 @@ mod tests {
                             "startLine":18,
                             "endLine":18,
                             "resolution":"SYNTAX_UNRESOLVED"
+                        },
+                        {
+                            "kind":"CALL_PATH",
+                            "pathSegments":["unmatched_helper"],
+                            "terminalName":"unmatched_helper",
+                            "rangeStart":210,
+                            "rangeEnd":226,
+                            "startLine":20,
+                            "endLine":20,
+                            "resolution":"SYNTAX_UNRESOLVED"
+                        },
+                        {
+                            "kind":"CALL_PATH",
+                            "pathSegments":["member_global"],
+                            "terminalName":"member_global",
+                            "rangeStart":230,
+                            "rangeEnd":243,
+                            "startLine":22,
+                            "endLine":22,
+                            "resolution":"SYNTAX_UNRESOLVED"
                         }
                     ]
                 }
@@ -2796,14 +2816,16 @@ mod tests {
         let (selected, source_references_truncated, eligible_count) =
             select_direct_references(&authority, &candidate_id).unwrap();
         assert!(!source_references_truncated);
-        assert_eq!(eligible_count, 2);
-        assert_eq!(selected.len(), 1);
+        assert_eq!(eligible_count, 4);
+        assert_eq!(selected.len(), 3);
         assert_eq!(selected[0].terminal_name(), "aggregate_completeness");
         assert_eq!(selected[0].matched_terms, vec!["completeness"]);
         assert_eq!(
             selected[0].observations[0].path_segments,
             vec!["super", "aggregate_completeness"]
         );
+        assert_eq!(selected[1].terminal_name(), "member_context");
+        assert_eq!(selected[2].terminal_name(), "member_global");
 
         authority.projection["matches"][0]["payload"]["directReferences"][1]["terminalName"] =
             json!("different");
@@ -2965,6 +2987,247 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn direct_reference_detail_batches_three_selected_terms_under_one_source_budget() {
+        let declaration = |fact_key: &str, name: &str, file: &str, line: u64| {
+            json!({
+                "compilation":"cargo:demo",
+                "factKey":fact_key,
+                "payload":{
+                    "kind":"declaration",
+                    "name":name,
+                    "declarationKind":"function",
+                    "symbolIdentity":format!("symbol:{name}"),
+                    "file":file,
+                    "rangeStart":line * 10,
+                    "rangeEnd":line * 10 + 5,
+                    "startLine":1,
+                    "endLine":1
+                }
+            })
+        };
+        let retained = json!({
+            "matches":[
+                declaration("fact:alpha", "alpha", "src/alpha.rs", 1),
+                declaration("fact:beta", "beta", "src/beta.rs", 2),
+                declaration("fact:gamma", "gamma", "src/gamma.rs", 3),
+            ],
+            "sources":[
+                {
+                    "fileId":"src/alpha.rs",
+                    "contentRef":{"digest":"sha256:alpha"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"fn alpha() {}"}]
+                },
+                {
+                    "fileId":"src/beta.rs",
+                    "contentRef":{"digest":"sha256:beta"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"fn beta() {}"}]
+                },
+                {
+                    "fileId":"src/gamma.rs",
+                    "contentRef":{"digest":"sha256:gamma"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"fn gamma() {}"}]
+                }
+            ],
+            "completeness":{"certainty":"UNSURE"},
+            "truncated":false
+        });
+        let authority = context(
+            "context:three-reference-child",
+            Some("context:three-reference-parent"),
+            "sha256:three-reference-child",
+            retained,
+        );
+        let selections = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, terminal_name)| DirectReferenceSelection {
+                terminal_name: terminal_name.into(),
+                source_file: "src/caller.rs".into(),
+                matched_terms: vec![terminal_name.into()],
+                observations: vec![DirectReferenceObservation {
+                    path_segments: vec![terminal_name.into()],
+                    range_start: 100 + index as u64 * 10,
+                    range_end: 105 + index as u64 * 10,
+                    start_line: 10 + index as u64,
+                    end_line: 10 + index as u64,
+                }],
+                source_references_truncated: false,
+            })
+            .collect::<Vec<_>>();
+
+        let detail = direct_reference_detail(&authority, &selections, 4).unwrap();
+        assert_eq!(detail["sessionId"], "session:test");
+        assert_eq!(detail["contextId"], "context:three-reference-child");
+        assert_eq!(detail["evidenceDigest"], "sha256:three-reference-child");
+        assert_eq!(detail["references"].as_array().unwrap().len(), 3);
+        assert_eq!(detail["referenceTermCount"]["returned"], 3);
+        assert_eq!(detail["referenceTermCount"]["eligible"], 4);
+        assert_eq!(detail["referenceTermCount"]["omitted"], 1);
+        assert_eq!(detail["selectionTruncated"], true);
+        assert!(detail["sourceBytes"].as_u64().unwrap() > 0);
+        assert!(
+            detail["sourceBytes"].as_u64().unwrap()
+                <= u64::try_from(MAX_REFERENCE_FOLLOW_SOURCE_BYTES).unwrap()
+        );
+        assert!(
+            detail["references"].as_array().unwrap().iter().all(|row| {
+                row["nameMatches"]["candidates"][0]["source"]["status"] == "SUPPORTED"
+            })
+        );
+        assert_eq!(
+            detail["references"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["observed"]["terminalName"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma"]
+        );
+    }
+
+    #[test]
+    fn direct_reference_detail_omits_later_source_after_the_shared_budget() {
+        let declaration = |fact_key: &str, name: &str, file: &str| {
+            json!({
+                "compilation":"cargo:demo",
+                "factKey":fact_key,
+                "payload":{
+                    "kind":"declaration",
+                    "name":name,
+                    "declarationKind":"function",
+                    "symbolIdentity":format!("symbol:{name}"),
+                    "file":file,
+                    "rangeStart":10,
+                    "rangeEnd":20,
+                    "startLine":1,
+                    "endLine":2
+                }
+            })
+        };
+        let retained = json!({
+            "matches":[
+                declaration("fact:alpha", "alpha", "src/alpha.rs"),
+                declaration("fact:beta", "beta", "src/beta.rs"),
+                declaration("fact:gamma", "gamma", "src/gamma.rs"),
+            ],
+            "sources":[
+                {
+                    "fileId":"src/alpha.rs",
+                    "contentRef":{"digest":"sha256:alpha"},
+                    "windows":[{
+                        "startLine":1,
+                        "endLine":2,
+                        "text":format!("fn alpha() {{}}\n{}", "ALPHA".repeat(1_800))
+                    }]
+                },
+                {
+                    "fileId":"src/beta.rs",
+                    "contentRef":{"digest":"sha256:beta"},
+                    "windows":[{
+                        "startLine":1,
+                        "endLine":2,
+                        "text":format!("fn beta() {{}}\n{}", "SECRET_BETA_PAYLOAD".repeat(500))
+                    }]
+                },
+                {
+                    "fileId":"src/gamma.rs",
+                    "contentRef":{"digest":"sha256:gamma"},
+                    "windows":[{
+                        "startLine":1,
+                        "endLine":2,
+                        "text":format!("fn gamma() {{}}\n{}", "SECRET_GAMMA_PAYLOAD".repeat(500))
+                    }]
+                }
+            ],
+            "completeness":{"certainty":"UNSURE"},
+            "truncated":false
+        });
+        let authority = context(
+            "context:reference-budget-child",
+            Some("context:reference-budget-parent"),
+            "sha256:reference-budget-child",
+            retained,
+        );
+        let selections = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|terminal_name| DirectReferenceSelection {
+                terminal_name: terminal_name.into(),
+                source_file: "src/caller.rs".into(),
+                matched_terms: vec![terminal_name.into()],
+                observations: vec![DirectReferenceObservation {
+                    path_segments: vec![terminal_name.into()],
+                    range_start: 100,
+                    range_end: 105,
+                    start_line: 10,
+                    end_line: 10,
+                }],
+                source_references_truncated: false,
+            })
+            .collect::<Vec<_>>();
+
+        let detail = direct_reference_detail(&authority, &selections, 3).unwrap();
+        assert_eq!(
+            detail["references"][0]["nameMatches"]["candidates"][0]["source"]["status"],
+            "SUPPORTED"
+        );
+        for index in [1, 2] {
+            assert_eq!(
+                detail["references"][index]["nameMatches"]["candidates"][0]["source"]["status"],
+                "UNAVAILABLE"
+            );
+            assert_eq!(
+                detail["references"][index]["nameMatches"]["candidates"][0]["source"]["reason"],
+                "OMITTED_BUDGET"
+            );
+        }
+        assert_eq!(detail["truncated"], true);
+        assert!(
+            detail["sourceBytes"].as_u64().unwrap()
+                <= u64::try_from(MAX_REFERENCE_FOLLOW_SOURCE_BYTES).unwrap()
+        );
+        let public = serde_json::to_string(&detail).unwrap();
+        assert!(!public.contains("SECRET_BETA_PAYLOAD"));
+        assert!(!public.contains("SECRET_GAMMA_PAYLOAD"));
+    }
+
+    #[test]
+    fn direct_reference_detail_rejects_empty_or_over_limit_selection_sets() {
+        let authority = context(
+            "context:reference-bounds-child",
+            Some("context:reference-bounds-parent"),
+            "sha256:reference-bounds-child",
+            json!({
+                "matches":[],
+                "sources":[],
+                "completeness":{"certainty":"UNSURE"},
+                "truncated":false
+            }),
+        );
+        assert_eq!(
+            direct_reference_detail(&authority, &[], 0)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        let over_limit = ["alpha", "beta", "gamma", "delta"]
+            .into_iter()
+            .map(|terminal_name| DirectReferenceSelection {
+                terminal_name: terminal_name.into(),
+                source_file: "src/caller.rs".into(),
+                matched_terms: vec![terminal_name.into()],
+                observations: Vec::new(),
+                source_references_truncated: false,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            direct_reference_detail(&authority, &over_limit, 4)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
         );
     }
 
