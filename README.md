@@ -82,10 +82,13 @@ fact-bound decision cards with exact one-line source previews in one command:
   --language rust \
   --profile rust-syntax \
   --compilation 'cargo:crates/clew/Cargo.toml#clew#lib#clew' \
-  --term fair_fact_selection
+  --term fair_fact_selection \
+  --source
 ```
 
 The response retains `sessionId`, `contextId`, and the full evidence digest.
+`--source` includes the exact retained source only for the highest-ranked card;
+the other choices stay compact. Omit it when names and locations are enough.
 Select one to three cards in one call to receive each complete retained fact
 and its single exact source window without retransmitting every alternative:
 
@@ -102,6 +105,21 @@ and its single exact source window without retransmitting every alternative:
 If the decision cards are insufficient, add one discriminative identifier with
 `--term rank_fact_evidence` instead. Term selection and candidate selection are
 mutually exclusive.
+
+When an exact identifier and repository-relative file are already established,
+expand and select them atomically:
+
+```bash
+./clew nav expand \
+  --session session:... \
+  --from context:sha256:... \
+  --term rank_fact_evidence \
+  --file crates/clew/src/context_v2.rs \
+  --source
+```
+
+This succeeds only for one exact declaration. No match and same-file overloads
+remain typed `SYMBOL_NOT_FOUND` or `AMBIGUOUS_SYMBOL` results.
 
 `nav expand` returns a delta against its exact `parentContextId`, not another
 copy of the cumulative candidate list. Apply `candidateDelta.upserts` and

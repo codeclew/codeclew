@@ -171,6 +171,92 @@ pub fn detail(
     Ok(result)
 }
 
+pub fn detail_by_exact_file_term(
+    context: &ContextObject,
+    file: &str,
+    term: &str,
+    include_source: bool,
+) -> Result<Value, ClewError> {
+    validate_file_selector(file)?;
+    if term.is_empty() {
+        return Err(invalid("exact navigation term is empty"));
+    }
+    let retained = retained_context(context)?;
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no match array"))?;
+    let mut candidate_ids = Vec::new();
+    for matched in matches {
+        let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
+            continue;
+        };
+        if !is_declaration(payload)
+            || payload.get("file").and_then(Value::as_str) != Some(file)
+            || !exact_candidate_name_matches(payload, term)
+        {
+            continue;
+        }
+        candidate_ids.push(candidate_handle(
+            required_string(matched, "compilation")?,
+            required_string(matched, "factKey")?,
+        )?);
+    }
+    match candidate_ids.len() {
+        0 => Err(ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "no exact declaration matches the selected file and term",
+        )),
+        1 => detail(context, &candidate_ids, include_source, &[]),
+        _ => Err(ClewError::new(
+            ErrorCode::AmbiguousSymbol,
+            "multiple exact declarations match the selected file and term",
+        )),
+    }
+}
+
+pub fn source_by_candidate(
+    context: &ContextObject,
+    candidate_id: &str,
+) -> Result<Value, ClewError> {
+    let retained = retained_context(context)?;
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no match array"))?;
+    let sources = retained
+        .get("sources")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no source array"))?;
+    let mut selected = None;
+    for matched in matches {
+        let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
+            continue;
+        };
+        if !is_declaration(payload) {
+            continue;
+        }
+        if candidate_handle(
+            required_string(matched, "compilation")?,
+            required_string(matched, "factKey")?,
+        )? == candidate_id
+            && selected.replace(payload).is_some()
+        {
+            return Err(invalid("navigation candidate handle is ambiguous"));
+        }
+    }
+    let payload = selected.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "navigation candidate is not retained by this context",
+        )
+    })?;
+    Ok(json!({
+        "candidateId":candidate_id,
+        "source":exact_source_detail(sources, payload),
+    }))
+}
+
 fn selected_candidate_detail(
     matches: &[Value],
     sources: &[Value],
@@ -388,6 +474,7 @@ fn assemble(
         "nextAction":{
             "detail":"nav expand --session <sessionId> --from <contextId> --candidate <candidateId> [--candidate <candidateId> ...] [--source] [--facet callers|callees|tests]",
             "refine":"nav expand --session <sessionId> --from <contextId> --term <additional-term>",
+            "exactSource":"nav expand --session <sessionId> --from <contextId> --term <exact-identifier> --file <repository-relative-file> --source",
         },
     });
     Ok(result)
@@ -502,6 +589,30 @@ fn display_name(payload: &Map<String, Value>) -> Option<&str> {
     ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
         .into_iter()
         .find_map(|key| payload.get(key).and_then(Value::as_str))
+}
+
+fn exact_candidate_name_matches(payload: &Map<String, Value>, term: &str) -> bool {
+    ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .any(|identity| identity == term)
+}
+
+fn validate_file_selector(file: &str) -> Result<(), ClewError> {
+    if file.is_empty()
+        || file.len() > 4096
+        || file.contains("://")
+        || file.starts_with('/')
+        || file.contains('\0')
+        || file
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(invalid(
+            "navigation file selector is not repository-relative",
+        ));
+    }
+    Ok(())
 }
 
 fn candidate_relevance(
@@ -976,6 +1087,41 @@ mod tests {
     }
 
     #[test]
+    fn candidate_source_does_not_materialize_an_unreturned_large_fact() {
+        let retained = json!({
+            "matches":[{
+                "compilation":"cargo:demo",
+                "factKey":"fact:large",
+                "payload":{
+                    "kind":"declaration",
+                    "name":"Large",
+                    "symbolIdentity":"symbol:Large",
+                    "file":"src/lib.rs",
+                    "startLine":1,
+                    "endLine":1,
+                    "opaque":"x".repeat(128 * 1024)
+                }
+            }],
+            "sources":[{
+                "fileId":"src/lib.rs",
+                "contentRef":{"digest":"sha256:source"},
+                "windows":[{"startLine":1,"endLine":1,"text":"fn Large() {}"}]
+            }],
+            "completeness":{},
+            "truncated":false
+        });
+        let authority = context("context:large-source", None, "sha256:evidence", retained);
+        let cards = query(&authority, &[]).unwrap();
+        let candidate_id = cards["candidates"][0]["candidateId"].as_str().unwrap();
+        let selected = source_by_candidate(&authority, candidate_id).unwrap();
+        let rendered = canonical::compact(&selected).unwrap();
+        assert!(rendered.len() < 2048);
+        assert!(!rendered.contains("opaque"));
+        assert_eq!(selected["source"]["windows"][0]["text"], "fn Large() {}");
+        validate_stdout(&selected).unwrap();
+    }
+
+    #[test]
     fn candidate_source_fails_closed_without_an_overlapping_window() {
         let retained = json!({
             "matches":[{
@@ -1155,6 +1301,97 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn exact_file_term_selects_one_declaration_and_refuses_ambiguity() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:a",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"Target",
+                        "symbolIdentity":"symbol:a:Target",
+                        "file":"src/a.rs",
+                        "startLine":1,
+                        "endLine":1
+                    }
+                },
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:b",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"Target",
+                        "symbolIdentity":"symbol:b:Target",
+                        "file":"src/b.rs",
+                        "startLine":2,
+                        "endLine":2
+                    }
+                }
+            ],
+            "sources":[
+                {
+                    "fileId":"src/a.rs",
+                    "contentRef":{"digest":"sha256:a"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"fn Target() {}"}]
+                },
+                {
+                    "fileId":"src/b.rs",
+                    "contentRef":{"digest":"sha256:b"},
+                    "windows":[{"startLine":2,"endLine":2,"text":"fn Target() {}"}]
+                }
+            ],
+            "completeness":{},
+            "truncated":false
+        });
+        let authority = context("context:exact", None, "sha256:evidence", retained);
+        let selected = detail_by_exact_file_term(&authority, "src/b.rs", "Target", true).unwrap();
+        assert_eq!(
+            selected["candidates"][0]["candidateKey"]["factKey"],
+            "fact:b"
+        );
+        assert_eq!(
+            selected["candidates"][0]["source"]["contentRef"]["digest"],
+            "sha256:b"
+        );
+        assert_eq!(
+            detail_by_exact_file_term(&authority, "../src/b.rs", "Target", true)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            detail_by_exact_file_term(&authority, "src//b.rs", "Target", true)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+
+        let mut ambiguous = authority.clone();
+        ambiguous.evidence["context"]["matches"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "compilation":"cargo:other",
+                "factKey":"fact:b-overload",
+                "payload":{
+                    "kind":"declaration",
+                    "name":"Target",
+                    "symbolIdentity":"symbol:b:Target-overload",
+                    "file":"src/b.rs",
+                    "startLine":2,
+                    "endLine":2
+                }
+            }));
+        assert_eq!(
+            detail_by_exact_file_term(&ambiguous, "src/b.rs", "Target", true)
+                .unwrap_err()
+                .code,
+            ErrorCode::AmbiguousSymbol
         );
     }
 

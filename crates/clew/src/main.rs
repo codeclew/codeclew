@@ -591,6 +591,9 @@ struct NavQueryArgs {
     intent: Option<String>,
     #[arg(long = "term", required = true)]
     terms: Vec<String>,
+    /// Include the exact retained source of the highest-ranked decision card.
+    #[arg(long)]
+    source: bool,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
 }
@@ -601,6 +604,10 @@ struct NavQueryArgs {
         .required(true)
         .multiple(false)
         .args(["terms", "candidates"])
+), group(
+    ArgGroup::new("source_target")
+        .multiple(false)
+        .args(["candidates", "file"])
 ))]
 struct NavExpandArgs {
     #[arg(long)]
@@ -613,8 +620,17 @@ struct NavExpandArgs {
     #[arg(long = "candidate", num_args = 1, action = clap::ArgAction::Append)]
     candidates: Vec<String>,
     /// Include the exact retained source window for the selected candidate.
-    #[arg(long, requires = "candidates", conflicts_with = "terms")]
+    /// With term selection, requires one exact term and --file.
+    #[arg(long, requires = "source_target")]
     source: bool,
+    /// Select one exact declaration in this repository-relative file after
+    /// expanding one exact term. Requires --source.
+    #[arg(
+        long,
+        requires_all = ["terms", "source"],
+        conflicts_with = "candidates"
+    )]
+    file: Option<String>,
     /// Optional provenance only. It never changes retrieval or ranking.
     #[arg(long, conflicts_with = "candidates")]
     intent: Option<String>,
@@ -1868,6 +1884,7 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
 }
 
 fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
+    let include_top_source = args.source;
     let intent = args
         .intent
         .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());
@@ -1879,8 +1896,23 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let navigation = clew::navigation::query(&opened.context, &[])
+    let mut navigation = clew::navigation::query(&opened.context, &[])
         .map_err(|error| compensate_opened_context(error, &opened))?;
+    if include_top_source {
+        let decision_source = navigation
+            .pointer("/candidates/0/candidateId")
+            .and_then(Value::as_str)
+            .map(|candidate_id| {
+                clew::navigation::source_by_candidate(&opened.context, candidate_id)
+            })
+            .transpose()
+            .map_err(|error| compensate_opened_context(error, &opened))?
+            .unwrap_or_else(|| json!({"status":"UNAVAILABLE","reason":"NO_CANDIDATE"}));
+        navigation
+            .as_object_mut()
+            .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation result is invalid"))?
+            .insert("decisionSource".into(), decision_source);
+    }
     let result = json!({
         "schema":clew::navigation::NAV_QUERY_SCHEMA,
         "status":"OPEN",
@@ -1903,6 +1935,12 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(&args.session)?;
     let parent = session.load_context(&args.context)?;
     if !args.candidates.is_empty() {
+        if args.file.is_some() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "candidate detail cannot use an exact file selector",
+            ));
+        }
         let navigation = clew::navigation::detail(
             &parent,
             &args.candidates,
@@ -1918,6 +1956,18 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         clew::navigation::validate_stdout(&result)?;
         return Ok(result);
     }
+    if args.source && args.file.is_none() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "term source selection requires one exact term and --file",
+        ));
+    }
+    if args.file.is_some() && (!args.source || args.terms.len() != 1) {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "exact file selection requires --source and one exact term",
+        ));
+    }
     let requested_terms = args.terms.clone();
     let context = expand_context_object(
         &session,
@@ -1926,6 +1976,24 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
+    if let Some(file) = args.file {
+        let navigation = clew::navigation::detail_by_exact_file_term(
+            &context,
+            &file,
+            &requested_terms[0],
+            true,
+        )?;
+        let result = json!({
+            "schema":clew::navigation::NAV_EXPAND_SCHEMA,
+            "status":"EXPANDED_SELECTED",
+            "sessionId":session.session_id,
+            "parentContextId":parent.context_id,
+            "requestedTerms":requested_terms,
+            "navigation":navigation,
+        });
+        clew::navigation::validate_stdout(&result)?;
+        return Ok(result);
+    }
     let navigation = clew::navigation::expand_delta(
         &parent,
         &context,
@@ -3908,6 +3976,7 @@ mod tests {
             "Target",
         ];
         assert!(Cli::try_parse_from(base).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--source"])).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--intent", "find Target"])).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--all"])).is_err());
@@ -3925,6 +3994,39 @@ mod tests {
                 "Caller",
             ])
             .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Target",
+                "--file",
+                "src/lib.rs",
+                "--source",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Target",
+                "--file",
+                "src/lib.rs",
+            ])
+            .is_err()
         );
         assert!(
             Cli::try_parse_from([

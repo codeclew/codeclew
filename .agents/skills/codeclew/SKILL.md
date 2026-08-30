@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.2"
+  version: "0.2.3"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -72,7 +72,8 @@ clew nav query \
   --language <language> \
   --profile <profile-id> \
   --compilation <compilation> \
-  --term <term>
+  --term <term> \
+  --source
 ```
 
 Pass two to four discriminative code tokens from the request together when they
@@ -83,9 +84,11 @@ identifiers. When these arguments are already known, run the command directly
 instead of spending a call on `--help`.
 
 The first response contains at most three fact-bound decision cards with exact
-one-line previews. Select up to three useful cards in one call by repeating
-`--candidate`; each returns its retained fact and exact source window. Request
-relations only when they are needed for those selected symbols:
+one-line previews. `--source` additionally returns the exact retained source
+for only the highest-ranked card; omit it when names and locations are enough.
+Select up to three other useful cards in one call by repeating `--candidate`;
+each returns its retained fact and exact source window. Request relations only
+when they are needed for those selected symbols:
 
 ```bash
 clew nav expand \
@@ -101,7 +104,11 @@ Both source and facet are optional. Never reread a returned exact source window
 with `sed`, `nl`, or another search tool unless a later observation contradicts
 its bound digest. If none of the cards is sufficient, add only the missing
 identifier with `nav expand --session <session-id> --from <context-id> --term
-<term>`. There is no `--all`; narrow a reported truncation and do not expand
+<term>`. If the exact identifier and file are already established, combine the
+refinement and selection in one call: `nav expand --session <session-id> --from
+<context-id> --term <exact-identifier> --file <repository-relative-file>
+--source`. This fails closed on no match or same-file ambiguity. There is no
+`--all`; narrow a reported truncation and do not expand
 merely to collect every match. Term expansion returns a reconstructable patch:
 apply upserts and removals, then `candidateOrder`; unchanged cards are omitted.
 The child `contextId` and `evidenceDigest` bind the complete immutable evidence.
