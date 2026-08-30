@@ -18,12 +18,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const TYPESCRIPT_LANGUAGE: &str = "language:typescript";
 pub const TYPESCRIPT_COMPILER_FACTS_CAPABILITY: &str = "analysis:typescript-compiler-facts";
-pub const TYPESCRIPT_INDEX_SCHEMA: &str = "codeclew-typescript-compiler-index/1.0";
-pub const TYPESCRIPT_FACT_SCHEMA: &str = "codeclew-typescript-compiler-fact/1.0";
+pub const TYPESCRIPT_INDEX_SCHEMA: &str = "codeclew-typescript-compiler-index/1.1";
+pub const TYPESCRIPT_FACT_SCHEMA: &str = "codeclew-typescript-compiler-fact/1.1";
 pub const JAVASCRIPT_LANGUAGE: &str = "language:javascript";
 pub const JAVASCRIPT_COMPILER_FACTS_CAPABILITY: &str = "analysis:javascript-compiler-facts";
-pub const JAVASCRIPT_INDEX_SCHEMA: &str = "codeclew-javascript-compiler-index/1.0";
-pub const JAVASCRIPT_FACT_SCHEMA: &str = "codeclew-javascript-compiler-fact/1.0";
+pub const JAVASCRIPT_INDEX_SCHEMA: &str = "codeclew-javascript-compiler-index/1.1";
+pub const JAVASCRIPT_FACT_SCHEMA: &str = "codeclew-javascript-compiler-fact/1.1";
 const TYPESCRIPT_RECEIPT_SCHEMA: &str = "codeclew-typescript-compiler-completeness/1.0";
 const JAVASCRIPT_RECEIPT_SCHEMA: &str = "codeclew-javascript-compiler-completeness/1.0";
 const TYPESCRIPT_ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-typescript-compiler-adapter/1.0";
@@ -68,6 +68,8 @@ pub enum TypeScriptCompilerFact {
         file: String,
         start: u64,
         end: u64,
+        start_line: u64,
+        end_line: u64,
         resolution: String,
     },
     Relation {
@@ -387,6 +389,7 @@ fn validate_index(index: &TypeScriptCompilerIndex) -> Result<(), ClewError> {
     for fact in &index.facts {
         if fact.schema() != profile.fact_schema
             || fact.path().is_some_and(|path| !safe_relative_path(path))
+            || !fact_position_authority_is_valid(fact)
         {
             return Err(corrupt("TypeScript compiler fact authority is invalid"));
         }
@@ -399,6 +402,19 @@ fn validate_index(index: &TypeScriptCompilerIndex) -> Result<(), ClewError> {
         previous = Some(bytes);
     }
     Ok(())
+}
+
+fn fact_position_authority_is_valid(fact: &TypeScriptCompilerFact) -> bool {
+    match fact {
+        TypeScriptCompilerFact::Declaration {
+            start,
+            end,
+            start_line,
+            end_line,
+            ..
+        } => start < end && *start_line > 0 && start_line <= end_line,
+        _ => true,
+    }
 }
 
 fn profile_for(model: &TypeScriptProjectModel) -> Result<EcmaScriptProfile, ClewError> {
@@ -507,6 +523,8 @@ mod tests {
             file: "src/hooks.ts".into(),
             start: 0,
             end: 10,
+            start_line: 1,
+            end_line: 1,
             resolution: "COMPILER_RESOLVED".into(),
         };
         let relation = TypeScriptCompilerFact::Relation {
@@ -524,6 +542,34 @@ mod tests {
             declaration.query_family(),
             "0-declaration:usepersistentstate"
         );
+        assert!(fact_position_authority_is_valid(&declaration));
+        assert_eq!(serde_json::to_value(&declaration).unwrap()["startLine"], 1);
+        assert_eq!(serde_json::to_value(&declaration).unwrap()["endLine"], 1);
         assert_eq!(relation.query_family(), "1-relation:calls");
+    }
+
+    #[test]
+    fn declaration_line_authority_is_one_based_ordered_and_nonempty() {
+        let fact = |start, end, start_line, end_line| TypeScriptCompilerFact::Declaration {
+            schema: TYPESCRIPT_FACT_SCHEMA.into(),
+            declaration_kind: "FUNCTION".into(),
+            name: "target".into(),
+            symbol_identity: "ts:src/main.ts#function:target@0-10".into(),
+            owner_identity: "module:src/main.ts".into(),
+            exported: false,
+            type_text: "() => void".into(),
+            signature: Some("(): void".into()),
+            file: "src/main.ts".into(),
+            start,
+            end,
+            start_line,
+            end_line,
+            resolution: "COMPILER_RESOLVED".into(),
+        };
+
+        assert!(fact_position_authority_is_valid(&fact(4, 12, 2, 4)));
+        assert!(!fact_position_authority_is_valid(&fact(4, 4, 2, 4)));
+        assert!(!fact_position_authority_is_valid(&fact(4, 12, 0, 4)));
+        assert!(!fact_position_authority_is_valid(&fact(4, 12, 4, 2)));
     }
 }

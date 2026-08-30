@@ -274,14 +274,20 @@ pub fn select_direct_references(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("retained navigation context has no match array"))?;
     let payload = candidate_payload(matches, candidate_id)?;
+    let references = match payload.get("directReferences") {
+        Some(references) => references,
+        None if payload.contains_key("directReferencesTruncated") => {
+            return Err(invalid(
+                "direct reference truncation exists without reference facts",
+            ));
+        }
+        None => return Ok((Vec::new(), false, 0)),
+    };
     let source_file = required_payload_string(payload, "file")?.to_owned();
     let declaration_start = required_payload_u64(payload, "rangeStart")?;
     let declaration_end = required_payload_u64(payload, "rangeEnd")?;
     let declaration_start_line = required_payload_u64(payload, "startLine")?;
     let declaration_end_line = required_payload_u64(payload, "endLine")?;
-    let Some(references) = payload.get("directReferences") else {
-        return Ok((Vec::new(), false, 0));
-    };
     let source_references_truncated = payload
         .get("directReferencesTruncated")
         .and_then(Value::as_bool)
@@ -1706,6 +1712,57 @@ mod tests {
 
         authority.projection["matches"][0]["payload"]["directReferences"][1]["terminalName"] =
             json!("different");
+        authority.evidence["context"] = authority.projection.clone();
+        assert_eq!(
+            select_direct_references(&authority, &candidate_id)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn direct_reference_selection_abstains_before_requiring_adapter_specific_coordinates() {
+        let retained = json!({
+            "matches":[{
+                "compilation":"tsconfig:tsconfig.json",
+                "factKey":"typescript:declaration:api-error",
+                "payload":{
+                    "kind":"DECLARATION",
+                    "name":"ApiError",
+                    "file":"src/client.ts",
+                    "start":100,
+                    "end":180
+                }
+            }],
+            "sources":[],
+            "completeness":{},
+            "truncated":false
+        });
+        let mut authority = context(
+            "context:typescript-declaration",
+            None,
+            "sha256:typescript-declaration",
+            retained,
+        );
+        let candidate_id =
+            candidate_handle("tsconfig:tsconfig.json", "typescript:declaration:api-error").unwrap();
+
+        assert_eq!(
+            select_direct_references(&authority, &candidate_id).unwrap(),
+            (Vec::new(), false, 0)
+        );
+
+        authority.projection["matches"][0]["payload"]["directReferencesTruncated"] = json!(false);
+        authority.evidence["context"] = authority.projection.clone();
+        assert_eq!(
+            select_direct_references(&authority, &candidate_id)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+
+        authority.projection["matches"][0]["payload"]["directReferences"] = json!([]);
         authority.evidence["context"] = authority.projection.clone();
         assert_eq!(
             select_direct_references(&authority, &candidate_id)
