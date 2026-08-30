@@ -598,7 +598,7 @@ struct NavQueryArgs {
     /// bounded exact declaration-name candidates. Requires --source.
     #[arg(long, requires = "source")]
     follow_references: bool,
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 4)]
     max_roots: usize,
 }
 
@@ -4087,7 +4087,14 @@ mod tests {
             "--term",
             "Target",
         ];
-        assert!(Cli::try_parse_from(base).is_ok());
+        let parsed = Cli::try_parse_from(base).unwrap();
+        let Command::Nav {
+            command: NavCommand::Query(args),
+        } = parsed.command
+        else {
+            panic!("nav query did not parse as a navigation query");
+        };
+        assert_eq!(args.max_roots, 4);
         assert!(Cli::try_parse_from(base.into_iter().chain(["--source"])).is_ok());
         assert!(
             Cli::try_parse_from(base.into_iter().chain(["--source", "--follow-references"]))
