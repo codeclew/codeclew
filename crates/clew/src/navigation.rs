@@ -493,7 +493,7 @@ pub fn source_envelope_by_candidate(
             .is_none()
         || decision_payload.get("rangeStart").is_some()
     {
-        return source_by_candidate(context, candidate_id);
+        return singleton_source_envelope(matches, sources, candidate_id, decision_payload);
     }
     let decision_file = required_payload_string(decision_payload, "file")?;
     let decision_start_line = required_payload_u64(decision_payload, "startLine")?;
@@ -688,6 +688,89 @@ pub fn source_envelope_by_candidate(
             "contentRef":content_ref,
             "completeFile":complete_file && !source_reduced,
             "windows":windows.into_values().collect::<Vec<_>>(),
+            "truncated":truncated,
+        },
+    }))
+}
+
+fn singleton_source_envelope(
+    matches: &[Value],
+    sources: &[Value],
+    candidate_id: &str,
+    payload: &Map<String, Value>,
+) -> Result<Value, ClewError> {
+    let Some(source) = exact_source(sources, payload) else {
+        return Ok(json!({
+            "candidateId":candidate_id,
+            "source":{"status":"UNSUPPORTED","reason":"NO_EXACT_DECLARATION_WINDOW"},
+        }));
+    };
+    let mut matched_candidate = None;
+    for matched in matches {
+        let compilation = required_string(matched, "compilation")?;
+        let fact_key = required_string(matched, "factKey")?;
+        if candidate_handle(compilation, fact_key)? == candidate_id {
+            matched_candidate = Some((compilation, fact_key));
+            break;
+        }
+    }
+    let (compilation, fact_key) = matched_candidate.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "navigation candidate is not retained by this context",
+        )
+    })?;
+    let declaration_start = required_payload_u64(payload, "startLine")?;
+    let declaration_end = required_payload_u64(payload, "endLine")?;
+    let mut start_line = required_value_u64(source.window, "startLine")?;
+    let mut end_line = required_value_u64(source.window, "endLine")?;
+    let mut text = required_value_string(source.window, "text")?.to_owned();
+    let mut truncated = false;
+    if text.len() > MAX_DECISION_SOURCE_BYTES
+        && let Some(exact_text) = exact_declaration_text(sources, payload)
+    {
+        start_line = declaration_start;
+        end_line = declaration_end;
+        text = exact_text;
+        truncated = true;
+    }
+    if text.len() > MAX_DECISION_SOURCE_BYTES {
+        return Ok(json!({
+            "candidateId":candidate_id,
+            "source":{"status":"UNSUPPORTED","reason":"SOURCE_ENVELOPE_BUDGET_EXCEEDED"},
+        }));
+    }
+    let content_ref = source
+        .row
+        .get("contentRef")
+        .cloned()
+        .ok_or_else(|| invalid("exact navigation source has no content authority"))?;
+    let display_name =
+        display_name(payload).ok_or_else(|| invalid("navigation candidate has no display name"))?;
+    Ok(json!({
+        "candidateId":candidate_id,
+        "selectionAuthority":"TOP_CANDIDATE",
+        "sourceBytes":text.len(),
+        "sourceBindingCount":{"eligible":1,"returned":1,"omitted":0},
+        "sourceBindings":[{
+            "candidateId":candidate_id,
+            "candidateKey":{"compilation":compilation,"factKey":fact_key},
+            "displayName":display_name,
+            "declarationStartLine":declaration_start,
+            "declarationEndLine":declaration_end,
+            "windowIndex":0,
+        }],
+        "source":{
+            "status":"SUPPORTED",
+            "authority":"EXACT_SNAPSHOT_TEXT",
+            "fileId":required_payload_string(payload, "file")?,
+            "contentRef":content_ref,
+            "completeFile":source
+                .row
+                .get("completeFile")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) && !truncated,
+            "windows":[{"startLine":start_line,"endLine":end_line,"text":text}],
             "truncated":truncated,
         },
     }))
@@ -1941,6 +2024,42 @@ mod tests {
     }
 
     #[test]
+    fn range_based_syntax_candidate_builds_a_compact_bound_source_card() {
+        let retained = projection();
+        let authority = context(
+            "context:range-source-card",
+            None,
+            "sha256:evidence",
+            retained,
+        );
+        let mut result = query(&authority, &[]).unwrap();
+        let candidate_id = result["candidates"][0]["candidateId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let source = source_envelope_by_candidate(&authority, &candidate_id).unwrap();
+        result
+            .as_object_mut()
+            .unwrap()
+            .insert("decisionSource".into(), source);
+
+        let card = agent_card(&result).unwrap();
+        assert_eq!(card["decisionSource"]["source"]["status"], "SUPPORTED");
+        assert_eq!(
+            card["decisionSource"]["source"]["contentDigest"],
+            "sha256:bounded"
+        );
+        assert_eq!(
+            card["decisionSource"]["sourceBindingCount"],
+            json!({"eligible":1,"returned":1,"omitted":0})
+        );
+        assert_eq!(
+            card["decisionSource"]["sourceBindings"][0]["candidateId"],
+            candidate_id
+        );
+    }
+
+    #[test]
     fn kotlin_descriptor_lines_enable_exact_preview_and_decision_source() {
         let retained = json!({
             "matches":[{
@@ -2228,14 +2347,14 @@ mod tests {
         let authority = context("context:large-source", None, "sha256:evidence", retained);
         let cards = query(&authority, &[]).unwrap();
         let candidate_id = cards["candidates"][0]["candidateId"].as_str().unwrap();
-        let selected = source_by_candidate(&authority, candidate_id).unwrap();
-        assert_eq!(
-            source_envelope_by_candidate(&authority, candidate_id).unwrap(),
-            selected
-        );
+        let selected = source_envelope_by_candidate(&authority, candidate_id).unwrap();
         let rendered = canonical::compact(&selected).unwrap();
         assert!(rendered.len() < 2048);
         assert!(!rendered.contains("opaque"));
+        assert_eq!(
+            selected["sourceBindingCount"],
+            json!({"eligible":1,"returned":1,"omitted":0})
+        );
         assert_eq!(selected["source"]["windows"][0]["text"], "fn Large() {}");
         validate_stdout(&selected).unwrap();
     }
