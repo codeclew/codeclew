@@ -23,6 +23,7 @@ const MAX_CONTEXTUAL_DECLARATION_LINES: usize = 16;
 const MAX_SUPPORT_TERM_SETS: usize = 32;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
 const MAX_EXACT_SELECTIONS: usize = 3;
+const MAX_EXACT_EXPANSION_MATCHES_PER_TERM: usize = 4;
 pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-context/1.0";
 pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/4.0";
 pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/4.0";
@@ -391,6 +392,11 @@ fn exact_source_window_retained(sources: Option<&Vec<Value>>, payload: &Value) -
 }
 
 fn exact_declaration_file_term_matches(payload: &Value, file: &str, term: &str) -> bool {
+    exact_declaration_term_matches(payload, term)
+        && payload.get("file").and_then(Value::as_str) == Some(file)
+}
+
+fn exact_declaration_term_matches(payload: &Value, term: &str) -> bool {
     let Some(payload) = payload.as_object() else {
         return false;
     };
@@ -399,9 +405,7 @@ fn exact_declaration_file_term_matches(payload: &Value, file: &str, term: &str) 
         .and_then(Value::as_str)
         .is_some_and(|kind| kind.eq_ignore_ascii_case("declaration"))
         || (payload.contains_key("declarationKind") && payload.contains_key("symbolIdentity"));
-    declaration
-        && payload.get("file").and_then(Value::as_str) == Some(file)
-        && payload.get("name").and_then(Value::as_str) == Some(term)
+    declaration && payload.get("name").and_then(Value::as_str) == Some(term)
 }
 
 fn validate_exact_file_selector(file: &str) -> Result<(), ClewError> {
@@ -552,7 +556,24 @@ fn create_with_selector(
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let fact_limit = max_roots.saturating_mul(16).min(MAX_EVIDENCE_FACTS);
-    let required_capacity = exact_selector.map_or(0, |selector| selector.terms.len());
+    let exact_expansion_terms =
+        (parent.is_some() && exact_selector.is_none() && terms.len() <= MAX_EXACT_SELECTIONS)
+            .then_some(terms);
+    let exact_expansion_match_limit = exact_expansion_terms.map_or(0, |terms| {
+        max_roots
+            .saturating_mul(4)
+            .checked_div(terms.len())
+            .unwrap_or(0)
+            .clamp(1, MAX_EXACT_EXPANSION_MATCHES_PER_TERM)
+    });
+    let required_capacity = exact_selector.map_or_else(
+        || {
+            exact_expansion_terms.map_or(0, |terms| {
+                terms.len().saturating_mul(exact_expansion_match_limit)
+            })
+        },
+        |selector| selector.terms.len(),
+    );
     let query_limit = fact_limit.saturating_sub(required_capacity).max(1);
     let parent_queries = parent
         .map(|parent| {
@@ -579,17 +600,29 @@ fn create_with_selector(
         } else {
             query(&store, &index, terms, query_limit)?
         };
-        if let Some(selector) = exact_selector {
-            for term in selector.terms {
+        let exact_terms = exact_selector
+            .map(|selector| selector.terms)
+            .or(exact_expansion_terms);
+        if let Some(exact_terms) = exact_terms {
+            for term in exact_terms {
                 let exact = exact_name_query(&store, &index, term)?;
                 exact_query_truncated |= exact.truncated;
+                if exact_selector.is_none() && exact.truncated {
+                    context.truncated = true;
+                }
                 context.query_shards_read = context
                     .query_shards_read
                     .checked_add(exact.query_shards_read)
                     .ok_or_else(|| resource("context query shard count overflow"))?;
                 for fact in exact.facts {
                     let payload = load_fact_payload(&store, &fact)?;
-                    if exact_declaration_file_term_matches(&payload, selector.file, term) {
+                    let selected = exact_selector.map_or_else(
+                        || exact_declaration_term_matches(&payload, term),
+                        |selector| {
+                            exact_declaration_file_term_matches(&payload, selector.file, term)
+                        },
+                    );
+                    if selected {
                         exact_matches
                             .entry(term.clone())
                             .or_default()
@@ -603,20 +636,34 @@ fn create_with_selector(
         }
         query_contexts.insert(compilation.compilation.clone(), context);
     }
-    let exact_matches = if let Some(selector) = exact_selector {
-        selector
-            .terms
-            .iter()
-            .map(|term| {
-                select_unique_exact_match(
-                    exact_matches.remove(term).unwrap_or_default(),
-                    exact_query_truncated,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?
+    let (exact_matches, bounded_exact_truncated) = if let Some(selector) = exact_selector {
+        (
+            selector
+                .terms
+                .iter()
+                .map(|term| {
+                    select_unique_exact_match(
+                        exact_matches.remove(term).unwrap_or_default(),
+                        exact_query_truncated,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            false,
+        )
+    } else if let Some(terms) = exact_expansion_terms {
+        select_bounded_exact_expansion_matches(
+            &mut exact_matches,
+            terms,
+            exact_expansion_match_limit,
+        )
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
+    if bounded_exact_truncated {
+        for context in query_contexts.values_mut() {
+            context.truncated = true;
+        }
+    }
     for selected in exact_matches.iter().rev() {
         let context = query_contexts
             .get_mut(&selected.compilation)
@@ -1010,6 +1057,21 @@ fn promote_query_fact(context: &mut QueryContext, selected: &FactHit, limit: usi
     context.facts.insert(0, selected.clone());
     context.truncated |=
         original_len > context.facts.len() || (!already_selected && original_len >= limit);
+}
+
+fn select_bounded_exact_expansion_matches(
+    matches: &mut BTreeMap<String, BTreeSet<CompilationFactHit>>,
+    terms: &[String],
+    per_term_limit: usize,
+) -> (Vec<CompilationFactHit>, bool) {
+    let mut selected = Vec::new();
+    let mut truncated = false;
+    for term in terms {
+        let term_matches = matches.remove(term).unwrap_or_default();
+        truncated |= term_matches.len() > per_term_limit;
+        selected.extend(term_matches.into_iter().take(per_term_limit));
+    }
+    (selected, truncated)
 }
 
 fn select_unique_exact_match(
@@ -1989,10 +2051,11 @@ mod tests {
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, EXACT_SELECTION_SCHEMA,
         ExactSelectionAuthority, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES, PROJECTION_TARGET_BYTES,
         best_lexical_support, bounded_projection, exact_declaration_file_term_matches,
-        exact_selection_authorities, load_fact_evidence, merge_query_contexts,
-        merge_query_contexts_with_required, ordered_paths_in_evidence, promote_query_fact,
-        rank_fact_evidence, rank_fact_evidence_with_required, select_unique_exact_match,
-        source_offset_hints, source_windows, validate_exact_selection, validate_source_rows,
+        exact_declaration_term_matches, exact_selection_authorities, load_fact_evidence,
+        merge_query_contexts, merge_query_contexts_with_required, ordered_paths_in_evidence,
+        promote_query_fact, rank_fact_evidence, rank_fact_evidence_with_required,
+        select_bounded_exact_expansion_matches, select_unique_exact_match, source_offset_hints,
+        source_windows, validate_exact_selection, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -2088,6 +2151,40 @@ mod tests {
             "crates/clew/src/canonical.rs",
             "value"
         ));
+        assert!(exact_declaration_term_matches(&selected, "value"));
+    }
+
+    #[test]
+    fn bounded_exact_name_expansion_retains_each_term_and_reports_omissions() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"{}").unwrap();
+        let hit = |key: &str| CompilationFactHit {
+            compilation: "cargo:demo".into(),
+            fact: FactHit {
+                fact_key: key.into(),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload: payload.clone(),
+            },
+        };
+        let mut matches = BTreeMap::from([
+            (
+                "bytes".into(),
+                (0..5).map(|index| hit(&format!("bytes-{index}"))).collect(),
+            ),
+            ("hash".into(), [hit("hash-0")].into_iter().collect()),
+        ]);
+        let (selected, truncated) = select_bounded_exact_expansion_matches(
+            &mut matches,
+            &["bytes".into(), "hash".into()],
+            4,
+        );
+        assert!(truncated);
+        assert_eq!(selected.len(), 5);
+        assert_eq!(selected[0].fact.fact_key, "bytes-0");
+        assert_eq!(selected[3].fact.fact_key, "bytes-3");
+        assert_eq!(selected[4].fact.fact_key, "hash-0");
     }
 
     #[test]
