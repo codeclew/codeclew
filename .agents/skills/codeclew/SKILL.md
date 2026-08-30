@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.8"
+  version: "0.2.9"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -161,6 +161,10 @@ Use this command-selection loop while checklist items remain open:
    summary. Track the clause as `DRAFTED`, then `EMITTED`; navigation may add
    atoms but must not replace or weaken an existing draft. Harvest
    retained-reference choices at the same time.
+   When the requested behavior is a transformation, normalization, or
+   serialization algorithm, record one draft atom for every distinct visible
+   branch or data-shape case, including cases whose value or order is preserved
+   unchanged. A summary of changed cases does not cover preserved cases.
 2. Stop navigation as soon as every atom is `PROVEN` or retained as an explicit
    obligation.
 3. Before batching repeated `--term` values, require one already established
@@ -230,6 +234,9 @@ Before answering, assemble the final answer from the per-item `DRAFTED` clauses
 in the request's original order. Concatenation may remove repetition, but any
 edited or summarized clause must be checked again against every one of its
 `PROVEN` atoms before it can become `EMITTED`. Then perform one coverage pass
+over every visible branch of a requested transformation. Verify that modified
+and preserved cases are each `EMITTED`; do not infer an unchanged case from a
+generic recursive summary. Then perform one coverage pass
 over the private checklist. Every
 explicitly requested item must be either supported by cited returned evidence
 and present in the answer, or reported as conditional/unproven with the missing
