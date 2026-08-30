@@ -905,7 +905,6 @@ fn assemble(
         .map(|term| term.to_lowercase())
         .filter(|term| !term.is_empty())
         .collect::<BTreeSet<_>>();
-    let file_relevance = source_file_relevance(sources, &normalized_terms);
     let mut ranked_candidates = Vec::new();
     let mut handles = BTreeMap::new();
     for (ordinal, matched) in matches.iter().enumerate() {
@@ -926,18 +925,14 @@ fn assemble(
         }
         let (term_coverage, name_coverage, occurrences) =
             candidate_relevance(payload, sources, &normalized_terms);
-        let (file_coverage, file_occurrences) = payload
-            .get("file")
-            .and_then(Value::as_str)
-            .and_then(|file| file_relevance.get(file))
-            .copied()
-            .unwrap_or((0, 0));
+        let (window_coverage, window_occurrences) =
+            source_window_relevance(sources, payload, &normalized_terms);
         ranked_candidates.push((
-            file_coverage,
+            window_coverage,
             term_coverage,
             name_coverage,
             occurrences,
-            file_occurrences,
+            window_occurrences,
             ordinal,
             candidate_id,
             matched,
@@ -1221,33 +1216,25 @@ fn candidate_relevance(
     (term_coverage, name_coverage, occurrences)
 }
 
-fn source_file_relevance(
+fn source_window_relevance(
     sources: &[Value],
+    payload: &Map<String, Value>,
     terms: &BTreeSet<String>,
-) -> BTreeMap<String, (usize, usize)> {
-    sources
-        .iter()
-        .filter_map(|source| {
-            let file = source.get("fileId").and_then(Value::as_str)?;
-            let source_text = source
-                .get("windows")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|window| window.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n")
-                .to_lowercase();
-            let relevance = terms.iter().fold((0usize, 0usize), |score, term| {
-                let occurrences = source_text.matches(term).count();
-                (
-                    score.0 + usize::from(occurrences > 0),
-                    score.1.saturating_add(occurrences),
-                )
-            });
-            Some((file.to_owned(), relevance))
-        })
-        .collect()
+) -> (usize, usize) {
+    let Some(source_text) = exact_source(sources, payload)
+        .and_then(|source| source.window.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
+    else {
+        return (0, 0);
+    };
+    terms.iter().fold((0usize, 0usize), |score, term| {
+        let occurrences = source_text.matches(term).count();
+        (
+            score.0 + usize::from(occurrences > 0),
+            score.1.saturating_add(occurrences),
+        )
+    })
 }
 
 fn exact_declaration_text(sources: &[Value], payload: &Map<String, Value>) -> Option<String> {
@@ -2810,6 +2797,88 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result["candidates"][0]["displayName"], "ApiError");
+    }
+
+    #[test]
+    fn decision_card_relevance_does_not_leak_from_a_distant_same_file_window() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:fixture",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"defaultProfileTopicsResponse",
+                        "symbolIdentity":"ts:test.ts#variable:defaultProfileTopicsResponse",
+                        "file":"src/DataToolsPage.test.tsx",
+                        "startLine":28,
+                        "endLine":58
+                    }
+                },
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:refresh",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"refreshProfileTopics",
+                        "symbolIdentity":"ts:page.ts#function:refreshProfileTopics",
+                        "file":"src/DataToolsPage.tsx",
+                        "startLine":246,
+                        "endLine":255
+                    }
+                }
+            ],
+            "sources":[
+                {
+                    "fileId":"src/DataToolsPage.test.tsx",
+                    "contentRef":{"digest":"sha256:test"},
+                    "windows":[
+                        {
+                            "startLine":28,
+                            "endLine":58,
+                            "text":"const defaultProfileTopicsResponse = { topics: [] }"
+                        },
+                        {
+                            "startLine":488,
+                            "endLine":490,
+                            "text":"it('preserves deselected topics on manual refresh', () => {})"
+                        }
+                    ]
+                },
+                {
+                    "fileId":"src/DataToolsPage.tsx",
+                    "contentRef":{"digest":"sha256:page"},
+                    "windows":[{
+                        "startLine":246,
+                        "endLine":255,
+                        "text":"async function refreshProfileTopics() { return loadProfileTopics() }"
+                    }]
+                }
+            ],
+            "completeness":{},
+            "truncated":false
+        });
+        let result = assemble(
+            "session:test",
+            "context:test",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &[
+                "manual".into(),
+                "refresh".into(),
+                "deselected".into(),
+                "topics".into(),
+                "profile".into(),
+            ],
+            &retained,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            result["candidates"][0]["displayName"],
+            "refreshProfileTopics"
+        );
     }
 
     #[test]
