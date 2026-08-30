@@ -952,18 +952,23 @@ fn source_windows(
         .unwrap_or_else(|| vec![(None, None)]);
     let mut windows = Vec::new();
     let mut projected_bytes = 0usize;
-    let lines = source.lines().collect::<Vec<_>>();
+    let line_ranges = source_line_ranges(source);
+    let lines = line_ranges
+        .iter()
+        .filter_map(|(start, end)| source.get(*start..*end))
+        .collect::<Vec<_>>();
     for (offset, end) in ranges {
         let window = declaration_window(source, offset, end)
             .map(|window| {
                 declaration_context_window(
                     source,
+                    &line_ranges,
                     window,
                     SOURCE_DECLARATION_CONTEXT_BEFORE_LINES,
                     SOURCE_DECLARATION_CONTEXT_AFTER_LINES,
                 )
             })
-            .unwrap_or_else(|| snippet(source, terms, offset));
+            .unwrap_or_else(|| snippet(source, terms, offset, &lines, &line_ranges));
         if windows.iter().any(|existing: &(usize, usize, String)| {
             existing.0 == window.0 && existing.1 == window.1
         }) {
@@ -973,7 +978,10 @@ fn source_windows(
             && window.0 <= previous.1.saturating_add(1)
         {
             let merged_end = previous.1.max(window.1);
-            let merged_text = lines[previous.0 - 1..merged_end].join("\n");
+            let Some(merged_text) = exact_line_window(source, &line_ranges, previous.0, merged_end)
+            else {
+                break;
+            };
             let merged_bytes = projected_bytes
                 .saturating_sub(previous.2.len())
                 .saturating_add(merged_text.len());
@@ -1004,11 +1012,13 @@ fn source_windows(
             let Some((_, line, text)) = best_support else {
                 break;
             };
-            if projected_bytes.saturating_add(text.len()) > MAX_SOURCE_BYTES {
+            let exact_text = exact_line_window(source, &line_ranges, line, line)
+                .unwrap_or_else(|| text.to_owned());
+            if projected_bytes.saturating_add(exact_text.len()) > MAX_SOURCE_BYTES {
                 break;
             }
-            projected_bytes = projected_bytes.saturating_add(text.len());
-            windows.push((line, line, text.to_owned()));
+            projected_bytes = projected_bytes.saturating_add(exact_text.len());
+            windows.push((line, line, exact_text));
             windows.sort_by_key(|window| (window.0, window.1));
         }
     }
@@ -1017,6 +1027,7 @@ fn source_windows(
 
 fn declaration_context_window(
     source: &str,
+    line_ranges: &[(usize, usize)],
     exact: (usize, usize, String),
     before: usize,
     after: usize,
@@ -1025,18 +1036,51 @@ fn declaration_context_window(
     if exact_line_count > MAX_CONTEXTUAL_DECLARATION_LINES {
         return exact;
     }
-    let lines = source.lines().collect::<Vec<_>>();
     let start = exact.0.saturating_sub(1).saturating_sub(before);
-    let end = exact.1.saturating_add(after).min(lines.len());
+    let end = exact.1.saturating_add(after).min(line_ranges.len());
     if start >= end {
         return exact;
     }
-    let text = lines[start..end].join("\n");
+    let Some(text) = exact_line_window(source, line_ranges, start + 1, end) else {
+        return exact;
+    };
     if text.len() > MAX_SNIPPET_BYTES {
         exact
     } else {
         (start + 1, end, text)
     }
+}
+
+fn source_line_ranges(source: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    for (index, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            ranges.push((start, index));
+            start = index + 1;
+        }
+    }
+    if start < source.len() {
+        ranges.push((start, source.len()));
+    }
+    if ranges.is_empty() {
+        ranges.push((0, 0));
+    }
+    ranges
+}
+
+fn exact_line_window(
+    source: &str,
+    line_ranges: &[(usize, usize)],
+    start_line: usize,
+    end_line: usize,
+) -> Option<String> {
+    if start_line == 0 || start_line > end_line || end_line > line_ranges.len() {
+        return None;
+    }
+    let start = line_ranges.get(start_line - 1)?.0;
+    let end = line_ranges.get(end_line - 1)?.1;
+    source.get(start..end).map(str::to_owned)
 }
 
 type LexicalSupport<'a> = ((usize, usize), usize, &'a str);
@@ -1110,7 +1154,13 @@ fn lexical_subset_score(
     (coverage, occurrences)
 }
 
-fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usize, usize, String) {
+fn snippet(
+    source: &str,
+    terms: &[String],
+    source_offset: Option<usize>,
+    lines: &[&str],
+    line_ranges: &[(usize, usize)],
+) -> (usize, usize, String) {
     if source.len() <= MAX_SNIPPET_BYTES {
         return (1, source.lines().count().max(1), source.to_owned());
     }
@@ -1118,7 +1168,6 @@ fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usi
         .iter()
         .map(|term| term.to_lowercase())
         .collect::<Vec<_>>();
-    let lines = source.lines().collect::<Vec<_>>();
     let hit = source_offset
         .map(|offset| {
             let offset = offset.min(source.len());
@@ -1147,10 +1196,10 @@ fn snippet(source: &str, terms: &[String], source_offset: Option<usize>) -> (usi
         .unwrap_or(0);
     let start = hit.saturating_sub(20);
     let mut end = (hit + 40).min(lines.len());
-    let mut text = lines[start..end].join("\n");
+    let mut text = exact_line_window(source, line_ranges, start + 1, end).unwrap_or_default();
     while text.len() > MAX_SNIPPET_BYTES && end > start + 1 {
         end -= 1;
-        text = lines[start..end].join("\n");
+        text = exact_line_window(source, line_ranges, start + 1, end).unwrap_or_default();
     }
     (start + 1, end, text)
 }
@@ -2359,6 +2408,30 @@ mod tests {
         assert_eq!(windows[0].1, 4);
         assert!(windows[0].2.contains("let member_unmatched"));
         assert!(windows[0].2.contains("\"memberCompleteness\""));
+    }
+
+    #[test]
+    fn contextual_and_merged_windows_preserve_crlf_snapshot_bytes() {
+        let source = (1..=60)
+            .map(|line| match line {
+                10 => "fn Target() {}".to_owned(),
+                30 => "fn Second() {}".to_owned(),
+                _ => format!("padding_{line}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let target_start = source.find("fn Target").unwrap();
+        let second_start = source.find("fn Second").unwrap();
+        let ranges = BTreeMap::from([
+            (target_start, Some(target_start + "fn Target() {}".len())),
+            (second_start, Some(second_start + "fn Second() {}".len())),
+        ]);
+        let windows = source_windows(&source, &["Target".into(), "Second".into()], Some(&ranges));
+
+        assert_eq!(windows.len(), 1);
+        assert!(windows[0].2.contains("\r\n"));
+        assert!(!windows[0].2.replace("\r\n", "").contains('\n'));
+        assert!(source.contains(&windows[0].2));
     }
 
     #[test]

@@ -340,6 +340,7 @@ pub fn source_envelope_by_candidate(
     let mut pending_bindings = Vec::new();
     let mut source_bytes = 0usize;
     let mut truncated = eligible_count > selected.len();
+    let mut source_reduced = false;
     let mut observed_exact_source = false;
     for (matched, payload, handle) in selected {
         let Some(source) = exact_source(sources, payload) else {
@@ -366,13 +367,25 @@ pub fn source_envelope_by_candidate(
             .get("completeFile")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let start_line = required_value_u64(source.window, "startLine")?;
-        let end_line = required_value_u64(source.window, "endLine")?;
-        let text = required_value_string(source.window, "text")?.to_owned();
-        let window_key = (start_line, end_line, text.clone());
+        let mut start_line = required_value_u64(source.window, "startLine")?;
+        let mut end_line = required_value_u64(source.window, "endLine")?;
+        let mut text = required_value_string(source.window, "text")?.to_owned();
+        let mut window_key = (start_line, end_line, text.clone());
+        if !windows.contains_key(&window_key)
+            && source_bytes.saturating_add(text.len()) > MAX_DECISION_SOURCE_BYTES
+            && let Some(exact_text) = exact_declaration_text(sources, payload)
+        {
+            start_line = required_payload_u64(payload, "startLine")?;
+            end_line = required_payload_u64(payload, "endLine")?;
+            text = exact_text;
+            window_key = (start_line, end_line, text.clone());
+            truncated = true;
+            source_reduced = true;
+        }
         if !windows.contains_key(&window_key) {
             if source_bytes.saturating_add(text.len()) > MAX_DECISION_SOURCE_BYTES {
                 truncated = true;
+                source_reduced = true;
                 continue;
             }
             source_bytes = source_bytes.saturating_add(text.len());
@@ -436,7 +449,7 @@ pub fn source_envelope_by_candidate(
             "authority":"EXACT_SNAPSHOT_TEXT",
             "fileId":decision_file,
             "contentRef":content_ref,
-            "completeFile":complete_file,
+            "completeFile":complete_file && !source_reduced,
             "windows":windows.into_values().collect::<Vec<_>>(),
             "truncated":truncated,
         },
@@ -1878,7 +1891,7 @@ mod tests {
                     "start":21,"end":40,"startLine":2,"endLine":2
                 }}
             ],
-            "sources":[{"fileId":"src/app.ts","contentRef":{"digest":"sha256:app"},"windows":[{
+            "sources":[{"fileId":"src/app.ts","contentRef":{"digest":"sha256:app"},"completeFile":true,"windows":[{
                 "startLine":1,"endLine":2,"text":shared
             }]}],
             "completeness":{},"truncated":false
@@ -1901,6 +1914,55 @@ mod tests {
             "SOURCE_ENVELOPE_BUDGET_EXCEEDED"
         );
         validate_stdout(&bounded).unwrap();
+    }
+
+    #[test]
+    fn oversized_context_window_falls_back_to_exact_declaration_slices() {
+        let oversized = format!(
+            "function first() {{}}\n{}\nfunction second() {{}}",
+            "x".repeat(MAX_DECISION_SOURCE_BYTES + 1)
+        );
+        let retained = json!({
+            "matches":[
+                {"compilation":"tsconfig:app/tsconfig.json","factKey":"fact:first","payload":{
+                    "kind":"DECLARATION","name":"first","symbolIdentity":"ts:first","file":"src/app.ts",
+                    "start":1,"end":20,"startLine":1,"endLine":1
+                }},
+                {"compilation":"tsconfig:app/tsconfig.json","factKey":"fact:second","payload":{
+                    "kind":"DECLARATION","name":"second","symbolIdentity":"ts:second","file":"src/app.ts",
+                    "start":21,"end":40,"startLine":3,"endLine":3
+                }}
+            ],
+            "sources":[{"fileId":"src/app.ts","contentRef":{"digest":"sha256:app"},"completeFile":true,"windows":[{
+                "startLine":1,"endLine":3,"text":oversized
+            }]}],
+            "completeness":{},"truncated":false
+        });
+        let mut authority = context(
+            "context:oversized-context",
+            None,
+            "sha256:evidence",
+            retained,
+        );
+        authority.terms = vec!["first".into(), "second".into()];
+        let candidate_id = candidate_handle("tsconfig:app/tsconfig.json", "fact:first").unwrap();
+        let selected = source_envelope_by_candidate(&authority, &candidate_id).unwrap();
+
+        assert_eq!(selected["source"]["status"], "SUPPORTED");
+        assert_eq!(selected["source"]["truncated"], true);
+        assert_eq!(selected["source"]["completeFile"], false);
+        assert_eq!(selected["source"]["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            selected["source"]["windows"][0]["text"],
+            "function first() {}"
+        );
+        assert_eq!(
+            selected["source"]["windows"][1]["text"],
+            "function second() {}"
+        );
+        assert_eq!(selected["sourceBindings"].as_array().unwrap().len(), 2);
+        assert!(selected["sourceBytes"].as_u64().unwrap() < MAX_DECISION_SOURCE_BYTES as u64);
+        validate_stdout(&selected).unwrap();
     }
 
     #[test]
