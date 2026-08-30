@@ -16,6 +16,7 @@ const MAX_EVIDENCE_FACTS: usize = 4096;
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SNIPPET_BYTES: usize = 16 * 1024;
 const MAX_SOURCE_BYTES: usize = 32 * 1024;
+const MAX_COMPLETE_FILE_SOURCE_BYTES: usize = 8 * 1024;
 const MAX_SOURCE_WINDOWS: usize = 4;
 const SOURCE_DECLARATION_CONTEXT_BEFORE_LINES: usize = 8;
 const SOURCE_DECLARATION_CONTEXT_AFTER_LINES: usize = 24;
@@ -616,7 +617,17 @@ pub fn create(
     max_roots: usize,
     parent: Option<&ContextObject>,
 ) -> Result<(Value, Value), ClewError> {
-    create_with_selector(session, intent, terms, max_roots, parent, None)
+    create_with_selector(session, intent, terms, max_roots, parent, None, false)
+}
+
+pub fn create_reference_follow(
+    session: &SessionAuthority,
+    intent: &str,
+    terms: &[String],
+    max_roots: usize,
+    parent: &ContextObject,
+) -> Result<(Value, Value), ClewError> {
+    create_with_selector(session, intent, terms, max_roots, Some(parent), None, true)
 }
 
 pub fn create_exact_file_terms(
@@ -643,6 +654,7 @@ pub fn create_exact_file_terms(
         max_roots,
         Some(parent),
         Some(ExactFileTermsSelector { file, terms }),
+        false,
     )
 }
 
@@ -653,6 +665,7 @@ fn create_with_selector(
     max_roots: usize,
     parent: Option<&ContextObject>,
     exact_selector: Option<ExactFileTermsSelector<'_>>,
+    complete_small_sources: bool,
 ) -> Result<(Value, Value), ClewError> {
     crate::session::validate_context_request(intent, terms)?;
     if terms.is_empty() || max_roots == 0 || max_roots > 256 {
@@ -851,8 +864,14 @@ fn create_with_selector(
     paths.extend(semantic_paths_in_order);
 
     let source_hints = source_offset_hints(&evidence_facts, selection_terms);
-    let mut sources =
-        load_source_snippets(&store, &snapshot, &paths, selection_terms, &source_hints)?;
+    let mut sources = load_source_snippets(
+        &store,
+        &snapshot,
+        &paths,
+        selection_terms,
+        &source_hints,
+        complete_small_sources,
+    )?;
     for source in &mut sources {
         let Some(file) = source.get("fileId").and_then(Value::as_str) else {
             continue;
@@ -1350,6 +1369,7 @@ fn load_source_snippets(
     paths: &[String],
     terms: &[String],
     source_hints: &SourceRangeHints,
+    complete_small_sources: bool,
 ) -> Result<Vec<Value>, ClewError> {
     let worktree = snapshot
         .worktree
@@ -1382,7 +1402,12 @@ fn load_source_snippets(
         let Ok(source) = std::str::from_utf8(lease.bytes()) else {
             continue;
         };
-        let windows = source_windows(source, terms, source_hints.get(path));
+        let windows = source_windows_with_policy(
+            source,
+            terms,
+            source_hints.get(path),
+            complete_small_sources,
+        );
         let start_line = windows.first().map(|window| window.0).unwrap_or(1);
         let end_line = windows.last().map(|window| window.1).unwrap_or(start_line);
         let text = windows
@@ -1541,11 +1566,25 @@ fn declaration_window(
     Some((start_line, end_line, text))
 }
 
+#[cfg(test)]
 fn source_windows(
     source: &str,
     terms: &[String],
     source_ranges: Option<&BTreeMap<usize, Option<usize>>>,
 ) -> Vec<(usize, usize, String)> {
+    source_windows_with_policy(source, terms, source_ranges, false)
+}
+
+fn source_windows_with_policy(
+    source: &str,
+    terms: &[String],
+    source_ranges: Option<&BTreeMap<usize, Option<usize>>>,
+    complete_small_source: bool,
+) -> Vec<(usize, usize, String)> {
+    if complete_small_source && !source.is_empty() && source.len() <= MAX_COMPLETE_FILE_SOURCE_BYTES
+    {
+        return vec![(1, source.lines().count().max(1), source.to_owned())];
+    }
     let has_declaration_ranges = source_ranges.is_some_and(|ranges| !ranges.is_empty());
     let ranges = source_ranges
         .filter(|ranges| !ranges.is_empty())
@@ -2197,7 +2236,7 @@ mod tests {
         merge_query_contexts_with_required, ordered_paths_in_evidence, promote_query_fact,
         rank_fact_evidence, rank_fact_evidence_with_required,
         select_bounded_exact_expansion_matches, select_unique_exact_match, source_offset_hints,
-        source_windows, validate_exact_selection, validate_source_rows,
+        source_windows, source_windows_with_policy, validate_exact_selection, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -3249,6 +3288,18 @@ mod tests {
         let text = &windows[0].2;
         assert!(text.contains("class Target"));
         assert!(!text.contains("import sample.Target"));
+    }
+
+    #[test]
+    fn reference_follow_returns_a_complete_small_source_file() {
+        let source = "fn bytes() { value(); }\nfn value() { sort_value(); }\nfn sort_value() {}\n";
+        let ranges = BTreeMap::from([(0usize, Some(23usize))]);
+        let windows = source_windows_with_policy(source, &["bytes".into()], Some(&ranges), true);
+        assert_eq!(windows, vec![(1, 3, source.into())]);
+
+        let bounded = source_windows(source, &["bytes".into()], Some(&ranges));
+        assert_eq!(bounded.len(), 1);
+        assert!(bounded[0].2.len() <= source.len());
     }
 
     #[test]

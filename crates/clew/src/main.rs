@@ -1821,6 +1821,31 @@ fn expand_context_object(
     session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
 }
 
+fn expand_reference_context_object(
+    session: &SessionAuthority,
+    parent_context_id: String,
+    intent: Option<String>,
+    additional_terms: Vec<String>,
+    max_roots: usize,
+) -> Result<ContextObject, ClewError> {
+    session.require_open()?;
+    let parent = session.load_context(&parent_context_id)?;
+    let mut terms = parent.terms.clone();
+    terms.extend(additional_terms.iter().cloned());
+    terms.sort();
+    terms.dedup();
+    let intent = intent.unwrap_or_else(|| parent.intent.clone());
+    validate_context_request(&intent, &terms)?;
+    let (projection, evidence) = clew::context_v2::create_reference_follow(
+        session,
+        &intent,
+        &additional_terms,
+        max_roots,
+        &parent,
+    )?;
+    session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
+}
+
 fn expand_context_exact_file_terms_object(
     session: &SessionAuthority,
     parent_context_id: String,
@@ -2115,7 +2140,7 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
                 .iter()
                 .map(|selection| selection.terminal_name().to_owned())
                 .collect::<Vec<_>>();
-            let child = expand_context_object(
+            let child = expand_reference_context_object(
                 &session,
                 parent.context_id.clone(),
                 None,
