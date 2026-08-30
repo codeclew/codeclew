@@ -17,7 +17,8 @@ const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SNIPPET_BYTES: usize = 16 * 1024;
 const MAX_SOURCE_BYTES: usize = 32 * 1024;
 const MAX_SOURCE_WINDOWS: usize = 4;
-const SOURCE_DECLARATION_CONTEXT_LINES: usize = 8;
+const SOURCE_DECLARATION_CONTEXT_BEFORE_LINES: usize = 8;
+const SOURCE_DECLARATION_CONTEXT_AFTER_LINES: usize = 24;
 const MAX_CONTEXTUAL_DECLARATION_LINES: usize = 16;
 const MAX_SUPPORT_TERM_SETS: usize = 32;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
@@ -955,7 +956,12 @@ fn source_windows(
     for (offset, end) in ranges {
         let window = declaration_window(source, offset, end)
             .map(|window| {
-                declaration_context_window(source, window, SOURCE_DECLARATION_CONTEXT_LINES)
+                declaration_context_window(
+                    source,
+                    window,
+                    SOURCE_DECLARATION_CONTEXT_BEFORE_LINES,
+                    SOURCE_DECLARATION_CONTEXT_AFTER_LINES,
+                )
             })
             .unwrap_or_else(|| snippet(source, terms, offset));
         if windows.iter().any(|existing: &(usize, usize, String)| {
@@ -1012,15 +1018,16 @@ fn source_windows(
 fn declaration_context_window(
     source: &str,
     exact: (usize, usize, String),
-    padding: usize,
+    before: usize,
+    after: usize,
 ) -> (usize, usize, String) {
     let exact_line_count = exact.1.saturating_sub(exact.0).saturating_add(1);
     if exact_line_count > MAX_CONTEXTUAL_DECLARATION_LINES {
         return exact;
     }
     let lines = source.lines().collect::<Vec<_>>();
-    let start = exact.0.saturating_sub(1).saturating_sub(padding);
-    let end = exact.1.saturating_add(padding).min(lines.len());
+    let start = exact.0.saturating_sub(1).saturating_sub(before);
+    let end = exact.1.saturating_add(after).min(lines.len());
     if start >= end {
         return exact;
     }
