@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.7"
+  version: "0.2.8"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -153,9 +153,14 @@ Use this command-selection loop while checklist items remain open:
    command. Record every requested visible fact as a separate per-item ledger
    atom: mechanism or value, qualifiers or conditions, typed outcome,
    order/timing relation, source anchor, and certainty. Track evidence as
-   `PROVEN` or `UNPROVEN` separately from final output as `PENDING` or `EMITTED`;
-   navigation updates only the evidence state. Harvest retained-reference
-   choices at the same time.
+   `PROVEN` or `UNPROVEN` separately from final output. Immediately convert each
+   newly `PROVEN` atom into a private draft clause for its request item before
+   navigating again. Preserve the predicate, typed outcome, qualifiers, and
+   relative order literally enough to audit; for example, record “`predicate`
+   returns `typed outcome` before `later operation`” rather than a generic
+   summary. Track the clause as `DRAFTED`, then `EMITTED`; navigation may add
+   atoms but must not replace or weaken an existing draft. Harvest
+   retained-reference choices at the same time.
 2. Stop navigation as soon as every atom is `PROVEN` or retained as an explicit
    obligation.
 3. Before batching repeated `--term` values, require one already established
@@ -221,7 +226,11 @@ returned helper body delegates an open checklist item; prioritize the bounded
 call that closes the most open items. Preserve reported truncation and do not
 infer that an omitted reference is absent.
 
-Before answering, perform one coverage pass over the private checklist. Every
+Before answering, assemble the final answer from the per-item `DRAFTED` clauses
+in the request's original order. Concatenation may remove repetition, but any
+edited or summarized clause must be checked again against every one of its
+`PROVEN` atoms before it can become `EMITTED`. Then perform one coverage pass
+over the private checklist. Every
 explicitly requested item must be either supported by cited returned evidence
 and present in the answer, or reported as conditional/unproven with the missing
 evidence named. For each supported item, preserve the concrete mechanism,
@@ -236,9 +245,9 @@ or helper name alone is insufficient. For a structured multi-part response,
 emit one evidence or claim entry per checklist item in the request's order; if
 the output schema has no such array, use one explicit clause per item. Every
 requested exact fact already visible in returned source must appear there.
-Answer only after every `PROVEN` ledger atom is marked `EMITTED` in that item’s
-final clause. Summarization must not discard a qualifier, ordering, or timing
-atom.
+Answer only after every `PROVEN` ledger atom has a `DRAFTED` clause and is
+marked `EMITTED` in that item's final clause. Summarization must not discard a
+qualifier, ordering, or timing atom.
 
 Admission already binds the exact base revision. Do not run a preliminary
 `git rev-parse` or cleanliness check for read-only analysis; use one final

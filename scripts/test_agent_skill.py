@@ -43,7 +43,7 @@ class AgentSkillTest(unittest.TestCase):
 
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("version: \"0.2.7\"", skill)
+        self.assertIn("version: \"0.2.8\"", skill)
         self.assertIn("codeclew-agent-contract/1.0", skill)
         self.assertIn("clew context open", skill)
         self.assertIn("clew nav query", skill)
@@ -59,6 +59,10 @@ class AgentSkillTest(unittest.TestCase):
         self.assertIn("sourceDelivery.status=RETURNED", skill)
         self.assertIn("per-item ledger", skill)
         self.assertIn("`PROVEN` or `UNPROVEN`", skill)
+        self.assertIn("Immediately convert each", skill)
+        self.assertIn("`DRAFTED`, then `EMITTED`", skill)
+        self.assertIn("assemble the final answer from the per-item", skill)
+        self.assertIn("checked again against every one of its", skill)
         self.assertIn("marked `EMITTED`", skill)
         self.assertIn("Summarization must not discard", skill)
         self.assertIn("--reference <terminal-or-full-path>", skill)
