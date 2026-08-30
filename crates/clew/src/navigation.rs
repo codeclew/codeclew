@@ -326,13 +326,31 @@ pub fn source_envelope_by_candidate(
             .then_with(|| left.2.cmp(right.2))
     });
     let eligible_count = 1usize.saturating_add(exact_names.len());
+    let decision_window = source_window_term_hits(sources, decision.1, &normalized_terms);
     let mut selected = vec![decision];
-    selected.extend(
-        exact_names
-            .into_iter()
-            .take(MAX_DECISION_SOURCE_DECLARATIONS.saturating_sub(1))
-            .map(|(_, _, _, matched, payload, handle)| (matched, payload, handle)),
-    );
+    let mut selected_window_ranges = BTreeSet::new();
+    let mut covered_terms = BTreeSet::new();
+    if let Some((range, hits)) = decision_window {
+        selected_window_ranges.insert(range);
+        covered_terms.extend(hits);
+    }
+    for (_, _, _, matched, payload, handle) in exact_names {
+        if selected.len() >= MAX_DECISION_SOURCE_DECLARATIONS {
+            break;
+        }
+        let Some((range, hits)) = source_window_term_hits(sources, payload, &normalized_terms)
+        else {
+            continue;
+        };
+        let same_window = selected_window_ranges.contains(&range);
+        let adds_term = hits.iter().any(|term| !covered_terms.contains(term));
+        if !same_window && !adds_term && !selected_window_ranges.is_empty() {
+            continue;
+        }
+        selected_window_ranges.insert(range);
+        covered_terms.extend(hits);
+        selected.push((matched, payload, handle));
+    }
 
     let mut content_ref = None;
     let mut complete_file = false;
@@ -1237,6 +1255,27 @@ fn source_window_relevance(
     })
 }
 
+fn source_window_term_hits(
+    sources: &[Value],
+    payload: &Map<String, Value>,
+    terms: &BTreeSet<String>,
+) -> Option<((u64, u64), BTreeSet<String>)> {
+    let source = exact_source(sources, payload)?;
+    let start_line = source.window.get("startLine").and_then(Value::as_u64)?;
+    let end_line = source.window.get("endLine").and_then(Value::as_u64)?;
+    let text = source
+        .window
+        .get("text")
+        .and_then(Value::as_str)?
+        .to_lowercase();
+    let hits = terms
+        .iter()
+        .filter(|term| text.contains(term.as_str()))
+        .cloned()
+        .collect();
+    Some(((start_line, end_line), hits))
+}
+
 fn exact_declaration_text(sources: &[Value], payload: &Map<String, Value>) -> Option<String> {
     let source = exact_source(sources, payload)?;
     let window_start = source.window.get("startLine").and_then(Value::as_u64)?;
@@ -1861,6 +1900,57 @@ mod tests {
         assert_eq!(selected["sourceBindings"][0]["displayName"], "request");
         assert_eq!(selected["sourceBindings"][0]["windowIndex"], 2);
         assert!(selected["sourceBytes"].as_u64().unwrap() <= 16 * 1024);
+        validate_stdout(&selected).unwrap();
+    }
+
+    #[test]
+    fn decision_source_envelope_omits_a_distant_exact_name_without_new_coverage() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:parse",
+                    "payload":{
+                        "kind":"DECLARATION","name":"parseErrorPayload","symbolIdentity":"ts:parse",
+                        "file":"src/client.ts","start":100,"end":180,"startLine":50,"endLine":63
+                    }
+                },
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:headers",
+                    "payload":{
+                        "kind":"DECLARATION","name":"headers","symbolIdentity":"ts:unrelated:headers",
+                        "file":"src/client.ts","start":500,"end":510,"startLine":170,"endLine":170
+                    }
+                }
+            ],
+            "sources":[{
+                "fileId":"src/client.ts",
+                "contentRef":{"digest":"sha256:client"},
+                "completeFile":false,
+                "windows":[
+                    {
+                        "startLine":41,"endLine":87,
+                        "text":"function parseErrorPayload(payload: string) { return payload }\nconst headers = new Headers()"
+                    },
+                    {
+                        "startLine":162,"endLine":194,
+                        "text":"const headers: Record<string, string> = {}"
+                    }
+                ]
+            }],
+            "completeness":{},"truncated":false
+        });
+        let mut authority = context("context:marginal-source", None, "sha256:evidence", retained);
+        authority.terms = vec!["parseErrorPayload".into(), "headers".into()];
+        let candidate_id = candidate_handle("tsconfig:app/tsconfig.json", "fact:parse").unwrap();
+        let selected = source_envelope_by_candidate(&authority, &candidate_id).unwrap();
+
+        assert_eq!(selected["source"]["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(selected["sourceBindingCount"]["eligible"], 2);
+        assert_eq!(selected["sourceBindingCount"]["returned"], 1);
+        assert_eq!(selected["sourceBindingCount"]["omitted"], 1);
+        assert_eq!(selected["source"]["truncated"], true);
         validate_stdout(&selected).unwrap();
     }
 
