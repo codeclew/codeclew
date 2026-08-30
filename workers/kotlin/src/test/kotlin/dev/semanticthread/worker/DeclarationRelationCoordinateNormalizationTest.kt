@@ -18,11 +18,11 @@ class DeclarationRelationCoordinateNormalizationTest {
 
     @Test
     fun callCoordinatesUseUtf8BytesAfterCyrillicAndEmojiPrefix() {
-        val source = "// Привет\nfun run() { target(\"😀\", имя) }\n"
+        val source = "// \u041f\u0440\u0438\u0432\u0435\u0442\nfun run() { target(\"😀\", \u0438\u043c\u044f) }\n"
         val callStart = source.indexOf("target")
         val callEnd = source.indexOf(')', callStart) + 1
         val firstArgumentStart = source.indexOf("\"😀\"")
-        val secondArgumentStart = source.indexOf("имя", callStart)
+        val secondArgumentStart = source.indexOf("\u0438\u043c\u044f", callStart)
         val raw = buildJsonObject {
             put("schema", "declaration-relation/0.1")
             put("kind", "CALLS")
@@ -63,7 +63,7 @@ class DeclarationRelationCoordinateNormalizationTest {
 
     @Test
     fun orderedRelationsIncludingReadSurviveWithoutAnOptionalArgumentMap() {
-        val source = "// 😀 чтение\nfun run() = state\n"
+        val source = "// 😀 \u0447\u0442\u0435\u043d\u0438\u0435\nfun run() = state\n"
         val relationStart = source.indexOf("state")
         val relationEnd = relationStart + "state".length
         for (kind in listOf("CALLS", "CONSTRUCTS", "READS", "WRITES", "INITIALIZES")) {
@@ -87,7 +87,7 @@ class DeclarationRelationCoordinateNormalizationTest {
 
     @Test
     fun nullCoalescingConvertsEveryNestedCoordinate() {
-        val source = "// 😀 Префикс\nfun choose(a: String?, b: String) = a ?: b\n"
+        val source = "// 😀 \u041f\u0440\u0435\u0444\u0438\u043a\u0441\nfun choose(a: String?, b: String) = a ?: b\n"
         val mergeStart = source.indexOf("a ?:")
         val mergeEnd = source.indexOf('\n', mergeStart)
         val sourceStart = mergeStart
@@ -127,7 +127,7 @@ class DeclarationRelationCoordinateNormalizationTest {
 
     @Test
     fun returnValueConvertsEveryNestedCoordinate() {
-        val source = "// 😀 возврат\nfun answer() { return target() }\n"
+        val source = "// 😀 \u0432\u043e\u0437\u0432\u0440\u0430\u0442\nfun answer() { return target() }\n"
         val returnStart = source.indexOf("return")
         val returnEnd = source.indexOf('}', returnStart) - 1
         val resultStart = source.indexOf("target", returnStart)
@@ -153,7 +153,7 @@ class DeclarationRelationCoordinateNormalizationTest {
 
     @Test
     fun invalidMissingAndSurrogateInteriorCoordinatesFailClosed() {
-        val source = "// Префикс 😀\nfun run() { target(value) }\n"
+        val source = "// \u041f\u0440\u0435\u0444\u0438\u043a\u0441 😀\nfun run() { target(value) }\n"
         val callStart = source.indexOf("target")
         val callEnd = source.indexOf(')', callStart) + 1
         val argumentStart = source.indexOf("value", callStart)
