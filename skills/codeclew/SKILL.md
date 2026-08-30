@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.4"
+  version: "0.2.5"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -91,7 +91,9 @@ conditional or unsure authority without upgrading it. For a multi-part request,
 the checklist is the coverage authority for the final answer. Overall
 `completeness`, truncation, or an unmatched seed term limits exhaustive claims,
 but does not downgrade a specific fact proven by an exact retained source
-window.
+window. Split a compound requirement into independently observable subclaims;
+recursion, collection ordering, representation, failure type, and timing are
+not interchangeable evidence and must not be closed as one vague item.
 
 The first response contains at most three fact-bound decision cards with exact
 one-line previews. `--source` returns a compact, evidence-bound agent card: the
@@ -155,7 +157,10 @@ resolved call edge. When `targetResolution=UNRESOLVED` or
 `semanticRelation=UNKNOWN`, treat returned name matches as bounded discovery
 candidates. Exact source returned for such a candidate may prove facts about
 that declaration, but not that the observed reference targets it. Do not
-re-query source already returned. Use exact `--term ... --file ... --source`
+re-query source already returned. If a supported choice can close an open
+checklist item, the next navigation command must follow that retained reference
+with the returned candidate and newest context; do not replace it with a term
+search. Use exact `--term ... --file ... --source`
 only when the retained-name result lacks sufficient exact source and both the
 identifier and file are already established by evidence. Recurse only when the
 returned helper body delegates an open checklist item; prioritize the bounded
@@ -170,7 +175,10 @@ predicate or boundary, typed outcome, and before/after mutation order exposed
 by the source instead of weakening them into a generic paraphrase. Do not drop
 a supported item merely because another item seems more important. If the
 command or output budget prevents closing an item, return the remaining item as
-an obligation instead of guessing.
+an obligation instead of guessing. A guard, limit, failure, or transition item
+remains open until the evidence records its comparison predicate, typed outcome,
+and relative order to any requested digest, publication, or mutation; a constant
+or helper name alone is insufficient.
 
 Admission already binds the exact base revision. Do not run a preliminary
 `git rev-parse` or cleanliness check for read-only analysis; use one final
