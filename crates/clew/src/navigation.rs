@@ -892,6 +892,7 @@ fn assemble(
         .map(|term| term.to_lowercase())
         .filter(|term| !term.is_empty())
         .collect::<BTreeSet<_>>();
+    let file_relevance = source_file_relevance(sources, &normalized_terms);
     let mut ranked_candidates = Vec::new();
     let mut handles = BTreeMap::new();
     for (ordinal, matched) in matches.iter().enumerate() {
@@ -912,10 +913,18 @@ fn assemble(
         }
         let (term_coverage, name_coverage, occurrences) =
             candidate_relevance(payload, sources, &normalized_terms);
+        let (file_coverage, file_occurrences) = payload
+            .get("file")
+            .and_then(Value::as_str)
+            .and_then(|file| file_relevance.get(file))
+            .copied()
+            .unwrap_or((0, 0));
         ranked_candidates.push((
+            file_coverage,
             term_coverage,
             name_coverage,
             occurrences,
+            file_occurrences,
             ordinal,
             candidate_id,
             matched,
@@ -928,12 +937,14 @@ fn assemble(
             .cmp(&left.0)
             .then_with(|| right.1.cmp(&left.1))
             .then_with(|| right.2.cmp(&left.2))
-            .then_with(|| left.3.cmp(&right.3))
+            .then_with(|| right.3.cmp(&left.3))
+            .then_with(|| right.4.cmp(&left.4))
+            .then_with(|| left.5.cmp(&right.5))
     });
     let total_candidates = ranked_candidates.len();
     let mut candidates = Vec::new();
     let mut candidate_identities = BTreeSet::new();
-    for (_, _, _, _, candidate_id, matched, payload) in
+    for (_, _, _, _, _, _, candidate_id, matched, payload) in
         ranked_candidates.into_iter().take(MAX_NAV_CANDIDATES)
     {
         let fact_key = required_string(matched, "factKey")?;
@@ -1195,6 +1206,35 @@ fn candidate_relevance(
         occurrences = occurrences.saturating_add(name_occurrences + source_occurrences);
     }
     (term_coverage, name_coverage, occurrences)
+}
+
+fn source_file_relevance(
+    sources: &[Value],
+    terms: &BTreeSet<String>,
+) -> BTreeMap<String, (usize, usize)> {
+    sources
+        .iter()
+        .filter_map(|source| {
+            let file = source.get("fileId").and_then(Value::as_str)?;
+            let source_text = source
+                .get("windows")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|window| window.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .to_lowercase();
+            let relevance = terms.iter().fold((0usize, 0usize), |score, term| {
+                let occurrences = source_text.matches(term).count();
+                (
+                    score.0 + usize::from(occurrences > 0),
+                    score.1.saturating_add(occurrences),
+                )
+            });
+            Some((file.to_owned(), relevance))
+        })
+        .collect()
 }
 
 fn exact_declaration_text(sources: &[Value], payload: &Map<String, Value>) -> Option<String> {
@@ -2633,6 +2673,81 @@ mod tests {
         assert_eq!(result["candidates"][0]["displayName"], "Work");
         assert_eq!(result["candidates"][1]["displayName"], "AlphaBeta");
         assert_eq!(result["candidateCount"]["omitted"], 1);
+    }
+
+    #[test]
+    fn decision_cards_prefer_the_exact_file_that_covers_more_query_terms() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:json-response",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"jsonResponse",
+                        "symbolIdentity":"ts:test.ts#function:jsonResponse",
+                        "file":"test.ts",
+                        "startLine":1,
+                        "endLine":4
+                    }
+                },
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:api-error",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"ApiError",
+                        "symbolIdentity":"ts:client.ts#class:ApiError",
+                        "file":"client.ts",
+                        "startLine":1,
+                        "endLine":3
+                    }
+                }
+            ],
+            "sources":[
+                {
+                    "fileId":"test.ts",
+                    "contentRef":{"digest":"sha256:test"},
+                    "windows":[{
+                        "startLine":1,
+                        "endLine":4,
+                        "text":"function jsonResponse(payload: unknown) {\n return new Response(JSON.stringify(payload), {\n  headers: {'Content-Type':'application/json'}\n })\n}"
+                    }]
+                },
+                {
+                    "fileId":"client.ts",
+                    "contentRef":{"digest":"sha256:client"},
+                    "windows":[{
+                        "startLine":1,
+                        "endLine":9,
+                        "text":"class ApiError extends Error {\n status: number\n}\nheaders.set('Content-Type', 'application/json')\nheaders.set('X-Launchpad-Source', 'ui')\nconst payload = await response.text()\nthrow new ApiError(status, payload)\nconst contentType = response.headers.get('content-type')\nreturn contentType ? response.json() : payload"
+                    }]
+                }
+            ],
+            "completeness":{},
+            "truncated":false
+        });
+        let result = assemble(
+            "session:test",
+            "context:test",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &[
+                "ApiError".into(),
+                "Content-Type".into(),
+                "X-Launchpad-Source".into(),
+                "response.text".into(),
+                "response.json".into(),
+                "JSON.stringify".into(),
+                "error".into(),
+                "payload".into(),
+            ],
+            &retained,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(result["candidates"][0]["displayName"], "ApiError");
     }
 
     #[test]

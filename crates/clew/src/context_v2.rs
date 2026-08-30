@@ -17,6 +17,8 @@ const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SNIPPET_BYTES: usize = 16 * 1024;
 const MAX_SOURCE_BYTES: usize = 32 * 1024;
 const MAX_SOURCE_WINDOWS: usize = 4;
+const SOURCE_DECLARATION_CONTEXT_LINES: usize = 8;
+const MAX_CONTEXTUAL_DECLARATION_LINES: usize = 16;
 const MAX_SUPPORT_TERM_SETS: usize = 32;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
 pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-context/1.0";
@@ -952,6 +954,9 @@ fn source_windows(
     let lines = source.lines().collect::<Vec<_>>();
     for (offset, end) in ranges {
         let window = declaration_window(source, offset, end)
+            .map(|window| {
+                declaration_context_window(source, window, SOURCE_DECLARATION_CONTEXT_LINES)
+            })
             .unwrap_or_else(|| snippet(source, terms, offset));
         if windows.iter().any(|existing: &(usize, usize, String)| {
             existing.0 == window.0 && existing.1 == window.1
@@ -1002,6 +1007,29 @@ fn source_windows(
         }
     }
     windows
+}
+
+fn declaration_context_window(
+    source: &str,
+    exact: (usize, usize, String),
+    padding: usize,
+) -> (usize, usize, String) {
+    let exact_line_count = exact.1.saturating_sub(exact.0).saturating_add(1);
+    if exact_line_count > MAX_CONTEXTUAL_DECLARATION_LINES {
+        return exact;
+    }
+    let lines = source.lines().collect::<Vec<_>>();
+    let start = exact.0.saturating_sub(1).saturating_sub(padding);
+    let end = exact.1.saturating_add(padding).min(lines.len());
+    if start >= end {
+        return exact;
+    }
+    let text = lines[start..end].join("\n");
+    if text.len() > MAX_SNIPPET_BYTES {
+        exact
+    } else {
+        (start + 1, end, text)
+    }
 }
 
 type LexicalSupport<'a> = ((usize, usize), usize, &'a str);
@@ -1464,9 +1492,9 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 mod tests {
     use super::{
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES,
-        MAX_SOURCE_WINDOWS, PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection,
-        load_fact_evidence, merge_query_contexts, ordered_paths_in_evidence, rank_fact_evidence,
-        source_offset_hints, source_windows, validate_source_rows,
+        PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection, load_fact_evidence,
+        merge_query_contexts, ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints,
+        source_windows, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -2295,7 +2323,7 @@ mod tests {
     }
 
     #[test]
-    fn remaining_window_budget_retains_distinct_improving_support() {
+    fn nearby_short_declarations_retain_their_bounded_owner_context() {
         let mut source =
             "fn collect_member_completeness(contexts: &[MemberContext]) {}\n".to_owned();
         source.push_str("let member_unmatched = completeness;\n");
@@ -2319,9 +2347,11 @@ mod tests {
             ],
             Some(&ranges),
         );
-        assert_eq!(windows.len(), MAX_SOURCE_WINDOWS);
-        assert!(windows.iter().any(|window| window.0 == 2));
-        assert!(windows.iter().any(|window| window.0 == 3));
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].0, 1);
+        assert_eq!(windows[0].1, 4);
+        assert!(windows[0].2.contains("let member_unmatched"));
+        assert!(windows[0].2.contains("\"memberCompleteness\""));
     }
 
     #[test]
