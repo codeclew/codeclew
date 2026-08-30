@@ -983,15 +983,20 @@ fn source_windows(
         projected_bytes = projected_bytes.saturating_add(window.2.len());
         windows.push(window);
     }
-    if has_declaration_ranges && windows.len() < MAX_SOURCE_WINDOWS {
+    if has_declaration_ranges {
         let lowered_terms = terms
             .iter()
             .map(|term| term.to_lowercase())
             .collect::<Vec<_>>();
-        let (best_support, _) = best_lexical_support(&lines, &windows, &lowered_terms);
-        if let Some((_, line, text)) = best_support
-            && projected_bytes.saturating_add(text.len()) <= MAX_SOURCE_BYTES
-        {
+        while windows.len() < MAX_SOURCE_WINDOWS {
+            let (best_support, _) = best_lexical_support(&lines, &windows, &lowered_terms);
+            let Some((_, line, text)) = best_support else {
+                break;
+            };
+            if projected_bytes.saturating_add(text.len()) > MAX_SOURCE_BYTES {
+                break;
+            }
+            projected_bytes = projected_bytes.saturating_add(text.len());
             windows.push((line, line, text.to_owned()));
             windows.sort_by_key(|window| (window.0, window.1));
         }
@@ -1459,9 +1464,9 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 mod tests {
     use super::{
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES,
-        PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection, load_fact_evidence,
-        merge_query_contexts, ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints,
-        source_windows, validate_source_rows,
+        MAX_SOURCE_WINDOWS, PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection,
+        load_fact_evidence, merge_query_contexts, ordered_paths_in_evidence, rank_fact_evidence,
+        source_offset_hints, source_windows, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -2287,6 +2292,36 @@ mod tests {
             best_lexical_support(&lines, &windows, &["member".into(), "completeness".into()]);
         assert_eq!(retained_score_computations, 1);
         assert_eq!(support.map(|(_, line, _)| line), Some(2));
+    }
+
+    #[test]
+    fn remaining_window_budget_retains_distinct_improving_support() {
+        let mut source =
+            "fn collect_member_completeness(contexts: &[MemberContext]) {}\n".to_owned();
+        source.push_str("let member_unmatched = completeness;\n");
+        source.push_str("\"memberCompleteness\": member_completeness,\n");
+        source.push_str("fn aggregate_unmatched_terms_are_global_not_member_local() {}\n");
+        let lines = source.lines().collect::<Vec<_>>();
+        let ranges = BTreeMap::from([
+            (0, Some(lines[0].len())),
+            (
+                source.rfind(lines[3]).unwrap(),
+                Some(source.rfind(lines[3]).unwrap() + lines[3].len()),
+            ),
+        ]);
+        let windows = source_windows(
+            &source,
+            &[
+                "unmatched".into(),
+                "global".into(),
+                "member".into(),
+                "completeness".into(),
+            ],
+            Some(&ranges),
+        );
+        assert_eq!(windows.len(), MAX_SOURCE_WINDOWS);
+        assert!(windows.iter().any(|window| window.0 == 2));
+        assert!(windows.iter().any(|window| window.0 == 3));
     }
 
     #[test]
