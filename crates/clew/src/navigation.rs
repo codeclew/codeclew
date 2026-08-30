@@ -18,6 +18,8 @@ const MAX_REFERENCE_MATCHES_PER_TERM: usize = 3;
 const MAX_REFERENCE_FOLLOW_SOURCE_BYTES: usize = 16 * 1024;
 const MAX_REFERENCE_OBSERVATIONS_PER_TERM: usize = 4;
 const MAX_REFERENCE_PATH_BYTES: usize = 512;
+const MAX_DECISION_SOURCE_DECLARATIONS: usize = 3;
+const MAX_DECISION_SOURCE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NavigationFacet {
@@ -237,6 +239,207 @@ pub fn source_by_candidate(
     Ok(json!({
         "candidateId":candidate_id,
         "source":exact_source_detail(sources, payload),
+    }))
+}
+
+pub fn source_envelope_by_candidate(
+    context: &ContextObject,
+    candidate_id: &str,
+) -> Result<Value, ClewError> {
+    let retained = retained_context(context)?;
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no match array"))?;
+    let sources = retained
+        .get("sources")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no source array"))?;
+    let decision_payload = candidate_payload(matches, candidate_id)?;
+    if decision_payload
+        .get("start")
+        .and_then(Value::as_u64)
+        .is_none()
+        || decision_payload
+            .get("end")
+            .and_then(Value::as_u64)
+            .is_none()
+        || decision_payload
+            .get("startLine")
+            .and_then(Value::as_u64)
+            .is_none()
+        || decision_payload
+            .get("endLine")
+            .and_then(Value::as_u64)
+            .is_none()
+        || decision_payload.get("rangeStart").is_some()
+    {
+        return source_by_candidate(context, candidate_id);
+    }
+    let decision_file = required_payload_string(decision_payload, "file")?;
+    let decision_start_line = required_payload_u64(decision_payload, "startLine")?;
+    let normalized_terms = context
+        .terms
+        .iter()
+        .map(|term| term.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut decision = None;
+    let mut exact_names = Vec::new();
+    for matched in matches {
+        let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
+            continue;
+        };
+        if !is_declaration(payload)
+            || payload.get("file").and_then(Value::as_str) != Some(decision_file)
+            || payload.get("start").and_then(Value::as_u64).is_none()
+            || payload.get("rangeStart").is_some()
+        {
+            continue;
+        }
+        let compilation = required_string(matched, "compilation")?;
+        let fact_key = required_string(matched, "factKey")?;
+        let handle = candidate_handle(compilation, fact_key)?;
+        if handle == candidate_id {
+            decision = Some((matched, payload, handle));
+        } else if exact_query_name_match(payload, &normalized_terms) {
+            let start_line = required_payload_u64(payload, "startLine")?;
+            exact_names.push((
+                start_line.abs_diff(decision_start_line),
+                start_line,
+                fact_key,
+                matched,
+                payload,
+                handle,
+            ));
+        }
+    }
+    let decision = decision.ok_or_else(|| {
+        ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "navigation candidate is not retained by this context",
+        )
+    })?;
+    exact_names.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(right.2))
+    });
+    let eligible_count = 1usize.saturating_add(exact_names.len());
+    let mut selected = vec![decision];
+    selected.extend(
+        exact_names
+            .into_iter()
+            .take(MAX_DECISION_SOURCE_DECLARATIONS.saturating_sub(1))
+            .map(|(_, _, _, matched, payload, handle)| (matched, payload, handle)),
+    );
+
+    let mut content_ref = None;
+    let mut complete_file = false;
+    let mut windows = BTreeMap::<(u64, u64, String), Value>::new();
+    let mut pending_bindings = Vec::new();
+    let mut source_bytes = 0usize;
+    let mut truncated = eligible_count > selected.len();
+    let mut observed_exact_source = false;
+    for (matched, payload, handle) in selected {
+        let Some(source) = exact_source(sources, payload) else {
+            truncated = true;
+            continue;
+        };
+        observed_exact_source = true;
+        let observed_content_ref = source
+            .row
+            .get("contentRef")
+            .cloned()
+            .ok_or_else(|| invalid("exact navigation source has no content authority"))?;
+        if content_ref
+            .as_ref()
+            .is_some_and(|expected| expected != &observed_content_ref)
+        {
+            return Err(invalid(
+                "decision source declarations have different content authority",
+            ));
+        }
+        content_ref.get_or_insert(observed_content_ref);
+        complete_file |= source
+            .row
+            .get("completeFile")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let start_line = required_value_u64(source.window, "startLine")?;
+        let end_line = required_value_u64(source.window, "endLine")?;
+        let text = required_value_string(source.window, "text")?.to_owned();
+        let window_key = (start_line, end_line, text.clone());
+        if !windows.contains_key(&window_key) {
+            if source_bytes.saturating_add(text.len()) > MAX_DECISION_SOURCE_BYTES {
+                truncated = true;
+                continue;
+            }
+            source_bytes = source_bytes.saturating_add(text.len());
+            windows.insert(
+                window_key.clone(),
+                json!({"startLine":start_line,"endLine":end_line,"text":text}),
+            );
+        }
+        pending_bindings.push((
+            window_key,
+            json!({
+                "candidateId":handle,
+                "candidateKey":{
+                    "compilation":required_string(matched, "compilation")?,
+                    "factKey":required_string(matched, "factKey")?,
+                },
+                "displayName":display_name(payload),
+                "declarationStartLine":payload.get("startLine"),
+                "declarationEndLine":payload.get("endLine"),
+            }),
+        ));
+    }
+    let window_indexes = windows
+        .keys()
+        .enumerate()
+        .map(|(index, key)| (key.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let bindings = pending_bindings
+        .into_iter()
+        .map(|(window_key, mut binding)| {
+            binding["windowIndex"] = json!(window_indexes[&window_key]);
+            binding
+        })
+        .collect::<Vec<_>>();
+    if bindings.is_empty() {
+        return Ok(json!({
+            "candidateId":candidate_id,
+            "source":{
+                "status":"UNSUPPORTED",
+                "reason":if observed_exact_source {
+                    "SOURCE_ENVELOPE_BUDGET_EXCEEDED"
+                } else {
+                    "NO_EXACT_DECLARATION_WINDOW"
+                },
+            },
+        }));
+    }
+    let returned_binding_count = bindings.len();
+    Ok(json!({
+        "candidateId":candidate_id,
+        "selectionAuthority":"TOP_CANDIDATE_PLUS_EXACT_QUERY_NAMES_SAME_FILE",
+        "sourceBytes":source_bytes,
+        "sourceBindingCount":{
+            "eligible":eligible_count,
+            "returned":returned_binding_count,
+            "omitted":eligible_count.saturating_sub(returned_binding_count),
+        },
+        "sourceBindings":bindings,
+        "source":{
+            "status":"SUPPORTED",
+            "authority":"EXACT_SNAPSHOT_TEXT",
+            "fileId":decision_file,
+            "contentRef":content_ref,
+            "completeFile":complete_file,
+            "windows":windows.into_values().collect::<Vec<_>>(),
+            "truncated":truncated,
+        },
     }))
 }
 
@@ -938,6 +1141,14 @@ fn exact_candidate_name_matches(payload: &Map<String, Value>, term: &str) -> boo
         .any(|identity| identity == term)
 }
 
+fn exact_query_name_match(payload: &Map<String, Value>, terms: &BTreeSet<String>) -> bool {
+    ["name", "qualifiedName"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .map(str::to_lowercase)
+        .any(|name| terms.contains(&name))
+}
+
 fn validate_file_selector(file: &str) -> Result<(), ClewError> {
     if file.is_empty()
         || file.len() > 4096
@@ -1517,11 +1728,175 @@ mod tests {
         let cards = query(&authority, &[]).unwrap();
         let candidate_id = cards["candidates"][0]["candidateId"].as_str().unwrap();
         let selected = source_by_candidate(&authority, candidate_id).unwrap();
+        assert_eq!(
+            source_envelope_by_candidate(&authority, candidate_id).unwrap(),
+            selected
+        );
         let rendered = canonical::compact(&selected).unwrap();
         assert!(rendered.len() < 2048);
         assert!(!rendered.contains("opaque"));
         assert_eq!(selected["source"]["windows"][0]["text"], "fn Large() {}");
         validate_stdout(&selected).unwrap();
+    }
+
+    #[test]
+    fn decision_source_envelope_binds_three_exact_same_file_declarations() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:request",
+                    "payload":{
+                        "kind":"DECLARATION","name":"request","symbolIdentity":"ts:request",
+                        "file":"src/client.ts","start":300,"end":500,"startLine":65,"endLine":87
+                    }
+                },
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:error",
+                    "payload":{
+                        "kind":"DECLARATION","name":"ApiError","symbolIdentity":"ts:ApiError",
+                        "file":"src/client.ts","start":100,"end":160,"startLine":41,"endLine":48
+                    }
+                },
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:parse",
+                    "payload":{
+                        "kind":"DECLARATION","name":"parseErrorPayload","symbolIdentity":"ts:parseErrorPayload",
+                        "file":"src/client.ts","start":170,"end":290,"startLine":50,"endLine":63
+                    }
+                },
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"fact:other-file",
+                    "payload":{
+                        "kind":"DECLARATION","name":"ApiError","symbolIdentity":"ts:other:ApiError",
+                        "file":"src/other.ts","start":1,"end":20,"startLine":1,"endLine":2
+                    }
+                }
+            ],
+            "sources":[
+                {
+                    "fileId":"src/client.ts",
+                    "contentRef":{"digest":"sha256:client"},
+                    "completeFile":false,
+                    "windows":[
+                        {"startLine":41,"endLine":48,"text":"class ApiError extends Error {}"},
+                        {"startLine":50,"endLine":63,"text":"function parseErrorPayload() {}"},
+                        {"startLine":65,"endLine":87,"text":"async function request() {}"}
+                    ]
+                },
+                {
+                    "fileId":"src/other.ts",
+                    "contentRef":{"digest":"sha256:other"},
+                    "completeFile":true,
+                    "windows":[{"startLine":1,"endLine":2,"text":"class ApiError {}"}]
+                }
+            ],
+            "completeness":{},
+            "truncated":false
+        });
+        let mut authority = context(
+            "context:typescript-source-envelope",
+            None,
+            "sha256:evidence",
+            retained,
+        );
+        authority.terms = vec![
+            "ApiError".into(),
+            "parseErrorPayload".into(),
+            "request".into(),
+        ];
+        let candidate_id = candidate_handle("tsconfig:app/tsconfig.json", "fact:request").unwrap();
+        let selected = source_envelope_by_candidate(&authority, &candidate_id).unwrap();
+
+        assert_eq!(selected["source"]["status"], "SUPPORTED");
+        assert_eq!(selected["source"]["truncated"], false);
+        assert_eq!(selected["source"]["contentRef"]["digest"], "sha256:client");
+        assert_eq!(selected["source"]["windows"].as_array().unwrap().len(), 3);
+        assert_eq!(selected["source"]["windows"][0]["startLine"], 41);
+        assert_eq!(selected["source"]["windows"][2]["endLine"], 87);
+        assert_eq!(selected["sourceBindings"].as_array().unwrap().len(), 3);
+        assert_eq!(selected["sourceBindings"][0]["displayName"], "request");
+        assert_eq!(selected["sourceBindings"][0]["windowIndex"], 2);
+        assert!(selected["sourceBytes"].as_u64().unwrap() <= 16 * 1024);
+        validate_stdout(&selected).unwrap();
+    }
+
+    #[test]
+    fn decision_source_envelope_deduplicates_windows_and_enforces_its_byte_bound() {
+        let shared = "function first() {}\nfunction second() {}";
+        let retained = json!({
+            "matches":[
+                {"compilation":"tsconfig:app/tsconfig.json","factKey":"fact:first","payload":{
+                    "kind":"DECLARATION","name":"first","symbolIdentity":"ts:first","file":"src/app.ts",
+                    "start":1,"end":20,"startLine":1,"endLine":1
+                }},
+                {"compilation":"tsconfig:app/tsconfig.json","factKey":"fact:second","payload":{
+                    "kind":"DECLARATION","name":"second","symbolIdentity":"ts:second","file":"src/app.ts",
+                    "start":21,"end":40,"startLine":2,"endLine":2
+                }}
+            ],
+            "sources":[{"fileId":"src/app.ts","contentRef":{"digest":"sha256:app"},"windows":[{
+                "startLine":1,"endLine":2,"text":shared
+            }]}],
+            "completeness":{},"truncated":false
+        });
+        let mut authority = context("context:dedupe", None, "sha256:evidence", retained);
+        authority.terms = vec!["first".into(), "second".into()];
+        let candidate_id = candidate_handle("tsconfig:app/tsconfig.json", "fact:first").unwrap();
+        let selected = source_envelope_by_candidate(&authority, &candidate_id).unwrap();
+        assert_eq!(selected["source"]["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(selected["sourceBindings"].as_array().unwrap().len(), 2);
+        assert_eq!(selected["sourceBytes"], shared.len());
+
+        authority.projection["sources"][0]["windows"][0]["text"] =
+            json!("x".repeat(MAX_DECISION_SOURCE_BYTES + 1));
+        authority.evidence["context"] = authority.projection.clone();
+        let bounded = source_envelope_by_candidate(&authority, &candidate_id).unwrap();
+        assert_eq!(bounded["source"]["status"], "UNSUPPORTED");
+        assert_eq!(
+            bounded["source"]["reason"],
+            "SOURCE_ENVELOPE_BUDGET_EXCEEDED"
+        );
+        validate_stdout(&bounded).unwrap();
+    }
+
+    #[test]
+    fn decision_source_envelope_preserves_java_offset_only_abstention() {
+        let retained = json!({
+            "matches":[{
+                "compilation":"gradle:main",
+                "factKey":"java:declaration:Client",
+                "payload":{
+                    "kind":"DECLARATION",
+                    "declarationKind":"CLASS",
+                    "symbolIdentity":"java:Client",
+                    "file":"src/main/java/Client.java",
+                    "start":10,
+                    "end":100
+                }
+            }],
+            "sources":[{
+                "fileId":"src/main/java/Client.java",
+                "contentRef":{"digest":"sha256:java"},
+                "windows":[{"startLine":1,"endLine":5,"text":"class Client {}"}]
+            }],
+            "completeness":{},
+            "truncated":false
+        });
+        let authority = context("context:java-offsets", None, "sha256:evidence", retained);
+        let candidate_id = candidate_handle("gradle:main", "java:declaration:Client").unwrap();
+
+        assert_eq!(
+            source_envelope_by_candidate(&authority, &candidate_id).unwrap(),
+            source_by_candidate(&authority, &candidate_id).unwrap()
+        );
+        assert_eq!(
+            source_envelope_by_candidate(&authority, &candidate_id).unwrap()["source"]["status"],
+            "UNSUPPORTED"
+        );
     }
 
     #[test]

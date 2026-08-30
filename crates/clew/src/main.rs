@@ -1912,7 +1912,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         let decision_source = decision_candidate_id
             .as_deref()
             .map(|candidate_id| {
-                clew::navigation::source_by_candidate(&opened.context, candidate_id)
+                clew::navigation::source_envelope_by_candidate(&opened.context, candidate_id)
             })
             .transpose()
             .map_err(|error| compensate_opened_context(error, &opened))?
