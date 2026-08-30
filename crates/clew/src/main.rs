@@ -1985,10 +1985,25 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
                 .insert("referenceFollow".into(), reference_follow);
         }
     }
+    let admission = if include_top_source {
+        json!({
+            "status":opened.admission.get("status"),
+            "runtimeKey":opened.admission.get("runtimeKey"),
+            "runtimeManifestDigest":opened.admission.get("runtimeManifestDigest"),
+            "runtimeMode":opened.admission.get("runtimeMode"),
+            "taskAuthority":opened.admission.get("taskAuthority"),
+        })
+    } else {
+        opened.admission.clone()
+    };
+    if include_top_source {
+        navigation = clew::navigation::agent_card(&navigation)
+            .map_err(|error| compensate_opened_context(error, &opened))?;
+    }
     let mut result = json!({
         "schema":clew::navigation::NAV_QUERY_SCHEMA,
         "status":"OPEN",
-        "admission":opened.admission,
+        "admission":admission,
         "session":{
             "sessionId":opened.session.session_id,
             "baseRevision":opened.session.base_revision,
@@ -4209,14 +4224,27 @@ mod tests {
 
     #[test]
     fn optional_reference_follow_abstains_instead_of_breaking_stdout_budget() {
-        let mut result = json!({
-            "navigation":{
-                "truncated":false,
-                "referenceFollow":{
-                    "status":"SUPPORTED",
-                    "payload":"x".repeat(clew::navigation::MAX_NAV_STDOUT_BYTES),
-                }
+        let navigation = clew::navigation::agent_card(&json!({
+            "schema":clew::navigation::NAV_RESULT_SCHEMA,
+            "sessionId":"session:authority",
+            "contextId":"context:authority",
+            "evidenceDigest":"sha256:evidence",
+            "terms":["target"],
+            "candidates":[],
+            "candidateCount":{"returned":0,"total":0,"omitted":0},
+            "decisionSource":{"status":"UNAVAILABLE","reason":"NO_CANDIDATE"},
+            "termAnchors":[],
+            "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "truncated":false,
+            "nextAction":{"refine":"nav expand ..."},
+            "referenceFollow":{
+                "status":"SUPPORTED",
+                "payload":"x".repeat(clew::navigation::MAX_NAV_STDOUT_BYTES),
             }
+        }))
+        .unwrap();
+        let mut result = json!({
+            "navigation":navigation,
         });
         validate_nav_query_stdout(&mut result, true).unwrap();
         assert_eq!(

@@ -84,8 +84,12 @@ identifiers. When these arguments are already known, run the command directly
 instead of spending a call on `--help`.
 
 The first response contains at most three fact-bound decision cards with exact
-one-line previews. `--source` additionally returns the exact retained source
-for only the highest-ranked card; omit it when names and locations are enough.
+one-line previews. `--source` returns a compact, evidence-bound agent card: the
+exact retained source and declaration-to-window bindings for the highest-ranked
+card, attested previews for alternatives, and only anchors outside that source
+window. Treat its `completeness` and `truncated` fields as authoritative; the
+full immutable evidence remains bound by `evidenceDigest`. Omit `--source` when
+names and locations are enough.
 Select up to three other useful cards in one call by repeating `--candidate`;
 each returns its retained fact and exact source window. Request relations only
 when they are needed for those selected symbols:

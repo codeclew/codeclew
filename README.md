@@ -87,8 +87,12 @@ fact-bound decision cards with exact one-line source previews in one command:
 ```
 
 The response retains `sessionId`, `contextId`, and the full evidence digest.
-`--source` includes the exact retained source only for the highest-ranked card;
-the other choices stay compact. Omit it when names and locations are enough.
+`--source` returns a `codeclew-navigation-agent-card/1.0`: the exact retained
+source and its declaration-to-window bindings for the highest-ranked card,
+attested previews for the alternatives, and only supporting anchors outside
+the returned source window. The complete immutable evidence remains bound by
+`evidenceDigest`; the compact card removes fields that do not help the next
+agent decision. Omit `--source` when names and locations are enough.
 Select one to three cards in one call to receive each complete retained fact
 and its single exact source window without retransmitting every alternative:
 

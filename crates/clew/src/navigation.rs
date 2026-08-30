@@ -9,6 +9,7 @@ pub const NAV_EXPAND_SCHEMA: &str = "codeclew-nav-expand/2.0";
 pub const NAV_RESULT_SCHEMA: &str = "codeclew-navigation-result/2.0";
 pub const NAV_DELTA_SCHEMA: &str = "codeclew-navigation-delta/2.0";
 pub const NAV_DETAIL_SCHEMA: &str = "codeclew-navigation-detail/1.0";
+pub const NAV_AGENT_CARD_SCHEMA: &str = "codeclew-navigation-agent-card/1.0";
 pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_NAV_CANDIDATES: usize = 3;
@@ -42,6 +43,224 @@ pub fn query(context: &ContextObject, facets: &[NavigationFacet]) -> Result<Valu
     )?;
     validate_stdout(&result)?;
     Ok(result)
+}
+
+pub fn agent_card(result: &Value) -> Result<Value, ClewError> {
+    if result.get("schema").and_then(Value::as_str) != Some(NAV_RESULT_SCHEMA) {
+        return Err(invalid("agent card input is not a navigation result"));
+    }
+    let candidates = result
+        .get("candidates")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("navigation result has no candidate array"))?
+        .iter()
+        .map(compact_agent_candidate)
+        .collect::<Result<Vec<_>, _>>()?;
+    let decision_source = result
+        .get("decisionSource")
+        .ok_or_else(|| invalid("navigation result has no decision source"))?;
+    let compact_source = compact_decision_source(decision_source)?;
+    let supporting_anchors = result
+        .get("termAnchors")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("navigation result has no term anchors"))?
+        .iter()
+        .filter(|anchor| !anchor_is_in_decision_source(anchor, decision_source))
+        .cloned()
+        .collect::<Vec<_>>();
+    let terms = result
+        .get("terms")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("navigation result has no term array"))?;
+    let candidate_count = result
+        .get("candidateCount")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("navigation result has no candidate count"))?;
+    let completeness = result
+        .get("completeness")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("navigation result has no completeness"))?;
+    let truncated = result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("navigation result has no truncated flag"))?;
+    let next_action = result
+        .get("nextAction")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("navigation result has no next action"))?;
+    let mut card = json!({
+        "schema":NAV_AGENT_CARD_SCHEMA,
+        "sessionId":required_value_string(result, "sessionId")?,
+        "contextId":required_value_string(result, "contextId")?,
+        "evidenceDigest":required_value_string(result, "evidenceDigest")?,
+        "terms":terms,
+        "candidates":candidates,
+        "candidateCount":candidate_count,
+        "decisionSource":compact_source,
+        "supportingAnchors":supporting_anchors,
+        "completeness":completeness,
+        "truncated":truncated,
+        "nextAction":next_action,
+    });
+    if let Some(reference_follow) = result.get("referenceFollow") {
+        card.as_object_mut()
+            .expect("agent card is an object")
+            .insert("referenceFollow".into(), reference_follow.clone());
+    }
+    Ok(card)
+}
+
+fn compact_agent_candidate(candidate: &Value) -> Result<Value, ClewError> {
+    let location = candidate
+        .get("location")
+        .ok_or_else(|| invalid("navigation candidate has no location"))?;
+    let preview = candidate
+        .get("preview")
+        .ok_or_else(|| invalid("navigation candidate has no preview"))?;
+    let preview = match preview.get("status").and_then(Value::as_str) {
+        Some("EXACT") => json!({
+            "status":"EXACT",
+            "authority":required_value_string(preview, "authority")?,
+            "contentDigest":required_value_string(preview, "contentDigest")?,
+            "startLine":required_value_u64(preview, "startLine")?,
+            "endLine":required_value_u64(preview, "endLine")?,
+            "text":required_value_string(preview, "text")?,
+            "truncated":preview
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| invalid("exact navigation preview has no truncated flag"))?,
+        }),
+        Some("UNAVAILABLE") => json!({
+            "status":"UNAVAILABLE",
+            "reason":required_value_string(preview, "reason")?,
+        }),
+        _ => return Err(invalid("navigation preview has an invalid status")),
+    };
+    let mut compact = json!({
+        "candidateId":required_value_string(candidate, "candidateId")?,
+        "displayName":required_value_string(candidate, "displayName")?,
+        "declarationKind":required_value_string(candidate, "declarationKind")?,
+        "location":{
+            "file":required_value_string(location, "file")?,
+            "startLine":required_value_u64(location, "startLine")?,
+            "endLine":required_value_u64(location, "endLine")?,
+        },
+        "preview":preview,
+    });
+    for field in ["displayNameTruncated", "declarationKindTruncated"] {
+        if let Some(value) = candidate.get(field) {
+            compact
+                .as_object_mut()
+                .expect("compact candidate is an object")
+                .insert(field.into(), value.clone());
+        }
+    }
+    if let Some(value) = location.get("fileTruncated") {
+        compact
+            .pointer_mut("/location")
+            .expect("compact candidate has a location")
+            .as_object_mut()
+            .expect("compact candidate location is an object")
+            .insert("fileTruncated".into(), value.clone());
+    }
+    Ok(compact)
+}
+
+fn compact_decision_source(decision: &Value) -> Result<Value, ClewError> {
+    let Some(source) = decision.get("source") else {
+        return match decision.get("status").and_then(Value::as_str) {
+            Some("UNAVAILABLE") => Ok(json!({
+                "status":"UNAVAILABLE",
+                "reason":required_value_string(decision, "reason")?,
+            })),
+            _ => Err(invalid("decision source has an invalid status")),
+        };
+    };
+    match source.get("status").and_then(Value::as_str) {
+        Some("SUPPORTED") => {
+            let bindings = decision
+                .get("sourceBindings")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("supported decision source has no bindings"))?
+                .iter()
+                .map(|binding| {
+                    Ok(json!({
+                        "candidateId":required_value_string(binding, "candidateId")?,
+                        "displayName":required_value_string(binding, "displayName")?,
+                        "declarationStartLine":required_value_u64(binding, "declarationStartLine")?,
+                        "declarationEndLine":required_value_u64(binding, "declarationEndLine")?,
+                        "windowIndex":required_value_u64(binding, "windowIndex")?,
+                    }))
+                })
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            let binding_count = decision
+                .get("sourceBindingCount")
+                .ok_or_else(|| invalid("supported decision source has no binding count"))?;
+            let windows = source
+                .get("windows")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("supported decision source has no windows"))?;
+            Ok(json!({
+                "candidateId":required_value_string(decision, "candidateId")?,
+                "selectionAuthority":required_value_string(decision, "selectionAuthority")?,
+                "sourceBindingCount":binding_count,
+                "sourceBindings":bindings,
+                "source":{
+                    "status":"SUPPORTED",
+                    "authority":required_value_string(source, "authority")?,
+                    "fileId":required_value_string(source, "fileId")?,
+                    "contentDigest":source
+                        .pointer("/contentRef/digest")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| invalid("supported decision source has no content digest"))?,
+                    "completeFile":source
+                        .get("completeFile")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| invalid("supported decision source has no complete-file flag"))?,
+                    "truncated":source
+                        .get("truncated")
+                        .and_then(Value::as_bool)
+                        .ok_or_else(|| invalid("supported decision source has no truncated flag"))?,
+                    "windows":windows,
+                },
+            }))
+        }
+        Some(status @ ("UNSUPPORTED" | "UNAVAILABLE")) => Ok(json!({
+            "candidateId":required_value_string(decision, "candidateId")?,
+            "source":{
+                "status":status,
+                "reason":required_value_string(source, "reason")?,
+            },
+        })),
+        _ => Err(invalid("decision source has an invalid status")),
+    }
+}
+
+fn anchor_is_in_decision_source(anchor: &Value, decision: &Value) -> bool {
+    let Some(file) = anchor.get("file").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(line) = anchor.get("line").and_then(Value::as_u64) else {
+        return false;
+    };
+    if decision.pointer("/source/fileId").and_then(Value::as_str) != Some(file) {
+        return false;
+    }
+    decision
+        .pointer("/source/windows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|window| {
+            window
+                .get("startLine")
+                .and_then(Value::as_u64)
+                .is_some_and(|start| start <= line)
+                && window
+                    .get("endLine")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|end| line <= end)
+        })
 }
 
 pub fn expand_delta(
@@ -1777,6 +1996,154 @@ mod tests {
         assert!(selected["candidates"][0]["source"].get("text").is_none());
         let rendered = canonical::compact(&selected).unwrap();
         assert_eq!(rendered.matches("TARGET_MARKER").count(), 1);
+    }
+
+    #[test]
+    fn agent_card_keeps_decision_authority_and_removes_redundant_envelope_fields() {
+        let result = json!({
+            "schema":NAV_RESULT_SCHEMA,
+            "sessionId":"session:one",
+            "contextId":"context:one",
+            "evidenceDigest":"sha256:evidence",
+            "terms":["restart","service"],
+            "candidates":[
+                {
+                    "candidateId":"c:one",
+                    "candidateKey":{"compilation":"tsconfig:app.json","factKey":"fact:one"},
+                    "displayName":"restartService",
+                    "declarationKind":"FUNCTION",
+                    "symbolIdentity":"ts:src/service.ts#function:restartService@10-80",
+                    "location":{"file":"src/service.ts","startLine":2,"endLine":5,"start":10,"end":80},
+                    "preview":{"status":"EXACT","authority":"EXACT_SNAPSHOT_TEXT","contentDigest":"sha256:source","startLine":2,"endLine":2,"text":"function restartService() {","truncated":true}
+                },
+                {
+                    "candidateId":"c:two",
+                    "candidateKey":{"compilation":"tsconfig:app.json","factKey":"fact:two"},
+                    "displayName":"ServiceActions",
+                    "declarationKind":"FUNCTION",
+                    "symbolIdentity":"ts:src/actions.ts#function:ServiceActions@10-80",
+                    "location":{"file":"src/actions.ts","startLine":8,"endLine":12,"start":10,"end":80},
+                    "preview":{"status":"EXACT","authority":"EXACT_SNAPSHOT_TEXT","contentDigest":"sha256:actions","startLine":8,"endLine":8,"text":"function ServiceActions() {","truncated":true}
+                }
+            ],
+            "candidateCount":{"returned":2,"total":4,"omitted":2},
+            "decisionSource":{
+                "candidateId":"c:one",
+                "selectionAuthority":"TOP_CANDIDATE",
+                "sourceBindingCount":{"eligible":2,"returned":2,"omitted":0},
+                "sourceBindings":[
+                    {"candidateId":"c:one","candidateKey":{"compilation":"tsconfig:app.json","factKey":"fact:one"},"displayName":"restartService","declarationStartLine":2,"declarationEndLine":5,"windowIndex":0},
+                    {"candidateId":"c:helper","candidateKey":{"compilation":"tsconfig:app.json","factKey":"fact:helper"},"displayName":"request","declarationStartLine":10,"declarationEndLine":12,"windowIndex":1}
+                ],
+                "source":{
+                    "status":"SUPPORTED",
+                    "authority":"EXACT_SNAPSHOT_TEXT",
+                    "fileId":"src/service.ts",
+                    "contentRef":{"schema":"codeclew-cas-object/2.0","objectSchema":"source","digest":"sha256:source","size":100},
+                    "completeFile":false,
+                    "truncated":false,
+                    "windows":[
+                        {"startLine":2,"endLine":5,"text":"function restartService() {\n  return request()\n}"},
+                        {"startLine":10,"endLine":12,"text":"function request() {\n  return fetch()\n}"}
+                    ]
+                }
+            },
+            "termAnchors":[
+                {"authority":"EXACT_SNAPSHOT_TEXT_LEXICAL","file":"src/service.ts","line":3,"text":"return request()","contentDigest":"sha256:source","matchedTerms":["service"]},
+                {"authority":"EXACT_SNAPSHOT_TEXT_LEXICAL","file":"src/service.test.ts","line":20,"text":"it('restarts a service')","contentDigest":"sha256:test","matchedTerms":["restart","service"]}
+            ],
+            "facets":{"callers":{"status":"NOT_REQUESTED"}},
+            "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "truncated":true,
+            "nextAction":{"detail":"nav expand ..."},
+        });
+
+        let card = agent_card(&result).unwrap();
+
+        assert_eq!(card["schema"], NAV_AGENT_CARD_SCHEMA);
+        assert_eq!(card["candidates"][0]["candidateId"], "c:one");
+        assert_eq!(card["candidates"][1]["preview"]["status"], "EXACT");
+        assert_eq!(
+            card["candidates"][1]["preview"]["authority"],
+            "EXACT_SNAPSHOT_TEXT"
+        );
+        assert_eq!(
+            card["candidates"][1]["preview"]["contentDigest"],
+            "sha256:actions"
+        );
+        assert!(card["candidates"][0].get("candidateKey").is_none());
+        assert!(card["candidates"][0].get("symbolIdentity").is_none());
+        assert_eq!(
+            card["decisionSource"]["source"]["contentDigest"],
+            "sha256:source"
+        );
+        assert!(card["decisionSource"]["source"].get("contentRef").is_none());
+        assert_eq!(
+            card["decisionSource"]["sourceBindings"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            card["decisionSource"]["sourceBindings"][1]["windowIndex"],
+            1
+        );
+        assert!(
+            card["decisionSource"]["sourceBindings"][0]
+                .get("candidateKey")
+                .is_none()
+        );
+        assert_eq!(card["supportingAnchors"].as_array().unwrap().len(), 1);
+        assert_eq!(card["supportingAnchors"][0]["file"], "src/service.test.ts");
+        assert!(card.get("facets").is_none());
+        assert!(canonical::bytes(&card).unwrap().len() < canonical::bytes(&result).unwrap().len());
+    }
+
+    #[test]
+    fn agent_card_preserves_unsupported_reason_and_rejects_unknown_statuses() {
+        let mut result = json!({
+            "schema":NAV_RESULT_SCHEMA,
+            "sessionId":"session:one",
+            "contextId":"context:one",
+            "evidenceDigest":"sha256:evidence",
+            "terms":["missing"],
+            "candidates":[{
+                "candidateId":"c:one",
+                "displayName":"missing",
+                "declarationKind":"FUNCTION",
+                "location":{"file":"src/lib.ts","startLine":1,"endLine":1},
+                "preview":{"status":"UNAVAILABLE","reason":"NO_EXACT_DECLARATION_WINDOW"}
+            }],
+            "candidateCount":{"returned":1,"total":1,"omitted":0},
+            "decisionSource":{
+                "candidateId":"c:one",
+                "source":{"status":"UNSUPPORTED","reason":"NO_EXACT_DECLARATION_WINDOW"}
+            },
+            "termAnchors":[],
+            "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "truncated":false,
+            "nextAction":{"refine":"nav expand ..."},
+        });
+
+        let card = agent_card(&result).unwrap();
+        assert_eq!(
+            card["decisionSource"]["source"]["reason"],
+            "NO_EXACT_DECLARATION_WINDOW"
+        );
+        assert!(!canonical::compact(&card).unwrap().contains(":null"));
+
+        result["decisionSource"]["source"]["status"] = json!("MAYBE");
+        assert_eq!(
+            agent_card(&result).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+        result["decisionSource"]["source"]["status"] = json!("UNSUPPORTED");
+        result["candidates"][0]["preview"]["status"] = json!("MAYBE");
+        assert_eq!(
+            agent_card(&result).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
     }
 
     #[test]
