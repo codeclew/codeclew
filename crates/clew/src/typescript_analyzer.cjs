@@ -13,8 +13,8 @@ if (languageProfile !== 'typescript' && languageProfile !== 'javascript') {
   process.exit(2)
 }
 const FACT_SCHEMA = languageProfile === 'typescript'
-  ? 'codeclew-typescript-compiler-fact/1.0'
-  : 'codeclew-javascript-compiler-fact/1.0'
+  ? 'codeclew-typescript-compiler-fact/1.1'
+  : 'codeclew-javascript-compiler-fact/1.1'
 const ts = require(typescriptModule)
 const configPath = path.resolve(repository, configRelative)
 const repositoryPrefix = repository.endsWith(path.sep) ? repository : repository + path.sep
@@ -122,7 +122,17 @@ function byteMap(source) {
 function range(node) {
   const source = node.getSourceFile()
   const offsets = byteMap(source)
-  return { start: offsets[node.getStart(source, false)], end: offsets[node.getEnd()] }
+  const startPosition = node.getStart(source, false)
+  const endPosition = node.getEnd()
+  const startLine = source.getLineAndCharacterOfPosition(startPosition).line + 1
+  const inclusiveEndPosition = Math.max(startPosition, endPosition - 1)
+  const endLine = source.getLineAndCharacterOfPosition(inclusiveEndPosition).line + 1
+  return {
+    start: offsets[startPosition],
+    end: offsets[endPosition],
+    startLine,
+    endLine,
+  }
 }
 
 function declarationKind(node) {
@@ -165,6 +175,19 @@ function identityForDeclaration(declaration, fallbackName) {
 
 function identityForSymbol(symbol) {
   if (!symbol) return null
+  const visited = new Set()
+  while ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    if (visited.has(symbol) || visited.size >= 8) return null
+    visited.add(symbol)
+    let aliased
+    try {
+      aliased = checker.getAliasedSymbol(symbol)
+    } catch (_) {
+      return null
+    }
+    if (!aliased || aliased === symbol) return null
+    symbol = aliased
+  }
   const declaration = symbol.valueDeclaration || (symbol.declarations && symbol.declarations[0])
   if (!declaration) return null
   return identityForDeclaration(declaration, symbol.getName())
@@ -253,6 +276,8 @@ function visit(node, currentIdentity) {
         file,
         start: offsets.start,
         end: offsets.end,
+        startLine: offsets.startLine,
+        endLine: offsets.endLine,
         resolution: factResolution,
       })
       if (kind !== 'CONSTRUCTOR' && (type.flags & ts.TypeFlags.Any) !== 0) {
@@ -402,7 +427,7 @@ facts.push(...projectReferences.map(reference => ({
 })))
 
 process.stdout.write(JSON.stringify({
-  schema: 'codeclew-ecmascript-analyzer-output/1.0',
+  schema: 'codeclew-ecmascript-analyzer-output/1.1',
   language: languageProfile,
   authorityMode,
   compilerVersion: ts.version,

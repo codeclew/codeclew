@@ -245,6 +245,58 @@ private fun JsonElement?.safeString(): String? =
 
 private fun JsonElement?.safeInt(): Int? = (this as? JsonPrimitive)?.intOrNull
 
+/**
+ * Maps Kotlin compiler UTF-16 boundaries to UTF-8 byte offsets. An entry inside
+ * a surrogate pair is deliberately absent, so callers cannot publish a byte
+ * coordinate that splits one Unicode scalar value.
+ */
+internal class CompilerUtf16ToUtf8ByteMap private constructor(
+    private val byteOffsets: IntArray,
+) {
+    internal fun offset(utf16Offset: Int): Int? =
+        byteOffsets.getOrNull(utf16Offset)?.takeIf { it >= 0 }
+
+    internal fun range(start: Int, end: Int): IntRange? {
+        if (end < start) return null
+        val byteStart = offset(start) ?: return null
+        val byteEnd = offset(end) ?: return null
+        return byteStart until byteEnd
+    }
+
+    internal companion object {
+        fun from(source: String): CompilerUtf16ToUtf8ByteMap? {
+            if (source.length == Int.MAX_VALUE) return null
+            val byteOffsets = IntArray(source.length + 1) { -1 }
+            var utf16Offset = 0
+            var byteOffset = 0
+            byteOffsets[0] = 0
+            while (utf16Offset < source.length) {
+                val current = source[utf16Offset]
+                val byteWidth = when {
+                    Character.isHighSurrogate(current) -> {
+                        if (utf16Offset + 1 >= source.length ||
+                            !Character.isLowSurrogate(source[utf16Offset + 1])
+                        ) {
+                            return null
+                        }
+                        byteOffsets[utf16Offset + 1] = -1
+                        4
+                    }
+                    Character.isLowSurrogate(current) -> return null
+                    current.code <= 0x7f -> 1
+                    current.code <= 0x7ff -> 2
+                    else -> 3
+                }
+                if (byteOffset > Int.MAX_VALUE - byteWidth) return null
+                byteOffset += byteWidth
+                utf16Offset += if (Character.isHighSurrogate(current)) 2 else 1
+                byteOffsets[utf16Offset] = byteOffset
+            }
+            return CompilerUtf16ToUtf8ByteMap(byteOffsets)
+        }
+    }
+}
+
 internal fun compilerRangeToUtf8Bytes(source: String, start: Int, end: Int): IntRange? {
     if (start < 0 || end < start || end > source.length) return null
     if (start > 0 && start < source.length && Character.isLowSurrogate(source[start]) && Character.isHighSurrogate(source[start - 1])) return null
@@ -252,6 +304,137 @@ internal fun compilerRangeToUtf8Bytes(source: String, start: Int, end: Int): Int
     val byteStart = source.substring(0, start).toByteArray(Charsets.UTF_8).size
     val byteEnd = byteStart + source.substring(start, end).toByteArray(Charsets.UTF_8).size
     return byteStart until byteEnd
+}
+
+internal data class Utf8LineIndex(
+    val byteSize: Int,
+    val lineStarts: IntArray,
+)
+
+internal fun utf8LineIndex(source: String): Utf8LineIndex {
+    val bytes = source.toByteArray(Charsets.UTF_8)
+    val starts = ArrayList<Int>()
+    starts += 0
+    bytes.forEachIndexed { index, byte ->
+        if (byte == '\n'.code.toByte()) starts += index + 1
+    }
+    return Utf8LineIndex(bytes.size, starts.toIntArray())
+}
+
+internal fun utf8ByteRangeToOneBasedLines(
+    index: Utf8LineIndex,
+    start: Int,
+    end: Int,
+): IntRange? {
+    if (start < 0 || end < start || end > index.byteSize) return null
+    fun lineAt(offset: Int): Int {
+        val found = index.lineStarts.binarySearch(offset)
+        val lineIndex = if (found >= 0) found else -found - 2
+        return lineIndex + 1
+    }
+    val inclusiveEnd = if (end > start) end - 1 else start
+    return lineAt(start)..lineAt(inclusiveEnd)
+}
+
+/**
+ * Converts relation-kind-specific attributes. Top-level start/end are left
+ * untouched because declarationRelationGraph replaces them from its already
+ * proven source range.
+ */
+internal fun normalizeDeclarationRelationAttributeCoordinatesToUtf8(
+    source: String,
+    payload: JsonObject,
+): JsonObject? {
+    val coordinates = CompilerUtf16ToUtf8ByteMap.from(source) ?: return null
+    return normalizeDeclarationRelationAttributeCoordinatesToUtf8(coordinates, payload)
+}
+
+private fun normalizeDeclarationRelationAttributeCoordinatesToUtf8(
+    coordinates: CompilerUtf16ToUtf8ByteMap,
+    payload: JsonObject,
+): JsonObject? {
+    if (payload["attributeCoverage"].safeString() == "PARTIAL") return payload
+
+    fun rebuild(original: JsonObject, replacements: Map<String, JsonElement>): JsonObject =
+        buildJsonObject {
+            original.entries.sortedBy { it.key }.forEach { (key, value) ->
+                put(key, replacements[key] ?: value)
+            }
+        }
+
+    fun normalizedPoint(container: JsonObject, field: String): JsonPrimitive? {
+        val utf16Offset = container[field].safeInt() ?: return null
+        return coordinates.offset(utf16Offset)?.let(::JsonPrimitive)
+    }
+
+    fun normalizedOccurrence(field: String): JsonObject? {
+        val occurrence = payload[field] as? JsonObject ?: return null
+        val start = occurrence["start"].safeInt() ?: return null
+        val end = occurrence["end"].safeInt() ?: return null
+        if (end <= start) return null
+        val byteRange = coordinates.range(start, end) ?: return null
+        return rebuild(
+            occurrence,
+            mapOf(
+                "start" to JsonPrimitive(byteRange.first),
+                "end" to JsonPrimitive(byteRange.last + 1),
+            ),
+        )
+    }
+
+    fun normalizedArguments(element: JsonElement): JsonArray? {
+        val arguments = element as? JsonArray ?: return null
+        val normalized = ArrayList<JsonElement>(arguments.size)
+        for (argumentElement in arguments) {
+            val argument = argumentElement as? JsonObject ?: return null
+            val argumentStart = normalizedPoint(argument, "argumentStart") ?: return null
+            normalized += rebuild(argument, mapOf("argumentStart" to argumentStart))
+        }
+        return JsonArray(normalized)
+    }
+
+    val replacements = mutableMapOf<String, JsonElement>()
+    when (payload["kind"].safeString() ?: return null) {
+        "OVERRIDES", "REFERENCES" -> Unit
+        "CALLS", "CONSTRUCTS", "READS" -> {
+            payload["argumentToParameter"]?.let { arguments ->
+                replacements["argumentToParameter"] = normalizedArguments(arguments) ?: return null
+            }
+            replacements["orderKey"] = normalizedPoint(payload, "orderKey") ?: return null
+        }
+        "WRITES", "INITIALIZES" -> {
+            replacements["orderKey"] = normalizedPoint(payload, "orderKey") ?: return null
+        }
+        "NULL_COALESCES" -> {
+            replacements["sourceOccurrence"] = normalizedOccurrence("sourceOccurrence") ?: return null
+            replacements["fallbackOccurrence"] = normalizedOccurrence("fallbackOccurrence") ?: return null
+            replacements["mergedOccurrence"] = normalizedOccurrence("mergedOccurrence") ?: return null
+            val branch = payload["branchProvenance"] as? JsonObject ?: return null
+            val mergeStart = branch["mergeStart"].safeInt() ?: return null
+            val mergeEnd = branch["mergeEnd"].safeInt() ?: return null
+            if (mergeEnd <= mergeStart || coordinates.range(mergeStart, mergeEnd) == null) return null
+            replacements["branchProvenance"] = rebuild(
+                branch,
+                mapOf(
+                    "nullableBranchStart" to
+                        (normalizedPoint(branch, "nullableBranchStart") ?: return null),
+                    "fallbackBranchStart" to
+                        (normalizedPoint(branch, "fallbackBranchStart") ?: return null),
+                    "mergeStart" to (normalizedPoint(branch, "mergeStart") ?: return null),
+                    "mergeEnd" to (normalizedPoint(branch, "mergeEnd") ?: return null),
+                ),
+            )
+            replacements["orderKey"] = normalizedPoint(payload, "orderKey") ?: return null
+        }
+        "RETURNS_VALUE_FROM" -> {
+            replacements["sourceOccurrence"] = normalizedOccurrence("sourceOccurrence") ?: return null
+            replacements["returnOccurrence"] = normalizedOccurrence("returnOccurrence") ?: return null
+            replacements["resultOccurrence"] = normalizedOccurrence("resultOccurrence") ?: return null
+            replacements["orderKey"] = normalizedPoint(payload, "orderKey") ?: return null
+        }
+        else -> return null
+    }
+    return rebuild(payload, replacements)
 }
 
 internal fun stableBoundaryDigest(value: JsonElement): String = sha(canonicalJson(value).toByteArray())
@@ -1902,6 +2085,14 @@ internal class Worker(
             return repositoryRelativeCompilerPath(repo, raw)
         }
         val sourceTextByFile = projectSourceTextByRelativePath(repo, compilation)
+        val sourceCoordinatesByFile = mutableMapOf<String, CompilerUtf16ToUtf8ByteMap?>()
+        fun sourceCoordinates(file: String): CompilerUtf16ToUtf8ByteMap? {
+            if (file !in sourceCoordinatesByFile) {
+                sourceCoordinatesByFile[file] = sourceTextByFile[file]
+                    ?.let(CompilerUtf16ToUtf8ByteMap::from)
+            }
+            return sourceCoordinatesByFile[file]
+        }
         val quarantinedDescriptorKeys = analysis.facts
             .filter { it["recordType"].safeString() == "DECLARATION_DESCRIPTOR" }
             .filter { raw ->
@@ -1963,7 +2154,8 @@ internal class Worker(
                 val start = raw["start"].safeInt() ?: -1
                 val end = raw["end"].safeInt() ?: -1
                 val source = sourceTextByFile[file]
-                val byteRange = source?.let { compilerRangeToUtf8Bytes(it, start, end) }
+                val coordinates = sourceCoordinates(file)
+                val byteRange = coordinates?.range(start, end)
                 val unsupported = when {
                     owner.isEmpty() || target.isEmpty() -> "INVALID_RELATION_IDENTITY"
                     kind !in SUPPORTED_RELATION_KINDS -> "UNKNOWN_RELATION_KIND"
@@ -2026,8 +2218,27 @@ internal class Worker(
                 }
                 val sourceRowHash = canonicalCompilerRowDigest(raw, file)
                 val relationPayload = if (retainCallTopology) relationCorePayload(raw, sourceRowHash) else raw
+                val coordinateNormalizedPayload = if (retainCallTopology) {
+                    relationPayload
+                } else {
+                    normalizeDeclarationRelationAttributeCoordinatesToUtf8(coordinates, relationPayload)
+                        ?: run {
+                            generatedBoundaries += boundary(
+                                "INVALID_RELATION_POSITIONAL_COORDINATE",
+                                raw,
+                                stage = "COORDINATE_NORMALIZATION",
+                                file = file,
+                                owner = owner,
+                                target = target,
+                                relationKind = kind,
+                                start = provenByteRange.first,
+                                end = provenByteRange.last + 1,
+                            )
+                            return@mapNotNull null
+                        }
+                }
                 val normalized = buildJsonObject {
-                    relationPayload.entries.sortedBy { it.key }.forEach { (key, value) ->
+                    coordinateNormalizedPayload.entries.sortedBy { it.key }.forEach { (key, value) ->
                         if (key !in setOf("recordType", "file", "start", "end")) put(key, value)
                     }
                     put("file", file)
@@ -2073,7 +2284,7 @@ internal class Worker(
                 val start = raw["start"].safeInt()
                 val end = raw["end"].safeInt()
                 val byteRange = if (start != null && end != null && normalizedFile != null) {
-                    sourceTextByFile[normalizedFile]?.let { compilerRangeToUtf8Bytes(it, start, end) }
+                    sourceCoordinates(normalizedFile)?.range(start, end)
                 } else null
                 if (start != null && end != null && byteRange == null) {
                     return@map boundary("INVALID_RELATION_SOURCE_RANGE", raw, file = normalizedFile)
@@ -2140,6 +2351,7 @@ internal class Worker(
             return repositoryRelativeCompilerPath(repo, raw)
         }
         val sourceTextByFile = projectSourceTextByRelativePath(repo, compilation)
+        val lineIndexByFile = mutableMapOf<String, Utf8LineIndex>()
         fun boundary(
             code: String,
             raw: JsonObject,
@@ -2175,6 +2387,16 @@ internal class Worker(
                     return@mapNotNull null
                 }
                 val provenByteRange = byteRange!!
+                val byteEnd = provenByteRange.last + 1
+                val provenLineRange = utf8ByteRangeToOneBasedLines(
+                    lineIndexByFile.getOrPut(file) { utf8LineIndex(source) },
+                    provenByteRange.first,
+                    byteEnd,
+                )
+                if (provenLineRange == null) {
+                    generatedBoundaries += boundary("INVALID_DESCRIPTOR_SOURCE_RANGE", raw, file)
+                    return@mapNotNull null
+                }
                 val sourceRowHash = canonicalCompilerRowDigest(raw, file)
                 val descriptorPayload = if (attributeBoundary != null) {
                     descriptorCorePayload(raw, sourceRowHash)
@@ -2187,7 +2409,10 @@ internal class Worker(
                     }
                     put("file", file)
                     put("start", provenByteRange.first)
-                    put("end", provenByteRange.last + 1)
+                    put("end", byteEnd)
+                    put("startLine", provenLineRange.first)
+                    put("endLine", provenLineRange.last)
+                    put("lineProvenance", "UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE")
                     put("module", module)
                     put("sourceSet", sourceSet)
                     put("sourceProvenance", "COMPILER_UTF16_RANGE_TO_UTF8_BYTES")

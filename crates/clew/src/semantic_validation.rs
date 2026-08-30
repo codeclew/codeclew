@@ -425,6 +425,9 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
         "file",
         "start",
         "end",
+        "startLine",
+        "endLine",
+        "lineProvenance",
         "symbolIdentity",
         "declarationKind",
         "ownerIdentity",
@@ -478,6 +481,30 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
     Ok(allowed)
 }
 
+fn validate_optional_descriptor_lines(value: &Value) -> Result<(), ClewError> {
+    let present = ["startLine", "endLine", "lineProvenance"]
+        .iter()
+        .filter(|field| value.get(**field).is_some())
+        .count();
+    if present == 0 {
+        return Ok(());
+    }
+    let start = value.get("startLine").and_then(Value::as_u64);
+    let end = value.get("endLine").and_then(Value::as_u64);
+    if present != 3
+        || start.is_none_or(|line| line == 0)
+        || end.is_none_or(|line| line == 0)
+        || start.zip(end).is_none_or(|(start, end)| start > end)
+        || value.get("lineProvenance").and_then(Value::as_str)
+            != Some("UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE")
+    {
+        return Err(payload_invalid(
+            "declaration descriptor has invalid line coordinates",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), ClewError> {
     if value.get("schema").and_then(Value::as_str) != Some("declaration-descriptor/0.1")
         || value.get("resolution").and_then(Value::as_str) != Some("PROVEN")
@@ -491,6 +518,7 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
         ));
     }
     validate_payload_location(value, "declaration descriptor")?;
+    validate_optional_descriptor_lines(value)?;
     for field in ["symbolIdentity", "ownerIdentity", "module", "sourceSet"] {
         payload_string(value, field)?;
     }
@@ -1067,6 +1095,7 @@ pub(crate) fn validate_declaration_relation_boundary(value: &Value) -> Result<()
                         | "REFERENCE_TO_QUARANTINED_DESCRIPTOR"
                         | "RELATION_SOURCE_NOT_IN_COMPILATION"
                         | "INVALID_RELATION_SOURCE_RANGE"
+                        | "INVALID_RELATION_POSITIONAL_COORDINATE"
                         | "UNRESOLVED_RELATION_TYPE"
                 ),
             )
@@ -1093,6 +1122,15 @@ pub(crate) fn validate_declaration_relation_boundary(value: &Value) -> Result<()
                 "normalized declaration relation boundary is incomplete",
             ));
         }
+    }
+    if (stage == "COORDINATE_NORMALIZATION" || code == "INVALID_RELATION_POSITIONAL_COORDINATE")
+        && (provider != "COMPILER_RELATION_NORMALIZER"
+            || stage != "COORDINATE_NORMALIZATION"
+            || code != "INVALID_RELATION_POSITIONAL_COORDINATE")
+    {
+        return Err(payload_invalid(
+            "relation coordinate boundary stage and code are inconsistent",
+        ));
     }
     if value.get("retainedRelationHash").is_some()
         && (provider != "COMPILER_RELATION_NORMALIZER"
@@ -1896,6 +1934,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
                             | "REFERENCE_TO_QUARANTINED_DESCRIPTOR"
                             | "RELATION_SOURCE_NOT_IN_COMPILATION"
                             | "INVALID_RELATION_SOURCE_RANGE"
+                            | "INVALID_RELATION_POSITIONAL_COORDINATE"
                             | "UNRESOLVED_RELATION_TYPE"
                     )
                 ),
@@ -2180,6 +2219,9 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
             "file",
             "start",
             "end",
+            "startLine",
+            "endLine",
+            "lineProvenance",
             "symbolIdentity",
             "declarationKind",
             "ownerIdentity",
@@ -2237,6 +2279,9 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
             "file",
             "start",
             "end",
+            "startLine",
+            "endLine",
+            "lineProvenance",
             "symbolIdentity",
             "declarationKind",
             "ownerIdentity",
@@ -3223,6 +3268,32 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_line_coordinates_are_optional_but_closed_when_present() {
+        let legacy = verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        validate_declaration_descriptor_fact(&legacy).unwrap();
+
+        let mut located = legacy.clone();
+        located["startLine"] = json!(4);
+        located["endLine"] = json!(9);
+        located["lineProvenance"] = json!("UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE");
+        validate_declaration_descriptor_fact(&located).unwrap();
+
+        let mut missing = located.clone();
+        missing.as_object_mut().unwrap().remove("endLine");
+        assert!(validate_declaration_descriptor_fact(&missing).is_err());
+
+        for (field, value) in [
+            ("startLine", json!(0)),
+            ("endLine", json!(3)),
+            ("lineProvenance", json!("FIR_GUESSED_LINES")),
+        ] {
+            let mut invalid = located.clone();
+            invalid[field] = value;
+            assert!(validate_declaration_descriptor_fact(&invalid).is_err());
+        }
+    }
+
+    #[test]
     fn partial_descriptor_admission_keeps_jvm_suffix_opaque_but_safe() {
         let source_row_hash = format!("sha256:{}", "a".repeat(64));
 
@@ -3445,6 +3516,36 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn positional_coordinate_failure_is_a_closed_compiler_boundary() {
+        let mut facts = verified_facts();
+        let boundary = json!({
+            "schema":"declaration-relation-boundary/0.1",
+            "file":"A.kt","start":0,"end":12,
+            "owner":"p/Derived.read","target":"p/Base.read",
+            "relationKind":"READS","stage":"COORDINATE_NORMALIZATION",
+            "code":"INVALID_RELATION_POSITIONAL_COORDINATE",
+            "resolution":"UNKNOWN","provider":"COMPILER_RELATION_NORMALIZER",
+            "rawRowHash":format!("sha256:{}", "c".repeat(64))
+        });
+        validate_declaration_relation_boundary(&boundary).unwrap();
+        let mut wrong_stage = boundary.clone();
+        wrong_stage["stage"] = json!("NORMALIZE");
+        assert!(validate_declaration_relation_boundary(&wrong_stage).is_err());
+        let boundaries = facts["declarationRelations"]["boundaries"]
+            .as_array_mut()
+            .unwrap();
+        boundaries.push(boundary);
+        boundaries.sort_by_key(|row| canonical::bytes(row).unwrap());
+        refresh(
+            &mut facts,
+            "declarationRelations",
+            "declarationRelationHash",
+        );
+
+        validate_declaration_relation_snapshot(&facts).unwrap();
     }
 
     #[test]

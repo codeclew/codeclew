@@ -110,6 +110,17 @@ pub struct QueryContext {
     pub truncated: bool,
 }
 
+/// A bounded lookup in the dedicated declaration-name posting.  Callers must
+/// still inspect the referenced payloads for their exact file and declaration
+/// authority; this lookup deliberately does not fall back to broad lexical
+/// postings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactNameQuery {
+    pub facts: Vec<FactHit>,
+    pub query_shards_read: u32,
+    pub truncated: bool,
+}
+
 pub fn build_query_index(
     store: &CasStore,
     generation: &GenerationManifest,
@@ -219,42 +230,59 @@ pub fn query(
     if requested_terms.is_empty() {
         return Err(invalid("query has no normalized terms"));
     }
-    let mut direct_by_term = Vec::with_capacity(requested_terms.len());
-    let mut matched_by_term = Vec::with_capacity(requested_terms.len());
+    let mut exact_direct_by_term = Vec::with_capacity(requested_terms.len());
+    let mut exact_matched_by_term = Vec::with_capacity(requested_terms.len());
+    let mut alias_direct_by_term = Vec::with_capacity(requested_terms.len());
+    let mut alias_matched_by_term = Vec::with_capacity(requested_terms.len());
     let mut unmatched = Vec::new();
     let mut shards_read = BTreeSet::<String>::new();
+    let mut alias_overflow = false;
     for term in &requested_terms {
         let direct_term = direct_name_term(term);
-        direct_by_term.push(read_term_matches(
-            store,
-            index,
-            &direct_term,
-            &mut shards_read,
-        )?);
-        let term_matches = read_term_matches(store, index, term, &mut shards_read)?;
-        if term_matches.is_empty() {
+        let exact_direct = read_term_matches(store, index, &direct_term, &mut shards_read)?;
+        let exact_matches = read_term_matches(store, index, term, &mut shards_read)?;
+        alias_overflow |=
+            index.overflow_terms.contains(term) || index.overflow_terms.contains(&direct_term);
+        let mut alias_direct = BTreeSet::new();
+        let mut alias_matches = BTreeSet::new();
+        for alias in query_aliases(term) {
+            let direct_term = direct_name_term(&alias);
+            alias_direct.extend(read_term_matches(
+                store,
+                index,
+                &direct_term,
+                &mut shards_read,
+            )?);
+            alias_matches.extend(read_term_matches(store, index, &alias, &mut shards_read)?);
+            alias_overflow |= index.overflow_terms.contains(&alias)
+                || index.overflow_terms.contains(&direct_term);
+        }
+        if exact_matches.is_empty() && alias_matches.is_empty() {
             unmatched.push(term.clone());
         }
-        matched_by_term.push(term_matches);
+        exact_direct_by_term.push(exact_direct);
+        exact_matched_by_term.push(exact_matches);
+        alias_direct_by_term.push(alias_direct.into_iter().collect());
+        alias_matched_by_term.push(alias_matches.into_iter().collect());
     }
-    let unique_match_count = direct_by_term
+    let unique_match_count = exact_direct_by_term
         .iter()
-        .chain(&matched_by_term)
+        .chain(&exact_matched_by_term)
+        .chain(&alias_direct_by_term)
+        .chain(&alias_matched_by_term)
         .flatten()
         .cloned()
         .collect::<BTreeSet<_>>()
         .len();
-    let selection_lanes = direct_by_term
+    let selection_lanes = exact_direct_by_term
         .iter()
-        .chain(&matched_by_term)
+        .chain(&exact_matched_by_term)
+        .chain(&alias_direct_by_term)
+        .chain(&alias_matched_by_term)
         .cloned()
         .collect::<Vec<_>>();
     let facts = fair_fact_selection(&selection_lanes, limit);
-    let truncated = unique_match_count > facts.len()
-        || requested_terms.iter().any(|term| {
-            index.overflow_terms.contains(term)
-                || index.overflow_terms.contains(&direct_name_term(term))
-        });
+    let truncated = unique_match_count > facts.len() || alias_overflow;
     Ok(QueryContext {
         schema: QUERY_CONTEXT_SCHEMA.into(),
         index_id: index.index_id.clone(),
@@ -263,6 +291,28 @@ pub fn query(
         facts,
         query_shards_read: shards_read.len() as u32,
         truncated,
+    })
+}
+
+pub fn exact_name_query(
+    store: &CasStore,
+    index: &QueryIndexManifest,
+    term: &str,
+) -> Result<ExactNameQuery, ClewError> {
+    verify_index_manifest(store, index)?;
+    let normalized = normalize_terms(std::iter::once(term));
+    if normalized.len() != 1 {
+        return Err(invalid(
+            "exact declaration lookup requires one normalized identifier",
+        ));
+    }
+    let direct_term = direct_name_term(&normalized[0]);
+    let mut shards_read = BTreeSet::new();
+    let facts = read_term_matches(store, index, &direct_term, &mut shards_read)?;
+    Ok(ExactNameQuery {
+        facts,
+        query_shards_read: shards_read.len() as u32,
+        truncated: index.overflow_terms.contains(&direct_term),
     })
 }
 
@@ -703,6 +753,17 @@ fn direct_name_term(term: &str) -> String {
     format!("codeclewdirectname_{term}")
 }
 
+fn query_aliases(term: &str) -> Vec<String> {
+    let mut aliases = Vec::new();
+    if term.contains('_') {
+        let collapsed = term.replace('_', "");
+        if collapsed.len() >= 2 && collapsed != term {
+            aliases.push(collapsed);
+        }
+    }
+    aliases
+}
+
 fn collect_json_strings(
     value: &Value,
     output: &mut BTreeSet<String>,
@@ -1091,6 +1152,12 @@ mod tests {
         assert_eq!(result.facts.len(), 1);
         assert_eq!(result.facts[0].fact_key, "z:declaration");
         assert!(result.truncated);
+
+        let exact = exact_name_query(&store, &index, "TargetSymbol").unwrap();
+        assert_eq!(exact.facts.len(), 1);
+        assert_eq!(exact.facts[0].fact_key, "z:declaration");
+        assert!(!exact.truncated);
+        assert!(exact.query_shards_read <= 1);
     }
 
     #[test]
@@ -1405,16 +1472,49 @@ mod tests {
                 .put("test/payload/1", br#"{"name":"UnrelatedProject"}"#)
                 .unwrap(),
         };
+        let camel_case_declaration = FactRecord {
+            fact_key: "c:symbol:aggregate-completeness".into(),
+            domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+            payload: store
+                .put(
+                    "test/payload/1",
+                    br#"{"kind":"declaration","name":"aggregateCompleteness"}"#,
+                )
+                .unwrap(),
+        };
+        let exact_snake_declaration = FactRecord {
+            fact_key: "d:symbol:render-output-exact".into(),
+            domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+            payload: store
+                .put(
+                    "test/payload/1",
+                    br#"{"kind":"declaration","name":"render_output"}"#,
+                )
+                .unwrap(),
+        };
+        let camel_alias_declaration = FactRecord {
+            fact_key: "e:symbol:render-output-alias".into(),
+            domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+            payload: store
+                .put(
+                    "test/payload/1",
+                    br#"{"kind":"declaration","name":"renderOutput"}"#,
+                )
+                .unwrap(),
+        };
         let mut writer = FactRunWriter::create(&state).unwrap();
         writer.push(&relevant).unwrap();
         writer.push(&noise).unwrap();
+        writer.push(&camel_case_declaration).unwrap();
+        writer.push(&exact_snake_declaration).unwrap();
+        writer.push(&camel_alias_declaration).unwrap();
         let attempt = AttemptAuthority {
             compilation_id: "main".into(),
             capability: CapabilityUri::parse("analysis:symbol").unwrap(),
             completion: AnalysisAttemptComplete {
                 scope_digest: format!("sha256:{}", "d".repeat(64)),
                 completeness_receipt: receipt,
-                fact_count: 2,
+                fact_count: 5,
             },
         };
         let (generation, generation_object) = finalize_generation(
@@ -1438,6 +1538,22 @@ mod tests {
         let focused = query(&store, &index, &["Maven".into(), "Project".into()], 1).unwrap();
         assert_eq!(focused.facts.len(), 1);
         assert_eq!(focused.facts[0].fact_key, "a:symbol:relevant");
+
+        let snake_to_camel = query(&store, &index, &["aggregate_completeness".into()], 1).unwrap();
+        assert_eq!(snake_to_camel.requested_terms, ["aggregate_completeness"]);
+        assert!(snake_to_camel.unmatched_terms.is_empty());
+        assert_eq!(snake_to_camel.facts.len(), 1);
+        assert_eq!(
+            snake_to_camel.facts[0].fact_key,
+            "c:symbol:aggregate-completeness"
+        );
+
+        let exact_before_alias = query(&store, &index, &["render_output".into()], 1).unwrap();
+        assert_eq!(exact_before_alias.facts.len(), 1);
+        assert_eq!(
+            exact_before_alias.facts[0].fact_key,
+            "d:symbol:render-output-exact"
+        );
     }
 
     #[test]
@@ -1516,16 +1632,17 @@ mod tests {
                 payload: payload.clone(),
             })
             .collect::<Vec<_>>();
+        let posting_term = direct_name_term("popular");
         let (bounded, overflow_terms) = bound_postings(BTreeMap::from([(
-            "popular".to_owned(),
+            posting_term.clone(),
             facts.iter().cloned().collect(),
         )]));
-        let retained = bounded["popular"].iter().cloned().collect::<Vec<_>>();
+        let retained = bounded[&posting_term].iter().cloned().collect::<Vec<_>>();
         let posting = TermPosting {
-            term: "popular".into(),
+            term: posting_term.clone(),
             facts: retained.clone(),
         };
-        let posting_bucket = bucket("popular");
+        let posting_bucket = bucket(&posting_term);
         let mut references = Vec::new();
         publish_bucket(&store, &posting_bucket, vec![posting], &mut references).unwrap();
         assert!(
@@ -1560,5 +1677,8 @@ mod tests {
         let result = query(&store, &index, &["popular".into()], MAX_CONTEXT_FACTS).unwrap();
         assert_eq!(result.facts.len(), MAX_QUERY_FACTS_PER_TERM);
         assert!(result.truncated);
+        let exact = exact_name_query(&store, &index, "popular").unwrap();
+        assert_eq!(exact.facts.len(), MAX_QUERY_FACTS_PER_TERM);
+        assert!(exact.truncated);
     }
 }

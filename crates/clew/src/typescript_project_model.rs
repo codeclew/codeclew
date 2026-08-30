@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 pub const TYPESCRIPT_MODEL_SCHEMA: &str = "codeclew-typescript-project-model/1.0";
 pub const JAVASCRIPT_MODEL_SCHEMA: &str = "codeclew-javascript-project-model/1.0";
-const ANALYZER_OUTPUT_SCHEMA: &str = "codeclew-ecmascript-analyzer-output/1.0";
+const ANALYZER_OUTPUT_SCHEMA: &str = "codeclew-ecmascript-analyzer-output/1.1";
 const ANALYZER_SOURCE: &str = include_str!("typescript_analyzer.cjs");
 const MAX_ANALYZER_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ANALYZER_ERROR_BYTES: usize = 4 * 1024 * 1024;

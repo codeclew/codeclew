@@ -33,6 +33,7 @@ pub mod scenario_receipt;
 pub mod semantic_envelope;
 pub(crate) mod semantic_validation;
 pub mod session;
+pub mod source_locate;
 pub mod state;
 pub mod task_run_v2;
 pub mod text_authority;

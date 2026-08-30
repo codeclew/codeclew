@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::operations::{
@@ -15,10 +15,15 @@ use clew::thread_context::{bounded_thread_context_stdout, create as create_threa
 use clew::workspace;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
+
+const PLAN_INPUT_HELP: &str = r#"Task plan JSON. Minimal REPLACE_TEXT shape: {"schema":"codeclew-task-plan/2.0","operations":[{"kind":"REPLACE_TEXT","opId":"edit-1","target":{"fileId":"src/file","contentRef":{"schema":"codeclew-cas-object/2.0","objectSchema":"codeclew-repository-input-blob/2.0","digest":"sha256:<copy exact digest from context source>","size":0}},"oldText":"exact existing text","newText":"replacement text"}],"validation":[{"launcher":"CARGO","args":["test"]}]}. Copy the complete contentRef object from the matching context source. The CLI supplies the current schema when it is omitted; run the repository-appropriate launcher."#;
+const MISSION_SPEC_HELP: &str = r#"ChangeSpec JSON. Minimal shape: {"schema":"codeclew-change-spec/1.0","intent":"intent","requirements":[{"id":"REQ-1","text":"requirement"}],"nonGoals":[],"acceptanceCriteria":[{"id":"AC-1","text":"acceptance"}],"docsPolicy":{"requiredRequirementIds":[]}}. Whitespace and object-key order need not be canonical; the CLI canonicalizes validated input before hashing."#;
+const WORKSPACE_CATALOG_HELP: &str = r#"Workspace catalog JSON in a caller-owned mode-0600 file at an absolute path. Minimal two-member shape: {"schema":"codeclew-workspace-catalog-input/1.0","missionId":"mission:<from mission open>","members":[{"alias":"api","sessionId":"session:<first>"},{"alias":"client","sessionId":"session:<second>"}],"edges":[{"id":"api-client","source":"api","target":"client","relation":"depends-on"}]}. Bind every open mission session exactly once (2-4 distinct local repositories); edges are optional and remain declared evidence. Whitespace and object-key order need not be canonical; validated authority is canonicalized before hashing."#;
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -185,6 +190,8 @@ enum NavCommand {
     Query(NavQueryArgs),
     /// Add terms to an existing navigation context without reopening the repository.
     Expand(NavExpandArgs),
+    /// Locate one exact UTF-8 literal in an explicit snapshot-bound source path set.
+    Locate(NavLocateArgs),
 }
 
 #[derive(Subcommand)]
@@ -371,7 +378,7 @@ struct ChangePrepareArgs {
     session: String,
     #[arg(long)]
     context: String,
-    #[arg(long)]
+    #[arg(long, help = PLAN_INPUT_HELP)]
     plan: PathBuf,
 }
 
@@ -379,7 +386,7 @@ struct ChangePrepareArgs {
 struct MissionOpenArgs {
     #[arg(long = "session", required = true)]
     sessions: Vec<String>,
-    #[arg(long)]
+    #[arg(long, help = MISSION_SPEC_HELP)]
     spec: PathBuf,
 }
 
@@ -427,8 +434,7 @@ struct MissionIdArgs {
 
 #[derive(Args)]
 struct WorkspaceOpenArgs {
-    /// Closed, canonical codeclew-workspace-catalog-input/1.0 JSON file.
-    #[arg(long)]
+    #[arg(long, help = WORKSPACE_CATALOG_HELP)]
     catalog: PathBuf,
 }
 
@@ -588,29 +594,99 @@ struct NavQueryArgs {
     intent: Option<String>,
     #[arg(long = "term", required = true)]
     terms: Vec<String>,
-    #[arg(long, default_value_t = 2)]
+    /// Include the exact retained source of the highest-ranked decision card.
+    #[arg(long)]
+    source: bool,
+    /// Follow up to three lexically related unresolved direct call paths and
+    /// return bounded exact declaration-name candidates. Requires --source.
+    #[arg(long, requires = "source")]
+    follow_references: bool,
+    #[arg(long, default_value_t = 4)]
     max_roots: usize,
-    /// Add a direct fact facet. Repeat for multiple facets.
-    #[arg(long = "facet", value_enum)]
-    facets: Vec<NavFacetArg>,
 }
 
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("selection")
+        .required(true)
+        .multiple(false)
+        .args(["terms", "candidates"])
+), group(
+    ArgGroup::new("source_target")
+        .multiple(false)
+        .args(["candidates", "file"])
+))]
 struct NavExpandArgs {
     #[arg(long)]
     session: String,
     #[arg(long = "from")]
     context: String,
-    #[arg(long = "term", required = true)]
+    #[arg(long = "term", num_args = 1..)]
     terms: Vec<String>,
+    /// Select one to three fact-bound decision cards. Repeat for a batch.
+    #[arg(long = "candidate", num_args = 1, action = clap::ArgAction::Append)]
+    candidates: Vec<String>,
+    /// Follow one exact retained direct-reference terminal or `a::b` path from
+    /// the single selected candidate. Repeat up to three times. Requires source.
+    #[arg(
+        long = "reference",
+        num_args = 1,
+        action = clap::ArgAction::Append,
+        requires_all = ["candidates", "source"],
+        conflicts_with_all = ["terms", "file", "facets"]
+    )]
+    references: Vec<String>,
+    /// Include the exact retained source window for the selected candidate.
+    /// With term selection, requires one to three exact terms and --file.
+    #[arg(long, requires = "source_target")]
+    source: bool,
+    /// Select one to three exact declaration names in this repository-relative
+    /// file before bounded context ranking. Every repeated --term is scoped to
+    /// this same file. Requires --source.
+    #[arg(
+        long,
+        requires_all = ["terms", "source"],
+        conflicts_with = "candidates"
+    )]
+    file: Option<String>,
     /// Optional provenance only. It never changes retrieval or ranking.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "candidates")]
     intent: Option<String>,
     #[arg(long, default_value_t = 4)]
     max_roots: usize,
     /// Add a direct fact facet. Repeat for multiple facets.
-    #[arg(long = "facet", value_enum)]
+    #[arg(
+        long = "facet",
+        value_enum,
+        requires = "candidates",
+        conflicts_with = "terms"
+    )]
     facets: Vec<NavFacetArg>,
+}
+
+#[derive(Args)]
+#[command(group(
+    ArgGroup::new("locate_authority")
+        .required(true)
+        .multiple(false)
+        .args(["session", "repo"])
+))]
+struct NavLocateArgs {
+    #[arg(long, requires = "context")]
+    session: Option<String>,
+    /// Exact retained context whose source authority is being queried.
+    #[arg(long = "from", requires = "session")]
+    context: Option<String>,
+    /// Canonical absolute clean Git repository root for adapter-independent
+    /// exact-byte navigation.
+    #[arg(long, requires = "target_ref")]
+    repo: Option<PathBuf>,
+    /// Exact checked-out branch; it must resolve to the same commit as HEAD.
+    #[arg(long = "target-ref", requires = "repo")]
+    target_ref: Option<String>,
+    /// Absolute caller-owned mode-0600 closed source-locate request JSON.
+    #[arg(long)]
+    request: PathBuf,
 }
 
 #[derive(Args)]
@@ -766,7 +842,7 @@ struct PlanValidateArgs {
     session: String,
     #[arg(long)]
     context: String,
-    #[arg(long)]
+    #[arg(long, help = PLAN_INPUT_HELP)]
     plan: PathBuf,
 }
 
@@ -1319,6 +1395,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Nav {
             command: NavCommand::Expand(args),
         } => nav_expand(args),
+        Command::Nav {
+            command: NavCommand::Locate(args),
+        } => nav_locate(args),
         Command::Thread {
             command: ThreadCommand::Open(args),
         } => {
@@ -1772,6 +1851,58 @@ fn expand_context_object(
     session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
 }
 
+fn expand_reference_context_object(
+    session: &SessionAuthority,
+    parent_context_id: String,
+    intent: Option<String>,
+    additional_terms: Vec<String>,
+    max_roots: usize,
+) -> Result<ContextObject, ClewError> {
+    session.require_open()?;
+    let parent = session.load_context(&parent_context_id)?;
+    let mut terms = parent.terms.clone();
+    terms.extend(additional_terms.iter().cloned());
+    terms.sort();
+    terms.dedup();
+    let intent = intent.unwrap_or_else(|| parent.intent.clone());
+    validate_context_request(&intent, &terms)?;
+    let (projection, evidence) = clew::context_v2::create_reference_follow(
+        session,
+        &intent,
+        &additional_terms,
+        max_roots,
+        &parent,
+    )?;
+    session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
+}
+
+fn expand_context_exact_file_terms_object(
+    session: &SessionAuthority,
+    parent_context_id: String,
+    intent: Option<String>,
+    additional_terms: Vec<String>,
+    file: &str,
+    max_roots: usize,
+) -> Result<ContextObject, ClewError> {
+    session.require_open()?;
+    let parent = session.load_context(&parent_context_id)?;
+    let mut terms = parent.terms.clone();
+    terms.extend(additional_terms.iter().cloned());
+    terms.sort();
+    terms.dedup();
+    let intent = intent.unwrap_or_else(|| parent.intent.clone());
+    validate_context_request(&intent, &terms)?;
+    let (projection, evidence) = clew::context_v2::create_exact_file_terms(
+        session,
+        &intent,
+        &additional_terms,
+        max_roots,
+        &parent,
+        file,
+    )?;
+    session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
+}
+
 struct AdmittedContext {
     admission: Value,
     session: SessionAuthority,
@@ -1813,6 +1944,7 @@ fn admit_and_open_context(
                 "agentContract":product["agentContract"],
                 "readinessDigest":readiness_digest,
                 "readinessSchema":readiness["schema"],
+                "runtimeMode":runtime.mode,
                 "runtimeKey":runtime.runtime_key,
                 "runtimeManifestDigest":runtime.manifest_digest,
                 "status":"PASS",
@@ -1850,6 +1982,9 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
 }
 
 fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
+    let include_top_source = args.source;
+    let follow_references = args.follow_references;
+    let follow_max_roots = args.max_roots.max(4);
     let intent = args
         .intent
         .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());
@@ -1861,13 +1996,98 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let facets = navigation_facets(&args.facets);
-    let navigation = clew::navigation::query(&opened.context, &facets)
+    let mut navigation = clew::navigation::query(&opened.context, &[])
         .map_err(|error| compensate_opened_context(error, &opened))?;
-    let result = json!({
+    if include_top_source {
+        let decision_candidate_id = navigation
+            .pointer("/candidates/0/candidateId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let decision_source = decision_candidate_id
+            .as_deref()
+            .map(|candidate_id| {
+                clew::navigation::source_envelope_by_candidate(&opened.context, candidate_id)
+            })
+            .transpose()
+            .map_err(|error| compensate_opened_context(error, &opened))?
+            .unwrap_or_else(|| json!({"status":"UNAVAILABLE","reason":"NO_CANDIDATE"}));
+        navigation
+            .as_object_mut()
+            .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation result is invalid"))?
+            .insert("decisionSource".into(), decision_source);
+        if follow_references {
+            let reference_follow = match decision_candidate_id.as_deref() {
+                None => json!({
+                    "status":"UNAVAILABLE",
+                    "reason":"NO_CANDIDATE",
+                    "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+                    "targetResolution":"UNRESOLVED",
+                    "semanticRelation":"UNKNOWN",
+                }),
+                Some(candidate_id) => {
+                    let (selections, source_references_truncated, eligible_count) =
+                        clew::navigation::select_direct_references(&opened.context, candidate_id)
+                            .map_err(|error| compensate_opened_context(error, &opened))?;
+                    if selections.is_empty() {
+                        json!({
+                            "status":"UNAVAILABLE",
+                            "reason":"NO_LEXICALLY_RELATED_RETAINED_DIRECT_REFERENCE",
+                            "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+                            "targetResolution":"UNRESOLVED",
+                            "semanticRelation":"UNKNOWN",
+                            "sourceReferencesTruncated":source_references_truncated,
+                            "truncated":source_references_truncated,
+                        })
+                    } else {
+                        let terms = selections
+                            .iter()
+                            .map(|selection| selection.terminal_name().to_owned())
+                            .collect::<Vec<_>>();
+                        let child = expand_context_object(
+                            &opened.session,
+                            opened.context.context_id.clone(),
+                            None,
+                            terms,
+                            follow_max_roots,
+                        )
+                        .map_err(|error| compensate_opened_context(error, &opened))?;
+                        let mut detail = clew::navigation::direct_reference_detail(
+                            &child,
+                            &selections,
+                            eligible_count,
+                        )
+                        .map_err(|error| compensate_opened_context(error, &opened))?;
+                        detail
+                            .as_object_mut()
+                            .ok_or_else(|| {
+                                ClewError::new(
+                                    ErrorCode::Internal,
+                                    "direct reference detail is invalid",
+                                )
+                            })?
+                            .insert(
+                                "parentContextId".into(),
+                                Value::String(opened.context.context_id.clone()),
+                            );
+                        detail
+                    }
+                }
+            };
+            navigation
+                .as_object_mut()
+                .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation result is invalid"))?
+                .insert("referenceFollow".into(), reference_follow);
+        }
+    }
+    let admission = navigation_admission(&opened.admission, include_top_source);
+    if include_top_source {
+        navigation = clew::navigation::agent_card(&navigation)
+            .map_err(|error| compensate_opened_context(error, &opened))?;
+    }
+    let mut result = json!({
         "schema":clew::navigation::NAV_QUERY_SCHEMA,
         "status":"OPEN",
-        "admission":opened.admission,
+        "admission":admission,
         "session":{
             "sessionId":opened.session.session_id,
             "baseRevision":opened.session.base_revision,
@@ -1877,13 +2097,188 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         },
         "navigation":navigation,
     });
-    clew::navigation::validate_stdout(&result)
+    validate_nav_query_stdout(&mut result, follow_references)
         .map_err(|error| compensate_opened_context(error, &opened))?;
     Ok(result)
 }
 
+fn navigation_admission(admission: &Value, compact: bool) -> Value {
+    if compact {
+        json!({
+            "status":admission.get("status"),
+            "runtimeKey":admission.get("runtimeKey"),
+            "runtimeManifestDigest":admission.get("runtimeManifestDigest"),
+            "runtimeMode":admission.get("runtimeMode"),
+            "taskAuthority":admission.get("taskAuthority"),
+            "agentContract":admission.get("agentContract"),
+        })
+    } else {
+        admission.clone()
+    }
+}
+
+fn nav_locate(args: NavLocateArgs) -> Result<Value, ClewError> {
+    let source =
+        read_private_diagnostic_input(&args.request, clew::source_locate::max_request_bytes())?;
+    let (request, request_digest) = clew::source_locate::parse_request(&source)?;
+    match (args.session, args.context, args.repo, args.target_ref) {
+        (Some(session_id), Some(context_id), None, None) => {
+            let (session, _) = SessionAuthority::load(&session_id)?;
+            let _admission = session.open_admission()?;
+            let context = session.load_context(&context_id)?;
+            let repository = session.repository_path()?;
+            clew::source_locate::locate(
+                &repository,
+                clew::source_locate::SourceLocateAuthority {
+                    session_id: session.session_id,
+                    session_authority_digest: session.authority_digest,
+                    context_id: context.context_id,
+                    context_evidence_digest: context.evidence_digest,
+                    repository_key: session.repository_key,
+                    base_revision: session.base_revision,
+                },
+                &request,
+                &request_digest,
+            )
+        }
+        (None, None, Some(repository), Some(target_ref)) => {
+            clew::source_locate::locate_direct(&repository, &target_ref, &request, &request_digest)
+        }
+        _ => Err(invalid("source locate authority selection is invalid")),
+    }
+}
+
+fn validate_nav_query_stdout(
+    result: &mut Value,
+    optional_reference_follow: bool,
+) -> Result<(), ClewError> {
+    if optional_reference_follow
+        && clew::navigation::validate_stdout(result)
+            .is_err_and(|error| error.code == ErrorCode::SliceBudgetExceeded)
+        && result
+            .pointer("/navigation/referenceFollow/status")
+            .and_then(Value::as_str)
+            == Some("SUPPORTED")
+    {
+        *result
+            .pointer_mut("/navigation/referenceFollow")
+            .ok_or_else(|| ClewError::new(ErrorCode::Internal, "reference follow is invalid"))? = json!({
+            "status":"UNAVAILABLE",
+            "reason":"OMITTED_BUDGET",
+            "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+            "targetResolution":"UNRESOLVED",
+            "semanticRelation":"UNKNOWN",
+        });
+    }
+    clew::navigation::validate_stdout(result)
+}
+
 fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(&args.session)?;
+    let parent = session.load_context(&args.context)?;
+    if !args.candidates.is_empty() {
+        if args.file.is_some() {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "candidate detail cannot use an exact file selector",
+            ));
+        }
+        validate_explicit_reference_request(&args.candidates, &args.references)?;
+        let mut navigation = clew::navigation::detail(
+            &parent,
+            &args.candidates,
+            args.source,
+            &navigation_facets(&args.facets),
+        )?;
+        if !args.references.is_empty() {
+            let candidate_id = &args.candidates[0];
+            let selections = clew::navigation::select_explicit_direct_references(
+                &parent,
+                candidate_id,
+                &args.references,
+            )?;
+            let terms = selections
+                .iter()
+                .map(|selection| selection.terminal_name().to_owned())
+                .collect::<Vec<_>>();
+            let child = expand_reference_context_object(
+                &session,
+                parent.context_id.clone(),
+                None,
+                terms,
+                args.max_roots.max(4),
+            )?;
+            let mut reference_follow =
+                clew::navigation::explicit_direct_reference_detail(&child, &selections)?;
+            reference_follow
+                .as_object_mut()
+                .ok_or_else(|| {
+                    ClewError::new(ErrorCode::Internal, "direct reference detail is invalid")
+                })?
+                .extend([
+                    (
+                        "parentContextId".into(),
+                        Value::String(parent.context_id.clone()),
+                    ),
+                    (
+                        "selectedCandidateId".into(),
+                        Value::String(candidate_id.clone()),
+                    ),
+                ]);
+            navigation
+                .as_object_mut()
+                .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation detail is invalid"))?
+                .insert("referenceFollow".into(), reference_follow);
+        }
+        let result = json!({
+            "schema":clew::navigation::NAV_EXPAND_SCHEMA,
+            "status":"SELECTED",
+            "sessionId":session.session_id,
+            "navigation":navigation,
+        });
+        clew::navigation::validate_stdout(&result)?;
+        return Ok(result);
+    }
+    if args.source && args.file.is_none() {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "term source selection requires one to three exact terms and --file",
+        ));
+    }
+    if args.file.is_some()
+        && (!args.source
+            || !(1..=3).contains(&args.terms.len())
+            || args.terms.iter().collect::<BTreeSet<_>>().len() != args.terms.len())
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "exact file selection requires --source and one to three unique exact terms",
+        ));
+    }
+    if let Some(file) = args.file {
+        let requested_terms = args.terms.clone();
+        let context = expand_context_exact_file_terms_object(
+            &session,
+            args.context,
+            args.intent,
+            args.terms,
+            &file,
+            args.max_roots,
+        )?;
+        let navigation =
+            clew::navigation::detail_by_exact_file_terms(&context, &file, &requested_terms, true)?;
+        let result = json!({
+            "schema":clew::navigation::NAV_EXPAND_SCHEMA,
+            "status":"EXPANDED_SELECTED",
+            "sessionId":session.session_id,
+            "parentContextId":parent.context_id,
+            "requestedTerms":requested_terms,
+            "navigation":navigation,
+        });
+        clew::navigation::validate_stdout(&result)?;
+        return Ok(result);
+    }
+    let requested_terms = args.terms.clone();
     let context = expand_context_object(
         &session,
         args.context,
@@ -1891,7 +2286,12 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let navigation = clew::navigation::query(&context, &navigation_facets(&args.facets))?;
+    let navigation = clew::navigation::expand_delta(
+        &parent,
+        &context,
+        &requested_terms,
+        &navigation_facets(&args.facets),
+    )?;
     let result = json!({
         "schema":clew::navigation::NAV_EXPAND_SCHEMA,
         "status":"EXPANDED",
@@ -1900,6 +2300,25 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     });
     clew::navigation::validate_stdout(&result)?;
     Ok(result)
+}
+
+fn validate_explicit_reference_request(
+    candidates: &[String],
+    references: &[String],
+) -> Result<(), ClewError> {
+    if references.is_empty() {
+        return Ok(());
+    }
+    if candidates.len() != 1
+        || references.len() > 3
+        || references.iter().collect::<BTreeSet<_>>().len() != references.len()
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "explicit reference follow requires one candidate and one to three unique references",
+        ));
+    }
+    Ok(())
 }
 
 fn navigation_facets(facets: &[NavFacetArg]) -> Vec<clew::navigation::NavigationFacet> {
@@ -2995,6 +3414,32 @@ mod tests {
     }
 
     #[test]
+    fn authoring_help_exposes_bounded_input_shapes_without_source_discovery() {
+        for (args, needles) in [
+            (
+                vec!["clew", "mission", "open", "--help"],
+                vec!["codeclew-change-spec/1.0", "acceptanceCriteria"],
+            ),
+            (
+                vec!["clew", "workspace", "open", "--help"],
+                vec!["codeclew-workspace-catalog-input/1.0", "missionId"],
+            ),
+            (
+                vec!["clew", "change", "prepare", "--help"],
+                vec!["codeclew-task-plan/2.0", "REPLACE_TEXT"],
+            ),
+        ] {
+            let error = Cli::try_parse_from(args).err().unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            let help = error.to_string();
+            assert!(help.len() < 8 * 1024);
+            for needle in needles {
+                assert!(help.contains(needle), "help must contain {needle}: {help}");
+            }
+        }
+    }
+
+    #[test]
     fn operational_entrypoints_require_explicit_closed_arguments() {
         assert!(Cli::try_parse_from(["clew", "capabilities"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "capabilities", "--human"]).is_ok());
@@ -3018,6 +3463,153 @@ mod tests {
                 "python:.#src",
                 "--operation",
                 "analysis",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--reference",
+                "canonical::bytes",
+                "--reference",
+                "hash",
+                "--source",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "locate",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:sha256:authority",
+                "--request",
+                "/tmp/source-locate.json",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "locate",
+                "--repo",
+                "/tmp/repository",
+                "--target-ref",
+                "main",
+                "--request",
+                "/tmp/source-locate.json",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["clew", "nav", "locate", "--session", "session:authority",])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "locate",
+                "--repo",
+                "/tmp/repository",
+                "--request",
+                "/tmp/source-locate.json",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "locate",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:sha256:authority",
+                "--repo",
+                "/tmp/repository",
+                "--target-ref",
+                "main",
+                "--request",
+                "/tmp/source-locate.json",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--reference",
+                "bytes",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--reference",
+                "bytes",
+                "--source",
+                "--facet",
+                "callers",
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_explicit_reference_request(
+                &["c:first".into(), "c:second".into()],
+                &["bytes".into()]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_explicit_reference_request(
+                &["c:first".into()],
+                &["bytes".into(), "bytes".into()]
+            )
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--candidate",
+                "c:fedcba9876543210",
+                "--source",
             ])
             .is_ok()
         );
@@ -3106,6 +3698,30 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::PreconditionFailed);
         assert!(error.message.contains("SELECT_SUPPORTED_OPERATION"));
+    }
+
+    #[test]
+    fn compact_navigation_admission_preserves_the_agent_contract() {
+        let admission = json!({
+            "status":"PASS",
+            "readinessDigest":"sha256:readiness",
+            "readinessSchema":"codeclew-doctor/1.0",
+            "runtimeKey":"sha256:runtime",
+            "runtimeManifestDigest":"sha256:manifest",
+            "runtimeMode":"RELEASE",
+            "taskAuthority":{"profileId":"rust-syntax"},
+            "agentContract":{
+                "schema":"codeclew-agent-contract/1.0",
+                "launcherAuthority":"INSTALLED_RELEASE",
+                "sourceFallbackAllowed":false,
+            },
+        });
+
+        let compact = navigation_admission(&admission, true);
+
+        assert_eq!(compact["agentContract"], admission["agentContract"].clone());
+        assert!(compact.get("readinessDigest").is_none());
+        assert_eq!(navigation_admission(&admission, false), admission);
     }
 
     #[test]
@@ -3824,9 +4440,22 @@ mod tests {
             "--term",
             "Target",
         ];
-        assert!(Cli::try_parse_from(base).is_ok());
+        let parsed = Cli::try_parse_from(base).unwrap();
+        let Command::Nav {
+            command: NavCommand::Query(args),
+        } = parsed.command
+        else {
+            panic!("nav query did not parse as a navigation query");
+        };
+        assert_eq!(args.max_roots, 4);
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--source"])).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--source", "--follow-references"]))
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--follow-references"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--intent", "find Target"])).is_ok());
-        assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_ok());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--all"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--operation", "mutation"])).is_err());
         assert!(
@@ -3840,10 +4469,216 @@ mod tests {
                 "context:authority",
                 "--term",
                 "Caller",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Target",
+                "--file",
+                "src/lib.rs",
+                "--source",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Target",
+                "--file",
+                "src/lib.rs",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--source",
                 "--facet",
                 "callers",
             ])
             .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Caller",
+                "--source",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+            ])
+            .is_ok()
+        );
+        for conflicting in [
+            vec!["--term", "Caller", "--candidate", "c:0123456789abcdef"],
+            vec!["--candidate", "c:0123456789abcdef", "--intent", "inspect"],
+            vec!["--term", "Caller", "--facet", "callers"],
+        ] {
+            let mut args = vec![
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+            ];
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn optional_reference_follow_abstains_instead_of_breaking_stdout_budget() {
+        let navigation = clew::navigation::agent_card(&json!({
+            "schema":clew::navigation::NAV_RESULT_SCHEMA,
+            "sessionId":"session:authority",
+            "contextId":"context:authority",
+            "evidenceDigest":"sha256:evidence",
+            "terms":["target"],
+            "candidates":[],
+            "candidateCount":{"returned":0,"total":0,"omitted":0},
+            "decisionSource":{
+                "candidateId":"c:source",
+                "selectionAuthority":"TOP_CANDIDATE",
+                "sourceBindingCount":{"eligible":1,"returned":1,"omitted":0},
+                "sourceBindings":[{
+                    "candidateId":"c:source",
+                    "displayName":"target",
+                    "declarationStartLine":1,
+                    "declarationEndLine":1,
+                    "windowIndex":0
+                }],
+                "source":{
+                    "status":"SUPPORTED",
+                    "authority":"EXACT_SNAPSHOT_TEXT",
+                    "fileId":"src/lib.rs",
+                    "contentRef":{"digest":"sha256:source"},
+                    "completeFile":false,
+                    "truncated":false,
+                    "windows":[{"startLine":1,"endLine":1,"text":"fn target() {}"}]
+                }
+            },
+            "termAnchors":[],
+            "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "truncated":false,
+            "nextAction":{"refine":"nav expand ..."},
+            "nextActions":{
+                "schema":clew::navigation::NAV_ACTION_SCHEMA,
+                "candidateSource":{"kind":"CANDIDATE_SOURCE","maxCandidates":3,"includeSource":true,"includeFacet":false},
+                "exactSource":{"kind":"EXACT_FILE_SOURCE","maxTerms":3,"sameFileRequired":true,"includeSource":true},
+                "facet":{"kind":"CANDIDATE_FACET","allowedValues":["callers","callees","tests"],"includeSource":false,"explicitRelationOnly":true},
+                "refine":{"kind":"TERM_REFINEMENT","includeSource":false},
+            },
+            "referenceFollow":{
+                "status":"SUPPORTED",
+                "followAction":{
+                    "kind":"RETAINED_REFERENCE_FOLLOW",
+                    "candidateId":"c:source",
+                    "maxReferences":3,
+                    "onePathPerTerminal":true,
+                    "includeSource":true,
+                    "includeFacet":false,
+                    "requiresNewestContext":true,
+                    "choiceAuthority":"RETAINED_DIRECT_REFERENCE_FACT",
+                    "resultSelectionAuthority":"USER_SELECTED_RETAINED_REFERENCE",
+                    "targetResolution":"UNRESOLVED",
+                    "semanticRelation":"UNKNOWN"
+                },
+                "payload":"x".repeat(clew::navigation::MAX_NAV_STDOUT_BYTES),
+            }
+        }))
+        .unwrap();
+        let mut result = json!({
+            "admission":{
+                "status":"PASS",
+                "runtimeMode":"RELEASE",
+                "agentContract":{
+                    "schema":"codeclew-agent-contract/1.0",
+                    "launcherAuthority":"INSTALLED_RELEASE",
+                    "sourceFallbackAllowed":false,
+                },
+            },
+            "navigation":navigation,
+        });
+        validate_nav_query_stdout(&mut result, true).unwrap();
+        assert_eq!(
+            result["navigation"]["referenceFollow"]["status"],
+            "UNAVAILABLE"
+        );
+        assert_eq!(
+            result["navigation"]["referenceFollow"]["reason"],
+            "OMITTED_BUDGET"
+        );
+        assert_eq!(
+            result["navigation"]["referenceFollow"]["semanticRelation"],
+            "UNKNOWN"
+        );
+        assert_eq!(
+            result["navigation"]["nextActions"]["exactSource"]["maxTerms"],
+            3
+        );
+        assert_eq!(
+            result["navigation"]["decisionSource"]["sourceDelivery"]["status"],
+            "RETURNED"
+        );
+        assert_eq!(
+            result["admission"]["agentContract"]["launcherAuthority"],
+            "INSTALLED_RELEASE"
         );
     }
 

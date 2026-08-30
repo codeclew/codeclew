@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -176,49 +175,12 @@ fn collect_cas_references(value: &Value, output: &mut Vec<CasObject>) {
     }
 }
 
-fn read_cas_bytes(state_root: &Path, object: &CasObject) -> Vec<u8> {
-    let component = object.digest.strip_prefix("sha256:").unwrap();
-    let loose = state_root
-        .join("objects/sha256")
-        .join(&component[..2])
-        .join(&component[2..]);
-    let bytes = if loose.is_file() {
-        fs::read(loose).unwrap()
-    } else {
-        let packs = state_root.join("objects/packs-v3");
-        let mut indexes = fs::read_dir(&packs)
-            .unwrap()
-            .map(Result::unwrap)
-            .filter(|entry| {
-                entry.path().extension().and_then(|value| value.to_str()) == Some("json")
-            })
-            .collect::<Vec<_>>();
-        indexes.sort_by_key(|entry| entry.file_name());
-        let mut found = None;
-        for index in indexes {
-            let manifest: Value = serde_json::from_slice(&fs::read(index.path()).unwrap()).unwrap();
-            let Some(entries) = manifest.get("objects").and_then(Value::as_array) else {
-                continue;
-            };
-            for entry in entries {
-                let candidate: CasObject = serde_json::from_value(entry["object"].clone()).unwrap();
-                if candidate != *object {
-                    continue;
-                }
-                let mut pack = File::open(index.path().with_extension("pack")).unwrap();
-                pack.seek(SeekFrom::Start(entry["offset"].as_u64().unwrap()))
-                    .unwrap();
-                let mut bytes = vec![0; usize::try_from(object.size).unwrap()];
-                pack.read_exact(&mut bytes).unwrap();
-                found = Some(bytes);
-                break;
-            }
-            if found.is_some() {
-                break;
-            }
-        }
-        found.unwrap_or_else(|| panic!("missing CAS object {}", object.digest))
-    };
+fn read_cas_bytes(store: &CasStore, object: &CasObject) -> Vec<u8> {
+    let bytes = store
+        .read(object, usize::try_from(object.size).unwrap())
+        .unwrap()
+        .bytes()
+        .to_vec();
     assert_eq!(bytes.len() as u64, object.size);
     assert_eq!(
         CasObject::for_bytes(&object.object_schema, &bytes).unwrap(),
@@ -227,7 +189,10 @@ fn read_cas_bytes(state_root: &Path, object: &CasObject) -> Vec<u8> {
     bytes
 }
 
-fn rooted_cas_closure(state_root: &Path, roots: &[Vec<u8>]) -> BTreeMap<String, (String, Vec<u8>)> {
+fn rooted_cas_closure_from_store(
+    store: &CasStore,
+    roots: &[Vec<u8>],
+) -> BTreeMap<String, (String, Vec<u8>)> {
     let mut queue = VecDeque::new();
     for bytes in roots {
         if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
@@ -241,7 +206,7 @@ fn rooted_cas_closure(state_root: &Path, roots: &[Vec<u8>]) -> BTreeMap<String, 
         if closure.contains_key(&reference.digest) {
             continue;
         }
-        let bytes = read_cas_bytes(state_root, &reference);
+        let bytes = read_cas_bytes(store, &reference);
         if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
             let mut nested = Vec::new();
             collect_cas_references(&value, &mut nested);
@@ -250,6 +215,40 @@ fn rooted_cas_closure(state_root: &Path, roots: &[Vec<u8>]) -> BTreeMap<String, 
         closure.insert(reference.digest, (reference.object_schema, bytes));
     }
     closure
+}
+
+fn rooted_cas_closure(state_root: &Path, roots: &[Vec<u8>]) -> BTreeMap<String, (String, Vec<u8>)> {
+    let transfer = tempfile::tempdir().unwrap();
+    let request = transfer.path().join("roots.json");
+    let result = transfer.path().join("closure.json");
+    fs::write(&request, serde_json::to_vec(roots).unwrap()).unwrap();
+
+    let state_handle = File::open(state_root).unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", "managed_cas_closure_helper", "--nocapture"])
+        .env("CODECLEW_STATE_ROOT_FD", "100")
+        .env("CODECLEW_CAS_CLOSURE_REQUEST", &request)
+        .env("CODECLEW_CAS_CLOSURE_RESULT", &result)
+        .stdin(Stdio::null());
+    #[cfg(unix)]
+    unsafe {
+        let state_fd = state_handle.as_raw_fd();
+        command.pre_exec(move || {
+            if libc::dup2(state_fd, 100) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "CAS closure helper failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    serde_json::from_slice(&fs::read(result).unwrap()).unwrap()
 }
 
 fn assert_bytes_hide_paths(bytes: &[u8], paths: &[&Path]) {
@@ -1602,6 +1601,269 @@ fn managed_thread_accepts_same_repository_python_and_rust_units_without_collisio
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn managed_source_locate_reads_the_bound_context_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repository = temporary.path().join("literal-locate-repository");
+    fs::create_dir_all(repository.join("src")).unwrap();
+    fs::write(
+        repository.join("Cargo.toml"),
+        b"[package]\nname='locate-fixture'\nversion='0.1.0'\nedition='2021'\n",
+    )
+    .unwrap();
+    let original = b"pub const FIRST: &str = \"prod-trace.json\";\r\npub const SECOND: &str = \"prod-trace.json\";\r\n";
+    fs::write(repository.join("src/lib.rs"), original).unwrap();
+    let lock = Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(&repository)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(lock.success());
+    run_git(&repository, &["init", "-q", "-b", "main"]);
+    run_git(&repository, &["add", "."]);
+    run_git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=codeclew@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "literal fixture",
+        ],
+    );
+
+    let state_root = temporary.path().join("state/v2");
+    let runtime_digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&runtime_digest);
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{runtime_digest}.lease"));
+
+    let opened = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "session",
+            "open",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--target-ref",
+            "main",
+            "--language",
+            "rust",
+            "--compilation",
+            "cargo:Cargo.toml#locate-fixture#lib#locate_fixture",
+        ],
+        None,
+    );
+    assert!(
+        opened.status.success(),
+        "{}",
+        String::from_utf8_lossy(&opened.stdout)
+    );
+    let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
+    let session = opened["session"]["sessionId"].as_str().unwrap();
+    let context = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "context",
+            "create",
+            "--session",
+            session,
+            "--intent",
+            "Bind the exact literal source snapshot",
+            "--term",
+            "FIRST",
+        ],
+        None,
+    );
+    assert!(
+        context.status.success(),
+        "{}",
+        String::from_utf8_lossy(&context.stdout)
+    );
+    let context: Value = serde_json::from_slice(&context.stdout).unwrap();
+    let context_id = context["contextId"].as_str().unwrap();
+
+    let request = temporary.path().join("source-locate.json");
+    let request_value = json!({
+        "schema":"codeclew-source-locate-request/1.0",
+        "literal":"prod-trace.json",
+        "paths":["src/lib.rs"],
+        "maxMatches":2,
+    });
+    fs::write(&request, canonical::bytes(&request_value).unwrap()).unwrap();
+    fs::set_permissions(&request, fs::Permissions::from_mode(0o600)).unwrap();
+
+    fs::write(
+        repository.join("src/lib.rs"),
+        b"pub const LIVE_ONLY: &str = \"changed-after-context\";\n",
+    )
+    .unwrap();
+    let located = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "nav",
+            "locate",
+            "--session",
+            session,
+            "--from",
+            context_id,
+            "--request",
+            request.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(
+        located.status.success(),
+        "{}",
+        String::from_utf8_lossy(&located.stdout)
+    );
+    assert!(located.stdout.len() <= 64 * 1024);
+    let located: Value = serde_json::from_slice(&located.stdout).unwrap();
+    assert_eq!(located["schema"], "codeclew-source-locate-result/1.0");
+    assert_eq!(located["status"], "COMPLETE");
+    assert_eq!(located["completeness"], "QUERY_COMPLETE");
+    assert_eq!(located["authority"], "SNAPSHOT_EXACT_BYTES");
+    assert_eq!(located["semanticResolution"], "NONE");
+    assert_eq!(located["source"]["contextId"], context_id);
+    assert_eq!(located["observedMatchCount"], 2);
+    assert_eq!(located["matches"][0]["path"], "src/lib.rs");
+    assert_eq!(located["matches"][0]["byteStart"], 25);
+    assert_eq!(located["matches"][1]["byteStart"], 70);
+    assert_eq!(
+        located["matches"][0]["contentDigest"],
+        canonical::hash_bytes(original)
+    );
+    let stdout = located.to_string();
+    assert!(!stdout.contains("changed-after-context"));
+    assert!(!stdout.contains(repository.to_str().unwrap()));
+    assert!(!stdout.contains("prod-trace.json"));
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_direct_source_locate_reads_the_pinned_git_tree_without_context() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repository = temporary.path().join("direct-literal-locate-repository");
+    fs::create_dir(&repository).unwrap();
+    fs::write(repository.join("Trace.kt"), b"before trace.json after\n").unwrap();
+    run_git(&repository, &["init", "-q", "-b", "main"]);
+    run_git(&repository, &["add", "."]);
+    run_git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=codeclew@localhost",
+            "commit",
+            "-q",
+            "-m",
+            "direct literal fixture",
+        ],
+    );
+    let repository = repository.canonicalize().unwrap();
+
+    let state_root = temporary.path().join("state/v2");
+    let runtime_digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&runtime_digest);
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{runtime_digest}.lease"));
+
+    let request = temporary.path().join("direct-source-locate.json");
+    let request_value = json!({
+        "schema":"codeclew-source-locate-request/1.0",
+        "literal":"trace.json",
+        "paths":["Trace.kt"],
+        "maxMatches":2,
+    });
+    fs::write(&request, canonical::bytes(&request_value).unwrap()).unwrap();
+    fs::set_permissions(&request, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let located = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "nav",
+            "locate",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--target-ref",
+            "main",
+            "--request",
+            request.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(
+        located.status.success(),
+        "{}",
+        String::from_utf8_lossy(&located.stdout)
+    );
+    assert!(located.stdout.len() <= 64 * 1024);
+    let located: Value = serde_json::from_slice(&located.stdout).unwrap();
+    assert_eq!(located["schema"], "codeclew-source-locate-result/1.1");
+    assert_eq!(located["status"], "COMPLETE");
+    assert_eq!(located["authority"], "SNAPSHOT_EXACT_BYTES");
+    assert_eq!(located["semanticResolution"], "NONE");
+    assert_eq!(located["source"]["mode"], "DIRECT_GIT_COMMIT");
+    assert_eq!(
+        located["source"]["schema"],
+        "codeclew-direct-git-source-authority/1.0"
+    );
+    assert_eq!(located["observedMatchCount"], 1);
+    assert_eq!(located["matches"][0]["path"], "Trace.kt");
+    assert_eq!(located["matches"][0]["byteStart"], 7);
+    assert_eq!(located["matches"][0]["byteEnd"], 17);
+    assert_eq!(
+        located["matches"][0]["contentDigest"],
+        canonical::hash_bytes(b"before trace.json after\n")
+    );
+    for field in [
+        "authorityDigest",
+        "targetRefDigest",
+        "baseRevision",
+        "treeOid",
+    ] {
+        assert!(located["source"][field].as_str().is_some());
+    }
+    let stdout = located.to_string();
+    assert!(!stdout.contains(repository.to_str().unwrap()));
+    assert!(!stdout.contains("refs/heads/main"));
+    assert!(!stdout.contains("trace.json"));
+}
+
 #[test]
 fn managed_thread_impact_seed_helper() {
     let Some(thread_id) = std::env::var_os("CODECLEW_SYNTHETIC_CALLABLE_THREAD") else {
@@ -1615,6 +1877,19 @@ fn managed_thread_impact_seed_helper() {
     let (thread, _) = ThreadAuthority::load(thread_id.to_str().unwrap()).unwrap();
     let root = seed_synthetic_callable_fact_set(&state, &store, &thread, &variant);
     fs::write(result_path, root.fact_set_id).unwrap();
+}
+
+#[test]
+fn managed_cas_closure_helper() {
+    let Some(request_path) = std::env::var_os("CODECLEW_CAS_CLOSURE_REQUEST") else {
+        return;
+    };
+    let result_path = std::env::var_os("CODECLEW_CAS_CLOSURE_RESULT").unwrap();
+    let roots: Vec<Vec<u8>> = serde_json::from_slice(&fs::read(request_path).unwrap()).unwrap();
+    let state = StateAuthority::process_default().unwrap();
+    let store = CasStore::open(&state).unwrap();
+    let closure = rooted_cas_closure_from_store(&store, &roots);
+    fs::write(result_path, serde_json::to_vec(&closure).unwrap()).unwrap();
 }
 
 #[test]

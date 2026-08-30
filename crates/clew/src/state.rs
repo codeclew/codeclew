@@ -1241,7 +1241,7 @@ fn managed_id_component<'a>(value: &'a str, prefix: &str) -> Result<&'a str, Cle
     Ok(component)
 }
 
-fn repository_key(repo: &Path) -> Result<String, ClewError> {
+pub(crate) fn repository_key(repo: &Path) -> Result<String, ClewError> {
     let common = git(repo, &["rev-parse", "--git-common-dir"])
         .ok()
         .map(|value| {

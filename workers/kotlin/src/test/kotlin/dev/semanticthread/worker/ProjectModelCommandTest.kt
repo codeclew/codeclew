@@ -3,7 +3,10 @@ package dev.semanticthread.worker
 import dev.semanticthread.worker.gradleModelCommand
 import dev.semanticthread.worker.sanitizedProjectModelProcess
 import java.nio.file.Files
+import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.createDirectories
@@ -41,6 +44,14 @@ class ProjectModelCommandTest {
             archive.closeEntry()
         }
     }
+
+    private fun repositoryRoot(): Path = generateSequence(
+        Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize(),
+        Path::getParent,
+    ).firstOrNull { candidate ->
+        candidate.resolve("gradlew").isRegularFile() &&
+            candidate.resolve("workers/kotlin/src/main/resources/semantic-thread-model.init.gradle").isRegularFile()
+    } ?: error("Codeclew repository root is unavailable")
 
     private fun gradleFixtureModel(
         repo: java.nio.file.Path,
@@ -205,6 +216,101 @@ class ProjectModelCommandTest {
         } finally {
             repo.toFile().deleteRecursively()
             externalRoot.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun gradleModelMaterializesSelectedClasspathBuildDependenciesWithoutCompilingTarget() {
+        val repository = repositoryRoot()
+        val root = Files.createTempDirectory("worker-gradle-project-dependency-model").toRealPath()
+        try {
+            root.resolve("settings.gradle.kts").writeText(
+                """pluginManagement { repositories { gradlePluginPortal(); mavenCentral() } }
+                |dependencyResolutionManagement { repositories { mavenCentral() } }
+                |rootProject.name = "project-dependency-model"
+                |include(":lib", ":app")
+                |""".trimMargin(),
+            )
+            root.resolve("build.gradle.kts").writeText(
+                """plugins { kotlin("jvm") version "2.4.10" apply false }
+                |""".trimMargin(),
+            )
+            val lib = root.resolve("lib")
+            val app = root.resolve("app")
+            lib.createDirectories()
+            app.createDirectories()
+            lib.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") }\n")
+            app.resolve("build.gradle.kts").writeText(
+                """plugins { kotlin("jvm") }
+                |dependencies { implementation(project(":lib")) }
+                |tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+                |    libraries.from(project.files("self-classpath").builtBy(this))
+                |}
+                |""".trimMargin(),
+            )
+            app.resolve("self-classpath").createDirectories()
+            lib.resolve("src/main/kotlin/p/Lib.kt").also { source ->
+                source.parent.createDirectories()
+                source.writeText("package p\nfun libAnswer() = 42\n")
+            }
+            app.resolve("src/main/kotlin/p/App.kt").also { source ->
+                source.parent.createDirectories()
+                source.writeText("package p\nfun appAnswer() = libAnswer()\n")
+            }
+            assertFalse(lib.resolve("build").exists())
+            assertFalse(app.resolve("build").exists())
+
+            val initScript = repository.resolve(
+                "workers/kotlin/src/main/resources/semantic-thread-model.init.gradle",
+            )
+            val process = ProcessBuilder(
+                repository.resolve("gradlew").toString(),
+                "-p", root.toString(),
+                "--offline",
+                "--no-daemon",
+                "--quiet",
+                "-I", initScript.toString(),
+                "-Dsemantic.thread.compileTask=compileKotlin",
+                ":app:semanticThreadModel",
+            ).directory(root.toFile()).redirectErrorStream(true).start()
+            val outputFuture = CompletableFuture.supplyAsync {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }
+            val completed = process.waitFor(120, TimeUnit.SECONDS)
+            if (!completed) {
+                process.destroyForcibly()
+                process.waitFor(10, TimeUnit.SECONDS)
+            }
+            val output = outputFuture.get(10, TimeUnit.SECONDS)
+            assertTrue(completed, "nested Gradle model extraction timed out")
+            assertEquals(0, process.exitValue(), output.takeLast(4_000))
+
+            val marker = output.lineSequence().lastOrNull {
+                it.startsWith("__SEMANTIC_THREAD_MODEL__")
+            } ?: error("Gradle model marker is unavailable: ${output.takeLast(4_000)}")
+            val model = Json.parseToJsonElement(
+                marker.removePrefix("__SEMANTIC_THREAD_MODEL__"),
+            ).jsonObject
+            val classpath = model["classpath"]!!.jsonArray.map {
+                Path.of(it.jsonPrimitive.content).toAbsolutePath().normalize()
+            }
+            assertEquals(
+                "KOTLIN_TASK_LIBRARIES",
+                model["classpathAuthority"]!!.jsonObject["chosen"]!!.jsonPrimitive.content,
+            )
+            assertTrue(classpath.all { Files.isRegularFile(it) || Files.isDirectory(it) })
+            val libraryJars = Files.list(lib.resolve("build/libs")).use { entries ->
+                entries.filter { it.fileName.toString().endsWith(".jar") }.toList()
+            }
+            assertEquals(1, libraryJars.size)
+            assertTrue(libraryJars.single().isRegularFile())
+            assertTrue(classpath.contains(libraryJars.single().toAbsolutePath().normalize()))
+            assertFalse(
+                app.resolve("build/classes/kotlin/main").exists(),
+                "model extraction must not compile the target source set",
+            )
+        } finally {
+            root.toFile().deleteRecursively()
         }
     }
 
@@ -753,6 +859,44 @@ class ProjectModelCommandTest {
         val bytes = compilerRangeToUtf8Bytes(source, functionStart, functionEnd)
         assertEquals(source.substring(0, functionStart).toByteArray().size, bytes?.first)
         assertEquals(source.toByteArray().size, bytes?.last?.plus(1))
+        val provenBytes = requireNotNull(bytes)
+        assertEquals(
+            2..2,
+            utf8ByteRangeToOneBasedLines(
+                utf8LineIndex(source),
+                provenBytes.first,
+                provenBytes.last + 1,
+            ),
+        )
+
+        val multiline = "val marker = \"😀\"\r\nfun answer() =\r\n    42\r\n"
+        val multilineStart = multiline.indexOf("fun")
+        val multilineBytes = compilerRangeToUtf8Bytes(multiline, multilineStart, multiline.length)!!
+        val multilineIndex = utf8LineIndex(multiline)
+        assertEquals(
+            2..3,
+            utf8ByteRangeToOneBasedLines(
+                multilineIndex,
+                multilineBytes.first,
+                multilineBytes.last + 1,
+            ),
+        )
+        assertEquals(
+            4..4,
+            utf8ByteRangeToOneBasedLines(
+                multilineIndex,
+                multilineIndex.byteSize,
+                multilineIndex.byteSize,
+            ),
+        )
+        assertNull(utf8ByteRangeToOneBasedLines(multilineIndex, -1, 0))
+        assertNull(
+            utf8ByteRangeToOneBasedLines(
+                multilineIndex,
+                0,
+                multilineIndex.byteSize + 1,
+            ),
+        )
 
         val emojiStart = source.indexOf("😀")
         assertNull(compilerRangeToUtf8Bytes(source, emojiStart + 1, emojiStart + 2))

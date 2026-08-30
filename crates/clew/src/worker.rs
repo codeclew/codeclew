@@ -1235,6 +1235,123 @@ fn normalize_optional_relation_evidence(facts: &mut Value) -> Result<(), ClewErr
 /// Quarantine exact descriptor rows whose only invalid claim is a non-JVMS
 /// compiler suffix. The raw worker graph is hash-verified before mutation and
 /// the row becomes typed UNKNOWN evidence; it is never admitted as PROVEN.
+struct DescriptorSourceLineIndex {
+    source: String,
+    line_starts: Vec<usize>,
+}
+
+fn verify_descriptor_line_coordinates(repo: &Path, facts: &Value) -> Result<(), ClewError> {
+    let protocol = |message: &str| ClewError::new(ErrorCode::WorkerProtocolMismatch, message);
+    let files = facts
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol("Kotlin descriptor line proof has no source files"))?;
+    let mut content_hashes = BTreeMap::new();
+    for file in files {
+        let path = file
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| protocol("Kotlin descriptor line proof has no source path"))?;
+        let content_hash = file
+            .get("contentHash")
+            .and_then(Value::as_str)
+            .filter(|hash| hash.starts_with("sha256:"))
+            .ok_or_else(|| protocol("Kotlin descriptor line proof has no content hash"))?;
+        if content_hashes
+            .insert(path.to_owned(), content_hash.to_owned())
+            .is_some()
+        {
+            return Err(protocol(
+                "Kotlin descriptor line proof repeats a source path",
+            ));
+        }
+    }
+    let descriptors = facts
+        .pointer("/declarationDescriptors/descriptors")
+        .and_then(Value::as_array)
+        .ok_or_else(|| protocol("Kotlin descriptor line proof has no descriptors"))?;
+    let canonical_repo = repo.canonicalize().map_err(internal)?;
+    let mut indexes = BTreeMap::<String, DescriptorSourceLineIndex>::new();
+    for descriptor in descriptors {
+        let has_lines = ["startLine", "endLine", "lineProvenance"]
+            .iter()
+            .any(|field| descriptor.get(*field).is_some());
+        if !has_lines {
+            continue;
+        }
+        let path = descriptor
+            .get("file")
+            .and_then(Value::as_str)
+            .ok_or_else(|| protocol("Kotlin descriptor line proof has no file"))?;
+        let expected_hash = content_hashes
+            .get(path)
+            .ok_or_else(|| protocol("Kotlin descriptor line proof file is not bound"))?;
+        if !indexes.contains_key(path) {
+            let (_, bytes) = source_syntax_relative_path(&canonical_repo, path)?;
+            if crate::canonical::hash_bytes(&bytes) != *expected_hash {
+                return Err(ClewError::new(
+                    ErrorCode::ProjectModelChanged,
+                    "Kotlin descriptor line proof source content changed",
+                ));
+            }
+            let source = String::from_utf8(bytes)
+                .map_err(|_| protocol("Kotlin descriptor line proof source is not valid UTF-8"))?;
+            let mut line_starts = vec![0];
+            line_starts.extend(
+                source
+                    .as_bytes()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, byte)| (*byte == b'\n').then_some(index + 1)),
+            );
+            indexes.insert(
+                path.to_owned(),
+                DescriptorSourceLineIndex {
+                    source,
+                    line_starts,
+                },
+            );
+        }
+        let index = &indexes[path];
+        let start = descriptor
+            .get("start")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| protocol("Kotlin descriptor line proof has no byte start"))?;
+        let end = descriptor
+            .get("end")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| protocol("Kotlin descriptor line proof has no byte end"))?;
+        if start >= end
+            || end > index.source.len()
+            || !index.source.is_char_boundary(start)
+            || !index.source.is_char_boundary(end)
+        {
+            return Err(protocol(
+                "Kotlin descriptor line proof has an invalid UTF-8 byte range",
+            ));
+        }
+        let line_at = |offset: usize| {
+            u64::try_from(index.line_starts.partition_point(|line| *line <= offset))
+                .expect("source line count fits u64")
+        };
+        let expected_start = line_at(start);
+        let expected_end = line_at(end - 1);
+        if descriptor.get("startLine").and_then(Value::as_u64) != Some(expected_start)
+            || descriptor.get("endLine").and_then(Value::as_u64) != Some(expected_end)
+            || descriptor.get("lineProvenance").and_then(Value::as_str)
+                != Some("UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE")
+        {
+            return Err(protocol(
+                "Kotlin descriptor line proof differs from bound source bytes",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalize_invalid_jvm_descriptors(facts: &mut Value) -> Result<usize, ClewError> {
     fn invalid(message: impl Into<String>) -> ClewError {
         ClewError::new(ErrorCode::InvalidInput, message)
@@ -2490,6 +2607,9 @@ impl WorkerClient {
         normalize_invalid_jvm_descriptors(&mut facts).map_err(|error| {
             attach_verified_index_failure(error, "DESCRIPTOR_NORMALIZATION", Some(&facts))
         })?;
+        verify_descriptor_line_coordinates(&repo, &facts).map_err(|error| {
+            attach_verified_index_failure(error, "DESCRIPTOR_LINE_PROOF", Some(&facts))
+        })?;
         let descriptor = crate::semantic_validation::validate_declaration_descriptor_snapshot(
             &facts,
         )
@@ -2648,6 +2768,7 @@ impl WorkerClient {
             ));
         }
         require_k2_validated(&facts.payload)?;
+        verify_descriptor_line_coordinates(&source_root, &facts.payload)?;
         let relation =
             crate::semantic_validation::validate_declaration_relation_snapshot(&facts.payload)?;
         let descriptor =
@@ -4755,6 +4876,57 @@ mod tests {
             ErrorCode::ProjectModelChanged
         );
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn descriptor_line_proof_is_recomputed_from_bound_source_bytes() {
+        let repo = tempfile::tempdir().unwrap();
+        let source = "// 😀\r\nfun answer() =\r\n    42\r\n";
+        std::fs::write(repo.path().join("A.kt"), source).unwrap();
+        let start = source.find("fun").unwrap();
+        let end = source.len();
+        let mut facts = json!({
+            "files":[{
+                "path":"A.kt",
+                "contentHash":crate::canonical::hash_bytes(source.as_bytes()),
+            }],
+            "declarationDescriptors":{
+                "descriptors":[{
+                    "file":"A.kt",
+                    "start":start,
+                    "end":end,
+                    "startLine":2,
+                    "endLine":3,
+                    "lineProvenance":"UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE",
+                }]
+            }
+        });
+
+        verify_descriptor_line_coordinates(repo.path(), &facts).unwrap();
+
+        facts["declarationDescriptors"]["descriptors"][0]["endLine"] = json!(4);
+        assert_eq!(
+            verify_descriptor_line_coordinates(repo.path(), &facts)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+        facts["declarationDescriptors"]["descriptors"][0]["endLine"] = json!(3);
+        facts["declarationDescriptors"]["descriptors"][0]["end"] = json!(start);
+        assert_eq!(
+            verify_descriptor_line_coordinates(repo.path(), &facts)
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkerProtocolMismatch
+        );
+        facts["declarationDescriptors"]["descriptors"][0]["end"] = json!(end);
+        std::fs::write(repo.path().join("A.kt"), "fun changed() = 0\n").unwrap();
+        assert_eq!(
+            verify_descriptor_line_coordinates(repo.path(), &facts)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProjectModelChanged
+        );
     }
 
     #[test]

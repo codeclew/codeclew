@@ -3276,13 +3276,19 @@ def garbage_collect_runtime_capsules(
         os.close(runtimes_fd)
 
 
+def parse_bootstrap_arguments(
+    arguments: list[str] | None = None,
+) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--source-root", type=Path, required=True)
+    return parser.parse_known_args(arguments)
+
+
 def main() -> int:
     reset_audit_counters()
     if sys.version_info < (3, 11):
         raise BootstrapError("Codeclew requires Python 3.11 or newer")
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--source-root", type=Path, required=True)
-    known, command = parser.parse_known_args()
+    known, command = parse_bootstrap_arguments()
     if command == ["--bootstrap-self-test"]:
         bootstrap_self_test()
         print(canonical({"schema": "codeclew-bootstrap-self-test/1.0", "status": "PASSED"}).decode())

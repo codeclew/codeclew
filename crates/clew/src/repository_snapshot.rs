@@ -843,7 +843,7 @@ pub(crate) fn isolated_git_command(repo: &Path) -> Command {
     command
 }
 
-fn read_git_blobs<'a>(
+pub(crate) fn read_git_blobs<'a>(
     repo: &Path,
     oids: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, Vec<u8>>, ClewError> {
@@ -908,7 +908,7 @@ fn read_git_blobs<'a>(
     Ok(blobs)
 }
 
-fn read_git_blob_metadata<'a>(
+pub(crate) fn read_git_blob_metadata<'a>(
     repo: &Path,
     oids: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, (String, u64)>, ClewError> {

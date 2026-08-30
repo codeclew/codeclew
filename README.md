@@ -72,8 +72,8 @@ invoke the project wrapper under the model-cache policy described below.
 ## Practical code navigation
 
 `nav query` is the shortest fact-backed path from a search term to code. It
-performs task admission, opens the managed session and returns compact
-declaration cards with bounded source in one command:
+performs task admission, opens the managed session and returns at most three
+fact-bound decision cards with exact one-line source previews in one command:
 
 ```bash
 ./clew nav query \
@@ -82,24 +82,103 @@ declaration cards with bounded source in one command:
   --language rust \
   --profile rust-syntax \
   --compilation 'cargo:crates/clew/Cargo.toml#clew#lib#clew' \
-  --term fair_fact_selection
+  --term fair_fact_selection \
+  --source
 ```
 
-The response retains `sessionId` and `contextId`, so an agent can ask for the
-next missing term without reopening the repository:
+The response retains `sessionId`, `contextId`, and the full evidence digest.
+`--source` returns a `codeclew-navigation-agent-card/1.0`: the exact retained
+source and its declaration-to-window bindings for the highest-ranked card,
+attested previews for the alternatives, and only supporting anchors outside
+the returned source window. The complete immutable evidence remains bound by
+`evidenceDigest`; the compact card removes fields that do not help the next
+agent decision. Omit `--source` when names and locations are enough.
+Select one to three cards in one call to receive each complete retained fact
+and its single exact source window without retransmitting every alternative:
+
+```bash
+./clew nav expand \
+  --session session:... \
+  --from context:sha256:... \
+  --candidate c:0123456789abcdef \
+  --candidate c:fedcba9876543210 \
+  --source \
+  --facet callers
+```
+
+If the decision cards are insufficient, add one discriminative identifier with
+`--term rank_fact_evidence` instead. Term selection and candidate selection are
+mutually exclusive.
+
+When an exact identifier and repository-relative file are already established,
+expand and select them atomically:
 
 ```bash
 ./clew nav expand \
   --session session:... \
   --from context:sha256:... \
   --term rank_fact_evidence \
-  --facet callers
+  --file crates/clew/src/context_v2.rs \
+  --source
 ```
 
+This succeeds only for one exact declaration. No match and same-file overloads
+remain typed `SYMBOL_NOT_FOUND` or `AMBIGUOUS_SYMBOL` results.
+
+When the task already supplies a non-identifier literal, `nav locate` searches
+only an explicit set of files in the session's immutable source snapshot. The
+request is a caller-owned mode-0600 JSON file whose paths are sorted and unique:
+
+```json
+{"schema":"codeclew-source-locate-request/1.0","literal":"local-trace.json","paths":["launchpad-web/src/main/kotlin/example/ReplayRoutes.kt"],"maxMatches":3}
+```
+
+```bash
+./clew nav locate \
+  --session session:... \
+  --from context:sha256:... \
+  --request /absolute/private/source-locate.json
+```
+
+The result contains exact non-overlapping UTF-8 byte coordinates, the request
+digest, and snapshot authority, but no source text. Missing files, unsafe paths,
+symlinks, and oversized scopes fail closed. If the match limit is exceeded,
+the count is returned without leaking a partial coordinate set. This is lexical
+source navigation; it does not claim compiler resolution or a semantic relation.
+
+For source-navigation-only tasks that cannot open a language context, the same
+request can be resolved directly from a clean repository's pinned Git commit:
+
+```bash
+./clew nav locate \
+  --repo /canonical/absolute/repository \
+  --target-ref main \
+  --request /absolute/private/source-locate.json
+```
+
+This direct mode requires the canonical Git root, a clean worktree/index, and a
+branch resolving to the same commit as `HEAD`. It reads regular blobs from
+that commit rather than live worktree files, rejects symlinks and submodules,
+and returns `codeclew-source-locate-result/1.1`. Its source authority exposes
+the pinned commit/tree and only digests for repository/branch identity; it
+creates no session and makes no compiler-backed claim. The session/context mode remains
+`codeclew-source-locate-result/1.0` and retains its lifecycle admission lock.
+
+`nav expand` returns a delta against its exact `parentContextId`, not another
+copy of the cumulative candidate list. Apply `candidateDelta.upserts` and
+`candidateDelta.removals` to the retained parent candidates; an empty upsert
+array means that no candidate card changed, not that the child context has no
+candidates. Then order the reconstructed cards by `candidateOrder`; ranking
+can change even when card bytes do not. `unchangedCount` reports the cards
+deliberately omitted from stdout. The child `contextId` and `evidenceDigest` still bind the complete
+immutable context in managed CAS. Candidate detail returns the exact selected
+payload and only the overlapping retained source window; it fails closed when
+there is no exact line mapping.
+
 `--intent` is optional provenance and never changes retrieval or ranking.
-`--facet callers`, `--facet callees`, and `--facet tests` return only direct,
-identity-bound relation facts already present in the bounded context. A missing
-relation is reported as `UNSUPPORTED`; a non-empty bounded subset is `PARTIAL`.
+On candidate detail, `--facet callers`, `--facet callees`, and `--facet tests`
+return only direct, identity-bound relation facts for that selected symbol. A
+missing relation is reported as `UNSUPPORTED`; a non-empty bounded subset is `PARTIAL`.
 Syntax-only namesakes are never promoted to resolved edges. There is no
 `--all`: narrow or expand the context when the bounded response reports
 truncation.

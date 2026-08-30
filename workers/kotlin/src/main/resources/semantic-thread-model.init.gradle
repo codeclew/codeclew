@@ -2,9 +2,43 @@ import groovy.json.JsonOutput
 import java.security.MessageDigest
 
 gradle.beforeProject { project ->
+    def requestedCompileTask = System.getProperty("semantic.thread.compileTask", "compileKotlin")
+    def sourceSetNameOf = { compile ->
+        if (compile.name.startsWith("compile") && compile.name.endsWith("Kotlin")) {
+            def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
+            return stem.isEmpty() ? "main" : stem.substring(0, 1).toLowerCase() + stem.substring(1)
+        }
+        return "main"
+    }
+    def selectedClasspathProvider = { compile ->
+        try {
+            def libraries = compile.property("libraries")
+            if (libraries != null && !libraries.files.isEmpty()) return libraries
+        } catch (Throwable ignored) {}
+        def sourceSetName = sourceSetNameOf(compile)
+        def configurationName = sourceSetName == "main" ? "compileClasspath" : sourceSetName + "CompileClasspath"
+        try {
+            def configuration = project.configurations.findByName(configurationName)
+            if (configuration != null && !configuration.files.isEmpty()) return configuration
+        } catch (Throwable ignored) {}
+        return null
+    }
     project.tasks.register("semanticThreadModel") {
+        // Gradle can report repository-local project artifacts in a compilation
+        // classpath before those artifacts exist in a pristine checkout. Run
+        // only the selected FileCollection's declared build dependencies; do
+        // not compile the target source set merely to extract its model.
+        dependsOn {
+            def compile = project.tasks.findByName(requestedCompileTask)
+            if (compile == null) return []
+            def provider = selectedClasspathProvider(compile)
+            if (provider == null) return []
+            return provider.buildDependencies.getDependencies(compile).findAll { dependency ->
+                dependency.path != compile.path
+            }
+        }
         doLast {
-            def requested = System.getProperty("semantic.thread.compileTask", "compileKotlin")
+            def requested = requestedCompileTask
             def compile = project.tasks.findByName(requested)
             if (compile == null) {
                 throw new GradleException("Kotlin compilation task not found: ${project.path}:${requested}")
@@ -46,11 +80,7 @@ gradle.beforeProject { project ->
             // Kotlin's task-level `libraries` is the first-choice compilation
             // authority when the plugin exposes it. The named resolvable
             // configuration is the explicit fallback across other plugin lines.
-            def sourceSetName = "main"
-            if (compile.name.startsWith("compile") && compile.name.endsWith("Kotlin")) {
-                def stem = compile.name.substring("compile".length(), compile.name.length() - "Kotlin".length())
-                sourceSetName = stem.isEmpty() ? "main" : stem.substring(0, 1).toLowerCase() + stem.substring(1)
-            }
+            def sourceSetName = sourceSetNameOf(compile)
             def configurationName = sourceSetName == "main" ? "compileClasspath" : sourceSetName + "CompileClasspath"
             def sourceSetClasspath = []
             def sourceSetClasspathAvailable = false
