@@ -175,6 +175,19 @@ function identityForDeclaration(declaration, fallbackName) {
 
 function identityForSymbol(symbol) {
   if (!symbol) return null
+  const visited = new Set()
+  while ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    if (visited.has(symbol) || visited.size >= 8) return null
+    visited.add(symbol)
+    let aliased
+    try {
+      aliased = checker.getAliasedSymbol(symbol)
+    } catch (_) {
+      return null
+    }
+    if (!aliased || aliased === symbol) return null
+    symbol = aliased
+  }
   const declaration = symbol.valueDeclaration || (symbol.declarations && symbol.declarations[0])
   if (!declaration) return null
   return identityForDeclaration(declaration, symbol.getName())
