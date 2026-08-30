@@ -627,8 +627,8 @@ struct NavExpandArgs {
     /// With term selection, requires one exact term and --file.
     #[arg(long, requires = "source_target")]
     source: bool,
-    /// Select one exact declaration in this repository-relative file after
-    /// expanding one exact term. Requires --source.
+    /// Select one exact declaration name in this repository-relative file
+    /// before bounded context ranking. Requires --source.
     #[arg(
         long,
         requires_all = ["terms", "source"],
@@ -1809,6 +1809,35 @@ fn expand_context_object(
     session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
 }
 
+fn expand_context_exact_file_term_object(
+    session: &SessionAuthority,
+    parent_context_id: String,
+    intent: Option<String>,
+    term: String,
+    file: &str,
+    max_roots: usize,
+) -> Result<ContextObject, ClewError> {
+    session.require_open()?;
+    let parent = session.load_context(&parent_context_id)?;
+    let mut terms = parent.terms.clone();
+    terms.push(term.clone());
+    terms.sort();
+    terms.dedup();
+    let intent = intent.unwrap_or_else(|| parent.intent.clone());
+    validate_context_request(&intent, &terms)?;
+    let additional_terms = vec![term.clone()];
+    let (projection, evidence) = clew::context_v2::create_exact_file_term(
+        session,
+        &intent,
+        &additional_terms,
+        max_roots,
+        &parent,
+        file,
+        &term,
+    )?;
+    session.store_context(Some(parent_context_id), intent, terms, projection, evidence)
+}
+
 struct AdmittedContext {
     admission: Value,
     session: SessionAuthority,
@@ -2080,15 +2109,16 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
             "exact file selection requires --source and one exact term",
         ));
     }
-    let requested_terms = args.terms.clone();
-    let context = expand_context_object(
-        &session,
-        args.context,
-        args.intent,
-        args.terms,
-        args.max_roots,
-    )?;
     if let Some(file) = args.file {
+        let requested_terms = args.terms.clone();
+        let context = expand_context_exact_file_term_object(
+            &session,
+            args.context,
+            args.intent,
+            args.terms[0].clone(),
+            &file,
+            args.max_roots,
+        )?;
         let navigation = clew::navigation::detail_by_exact_file_term(
             &context,
             &file,
@@ -2106,6 +2136,14 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         clew::navigation::validate_stdout(&result)?;
         return Ok(result);
     }
+    let requested_terms = args.terms.clone();
+    let context = expand_context_object(
+        &session,
+        args.context,
+        args.intent,
+        args.terms,
+        args.max_roots,
+    )?;
     let navigation = clew::navigation::expand_delta(
         &parent,
         &context,

@@ -4,7 +4,7 @@ use crate::error::{ClewError, ErrorCode};
 use crate::generation_service::{
     ensure_session_generation, load_query_index, load_session_generation, load_snapshot,
 };
-use crate::query_v2::{FactHit, QueryContext, expand, query};
+use crate::query_v2::{FactHit, QueryContext, exact_name_query, expand, query};
 use crate::repository_snapshot::{RepositoryInputSnapshot, WorktreeKind};
 use crate::session::{ContextObject, SessionAuthority};
 use crate::state::StateAuthority;
@@ -26,6 +26,24 @@ pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-conte
 pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/4.0";
 pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/4.0";
 pub const BOUNDED_CONTEXT_PROJECTION_SCHEMA: &str = "codeclew-bounded-context-projection/4.0";
+const EXACT_SELECTION_SCHEMA: &str = "codeclew-exact-declaration-selection/1.0";
+
+#[derive(Debug, Clone, Copy)]
+struct ExactFileTermSelector<'a> {
+    file: &'a str,
+    term: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExactSelectionAuthority {
+    schema: String,
+    file: String,
+    term: String,
+    compilation: String,
+    fact_key: String,
+    direct_posting_complete: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -71,6 +89,12 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             .ok_or_else(|| invalid("context has no per-compilation query authority"))?,
     )
     .map_err(parse_error)?;
+    let exact_selection = evidence
+        .get("exactSelection")
+        .map(|value| {
+            serde_json::from_value::<ExactSelectionAuthority>(value.clone()).map_err(parse_error)
+        })
+        .transpose()?;
     let compilations = evidence
         .pointer("/context/compilations")
         .and_then(Value::as_array)
@@ -135,7 +159,15 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             "context projection truncation does not match retained omissions",
         ));
     }
-    let recomputed = merge_query_contexts(&queries, aggregate.facts.len().max(1))?;
+    let required = exact_selection
+        .as_ref()
+        .map(|selection| exact_selection_hit(&queries, selection))
+        .transpose()?;
+    let recomputed = merge_query_contexts_with_required(
+        &queries,
+        aggregate.facts.len().max(1),
+        required.as_ref(),
+    )?;
     if aggregate != recomputed {
         return Err(invalid("aggregate query authority cannot be reproduced"));
     }
@@ -167,6 +199,13 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
             .get("sources")
             .ok_or_else(|| invalid("projection has no source authority"))?,
     )?;
+    if let Some(selection) = &exact_selection {
+        validate_exact_selection(
+            selection,
+            retained,
+            required.as_ref().expect("selected hit"),
+        )?;
+    }
     Ok(())
 }
 
@@ -213,6 +252,146 @@ fn supported_context_language(language: &str) -> bool {
             | "language:rust"
             | "language:typescript"
     )
+}
+
+fn exact_selection_hit(
+    queries: &BTreeMap<String, QueryContext>,
+    selection: &ExactSelectionAuthority,
+) -> Result<CompilationFactHit, ClewError> {
+    let query = queries
+        .get(&selection.compilation)
+        .ok_or_else(|| invalid("exact selection compilation is absent"))?;
+    let mut facts = query
+        .facts
+        .iter()
+        .filter(|fact| fact.fact_key == selection.fact_key);
+    let fact = facts
+        .next()
+        .cloned()
+        .ok_or_else(|| invalid("exact selection fact is absent"))?;
+    if facts.next().is_some() {
+        return Err(invalid("exact selection fact authority is duplicated"));
+    }
+    Ok(CompilationFactHit {
+        compilation: selection.compilation.clone(),
+        fact,
+    })
+}
+
+fn validate_exact_selection(
+    selection: &ExactSelectionAuthority,
+    retained: &Value,
+    required: &CompilationFactHit,
+) -> Result<(), ClewError> {
+    validate_exact_file_selector(&selection.file)?;
+    if selection.schema != EXACT_SELECTION_SCHEMA
+        || selection.term.is_empty()
+        || !selection.direct_posting_complete
+        || required.compilation != selection.compilation
+        || required.fact.fact_key != selection.fact_key
+    {
+        return Err(invalid("exact declaration selection authority is invalid"));
+    }
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("exact selection context has no matches"))?;
+    let selected = matches
+        .iter()
+        .filter(|fact| {
+            fact.get("compilation").and_then(Value::as_str) == Some(selection.compilation.as_str())
+                && fact.get("factKey").and_then(Value::as_str) == Some(selection.fact_key.as_str())
+        })
+        .collect::<Vec<_>>();
+    let expected_payload_ref = serde_json::to_value(&required.fact.payload).map_err(internal)?;
+    if selected.len() != 1
+        || selected[0].get("domainUri").and_then(Value::as_str)
+            != Some(required.fact.domain_uri.as_str())
+        || selected[0].get("payloadRef") != Some(&expected_payload_ref)
+        || !exact_declaration_file_term_matches(
+            &selected[0]["payload"],
+            &selection.file,
+            &selection.term,
+        )
+        || !exact_source_window_retained(
+            retained.get("sources").and_then(Value::as_array),
+            &selected[0]["payload"],
+        )
+    {
+        return Err(invalid(
+            "exact declaration selection is not retained with its source",
+        ));
+    }
+    Ok(())
+}
+
+fn exact_source_window_retained(sources: Option<&Vec<Value>>, payload: &Value) -> bool {
+    let Some(payload) = payload.as_object() else {
+        return false;
+    };
+    let Some(file) = payload.get("file").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(declaration_start) = payload.get("startLine").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(declaration_end) = payload.get("endLine").and_then(Value::as_u64) else {
+        return false;
+    };
+    declaration_start > 0
+        && declaration_start <= declaration_end
+        && sources.is_some_and(|sources| {
+            sources
+                .iter()
+                .filter(|row| row.get("fileId").and_then(Value::as_str) == Some(file))
+                .flat_map(|row| {
+                    row.get("windows")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .any(|window| {
+                    window
+                        .get("startLine")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|start| start <= declaration_start)
+                        && window
+                            .get("endLine")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|end| declaration_end <= end)
+                })
+        })
+}
+
+fn exact_declaration_file_term_matches(payload: &Value, file: &str, term: &str) -> bool {
+    let Some(payload) = payload.as_object() else {
+        return false;
+    };
+    let declaration = payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("declaration"))
+        || (payload.contains_key("declarationKind") && payload.contains_key("symbolIdentity"));
+    declaration
+        && payload.get("file").and_then(Value::as_str) == Some(file)
+        && payload.get("name").and_then(Value::as_str) == Some(term)
+}
+
+fn validate_exact_file_selector(file: &str) -> Result<(), ClewError> {
+    if file.is_empty()
+        || file.len() > 4096
+        || file.contains("://")
+        || file.starts_with('/')
+        || file.contains('\0')
+        || file
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        return Err(invalid(
+            "navigation file selector is not repository-relative",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_source_rows(value: &Value) -> Result<(), ClewError> {
@@ -296,6 +475,42 @@ pub fn create(
     max_roots: usize,
     parent: Option<&ContextObject>,
 ) -> Result<(Value, Value), ClewError> {
+    create_with_selector(session, intent, terms, max_roots, parent, None)
+}
+
+pub fn create_exact_file_term(
+    session: &SessionAuthority,
+    intent: &str,
+    terms: &[String],
+    max_roots: usize,
+    parent: &ContextObject,
+    file: &str,
+    term: &str,
+) -> Result<(Value, Value), ClewError> {
+    validate_exact_file_selector(file)?;
+    if term.is_empty() || terms.len() != 1 || terms[0] != term {
+        return Err(invalid(
+            "exact context selection requires one matching declaration term",
+        ));
+    }
+    create_with_selector(
+        session,
+        intent,
+        terms,
+        max_roots,
+        Some(parent),
+        Some(ExactFileTermSelector { file, term }),
+    )
+}
+
+fn create_with_selector(
+    session: &SessionAuthority,
+    intent: &str,
+    terms: &[String],
+    max_roots: usize,
+    parent: Option<&ContextObject>,
+    exact_selector: Option<ExactFileTermSelector<'_>>,
+) -> Result<(Value, Value), ClewError> {
     crate::session::validate_context_request(intent, terms)?;
     if terms.is_empty() || max_roots == 0 || max_roots > 256 {
         return Err(invalid("bounded context terms or root limit is invalid"));
@@ -308,6 +523,11 @@ pub fn create(
     let state = StateAuthority::process_default()?;
     let store = CasStore::open(&state)?;
     let fact_limit = max_roots.saturating_mul(16).min(MAX_EVIDENCE_FACTS);
+    let query_limit = if exact_selector.is_some() {
+        fact_limit.saturating_sub(1).max(1)
+    } else {
+        fact_limit
+    };
     let parent_queries = parent
         .map(|parent| {
             serde_json::from_value::<BTreeMap<String, QueryContext>>(
@@ -321,26 +541,66 @@ pub fn create(
         })
         .transpose()?;
     let mut query_contexts = BTreeMap::new();
+    let mut exact_matches = BTreeSet::new();
+    let mut exact_query_truncated = false;
     for compilation in &ready.compilations {
         let index = load_query_index(&store, compilation)?;
-        let context = if let Some(parent_queries) = &parent_queries {
+        let mut context = if let Some(parent_queries) = &parent_queries {
             let parent_query = parent_queries
                 .get(&compilation.compilation)
                 .ok_or_else(|| invalid("parent context misses a selected compilation"))?;
-            expand(&store, &index, parent_query, terms, fact_limit)?
+            expand(&store, &index, parent_query, terms, query_limit)?
         } else {
-            query(&store, &index, terms, fact_limit)?
+            query(&store, &index, terms, query_limit)?
         };
+        if let Some(selector) = exact_selector {
+            let exact = exact_name_query(&store, &index, selector.term)?;
+            exact_query_truncated |= exact.truncated;
+            context.query_shards_read = context
+                .query_shards_read
+                .checked_add(exact.query_shards_read)
+                .ok_or_else(|| resource("context query shard count overflow"))?;
+            for fact in exact.facts {
+                let payload = load_fact_payload(&store, &fact)?;
+                if exact_declaration_file_term_matches(&payload, selector.file, selector.term) {
+                    exact_matches.insert(CompilationFactHit {
+                        compilation: compilation.compilation.clone(),
+                        fact,
+                    });
+                }
+            }
+        }
         query_contexts.insert(compilation.compilation.clone(), context);
     }
-    let query_context = merge_query_contexts(&query_contexts, fact_limit)?;
+    let exact_match = if exact_selector.is_some() {
+        Some(select_unique_exact_match(
+            exact_matches,
+            exact_query_truncated,
+        )?)
+    } else {
+        None
+    };
+    if let Some(selected) = &exact_match {
+        let context = query_contexts
+            .get_mut(&selected.compilation)
+            .ok_or_else(|| internal("exact declaration compilation disappeared"))?;
+        promote_query_fact(context, &selected.fact, fact_limit);
+    }
+    let query_context =
+        merge_query_contexts_with_required(&query_contexts, fact_limit, exact_match.as_ref())?;
     let snapshot = load_snapshot(&store, &ready)?;
     let selection_terms = &query_context.requested_terms;
-    let evidence_facts = rank_fact_evidence(
-        load_fact_evidence(&store, &query_context.facts)?,
-        selection_terms,
-        max_roots.saturating_mul(4),
-    )?;
+    let loaded_facts = load_fact_evidence(&store, &query_context.facts)?;
+    let evidence_facts = if let Some(selected) = &exact_match {
+        rank_fact_evidence_with_required(
+            loaded_facts,
+            selection_terms,
+            max_roots.saturating_mul(4),
+            selected,
+        )?
+    } else {
+        rank_fact_evidence(loaded_facts, selection_terms, max_roots.saturating_mul(4))?
+    };
     let mut paths = ordered_paths_in_evidence(&evidence_facts);
     let semantic_paths = paths.iter().cloned().collect::<BTreeSet<_>>();
     let mut visible_paths = snapshot
@@ -508,7 +768,7 @@ pub fn create(
         },
     });
     let projection = bounded_projection(&context)?;
-    let evidence = json!({
+    let mut evidence = json!({
         "schema":BOUNDED_CONTEXT_EVIDENCE_SCHEMA,
         "context":context,
         "queryContext":query_context,
@@ -518,6 +778,23 @@ pub fn create(
             "certainty":certainty,
         },
     });
+    if let (Some(selected), Some(selector)) = (&exact_match, exact_selector) {
+        evidence
+            .as_object_mut()
+            .expect("context evidence is an object")
+            .insert(
+                "exactSelection".into(),
+                serde_json::to_value(ExactSelectionAuthority {
+                    schema: EXACT_SELECTION_SCHEMA.into(),
+                    file: selector.file.into(),
+                    term: selector.term.into(),
+                    compilation: selected.compilation.clone(),
+                    fact_key: selected.fact.fact_key.clone(),
+                    direct_posting_complete: true,
+                })
+                .map_err(internal)?,
+            );
+    }
     Ok((projection, evidence))
 }
 
@@ -543,9 +820,18 @@ fn query_selection_verified(
         .all(|term| exact_identities.contains(term))
 }
 
+#[cfg(test)]
 fn merge_query_contexts(
     contexts: &BTreeMap<String, QueryContext>,
     fact_limit: usize,
+) -> Result<AggregateQueryContext, ClewError> {
+    merge_query_contexts_with_required(contexts, fact_limit, None)
+}
+
+fn merge_query_contexts_with_required(
+    contexts: &BTreeMap<String, QueryContext>,
+    fact_limit: usize,
+    required: Option<&CompilationFactHit>,
 ) -> Result<AggregateQueryContext, ClewError> {
     let first = contexts
         .values()
@@ -586,7 +872,19 @@ fn merge_query_contexts(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let facts = fair_compilation_selection(&lanes, fact_limit);
+    let mut facts = fair_compilation_selection(&lanes, fact_limit);
+    if let Some(required) = required {
+        if !all_facts.contains(required) {
+            return Err(invalid(
+                "required exact declaration is absent from query authority",
+            ));
+        }
+        facts.retain(|fact| fact != required);
+        while facts.len() >= fact_limit {
+            facts.pop();
+        }
+        facts.insert(0, required.clone());
+    }
     let truncated =
         contexts.values().any(|context| context.truncated) || all_facts.len() > facts.len();
     let unmatched_terms = first
@@ -649,6 +947,41 @@ fn fair_compilation_selection(
     selected.into_iter().collect()
 }
 
+fn promote_query_fact(context: &mut QueryContext, selected: &FactHit, limit: usize) {
+    let original_len = context.facts.len();
+    let already_selected = context.facts.iter().any(|fact| fact == selected);
+    context.facts.retain(|fact| fact != selected);
+    while context.facts.len() >= limit {
+        context.facts.pop();
+    }
+    context.facts.insert(0, selected.clone());
+    context.truncated |=
+        original_len > context.facts.len() || (!already_selected && original_len >= limit);
+}
+
+fn select_unique_exact_match(
+    matches: BTreeSet<CompilationFactHit>,
+    direct_posting_truncated: bool,
+) -> Result<CompilationFactHit, ClewError> {
+    if direct_posting_truncated {
+        return Err(ClewError::new(
+            ErrorCode::IncompleteSemanticAnalysis,
+            "exact declaration-name posting is truncated; selection cannot prove uniqueness",
+        ));
+    }
+    match matches.len() {
+        0 => Err(ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "no exact declaration matches the selected file and term",
+        )),
+        1 => Ok(matches.into_iter().next().expect("one exact match")),
+        _ => Err(ClewError::new(
+            ErrorCode::AmbiguousSymbol,
+            "multiple exact declarations match the selected file and term",
+        )),
+    }
+}
+
 fn load_fact_evidence(
     store: &CasStore,
     facts: &[CompilationFactHit],
@@ -685,6 +1018,19 @@ fn load_fact_evidence(
             }))
         })
         .collect()
+}
+
+fn load_fact_payload(store: &CasStore, fact: &FactHit) -> Result<Value, ClewError> {
+    let limit = usize::try_from(fact.payload.size)
+        .map_err(|_| resource("fact payload exceeds host size"))?;
+    if limit > MAX_PAYLOAD_BYTES {
+        return Err(resource(
+            "exact declaration payload exceeds the context payload limit",
+        ));
+    }
+    let lease = store.read(&fact.payload, limit)?;
+    serde_json::from_slice(lease.bytes())
+        .map_err(|_| invalid("exact declaration payload is not JSON"))
 }
 
 fn paths_in_payload(payload: &Value) -> Vec<String> {
@@ -1355,6 +1701,30 @@ fn rank_fact_evidence(
     Ok(ranked)
 }
 
+fn rank_fact_evidence_with_required(
+    mut facts: Vec<Value>,
+    terms: &[String],
+    limit: usize,
+    required: &CompilationFactHit,
+) -> Result<Vec<Value>, ClewError> {
+    let position = facts
+        .iter()
+        .position(|fact| {
+            fact.get("compilation").and_then(Value::as_str) == Some(required.compilation.as_str())
+                && fact.get("factKey").and_then(Value::as_str)
+                    == Some(required.fact.fact_key.as_str())
+        })
+        .ok_or_else(|| internal("exact declaration is absent from aggregate query authority"))?;
+    let selected = facts.remove(position);
+    let mut ranked = if limit > 1 {
+        rank_fact_evidence(facts, terms, limit - 1)?
+    } else {
+        Vec::new()
+    };
+    ranked.insert(0, selected);
+    Ok(ranked)
+}
+
 fn normalized_direct_name(value: &str) -> String {
     value
         .chars()
@@ -1552,17 +1922,194 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES,
-        PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection, load_fact_evidence,
-        merge_query_contexts, ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints,
-        source_windows, validate_source_rows,
+        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, EXACT_SELECTION_SCHEMA,
+        ExactSelectionAuthority, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES, PROJECTION_TARGET_BYTES,
+        best_lexical_support, bounded_projection, exact_declaration_file_term_matches,
+        load_fact_evidence, merge_query_contexts, merge_query_contexts_with_required,
+        ordered_paths_in_evidence, promote_query_fact, rank_fact_evidence,
+        rank_fact_evidence_with_required, select_unique_exact_match, source_offset_hints,
+        source_windows, validate_exact_selection, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
+    use crate::error::ErrorCode;
     use crate::query_v2::{FactHit, QUERY_CONTEXT_SCHEMA, QueryContext};
     use crate::state::StateAuthority;
     use serde_json::json;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn required_exact_fact_survives_query_merge_and_evidence_limits() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"{}").unwrap();
+        let fact = |key: &str| FactHit {
+            fact_key: key.into(),
+            domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+            payload: payload.clone(),
+        };
+        let required = CompilationFactHit {
+            compilation: "cargo:demo".into(),
+            fact: fact("z:required"),
+        };
+        let mut query = QueryContext {
+            schema: QUERY_CONTEXT_SCHEMA.into(),
+            index_id: "sha256:index".into(),
+            requested_terms: vec!["value".into()],
+            unmatched_terms: vec![],
+            facts: vec![fact("a:first"), fact("b:second")],
+            query_shards_read: 1,
+            truncated: false,
+        };
+        promote_query_fact(&mut query, &required.fact, 2);
+        assert_eq!(query.facts[0], required.fact);
+        assert!(query.truncated);
+
+        let aggregate = merge_query_contexts_with_required(
+            &BTreeMap::from([("cargo:demo".into(), query)]),
+            1,
+            Some(&required),
+        )
+        .unwrap();
+        assert_eq!(aggregate.facts, vec![required.clone()]);
+
+        let ranked = rank_fact_evidence_with_required(
+            vec![
+                json!({"compilation":"cargo:demo","factKey":"a:first","payload":{}}),
+                json!({"compilation":"cargo:demo","factKey":"z:required","payload":{}}),
+            ],
+            &["value".into()],
+            1,
+            &required,
+        )
+        .unwrap();
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0]["factKey"], "z:required");
+    }
+
+    #[test]
+    fn exact_declaration_selection_is_structural_and_file_scoped() {
+        let selected = json!({
+            "kind":"declaration",
+            "name":"value",
+            "file":"crates/clew/src/canonical.rs"
+        });
+        assert!(exact_declaration_file_term_matches(
+            &selected,
+            "crates/clew/src/canonical.rs",
+            "value"
+        ));
+        assert!(!exact_declaration_file_term_matches(
+            &selected,
+            "crates/clew/src/operations.rs",
+            "value"
+        ));
+        assert!(!exact_declaration_file_term_matches(
+            &json!({"kind":"relation","name":"value","file":"crates/clew/src/canonical.rs"}),
+            "crates/clew/src/canonical.rs",
+            "value"
+        ));
+    }
+
+    #[test]
+    fn exact_declaration_selection_refuses_ambiguity_and_incomplete_postings() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"{}").unwrap();
+        let hit = |compilation: &str, key: &str| CompilationFactHit {
+            compilation: compilation.into(),
+            fact: FactHit {
+                fact_key: key.into(),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload: payload.clone(),
+            },
+        };
+        assert_eq!(
+            select_unique_exact_match(BTreeSet::new(), false)
+                .unwrap_err()
+                .code,
+            ErrorCode::SymbolNotFound
+        );
+        assert_eq!(
+            select_unique_exact_match(
+                [hit("cargo:a", "fact:a"), hit("cargo:b", "fact:b")]
+                    .into_iter()
+                    .collect(),
+                false,
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::AmbiguousSymbol
+        );
+        assert_eq!(
+            select_unique_exact_match([hit("cargo:a", "fact:a")].into_iter().collect(), true,)
+                .unwrap_err()
+                .code,
+            ErrorCode::IncompleteSemanticAnalysis
+        );
+    }
+
+    #[test]
+    fn exact_selection_validation_binds_fact_payload_and_covering_source_window() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload_ref = store
+            .put(
+                "test/payload/1",
+                br#"{"kind":"declaration","name":"value"}"#,
+            )
+            .unwrap();
+        let required = CompilationFactHit {
+            compilation: "cargo:demo".into(),
+            fact: FactHit {
+                fact_key: "fact:value".into(),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload: payload_ref.clone(),
+            },
+        };
+        let selection = ExactSelectionAuthority {
+            schema: EXACT_SELECTION_SCHEMA.into(),
+            file: "src/canonical.rs".into(),
+            term: "value".into(),
+            compilation: required.compilation.clone(),
+            fact_key: required.fact.fact_key.clone(),
+            direct_posting_complete: true,
+        };
+        let payload = json!({
+            "kind":"declaration",
+            "name":"value",
+            "file":"src/canonical.rs",
+            "startLine":7,
+            "endLine":9
+        });
+        let mut retained = json!({
+            "matches":[{
+                "compilation":"cargo:demo",
+                "factKey":"fact:value",
+                "domainUri":"analysis:test",
+                "payloadRef":payload_ref,
+                "payload":payload
+            }],
+            "sources":[{
+                "fileId":"src/canonical.rs",
+                "windows":[{"startLine":1,"endLine":20,"text":"source"}]
+            }]
+        });
+        validate_exact_selection(&selection, &retained, &required).unwrap();
+
+        retained["matches"][0]["domainUri"] = json!("analysis:other");
+        assert!(validate_exact_selection(&selection, &retained, &required).is_err());
+        retained["matches"][0]["domainUri"] = json!("analysis:test");
+        retained["sources"][0]["windows"][0]["startLine"] = json!(11);
+        assert!(validate_exact_selection(&selection, &retained, &required).is_err());
+        retained["sources"][0]["windows"][0]["startLine"] = json!(1);
+        retained["matches"][0]["payloadRef"]["digest"] =
+            json!(format!("sha256:{}", "f".repeat(64)));
+        assert!(validate_exact_selection(&selection, &retained, &required).is_err());
+    }
 
     #[test]
     fn bounded_projection_preserves_multi_compilation_authority() {

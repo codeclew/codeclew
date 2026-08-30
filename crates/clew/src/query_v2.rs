@@ -110,6 +110,17 @@ pub struct QueryContext {
     pub truncated: bool,
 }
 
+/// A bounded lookup in the dedicated declaration-name posting.  Callers must
+/// still inspect the referenced payloads for their exact file and declaration
+/// authority; this lookup deliberately does not fall back to broad lexical
+/// postings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactNameQuery {
+    pub facts: Vec<FactHit>,
+    pub query_shards_read: u32,
+    pub truncated: bool,
+}
+
 pub fn build_query_index(
     store: &CasStore,
     generation: &GenerationManifest,
@@ -280,6 +291,28 @@ pub fn query(
         facts,
         query_shards_read: shards_read.len() as u32,
         truncated,
+    })
+}
+
+pub fn exact_name_query(
+    store: &CasStore,
+    index: &QueryIndexManifest,
+    term: &str,
+) -> Result<ExactNameQuery, ClewError> {
+    verify_index_manifest(store, index)?;
+    let normalized = normalize_terms(std::iter::once(term));
+    if normalized.len() != 1 {
+        return Err(invalid(
+            "exact declaration lookup requires one normalized identifier",
+        ));
+    }
+    let direct_term = direct_name_term(&normalized[0]);
+    let mut shards_read = BTreeSet::new();
+    let facts = read_term_matches(store, index, &direct_term, &mut shards_read)?;
+    Ok(ExactNameQuery {
+        facts,
+        query_shards_read: shards_read.len() as u32,
+        truncated: index.overflow_terms.contains(&direct_term),
     })
 }
 
@@ -1119,6 +1152,12 @@ mod tests {
         assert_eq!(result.facts.len(), 1);
         assert_eq!(result.facts[0].fact_key, "z:declaration");
         assert!(result.truncated);
+
+        let exact = exact_name_query(&store, &index, "TargetSymbol").unwrap();
+        assert_eq!(exact.facts.len(), 1);
+        assert_eq!(exact.facts[0].fact_key, "z:declaration");
+        assert!(!exact.truncated);
+        assert!(exact.query_shards_read <= 1);
     }
 
     #[test]
@@ -1593,16 +1632,17 @@ mod tests {
                 payload: payload.clone(),
             })
             .collect::<Vec<_>>();
+        let posting_term = direct_name_term("popular");
         let (bounded, overflow_terms) = bound_postings(BTreeMap::from([(
-            "popular".to_owned(),
+            posting_term.clone(),
             facts.iter().cloned().collect(),
         )]));
-        let retained = bounded["popular"].iter().cloned().collect::<Vec<_>>();
+        let retained = bounded[&posting_term].iter().cloned().collect::<Vec<_>>();
         let posting = TermPosting {
-            term: "popular".into(),
+            term: posting_term.clone(),
             facts: retained.clone(),
         };
-        let posting_bucket = bucket("popular");
+        let posting_bucket = bucket(&posting_term);
         let mut references = Vec::new();
         publish_bucket(&store, &posting_bucket, vec![posting], &mut references).unwrap();
         assert!(
@@ -1637,5 +1677,8 @@ mod tests {
         let result = query(&store, &index, &["popular".into()], MAX_CONTEXT_FACTS).unwrap();
         assert_eq!(result.facts.len(), MAX_QUERY_FACTS_PER_TERM);
         assert!(result.truncated);
+        let exact = exact_name_query(&store, &index, "popular").unwrap();
+        assert_eq!(exact.facts.len(), MAX_QUERY_FACTS_PER_TERM);
+        assert!(exact.truncated);
     }
 }
