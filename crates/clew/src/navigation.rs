@@ -13,6 +13,11 @@ pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_NAV_CANDIDATES: usize = 3;
 const MAX_TERM_ANCHORS: usize = 4;
+const MAX_REFERENCE_FOLLOW_TERMS: usize = 1;
+const MAX_REFERENCE_MATCHES_PER_TERM: usize = 3;
+const MAX_REFERENCE_FOLLOW_SOURCE_BYTES: usize = 16 * 1024;
+const MAX_REFERENCE_OBSERVATIONS_PER_TERM: usize = 4;
+const MAX_REFERENCE_PATH_BYTES: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NavigationFacet {
@@ -228,6 +233,338 @@ pub fn source_by_candidate(
         .get("sources")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("retained navigation context has no source array"))?;
+    let payload = candidate_payload(matches, candidate_id)?;
+    Ok(json!({
+        "candidateId":candidate_id,
+        "source":exact_source_detail(sources, payload),
+    }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectReferenceSelection {
+    terminal_name: String,
+    source_file: String,
+    matched_terms: Vec<String>,
+    observations: Vec<DirectReferenceObservation>,
+    source_references_truncated: bool,
+}
+
+impl DirectReferenceSelection {
+    pub fn terminal_name(&self) -> &str {
+        &self.terminal_name
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct DirectReferenceObservation {
+    path_segments: Vec<String>,
+    range_start: u64,
+    range_end: u64,
+    start_line: u64,
+    end_line: u64,
+}
+
+pub fn select_direct_references(
+    context: &ContextObject,
+    candidate_id: &str,
+) -> Result<(Vec<DirectReferenceSelection>, bool, usize), ClewError> {
+    let retained = retained_context(context)?;
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no match array"))?;
+    let payload = candidate_payload(matches, candidate_id)?;
+    let source_file = required_payload_string(payload, "file")?.to_owned();
+    let declaration_start = required_payload_u64(payload, "rangeStart")?;
+    let declaration_end = required_payload_u64(payload, "rangeEnd")?;
+    let declaration_start_line = required_payload_u64(payload, "startLine")?;
+    let declaration_end_line = required_payload_u64(payload, "endLine")?;
+    let Some(references) = payload.get("directReferences") else {
+        return Ok((Vec::new(), false, 0));
+    };
+    let source_references_truncated = payload
+        .get("directReferencesTruncated")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("direct reference facts have no truncation boundary"))?;
+    let references = references
+        .as_array()
+        .ok_or_else(|| invalid("direct reference facts are not an array"))?;
+    let mut grouped = BTreeMap::<String, BTreeSet<DirectReferenceObservation>>::new();
+    for reference in references {
+        if reference.get("kind").and_then(Value::as_str) != Some("CALL_PATH")
+            || reference.get("resolution").and_then(Value::as_str) != Some("SYNTAX_UNRESOLVED")
+        {
+            return Err(invalid(
+                "direct reference fact has an unsupported closed value",
+            ));
+        }
+        let path_segments = reference
+            .get("pathSegments")
+            .and_then(Value::as_array)
+            .filter(|segments| !segments.is_empty() && segments.len() <= 32)
+            .ok_or_else(|| invalid("direct reference fact has invalid path segments"))?
+            .iter()
+            .map(|segment| {
+                segment
+                    .as_str()
+                    .filter(|segment| !segment.is_empty() && segment.len() <= 256)
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid("direct reference path segment is invalid"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let terminal_name = required_value_string(reference, "terminalName")?;
+        if path_segments.last().map(String::as_str) != Some(terminal_name) {
+            return Err(invalid(
+                "direct reference terminal does not match its final path segment",
+            ));
+        }
+        let range_start = required_value_u64(reference, "rangeStart")?;
+        let range_end = required_value_u64(reference, "rangeEnd")?;
+        let start_line = required_value_u64(reference, "startLine")?;
+        let end_line = required_value_u64(reference, "endLine")?;
+        if range_start >= range_end
+            || range_start < declaration_start
+            || declaration_end < range_end
+            || start_line < declaration_start_line
+            || declaration_end_line < end_line
+            || start_line > end_line
+        {
+            return Err(invalid(
+                "direct reference range escapes its declaration authority",
+            ));
+        }
+        grouped
+            .entry(terminal_name.to_owned())
+            .or_default()
+            .insert(DirectReferenceObservation {
+                path_segments,
+                range_start,
+                range_end,
+                start_line,
+                end_line,
+            });
+    }
+    let normalized_terms = context
+        .terms
+        .iter()
+        .map(|term| term.to_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut ranked = grouped
+        .into_iter()
+        .filter_map(|(terminal_name, observations)| {
+            let components = terminal_name
+                .split(|character: char| !character.is_alphanumeric())
+                .filter(|component| !component.is_empty())
+                .map(str::to_lowercase)
+                .collect::<BTreeSet<_>>();
+            let matched_terms = normalized_terms
+                .intersection(&components)
+                .cloned()
+                .collect::<Vec<_>>();
+            (!matched_terms.is_empty()).then(|| DirectReferenceSelection {
+                terminal_name,
+                source_file: source_file.clone(),
+                matched_terms,
+                observations: observations.into_iter().collect(),
+                source_references_truncated,
+            })
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .matched_terms
+            .len()
+            .cmp(&left.matched_terms.len())
+            .then_with(|| right.observations.len().cmp(&left.observations.len()))
+            .then_with(|| left.terminal_name.cmp(&right.terminal_name))
+    });
+    let eligible_count = ranked.len();
+    ranked.truncate(MAX_REFERENCE_FOLLOW_TERMS);
+    Ok((ranked, source_references_truncated, eligible_count))
+}
+
+pub fn direct_reference_detail(
+    context: &ContextObject,
+    selections: &[DirectReferenceSelection],
+    eligible_count: usize,
+) -> Result<Value, ClewError> {
+    if selections.is_empty()
+        || selections.len() > MAX_REFERENCE_FOLLOW_TERMS
+        || eligible_count < selections.len()
+    {
+        return Err(invalid(
+            "direct reference detail requires exactly one bounded selection",
+        ));
+    }
+    let retained = retained_context(context)?;
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no match array"))?;
+    let sources = retained
+        .get("sources")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no source array"))?;
+    let mut source_bytes = 0usize;
+    let source_references_truncated = selections
+        .iter()
+        .any(|selection| selection.source_references_truncated);
+    let selection_truncated = eligible_count > selections.len();
+    let mut follow_truncated =
+        source_references_truncated || selection_truncated || retained_query_truncated(context);
+    let mut details = Vec::new();
+    for selection in selections {
+        let mut candidates = matches
+            .iter()
+            .filter_map(|matched| {
+                let payload = matched.get("payload").and_then(Value::as_object)?;
+                (is_declaration(payload)
+                    && exact_candidate_name_matches(payload, &selection.terminal_name))
+                .then_some((matched, payload))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            let left_file = left.1.get("file").and_then(Value::as_str).unwrap_or("");
+            let right_file = right.1.get("file").and_then(Value::as_str).unwrap_or("");
+            let left_same_file = left_file == selection.source_file;
+            let right_same_file = right_file == selection.source_file;
+            right_same_file
+                .cmp(&left_same_file)
+                .then_with(|| left_file.cmp(right_file))
+                .then_with(|| {
+                    left.1
+                        .get("rangeStart")
+                        .and_then(Value::as_u64)
+                        .cmp(&right.1.get("rangeStart").and_then(Value::as_u64))
+                })
+                .then_with(|| {
+                    left.0
+                        .get("factKey")
+                        .and_then(Value::as_str)
+                        .cmp(&right.0.get("factKey").and_then(Value::as_str))
+                })
+        });
+        let total = candidates.len();
+        let mut returned = Vec::new();
+        for (matched, payload) in candidates.into_iter().take(MAX_REFERENCE_MATCHES_PER_TERM) {
+            let mut source = exact_source_detail(sources, payload);
+            let exact_bytes = source
+                .pointer("/windows/0/text")
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or(0);
+            if source_bytes.saturating_add(exact_bytes) > MAX_REFERENCE_FOLLOW_SOURCE_BYTES {
+                source = json!({"status":"UNAVAILABLE","reason":"OMITTED_BUDGET"});
+                follow_truncated = true;
+            } else {
+                source_bytes = source_bytes.saturating_add(exact_bytes);
+            }
+            returned.push(json!({
+                "candidateId":candidate_handle(
+                    required_string(matched, "compilation")?,
+                    required_string(matched, "factKey")?,
+                )?,
+                "candidateKey":{
+                    "compilation":required_string(matched, "compilation")?,
+                    "factKey":required_string(matched, "factKey")?,
+                },
+                "displayName":display_name(payload),
+                "location":{
+                    "file":payload.get("file"),
+                    "startLine":payload.get("startLine"),
+                    "endLine":payload.get("endLine"),
+                    "start":payload.get("rangeStart").or_else(|| payload.get("start")),
+                    "end":payload.get("rangeEnd").or_else(|| payload.get("end")),
+                },
+                "sameFileAsObservation":payload.get("file").and_then(Value::as_str) == Some(selection.source_file.as_str()),
+                "source":source,
+            }));
+        }
+        let observations = selection
+            .observations
+            .iter()
+            .filter(|observation| {
+                observation
+                    .path_segments
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>()
+                    .saturating_add(observation.path_segments.len().saturating_sub(1) * 2)
+                    <= MAX_REFERENCE_PATH_BYTES
+            })
+            .take(MAX_REFERENCE_OBSERVATIONS_PER_TERM)
+            .map(|observation| {
+                json!({
+                    "pathSegments":observation.path_segments,
+                    "rangeStart":observation.range_start,
+                    "rangeEnd":observation.range_end,
+                    "startLine":observation.start_line,
+                    "endLine":observation.end_line,
+                })
+            })
+            .collect::<Vec<_>>();
+        let observation_total = selection.observations.len();
+        follow_truncated |= observations.len() < observation_total;
+        follow_truncated |= returned.len() < total;
+        details.push(json!({
+            "observed":{
+                "kind":"CALL_PATH",
+                "sourceFile":selection.source_file,
+                "terminalName":selection.terminal_name,
+                "matchedTerms":selection.matched_terms,
+                "sourceReferencesTruncated":selection.source_references_truncated,
+                "occurrenceCount":{
+                    "returned":observations.len(),
+                    "total":observation_total,
+                    "omitted":observation_total.saturating_sub(observations.len()),
+                },
+                "occurrences":observations,
+            },
+            "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+            "targetResolution":"UNRESOLVED",
+            "semanticRelation":"UNKNOWN",
+            "nameMatches":{
+                "status":match total {
+                    0 => "NOT_FOUND_IN_RETAINED_CONTEXT",
+                    1 => "UNIQUE_RETAINED_NAME",
+                    _ => "AMBIGUOUS_RETAINED_NAME",
+                },
+                "ordering":"SAME_FILE_FIRST_PRESENTATION_ONLY",
+                "returned":returned.len(),
+                "total":total,
+                "omitted":total.saturating_sub(returned.len()),
+                "candidates":returned,
+            },
+        }));
+    }
+    Ok(json!({
+        "schema":"codeclew-navigation-reference-follow/1.0",
+        "status":"SUPPORTED",
+        "sessionId":context.session_id,
+        "contextId":context.context_id,
+        "evidenceDigest":context.evidence_digest,
+        "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+        "targetResolution":"UNRESOLVED",
+        "semanticRelation":"UNKNOWN",
+        "sourceBytes":source_bytes,
+        "sourceReferencesTruncated":source_references_truncated,
+        "referenceTermCount":{
+            "returned":selections.len(),
+            "eligible":eligible_count,
+            "omitted":eligible_count.saturating_sub(selections.len()),
+        },
+        "selectionTruncated":selection_truncated,
+        "references":details,
+        "contextCompleteness":retained.get("completeness"),
+        "truncated":follow_truncated,
+    }))
+}
+
+fn candidate_payload<'a>(
+    matches: &'a [Value],
+    candidate_id: &str,
+) -> Result<&'a Map<String, Value>, ClewError> {
     let mut selected = None;
     for matched in matches {
         let Some(payload) = matched.get("payload").and_then(Value::as_object) else {
@@ -251,10 +588,7 @@ pub fn source_by_candidate(
             "navigation candidate is not retained by this context",
         )
     })?;
-    Ok(json!({
-        "candidateId":candidate_id,
-        "source":exact_source_detail(sources, payload),
-    }))
+    Ok(payload)
 }
 
 fn selected_candidate_detail(
@@ -973,6 +1307,37 @@ fn required_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, ClewError
         .ok_or_else(|| invalid(format!("navigation match has no {key}")))
 }
 
+fn required_payload_string<'a>(
+    payload: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, ClewError> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(format!("navigation payload has no {key}")))
+}
+
+fn required_payload_u64(payload: &Map<String, Value>, key: &str) -> Result<u64, ClewError> {
+    payload
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid(format!("navigation payload has no {key}")))
+}
+
+fn required_value_string<'a>(value: &'a Value, key: &str) -> Result<&'a str, ClewError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(format!("navigation value has no {key}")))
+}
+
+fn required_value_u64(value: &Value, key: &str) -> Result<u64, ClewError> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| invalid(format!("navigation value has no {key}")))
+}
+
 fn invalid(message: impl Into<String>) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
 }
@@ -1266,6 +1631,188 @@ mod tests {
         assert_eq!(
             anchors[2]["matchedTerms"],
             json!(["completeness", "member"])
+        );
+    }
+
+    #[test]
+    fn direct_reference_selection_uses_query_overlap_without_claiming_resolution() {
+        let retained = json!({
+            "matches":[{
+                "compilation":"cargo:demo",
+                "factKey":"fact:test",
+                "payload":{
+                    "kind":"declaration",
+                    "name":"aggregate_unmatched_terms_are_global",
+                    "declarationKind":"function",
+                    "symbolIdentity":"symbol:test",
+                    "file":"src/lib.rs",
+                    "rangeStart":100,
+                    "rangeEnd":300,
+                    "startLine":10,
+                    "endLine":30,
+                    "directReferencesTruncated":false,
+                    "directReferences":[
+                        {
+                            "kind":"CALL_PATH",
+                            "pathSegments":["row"],
+                            "terminalName":"row",
+                            "rangeStart":120,
+                            "rangeEnd":125,
+                            "startLine":12,
+                            "endLine":12,
+                            "resolution":"SYNTAX_UNRESOLVED"
+                        },
+                        {
+                            "kind":"CALL_PATH",
+                            "pathSegments":["super","aggregate_completeness"],
+                            "terminalName":"aggregate_completeness",
+                            "rangeStart":150,
+                            "rangeEnd":180,
+                            "startLine":16,
+                            "endLine":16,
+                            "resolution":"SYNTAX_UNRESOLVED"
+                        },
+                        {
+                            "kind":"CALL_PATH",
+                            "pathSegments":["member_context"],
+                            "terminalName":"member_context",
+                            "rangeStart":190,
+                            "rangeEnd":204,
+                            "startLine":18,
+                            "endLine":18,
+                            "resolution":"SYNTAX_UNRESOLVED"
+                        }
+                    ]
+                }
+            }],
+            "sources":[],
+            "completeness":{},
+            "truncated":false
+        });
+        let mut authority = context("context:reference-parent", None, "sha256:parent", retained);
+        authority.terms = vec!["completeness".into(), "member".into(), "unmatched".into()];
+        let candidate_id = candidate_handle("cargo:demo", "fact:test").unwrap();
+        let (selected, source_references_truncated, eligible_count) =
+            select_direct_references(&authority, &candidate_id).unwrap();
+        assert!(!source_references_truncated);
+        assert_eq!(eligible_count, 2);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].terminal_name(), "aggregate_completeness");
+        assert_eq!(selected[0].matched_terms, vec!["completeness"]);
+        assert_eq!(
+            selected[0].observations[0].path_segments,
+            vec!["super", "aggregate_completeness"]
+        );
+
+        authority.projection["matches"][0]["payload"]["directReferences"][1]["terminalName"] =
+            json!("different");
+        authority.evidence["context"] = authority.projection.clone();
+        assert_eq!(
+            select_direct_references(&authority, &candidate_id)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn direct_reference_detail_keeps_all_bounded_namesakes_and_same_file_is_only_ordering() {
+        let retained = json!({
+            "matches":[
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:other",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"aggregate_completeness",
+                        "declarationKind":"function",
+                        "symbolIdentity":"symbol:other",
+                        "file":"src/other.rs",
+                        "rangeStart":10,
+                        "rangeEnd":30,
+                        "startLine":2,
+                        "endLine":4
+                    }
+                },
+                {
+                    "compilation":"cargo:demo",
+                    "factKey":"fact:local",
+                    "payload":{
+                        "kind":"declaration",
+                        "name":"aggregate_completeness",
+                        "declarationKind":"function",
+                        "symbolIdentity":"symbol:local",
+                        "file":"src/lib.rs",
+                        "rangeStart":100,
+                        "rangeEnd":140,
+                        "startLine":20,
+                        "endLine":23
+                    }
+                }
+            ],
+            "sources":[
+                {
+                    "fileId":"src/other.rs",
+                    "contentRef":{"digest":"sha256:other"},
+                    "windows":[{"startLine":2,"endLine":4,"text":"fn aggregate_completeness() {\n    other();\n}"}]
+                },
+                {
+                    "fileId":"src/lib.rs",
+                    "contentRef":{"digest":"sha256:local"},
+                    "windows":[{"startLine":20,"endLine":23,"text":"fn aggregate_completeness() {\n    local();\n}"}]
+                }
+            ],
+            "completeness":{"certainty":"UNSURE"},
+            "truncated":false
+        });
+        let authority = context(
+            "context:reference-child",
+            Some("context:reference-parent"),
+            "sha256:child",
+            retained,
+        );
+        let selection = DirectReferenceSelection {
+            terminal_name: "aggregate_completeness".into(),
+            source_file: "src/lib.rs".into(),
+            matched_terms: vec!["completeness".into()],
+            observations: vec![DirectReferenceObservation {
+                path_segments: vec!["super".into(), "aggregate_completeness".into()],
+                range_start: 150,
+                range_end: 180,
+                start_line: 16,
+                end_line: 16,
+            }],
+            source_references_truncated: false,
+        };
+        let detail = direct_reference_detail(&authority, &[selection], 2).unwrap();
+        assert_eq!(detail["semanticRelation"], "UNKNOWN");
+        assert_eq!(detail["targetResolution"], "UNRESOLVED");
+        assert_eq!(detail["selectionTruncated"], true);
+        assert_eq!(detail["referenceTermCount"]["eligible"], 2);
+        assert_eq!(detail["referenceTermCount"]["omitted"], 1);
+        assert_eq!(detail["truncated"], true);
+        assert_eq!(
+            detail["references"][0]["nameMatches"]["status"],
+            "AMBIGUOUS_RETAINED_NAME"
+        );
+        assert_eq!(
+            detail["references"][0]["nameMatches"]["ordering"],
+            "SAME_FILE_FIRST_PRESENTATION_ONLY"
+        );
+        assert_eq!(
+            detail["references"][0]["nameMatches"]["candidates"][0]["sameFileAsObservation"],
+            true
+        );
+        assert_eq!(
+            detail["references"][0]["nameMatches"]["candidates"][0]["source"]["status"],
+            "SUPPORTED"
+        );
+        assert_eq!(
+            detail["references"][0]["nameMatches"]["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
         );
     }
 

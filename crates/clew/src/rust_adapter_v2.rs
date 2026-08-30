@@ -13,18 +13,26 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 
 pub const RUST_LANGUAGE: &str = "language:rust";
 pub const RUST_SYNTAX_FACTS_CAPABILITY: &str = "analysis:rust-syntax-facts";
-pub const RUST_INDEX_SCHEMA: &str = "codeclew-rust-syntax-index/1.0";
-const FACT_SCHEMA: &str = "codeclew-rust-syntax-fact/1.0";
+pub const RUST_INDEX_SCHEMA: &str = "codeclew-rust-syntax-index/1.1";
+const FACT_SCHEMA: &str = "codeclew-rust-syntax-fact/1.1";
 const RECEIPT_SCHEMA: &str = "codeclew-rust-syntax-completeness/1.0";
-const ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-rust-syntax-adapter/1.0";
-const PARSER_AUTHORITY: &str = "syn-2.0.119/full+proc-macro2-1.0.107/span-locations";
+const ADAPTER_AUTHORITY_SCHEMA: &str = "codeclew-rust-syntax-adapter/1.1";
+const PARSER_AUTHORITY: &str =
+    "syn-2.0.119/full+visit+proc-macro2-1.0.107/span-locations+direct-call-paths-v1";
 const MAX_SOURCE_FILES: usize = 512;
 const MAX_SOURCE_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_TOTAL_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DECLARATIONS: usize = 65_536;
+const MAX_DIRECT_REFERENCES_PER_DECLARATION: usize = 64;
+const MAX_DIRECT_REFERENCES: usize = 65_536;
+const MAX_DIRECT_REFERENCE_PATH_SEGMENTS: usize = 32;
+const MAX_DIRECT_REFERENCE_PATH_SEGMENT_BYTES: usize = 256;
+const MAX_DIRECT_REFERENCE_BYTES: usize = 4 * 1024;
+const MAX_DIRECT_REFERENCES_PAYLOAD_BYTES: usize = 32 * 1024;
 const MAX_NESTING: usize = 64;
 const MAX_FACT_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_FACT_BATCH_INPUT_BYTES: usize = 128 * 1024 * 1024;
@@ -44,7 +52,7 @@ pub fn rust_adapter_digest() -> Result<String, ClewError> {
 pub fn rust_scope_digest(index: &Value) -> Result<String, ClewError> {
     validate_index(index)?;
     canonical::hash(&json!({
-        "schema":"codeclew-rust-syntax-scope/1.0",
+        "schema":"codeclew-rust-syntax-scope/1.1",
         "compilation":index["compilation"],
         "modelDigest":index["modelDigest"],
         "files":index["files"],
@@ -300,6 +308,28 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
         .get("boundaries")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("Rust syntax index has no analysis boundaries"))?;
+    let mut direct_reference_count = 0usize;
+    let mut any_direct_references_truncated = false;
+    let descriptors_valid = descriptors.iter().all(|descriptor| {
+        validate_descriptor(
+            descriptor,
+            &mut direct_reference_count,
+            &mut any_direct_references_truncated,
+        )
+    });
+    let has_direct_reference_limit = boundaries.iter().any(|boundary| {
+        matches!(
+            boundary.get("code").and_then(Value::as_str),
+            Some(
+                "RUST_DIRECT_REFERENCE_DECLARATION_LIMIT"
+                    | "RUST_DIRECT_REFERENCE_GLOBAL_LIMIT"
+                    | "RUST_DIRECT_REFERENCE_PAYLOAD_LIMIT"
+            )
+        )
+    });
+    let has_boundary_limit = boundaries.iter().any(|boundary| {
+        boundary.get("code").and_then(Value::as_str) == Some("RUST_BOUNDARY_LIMIT")
+    });
     if index.get("schema").and_then(Value::as_str) != Some(RUST_INDEX_SCHEMA)
         || index.get("analysisCoverage").and_then(Value::as_str) != Some("PARTIAL")
         || index.get("analysisCertainty").and_then(Value::as_str) != Some("UNSURE")
@@ -327,28 +357,10 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
             .windows(2)
             .any(|pair| pair[0]["path"].as_str() >= pair[1]["path"].as_str())
         || descriptors.len() > MAX_DECLARATIONS
-        || descriptors.iter().any(|descriptor| {
-            descriptor
-                .get("symbolIdentity")
-                .and_then(Value::as_str)
-                .is_none()
-                || descriptor.get("name").and_then(Value::as_str).is_none()
-                || descriptor
-                    .get("declarationKind")
-                    .and_then(Value::as_str)
-                    .is_none()
-                || descriptor
-                    .get("file")
-                    .and_then(Value::as_str)
-                    .is_none_or(|path| !safe_path(path) || !path.ends_with(".rs"))
-                || descriptor.get("resolution").and_then(Value::as_str) != Some("SYNTAX_EXACT")
-                || descriptor
-                    .get("rangeStart")
-                    .and_then(Value::as_u64)
-                    .is_none()
-                || descriptor.get("rangeEnd").and_then(Value::as_u64).is_none()
-                || descriptor["rangeStart"].as_u64() > descriptor["rangeEnd"].as_u64()
-        })
+        || !descriptors_valid
+        || direct_reference_count > MAX_DIRECT_REFERENCES
+        || (any_direct_references_truncated && !(has_direct_reference_limit || has_boundary_limit))
+        || (!any_direct_references_truncated && has_direct_reference_limit)
         || descriptors
             .windows(2)
             .any(|pair| pair[0]["symbolIdentity"].as_str() >= pair[1]["symbolIdentity"].as_str())
@@ -385,6 +397,169 @@ fn validate_index(index: &Value) -> Result<(), ClewError> {
     Ok(())
 }
 
+fn validate_descriptor(
+    descriptor: &Value,
+    direct_reference_count: &mut usize,
+    any_direct_references_truncated: &mut bool,
+) -> bool {
+    let Some(object) = descriptor.as_object() else {
+        return false;
+    };
+    let Some(symbol_identity) = object.get("symbolIdentity").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(name) = object.get("name").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(kind) = object.get("declarationKind").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(file) = object.get("file").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(range_start) = object.get("rangeStart").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(range_end) = object.get("rangeEnd").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(start_line) = object.get("startLine").and_then(Value::as_u64) else {
+        return false;
+    };
+    let Some(end_line) = object.get("endLine").and_then(Value::as_u64) else {
+        return false;
+    };
+    if symbol_identity.is_empty()
+        || name.is_empty()
+        || !matches!(
+            kind,
+            "function"
+                | "struct"
+                | "enum"
+                | "trait"
+                | "trait-method"
+                | "type-alias"
+                | "const"
+                | "static"
+                | "impl-method"
+                | "module"
+        )
+        || !safe_path(file)
+        || !file.ends_with(".rs")
+        || object.get("resolution").and_then(Value::as_str) != Some("SYNTAX_EXACT")
+        || !matches!(
+            object.get("cfgStatus").and_then(Value::as_str),
+            Some("UNKNOWN" | "UNCONDITIONAL")
+        )
+        || range_start > range_end
+        || start_line == 0
+        || start_line > end_line
+    {
+        return false;
+    }
+    let callable = matches!(kind, "function" | "impl-method" | "trait-method");
+    let references = object.get("directReferences");
+    let truncated = object.get("directReferencesTruncated");
+    if !callable {
+        return references.is_none() && truncated.is_none();
+    }
+    let Some(references) = references.and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(truncated) = truncated.and_then(Value::as_bool) else {
+        return false;
+    };
+    if references.len() > MAX_DIRECT_REFERENCES_PER_DECLARATION {
+        return false;
+    }
+    *direct_reference_count = match direct_reference_count.checked_add(references.len()) {
+        Some(count) => count,
+        None => return false,
+    };
+    *any_direct_references_truncated |= truncated;
+    let mut previous = None;
+    let mut direct_reference_payload_bytes = 0usize;
+    for reference in references {
+        let Some(key) =
+            validate_direct_reference(reference, range_start, range_end, start_line, end_line)
+        else {
+            return false;
+        };
+        if previous.as_ref().is_some_and(|previous| previous >= &key) {
+            return false;
+        }
+        let Ok(bytes) = canonical::bytes(reference) else {
+            return false;
+        };
+        let Some(next_payload_bytes) = direct_reference_payload_bytes.checked_add(bytes.len())
+        else {
+            return false;
+        };
+        if bytes.len() > MAX_DIRECT_REFERENCE_BYTES
+            || next_payload_bytes > MAX_DIRECT_REFERENCES_PAYLOAD_BYTES
+        {
+            return false;
+        }
+        direct_reference_payload_bytes = next_payload_bytes;
+        previous = Some(key);
+    }
+    true
+}
+
+fn validate_direct_reference(
+    reference: &Value,
+    declaration_start: u64,
+    declaration_end: u64,
+    declaration_start_line: u64,
+    declaration_end_line: u64,
+) -> Option<(u64, u64, Vec<String>)> {
+    let object = reference.as_object()?;
+    if object.len() != 8
+        || object.get("kind").and_then(Value::as_str) != Some("CALL_PATH")
+        || object.get("resolution").and_then(Value::as_str) != Some("SYNTAX_UNRESOLVED")
+    {
+        return None;
+    }
+    let segments = object.get("pathSegments")?.as_array()?;
+    if segments.is_empty()
+        || segments.len() > MAX_DIRECT_REFERENCE_PATH_SEGMENTS
+        || segments.iter().any(|segment| {
+            segment
+                .as_str()
+                .is_none_or(|segment| segment.len() > MAX_DIRECT_REFERENCE_PATH_SEGMENT_BYTES)
+        })
+    {
+        return None;
+    }
+    let segments = segments
+        .iter()
+        .map(|segment| {
+            segment
+                .as_str()
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_owned)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if object.get("terminalName")?.as_str()? != segments.last()? {
+        return None;
+    }
+    let range_start = object.get("rangeStart")?.as_u64()?;
+    let range_end = object.get("rangeEnd")?.as_u64()?;
+    let start_line = object.get("startLine")?.as_u64()?;
+    let end_line = object.get("endLine")?.as_u64()?;
+    if range_start < declaration_start
+        || range_start >= range_end
+        || range_end > declaration_end
+        || start_line < declaration_start_line
+        || start_line == 0
+        || start_line > end_line
+        || end_line > declaration_end_line
+    {
+        return None;
+    }
+    Some((range_start, range_end, segments))
+}
+
 pub struct RustSyntaxAuthority<'a> {
     pub compilation_id: &'a str,
     pub model_digest: &'a str,
@@ -416,6 +591,7 @@ pub fn build_syntax_index(
     let mut files = BTreeMap::new();
     let mut descriptors = BTreeMap::new();
     let mut boundaries = BTreeSet::new();
+    let mut direct_reference_count = 0usize;
     let mut total_bytes = 0usize;
     while let Some((path, module_dir)) = queue.pop_front() {
         if visited.contains(&path) {
@@ -471,15 +647,16 @@ pub fn build_syntax_index(
                 continue;
             }
         };
-        let line_starts = line_starts(source);
+        let line_index = source_line_index(source);
         let mut context = SyntaxContext {
             path: &path,
             source,
-            line_starts: &line_starts,
+            line_index: &line_index,
             sources: &sources,
             descriptors: &mut descriptors,
             boundaries: &mut boundaries,
             queue: &mut queue,
+            direct_reference_count: &mut direct_reference_count,
         };
         visit_items(&syntax.items, &module_dir, 0, &mut context)?;
     }
@@ -547,11 +724,12 @@ fn effective_sources(
 struct SyntaxContext<'a> {
     path: &'a str,
     source: &'a str,
-    line_starts: &'a [usize],
+    line_index: &'a SourceLineIndex,
     sources: &'a BTreeMap<String, crate::cas::CasObject>,
     descriptors: &'a mut BTreeMap<String, Value>,
     boundaries: &'a mut BTreeSet<String>,
     queue: &'a mut VecDeque<(String, String)>,
+    direct_reference_count: &'a mut usize,
 }
 
 fn visit_items(
@@ -575,9 +753,14 @@ fn visit_items(
             return Ok(());
         }
         match item {
-            syn::Item::Fn(value) => {
-                add_declaration("function", &value.sig.ident, value, &value.attrs, context)?
-            }
+            syn::Item::Fn(value) => add_callable_declaration(
+                "function",
+                &value.sig.ident,
+                value,
+                &value.attrs,
+                Some(&value.block),
+                context,
+            )?,
             syn::Item::Struct(value) => {
                 add_declaration("struct", &value.ident, value, &value.attrs, context)?
             }
@@ -588,11 +771,12 @@ fn visit_items(
                 add_declaration("trait", &value.ident, value, &value.attrs, context)?;
                 for member in &value.items {
                     if let syn::TraitItem::Fn(method) = member {
-                        add_declaration(
+                        add_callable_declaration(
                             "trait-method",
                             &method.sig.ident,
                             method,
                             &method.attrs,
+                            method.default.as_ref(),
                             context,
                         )?;
                     }
@@ -611,11 +795,12 @@ fn visit_items(
                 note_attributes(&value.attrs, context, "impl");
                 for member in &value.items {
                     if let syn::ImplItem::Fn(method) = member {
-                        add_declaration(
+                        add_callable_declaration(
                             "impl-method",
                             &method.sig.ident,
                             method,
                             &method.attrs,
+                            Some(&method.block),
                             context,
                         )?;
                     }
@@ -649,31 +834,232 @@ fn add_declaration(
     attrs: &[syn::Attribute],
     context: &mut SyntaxContext<'_>,
 ) -> Result<(), ClewError> {
+    add_declaration_inner(kind, ident, spanned, attrs, None, context)
+}
+
+fn add_callable_declaration(
+    kind: &str,
+    ident: &syn::Ident,
+    spanned: &impl Spanned,
+    attrs: &[syn::Attribute],
+    body: Option<&syn::Block>,
+    context: &mut SyntaxContext<'_>,
+) -> Result<(), ClewError> {
+    add_declaration_inner(kind, ident, spanned, attrs, Some(body), context)
+}
+
+fn add_declaration_inner(
+    kind: &str,
+    ident: &syn::Ident,
+    spanned: &impl Spanned,
+    attrs: &[syn::Attribute],
+    callable_body: Option<Option<&syn::Block>>,
+    context: &mut SyntaxContext<'_>,
+) -> Result<(), ClewError> {
     note_attributes(attrs, context, ident.to_string().as_str());
     let span = spanned.span();
-    let start = offset(context.source, context.line_starts, span.start())?;
-    let end = offset(context.source, context.line_starts, span.end())?;
+    let start = offset(context.source, context.line_index, span.start())?;
+    let end = offset(context.source, context.line_index, span.end())?;
     let name = ident.to_string();
     let identity = format!(
         "rust-syntax:{}#{}:{}@{}-{}",
         context.path, kind, name, start, end
     );
-    context.descriptors.insert(
-        identity.clone(),
-        json!({
-            "symbolIdentity":identity,
-            "name":name,
-            "declarationKind":kind,
-            "file":context.path,
+    let direct_references = callable_body
+        .map(|body| collect_direct_references(body, &identity, context))
+        .transpose()?;
+    let mut descriptor = json!({
+        "symbolIdentity":identity,
+        "name":name,
+        "declarationKind":kind,
+        "file":context.path,
+        "rangeStart":start,
+        "rangeEnd":end,
+        "startLine":span.start().line,
+        "endLine":span.end().line,
+        "cfgStatus":if has_any_attribute(attrs, &["cfg", "cfg_attr"]) { "UNKNOWN" } else { "UNCONDITIONAL" },
+        "resolution":"SYNTAX_EXACT",
+    });
+    if let Some((references, truncated)) = direct_references {
+        let object = descriptor
+            .as_object_mut()
+            .expect("declaration descriptor is an object");
+        object.insert("directReferences".into(), Value::Array(references));
+        object.insert("directReferencesTruncated".into(), Value::Bool(truncated));
+    }
+    context.descriptors.insert(identity.clone(), descriptor);
+    Ok(())
+}
+
+fn collect_direct_references(
+    body: Option<&syn::Block>,
+    symbol_identity: &str,
+    context: &mut SyntaxContext<'_>,
+) -> Result<(Vec<Value>, bool), ClewError> {
+    let Some(body) = body else {
+        return Ok((Vec::new(), false));
+    };
+    let remaining_global = MAX_DIRECT_REFERENCES.saturating_sub(*context.direct_reference_count);
+    let limit = remaining_global.min(MAX_DIRECT_REFERENCES_PER_DECLARATION);
+    let mut collector = DirectReferenceCollector {
+        source: context.source,
+        line_index: context.line_index,
+        limit,
+        references: BTreeMap::new(),
+        payload_bytes: 0,
+        truncated: false,
+        count_limit_reached: false,
+        payload_limit_reached: false,
+        error: None,
+    };
+    collector.visit_block(body);
+    if let Some(error) = collector.error {
+        return Err(error);
+    }
+    let truncated = collector.truncated;
+    let count_limit_reached = collector.count_limit_reached;
+    let payload_limit_reached = collector.payload_limit_reached;
+    let references = collector.references.into_values().collect::<Vec<_>>();
+    *context.direct_reference_count = context
+        .direct_reference_count
+        .checked_add(references.len())
+        .ok_or_else(|| resource("Rust direct reference count overflow"))?;
+    if truncated {
+        if payload_limit_reached {
+            boundary(
+                context.boundaries,
+                "RUST_DIRECT_REFERENCE_PAYLOAD_LIMIT",
+                Some(context.path),
+                Some(symbol_identity),
+            );
+        }
+        if count_limit_reached && remaining_global <= MAX_DIRECT_REFERENCES_PER_DECLARATION {
+            boundary(
+                context.boundaries,
+                "RUST_DIRECT_REFERENCE_GLOBAL_LIMIT",
+                None,
+                None,
+            );
+        }
+        if count_limit_reached && remaining_global >= MAX_DIRECT_REFERENCES_PER_DECLARATION {
+            boundary(
+                context.boundaries,
+                "RUST_DIRECT_REFERENCE_DECLARATION_LIMIT",
+                Some(context.path),
+                Some(symbol_identity),
+            );
+        }
+    }
+    Ok((references, truncated))
+}
+
+type DirectReferenceKey = (usize, usize, Vec<String>);
+
+struct DirectReferenceCollector<'a> {
+    source: &'a str,
+    line_index: &'a SourceLineIndex,
+    limit: usize,
+    references: BTreeMap<DirectReferenceKey, Value>,
+    payload_bytes: usize,
+    truncated: bool,
+    count_limit_reached: bool,
+    payload_limit_reached: bool,
+    error: Option<ClewError>,
+}
+
+impl DirectReferenceCollector<'_> {
+    fn record(&mut self, path: &syn::ExprPath) {
+        if self.error.is_some() || path.qself.is_some() {
+            return;
+        }
+        let segments = path
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        let Some(terminal_name) = segments.last().cloned() else {
+            return;
+        };
+        if segments.len() > MAX_DIRECT_REFERENCE_PATH_SEGMENTS
+            || segments
+                .iter()
+                .any(|segment| segment.len() > MAX_DIRECT_REFERENCE_PATH_SEGMENT_BYTES)
+        {
+            self.truncated = true;
+            self.payload_limit_reached = true;
+            return;
+        }
+        let span = path.span();
+        let start = match offset(self.source, self.line_index, span.start()) {
+            Ok(value) => value,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        let end = match offset(self.source, self.line_index, span.end()) {
+            Ok(value) => value,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        let key = (start, end, segments.clone());
+        if self.references.contains_key(&key) {
+            return;
+        }
+        if self.references.len() >= self.limit {
+            self.truncated = true;
+            self.count_limit_reached = true;
+            return;
+        }
+        let reference = json!({
+            "kind":"CALL_PATH",
+            "pathSegments":segments,
+            "terminalName":terminal_name,
             "rangeStart":start,
             "rangeEnd":end,
             "startLine":span.start().line,
             "endLine":span.end().line,
-        "cfgStatus":if has_any_attribute(attrs, &["cfg", "cfg_attr"]) { "UNKNOWN" } else { "UNCONDITIONAL" },
-            "resolution":"SYNTAX_EXACT",
-        }),
-    );
-    Ok(())
+            "resolution":"SYNTAX_UNRESOLVED",
+        });
+        let bytes = match canonical::bytes(&reference) {
+            Ok(bytes) => bytes.len(),
+            Err(error) => {
+                self.error = Some(internal(error));
+                return;
+            }
+        };
+        let Some(next_payload_bytes) = self.payload_bytes.checked_add(bytes) else {
+            self.truncated = true;
+            self.payload_limit_reached = true;
+            return;
+        };
+        if bytes > MAX_DIRECT_REFERENCE_BYTES
+            || next_payload_bytes > MAX_DIRECT_REFERENCES_PAYLOAD_BYTES
+        {
+            self.truncated = true;
+            self.payload_limit_reached = true;
+            return;
+        }
+        self.payload_bytes = next_payload_bytes;
+        self.references.insert(key, reference);
+    }
+}
+
+impl<'ast> Visit<'ast> for DirectReferenceCollector<'_> {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = call.func.as_ref() {
+            self.record(path);
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_item(&mut self, _item: &'ast syn::Item) {
+        // A nested item has its own declaration authority. Its calls do not
+        // belong to the enclosing callable descriptor.
+    }
 }
 
 fn resolve_external_module(
@@ -814,31 +1200,68 @@ fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     }
 }
 
-fn line_starts(source: &str) -> Vec<usize> {
-    std::iter::once(0)
+struct SourceLineIndex {
+    byte_starts: Vec<usize>,
+    non_ascii_byte_columns: BTreeMap<usize, Vec<usize>>,
+}
+
+fn source_line_index(source: &str) -> SourceLineIndex {
+    let byte_starts = std::iter::once(0)
         .chain(
             source
                 .bytes()
                 .enumerate()
                 .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
         )
-        .collect()
+        .collect::<Vec<_>>();
+    let mut non_ascii_byte_columns = BTreeMap::new();
+    for line in 0..byte_starts.len() {
+        let start = byte_starts[line];
+        let end = byte_starts.get(line + 1).copied().unwrap_or(source.len());
+        let text = &source[start..end];
+        if !text.is_ascii() {
+            let mut columns = text
+                .char_indices()
+                .map(|(byte_offset, _)| byte_offset)
+                .collect::<Vec<_>>();
+            columns.push(text.len());
+            non_ascii_byte_columns.insert(line, columns);
+        }
+    }
+    SourceLineIndex {
+        byte_starts,
+        non_ascii_byte_columns,
+    }
 }
 
 fn offset(
     source: &str,
-    starts: &[usize],
+    index: &SourceLineIndex,
     location: proc_macro2::LineColumn,
 ) -> Result<usize, ClewError> {
     let line = location
         .line
         .checked_sub(1)
         .ok_or_else(|| invalid("Rust parser returned an invalid line"))?;
-    let start = *starts
+    let start = *index
+        .byte_starts
         .get(line)
         .ok_or_else(|| invalid("Rust parser span escaped its source"))?;
-    let offset = start.saturating_add(location.column);
-    if offset > source.len() || !source.is_char_boundary(offset) {
+    let line_end = index
+        .byte_starts
+        .get(line + 1)
+        .copied()
+        .unwrap_or(source.len());
+    let byte_column = index
+        .non_ascii_byte_columns
+        .get(&line)
+        .map(|columns| columns.get(location.column).copied())
+        .unwrap_or(Some(location.column))
+        .ok_or_else(|| invalid("Rust parser span escaped its source"))?;
+    let offset = start
+        .checked_add(byte_column)
+        .ok_or_else(|| invalid("Rust parser span escaped its source"))?;
+    if offset > line_end || !source.is_char_boundary(offset) {
         return Err(invalid("Rust parser span escaped its source"));
     }
     Ok(offset)
@@ -1181,6 +1604,166 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn direct_call_paths_preserve_utf8_positions_without_claiming_resolution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = r#"pub fn aggregate_completeness() {}
+mod child {
+    pub fn caller() {
+        let _label = "кириллица🙂"; super::aggregate_completeness();
+        alpha::same();
+        beta::same();
+        let callable = super::aggregate_completeness;
+        (callable)();
+        value.method();
+        call_macro!();
+        fn nested() { hidden(); }
+    }
+    pub trait Worker {
+        fn required();
+        fn defaulted() { super::aggregate_completeness(); }
+    }
+    pub struct Demo;
+    impl Demo {
+        fn run(&self) { super::aggregate_completeness(); self.method(); }
+        fn method(&self) {}
+    }
+}
+"#;
+        let index = syntax_index_for_source(&temporary, source, "direct-reference-state-v2");
+        let descriptors = index["declarationDescriptors"]["descriptors"]
+            .as_array()
+            .unwrap();
+        let caller = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "caller")
+            .unwrap();
+        let references = caller["directReferences"].as_array().unwrap();
+        assert_eq!(references.len(), 3);
+        assert_eq!(references[0]["kind"], "CALL_PATH");
+        assert_eq!(
+            references[0]["pathSegments"],
+            json!(["super", "aggregate_completeness"])
+        );
+        assert_eq!(references[0]["terminalName"], "aggregate_completeness");
+        assert_eq!(references[0]["resolution"], "SYNTAX_UNRESOLVED");
+        let expected_start = source.find("super::aggregate_completeness();").unwrap();
+        assert_eq!(
+            references[0]["rangeStart"].as_u64().unwrap(),
+            expected_start as u64
+        );
+        assert_eq!(
+            references[0]["rangeEnd"].as_u64().unwrap(),
+            (expected_start + "super::aggregate_completeness".len()) as u64
+        );
+        assert_eq!(references[0]["startLine"], 4);
+        assert_eq!(references[0]["endLine"], 4);
+        assert_eq!(references[1]["pathSegments"], json!(["alpha", "same"]));
+        assert_eq!(references[2]["pathSegments"], json!(["beta", "same"]));
+        assert_eq!(caller["directReferencesTruncated"], false);
+        assert!(references.iter().all(|reference| {
+            !matches!(
+                reference["terminalName"].as_str(),
+                Some("method" | "call_macro" | "callable" | "hidden")
+            )
+        }));
+
+        let required = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "required")
+            .unwrap();
+        assert_eq!(required["directReferences"], json!([]));
+        assert_eq!(required["directReferencesTruncated"], false);
+        let defaulted = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "defaulted")
+            .unwrap();
+        assert_eq!(defaulted["directReferences"].as_array().unwrap().len(), 1);
+        let run = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "run")
+            .unwrap();
+        assert_eq!(run["directReferences"].as_array().unwrap().len(), 1);
+        let demo = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "Demo")
+            .unwrap();
+        assert!(demo.get("directReferences").is_none());
+
+        let mut tampered = index.clone();
+        let tampered_reference = tampered["declarationDescriptors"]["descriptors"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|descriptor| descriptor["name"] == "caller")
+            .unwrap()["directReferences"]
+            .as_array_mut()
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        tampered_reference["terminalName"] = json!("wrong");
+        assert!(super::validate_index(&tampered).is_err());
+    }
+
+    #[test]
+    fn direct_call_path_limits_truncate_with_closed_boundaries() {
+        let temporary = tempfile::tempdir().unwrap();
+        let calls = (0..65)
+            .map(|index| format!("call_{index}();"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let long_path = (0..33)
+            .map(|index| format!("segment_{index}"))
+            .collect::<Vec<_>>()
+            .join("::");
+        let source = format!(
+            "pub fn many() {{\n{calls}\n}}\npub fn oversized_path() {{ {long_path}(); }}\n"
+        );
+        let index = syntax_index_for_source(&temporary, &source, "reference-limit-state-v2");
+        let descriptors = index["declarationDescriptors"]["descriptors"]
+            .as_array()
+            .unwrap();
+        let many = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "many")
+            .unwrap();
+        assert_eq!(many["directReferences"].as_array().unwrap().len(), 64);
+        assert_eq!(many["directReferencesTruncated"], true);
+        let oversized = descriptors
+            .iter()
+            .find(|descriptor| descriptor["name"] == "oversized_path")
+            .unwrap();
+        assert!(oversized["directReferences"].as_array().unwrap().is_empty());
+        assert_eq!(oversized["directReferencesTruncated"], true);
+        let boundary_codes = index["boundaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|boundary| boundary["code"].as_str())
+            .collect::<Vec<_>>();
+        assert!(boundary_codes.contains(&"RUST_DIRECT_REFERENCE_DECLARATION_LIMIT"));
+        assert!(boundary_codes.contains(&"RUST_DIRECT_REFERENCE_PAYLOAD_LIMIT"));
+        let state = StateAuthority::open(temporary.path().join("translated-state-v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        assert!(translate_facts(&store, &index).is_ok());
+    }
+
+    fn syntax_index_for_source(
+        temporary: &tempfile::TempDir,
+        source: &str,
+        state_name: &str,
+    ) -> serde_json::Value {
+        let repo = temporary.path().join("repo");
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("src/lib.rs"), source).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["add", "."]);
+        let state = StateAuthority::open(temporary.path().join(state_name)).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let (snapshot, _) = repository_snapshot::capture(&repo, &store).unwrap();
+        build_syntax_index(&store, &snapshot, &syntax_authority(&digest('1'))).unwrap()
     }
 
     fn git(repo: &std::path::Path, arguments: &[&str]) {

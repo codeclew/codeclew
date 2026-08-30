@@ -594,6 +594,10 @@ struct NavQueryArgs {
     /// Include the exact retained source of the highest-ranked decision card.
     #[arg(long)]
     source: bool,
+    /// Follow one lexically related unresolved direct call path and return
+    /// bounded exact declaration-name candidates. Requires --source.
+    #[arg(long, requires = "source")]
+    follow_references: bool,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
 }
@@ -1885,6 +1889,8 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
 
 fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
     let include_top_source = args.source;
+    let follow_references = args.follow_references;
+    let follow_max_roots = args.max_roots.max(4);
     let intent = args
         .intent
         .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());
@@ -1899,9 +1905,12 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
     let mut navigation = clew::navigation::query(&opened.context, &[])
         .map_err(|error| compensate_opened_context(error, &opened))?;
     if include_top_source {
-        let decision_source = navigation
+        let decision_candidate_id = navigation
             .pointer("/candidates/0/candidateId")
             .and_then(Value::as_str)
+            .map(str::to_owned);
+        let decision_source = decision_candidate_id
+            .as_deref()
             .map(|candidate_id| {
                 clew::navigation::source_by_candidate(&opened.context, candidate_id)
             })
@@ -1912,8 +1921,71 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
             .as_object_mut()
             .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation result is invalid"))?
             .insert("decisionSource".into(), decision_source);
+        if follow_references {
+            let reference_follow = match decision_candidate_id.as_deref() {
+                None => json!({
+                    "status":"UNAVAILABLE",
+                    "reason":"NO_CANDIDATE",
+                    "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+                    "targetResolution":"UNRESOLVED",
+                    "semanticRelation":"UNKNOWN",
+                }),
+                Some(candidate_id) => {
+                    let (selections, source_references_truncated, eligible_count) =
+                        clew::navigation::select_direct_references(&opened.context, candidate_id)
+                            .map_err(|error| compensate_opened_context(error, &opened))?;
+                    if selections.is_empty() {
+                        json!({
+                            "status":"UNAVAILABLE",
+                            "reason":"NO_LEXICALLY_RELATED_RETAINED_DIRECT_REFERENCE",
+                            "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+                            "targetResolution":"UNRESOLVED",
+                            "semanticRelation":"UNKNOWN",
+                            "sourceReferencesTruncated":source_references_truncated,
+                            "truncated":source_references_truncated,
+                        })
+                    } else {
+                        let terms = selections
+                            .iter()
+                            .map(|selection| selection.terminal_name().to_owned())
+                            .collect::<Vec<_>>();
+                        let child = expand_context_object(
+                            &opened.session,
+                            opened.context.context_id.clone(),
+                            None,
+                            terms,
+                            follow_max_roots,
+                        )
+                        .map_err(|error| compensate_opened_context(error, &opened))?;
+                        let mut detail = clew::navigation::direct_reference_detail(
+                            &child,
+                            &selections,
+                            eligible_count,
+                        )
+                        .map_err(|error| compensate_opened_context(error, &opened))?;
+                        detail
+                            .as_object_mut()
+                            .ok_or_else(|| {
+                                ClewError::new(
+                                    ErrorCode::Internal,
+                                    "direct reference detail is invalid",
+                                )
+                            })?
+                            .insert(
+                                "parentContextId".into(),
+                                Value::String(opened.context.context_id.clone()),
+                            );
+                        detail
+                    }
+                }
+            };
+            navigation
+                .as_object_mut()
+                .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation result is invalid"))?
+                .insert("referenceFollow".into(), reference_follow);
+        }
     }
-    let result = json!({
+    let mut result = json!({
         "schema":clew::navigation::NAV_QUERY_SCHEMA,
         "status":"OPEN",
         "admission":opened.admission,
@@ -1926,9 +1998,34 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         },
         "navigation":navigation,
     });
-    clew::navigation::validate_stdout(&result)
+    validate_nav_query_stdout(&mut result, follow_references)
         .map_err(|error| compensate_opened_context(error, &opened))?;
     Ok(result)
+}
+
+fn validate_nav_query_stdout(
+    result: &mut Value,
+    optional_reference_follow: bool,
+) -> Result<(), ClewError> {
+    if optional_reference_follow
+        && clew::navigation::validate_stdout(result)
+            .is_err_and(|error| error.code == ErrorCode::SliceBudgetExceeded)
+        && result
+            .pointer("/navigation/referenceFollow/status")
+            .and_then(Value::as_str)
+            == Some("SUPPORTED")
+    {
+        *result
+            .pointer_mut("/navigation/referenceFollow")
+            .ok_or_else(|| ClewError::new(ErrorCode::Internal, "reference follow is invalid"))? = json!({
+            "status":"UNAVAILABLE",
+            "reason":"OMITTED_BUDGET",
+            "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+            "targetResolution":"UNRESOLVED",
+            "semanticRelation":"UNKNOWN",
+        });
+    }
+    clew::navigation::validate_stdout(result)
 }
 
 fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
@@ -3977,6 +4074,11 @@ mod tests {
         ];
         assert!(Cli::try_parse_from(base).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--source"])).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--source", "--follow-references"]))
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--follow-references"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--intent", "find Target"])).is_ok());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--facet", "callers"])).is_err());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--all"])).is_err());
@@ -4103,6 +4205,32 @@ mod tests {
             args.extend(conflicting);
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn optional_reference_follow_abstains_instead_of_breaking_stdout_budget() {
+        let mut result = json!({
+            "navigation":{
+                "truncated":false,
+                "referenceFollow":{
+                    "status":"SUPPORTED",
+                    "payload":"x".repeat(clew::navigation::MAX_NAV_STDOUT_BYTES),
+                }
+            }
+        });
+        validate_nav_query_stdout(&mut result, true).unwrap();
+        assert_eq!(
+            result["navigation"]["referenceFollow"]["status"],
+            "UNAVAILABLE"
+        );
+        assert_eq!(
+            result["navigation"]["referenceFollow"]["reason"],
+            "OMITTED_BUDGET"
+        );
+        assert_eq!(
+            result["navigation"]["referenceFollow"]["semanticRelation"],
+            "UNKNOWN"
+        );
     }
 
     #[cfg(unix)]
