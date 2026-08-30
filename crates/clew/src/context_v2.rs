@@ -29,6 +29,7 @@ pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/4.0";
 pub const BOUNDED_CONTEXT_EVIDENCE_SCHEMA: &str = "codeclew-bounded-context-evidence/4.0";
 pub const BOUNDED_CONTEXT_PROJECTION_SCHEMA: &str = "codeclew-bounded-context-projection/4.0";
 const EXACT_SELECTION_SCHEMA: &str = "codeclew-exact-declaration-selection/1.0";
+const EXACT_EXPANSION_SELECTION_SCHEMA: &str = "codeclew-exact-expansion-selection/1.0";
 
 #[derive(Debug, Clone, Copy)]
 struct ExactFileTermsSelector<'a> {
@@ -45,6 +46,15 @@ struct ExactSelectionAuthority {
     compilation: String,
     fact_key: String,
     direct_posting_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExactExpansionSelectionAuthority {
+    schema: String,
+    term: String,
+    compilation: String,
+    fact_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -92,6 +102,10 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
     )
     .map_err(parse_error)?;
     let exact_selections = exact_selection_authorities(evidence)?;
+    let exact_expansion_selections = exact_expansion_selection_authorities(evidence)?;
+    if !exact_selections.is_empty() && !exact_expansion_selections.is_empty() {
+        return Err(invalid("exact selection authorities are inconsistent"));
+    }
     let compilations = evidence
         .pointer("/context/compilations")
         .and_then(Value::as_array)
@@ -160,8 +174,17 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
         .iter()
         .map(|selection| exact_selection_hit(&queries, selection))
         .collect::<Result<Vec<_>, _>>()?;
-    let recomputed =
-        merge_query_contexts_with_required(&queries, aggregate.facts.len().max(1), &required)?;
+    let expansion_required = exact_expansion_selections
+        .iter()
+        .map(|selection| exact_expansion_selection_hit(&queries, selection))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut aggregate_required = required.clone();
+    aggregate_required.extend(expansion_required.iter().cloned());
+    let recomputed = merge_query_contexts_with_required(
+        &queries,
+        aggregate.facts.len().max(1),
+        &aggregate_required,
+    )?;
     if aggregate != recomputed {
         return Err(invalid("aggregate query authority cannot be reproduced"));
     }
@@ -195,6 +218,14 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
     )?;
     for (selection, required) in exact_selections.iter().zip(&required) {
         validate_exact_selection(selection, retained, required)?;
+    }
+    for (selection, required) in exact_expansion_selections.iter().zip(&expansion_required) {
+        validate_exact_expansion_selection(
+            selection,
+            retained,
+            required,
+            &aggregate.requested_terms,
+        )?;
     }
     Ok(())
 }
@@ -233,6 +264,32 @@ fn exact_selection_authorities(
             return Err(invalid("exact selection batch authority is inconsistent"));
         }
         file = Some(selection.file.as_str());
+    }
+    Ok(selections)
+}
+
+fn exact_expansion_selection_authorities(
+    evidence: &Value,
+) -> Result<Vec<ExactExpansionSelectionAuthority>, ClewError> {
+    let Some(value) = evidence.get("exactExpansionSelections") else {
+        return Ok(Vec::new());
+    };
+    let selections = serde_json::from_value::<Vec<ExactExpansionSelectionAuthority>>(value.clone())
+        .map_err(parse_error)?;
+    if selections.is_empty()
+        || selections.len()
+            > MAX_EXACT_SELECTIONS.saturating_mul(MAX_EXACT_EXPANSION_MATCHES_PER_TERM)
+    {
+        return Err(invalid("exact expansion selection count is invalid"));
+    }
+    let mut facts = BTreeSet::new();
+    for selection in &selections {
+        if selection.schema != EXACT_EXPANSION_SELECTION_SCHEMA
+            || selection.term.is_empty()
+            || !facts.insert((selection.compilation.as_str(), selection.fact_key.as_str()))
+        {
+            return Err(invalid("exact expansion selection authority is invalid"));
+        }
     }
     Ok(selections)
 }
@@ -306,6 +363,25 @@ fn exact_selection_hit(
     })
 }
 
+fn exact_expansion_selection_hit(
+    queries: &BTreeMap<String, QueryContext>,
+    selection: &ExactExpansionSelectionAuthority,
+) -> Result<CompilationFactHit, ClewError> {
+    let query = queries
+        .get(&selection.compilation)
+        .ok_or_else(|| invalid("exact expansion selection compilation is absent"))?;
+    let fact = query
+        .facts
+        .iter()
+        .find(|fact| fact.fact_key == selection.fact_key)
+        .cloned()
+        .ok_or_else(|| invalid("exact expansion selection fact is absent"))?;
+    Ok(CompilationFactHit {
+        compilation: selection.compilation.clone(),
+        fact,
+    })
+}
+
 fn validate_exact_selection(
     selection: &ExactSelectionAuthority,
     retained: &Value,
@@ -348,6 +424,40 @@ fn validate_exact_selection(
     {
         return Err(invalid(
             "exact declaration selection is not retained with its source",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exact_expansion_selection(
+    selection: &ExactExpansionSelectionAuthority,
+    retained: &Value,
+    required: &CompilationFactHit,
+    requested_terms: &[String],
+) -> Result<(), ClewError> {
+    if selection.schema != EXACT_EXPANSION_SELECTION_SCHEMA
+        || !requested_terms.contains(&selection.term)
+        || required.compilation != selection.compilation
+        || required.fact.fact_key != selection.fact_key
+    {
+        return Err(invalid("exact expansion selection authority is invalid"));
+    }
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("exact expansion context has no matches"))?;
+    let selected = matches
+        .iter()
+        .filter(|fact| {
+            fact.get("compilation").and_then(Value::as_str) == Some(selection.compilation.as_str())
+                && fact.get("factKey").and_then(Value::as_str) == Some(selection.fact_key.as_str())
+        })
+        .collect::<Vec<_>>();
+    if selected.len() != 1
+        || !exact_declaration_term_matches(&selected[0]["payload"], &selection.term)
+    {
+        return Err(invalid(
+            "exact expansion selection is not retained with exact declaration authority",
         ));
     }
     Ok(())
@@ -891,6 +1001,36 @@ fn create_with_selector(
             .as_object_mut()
             .expect("context evidence is an object")
             .insert(key.into(), value);
+    }
+    if let Some(terms) = exact_expansion_terms {
+        if !exact_matches.is_empty() {
+            let selections = exact_matches
+                .iter()
+                .map(|selected| {
+                    let payload = load_fact_payload(&store, &selected.fact)?;
+                    let term = payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|term| terms.iter().any(|requested| requested == *term))
+                        .ok_or_else(|| {
+                            internal("exact expansion fact has no requested name authority")
+                        })?;
+                    Ok(ExactExpansionSelectionAuthority {
+                        schema: EXACT_EXPANSION_SELECTION_SCHEMA.into(),
+                        term: term.into(),
+                        compilation: selected.compilation.clone(),
+                        fact_key: selected.fact.fact_key.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ClewError>>()?;
+            evidence
+                .as_object_mut()
+                .expect("context evidence is an object")
+                .insert(
+                    "exactExpansionSelections".into(),
+                    serde_json::to_value(selections).map_err(internal)?,
+                );
+        }
     }
     Ok((projection, evidence))
 }
@@ -2048,12 +2188,14 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::{
-        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, EXACT_SELECTION_SCHEMA,
-        ExactSelectionAuthority, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES, PROJECTION_TARGET_BYTES,
-        best_lexical_support, bounded_projection, exact_declaration_file_term_matches,
-        exact_declaration_term_matches, exact_selection_authorities, load_fact_evidence,
-        merge_query_contexts, merge_query_contexts_with_required, ordered_paths_in_evidence,
-        promote_query_fact, rank_fact_evidence, rank_fact_evidence_with_required,
+        AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, EXACT_EXPANSION_SELECTION_SCHEMA,
+        EXACT_SELECTION_SCHEMA, ExactSelectionAuthority, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES,
+        PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection,
+        exact_declaration_file_term_matches, exact_declaration_term_matches,
+        exact_expansion_selection_authorities, exact_expansion_selection_hit,
+        exact_selection_authorities, load_fact_evidence, merge_query_contexts,
+        merge_query_contexts_with_required, ordered_paths_in_evidence, promote_query_fact,
+        rank_fact_evidence, rank_fact_evidence_with_required,
         select_bounded_exact_expansion_matches, select_unique_exact_match, source_offset_hints,
         source_windows, validate_exact_selection, validate_source_rows,
     };
@@ -2127,6 +2269,52 @@ mod tests {
         assert_eq!(ranked[0]["factKey"], "x:first-required");
         assert_eq!(ranked[1]["factKey"], "y:second-required");
         assert_eq!(ranked[2]["factKey"], "z:third-required");
+    }
+
+    #[test]
+    fn exact_expansion_authority_reproduces_required_aggregate_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"{}").unwrap();
+        let fact = |key: &str| FactHit {
+            fact_key: key.into(),
+            domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+            payload: payload.clone(),
+        };
+        let query = QueryContext {
+            schema: QUERY_CONTEXT_SCHEMA.into(),
+            index_id: "sha256:index".into(),
+            requested_terms: vec!["bytes".into(), "hash".into()],
+            unmatched_terms: vec![],
+            facts: vec![fact("a:other"), fact("z:bytes"), fact("y:hash")],
+            query_shards_read: 1,
+            truncated: false,
+        };
+        let queries = BTreeMap::from([("cargo:demo".into(), query)]);
+        let evidence = json!({
+            "exactExpansionSelections":[
+                {"schema":EXACT_EXPANSION_SELECTION_SCHEMA,"term":"bytes","compilation":"cargo:demo","factKey":"z:bytes"},
+                {"schema":EXACT_EXPANSION_SELECTION_SCHEMA,"term":"hash","compilation":"cargo:demo","factKey":"y:hash"}
+            ]
+        });
+        let selections = exact_expansion_selection_authorities(&evidence).unwrap();
+        let required = selections
+            .iter()
+            .map(|selection| exact_expansion_selection_hit(&queries, selection).unwrap())
+            .collect::<Vec<_>>();
+        let aggregate = merge_query_contexts_with_required(&queries, 2, &required).unwrap();
+        let reproduced = merge_query_contexts_with_required(&queries, 2, &required).unwrap();
+        assert_eq!(aggregate, reproduced);
+        assert_eq!(aggregate.facts, required);
+
+        let duplicated = json!({
+            "exactExpansionSelections":[
+                {"schema":EXACT_EXPANSION_SELECTION_SCHEMA,"term":"bytes","compilation":"cargo:demo","factKey":"z:bytes"},
+                {"schema":EXACT_EXPANSION_SELECTION_SCHEMA,"term":"hash","compilation":"cargo:demo","factKey":"z:bytes"}
+            ]
+        });
+        assert!(exact_expansion_selection_authorities(&duplicated).is_err());
     }
 
     #[test]
