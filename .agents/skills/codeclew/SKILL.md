@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.3"
+  version: "0.2.4"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -83,6 +83,16 @@ not pass a positional search phrase. Retain the returned session and context
 identifiers. When these arguments are already known, run the command directly
 instead of spending a call on `--help`.
 
+Before querying, turn the explicit parts of the user's request into a short
+private evidence checklist. Codeclew does not infer this checklist. Search terms
+only retrieve candidates and never prove a checklist item. Keep an item open
+until an exact returned source window or supported fact proves it; record
+conditional or unsure authority without upgrading it. For a multi-part request,
+the checklist is the coverage authority for the final answer. Overall
+`completeness`, truncation, or an unmatched seed term limits exhaustive claims,
+but does not downgrade a specific fact proven by an exact retained source
+window.
+
 The first response contains at most three fact-bound decision cards with exact
 one-line previews. `--source` returns a compact, evidence-bound agent card: the
 exact retained source and declaration-to-window bindings for the highest-ranked
@@ -116,6 +126,51 @@ refinement and selection in one call: `nav expand --session <session-id> --from
 merely to collect every match. Term expansion returns a reconstructable patch:
 apply upserts and removals, then `candidateOrder`; unchanged cards are omitted.
 The child `contextId` and `evidenceDigest` bind the complete immutable evidence.
+
+Automatic `nav query --follow-references` follows lexical overlap from the
+automatically ranked top card. Omit it when candidate identity matters; select
+the intended card first and then use explicit retained-reference follow. Never
+present automatic follow as semantic resolution.
+
+When a selected card reports `referenceChoices.status=SUPPORTED` and an open
+checklist item depends on a helper, follow one to three relevant retained
+references together instead of guessing or issuing separate searches. Choose
+at most one path for each terminal name:
+
+```bash
+clew nav expand \
+  --session <session-id> \
+  --from <context-id> \
+  --candidate <one-candidate-id> \
+  --reference <terminal-or-full-path> \
+  --reference <terminal-or-full-path> \
+  --source
+```
+
+Choose references because they can close an explicit checklist item, not merely
+because they are present. Prefer qualified paths and use the newest child
+context that contains the selected candidate. `USER_SELECTED_RETAINED_REFERENCE`
+records that the agent selected an observed syntax reference; it is not a
+resolved call edge. When `targetResolution=UNRESOLVED` or
+`semanticRelation=UNKNOWN`, treat returned name matches as bounded discovery
+candidates. Exact source returned for such a candidate may prove facts about
+that declaration, but not that the observed reference targets it. Do not
+re-query source already returned. Use exact `--term ... --file ... --source`
+only when the retained-name result lacks sufficient exact source and both the
+identifier and file are already established by evidence. Recurse only when the
+returned helper body delegates an open checklist item; prioritize the bounded
+call that closes the most open items. Preserve reported truncation and do not
+infer that an omitted reference is absent.
+
+Before answering, perform one coverage pass over the private checklist. Every
+explicitly requested item must be either supported by cited returned evidence
+and present in the answer, or reported as conditional/unproven with the missing
+evidence named. For each supported item, preserve the concrete mechanism,
+predicate or boundary, typed outcome, and before/after mutation order exposed
+by the source instead of weakening them into a generic paraphrase. Do not drop
+a supported item merely because another item seems more important. If the
+command or output budget prevents closing an item, return the remaining item as
+an obligation instead of guessing.
 
 Admission already binds the exact base revision. Do not run a preliminary
 `git rev-parse` or cleanliness check for read-only analysis; use one final

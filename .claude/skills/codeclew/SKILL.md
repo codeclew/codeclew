@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.1"
+  version: "0.2.4"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -25,12 +25,14 @@ Preserve the user's scope and Codeclew's authority boundaries.
 2. Identify the absolute repository path, exact target ref, language, and exact
    compilation. Use explicit user input or authoritative project configuration;
    do not infer them from names. Ask when any remains ambiguous.
-3. Run `clew capabilities` once. Require `runtimeMode=RELEASE`,
+3. Admit the task through one of the two public atomic paths below. Their
+   `admission` object is the runtime authority; do not spend a separate call on
+   `clew capabilities` during an ordinary task. Require `runtimeMode=RELEASE`,
    `agentContract.schema=codeclew-agent-contract/1.0`,
    `agentContract.launcherAuthority=INSTALLED_RELEASE`, and
-   `agentContract.sourceFallbackAllowed=false`. Stop on a missing or mismatched
-   contract instead of trying another launcher.
-4. Admit the task through one of the two public paths below. For bounded
+   `agentContract.sourceFallbackAllowed=false`. Use standalone capabilities
+   only when the user explicitly asks about product support or runtime status.
+4. For bounded
    read-only navigation, prefer `nav query`. For broader analysis or mutation,
    open the admitted task and first bounded context atomically:
    `clew context open --repo <absolute-repo> --target-ref <exact-ref> --language
@@ -70,27 +72,109 @@ clew nav query \
   --language <language> \
   --profile <profile-id> \
   --compilation <compilation> \
-  --term <term>
+  --term <term> \
+  --source
 ```
 
-Repeat `--term` only for explicit additional terms. `--intent` is optional and
-does not affect retrieval. Do not pass a positional search phrase. Retain the
-returned session and context identifiers. When these arguments are already
-known, run the command directly instead of spending a call on `--help`.
+Pass two to four discriminative code tokens from the request together when they
+are available. These are agent-selected lexical identifiers, not requirements
+inferred by Codeclew. `--intent` is optional and does not affect retrieval. Do
+not pass a positional search phrase. Retain the returned session and context
+identifiers. When these arguments are already known, run the command directly
+instead of spending a call on `--help`.
 
-If the bounded result is insufficient, expand only the missing term or direct
-relation from the retained context:
+Before querying, turn the explicit parts of the user's request into a short
+private evidence checklist. Codeclew does not infer this checklist. Search terms
+only retrieve candidates and never prove a checklist item. Keep an item open
+until an exact returned source window or supported fact proves it; record
+conditional or unsure authority without upgrading it. For a multi-part request,
+the checklist is the coverage authority for the final answer. Overall
+`completeness`, truncation, or an unmatched seed term limits exhaustive claims,
+but does not downgrade a specific fact proven by an exact retained source
+window.
+
+The first response contains at most three fact-bound decision cards with exact
+one-line previews. `--source` returns a compact, evidence-bound agent card: the
+exact retained source and declaration-to-window bindings for the highest-ranked
+card, attested previews for alternatives, and only anchors outside that source
+window. Treat its `completeness` and `truncated` fields as authoritative; the
+full immutable evidence remains bound by `evidenceDigest`. Omit `--source` when
+names and locations are enough.
+Select up to three other useful cards in one call by repeating `--candidate`;
+each returns its retained fact and exact source window. Request relations only
+when they are needed for those selected symbols:
 
 ```bash
 clew nav expand \
   --session <session-id> \
   --from <context-id> \
-  --term <term> \
+  --candidate <candidate-id> \
+  --candidate <candidate-id> \
+  --source \
   --facet <callers-or-callees-or-tests>
 ```
 
-The facet is optional. There is no `--all`; use another bounded expansion when
-the response reports truncation. Do not expand merely to collect every match.
+Both source and facet are optional. Never reread a returned exact source window
+with `sed`, `nl`, or another search tool unless a later observation contradicts
+its bound digest. If none of the cards is sufficient, add only the missing
+identifier with `nav expand --session <session-id> --from <context-id> --term
+<term>`. If the exact identifier and file are already established, combine the
+refinement and selection in one call: `nav expand --session <session-id> --from
+<context-id> --term <exact-identifier> --file <repository-relative-file>
+--source`. This fails closed on no match or same-file ambiguity. There is no
+`--all`; narrow a reported truncation and do not expand
+merely to collect every match. Term expansion returns a reconstructable patch:
+apply upserts and removals, then `candidateOrder`; unchanged cards are omitted.
+The child `contextId` and `evidenceDigest` bind the complete immutable evidence.
+
+Automatic `nav query --follow-references` follows lexical overlap from the
+automatically ranked top card. Omit it when candidate identity matters; select
+the intended card first and then use explicit retained-reference follow. Never
+present automatic follow as semantic resolution.
+
+When a selected card reports `referenceChoices.status=SUPPORTED` and an open
+checklist item depends on a helper, follow one to three relevant retained
+references together instead of guessing or issuing separate searches. Choose
+at most one path for each terminal name:
+
+```bash
+clew nav expand \
+  --session <session-id> \
+  --from <context-id> \
+  --candidate <one-candidate-id> \
+  --reference <terminal-or-full-path> \
+  --reference <terminal-or-full-path> \
+  --source
+```
+
+Choose references because they can close an explicit checklist item, not merely
+because they are present. Prefer qualified paths and use the newest child
+context that contains the selected candidate. `USER_SELECTED_RETAINED_REFERENCE`
+records that the agent selected an observed syntax reference; it is not a
+resolved call edge. When `targetResolution=UNRESOLVED` or
+`semanticRelation=UNKNOWN`, treat returned name matches as bounded discovery
+candidates. Exact source returned for such a candidate may prove facts about
+that declaration, but not that the observed reference targets it. Do not
+re-query source already returned. Use exact `--term ... --file ... --source`
+only when the retained-name result lacks sufficient exact source and both the
+identifier and file are already established by evidence. Recurse only when the
+returned helper body delegates an open checklist item; prioritize the bounded
+call that closes the most open items. Preserve reported truncation and do not
+infer that an omitted reference is absent.
+
+Before answering, perform one coverage pass over the private checklist. Every
+explicitly requested item must be either supported by cited returned evidence
+and present in the answer, or reported as conditional/unproven with the missing
+evidence named. For each supported item, preserve the concrete mechanism,
+predicate or boundary, typed outcome, and before/after mutation order exposed
+by the source instead of weakening them into a generic paraphrase. Do not drop
+a supported item merely because another item seems more important. If the
+command or output budget prevents closing an item, return the remaining item as
+an obligation instead of guessing.
+
+Admission already binds the exact base revision. Do not run a preliminary
+`git rev-parse` or cleanliness check for read-only analysis; use one final
+`git status --short` only when proving that the task made no repository change.
 
 ## Build bounded context
 
