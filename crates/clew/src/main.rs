@@ -624,6 +624,16 @@ struct NavExpandArgs {
     /// Select one to three fact-bound decision cards. Repeat for a batch.
     #[arg(long = "candidate", num_args = 1, action = clap::ArgAction::Append)]
     candidates: Vec<String>,
+    /// Follow one exact retained direct-reference terminal or `a::b` path from
+    /// the single selected candidate. Repeat up to three times. Requires source.
+    #[arg(
+        long = "reference",
+        num_args = 1,
+        action = clap::ArgAction::Append,
+        requires_all = ["candidates", "source"],
+        conflicts_with_all = ["terms", "file", "facets"]
+    )]
+    references: Vec<String>,
     /// Include the exact retained source window for the selected candidate.
     /// With term selection, requires one to three exact terms and --file.
     #[arg(long, requires = "source_target")]
@@ -2081,12 +2091,53 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
                 "candidate detail cannot use an exact file selector",
             ));
         }
-        let navigation = clew::navigation::detail(
+        validate_explicit_reference_request(&args.candidates, &args.references)?;
+        let mut navigation = clew::navigation::detail(
             &parent,
             &args.candidates,
             args.source,
             &navigation_facets(&args.facets),
         )?;
+        if !args.references.is_empty() {
+            let candidate_id = &args.candidates[0];
+            let selections = clew::navigation::select_explicit_direct_references(
+                &parent,
+                candidate_id,
+                &args.references,
+            )?;
+            let terms = selections
+                .iter()
+                .map(|selection| selection.terminal_name().to_owned())
+                .collect::<Vec<_>>();
+            let child = expand_context_object(
+                &session,
+                parent.context_id.clone(),
+                None,
+                terms,
+                args.max_roots.max(4),
+            )?;
+            let mut reference_follow =
+                clew::navigation::explicit_direct_reference_detail(&child, &selections)?;
+            reference_follow
+                .as_object_mut()
+                .ok_or_else(|| {
+                    ClewError::new(ErrorCode::Internal, "direct reference detail is invalid")
+                })?
+                .extend([
+                    (
+                        "parentContextId".into(),
+                        Value::String(parent.context_id.clone()),
+                    ),
+                    (
+                        "selectedCandidateId".into(),
+                        Value::String(candidate_id.clone()),
+                    ),
+                ]);
+            navigation
+                .as_object_mut()
+                .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation detail is invalid"))?
+                .insert("referenceFollow".into(), reference_follow);
+        }
         let result = json!({
             "schema":clew::navigation::NAV_EXPAND_SCHEMA,
             "status":"SELECTED",
@@ -2157,6 +2208,25 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
     });
     clew::navigation::validate_stdout(&result)?;
     Ok(result)
+}
+
+fn validate_explicit_reference_request(
+    candidates: &[String],
+    references: &[String],
+) -> Result<(), ClewError> {
+    if references.is_empty() {
+        return Ok(());
+    }
+    if candidates.len() != 1
+        || references.len() > 3
+        || references.iter().collect::<BTreeSet<_>>().len() != references.len()
+    {
+        return Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "explicit reference follow requires one candidate and one to three unique references",
+        ));
+    }
+    Ok(())
 }
 
 fn navigation_facets(facets: &[NavFacetArg]) -> Vec<clew::navigation::NavigationFacet> {
@@ -3303,6 +3373,74 @@ mod tests {
                 "analysis",
             ])
             .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--reference",
+                "canonical::bytes",
+                "--reference",
+                "hash",
+                "--source",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--reference",
+                "bytes",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--candidate",
+                "c:0123456789abcdef",
+                "--reference",
+                "bytes",
+                "--source",
+                "--facet",
+                "callers",
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_explicit_reference_request(
+                &["c:first".into(), "c:second".into()],
+                &["bytes".into()]
+            )
+            .is_err()
+        );
+        assert!(
+            validate_explicit_reference_request(
+                &["c:first".into()],
+                &["bytes".into(), "bytes".into()]
+            )
+            .is_err()
         );
         assert!(
             Cli::try_parse_from([

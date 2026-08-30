@@ -8,7 +8,7 @@ pub const NAV_QUERY_SCHEMA: &str = "codeclew-nav-query/2.0";
 pub const NAV_EXPAND_SCHEMA: &str = "codeclew-nav-expand/2.0";
 pub const NAV_RESULT_SCHEMA: &str = "codeclew-navigation-result/2.0";
 pub const NAV_DELTA_SCHEMA: &str = "codeclew-navigation-delta/2.0";
-pub const NAV_DETAIL_SCHEMA: &str = "codeclew-navigation-detail/1.0";
+pub const NAV_DETAIL_SCHEMA: &str = "codeclew-navigation-detail/1.1";
 pub const NAV_AGENT_CARD_SCHEMA: &str = "codeclew-navigation-agent-card/1.0";
 pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
@@ -822,16 +822,28 @@ struct DirectReferenceObservation {
     end_line: u64,
 }
 
-pub fn select_direct_references(
+struct DirectReferenceGroups {
+    source_file: String,
+    references: BTreeMap<String, BTreeSet<DirectReferenceObservation>>,
+    truncated: bool,
+}
+
+fn direct_reference_groups(
     context: &ContextObject,
     candidate_id: &str,
-) -> Result<(Vec<DirectReferenceSelection>, bool, usize), ClewError> {
+) -> Result<Option<DirectReferenceGroups>, ClewError> {
     let retained = retained_context(context)?;
     let matches = retained
         .get("matches")
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("retained navigation context has no match array"))?;
     let payload = candidate_payload(matches, candidate_id)?;
+    direct_reference_groups_from_payload(payload)
+}
+
+fn direct_reference_groups_from_payload(
+    payload: &Map<String, Value>,
+) -> Result<Option<DirectReferenceGroups>, ClewError> {
     let references = match payload.get("directReferences") {
         Some(references) => references,
         None if payload.contains_key("directReferencesTruncated") => {
@@ -839,14 +851,14 @@ pub fn select_direct_references(
                 "direct reference truncation exists without reference facts",
             ));
         }
-        None => return Ok((Vec::new(), false, 0)),
+        None => return Ok(None),
     };
     let source_file = required_payload_string(payload, "file")?.to_owned();
     let declaration_start = required_payload_u64(payload, "rangeStart")?;
     let declaration_end = required_payload_u64(payload, "rangeEnd")?;
     let declaration_start_line = required_payload_u64(payload, "startLine")?;
     let declaration_end_line = required_payload_u64(payload, "endLine")?;
-    let source_references_truncated = payload
+    let truncated = payload
         .get("directReferencesTruncated")
         .and_then(Value::as_bool)
         .ok_or_else(|| invalid("direct reference facts have no truncation boundary"))?;
@@ -908,13 +920,32 @@ pub fn select_direct_references(
                 end_line,
             });
     }
+    Ok(Some(DirectReferenceGroups {
+        source_file,
+        references: grouped,
+        truncated,
+    }))
+}
+
+pub fn select_direct_references(
+    context: &ContextObject,
+    candidate_id: &str,
+) -> Result<(Vec<DirectReferenceSelection>, bool, usize), ClewError> {
+    let Some(groups) = direct_reference_groups(context, candidate_id)? else {
+        return Ok((Vec::new(), false, 0));
+    };
+    let DirectReferenceGroups {
+        source_file,
+        references,
+        truncated,
+    } = groups;
     let normalized_terms = context
         .terms
         .iter()
         .map(|term| term.to_lowercase())
         .filter(|term| !term.is_empty())
         .collect::<BTreeSet<_>>();
-    let mut ranked = grouped
+    let mut ranked = references
         .into_iter()
         .filter_map(|(terminal_name, observations)| {
             let components = terminal_name
@@ -931,7 +962,7 @@ pub fn select_direct_references(
                 source_file: source_file.clone(),
                 matched_terms,
                 observations: observations.into_iter().collect(),
-                source_references_truncated,
+                source_references_truncated: truncated,
             })
         })
         .collect::<Vec<_>>();
@@ -945,13 +976,127 @@ pub fn select_direct_references(
     });
     let eligible_count = ranked.len();
     ranked.truncate(MAX_REFERENCE_FOLLOW_TERMS);
-    Ok((ranked, source_references_truncated, eligible_count))
+    Ok((ranked, truncated, eligible_count))
+}
+
+pub fn select_explicit_direct_references(
+    context: &ContextObject,
+    candidate_id: &str,
+    requested: &[String],
+) -> Result<Vec<DirectReferenceSelection>, ClewError> {
+    if requested.is_empty()
+        || requested.len() > MAX_REFERENCE_FOLLOW_TERMS
+        || requested.iter().collect::<BTreeSet<_>>().len() != requested.len()
+    {
+        return Err(invalid(
+            "explicit reference selection requires one to three unique references",
+        ));
+    }
+    let retained = retained_context(context)?;
+    let matches = retained
+        .get("matches")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid("retained navigation context has no match array"))?;
+    let payload = candidate_payload(matches, candidate_id)?;
+    if !supports_explicit_direct_references(payload) {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedProjectConfiguration,
+            "explicit direct-reference follow is unsupported for this fact schema",
+        ));
+    }
+    let groups = direct_reference_groups_from_payload(payload)?;
+    let truncated = groups.as_ref().is_some_and(|groups| groups.truncated);
+    let Some(groups) = groups else {
+        return Err(ClewError::new(
+            ErrorCode::SymbolNotFound,
+            "selected candidate has no retained direct references",
+        ));
+    };
+    let mut terminal_names = BTreeSet::new();
+    let mut selections = Vec::new();
+    for requested in requested {
+        let path = requested.split("::").collect::<Vec<_>>();
+        if requested.is_empty()
+            || requested.len() > MAX_REFERENCE_PATH_BYTES
+            || path.iter().any(|segment| {
+                segment.is_empty() || segment.len() > 256 || segment.chars().any(char::is_control)
+            })
+            || path.len() > 32
+        {
+            return Err(invalid("explicit reference selector is invalid"));
+        }
+        let terminal_name = path.last().expect("nonempty path").to_string();
+        if !terminal_names.insert(terminal_name.clone()) {
+            return Err(invalid(
+                "explicit reference selectors have duplicate terminal names",
+            ));
+        }
+        let observations = groups
+            .references
+            .get(&terminal_name)
+            .into_iter()
+            .flatten()
+            .filter(|observation| {
+                path.len() == 1
+                    || observation
+                        .path_segments
+                        .iter()
+                        .map(String::as_str)
+                        .eq(path.iter().copied())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if observations.is_empty() {
+            return Err(ClewError::new(
+                if truncated {
+                    ErrorCode::IncompleteSemanticAnalysis
+                } else {
+                    ErrorCode::SymbolNotFound
+                },
+                format!("direct reference {requested} is not retained by the selected candidate"),
+            ));
+        }
+        selections.push(DirectReferenceSelection {
+            terminal_name,
+            source_file: groups.source_file.clone(),
+            matched_terms: vec![requested.clone()],
+            observations,
+            source_references_truncated: groups.truncated,
+        });
+    }
+    Ok(selections)
 }
 
 pub fn direct_reference_detail(
     context: &ContextObject,
     selections: &[DirectReferenceSelection],
     eligible_count: usize,
+) -> Result<Value, ClewError> {
+    direct_reference_detail_with_authority(
+        context,
+        selections,
+        eligible_count,
+        "LEXICAL_QUERY_TERM_OVERLAP",
+    )
+}
+
+pub fn explicit_direct_reference_detail(
+    context: &ContextObject,
+    selections: &[DirectReferenceSelection],
+) -> Result<Value, ClewError> {
+    direct_reference_detail_with_authority(
+        context,
+        selections,
+        selections.len(),
+        "USER_SELECTED_RETAINED_REFERENCE",
+    )
+}
+
+fn direct_reference_detail_with_authority(
+    context: &ContextObject,
+    selections: &[DirectReferenceSelection],
+    eligible_count: usize,
+    selection_authority: &str,
 ) -> Result<Value, ClewError> {
     if selections.is_empty()
         || selections.len() > MAX_REFERENCE_FOLLOW_TERMS
@@ -1085,7 +1230,7 @@ pub fn direct_reference_detail(
                 },
                 "occurrences":observations,
             },
-            "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+            "selectionAuthority":selection_authority,
             "targetResolution":"UNRESOLVED",
             "semanticRelation":"UNKNOWN",
             "nameMatches":{
@@ -1108,7 +1253,7 @@ pub fn direct_reference_detail(
         "sessionId":context.session_id,
         "contextId":context.context_id,
         "evidenceDigest":context.evidence_digest,
-        "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
+        "selectionAuthority":selection_authority,
         "targetResolution":"UNRESOLVED",
         "semanticRelation":"UNKNOWN",
         "sourceBytes":source_bytes,
@@ -1193,6 +1338,7 @@ fn selected_candidate_detail(
     } else {
         json!({"status":"NOT_REQUESTED"})
     };
+    let reference_choices = bounded_reference_choices(payload, candidate_id)?;
     Ok(json!({
         "candidateId":candidate_id,
         "candidateKey":{"compilation":compilation,"factKey":fact_key},
@@ -1204,12 +1350,102 @@ fn selected_candidate_detail(
             "payload":payload,
         },
         "source":source,
+        "referenceChoices":reference_choices,
         "facets":{
             "callers":relation_facet(matches, &identities, NavigationFacet::Callers, requested_facets.contains(&NavigationFacet::Callers)),
             "callees":relation_facet(matches, &identities, NavigationFacet::Callees, requested_facets.contains(&NavigationFacet::Callees)),
             "tests":relation_facet(matches, &identities, NavigationFacet::Tests, requested_facets.contains(&NavigationFacet::Tests)),
         },
     }))
+}
+
+fn bounded_reference_choices(
+    payload: &Map<String, Value>,
+    candidate_id: &str,
+) -> Result<Value, ClewError> {
+    if !supports_explicit_direct_references(payload) {
+        return Ok(json!({
+            "status":"UNSUPPORTED",
+            "reason":"FACT_SCHEMA_HAS_NO_EXPLICIT_DIRECT_REFERENCE_CONTRACT",
+            "choices":[],
+        }));
+    }
+    let Some(groups) = direct_reference_groups_from_payload(payload)? else {
+        return Ok(json!({
+            "status":"UNSUPPORTED",
+            "reason":"NO_RETAINED_DIRECT_REFERENCE_FACTS",
+            "choices":[],
+        }));
+    };
+    let total = groups.references.len();
+    let mut truncated = groups.truncated || total > MAX_REFERENCE_FOLLOW_TERMS;
+    let mut choices = Vec::new();
+    let mut ranked = groups.references.iter().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        let left_qualified = left
+            .1
+            .iter()
+            .any(|observation| observation.path_segments.len() > 1);
+        let right_qualified = right
+            .1
+            .iter()
+            .any(|observation| observation.path_segments.len() > 1);
+        right_qualified
+            .cmp(&left_qualified)
+            .then_with(|| left.0.cmp(right.0))
+    });
+    for (terminal_name, observations) in ranked.into_iter().take(MAX_REFERENCE_FOLLOW_TERMS) {
+        let mut ranked_paths = observations
+            .iter()
+            .filter(|observation| {
+                observation
+                    .path_segments
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>()
+                    .saturating_add(observation.path_segments.len().saturating_sub(1) * 2)
+                    <= MAX_REFERENCE_PATH_BYTES
+            })
+            .collect::<Vec<_>>();
+        ranked_paths.sort_by(|left, right| {
+            let left_qualified = left.path_segments.len() > 1;
+            let right_qualified = right.path_segments.len() > 1;
+            right_qualified
+                .cmp(&left_qualified)
+                .then_with(|| left.cmp(right))
+        });
+        let paths = ranked_paths
+            .into_iter()
+            .take(MAX_REFERENCE_OBSERVATIONS_PER_TERM)
+            .map(|observation| observation.path_segments.join("::"))
+            .collect::<Vec<_>>();
+        let returned = paths.len();
+        truncated |= returned < observations.len();
+        choices.push(json!({
+            "terminalName":terminal_name,
+            "paths":paths,
+            "observationCount":{
+                "returned":returned,
+                "total":observations.len(),
+                "omitted":observations.len().saturating_sub(returned),
+            },
+        }));
+    }
+    Ok(json!({
+        "status":"SUPPORTED",
+        "selectionAuthority":"RETAINED_DIRECT_REFERENCE_FACT",
+        "returned":choices.len(),
+        "total":total,
+        "truncated":truncated,
+        "choices":choices,
+        "nextAction":format!(
+            "nav expand --session <sessionId> --from <contextId> --candidate {candidate_id} --reference <terminal-or-full-path> --source"
+        ),
+    }))
+}
+
+fn supports_explicit_direct_references(payload: &Map<String, Value>) -> bool {
+    payload.get("schema").and_then(Value::as_str) == Some("codeclew-rust-syntax-fact/1.1")
 }
 
 pub fn validate_stdout(value: &Value) -> Result<(), ClewError> {
@@ -2858,6 +3094,159 @@ mod tests {
                 .code,
             ErrorCode::InvalidInput
         );
+    }
+
+    #[test]
+    fn explicit_reference_follow_binds_canonical_paths_and_remains_unresolved() {
+        let parent_retained = json!({
+            "matches":[{
+                "compilation":"cargo:demo",
+                "factKey":"fact:caller",
+                "domainUri":"analysis:rust-syntax-facts",
+                "payloadRef":{"digest":"sha256:caller"},
+                "payload":{
+                    "schema":"codeclew-rust-syntax-fact/1.1",
+                    "kind":"declaration",
+                    "name":"caller",
+                    "file":"src/lib.rs",
+                    "rangeStart":100,
+                    "rangeEnd":300,
+                    "startLine":10,
+                    "endLine":30,
+                    "directReferencesTruncated":false,
+                    "directReferences":[
+                        {"kind":"CALL_PATH","pathSegments":["canonical","bytes"],"terminalName":"bytes","rangeStart":120,"rangeEnd":136,"startLine":12,"endLine":12,"resolution":"SYNTAX_UNRESOLVED"},
+                        {"kind":"CALL_PATH","pathSegments":["bytes"],"terminalName":"bytes","rangeStart":137,"rangeEnd":142,"startLine":13,"endLine":13,"resolution":"SYNTAX_UNRESOLVED"},
+                        {"kind":"CALL_PATH","pathSegments":["canonical","hash"],"terminalName":"hash","rangeStart":150,"rangeEnd":165,"startLine":15,"endLine":15,"resolution":"SYNTAX_UNRESOLVED"},
+                        {"kind":"CALL_PATH","pathSegments":["aaa"],"terminalName":"aaa","rangeStart":170,"rangeEnd":174,"startLine":17,"endLine":17,"resolution":"SYNTAX_UNRESOLVED"},
+                        {"kind":"CALL_PATH","pathSegments":["bbb"],"terminalName":"bbb","rangeStart":180,"rangeEnd":184,"startLine":18,"endLine":18,"resolution":"SYNTAX_UNRESOLVED"},
+                        {"kind":"CALL_PATH","pathSegments":["ccc"],"terminalName":"ccc","rangeStart":190,"rangeEnd":194,"startLine":19,"endLine":19,"resolution":"SYNTAX_UNRESOLVED"}
+                    ]
+                }
+            }],
+            "sources":[{"fileId":"src/lib.rs","contentRef":{"digest":"sha256:source"},"windows":[{"startLine":10,"endLine":30,"text":"fn caller() { canonical::bytes(); canonical::hash(); }"}]}],
+            "completeness":{},
+            "truncated":false
+        });
+        let parent = context("context:parent", None, "sha256:parent", parent_retained);
+        let candidate_id = candidate_handle("cargo:demo", "fact:caller").unwrap();
+        let candidate = detail(&parent, &[candidate_id.clone()], true, &[]).unwrap();
+        assert_eq!(candidate["schema"], NAV_DETAIL_SCHEMA);
+        assert_eq!(candidate["schema"], "codeclew-navigation-detail/1.1");
+        assert_eq!(
+            candidate["candidates"][0]["referenceChoices"]["status"],
+            "SUPPORTED"
+        );
+        assert_eq!(
+            candidate["candidates"][0]["referenceChoices"]["choices"][0]["paths"][0],
+            "canonical::bytes"
+        );
+        assert_eq!(
+            candidate["candidates"][0]["referenceChoices"]["choices"][1]["paths"][0],
+            "canonical::hash"
+        );
+        assert_eq!(
+            candidate["candidates"][0]["referenceChoices"]["truncated"],
+            true
+        );
+        assert!(
+            candidate["candidates"][0]["referenceChoices"]["nextAction"]
+                .as_str()
+                .unwrap()
+                .contains("--reference")
+        );
+        let mut foreign = parent.clone();
+        foreign.evidence["context"]["matches"][0]["payload"]["schema"] =
+            json!("codeclew-typescript-syntax-fact/1.0");
+        let foreign_detail = detail(&foreign, &[candidate_id.clone()], true, &[]).unwrap();
+        assert_eq!(
+            foreign_detail["candidates"][0]["referenceChoices"]["status"],
+            "UNSUPPORTED"
+        );
+        assert_eq!(
+            select_explicit_direct_references(&foreign, &candidate_id, &["bytes".into()])
+                .unwrap_err()
+                .code,
+            ErrorCode::UnsupportedProjectConfiguration
+        );
+        foreign.evidence["context"]["matches"][0]["payload"]["schema"] =
+            json!("codeclew-rust-syntax-fact/1.0");
+        assert_eq!(
+            detail(&foreign, &[candidate_id.clone()], true, &[]).unwrap()["candidates"][0]["referenceChoices"]
+                ["status"],
+            "UNSUPPORTED"
+        );
+
+        let selections = select_explicit_direct_references(
+            &parent,
+            &candidate_id,
+            &["canonical::bytes".into(), "hash".into()],
+        )
+        .unwrap();
+        assert_eq!(selections[0].terminal_name(), "bytes");
+        assert_eq!(
+            selections[0].observations[0].path_segments,
+            vec!["canonical", "bytes"]
+        );
+        assert_eq!(selections[1].terminal_name(), "hash");
+        assert_eq!(
+            select_explicit_direct_references(&parent, &candidate_id, &["missing".into()])
+                .unwrap_err()
+                .code,
+            ErrorCode::SymbolNotFound
+        );
+        assert_eq!(
+            select_explicit_direct_references(
+                &parent,
+                &candidate_id,
+                &[
+                    "bytes".into(),
+                    "hash".into(),
+                    "other".into(),
+                    "fourth".into(),
+                ],
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidInput
+        );
+        let mut truncated_parent = parent.clone();
+        truncated_parent.evidence["context"]["matches"][0]["payload"]["directReferencesTruncated"] =
+            json!(true);
+        assert_eq!(
+            select_explicit_direct_references(
+                &truncated_parent,
+                &candidate_id,
+                &["missing".into()]
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::IncompleteSemanticAnalysis
+        );
+
+        let child_retained = json!({
+            "matches":[
+                {"compilation":"cargo:demo","factKey":"fact:bytes","payload":{"kind":"declaration","name":"bytes","file":"src/canonical.rs","startLine":1,"endLine":1}},
+                {"compilation":"cargo:demo","factKey":"fact:hash","payload":{"kind":"declaration","name":"hash","file":"src/canonical.rs","startLine":2,"endLine":2}}
+            ],
+            "sources":[{"fileId":"src/canonical.rs","contentRef":{"digest":"sha256:canonical"},"windows":[{"startLine":1,"endLine":2,"text":"fn bytes() {}\nfn hash() {}"}]}],
+            "completeness":{},
+            "truncated":false
+        });
+        let child = context(
+            "context:child",
+            Some("context:parent"),
+            "sha256:child",
+            child_retained,
+        );
+        let followed = explicit_direct_reference_detail(&child, &selections).unwrap();
+        assert_eq!(
+            followed["selectionAuthority"],
+            "USER_SELECTED_RETAINED_REFERENCE"
+        );
+        assert_eq!(followed["targetResolution"], "UNRESOLVED");
+        assert_eq!(followed["semanticRelation"], "UNKNOWN");
+        assert_eq!(followed["references"].as_array().unwrap().len(), 2);
     }
 
     #[test]
