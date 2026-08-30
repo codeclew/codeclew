@@ -17,6 +17,7 @@ const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_SNIPPET_BYTES: usize = 16 * 1024;
 const MAX_SOURCE_BYTES: usize = 32 * 1024;
 const MAX_SOURCE_WINDOWS: usize = 4;
+const MAX_SUPPORT_TERM_SETS: usize = 32;
 const PROJECTION_TARGET_BYTES: usize = 54 * 1024;
 pub const AGGREGATE_QUERY_CONTEXT_SCHEMA: &str = "codeclew-aggregate-query-context/1.0";
 pub const BOUNDED_CONTEXT_SCHEMA: &str = "codeclew-bounded-context/4.0";
@@ -987,24 +988,7 @@ fn source_windows(
             .iter()
             .map(|term| term.to_lowercase())
             .collect::<Vec<_>>();
-        let retained_score = windows
-            .iter()
-            .flat_map(|window| window.2.lines())
-            .map(|line| lexical_line_score(line, &lowered_terms))
-            .max()
-            .unwrap_or((0, 0));
-        let best_support = lines
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                let line = index + 1;
-                !windows
-                    .iter()
-                    .any(|window| window.0 <= line && line <= window.1)
-            })
-            .map(|(index, line)| (lexical_line_score(line, &lowered_terms), index + 1, *line))
-            .filter(|(score, _, _)| *score > retained_score)
-            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)));
+        let (best_support, _) = best_lexical_support(&lines, &windows, &lowered_terms);
         if let Some((_, line, text)) = best_support
             && projected_bytes.saturating_add(text.len()) <= MAX_SOURCE_BYTES
         {
@@ -1015,12 +999,71 @@ fn source_windows(
     windows
 }
 
-fn lexical_line_score(line: &str, terms: &[String]) -> (usize, usize) {
-    let lowered = line.to_lowercase();
+type LexicalSupport<'a> = ((usize, usize), usize, &'a str);
+
+fn best_lexical_support<'a>(
+    lines: &[&'a str],
+    windows: &[(usize, usize, String)],
+    lowered_terms: &[String],
+) -> (Option<LexicalSupport<'a>>, usize) {
+    let retained_lines = windows
+        .iter()
+        .flat_map(|window| window.2.lines())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    let mut retained_scores = BTreeMap::<Vec<usize>, (usize, usize)>::new();
+    let best = lines
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            let line = index + 1;
+            !windows
+                .iter()
+                .any(|window| window.0 <= line && line <= window.1)
+        })
+        .filter_map(|(index, line)| {
+            let lowered_line = line.to_lowercase();
+            let support_terms = lowered_terms
+                .iter()
+                .enumerate()
+                .filter_map(|(term_index, term)| {
+                    lowered_line.contains(term.as_str()).then_some(term_index)
+                })
+                .collect::<Vec<_>>();
+            if support_terms.is_empty() {
+                return None;
+            }
+            let score = lexical_subset_score(&lowered_line, lowered_terms, &support_terms);
+            let retained_score = match retained_scores.get(&support_terms).copied() {
+                Some(score) => score,
+                None if retained_scores.len() == MAX_SUPPORT_TERM_SETS => return None,
+                None => {
+                    let score = retained_lines
+                        .iter()
+                        .map(|retained| {
+                            lexical_subset_score(retained, lowered_terms, &support_terms)
+                        })
+                        .max()
+                        .unwrap_or((0, 0));
+                    retained_scores.insert(support_terms, score);
+                    score
+                }
+            };
+            (score > retained_score).then_some((score, index + 1, *line))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1)));
+    (best, retained_scores.len())
+}
+
+fn lexical_subset_score(
+    lowered_line: &str,
+    lowered_terms: &[String],
+    term_indexes: &[usize],
+) -> (usize, usize) {
     let mut coverage = 0usize;
     let mut occurrences = 0usize;
-    for term in terms {
-        let count = lowered.matches(term).count();
+    for term_index in term_indexes {
+        let count = lowered_line.matches(&lowered_terms[*term_index]).count();
         coverage += usize::from(count > 0);
         occurrences = occurrences.saturating_add(count);
     }
@@ -1416,9 +1459,9 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 mod tests {
     use super::{
         AGGREGATE_QUERY_CONTEXT_SCHEMA, CompilationFactHit, MAX_PAYLOAD_BYTES, MAX_SOURCE_BYTES,
-        PROJECTION_TARGET_BYTES, bounded_projection, load_fact_evidence, merge_query_contexts,
-        ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints, source_windows,
-        validate_source_rows,
+        PROJECTION_TARGET_BYTES, best_lexical_support, bounded_projection, load_fact_evidence,
+        merge_query_contexts, ordered_paths_in_evidence, rank_fact_evidence, source_offset_hints,
+        source_windows, validate_source_rows,
     };
     use crate::adapter_v2::CapabilityUri;
     use crate::cas::CasStore;
@@ -2213,7 +2256,12 @@ mod tests {
         ]);
         let windows = source_windows(
             &source,
-            &["member".into(), "completeness".into()],
+            &[
+                "unmatched".into(),
+                "global".into(),
+                "member".into(),
+                "completeness".into(),
+            ],
             Some(&ranges),
         );
         assert_eq!(windows.len(), 3);
@@ -2227,6 +2275,18 @@ mod tests {
                 .2
                 .contains("aggregate_unmatched_terms_are_global_not_member_local")
         );
+    }
+
+    #[test]
+    fn repeated_support_term_sets_reuse_one_retained_score() {
+        let mut source = "fn member_completeness() {}\n".to_owned();
+        source.push_str(&"memberCompleteness member_completeness\n".repeat(1_000));
+        let lines = source.lines().collect::<Vec<_>>();
+        let windows = vec![(1, 1, lines[0].to_owned())];
+        let (support, retained_score_computations) =
+            best_lexical_support(&lines, &windows, &["member".into(), "completeness".into()]);
+        assert_eq!(retained_score_computations, 1);
+        assert_eq!(support.map(|(_, line, _)| line), Some(2));
     }
 
     #[test]
