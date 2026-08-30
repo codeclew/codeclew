@@ -51,7 +51,8 @@ internal fun descriptorCorePayload(raw: JsonObject, sourceRowHash: String): Json
 internal fun relationCorePayload(raw: JsonObject, sourceRowHash: String): JsonObject = buildJsonObject {
     raw.entries.sortedBy { it.key }.forEach { (key, value) ->
         when (key) {
-            "schema", "kind", "owner", "target", "resolution", "provider" -> put(key, value)
+            "schema", "kind", "owner", "target", "resolution", "provider",
+            "targetCompilerCallableId", "targetJvmDescriptor" -> put(key, value)
         }
     }
     put("attributeCoverage", "PARTIAL")

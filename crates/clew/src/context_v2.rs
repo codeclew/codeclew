@@ -1021,35 +1021,35 @@ fn create_with_selector(
             .expect("context evidence is an object")
             .insert(key.into(), value);
     }
-    if let Some(terms) = exact_expansion_terms {
-        if !exact_matches.is_empty() {
-            let selections = exact_matches
-                .iter()
-                .map(|selected| {
-                    let payload = load_fact_payload(&store, &selected.fact)?;
-                    let term = payload
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .filter(|term| terms.iter().any(|requested| requested == *term))
-                        .ok_or_else(|| {
-                            internal("exact expansion fact has no requested name authority")
-                        })?;
-                    Ok(ExactExpansionSelectionAuthority {
-                        schema: EXACT_EXPANSION_SELECTION_SCHEMA.into(),
-                        term: term.into(),
-                        compilation: selected.compilation.clone(),
-                        fact_key: selected.fact.fact_key.clone(),
-                    })
+    if let Some(terms) = exact_expansion_terms
+        && !exact_matches.is_empty()
+    {
+        let selections = exact_matches
+            .iter()
+            .map(|selected| {
+                let payload = load_fact_payload(&store, &selected.fact)?;
+                let term = payload
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|term| terms.iter().any(|requested| requested == *term))
+                    .ok_or_else(|| {
+                        internal("exact expansion fact has no requested name authority")
+                    })?;
+                Ok(ExactExpansionSelectionAuthority {
+                    schema: EXACT_EXPANSION_SELECTION_SCHEMA.into(),
+                    term: term.into(),
+                    compilation: selected.compilation.clone(),
+                    fact_key: selected.fact.fact_key.clone(),
                 })
-                .collect::<Result<Vec<_>, ClewError>>()?;
-            evidence
-                .as_object_mut()
-                .expect("context evidence is an object")
-                .insert(
-                    "exactExpansionSelections".into(),
-                    serde_json::to_value(selections).map_err(internal)?,
-                );
-        }
+            })
+            .collect::<Result<Vec<_>, ClewError>>()?;
+        evidence
+            .as_object_mut()
+            .expect("context evidence is an object")
+            .insert(
+                "exactExpansionSelections".into(),
+                serde_json::to_value(selections).map_err(internal)?,
+            );
     }
     Ok((projection, evidence))
 }

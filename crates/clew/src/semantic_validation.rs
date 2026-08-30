@@ -165,6 +165,7 @@ fn validate_payload_location(value: &Value, label: &str) -> Result<(), ClewError
 #[derive(Debug, Clone, Copy)]
 struct ParsedJvmMethodDescriptor {
     returns_void: bool,
+    parameter_count: usize,
 }
 
 struct JvmMethodDescriptorParser<'a> {
@@ -255,13 +256,19 @@ fn parse_jvm_method_descriptor(descriptor: &str) -> Result<ParsedJvmMethodDescri
         ));
     }
     parser.offset += 1;
+    let mut parameter_count = 0_usize;
     loop {
         match parser.peek() {
             Some(b')') => {
                 parser.offset += 1;
                 break;
             }
-            Some(_) => parser.field_type()?,
+            Some(_) => {
+                parser.field_type()?;
+                parameter_count = parameter_count.checked_add(1).ok_or_else(|| {
+                    payload_invalid("JVM method descriptor parameter count overflow")
+                })?;
+            }
             None => {
                 return Err(payload_invalid(
                     "JVM method descriptor has no closing parameter delimiter",
@@ -279,7 +286,10 @@ fn parse_jvm_method_descriptor(descriptor: &str) -> Result<ParsedJvmMethodDescri
     if parser.offset != parser.bytes.len() {
         return Err(payload_invalid("JVM method descriptor has trailing bytes"));
     }
-    Ok(ParsedJvmMethodDescriptor { returns_void })
+    Ok(ParsedJvmMethodDescriptor {
+        returns_void,
+        parameter_count,
+    })
 }
 
 pub(crate) fn validate_jvm_method_descriptor(descriptor: &str) -> Result<(), ClewError> {
@@ -452,7 +462,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
     }
     match kind {
         "FUNCTION" => {
-            allowed.push("compilerCallableId");
+            allowed.extend(["compilerCallableId", "jvmDescriptor"]);
             if !partial {
                 allowed.extend([
                     "isOverride",
@@ -556,6 +566,17 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
                 validate_partial_jvm_signature(signature)?;
             } else {
                 validate_jvm_function_signature(signature)?;
+                if let Some(descriptor) = value.get("jvmDescriptor") {
+                    let descriptor = descriptor.as_str().ok_or_else(|| {
+                        payload_invalid("function JVM descriptor is not a string")
+                    })?;
+                    validate_jvm_method_descriptor(descriptor)?;
+                    if signature != descriptor {
+                        return Err(payload_invalid(
+                            "function symbol identity disagrees with JVM descriptor",
+                        ));
+                    }
+                }
             }
         }
         "CONSTRUCTOR" => {
@@ -670,6 +691,9 @@ fn relation_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static str
     ];
     if partial {
         allowed.extend(["attributeCoverage", "sourceRowHash"]);
+        if matches!(kind, "CALLS" | "CONSTRUCTS") {
+            allowed.extend(["targetCompilerCallableId", "targetJvmDescriptor"]);
+        }
         return Ok(allowed);
     }
     match kind {
@@ -680,6 +704,10 @@ fn relation_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static str
             "baseParameterTypes",
         ]),
         "CALLS" | "CONSTRUCTS" => allowed.extend([
+            "targetCompilerCallableId",
+            "targetJvmDescriptor",
+            "receiverSelection",
+            "omittedDefaultParameterIndices",
             "resultType",
             "receiverType",
             "argumentToParameter",
@@ -720,18 +748,99 @@ fn relation_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static str
     Ok(allowed)
 }
 
-fn validate_argument_payloads(value: &Value) -> Result<(), ClewError> {
+fn validate_exact_call_target(
+    value: &Value,
+    kind: &str,
+    partial: bool,
+) -> Result<Option<usize>, ClewError> {
+    let target = payload_string(value, "target")?;
+    let callable_field = value.get("targetCompilerCallableId");
+    let descriptor_field = value.get("targetJvmDescriptor");
+    if callable_field.is_none() && descriptor_field.is_none() {
+        return Ok(None);
+    }
+    if callable_field.is_none() || descriptor_field.is_none() {
+        return Err(payload_invalid(
+            "call target has only one exact compiler identity field",
+        ));
+    }
+    let callable = payload_string(value, "targetCompilerCallableId")?;
+    let descriptor = payload_string(value, "targetJvmDescriptor")?;
+    validate_raw_compiler_identity(callable, "call target compiler callable id", false)?;
+    let parsed = parse_jvm_method_descriptor(descriptor)?;
+    let expected = match kind {
+        "CALLS" => format!("callable:{callable}#jvm:{descriptor}"),
+        "CONSTRUCTS" => {
+            if !parsed.returns_void {
+                return Err(payload_invalid(
+                    "constructor call target descriptor does not return void",
+                ));
+            }
+            format!("constructor:{callable}#jvm:{descriptor}")
+        }
+        _ => {
+            return Err(payload_invalid(
+                "non-call relation has an exact call target",
+            ));
+        }
+    };
+    if target != expected {
+        return Err(payload_invalid(
+            "call target identity disagrees with compiler callable id or JVM descriptor",
+        ));
+    }
+    if !partial {
+        let receiver_selection = payload_string(value, "receiverSelection")?;
+        match kind {
+            "CALLS"
+                if receiver_selection != "EXPLICIT"
+                    || payload_string(value, "receiverType").is_err() =>
+            {
+                return Err(payload_invalid(
+                    "exact call target has no explicit receiver authority",
+                ));
+            }
+            "CONSTRUCTS" if receiver_selection != "NONE" || value.get("receiverType").is_some() => {
+                return Err(payload_invalid(
+                    "exact constructor target has invalid receiver authority",
+                ));
+            }
+            _ => {}
+        }
+        if !value
+            .get("omittedDefaultParameterIndices")
+            .is_some_and(Value::is_array)
+        {
+            return Err(payload_invalid(
+                "exact call target has no omitted-default parameter set",
+            ));
+        }
+    }
+    Ok(Some(parsed.parameter_count))
+}
+
+fn validate_argument_payloads(
+    value: &Value,
+    target_parameter_count: Option<usize>,
+) -> Result<(), ClewError> {
     let Some(arguments) = value.get("argumentToParameter") else {
         return Ok(());
     };
     let arguments = arguments
         .as_array()
         .ok_or_else(|| payload_invalid("declaration relation argument mapping is not an array"))?;
+    let relation_start = value.get("start").and_then(Value::as_i64).unwrap_or(-1);
+    let relation_end = value.get("end").and_then(Value::as_i64).unwrap_or(-1);
+    let mut argument_ranges = BTreeSet::new();
+    let mut parameter_indices = BTreeSet::new();
+    let mut previous_start = None;
     for argument in arguments {
         closed_payload(
             argument,
             &[
                 "argumentStart",
+                "argumentEnd",
+                "argumentName",
                 "argumentType",
                 "parameter",
                 "parameterIndex",
@@ -739,21 +848,31 @@ fn validate_argument_payloads(value: &Value) -> Result<(), ClewError> {
             ],
             "declaration relation argument mapping",
         )?;
-        if argument
+        let argument_start = argument
             .get("argumentStart")
             .and_then(Value::as_i64)
-            .is_none_or(|start| start < 0)
-            || argument
-                .get("parameterIndex")
-                .and_then(Value::as_u64)
-                .is_none()
+            .ok_or_else(|| payload_invalid("argument mapping has no source start"))?;
+        let argument_end = argument.get("argumentEnd").and_then(Value::as_i64);
+        let parameter_index = argument
+            .get("parameterIndex")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| payload_invalid("argument mapping has no parameter index"))?;
+        if argument_start < relation_start
+            || argument_start >= relation_end
+            || argument_end.is_some_and(|end| end <= argument_start || end > relation_end)
+            || target_parameter_count.is_some() && argument_end.is_none()
+            || previous_start.is_some_and(|previous| previous >= argument_start)
+            || !argument_ranges.insert((argument_start, argument_end))
+            || !parameter_indices.insert(parameter_index)
+            || target_parameter_count.is_some_and(|count| parameter_index as usize >= count)
             || payload_string(argument, "parameterType").is_err()
         {
             return Err(payload_invalid(
                 "declaration relation argument mapping has an invalid endpoint payload",
             ));
         }
-        for field in ["argumentType", "parameter"] {
+        previous_start = Some(argument_start);
+        for field in ["argumentName", "argumentType", "parameter"] {
             if argument
                 .get(field)
                 .is_some_and(|field| field.as_str().is_none_or(str::is_empty))
@@ -763,6 +882,50 @@ fn validate_argument_payloads(value: &Value) -> Result<(), ClewError> {
                 ));
             }
         }
+        if target_parameter_count.is_some() {
+            payload_string(argument, "argumentType")?;
+            payload_string(argument, "parameter")?;
+        }
+    }
+    let omitted = value
+        .get("omittedDefaultParameterIndices")
+        .map(|indices| {
+            indices
+                .as_array()
+                .ok_or_else(|| payload_invalid("omitted-default parameter set is not an array"))
+        })
+        .transpose()?;
+    if target_parameter_count.is_some() && omitted.is_none() {
+        return Err(payload_invalid(
+            "exact call target has no omitted-default parameter set",
+        ));
+    }
+    let mut omitted_indices = BTreeSet::new();
+    let mut previous_omitted = None;
+    for index in omitted.into_iter().flatten() {
+        let index = index
+            .as_u64()
+            .ok_or_else(|| payload_invalid("omitted-default parameter index is invalid"))?;
+        if previous_omitted.is_some_and(|previous| previous >= index)
+            || !omitted_indices.insert(index)
+            || parameter_indices.contains(&index)
+            || target_parameter_count.is_some_and(|count| index as usize >= count)
+        {
+            return Err(payload_invalid(
+                "omitted-default parameter indices are not canonical and disjoint",
+            ));
+        }
+        previous_omitted = Some(index);
+    }
+    if target_parameter_count.is_some_and(|count| {
+        parameter_indices.len() + omitted_indices.len() != count
+            || (0..count as u64).any(|index| {
+                !parameter_indices.contains(&index) && !omitted_indices.contains(&index)
+            })
+    }) {
+        return Err(payload_invalid(
+            "mapped and omitted-default parameters do not partition the target descriptor",
+        ));
     }
     Ok(())
 }
@@ -810,12 +973,31 @@ pub(crate) fn validate_declaration_relation_fact(value: &Value) -> Result<(), Cl
             ));
         }
     }
+    if let Some(receiver_selection) = value.get("receiverSelection") {
+        let receiver_selection = receiver_selection
+            .as_str()
+            .ok_or_else(|| payload_invalid("call receiver selection is not a string"))?;
+        if !matches!(
+            receiver_selection,
+            "EXPLICIT" | "EXTENSION" | "DISPATCH" | "NONE"
+        ) || receiver_selection == "NONE" && value.get("receiverType").is_some()
+            || receiver_selection != "NONE" && value.get("receiverType").is_none()
+            || kind == "CONSTRUCTS" && receiver_selection != "NONE"
+        {
+            return Err(payload_invalid("call receiver authority is invalid"));
+        }
+    }
+    let target_parameter_count = if matches!(kind, "CALLS" | "CONSTRUCTS") {
+        validate_exact_call_target(value, kind, partial)?
+    } else {
+        None
+    };
     if kind == "NULL_COALESCES" {
         for field in ["sourceTarget", "fallbackTarget"] {
             validate_relation_endpoint(payload_string(value, field)?, field)?;
         }
     }
-    validate_argument_payloads(value)
+    validate_argument_payloads(value, target_parameter_count)
 }
 
 fn validate_optional_boundary_location(value: &Value, label: &str) -> Result<(), ClewError> {
@@ -1657,6 +1839,8 @@ pub(crate) fn validate_declaration_relation_snapshot(
                 "orderProvenance",
                 "attributeCoverage",
                 "sourceRowHash",
+                "targetCompilerCallableId",
+                "targetJvmDescriptor",
             ]);
             let object = relation
                 .as_object()
@@ -1744,7 +1928,22 @@ pub(crate) fn validate_declaration_relation_snapshot(
             }
             let relation_kind = relation.get("kind").and_then(Value::as_str);
             if matches!(relation_kind, Some("CALLS" | "CONSTRUCTS")) {
-                let target = required_string(relation, "target")?;
+                let raw_target = required_string(relation, "target")?;
+                let exact_target = match (
+                    relation
+                        .get("targetCompilerCallableId")
+                        .and_then(Value::as_str),
+                    relation.get("targetJvmDescriptor").and_then(Value::as_str),
+                ) {
+                    (Some(callable), Some(descriptor)) => Some((callable, descriptor)),
+                    (None, None) => None,
+                    _ => {
+                        return Err(staged(
+                            invalid("call target exact identity fields are incomplete"),
+                            "CROSS_GRAPH_CONSISTENCY",
+                        ));
+                    }
+                };
                 let expected_kind = if relation_kind == Some("CALLS") {
                     "FUNCTION"
                 } else {
@@ -1755,8 +1954,22 @@ pub(crate) fn validate_declaration_relation_snapshot(
                     .filter(|descriptor| {
                         descriptor.get("declarationKind").and_then(Value::as_str)
                             == Some(expected_kind)
-                            && descriptor.get("compilerCallableId").and_then(Value::as_str)
-                                == Some(target)
+                            && match exact_target {
+                                Some((callable, jvm_descriptor)) => {
+                                    descriptor.get("symbolIdentity").and_then(Value::as_str)
+                                        == Some(raw_target)
+                                        && descriptor
+                                            .get("compilerCallableId")
+                                            .and_then(Value::as_str)
+                                            == Some(callable)
+                                        && descriptor.get("jvmDescriptor").and_then(Value::as_str)
+                                            == Some(jvm_descriptor)
+                                }
+                                None => {
+                                    descriptor.get("compilerCallableId").and_then(Value::as_str)
+                                        == Some(raw_target)
+                                }
+                            }
                     })
                     .collect::<Vec<_>>();
                 if descriptors.len() != 1 {
@@ -1776,6 +1989,64 @@ pub(crate) fn validate_declaration_relation_snapshot(
                             "CROSS_GRAPH_CONSISTENCY",
                         )
                     })?;
+                if let Some((_, exact_jvm_descriptor)) = exact_target {
+                    let omitted = relation
+                        .get("omittedDefaultParameterIndices")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            staged(
+                                invalid("exact call relation has no omitted-default set"),
+                                "CROSS_GRAPH_CONSISTENCY",
+                            )
+                        })?;
+                    let omitted = omitted
+                        .iter()
+                        .map(|index| {
+                            index.as_u64().ok_or_else(|| {
+                                staged(
+                                    invalid("omitted-default parameter index is invalid"),
+                                    "CROSS_GRAPH_CONSISTENCY",
+                                )
+                            })
+                        })
+                        .collect::<Result<BTreeSet<_>, _>>()?;
+                    if parameters.len()
+                        != parse_jvm_method_descriptor(exact_jvm_descriptor)?.parameter_count
+                    {
+                        return Err(staged(
+                            invalid(
+                                "target descriptor parameter slots disagree with JVM descriptor",
+                            ),
+                            "CROSS_GRAPH_CONSISTENCY",
+                        ));
+                    }
+                    for index in &omitted {
+                        let slot = parameters.get(*index as usize).ok_or_else(|| {
+                            staged(
+                                invalid("omitted-default parameter is outside target descriptor"),
+                                "CROSS_GRAPH_CONSISTENCY",
+                            )
+                        })?;
+                        if slot.get("hasDefault").and_then(Value::as_bool) != Some(true) {
+                            return Err(staged(
+                                invalid(
+                                    "omitted parameter lacks compiler-confirmed default authority",
+                                ),
+                                "CROSS_GRAPH_CONSISTENCY",
+                            ));
+                        }
+                    }
+                    if (0..parameters.len() as u64)
+                        .any(|index| !indices.contains(&index) && !omitted.contains(&index))
+                    {
+                        return Err(staged(
+                            invalid(
+                                "mapped and compiler-defaulted parameters do not cover the target",
+                            ),
+                            "CROSS_GRAPH_CONSISTENCY",
+                        ));
+                    }
+                }
                 for argument in arguments {
                     let index = argument["parameterIndex"].as_u64().unwrap() as usize;
                     let slot = parameters.get(index).ok_or_else(|| {
@@ -1795,7 +2066,14 @@ pub(crate) fn validate_declaration_relation_snapshot(
                         .get("argumentStart")
                         .and_then(Value::as_i64)
                         .ok_or_else(|| invalid("argument mapping has no source occurrence"))?;
-                    if argument_start < start || argument_start >= end {
+                    let argument_end = argument.get("argumentEnd").and_then(Value::as_i64);
+                    if argument_start < start
+                        || argument_start >= end
+                        || argument_end.is_some_and(|argument_end| {
+                            argument_start >= argument_end || argument_end > end
+                        })
+                        || exact_target.is_some() && argument_end.is_none()
+                    {
                         return Err(invalid(
                             "argument mapping source occurrence is outside the call range",
                         ));
@@ -2213,6 +2491,26 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         }
         Ok(())
     }
+    fn validate_parameter_slot(value: &Value, index: usize) -> Result<(), ClewError> {
+        closed_payload(
+            value,
+            &["index", "type", "nullable", "hasDefault"],
+            "declaration descriptor parameter slot",
+        )?;
+        if value.get("index").and_then(Value::as_u64) != Some(index as u64) {
+            return Err(invalid("descriptor parameter indexes are not canonical"));
+        }
+        validate_typed_value(value, "type", "nullable")?;
+        if value
+            .get("hasDefault")
+            .is_some_and(|flag| !flag.is_boolean())
+        {
+            return Err(invalid(
+                "descriptor parameter hasDefault authority is not boolean",
+            ));
+        }
+        Ok(())
+    }
     fn validate_field_closure(value: &Value, kind: &str) -> Result<(), ClewError> {
         let mut allowed = BTreeSet::from([
             "schema",
@@ -2241,6 +2539,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         match kind {
             "FUNCTION" => allowed.extend([
                 "compilerCallableId",
+                "jvmDescriptor",
                 "isOverride",
                 "returnType",
                 "returnNullable",
@@ -2296,7 +2595,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
             "sourceRowHash",
         ]);
         match kind {
-            "FUNCTION" => allowed.extend(["compilerCallableId"]),
+            "FUNCTION" => allowed.extend(["compilerCallableId", "jvmDescriptor"]),
             "CONSTRUCTOR" => {
                 allowed.extend(["compilerCallableId", "compilerClassId", "jvmDescriptor"])
             }
@@ -2319,6 +2618,13 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 if !identity.starts_with(&format!("callable:{callable}#jvm:")) {
                     return Err(invalid(
                         "partial function descriptor compiler identity is inconsistent",
+                    ));
+                }
+                if let Some(jvm) = value.get("jvmDescriptor").and_then(Value::as_str)
+                    && identity != format!("callable:{callable}#jvm:{jvm}")
+                {
+                    return Err(invalid(
+                        "partial function descriptor JVM identity is inconsistent",
                     ));
                 }
             }
@@ -2534,16 +2840,18 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                         "function descriptor compiler identity is inconsistent",
                     ));
                 }
+                if let Some(jvm) = descriptor.get("jvmDescriptor").and_then(Value::as_str)
+                    && identity != format!("callable:{callable}#jvm:{jvm}")
+                {
+                    return Err(invalid("function descriptor JVM identity is inconsistent"));
+                }
                 validate_typed_value(descriptor, "returnType", "returnNullable")?;
                 let parameters = descriptor
                     .get("parameterTypes")
                     .and_then(Value::as_array)
                     .ok_or_else(|| invalid("function descriptor has no parameterTypes"))?;
                 for (index, parameter) in parameters.iter().enumerate() {
-                    if parameter.get("index").and_then(Value::as_u64) != Some(index as u64) {
-                        return Err(invalid("function parameter indexes are not canonical"));
-                    }
-                    validate_typed_value(parameter, "type", "nullable")?;
+                    validate_parameter_slot(parameter, index)?;
                 }
                 if let Some(receiver) = descriptor.get("receiverType") {
                     validate_typed_value(receiver, "type", "nullable")?;
@@ -2579,7 +2887,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                             "constructor parameter indexes are not canonical and unique",
                         ));
                     }
-                    validate_typed_value(parameter, "type", "nullable")?;
+                    validate_parameter_slot(parameter, index)?;
                 }
             }
             "PROPERTY" | "MUTABLE_PROPERTY" => {
@@ -3491,6 +3799,201 @@ mod tests {
         let mut unexpected = relation;
         unexpected["futureEndpoint"] = json!("p/Future.call");
         assert!(validate_declaration_relation_fact(&unexpected).is_err());
+    }
+
+    fn exact_call_relation() -> Value {
+        json!({
+            "schema":"declaration-relation/0.1",
+            "file":"A.kt","start":10,"end":40,
+            "kind":"CALLS","owner":"p/Caller.run",
+            "target":"callable:p/Api.pick#jvm:(Ljava/lang/String;I)Ljava/lang/String;",
+            "targetCompilerCallableId":"p/Api.pick",
+            "targetJvmDescriptor":"(Ljava/lang/String;I)Ljava/lang/String;",
+            "resolution":"PROVEN","provider":"K2_FIR","cfgNodeIds":[7],
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "orderProvenance":"K2_FIR_CFG","orderKey":10,
+            "resultType":"kotlin/String","receiverSelection":"EXPLICIT",
+            "receiverType":"p/Api","omittedDefaultParameterIndices":[1],
+            "argumentToParameter":[{
+                "argumentStart":20,"argumentEnd":25,"argumentName":"value",
+                "argumentType":"kotlin/String","parameter":"value",
+                "parameterIndex":0,"parameterType":"kotlin/String"
+            }]
+        })
+    }
+
+    fn exact_call_snapshot() -> Value {
+        let mut facts = verified_facts();
+        facts["declarationRelations"]["relations"] = json!([exact_call_relation()]);
+        facts["declarationDescriptors"]["descriptors"] = json!([{
+            "schema":"declaration-descriptor/0.1",
+            "file":"A.kt","start":0,"end":12,
+            "symbolIdentity":"callable:p/Api.pick#jvm:(Ljava/lang/String;I)Ljava/lang/String;",
+            "declarationKind":"FUNCTION","ownerIdentity":"class:p/Api",
+            "containment":["class:p/Api"],"visibility":"public",
+            "effectiveVisibility":"public","exportBoundary":"PUBLIC_API",
+            "modality":"FINAL","compilerCallableId":"p/Api.pick",
+            "jvmDescriptor":"(Ljava/lang/String;I)Ljava/lang/String;",
+            "isOverride":false,"returnType":"kotlin/String","returnNullable":false,
+            "parameterTypes":[
+                {"index":0,"type":"kotlin/String","nullable":false,"hasDefault":false},
+                {"index":1,"type":"kotlin/Int","nullable":false,"hasDefault":true}
+            ],
+            "typeParameters":[],"module":":","sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "compilerAuthority":"fir-facts-extractor/0.6",
+            "resolution":"PROVEN","provider":"K2_FIR"
+        }]);
+        refresh(
+            &mut facts,
+            "declarationRelations",
+            "declarationRelationHash",
+        );
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        facts
+    }
+
+    #[test]
+    fn exact_call_target_and_default_argument_mapping_are_closed_and_overload_specific() {
+        let exact = exact_call_relation();
+        validate_declaration_relation_fact(&exact).unwrap();
+
+        // The compiler-selected descriptor has two slots: one mapped argument
+        // and one explicitly identified default-bearing omission.
+        assert_eq!(
+            parse_jvm_method_descriptor(exact["targetJvmDescriptor"].as_str().unwrap())
+                .unwrap()
+                .parameter_count,
+            2
+        );
+
+        for (field, replacement) in [
+            ("target", json!("p/Api.pick")),
+            ("targetCompilerCallableId", json!("p/Api.other")),
+            ("targetJvmDescriptor", json!("(I)Ljava/lang/String;")),
+        ] {
+            let mut malformed = exact.clone();
+            malformed[field] = replacement;
+            assert!(
+                validate_declaration_relation_fact(&malformed).is_err(),
+                "accepted mismatched exact call field {field}"
+            );
+        }
+
+        for missing in ["targetCompilerCallableId", "targetJvmDescriptor"] {
+            let mut malformed = exact.clone();
+            malformed.as_object_mut().unwrap().remove(missing);
+            assert!(validate_declaration_relation_fact(&malformed).is_err());
+        }
+
+        let mut constructor = exact.clone();
+        constructor["kind"] = json!("CONSTRUCTS");
+        constructor["target"] = json!("constructor:p/Box.<init>#jvm:(I)I");
+        constructor["targetCompilerCallableId"] = json!("p/Box.<init>");
+        constructor["targetJvmDescriptor"] = json!("(I)I");
+        constructor["receiverSelection"] = json!("NONE");
+        constructor.as_object_mut().unwrap().remove("receiverType");
+        assert!(validate_declaration_relation_fact(&constructor).is_err());
+
+        for pointer in ["/receiverSelection", "/omittedDefaultParameterIndices"] {
+            let mut missing = exact.clone();
+            missing
+                .as_object_mut()
+                .unwrap()
+                .remove(pointer.trim_start_matches('/'));
+            assert!(validate_declaration_relation_fact(&missing).is_err());
+        }
+
+        let mut implicit_receiver = exact.clone();
+        implicit_receiver["receiverSelection"] = json!("DISPATCH");
+        assert!(validate_declaration_relation_fact(&implicit_receiver).is_err());
+    }
+
+    #[test]
+    fn exact_argument_mapping_rejects_ambiguous_ranges_indices_and_open_fields() {
+        let exact = exact_call_relation();
+        for mutation in [
+            ("/argumentToParameter/0/argumentEnd", Value::Null),
+            ("/argumentToParameter/0/argumentName", json!("")),
+            ("/argumentToParameter/0/parameterIndex", json!(2)),
+            ("/argumentToParameter/0/argumentStart", json!(9)),
+            ("/argumentToParameter/0/argumentEnd", json!(41)),
+        ] {
+            let mut malformed = exact.clone();
+            if mutation.1.is_null() {
+                malformed["argumentToParameter"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("argumentEnd");
+            } else {
+                *malformed.pointer_mut(mutation.0).unwrap() = mutation.1;
+            }
+            assert!(validate_declaration_relation_fact(&malformed).is_err());
+        }
+
+        let mut duplicate_index = exact.clone();
+        duplicate_index["argumentToParameter"] = json!([
+            exact["argumentToParameter"][0].clone(),
+            {
+                "argumentStart":26,"argumentEnd":27,"argumentType":"kotlin/Int",
+                "parameter":"value","parameterIndex":0,"parameterType":"kotlin/String"
+            }
+        ]);
+        assert!(validate_declaration_relation_fact(&duplicate_index).is_err());
+
+        let mut unsorted = exact.clone();
+        unsorted["argumentToParameter"] = json!([
+            {
+                "argumentStart":26,"argumentEnd":27,"argumentType":"kotlin/Int",
+                "parameter":"count","parameterIndex":1,"parameterType":"kotlin/Int"
+            },
+            exact["argumentToParameter"][0].clone()
+        ]);
+        assert!(validate_declaration_relation_fact(&unsorted).is_err());
+
+        for omitted in [json!([]), json!([0]), json!([2]), json!([1, 1])] {
+            let mut malformed = exact.clone();
+            malformed["omittedDefaultParameterIndices"] = omitted;
+            assert!(validate_declaration_relation_fact(&malformed).is_err());
+        }
+
+        let mut open = exact;
+        open["argumentToParameter"][0]["sourceText"] = json!("private");
+        assert!(validate_declaration_relation_fact(&open).is_err());
+    }
+
+    #[test]
+    fn exact_call_snapshot_requires_compiler_confirmed_default_slot() {
+        let facts = exact_call_snapshot();
+        validate_declaration_descriptor_snapshot(&facts).unwrap();
+        validate_declaration_relation_snapshot(&facts).unwrap();
+
+        let mut no_default_authority = facts.clone();
+        no_default_authority["declarationDescriptors"]["descriptors"][0]["parameterTypes"][1]["hasDefault"] =
+            json!(false);
+        refresh(
+            &mut no_default_authority,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        validate_declaration_descriptor_snapshot(&no_default_authority).unwrap();
+        assert!(validate_declaration_relation_snapshot(&no_default_authority).is_err());
+
+        let mut absent_default_authority = facts;
+        absent_default_authority["declarationDescriptors"]["descriptors"][0]["parameterTypes"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("hasDefault");
+        refresh(
+            &mut absent_default_authority,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        assert!(validate_declaration_relation_snapshot(&absent_default_authority).is_err());
     }
 
     #[test]

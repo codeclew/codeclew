@@ -37,4 +37,9 @@ dependencies {
 }
 
 application { mainClass.set("dev.semanticthread.worker.MainKt") }
-tasks.test { useJUnitPlatform() }
+tasks.test {
+    useJUnitPlatform()
+    dependsOn(tasks.jar)
+    classpath = files(tasks.jar.flatMap { it.archiveFile }) +
+        (classpath - sourceSets.main.get().output)
+}

@@ -1515,6 +1515,10 @@ pub fn validate_stdout(value: &Value) -> Result<(), ClewError> {
     Ok(())
 }
 
+// The public result is bound independently to session, context, evidence,
+// request, retained facts, truncation, and facets; merging those authorities
+// into a convenience object would make this validation boundary less explicit.
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     session_id: &str,
     context_id: &str,
@@ -3321,7 +3325,7 @@ mod tests {
         });
         let parent = context("context:parent", None, "sha256:parent", parent_retained);
         let candidate_id = candidate_handle("cargo:demo", "fact:caller").unwrap();
-        let candidate = detail(&parent, &[candidate_id.clone()], true, &[]).unwrap();
+        let candidate = detail(&parent, std::slice::from_ref(&candidate_id), true, &[]).unwrap();
         assert_eq!(candidate["schema"], NAV_DETAIL_SCHEMA);
         assert_eq!(candidate["schema"], "codeclew-navigation-detail/1.1");
         assert_eq!(
@@ -3365,7 +3369,8 @@ mod tests {
         let mut foreign = parent.clone();
         foreign.evidence["context"]["matches"][0]["payload"]["schema"] =
             json!("codeclew-typescript-syntax-fact/1.0");
-        let foreign_detail = detail(&foreign, &[candidate_id.clone()], true, &[]).unwrap();
+        let foreign_detail =
+            detail(&foreign, std::slice::from_ref(&candidate_id), true, &[]).unwrap();
         assert_eq!(
             foreign_detail["candidates"][0]["referenceChoices"]["status"],
             "UNSUPPORTED"
@@ -3379,8 +3384,8 @@ mod tests {
         foreign.evidence["context"]["matches"][0]["payload"]["schema"] =
             json!("codeclew-rust-syntax-fact/1.0");
         assert_eq!(
-            detail(&foreign, &[candidate_id.clone()], true, &[]).unwrap()["candidates"][0]["referenceChoices"]
-                ["status"],
+            detail(&foreign, std::slice::from_ref(&candidate_id), true, &[]).unwrap()["candidates"]
+                [0]["referenceChoices"]["status"],
             "UNSUPPORTED"
         );
 

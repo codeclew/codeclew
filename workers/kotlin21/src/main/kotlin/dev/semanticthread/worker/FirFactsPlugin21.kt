@@ -26,6 +26,7 @@ import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirDeclarationChec
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.ExpressionCheckers
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirExpressionChecker
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
+import org.jetbrains.kotlin.fir.declarations.FirAnonymousFunction
 import org.jetbrains.kotlin.fir.declarations.FirFunction
 import org.jetbrains.kotlin.fir.declarations.FirCallableDeclaration
 import org.jetbrains.kotlin.fir.declarations.FirConstructor
@@ -34,9 +35,11 @@ import org.jetbrains.kotlin.fir.declarations.FirRegularClass
 import org.jetbrains.kotlin.fir.declarations.FirResolvePhase
 import org.jetbrains.kotlin.fir.declarations.FirSimpleFunction
 import org.jetbrains.kotlin.fir.declarations.FirTypeParameter
+import org.jetbrains.kotlin.fir.declarations.hasAnnotationSafe
 import org.jetbrains.kotlin.fir.expressions.FirExpression
 import org.jetbrains.kotlin.fir.expressions.FirElvisExpression
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
+import org.jetbrains.kotlin.fir.expressions.FirNamedArgumentExpression
 import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.FirSafeCallExpression
@@ -63,6 +66,7 @@ import org.jetbrains.kotlin.fir.types.ConeKotlinType
 import org.jetbrains.kotlin.fir.types.isMarkedNullable
 import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.fir.visitors.FirVisitorVoid
+import org.jetbrains.kotlin.name.JvmStandardClassIds
 import java.security.MessageDigest
 import java.nio.file.Files
 import java.nio.file.Path
@@ -147,6 +151,63 @@ private class FirFactsCheckersExtension(
 }
 
 private fun FirCallableSymbol<*>.relationSymbol(): String = callableId.toString()
+
+private fun compilerJvmMethodDescriptor21(declaration: FirFunction): String? = runCatching {
+    declaration.computeJvmDescriptor(null, true)
+}.getOrNull()
+    ?.substringAfter('(', "")
+    ?.takeIf(String::isNotEmpty)
+    ?.let { "($it" }
+    ?.takeIf { descriptor ->
+        descriptor.startsWith('(') && descriptor.indexOf(')') > 0 &&
+            descriptor.none(Char::isWhitespace)
+    }
+
+private data class ResolvedCallableTarget21(
+    val compilerCallableId: String,
+    val symbolIdentity: String,
+    val jvmDescriptor: String,
+)
+
+private data class ResolvedCallableTargetResult21(
+    val target: ResolvedCallableTarget21?,
+    val unknownCode: String?,
+)
+
+/** Exact FIR-selected target identity; never reconstructed from a name or arity. */
+private fun resolvedCallableTarget21(
+    callable: FirCallableSymbol<*>,
+    session: FirSession,
+): ResolvedCallableTargetResult21 {
+    val callableId = callable.callableId
+    if (callableId.isLocal) {
+        return ResolvedCallableTargetResult21(null, "LOCAL_CALL_TARGET_UNSUPPORTED")
+    }
+    val function = callable.fir as? FirFunction
+        ?: return ResolvedCallableTargetResult21(null, "CALL_TARGET_NOT_FUNCTION")
+    if (!function.origin.fromSource || function.origin.generated) {
+        return ResolvedCallableTargetResult21(null, "EXTERNAL_OR_GENERATED_CALL_TARGET")
+    }
+    if (function.hasAnnotationSafe(JvmStandardClassIds.Annotations.JvmName, session)) {
+        return ResolvedCallableTargetResult21(null, "JVM_NAME_OVERRIDE_UNSUPPORTED")
+    }
+    val prefix = when (callable) {
+        is FirConstructorSymbol -> "constructor:"
+        is FirNamedFunctionSymbol -> "callable:"
+        else -> return ResolvedCallableTargetResult21(null, "UNSUPPORTED_CALLABLE_SYMBOL_KIND")
+    }
+    val descriptor = compilerJvmMethodDescriptor21(function)
+        ?: return ResolvedCallableTargetResult21(null, "UNRESOLVED_TARGET_JVM_DESCRIPTOR")
+    val compilerId = callableId.toString()
+    return ResolvedCallableTargetResult21(
+        ResolvedCallableTarget21(
+            compilerCallableId = compilerId,
+            symbolIdentity = "$prefix$compilerId#jvm:$descriptor",
+            jvmDescriptor = descriptor,
+        ),
+        null,
+    )
+}
 
 private fun descriptorContainment(
     context: CheckerContext,
@@ -265,8 +326,21 @@ private class FirFactsFunctionDescriptorChecker(
         val parameterTypes = declaration.valueParameters.map { resolvedDescriptorType(it.returnTypeRef) }
         val receiverType = declaration.receiverParameter?.typeRef?.let(::resolvedDescriptorType)
         val typeParameters = typeParameterDescriptors(declaration.typeParameters)
-        val jvmDescriptor = runCatching { declaration.computeJvmDescriptor(null, true) }.getOrNull()
+        val jvmDescriptor = compilerJvmMethodDescriptor21(declaration)
         val status = runCatching { symbol.resolvedStatus }.getOrNull()
+        if (declaration.hasAnnotationSafe(JvmStandardClassIds.Annotations.JvmName, context.session)) {
+            appendFact(
+                output,
+                unknownDescriptor(
+                    context,
+                    source,
+                    provisionalIdentity,
+                    "DECLARATION",
+                    "JVM_NAME_OVERRIDE_UNSUPPORTED",
+                ),
+            )
+            return
+        }
         if (returnType == null || parameterTypes.any { it == null }
             || declaration.receiverParameter != null && receiverType == null
             || typeParameters == null || jvmDescriptor.isNullOrEmpty() || status == null
@@ -289,6 +363,7 @@ private class FirFactsFunctionDescriptorChecker(
             status.modality.name,
         ).toMutableMap()
         record["compilerCallableId"] = JsonPrimitive(callableId.toString())
+        record["jvmDescriptor"] = JsonPrimitive(jvmDescriptor)
         record["isOverride"] = JsonPrimitive(status.isOverride)
         record["returnType"] = JsonPrimitive(returnType.toString())
         record["returnNullable"] = JsonPrimitive(returnType.isMarkedNullable)
@@ -297,6 +372,7 @@ private class FirFactsFunctionDescriptorChecker(
                 put("index", index)
                 put("type", type.toString())
                 put("nullable", type.isMarkedNullable)
+                put("hasDefault", declaration.valueParameters[index].defaultValue != null)
             } },
         )
         receiverType?.let {
@@ -354,13 +430,7 @@ private class FirFactsConstructorDescriptorChecker(
             resolvedDescriptorType(it.returnTypeRef)
         }
         val status = runCatching { declaration.symbol.resolvedStatus }.getOrNull()
-        val jvmDescriptor = runCatching {
-            declaration.computeJvmDescriptor(null, true)
-                .substringAfter('(', "")
-                .takeIf(String::isNotEmpty)
-                ?.let { "($it" }
-                ?.takeIf { it.startsWith('(') && it.contains(')') }
-        }.getOrNull()
+        val jvmDescriptor = compilerJvmMethodDescriptor21(declaration)
         if (ownerClass == null || parameterTypes.any { it == null }
             || status == null || jvmDescriptor.isNullOrEmpty()
         ) {
@@ -399,6 +469,7 @@ private class FirFactsConstructorDescriptorChecker(
                 put("index", index)
                 put("type", type.toString())
                 put("nullable", type.isMarkedNullable)
+                put("hasDefault", declaration.valueParameters[index].defaultValue != null)
             } },
         )
         record["typeParameters"] = kotlinx.serialization.json.JsonArray(emptyList())
@@ -495,17 +566,49 @@ private class FirFactsClassDescriptorChecker(
     }
 }
 
-private fun relationOwner(context: CheckerContext): String? = context.containingDeclarations
-    .asReversed()
-    .mapNotNull { declaration ->
+private fun relationOwner(context: CheckerContext): String? {
+    for (declaration in context.containingDeclarations.asReversed()) {
         when (declaration) {
-            is FirCallableDeclaration ->
-                (declaration.symbol as? FirCallableSymbol<*>)?.relationSymbol()
-            is FirRegularClass -> (declaration.symbol as? FirClassSymbol<*>)?.classId?.toString()
-            else -> null
+            is FirAnonymousFunction -> continue
+            is FirCallableDeclaration -> {
+                val symbol = declaration.symbol as? FirCallableSymbol<*> ?: return null
+                val callableId = symbol.callableId
+                // A local `val` is a lexical carrier for its initializer, not
+                // the stable callable that owns relations inside that value.
+                // Skip it, but keep local functions fail-closed below so their
+                // calls cannot be attributed to an outer callable.
+                if (declaration is FirProperty && (callableId == null || callableId.isLocal)) {
+                    continue
+                }
+                callableId ?: return null
+                if (
+                    callableId.isLocal ||
+                    !declaration.origin.fromSource ||
+                    declaration.origin.generated ||
+                    declaration.source == null
+                ) {
+                    return null
+                }
+                return callableId.toString()
+            }
+            is FirRegularClass -> {
+                val symbol = declaration.symbol as? FirClassSymbol<*> ?: return null
+                val classId = symbol.classId
+                if (
+                    classId.isLocal ||
+                    !declaration.origin.fromSource ||
+                    declaration.origin.generated ||
+                    declaration.source == null
+                ) {
+                    return null
+                }
+                return classId.toString()
+            }
+            else -> continue
         }
     }
-    .firstOrNull()
+    return null
+}
 
 private fun relationBase(
     context: CheckerContext,
@@ -548,6 +651,7 @@ private fun unknownRelation(
 private data class ResolvedArgumentMapping21(
     val rows: List<kotlinx.serialization.json.JsonObject>?,
     val unknownCode: String?,
+    val omittedDefaultParameterIndices: List<Int>? = null,
 )
 
 private fun resolvedArgumentMapping21(
@@ -565,6 +669,9 @@ private fun resolvedArgumentMapping21(
     if (function.contextParameters.isNotEmpty()) {
         return ResolvedArgumentMapping21(null, "CONTEXT_ARGUMENT_MAPPING_UNSUPPORTED")
     }
+    if (function.status.isSuspend) {
+        return ResolvedArgumentMapping21(null, "SUSPEND_ARGUMENT_MAPPING_UNSUPPORTED")
+    }
     if (function.valueParameters.any { it.isVararg }) {
         return ResolvedArgumentMapping21(null, "VARARG_ARGUMENT_MAPPING_UNSUPPORTED")
     }
@@ -578,8 +685,14 @@ private fun resolvedArgumentMapping21(
         if (matches.size != 1) {
             return ResolvedArgumentMapping21(null, "UNRESOLVED_PARAMETER_IDENTITY")
         }
+        val argumentSource = argument.source
+            ?: return ResolvedArgumentMapping21(null, "MISSING_ARGUMENT_SOURCE")
         rows += buildJsonObject {
-            put("argumentStart", argument.source?.startOffset ?: -1)
+            put("argumentStart", argumentSource.startOffset)
+            put("argumentEnd", argumentSource.endOffset)
+            (argument as? FirNamedArgumentExpression)?.name?.asString()?.let {
+                put("argumentName", it)
+            }
             put("argumentType", argument.resolvedType.toString())
             put("parameter", parameter.name.asString())
             put("parameterIndex", matches.single().index)
@@ -593,7 +706,22 @@ private fun resolvedArgumentMapping21(
     if (rows.size != resolved.mapping.size) {
         return ResolvedArgumentMapping21(null, "INCOMPLETE_ARGUMENT_MAPPING")
     }
-    return ResolvedArgumentMapping21(rows, null)
+    val mappedIndices = rows.mapNotNull {
+        (it["parameterIndex"] as? JsonPrimitive)?.content?.toIntOrNull()
+    }.toSet()
+    val omitted = function.valueParameters.indices.filterNot(mappedIndices::contains)
+    if (omitted.any { function.valueParameters[it].defaultValue == null }) {
+        return ResolvedArgumentMapping21(null, "UNMAPPED_NON_DEFAULT_PARAMETER")
+    }
+    return ResolvedArgumentMapping21(
+        rows.sortedWith(compareBy<kotlinx.serialization.json.JsonObject> {
+            it["argumentStart"]?.let { start -> (start as JsonPrimitive).content.toInt() }
+        }.thenBy {
+            it["parameterIndex"]?.let { index -> (index as JsonPrimitive).content.toInt() }
+        }),
+        null,
+        omitted,
+    )
 }
 
 private class FirFactsOverrideChecker(
@@ -1123,18 +1251,28 @@ private class FirFactsExpressionChecker(
         val access = value as? FirQualifiedAccessExpression
         val resolved = access?.calleeReference as? FirResolvedNamedReference
         val callable = resolved?.resolvedSymbol as? FirCallableSymbol<*>
-        val receiver = access?.explicitReceiver ?: access?.extensionReceiver ?: access?.dispatchReceiver
+        val explicitReceiver = access?.explicitReceiver
+        val extensionReceiver = access?.extensionReceiver
+        val dispatchReceiver = access?.dispatchReceiver
+        val receiver = explicitReceiver ?: extensionReceiver ?: dispatchReceiver
+        val receiverSelection = when {
+            explicitReceiver != null -> "EXPLICIT"
+            extensionReceiver != null && dispatchReceiver != null -> "EXTENSION_AND_DISPATCH"
+            extensionReceiver != null -> "EXTENSION"
+            dispatchReceiver != null -> "DISPATCH"
+            else -> "NONE"
+        }
         val arguments = (value as? FirFunctionCall)?.argumentList as? FirResolvedArgumentList
         if (access != null) {
             if (owner == null || callable == null) {
                 appendFact(output, unknownRelation(context, source, owner, "REFERENCE", "UNRESOLVED_CALLABLE_TARGET"))
             } else {
-                val target = callable.relationSymbol()
-                val reference = relationBase(context, source, "REFERENCES", owner, target).toMutableMap()
+                val callableFamily = callable.relationSymbol()
+                val reference = relationBase(context, source, "REFERENCES", owner, callableFamily).toMutableMap()
                 reference["resultType"] = JsonPrimitive(value.resolvedType.toString())
                 receiver?.let { reference["receiverType"] = JsonPrimitive(it.resolvedType.toString()) }
                 appendFact(output, kotlinx.serialization.json.JsonObject(reference))
-                if (target.startsWith("kotlin/reflect/") || target.startsWith("java/lang/reflect/")) {
+                if (callableFamily.startsWith("kotlin/reflect/") || callableFamily.startsWith("java/lang/reflect/")) {
                     appendFact(output, unknownRelation(context, source, owner, "REFERENCE", "DYNAMIC_REFLECTION_BOUNDARY"))
                 }
                 val relationKind = when {
@@ -1162,9 +1300,74 @@ private class FirFactsExpressionChecker(
                         )
                         return
                     }
-                    val relation = relationBase(context, source, relationKind, owner, target).toMutableMap()
+                    val exactReceiverEligible = relationKind == "CONSTRUCTS" || receiverSelection == "EXPLICIT"
+                    if (relationKind == "CALLS" && !exactReceiverEligible) {
+                        appendFact(
+                            output,
+                            unknownRelation(
+                                context,
+                                source,
+                                owner,
+                                "RECEIVER_IDENTITY",
+                                if (receiverSelection == "EXTENSION_AND_DISPATCH") {
+                                    "MULTIPLE_IMPLICIT_RECEIVERS_UNSUPPORTED"
+                                } else {
+                                    "NON_EXPLICIT_CALL_RECEIVER_UNSUPPORTED"
+                                },
+                            ),
+                        )
+                    }
+                    val exactTarget = if (
+                        (relationKind == "CALLS" || relationKind == "CONSTRUCTS") &&
+                        exactReceiverEligible
+                    ) {
+                        resolvedCallableTarget21(callable, context.session)
+                    } else {
+                        ResolvedCallableTargetResult21(null, null)
+                    }
+                    if ((relationKind == "CALLS" || relationKind == "CONSTRUCTS") && exactReceiverEligible) {
+                        if (exactTarget.unknownCode != null || exactTarget.target == null) {
+                            appendFact(
+                                output,
+                                unknownRelation(
+                                    context,
+                                    source,
+                                    owner,
+                                    "TARGET_IDENTITY",
+                                    exactTarget.unknownCode ?: "UNRESOLVED_TARGET_IDENTITY",
+                                ),
+                            )
+                            return
+                        }
+                    }
+                    val target = exactTarget.target
+                    val relation = relationBase(
+                        context,
+                        source,
+                        relationKind,
+                        owner,
+                        target?.symbolIdentity ?: callableFamily,
+                    ).toMutableMap()
+                    target?.let {
+                        relation["targetCompilerCallableId"] = JsonPrimitive(it.compilerCallableId)
+                        relation["targetJvmDescriptor"] = JsonPrimitive(it.jvmDescriptor)
+                    }
+                    if (relationKind == "CALLS" || relationKind == "CONSTRUCTS") {
+                        if (relationKind == "CONSTRUCTS") {
+                            relation["receiverSelection"] = JsonPrimitive("NONE")
+                        } else if (receiverSelection != "EXTENSION_AND_DISPATCH") {
+                            relation["receiverSelection"] = JsonPrimitive(receiverSelection)
+                        }
+                        relation["omittedDefaultParameterIndices"] =
+                            kotlinx.serialization.json.JsonArray(
+                                argumentMapping.omittedDefaultParameterIndices.orEmpty()
+                                    .map(::JsonPrimitive),
+                            )
+                    }
                     relation["resultType"] = JsonPrimitive(value.resolvedType.toString())
-                    receiver?.let { relation["receiverType"] = JsonPrimitive(it.resolvedType.toString()) }
+                    if (relationKind != "CONSTRUCTS") {
+                        receiver?.let { relation["receiverType"] = JsonPrimitive(it.resolvedType.toString()) }
+                    }
                     relation["argumentToParameter"] = kotlinx.serialization.json.JsonArray(
                         argumentMapping.rows.orEmpty()
                     )

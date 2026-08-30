@@ -387,8 +387,17 @@ private fun normalizeDeclarationRelationAttributeCoordinatesToUtf8(
         val normalized = ArrayList<JsonElement>(arguments.size)
         for (argumentElement in arguments) {
             val argument = argumentElement as? JsonObject ?: return null
-            val argumentStart = normalizedPoint(argument, "argumentStart") ?: return null
-            normalized += rebuild(argument, mapOf("argumentStart" to argumentStart))
+            val start = argument["argumentStart"].safeInt() ?: return null
+            val end = argument["argumentEnd"].safeInt() ?: return null
+            if (end <= start) return null
+            val byteRange = coordinates.range(start, end) ?: return null
+            normalized += rebuild(
+                argument,
+                mapOf(
+                    "argumentStart" to JsonPrimitive(byteRange.first),
+                    "argumentEnd" to JsonPrimitive(byteRange.last + 1),
+                ),
+            )
         }
         return JsonArray(normalized)
     }
@@ -450,6 +459,131 @@ internal fun repositoryRelativeCompilerPath(repo: Path, raw: String): String? {
         ?.takeIf(String::isNotEmpty)
         ?.takeUnless { it == ".." || it.startsWith("../") || it.startsWith('/') }
 }
+
+private const val FIR_FILE_RECEIPT_SCHEMA = "fir-file-receipt/0.1"
+
+private fun directK2ReceiptFailure(message: String): Nothing =
+    throw WorkerFailure("INCOMPLETE_SEMANTIC_ANALYSIS", message)
+
+/**
+ * Closes the authority gap between a successful compiler exit and execution of
+ * our FIR plugin. The compiler may accept an artifact that contains the plugin
+ * classes but omits its service descriptors; in that case compilation succeeds
+ * without producing any facts. A successful direct analysis is authoritative
+ * only after the plugin has emitted exactly one strict receipt for every input
+ * source and no receipt for another source.
+ *
+ * [selectedSources] are the repository-owned identities from the project model;
+ * [compilerSources] are the actual arguments passed to K2 and may point at
+ * temporary override copies. Both identities are accepted for the same source,
+ * but aliases and suffix matches are deliberately rejected.
+ */
+internal fun validateDirectK2ReceiptClosure(
+    repo: Path,
+    selectedSources: List<Path>,
+    compilerSources: List<Path>,
+    facts: List<JsonObject>,
+): List<JsonObject> {
+    if (selectedSources.isEmpty() || selectedSources.size != compilerSources.size) {
+        directK2ReceiptFailure("direct K2 receipt closure has no complete selected source set")
+    }
+    val canonicalRepo = runCatching { repo.toRealPath() }.getOrElse {
+        directK2ReceiptFailure("direct K2 receipt closure has no canonical repository identity")
+    }
+    val expectedRelative = linkedSetOf<String>()
+    val expectedAbsolute = linkedMapOf<Path, String>()
+
+    fun bindAbsolute(path: Path, relative: String) {
+        val previous = expectedAbsolute.putIfAbsent(path.toAbsolutePath().normalize(), relative)
+        if (previous != null && previous != relative) {
+            directK2ReceiptFailure("direct K2 receipt closure has aliased compiler source identities")
+        }
+    }
+
+    selectedSources.zip(compilerSources).forEach { (selected, compilerInput) ->
+        val canonicalSelected = runCatching { selected.toRealPath() }.getOrElse {
+            directK2ReceiptFailure("direct K2 receipt closure contains an unavailable selected source")
+        }
+        if (canonicalSelected == canonicalRepo || !canonicalSelected.startsWith(canonicalRepo)) {
+            directK2ReceiptFailure("direct K2 receipt closure contains a selected source outside the repository")
+        }
+        val relative = canonicalRepo.relativize(canonicalSelected).invariantSeparatorsPathString
+        if (relative.isEmpty() || !expectedRelative.add(relative)) {
+            directK2ReceiptFailure("direct K2 receipt closure contains duplicate selected source identities")
+        }
+        val canonicalCompilerInput = compilerInput.toAbsolutePath().normalize()
+        if (!Files.isRegularFile(canonicalCompilerInput, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            directK2ReceiptFailure("direct K2 receipt closure contains an unavailable compiler source")
+        }
+        bindAbsolute(canonicalSelected, relative)
+        bindAbsolute(canonicalCompilerInput, relative)
+    }
+
+    fun admittedRelative(raw: String, subject: String): String {
+        if (raw.isEmpty() || '\\' in raw) {
+            directK2ReceiptFailure("$subject has a noncanonical source identity")
+        }
+        val parsed = runCatching { Path.of(raw) }.getOrElse {
+            directK2ReceiptFailure("$subject has an invalid source identity")
+        }
+        return if (parsed.isAbsolute) {
+            if (parsed != parsed.normalize()) {
+                directK2ReceiptFailure("$subject has a noncanonical source identity")
+            }
+            expectedAbsolute[parsed.toAbsolutePath().normalize()]
+        } else {
+            val normalized = parsed.normalize()
+            if (normalized != parsed || normalized.invariantSeparatorsPathString != raw ||
+                raw.split('/').any { it.isEmpty() || it == "." || it == ".." }
+            ) {
+                directK2ReceiptFailure("$subject has a noncanonical source identity")
+            }
+            raw.takeIf(expectedRelative::contains)
+        } ?: directK2ReceiptFailure("$subject is outside the selected source set")
+    }
+
+    val received = linkedSetOf<String>()
+    facts.asSequence()
+        .filter { it["recordType"].safeString() == "FIR_FILE_RECEIPT" }
+        .forEach { receipt ->
+            if (receipt.keys != setOf("recordType", "schema", "file") ||
+                receipt["schema"].safeString() != FIR_FILE_RECEIPT_SCHEMA
+            ) {
+                directK2ReceiptFailure("direct K2 FIR file receipt is malformed")
+            }
+            val raw = receipt["file"].safeString()
+                ?: directK2ReceiptFailure("direct K2 FIR file receipt is malformed")
+            val relative = admittedRelative(raw, "direct K2 FIR file receipt")
+            if (!received.add(relative)) {
+                directK2ReceiptFailure("direct K2 FIR file receipt is duplicated")
+            }
+        }
+
+    facts.asSequence()
+        .filter { it["recordType"].safeString() != "FIR_FILE_RECEIPT" && "file" in it }
+        .forEach { fact ->
+            val raw = fact["file"].safeString()
+                ?: directK2ReceiptFailure("direct K2 compiler fact has a malformed source identity")
+            val relative = admittedRelative(raw, "direct K2 compiler fact")
+            if (relative !in received) {
+                directK2ReceiptFailure("direct K2 compiler fact has no admitted FIR file receipt")
+            }
+        }
+
+    if (received != expectedRelative) {
+        directK2ReceiptFailure("direct K2 FIR file receipt closure is incomplete")
+    }
+    return facts
+}
+
+internal fun missingCompilerFactsRelationBoundary(facts: List<JsonObject>): JsonObject? =
+    if (facts.isNotEmpty()) null else buildJsonObject {
+        put("schema", "declaration-relation-boundary/0.1")
+        put("stage", "ANALYSIS")
+        put("code", "NO_COMPILER_FACTS")
+        put("resolution", "UNKNOWN")
+        put("provider", "WORKER")
+    }
 
 internal fun repositorySourceFile(repo: Path, raw: String): Path {
     val canonicalRepo = repo.toRealPath()
@@ -1964,7 +2098,12 @@ internal class Worker(
             val diagnostics = output.lineSequence().filter { it.isNotBlank() }.map { line ->
                 buildJsonObject { put("severity", when { "error:" in line.lowercase() || line.startsWith("e:") -> "ERROR"; "warning:" in line.lowercase() || line.startsWith("w:") -> "WARNING"; else -> "INFO" }); put("message", line) }
             }.toList()
-            val facts = if (factsFile.isRegularFile()) parseCompilerFactLines(factsFile.readLines()) else emptyList()
+            val parsedFacts = if (factsFile.isRegularFile()) parseCompilerFactLines(factsFile.readLines()) else emptyList()
+            val facts = if (status == 0) {
+                validateDirectK2ReceiptClosure(analysisRepo, sources, sourceArgs, parsedFacts)
+            } else {
+                emptyList()
+            }
             requestFirExtractionMicros += facts
                 .filter { it["recordType"]?.jsonPrimitive?.content == "FIR_CFG" }
                 .sumOf { it["firExtractionMicros"]?.jsonPrimitive?.longOrNull ?: 0 }
@@ -2302,7 +2441,8 @@ internal class Worker(
                     put("rawRowHash", canonicalCompilerRowDigest(raw, normalizedFile))
                 }
             }
-        val boundaries = (compilerBoundaries + generatedBoundaries)
+        val boundaries = (listOfNotNull(missingCompilerFactsRelationBoundary(analysis.facts)) +
+            compilerBoundaries + generatedBoundaries)
             .distinctBy(::canonicalJson)
             .sortedBy(::canonicalJson)
         return canonicalJsonValue(buildJsonObject {

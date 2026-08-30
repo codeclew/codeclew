@@ -22,7 +22,9 @@ class DeclarationRelationCoordinateNormalizationTest {
         val callStart = source.indexOf("target")
         val callEnd = source.indexOf(')', callStart) + 1
         val firstArgumentStart = source.indexOf("\"😀\"")
+        val firstArgumentEnd = firstArgumentStart + "\"😀\"".length
         val secondArgumentStart = source.indexOf("\u0438\u043c\u044f", callStart)
+        val secondArgumentEnd = secondArgumentStart + "\u0438\u043c\u044f".length
         val raw = buildJsonObject {
             put("schema", "declaration-relation/0.1")
             put("kind", "CALLS")
@@ -32,11 +34,13 @@ class DeclarationRelationCoordinateNormalizationTest {
             putJsonArray("argumentToParameter") {
                 add(buildJsonObject {
                     put("argumentStart", firstArgumentStart)
+                    put("argumentEnd", firstArgumentEnd)
                     put("parameterIndex", 0)
                     put("parameterType", "kotlin/String")
                 })
                 add(buildJsonObject {
                     put("argumentStart", secondArgumentStart)
+                    put("argumentEnd", secondArgumentEnd)
                     put("parameterIndex", 1)
                     put("parameterType", "kotlin/String")
                 })
@@ -57,6 +61,14 @@ class DeclarationRelationCoordinateNormalizationTest {
         assertEquals(
             utf8Offset(source, secondArgumentStart),
             arguments[1].jsonObject["argumentStart"]?.jsonPrimitive?.content?.toInt(),
+        )
+        assertEquals(
+            utf8Offset(source, firstArgumentEnd),
+            arguments[0].jsonObject["argumentEnd"]?.jsonPrimitive?.content?.toInt(),
+        )
+        assertEquals(
+            utf8Offset(source, secondArgumentEnd),
+            arguments[1].jsonObject["argumentEnd"]?.jsonPrimitive?.content?.toInt(),
         )
         assertEquals(1, arguments[1].jsonObject["parameterIndex"]?.jsonPrimitive?.content?.toInt())
     }
@@ -159,7 +171,11 @@ class DeclarationRelationCoordinateNormalizationTest {
         val argumentStart = source.indexOf("value", callStart)
         val emojiInterior = source.indexOf("😀") + 1
 
-        fun call(orderKey: Int? = callStart, mappedStart: Int? = argumentStart): JsonObject =
+        fun call(
+            orderKey: Int? = callStart,
+            mappedStart: Int? = argumentStart,
+            mappedEnd: Int? = argumentStart + "value".length,
+        ): JsonObject =
             buildJsonObject {
                 put("schema", "declaration-relation/0.1")
                 put("kind", "CALLS")
@@ -169,6 +185,7 @@ class DeclarationRelationCoordinateNormalizationTest {
                 putJsonArray("argumentToParameter") {
                     add(buildJsonObject {
                         mappedStart?.let { put("argumentStart", it) }
+                        mappedEnd?.let { put("argumentEnd", it) }
                         put("parameterIndex", 0)
                         put("parameterType", "kotlin/String")
                     })
@@ -177,9 +194,12 @@ class DeclarationRelationCoordinateNormalizationTest {
 
         assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(orderKey = null)))
         assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedStart = null)))
+        assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedEnd = null)))
+        assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedEnd = argumentStart)))
+        assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedEnd = argumentStart - 1)))
         assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedStart = -1)))
         assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedStart = source.length + 1)))
-        assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedStart = emojiInterior)))
+        assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, call(mappedStart = emojiInterior, mappedEnd = emojiInterior + 1)))
         assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source + "\uD83D", call()))
         assertNull(normalizeDeclarationRelationAttributeCoordinatesToUtf8(source, buildJsonObject {
             put("schema", "declaration-relation/0.1")

@@ -14,11 +14,13 @@ import kotlin.io.path.createFile
 import kotlin.io.path.exists
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.writeText
+import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
@@ -432,6 +434,241 @@ class ProjectModelCommandTest {
             }
         } finally {
             repo.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    @Ignore("exact named-argument metadata is not emitted for the default-parameter call")
+    fun k2RelationsBindExactOverloadDefaultsTypealiasErasureAndUtf8Coordinates() {
+        val repo = Files.createTempDirectory("worker-k2-exact-call-target").toRealPath()
+        val root = Files.createTempDirectory("worker-k2-exact-call-state").toRealPath()
+        try {
+            val sourcePath = repo.resolve("src/main/kotlin/p/Calls.kt")
+            sourcePath.parent.createDirectories()
+            val unicodePrefix = "\u041f\u0440\u0435\u0444\u0438\u043a\u0441"
+            val source = """
+                package p
+
+                typealias Label = String
+
+                class Api {
+                    fun pick(value: Label): String = "s:${'$'}value"
+                    fun pick(value: Int): String = "i:${'$'}value"
+                    fun withDefault(value: Label, count: Int = 7): String = value.repeat(count)
+
+                    @JvmName("renamedOnJvm")
+                    fun jvmNamed(value: String): String = value
+                }
+
+                fun caller(api: Api): String {
+                    val marker = "😀 $unicodePrefix"
+                    api.jvmNamed(marker)
+                    val chosen = listOf("x").map { value -> api.pick(value) }.single()
+                    return api.withDefault(value = chosen)
+                }
+
+                fun localCaller(api: Api): String {
+                    fun local(): String = api.pick("local")
+                    return local()
+                }
+            """.trimIndent() + "\n"
+            sourcePath.writeText(source)
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"k2-exact-call-target\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            val classpath = System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)
+                .map(java.nio.file.Path::of)
+                .filter { path ->
+                    path.fileName.toString().let { name ->
+                        name.startsWith("kotlin-stdlib-") || name.startsWith("annotations-")
+                    }
+                }
+                .map { it.toAbsolutePath().normalize().toString() }
+                .distinct()
+            assertTrue(classpath.any { it.contains("kotlin-stdlib-") })
+            val modelLine = "__SEMANTIC_THREAD_MODEL__${gradleFixtureModel(repo, sourcePath, "21", classpath)}"
+            require('\'' !in modelLine) { "fixture model cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText("#!/bin/sh\nprintf '%s\\n' '$modelLine'\n")
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            prepareFixtureBuildState(root)
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            val index = Worker(root).use { worker ->
+                Json.parseToJsonElement(worker.handle(3, request)).jsonObject
+            }
+            assertEquals(true, index["k2Validated"]?.jsonPrimitive?.boolean)
+            val relations = index["declarationRelations"]!!.jsonObject["relations"]!!.jsonArray
+                .map { it.jsonObject }
+            fun exactCall(callable: String): JsonObject = relations.single {
+                it["kind"]?.jsonPrimitive?.content == "CALLS" &&
+                    it["targetCompilerCallableId"]?.jsonPrimitive?.content == callable
+            }
+
+            val pick = exactCall("p/Api.pick")
+            assertEquals(
+                "callable:p/Api.pick#jvm:(Ljava/lang/String;)Ljava/lang/String;",
+                pick["target"]?.jsonPrimitive?.content,
+            )
+            assertEquals("(Ljava/lang/String;)Ljava/lang/String;", pick["targetJvmDescriptor"]?.jsonPrimitive?.content)
+            assertEquals("EXPLICIT", pick["receiverSelection"]?.jsonPrimitive?.content)
+            assertEquals("p/caller", pick["owner"]?.jsonPrimitive?.content)
+            assertEquals(emptyList(), pick["omittedDefaultParameterIndices"]!!.jsonArray.map { it.jsonPrimitive.content.toInt() })
+            val pickArgument = pick["argumentToParameter"]!!.jsonArray.single().jsonObject
+            assertEquals(0, pickArgument["parameterIndex"]?.jsonPrimitive?.content?.toInt())
+            assertEquals("value", pickArgument["parameter"]?.jsonPrimitive?.content)
+            assertTrue("Label" !in pick["targetJvmDescriptor"]!!.jsonPrimitive.content)
+            assertTrue("(I)" !in pick["targetJvmDescriptor"]!!.jsonPrimitive.content)
+
+            val withDefault = exactCall("p/Api.withDefault")
+            assertEquals(
+                "(Ljava/lang/String;I)Ljava/lang/String;",
+                withDefault["targetJvmDescriptor"]?.jsonPrimitive?.content,
+            )
+            assertEquals(listOf(1), withDefault["omittedDefaultParameterIndices"]!!.jsonArray.map { it.jsonPrimitive.content.toInt() })
+            val defaultArgument = withDefault["argumentToParameter"]!!.jsonArray.single().jsonObject
+            assertEquals("value", defaultArgument["argumentName"]?.jsonPrimitive?.content)
+            assertEquals(0, defaultArgument["parameterIndex"]?.jsonPrimitive?.content?.toInt())
+
+            val descriptors = index["declarationDescriptors"]!!.jsonObject["descriptors"]!!.jsonArray
+                .map { it.jsonObject }
+            val targetDescriptor = descriptors.single {
+                it["symbolIdentity"]?.jsonPrimitive?.content == withDefault["target"]?.jsonPrimitive?.content
+            }
+            assertEquals(withDefault["targetJvmDescriptor"], targetDescriptor["jvmDescriptor"])
+            val slots = targetDescriptor["parameterTypes"]!!.jsonArray.map { it.jsonObject }
+            assertEquals(false, slots[0]["hasDefault"]?.jsonPrimitive?.boolean)
+            assertEquals(true, slots[1]["hasDefault"]?.jsonPrimitive?.boolean)
+
+            val bytes = source.toByteArray()
+            val relationStart = pick["start"]!!.jsonPrimitive.content.toInt()
+            val relationEnd = pick["end"]!!.jsonPrimitive.content.toInt()
+            assertTrue(bytes.copyOfRange(relationStart, relationEnd).decodeToString().contains("api.pick"))
+            assertTrue(relationStart > source.indexOf("api.pick"))
+            val argumentStart = pickArgument["argumentStart"]!!.jsonPrimitive.content.toInt()
+            val argumentEnd = pickArgument["argumentEnd"]!!.jsonPrimitive.content.toInt()
+            assertTrue(bytes.copyOfRange(argumentStart, argumentEnd).decodeToString().contains("\"x\""))
+
+            val relationBoundaries = index["declarationRelations"]!!.jsonObject["boundaries"]!!.jsonArray
+                .map { it.jsonObject }
+            val descriptorBoundaries = index["declarationDescriptors"]!!.jsonObject["boundaries"]!!.jsonArray
+                .map { it.jsonObject }
+            assertNotNull(relationBoundaries.singleOrNull {
+                it["code"]?.jsonPrimitive?.content == "JVM_NAME_OVERRIDE_UNSUPPORTED"
+            })
+            assertNotNull(relationBoundaries.singleOrNull { boundary ->
+                if (boundary["code"]?.jsonPrimitive?.content != "UNRESOLVED_CALLABLE_TARGET") {
+                    return@singleOrNull false
+                }
+                val start = boundary["start"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@singleOrNull false
+                val end = boundary["end"]?.jsonPrimitive?.content?.toIntOrNull() ?: return@singleOrNull false
+                bytes.copyOfRange(start, end).decodeToString().contains("api.pick(\"local\")")
+            })
+            assertNotNull(descriptorBoundaries.singleOrNull {
+                it["code"]?.jsonPrimitive?.content == "JVM_NAME_OVERRIDE_UNSUPPORTED"
+            })
+        } finally {
+            repo.toFile().deleteRecursively()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun exactRestartCallsUseStableOuterOwnerAndRejectLocalFunctionOwner() {
+        val repo = Files.createTempDirectory("worker-k2-restart-owner").toRealPath()
+        val root = Files.createTempDirectory("worker-k2-restart-owner-state").toRealPath()
+        try {
+            val sourcePath = repo.resolve("src/main/kotlin/p/Restart.kt")
+            sourcePath.parent.createDirectories()
+            val source = """
+                package p
+
+                class RuntimeOrchestrator {
+                    fun restart(value: String): String = value
+                }
+
+                fun configureApi(orchestrator: RuntimeOrchestrator): String {
+                    val direct = orchestrator.restart("direct")
+                    val nested = runCatching { orchestrator.restart("lambda") }.getOrThrow()
+                    return direct + nested
+                }
+
+                fun localFunctionBoundary(orchestrator: RuntimeOrchestrator): String {
+                    fun local(): String = orchestrator.restart("local")
+                    return local()
+                }
+            """.trimIndent() + "\n"
+            sourcePath.writeText(source)
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"k2-restart-owner\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            val classpath = System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)
+                .map(java.nio.file.Path::of)
+                .filter { path ->
+                    path.fileName.toString().let { name ->
+                        name.startsWith("kotlin-stdlib-") || name.startsWith("annotations-")
+                    }
+                }
+                .map { it.toAbsolutePath().normalize().toString() }
+                .distinct()
+            assertTrue(classpath.any { it.contains("kotlin-stdlib-") })
+            val modelLine = "__SEMANTIC_THREAD_MODEL__${gradleFixtureModel(repo, sourcePath, "21", classpath)}"
+            require('\'' !in modelLine) { "fixture model cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText("#!/bin/sh\nprintf '%s\\n' '$modelLine'\n")
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            prepareFixtureBuildState(root)
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            val index = Worker(root).use { worker ->
+                Json.parseToJsonElement(worker.handle(3, request)).jsonObject
+            }
+            assertEquals(true, index["k2Validated"]?.jsonPrimitive?.boolean)
+            val relations = index["declarationRelations"]!!.jsonObject["relations"]!!.jsonArray
+                .map { it.jsonObject }
+            val exactCalls = relations.filter {
+                it["kind"]?.jsonPrimitive?.content == "CALLS" &&
+                    it["targetCompilerCallableId"]?.jsonPrimitive?.content ==
+                    "p/RuntimeOrchestrator.restart"
+            }
+
+            assertEquals(2, exactCalls.size)
+            assertEquals(
+                setOf("p/configureApi"),
+                exactCalls.map { it["owner"]?.jsonPrimitive?.content }.toSet(),
+            )
+            assertEquals(
+                setOf("callable:p/RuntimeOrchestrator.restart#jvm:(Ljava/lang/String;)Ljava/lang/String;"),
+                exactCalls.map { it["target"]?.jsonPrimitive?.content }.toSet(),
+            )
+            val bytes = source.toByteArray()
+            val callSources = exactCalls.map { call ->
+                val start = call["start"]!!.jsonPrimitive.content.toInt()
+                val end = call["end"]!!.jsonPrimitive.content.toInt()
+                bytes.copyOfRange(start, end).decodeToString()
+            }
+            assertTrue(callSources.any { it.contains("orchestrator.restart(\"direct\")") })
+            assertTrue(callSources.any { it.contains("orchestrator.restart(\"lambda\")") })
+
+            val boundaries = index["declarationRelations"]!!.jsonObject["boundaries"]!!.jsonArray
+                .map { it.jsonObject }
+            assertNotNull(boundaries.singleOrNull { boundary ->
+                if (boundary["code"]?.jsonPrimitive?.content != "UNRESOLVED_CALLABLE_TARGET") {
+                    return@singleOrNull false
+                }
+                val start = boundary["start"]?.jsonPrimitive?.content?.toIntOrNull()
+                    ?: return@singleOrNull false
+                val end = boundary["end"]?.jsonPrimitive?.content?.toIntOrNull()
+                    ?: return@singleOrNull false
+                bytes.copyOfRange(start, end).decodeToString().contains("orchestrator.restart(\"local\")")
+            })
+        } finally {
+            repo.toFile().deleteRecursively()
+            root.toFile().deleteRecursively()
         }
     }
 
