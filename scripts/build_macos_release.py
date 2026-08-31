@@ -433,7 +433,18 @@ def verify_annotated_tag_navigation(
         source,
     )
     run(
-        ["git", "clone", "-q", "--no-local", "--branch", "v-release-smoke", str(source), str(clone)],
+        [
+            "git",
+            "clone",
+            "-q",
+            "--no-local",
+            "--depth",
+            "1",
+            "--branch",
+            "v-release-smoke",
+            str(source),
+            str(clone),
+        ],
         work,
     )
 
@@ -442,6 +453,16 @@ def verify_annotated_tag_navigation(
         (linked, "v-release-smoke", "refs/tags/v-release-smoke"),
         (clone, "v-release-smoke", "refs/tags/v-release-smoke"),
     ]:
+        before_head = git_text(repository, "rev-parse", "--verify", "HEAD^{commit}")
+        before_status = git_text(
+            repository,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        if before_head != revision or before_status:
+            raise ReleaseError("navigation smoke repository authority is invalid")
         output = run(
             [
                 str(launcher),
@@ -472,15 +493,30 @@ def verify_annotated_tag_navigation(
             result = json.loads(output)
             session = result["session"]
             admission = result["admission"]
+            agent_contract = admission["agentContract"]
+            navigation = result["navigation"]
+            candidates = navigation["candidates"]
+            decision_source = navigation["decisionSource"]["source"]
             session_id = session["sessionId"]
         except (KeyError, TypeError, ValueError) as error:
             raise ReleaseError("packaged navigation smoke output is invalid") from error
         if (
-            result.get("status") != "OPEN"
+            result.get("schema") != "codeclew-nav-query/2.0"
+            or result.get("status") != "OPEN"
+            or not isinstance(admission, dict)
             or admission.get("status") != "PASS"
             or admission.get("runtimeMode") != "RELEASE"
+            or not isinstance(agent_contract, dict)
+            or agent_contract.get("launcherAuthority") != "INSTALLED_RELEASE"
+            or agent_contract.get("sourceFallbackAllowed") is not False
+            or not isinstance(session, dict)
             or session.get("targetRef") != expected_ref
             or session.get("baseRevision") != revision
+            or not isinstance(candidates, list)
+            or not candidates
+            or not isinstance(decision_source, dict)
+            or decision_source.get("status") != "SUPPORTED"
+            or not decision_source.get("windows")
         ):
             raise ReleaseError("packaged navigation smoke authority is invalid")
         run(
@@ -493,6 +529,18 @@ def verify_annotated_tag_navigation(
             repository,
             environment=environment,
         )
+        if (
+            git_text(repository, "rev-parse", "--verify", "HEAD^{commit}") != before_head
+            or git_text(
+                repository,
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            )
+            != before_status
+        ):
+            raise ReleaseError("packaged navigation smoke changed the repository")
 
 
 def main() -> int:

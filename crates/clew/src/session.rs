@@ -291,11 +291,8 @@ impl SessionAuthority {
         if !generation_jobs_are_valid(generation_jobs) {
             return Err(invalid("generation jobs must be between 1 and 64"));
         }
-        let base_revision = if language == SessionLanguage::Python {
-            isolated_git_output(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?
-        } else {
-            git_output(&repo, &["rev-parse", "HEAD"])?
-        };
+        let base_revision =
+            isolated_git_output(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
         let target = resolve_local_target_ref(&repo, target_ref)?;
         let target_ref = target.reference;
         let target_oid = target.commit_oid;
