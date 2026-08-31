@@ -8,7 +8,10 @@ use crate::repository_snapshot;
 use crate::session::{ContextObject, SessionAuthority, SessionLanguage};
 use crate::state::{self, StateAuthority};
 use crate::text_authority;
-use crate::typescript_adapter_v2::TYPESCRIPT_LANGUAGE;
+use crate::typescript_adapter_v2::{
+    TYPESCRIPT_COMPILER_FACTS_CAPABILITY, TYPESCRIPT_FACT_SCHEMA, TYPESCRIPT_LANGUAGE,
+    TypeScriptCompilerFact,
+};
 use crate::typescript_project_model::{
     TYPESCRIPT_MODEL_SCHEMA, TypeScriptCompilationSelector, TypeScriptProjectModel, verify_model,
 };
@@ -39,6 +42,12 @@ const MAX_RESULT_BYTES: usize = 64 * 1024;
 const MAX_TREE_ENTRIES: usize = 200_000;
 const MAX_TREE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SEALED_AUTHORITY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_BRIDGE_FACTS: u64 = 262_144;
+const MAX_BRIDGE_FACT_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_BRIDGE_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+const MAX_BRIDGE_WINDOWS: usize = 8;
+const MAX_BRIDGE_WINDOW_BYTES: usize = 32 * 1024;
+const MAX_BRIDGE_TOTAL_WINDOW_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -57,6 +66,8 @@ pub struct SourceLocateRequest {
 pub struct SourceLocateScope {
     pub kind: SourceLocateScopeKind,
     pub compilation: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_test_source: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +108,13 @@ struct SourcePathSelection {
     paths_digest: String,
     path_count: usize,
     conventions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScopedBridgeAuthority {
+    source: SourceLocateAuthority,
+    store: CasStore,
+    generation: GenerationManifest,
 }
 
 pub fn max_request_bytes() -> usize {
@@ -155,17 +173,24 @@ pub fn locate_session(
             locate_session_paths(&root, authority, request, request_digest, paths, None)
         }
         (None, Some(scope)) => {
-            let (paths, selection) = compilation_test_candidate_paths(&session, &context, scope)?;
+            let (paths, selection, store, generation) =
+                compilation_test_candidate_paths(&session, &context, scope)?;
             if paths.is_empty() {
                 return scoped_abstention(authority, request, request_digest, selection);
             }
-            locate_session_paths(
+            let bridge = scope.include_test_source.then(|| ScopedBridgeAuthority {
+                source: authority.clone(),
+                store,
+                generation,
+            });
+            locate_session_paths_with_bridge(
                 &root,
                 authority,
                 request,
                 request_digest,
                 &paths,
                 Some(selection),
+                bridge,
             )
         }
         _ => Err(invalid("source locate path authority is invalid")),
@@ -179,6 +204,26 @@ fn locate_session_paths(
     request_digest: &str,
     paths: &[String],
     selection: Option<SourcePathSelection>,
+) -> Result<serde_json::Value, ClewError> {
+    locate_session_paths_with_bridge(
+        root,
+        authority,
+        request,
+        request_digest,
+        paths,
+        selection,
+        None,
+    )
+}
+
+fn locate_session_paths_with_bridge(
+    root: &Path,
+    authority: SourceLocateAuthority,
+    request: &SourceLocateRequest,
+    request_digest: &str,
+    paths: &[String],
+    selection: Option<SourcePathSelection>,
+    bridge: Option<ScopedBridgeAuthority>,
 ) -> Result<serde_json::Value, ClewError> {
     verify_request_digest(request, request_digest)?;
     let root = root.canonicalize().map_err(io_error)?;
@@ -244,6 +289,7 @@ fn locate_session_paths(
         paths,
         contents,
         selection,
+        bridge,
     )
 }
 
@@ -314,6 +360,7 @@ fn locate_direct_with_hook(
         paths,
         contents,
         None,
+        None,
     )
 }
 
@@ -326,19 +373,20 @@ fn locate_contents(
     paths: &[String],
     contents: Vec<(String, Vec<u8>)>,
     selection: Option<SourcePathSelection>,
+    bridge_authority: Option<ScopedBridgeAuthority>,
 ) -> Result<serde_json::Value, ClewError> {
     let needle = request.literal.as_bytes();
     let mut observed_match_count = 0usize;
     let mut matches = Vec::with_capacity(request.max_matches);
     let mut scanned_bytes = 0usize;
-    for (relative, content) in contents {
+    for (relative, content) in &contents {
         scanned_bytes = scanned_bytes
             .checked_add(content.len())
             .ok_or_else(|| resource("source locate byte count overflow"))?;
         if scanned_bytes > MAX_TOTAL_BYTES {
             return Err(resource("source locate input exceeds 16 MiB"));
         }
-        let content_digest = canonical::hash_bytes(&content);
+        let content_digest = canonical::hash_bytes(content);
         let mut offset = 0usize;
         while offset <= content.len().saturating_sub(needle.len()) {
             let Some(relative_start) = find_bytes(&content[offset..], needle) else {
@@ -371,8 +419,25 @@ fn locate_contents(
                 Vec::new(),
             )
         } else {
-            ("COMPLETE", None, "QUERY_COMPLETE", false, matches)
+            ("COMPLETE", None, "QUERY_COMPLETE", false, matches.clone())
         };
+    let bridge = if selection.is_some() {
+        if truncated {
+            bridge_abstention("LOCATE_MATCH_SET_INCOMPLETE")
+        } else if !request
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.include_test_source)
+        {
+            bridge_unavailable()
+        } else if let Some(bridge_authority) = bridge_authority.as_ref() {
+            typescript_bridge(bridge_authority, &contents, &matches)?
+        } else {
+            bridge_unavailable()
+        }
+    } else {
+        serde_json::Value::Null
+    };
     let literal_digest = canonical::hash_bytes(needle);
     let mut result = serde_json::json!({
         "schema":result_schema,
@@ -396,7 +461,17 @@ fn locate_contents(
     if let Some(selection) = selection {
         result["pathSelection"] =
             serde_json::to_value(selection).map_err(|error| internal(error.into()))?;
-        result["bridge"] = bridge_unavailable();
+        result["bridge"] = bridge;
+    }
+    if canonical::bytes(&result)
+        .map_err(internal)?
+        .len()
+        .saturating_add(1)
+        > MAX_RESULT_BYTES
+    {
+        if result.get("bridge").is_some() {
+            result["bridge"] = bridge_abstention("BRIDGE_OUTPUT_LIMIT");
+        }
     }
     if canonical::bytes(&result)
         .map_err(internal)?
@@ -427,7 +502,15 @@ fn compilation_test_candidate_paths(
     session: &SessionAuthority,
     context: &ContextObject,
     scope: &SourceLocateScope,
-) -> Result<(Vec<String>, SourcePathSelection), ClewError> {
+) -> Result<
+    (
+        Vec<String>,
+        SourcePathSelection,
+        CasStore,
+        GenerationManifest,
+    ),
+    ClewError,
+> {
     if session.language != SessionLanguage::TypeScript
         || !session
             .compilations
@@ -520,7 +603,7 @@ fn compilation_test_candidate_paths(
             "*.test.tsx".into(),
         ],
     };
-    Ok((paths, selection))
+    Ok((paths, selection, store, generation))
 }
 
 fn verify_context_generation_binding(
@@ -645,13 +728,461 @@ fn scoped_abstention(
     }))
 }
 
-fn bridge_unavailable() -> serde_json::Value {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BridgeTestWindow {
+    path: String,
+    start: usize,
+    end: usize,
+    callee: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct BridgeDeclaration {
+    name: String,
+    symbol_identity: String,
+    file: String,
+    start: u64,
+    end: u64,
+}
+
+fn typescript_bridge(
+    authority: &ScopedBridgeAuthority,
+    contents: &[(String, Vec<u8>)],
+    matches: &[SourceMatch],
+) -> Result<serde_json::Value, ClewError> {
+    if authority.generation.fact_count > MAX_BRIDGE_FACTS {
+        return Ok(bridge_abstention("BRIDGE_FACT_LIMIT"));
+    }
+    if authority.generation.attempts.len() != 1
+        || authority.generation.attempts[0].capability.as_str()
+            != TYPESCRIPT_COMPILER_FACTS_CAPABILITY
+    {
+        return Ok(bridge_abstention(
+            "TYPESCRIPT_GENERATION_AUTHORITY_AMBIGUOUS",
+        ));
+    }
+
+    let mut facts = Vec::new();
+    let mut payload_bytes = 0usize;
+    let mut budget_reason = None;
+    authority
+        .generation
+        .visit_facts(&authority.store, |record| {
+            if budget_reason.is_some() {
+                return Ok(());
+            }
+            if record.domain_uri.as_str() != TYPESCRIPT_COMPILER_FACTS_CAPABILITY
+                || record.payload.object_schema != TYPESCRIPT_FACT_SCHEMA
+            {
+                return Err(corrupt(
+                    "TypeScript bridge generation contains another fact authority",
+                ));
+            }
+            let payload_size = usize::try_from(record.payload.size)
+                .map_err(|_| resource("TypeScript bridge fact exceeds the host size"))?;
+            if payload_size > MAX_BRIDGE_FACT_PAYLOAD_BYTES {
+                budget_reason = Some("BRIDGE_FACT_PAYLOAD_LIMIT");
+                return Ok(());
+            }
+            let Some(next_payload_bytes) = payload_bytes.checked_add(payload_size) else {
+                budget_reason = Some("BRIDGE_PAYLOAD_LIMIT");
+                return Ok(());
+            };
+            if next_payload_bytes > MAX_BRIDGE_PAYLOAD_BYTES {
+                budget_reason = Some("BRIDGE_PAYLOAD_LIMIT");
+                return Ok(());
+            }
+            payload_bytes = next_payload_bytes;
+            let lease = authority.store.read(&record.payload, payload_size)?;
+            let fact: TypeScriptCompilerFact = serde_json::from_slice(lease.bytes())
+                .map_err(|_| corrupt("TypeScript bridge fact payload is invalid"))?;
+            if canonical::bytes(&fact).map_err(internal)? != lease.bytes() {
+                return Err(corrupt("TypeScript bridge fact payload is not canonical"));
+            }
+            validate_bridge_fact(&fact)?;
+            facts.push(fact);
+            Ok(())
+        })?;
+    if let Some(reason) = budget_reason {
+        return Ok(bridge_abstention(reason));
+    }
+    typescript_bridge_from_facts(&authority.source, contents, matches, &facts)
+}
+
+fn validate_bridge_fact(fact: &TypeScriptCompilerFact) -> Result<(), ClewError> {
+    let (schema, path, range) = match fact {
+        TypeScriptCompilerFact::SourceFile {
+            schema,
+            file,
+            source_content_digest,
+            ..
+        } => {
+            if !canonical_digest(source_content_digest) {
+                return Err(corrupt("TypeScript bridge source digest is invalid"));
+            }
+            (schema, Some(file.as_str()), None)
+        }
+        TypeScriptCompilerFact::Declaration {
+            schema,
+            file,
+            start,
+            end,
+            ..
+        }
+        | TypeScriptCompilerFact::Relation {
+            schema,
+            file,
+            start,
+            end,
+            ..
+        } => (schema, Some(file.as_str()), Some((*start, *end))),
+        TypeScriptCompilerFact::Boundary {
+            schema,
+            file,
+            start,
+            end,
+            ..
+        } => {
+            if start.is_some() != end.is_some() {
+                return Err(corrupt("TypeScript bridge boundary range is incomplete"));
+            }
+            (schema, file.as_deref(), start.zip(*end))
+        }
+    };
+    if schema != TYPESCRIPT_FACT_SCHEMA {
+        return Err(corrupt("TypeScript bridge fact schema is invalid"));
+    }
+    if let Some(path) = path {
+        validate_relative_path(path)
+            .map_err(|_| corrupt("TypeScript bridge fact path is invalid"))?;
+    }
+    if range.is_some_and(|(start, end)| start >= end) {
+        return Err(corrupt("TypeScript bridge fact range is invalid"));
+    }
+    Ok(())
+}
+
+fn typescript_bridge_from_facts(
+    authority: &SourceLocateAuthority,
+    contents: &[(String, Vec<u8>)],
+    matches: &[SourceMatch],
+    facts: &[TypeScriptCompilerFact],
+) -> Result<serde_json::Value, ClewError> {
+    if matches.is_empty() {
+        return Ok(bridge_abstention("NO_LITERAL_MATCHES"));
+    }
+    let content_by_path = contents
+        .iter()
+        .map(|(path, content)| (path.as_str(), content.as_slice()))
+        .collect::<BTreeMap<_, _>>();
+    let mut source_membership = BTreeMap::<String, Vec<String>>::new();
+    let mut declarations = BTreeMap::<String, Vec<BridgeDeclaration>>::new();
+    let mut relations = Vec::new();
+    let mut boundaries = Vec::new();
+    for fact in facts {
+        match fact {
+            TypeScriptCompilerFact::SourceFile {
+                file,
+                source_content_digest,
+                resolution,
+                ..
+            } if resolution == "SOURCE_MEMBERSHIP_EXACT" => {
+                source_membership
+                    .entry(file.clone())
+                    .or_default()
+                    .push(source_content_digest.clone());
+            }
+            TypeScriptCompilerFact::Declaration {
+                name,
+                symbol_identity,
+                exported: true,
+                file,
+                start,
+                end,
+                resolution,
+                ..
+            } if resolution == "COMPILER_RESOLVED" => {
+                declarations
+                    .entry(symbol_identity.clone())
+                    .or_default()
+                    .push(BridgeDeclaration {
+                        name: name.clone(),
+                        symbol_identity: symbol_identity.clone(),
+                        file: file.clone(),
+                        start: *start,
+                        end: *end,
+                    });
+            }
+            TypeScriptCompilerFact::Relation {
+                relation_kind,
+                source_identity,
+                target_identity,
+                file,
+                start,
+                end,
+                resolution,
+                ..
+            } if resolution == "COMPILER_RESOLVED" => relations.push((
+                relation_kind.as_str(),
+                source_identity.as_str(),
+                target_identity.as_str(),
+                file.as_str(),
+                *start,
+                *end,
+            )),
+            TypeScriptCompilerFact::Boundary {
+                file: Some(file),
+                start: Some(start),
+                end: Some(end),
+                ..
+            } => boundaries.push((file.as_str(), *start, *end)),
+            _ => {}
+        }
+    }
+
+    for source_match in matches {
+        let Some(content) = content_by_path.get(source_match.path.as_str()) else {
+            return Ok(bridge_abstention("MATCH_SOURCE_UNAVAILABLE"));
+        };
+        if canonical::hash_bytes(content) != source_match.content_digest
+            || source_membership
+                .get(&source_match.path)
+                .is_none_or(|digests| {
+                    digests.len() != 1 || digests[0] != source_match.content_digest
+                })
+        {
+            return Ok(bridge_abstention("MATCH_SOURCE_AUTHORITY_UNBOUND"));
+        }
+    }
+
+    let mut windows = BTreeSet::new();
+    for source_match in matches {
+        let enclosing = relations
+            .iter()
+            .filter_map(|(kind, _, target_identity, file, start, end)| {
+                if *kind != "CALLS" || *file != source_match.path {
+                    return None;
+                }
+                let (callee, allowed) = vitest_test_call(target_identity);
+                if !allowed {
+                    return None;
+                }
+                let start = usize::try_from(*start).ok()?;
+                let end = usize::try_from(*end).ok()?;
+                (start <= source_match.byte_start && end >= source_match.byte_end).then(|| {
+                    BridgeTestWindow {
+                        path: source_match.path.clone(),
+                        start,
+                        end,
+                        callee: callee.to_owned(),
+                    }
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        match enclosing.len() {
+            0 => return Ok(bridge_abstention("ENCLOSING_VITEST_CALL_UNRESOLVED")),
+            1 => windows.extend(enclosing),
+            _ => return Ok(bridge_abstention("ENCLOSING_VITEST_CALL_AMBIGUOUS")),
+        }
+    }
+    if windows.len() > MAX_BRIDGE_WINDOWS {
+        return Ok(bridge_abstention("BRIDGE_WINDOW_COUNT_LIMIT"));
+    }
+    for window in &windows {
+        if boundaries.iter().any(|(file, start, end)| {
+            *file == window.path
+                && usize::try_from(*start)
+                    .ok()
+                    .is_some_and(|start| start < window.end)
+                && usize::try_from(*end)
+                    .ok()
+                    .is_some_and(|end| end > window.start)
+        }) {
+            return Ok(bridge_abstention("TEST_BLOCK_SEMANTIC_BOUNDARY"));
+        }
+    }
+
+    let imported_modules = relations
+        .iter()
+        .filter_map(|(kind, _, target, file, _, _)| {
+            (*kind == "IMPORTS").then(|| ((*file).to_owned(), (*target).to_owned()))
+        })
+        .collect::<BTreeSet<_>>();
+    let mut observed_targets = BTreeSet::new();
+    for window in &windows {
+        let mut block_targets = BTreeSet::new();
+        for (kind, _, target_identity, file, start, end) in &relations {
+            if *kind != "REFERENCES" || *file != window.path {
+                continue;
+            }
+            let Ok(start) = usize::try_from(*start) else {
+                return Ok(bridge_abstention("REFERENCE_RANGE_INVALID"));
+            };
+            let Ok(end) = usize::try_from(*end) else {
+                return Ok(bridge_abstention("REFERENCE_RANGE_INVALID"));
+            };
+            if start < window.start || end > window.end {
+                continue;
+            }
+            let Some(candidates) = declarations.get(*target_identity) else {
+                continue;
+            };
+            if candidates.len() != 1 {
+                return Ok(bridge_abstention("TARGET_DECLARATION_AMBIGUOUS"));
+            }
+            let candidate = &candidates[0];
+            if candidate.file == window.path
+                || source_membership
+                    .get(&candidate.file)
+                    .is_none_or(|digests| digests.len() != 1)
+                || !imported_modules
+                    .contains(&(window.path.clone(), format!("module:{}", candidate.file)))
+            {
+                continue;
+            }
+            block_targets.insert(candidate.clone());
+        }
+        match block_targets.len() {
+            0 => return Ok(bridge_abstention("OBSERVED_TARGET_UNRESOLVED")),
+            1 => observed_targets.extend(block_targets),
+            _ => return Ok(bridge_abstention("OBSERVED_TARGET_AMBIGUOUS")),
+        }
+    }
+    if observed_targets.len() != 1 {
+        return Ok(bridge_abstention("OBSERVED_TARGET_AMBIGUOUS"));
+    }
+    let target = observed_targets
+        .into_iter()
+        .next()
+        .expect("one observed target");
+    let exact_action_matches = declarations
+        .values()
+        .flatten()
+        .filter(|candidate| candidate.file == target.file && candidate.name == target.name)
+        .collect::<Vec<_>>();
+    if !safe_typescript_navigation_term(&target.name)
+        || exact_action_matches.len() != 1
+        || exact_action_matches[0].symbol_identity != target.symbol_identity
+    {
+        return Ok(bridge_abstention("TARGET_EXACT_SOURCE_ACTION_AMBIGUOUS"));
+    }
+
+    let mut total_window_bytes = 0usize;
+    let mut returned_windows = Vec::with_capacity(windows.len());
+    for window in windows {
+        let Some(content) = content_by_path.get(window.path.as_str()) else {
+            return Ok(bridge_abstention("TEST_WINDOW_SOURCE_UNAVAILABLE"));
+        };
+        if window.start >= window.end || window.end > content.len() {
+            return Ok(bridge_abstention("ENCLOSING_VITEST_CALL_RANGE_INVALID"));
+        }
+        let window_bytes = window.end - window.start;
+        let Some(next_total) = total_window_bytes.checked_add(window_bytes) else {
+            return Ok(bridge_abstention("BRIDGE_WINDOW_BYTE_LIMIT"));
+        };
+        if window_bytes > MAX_BRIDGE_WINDOW_BYTES || next_total > MAX_BRIDGE_TOTAL_WINDOW_BYTES {
+            return Ok(bridge_abstention("BRIDGE_WINDOW_BYTE_LIMIT"));
+        }
+        total_window_bytes = next_total;
+        let text = std::str::from_utf8(&content[window.start..window.end])
+            .map_err(|_| corrupt("TypeScript test window is not UTF-8"))?;
+        returned_windows.push(serde_json::json!({
+            "path":window.path,
+            "byteStart":window.start,
+            "byteEnd":window.end,
+            "startLine":line_at(content, window.start),
+            "endLine":line_at(content, window.end.saturating_sub(1)),
+            "contentDigest":canonical::hash_bytes(content),
+            "callKind":"CALLS",
+            "callee":window.callee,
+            "text":text,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "schema":BRIDGE_SCHEMA,
+        "status":"DISCOVERY_AVAILABLE",
+        "reasonCode":null,
+        "semanticResolution":"COMPILER_RESOLVED",
+        "decisionAuthority":"NONE",
+        "coverage":{
+            "scope":"RETURNED_LITERAL_MATCHES_AND_ENCLOSING_VITEST_CALLS",
+            "exhaustive":false,
+            "literalMatchCount":matches.len(),
+            "testBlockCount":returned_windows.len(),
+        },
+        "testBlocks":returned_windows,
+        "target":{
+            "selectionAuthority":"SINGLE_COMPILER_BOUND_PROJECT_CANDIDATE_OBSERVED_IN_RETURNED_TEST_BLOCKS",
+            "name":target.name,
+            "file":target.file,
+            "start":target.start,
+            "end":target.end,
+            "exported":true,
+            "resolution":"COMPILER_RESOLVED",
+        },
+        "discoveryAction":{
+            "kind":"EXACT_FILE_SOURCE",
+            "sessionId":authority.session_id,
+            "fromContextId":authority.context_id,
+            "terms":[target.name],
+            "file":target.file,
+            "maxTerms":3,
+            "sameFileRequired":true,
+            "includeSource":true,
+        },
+    }))
+}
+
+fn vitest_test_call(identity: &str) -> (&'static str, bool) {
+    let allowed_package =
+        identity.starts_with("ts-external:") && identity.contains("/node_modules/vitest/");
+    if allowed_package && identity.ends_with("#it") {
+        ("it", true)
+    } else if allowed_package && identity.ends_with("#test") {
+        ("test", true)
+    } else {
+        ("", false)
+    }
+}
+
+fn line_at(content: &[u8], offset: usize) -> usize {
+    1 + content[..offset.min(content.len())]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+}
+
+fn safe_typescript_navigation_term(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    value.len() <= 128
+        && (first.is_ascii_alphabetic() || matches!(first, b'_' | b'$'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn bridge_abstention(reason_code: &str) -> serde_json::Value {
     serde_json::json!({
         "schema":BRIDGE_SCHEMA,
         "status":"ABSTAIN",
-        "reasonCode":"IMPORT_LOCAL_MODULE_UNIQUE_DECLARATION_BRIDGE_UNAVAILABLE",
+        "reasonCode":reason_code,
         "semanticResolution":"NONE",
+        "decisionAuthority":"NONE",
+        "coverage":{
+            "scope":"NONE",
+            "exhaustive":false,
+        },
     })
+}
+
+fn bridge_unavailable() -> serde_json::Value {
+    bridge_abstention("TEST_SOURCE_NOT_AUTHORIZED")
 }
 
 fn canonical_repository(repo: &Path) -> Result<std::path::PathBuf, ClewError> {
@@ -1104,6 +1635,7 @@ mod tests {
             scope: Some(SourceLocateScope {
                 kind: SourceLocateScopeKind::CompilationTestCandidates,
                 compilation: compilation.into(),
+                include_test_source: true,
             }),
             max_matches: 4,
         }
@@ -1180,6 +1712,294 @@ mod tests {
         let repository = repository.canonicalize().unwrap();
         let revision = git(&repository, &["rev-parse", "HEAD"]);
         (temporary, repository, revision)
+    }
+
+    struct BridgeFixture {
+        contents: Vec<(String, Vec<u8>)>,
+        matches: Vec<SourceMatch>,
+        facts: Vec<TypeScriptCompilerFact>,
+        window_start: usize,
+        window_end: usize,
+    }
+
+    fn source_file(file: &str, bytes: &[u8]) -> TypeScriptCompilerFact {
+        TypeScriptCompilerFact::SourceFile {
+            schema: TYPESCRIPT_FACT_SCHEMA.into(),
+            file: file.into(),
+            source_content_digest: canonical::hash_bytes(bytes),
+            resolution: "SOURCE_MEMBERSHIP_EXACT".into(),
+        }
+    }
+
+    fn relation(
+        kind: &str,
+        target: &str,
+        file: &str,
+        start: usize,
+        end: usize,
+    ) -> TypeScriptCompilerFact {
+        TypeScriptCompilerFact::Relation {
+            schema: TYPESCRIPT_FACT_SCHEMA.into(),
+            relation_kind: kind.into(),
+            source_identity: format!("module:{file}"),
+            target_identity: target.into(),
+            file: file.into(),
+            start: start as u64,
+            end: end as u64,
+            resolution: "COMPILER_RESOLVED".into(),
+        }
+    }
+
+    fn declaration(name: &str, identity: &str, file: &str) -> TypeScriptCompilerFact {
+        TypeScriptCompilerFact::Declaration {
+            schema: TYPESCRIPT_FACT_SCHEMA.into(),
+            declaration_kind: "VARIABLE".into(),
+            name: name.into(),
+            symbol_identity: identity.into(),
+            owner_identity: format!("module:{file}"),
+            exported: true,
+            type_text: "unknown".into(),
+            signature: None,
+            file: file.into(),
+            start: 0,
+            end: 16,
+            start_line: 1,
+            end_line: 1,
+            resolution: "COMPILER_RESOLVED".into(),
+        }
+    }
+
+    fn bridge_fixture(padding_bytes: usize) -> BridgeFixture {
+        let test_path = "src/Widget.test.tsx";
+        let target_path = "src/Widget.tsx";
+        let source = format!(
+            "import {{ Widget }} from \"./Widget\";\n\nit(\"handles needle\", () => {{\n{}  const view = render(<Widget />);\n  expect(view).toBeTruthy();\n}});\n",
+            " ".repeat(padding_bytes)
+        )
+        .into_bytes();
+        let text = std::str::from_utf8(&source).unwrap();
+        let window_start = text.find("it(").unwrap();
+        let window_end = text.rfind("});").unwrap() + 2;
+        let match_start = text.find("needle").unwrap();
+        let reference_start = text.rfind("Widget").unwrap();
+        let target_identity = "ts:src/Widget.tsx#variable:Widget@0-16";
+        let facts = vec![
+            source_file(test_path, &source),
+            source_file(target_path, b"export const Widget = () => null;\n"),
+            relation(
+                "CALLS",
+                "ts-external:launchpad-ui/node_modules/vitest/globals.d.ts#it",
+                test_path,
+                window_start,
+                window_end,
+            ),
+            relation(
+                "REFERENCES",
+                target_identity,
+                test_path,
+                reference_start,
+                reference_start + "Widget".len(),
+            ),
+            relation(
+                "IMPORTS",
+                &format!("module:{target_path}"),
+                test_path,
+                24,
+                34,
+            ),
+            declaration("Widget", target_identity, target_path),
+        ];
+        BridgeFixture {
+            contents: vec![(test_path.into(), source.clone())],
+            matches: vec![SourceMatch {
+                path: test_path.into(),
+                byte_start: match_start,
+                byte_end: match_start + "needle".len(),
+                content_digest: canonical::hash_bytes(&source),
+            }],
+            facts,
+            window_start,
+            window_end,
+        }
+    }
+
+    fn bridge_result(fixture: &BridgeFixture) -> serde_json::Value {
+        typescript_bridge_from_facts(
+            &authority(),
+            &fixture.contents,
+            &fixture.matches,
+            &fixture.facts,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn typescript_bridge_returns_one_full_test_window_and_discovery_action() {
+        let fixture = bridge_fixture(0);
+        let result = bridge_result(&fixture);
+        let source = std::str::from_utf8(&fixture.contents[0].1).unwrap();
+        assert_eq!(result["status"], "DISCOVERY_AVAILABLE");
+        assert_eq!(result["decisionAuthority"], "NONE");
+        assert_eq!(result["coverage"]["exhaustive"], false);
+        assert_eq!(result["testBlocks"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            result["testBlocks"][0]["text"],
+            &source[fixture.window_start..fixture.window_end]
+        );
+        assert!(
+            result["testBlocks"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("expect(view).toBeTruthy()")
+        );
+        assert_eq!(result["discoveryAction"]["kind"], "EXACT_FILE_SOURCE");
+        assert_eq!(result["discoveryAction"]["terms"], json!(["Widget"]));
+        assert_eq!(result["discoveryAction"]["file"], "src/Widget.tsx");
+        let encoded = canonical::compact(&result).unwrap();
+        assert!(!encoded.contains("decisionIdentifier"));
+        assert!(!encoded.contains("decisionSource"));
+        assert!(!encoded.contains("ts:src/Widget.tsx#variable:Widget@0-16"));
+        assert!(!encoded.contains("vitest/globals.d.ts#it"));
+    }
+
+    #[test]
+    fn typescript_bridge_abstains_on_overlapping_vitest_calls() {
+        let mut fixture = bridge_fixture(0);
+        fixture.facts.push(relation(
+            "CALLS",
+            "ts-external:launchpad-ui/node_modules/vitest/globals.d.ts#test",
+            "src/Widget.test.tsx",
+            fixture.window_start,
+            fixture.window_end,
+        ));
+        let result = bridge_result(&fixture);
+        assert_eq!(result["status"], "ABSTAIN");
+        assert_eq!(result["reasonCode"], "ENCLOSING_VITEST_CALL_AMBIGUOUS");
+        assert!(result.get("testBlocks").is_none());
+    }
+
+    #[test]
+    fn typescript_bridge_abstains_on_a_second_project_target() {
+        let mut fixture = bridge_fixture(0);
+        let test_path = "src/Widget.test.tsx";
+        let helper_path = "src/render.ts";
+        let helper_identity = "ts:src/render.ts#function:render@0-16";
+        let text = std::str::from_utf8(&fixture.contents[0].1).unwrap();
+        let reference_start = text.find("render").unwrap();
+        fixture
+            .facts
+            .push(source_file(helper_path, b"export function render() {}\n"));
+        fixture.facts.push(relation(
+            "IMPORTS",
+            &format!("module:{helper_path}"),
+            test_path,
+            0,
+            1,
+        ));
+        fixture.facts.push(relation(
+            "REFERENCES",
+            helper_identity,
+            test_path,
+            reference_start,
+            reference_start + "render".len(),
+        ));
+        fixture
+            .facts
+            .push(declaration("render", helper_identity, helper_path));
+        let result = bridge_result(&fixture);
+        assert_eq!(result["status"], "ABSTAIN");
+        assert_eq!(result["reasonCode"], "OBSERVED_TARGET_AMBIGUOUS");
+    }
+
+    #[test]
+    fn typescript_bridge_rejects_non_vitest_test_runner_identity() {
+        let mut fixture = bridge_fixture(0);
+        for fact in &mut fixture.facts {
+            if let TypeScriptCompilerFact::Relation {
+                relation_kind,
+                target_identity,
+                ..
+            } = fact
+                && relation_kind == "CALLS"
+            {
+                *target_identity =
+                    "ts-external:launchpad-ui/node_modules/jest/globals.d.ts#it".into();
+            }
+        }
+        let result = bridge_result(&fixture);
+        assert_eq!(result["status"], "ABSTAIN");
+        assert_eq!(result["reasonCode"], "ENCLOSING_VITEST_CALL_UNRESOLVED");
+    }
+
+    #[test]
+    fn typescript_bridge_rejects_test_block_semantic_boundary() {
+        let mut fixture = bridge_fixture(0);
+        fixture.facts.push(TypeScriptCompilerFact::Boundary {
+            schema: TYPESCRIPT_FACT_SCHEMA.into(),
+            code: "UNRESOLVED_CALL_SIGNATURE".into(),
+            diagnostic_code: None,
+            file: Some("src/Widget.test.tsx".into()),
+            start: Some((fixture.window_start + 1) as u64),
+            end: Some((fixture.window_start + 2) as u64),
+            required_checks: vec!["FIX_TYPESCRIPT_CONFIGURATION_OR_DEPENDENCY".into()],
+            resolution: "UNKNOWN".into(),
+        });
+        let result = bridge_result(&fixture);
+        assert_eq!(result["status"], "ABSTAIN");
+        assert_eq!(result["reasonCode"], "TEST_BLOCK_SEMANTIC_BOUNDARY");
+    }
+
+    #[test]
+    fn typescript_bridge_rejects_invalid_and_oversize_test_ranges() {
+        let mut invalid = bridge_fixture(0);
+        let invalid_end = invalid.contents[0].1.len() + 1;
+        for fact in &mut invalid.facts {
+            if let TypeScriptCompilerFact::Relation {
+                relation_kind, end, ..
+            } = fact
+                && relation_kind == "CALLS"
+            {
+                *end = invalid_end as u64;
+            }
+        }
+        assert_eq!(
+            bridge_result(&invalid)["reasonCode"],
+            "ENCLOSING_VITEST_CALL_RANGE_INVALID"
+        );
+
+        let oversize = bridge_fixture(MAX_BRIDGE_TOTAL_WINDOW_BYTES);
+        assert_eq!(
+            bridge_result(&oversize)["reasonCode"],
+            "BRIDGE_WINDOW_BYTE_LIMIT"
+        );
+    }
+
+    #[test]
+    fn scoped_source_authorization_is_backward_compatible_and_fail_closed() {
+        let legacy = br#"{"schema":"codeclew-source-locate-request/1.1","literal":"secret","scope":{"kind":"COMPILATION_TEST_CANDIDATES","compilation":"tsconfig:tsconfig.json"},"maxMatches":4}"#;
+        let (parsed, _) = parse_request(legacy).unwrap();
+        assert!(!parsed.scope.as_ref().unwrap().include_test_source);
+        let canonical_request = String::from_utf8(canonical::bytes(&parsed).unwrap()).unwrap();
+        assert!(!canonical_request.contains("includeTestSource"));
+
+        let temporary = TempDir::new().unwrap();
+        let path = "src/A.test.ts";
+        fs::create_dir(temporary.path().join("src")).unwrap();
+        fs::write(temporary.path().join(path), b"secret").unwrap();
+        let digest = canonical::hash(&parsed).unwrap();
+        let paths = vec![path.to_owned()];
+        let result = locate_session_paths(
+            temporary.path(),
+            authority(),
+            &parsed,
+            &digest,
+            &paths,
+            Some(scoped_selection(&paths)),
+        )
+        .unwrap();
+        assert_eq!(result["bridge"]["status"], "ABSTAIN");
+        assert_eq!(result["bridge"]["reasonCode"], "TEST_SOURCE_NOT_AUTHORIZED");
+        assert!(!canonical::compact(&result).unwrap().contains("secret"));
     }
 
     #[test]
