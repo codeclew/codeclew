@@ -98,8 +98,10 @@ term, and the underlying query is not truncated. With `--source`, that
 retained source and declaration-to-window bindings. Generic search terms alone,
 unmatched terms, underlying query truncation, ambiguous identities, or partial
 local coverage produce `ABSTAIN`: cards remain discovery evidence,
-`decisionSource` is unavailable, reference follow is disabled, and one
-structured refinement names the next missing discriminator. The legacy
+`decisionSource` is unavailable and reference follow is disabled. A structured
+refinement is executable only once and only when the task supplies a new exact
+identifier absent from the current query; otherwise it returns
+`STOP_UNRESOLVED` and forbids replaying the same request. The legacy
 `truncated` flag combines underlying query truncation with the three-card
 presentation cap; `queryCoverageTruncated` and `candidateListTruncated` separate
 those cases. Candidate uniqueness is evaluated across all retained declaration

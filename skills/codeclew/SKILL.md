@@ -72,8 +72,7 @@ clew nav query \
   --language <language> \
   --profile <profile-id> \
   --compilation <compilation> \
-  --term <term> \
-  --source
+  --term <term>
 ```
 
 Pass two to four discriminative code tokens from the request together when they
@@ -98,7 +97,21 @@ not interchangeable evidence and must not be closed as one vague item.
 The first response contains at most three fact-bound decision cards with exact
 one-line previews. Generic terms produce discovery cards only. When the task
 itself supplies an exact declaration name or full identity, repeat it with
-`--decision-identifier`; never invent one from a top-ranked card. With
+`--decision-identifier` and request its source in the same call:
+
+```bash
+clew nav query \
+  --repo <absolute-repo> \
+  --target-ref <exact-ref> \
+  --language <language> \
+  --profile <profile-id> \
+  --compilation <compilation> \
+  --term <exact-task-supplied-identifier> \
+  --decision-identifier <same-exact-task-supplied-identifier> \
+  --source
+```
+
+Never invent the decision identifier from a top-ranked card. With
 `--source`, a compact evidence-bound agent card contains exact retained source
 and declaration-to-window bindings only for a supported decision, attested
 previews for alternatives, and anchors outside that source window. Otherwise
@@ -113,11 +126,15 @@ boundary-safe evidence covers the normalized query terms. It does not prove the
 private checklist, a relation, or a test outcome. When `status=ABSTAIN`, every
 returned card is provisional discovery evidence: never turn the first card or
 its local mechanism into a task-level conclusion and do not follow references
-from it. Execute the single structured `refinement` only when the task supplies
-a genuinely discriminating exact identifier; pass it both as `--term` and
-`--decision-identifier`. Otherwise mark candidate identity and dependent
-checklist items `UNPROVEN` and report the named missing, unmatched, ambiguous,
-or truncated coverage. Do not repeat a generic unmatched term.
+from it. Execute an `ADD_TASK_DISCRIMINANT` refinement once only when its
+precondition is satisfied: the task supplies a genuinely discriminating exact
+identifier that is not already present in the current query. Pass it both as
+`--term` and `--decision-identifier`; never reuse the current identifier or a
+returned card name. `repeatSameRequest=false` forbids replaying the same
+request. If `onUnsatisfied=STOP_UNRESOLVED`, or the refinement itself has
+`kind=STOP_UNRESOLVED`, stop that retrieval branch. Mark candidate identity and
+dependent checklist items `UNPROVEN` and report the named missing, unmatched,
+ambiguous, or truncated coverage. Do not repeat a generic unmatched term.
 `returnedCandidateCoverage` is bounded lexical coverage of exact identity text,
 an exact full-file byte range when available, or conservative interior
 declaration lines; it is not semantic correctness or proof that omitted

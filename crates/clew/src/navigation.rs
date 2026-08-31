@@ -2008,6 +2008,26 @@ fn navigation_decision_authority(
             best_missing_terms.iter().next().cloned(),
         )
     };
+    let refinement = if decision_identifier_declared {
+        json!({
+            "kind":"STOP_UNRESOLVED",
+            "reason":"DECLARED_IDENTIFIER_DID_NOT_ESTABLISH_UNIQUE_FULL_COVERAGE",
+            "repeatSameRequest":false,
+            "instruction":"The declared identifier did not establish one complete decision. Do not repeat it or select an analogue. Continue only after the task or an exact retained source supplies a different identifier or a known file; otherwise keep the task unresolved.",
+        })
+    } else {
+        json!({
+            "kind":"ADD_TASK_DISCRIMINANT",
+            "command":format!(
+                "nav expand --session {session_id} --from {context_id} --term <new-task-derived-exact-identifier> --decision-identifier <same-new-task-derived-exact-identifier>"
+            ),
+            "precondition":"NEW_TASK_SUPPLIED_EXACT_IDENTIFIER_NOT_ALREADY_IN_CONTEXT",
+            "repeatSameRequest":false,
+            "onUnsatisfied":"STOP_UNRESOLVED",
+            "requiredCoverage":next_missing_term.iter().collect::<Vec<_>>(),
+            "instruction":"Use this refinement once only when the task supplies a new exact identifier that is absent from the current query. Never copy a returned card name into this field. If no such identifier is available, keep the task unresolved.",
+        })
+    };
     let authority = json!({
         "schema":NAV_DECISION_AUTHORITY_SCHEMA,
         "status":"ABSTAIN",
@@ -2022,14 +2042,7 @@ fn navigation_decision_authority(
         "observedExactIdentifierCandidateCount":exact_identifier_candidate_count,
         "queryCoverageTruncated":query_truncated,
         "candidateListTruncated":candidate_list_truncated,
-        "refinement":{
-            "kind":"ADD_TASK_DISCRIMINANT",
-            "command":format!(
-                "nav expand --session {session_id} --from {context_id} --term <task-derived-exact-identifier> --decision-identifier <same-task-derived-exact-identifier>"
-            ),
-            "requiredCoverage":next_missing_term.iter().collect::<Vec<_>>(),
-            "instruction":"Add one task-derived exact identifier that disambiguates the missing coverage; if none is available, keep the task unresolved.",
-        },
+        "refinement":refinement,
     });
     Ok(authority)
 }
@@ -4981,6 +4994,18 @@ mod tests {
             result["decisionAuthority"]["refinement"]["requiredCoverage"],
             json!(["subscription"])
         );
+        assert_eq!(
+            result["decisionAuthority"]["refinement"]["precondition"],
+            "NEW_TASK_SUPPLIED_EXACT_IDENTIFIER_NOT_ALREADY_IN_CONTEXT"
+        );
+        assert_eq!(
+            result["decisionAuthority"]["refinement"]["repeatSameRequest"],
+            false
+        );
+        assert_eq!(
+            result["decisionAuthority"]["refinement"]["onUnsatisfied"],
+            "STOP_UNRESOLVED"
+        );
         assert!(
             !canonical::compact(&result["decisionAuthority"])
                 .unwrap()
@@ -5169,6 +5194,19 @@ mod tests {
         assert_eq!(
             result["decisionAuthority"]["classification"],
             "PARTIAL_EXACT_IDENTIFIER_COVERAGE"
+        );
+        assert_eq!(
+            result["decisionAuthority"]["refinement"]["kind"],
+            "STOP_UNRESOLVED"
+        );
+        assert_eq!(
+            result["decisionAuthority"]["refinement"]["repeatSameRequest"],
+            false
+        );
+        assert!(
+            result["decisionAuthority"]["refinement"]
+                .get("command")
+                .is_none()
         );
         assert_eq!(
             result["decisionAuthority"]["returnedCandidateCoverage"][0]["missingTermCount"],
