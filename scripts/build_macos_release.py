@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
@@ -380,6 +380,33 @@ def write_archive(
     return asset, checksum
 
 
+def extract_release_archive(asset: Path, destination: Path) -> Path:
+    """Extract one self-produced release asset after validating its member topology."""
+    destination.mkdir(mode=0o700, parents=True)
+    with tarfile.open(asset, mode="r:gz") as archive:
+        members = archive.getmembers()
+        if not members:
+            raise ReleaseError("release archive is empty")
+        for member in members:
+            path = PurePosixPath(member.name)
+            if (
+                path.is_absolute()
+                or not path.parts
+                or path.parts[0] != "codeclew"
+                or ".." in path.parts
+                or not (member.isdir() or member.isfile())
+            ):
+                raise ReleaseError("release archive contains an unsafe member")
+        # Topology and member types were checked above, so preserving the sealed
+        # package modes is safe and lets the smoke exercise the bytes users get.
+        archive.extractall(destination, filter="fully_trusted")
+    package = destination / "codeclew"
+    if not package.is_dir():
+        raise ReleaseError("release archive package root is missing")
+    validate_tree(package)
+    return package
+
+
 def verify_cli_version(
     launcher: Path, release_version: str, state_root: Path, working_directory: Path
 ) -> None:
@@ -622,16 +649,31 @@ def main() -> int:
             }
             if observed_workers != expected_workers:
                 raise ReleaseError("packaged profile worker set is invalid")
-            if profile == "core":
-                verify_annotated_tag_navigation(
-                    root,
-                    launcher,
-                    environment,
-                    temporary / "navigation-smoke",
-                )
             asset, checksum = write_archive(
                 package, output, platform.machine(), profile
             )
+            if profile == "core":
+                extracted = extract_release_archive(
+                    asset,
+                    temporary / "extracted" / profile,
+                )
+                extracted_launcher = extracted / "bin" / "clew"
+                extracted_environment = dict(os.environ)
+                extracted_environment["CODECLEW_HOME"] = str(
+                    temporary / "verification-extracted" / profile
+                )
+                verify_cli_version(
+                    extracted_launcher,
+                    arguments.version,
+                    Path(extracted_environment["CODECLEW_HOME"]),
+                    extracted,
+                )
+                verify_annotated_tag_navigation(
+                    root,
+                    extracted_launcher,
+                    extracted_environment,
+                    temporary / "navigation-smoke-extracted",
+                )
             assets.append({
                 "asset": str(asset),
                 "checksum": str(checksum),

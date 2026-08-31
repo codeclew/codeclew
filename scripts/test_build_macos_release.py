@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import stat
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -16,6 +18,37 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def test_release_archive_is_reopened_and_extracted_from_produced_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            temporary = Path(value)
+            package = temporary / "package"
+            (package / "bin").mkdir(parents=True)
+            launcher = package / "bin" / "clew"
+            launcher.write_text("#!/bin/sh\n", encoding="ascii")
+            launcher.chmod(0o500)
+            output = temporary / "output"
+            output.mkdir()
+            asset, _ = release.write_archive(package, output, "arm64", "core")
+
+            extracted = release.extract_release_archive(
+                asset,
+                temporary / "extracted",
+            )
+            self.assertEqual((extracted / "bin" / "clew").read_bytes(), launcher.read_bytes())
+            self.assertEqual(stat.S_IMODE((extracted / "bin" / "clew").stat().st_mode), 0o500)
+
+            unsafe = output / "unsafe.tar.gz"
+            with tarfile.open(unsafe, mode="w:gz") as archive:
+                member = tarfile.TarInfo("codeclew/link")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "../../outside"
+                archive.addfile(member, io.BytesIO())
+            with self.assertRaisesRegex(release.ReleaseError, "unsafe member"):
+                release.extract_release_archive(
+                    unsafe,
+                    temporary / "unsafe-extracted",
+                )
+
     def test_seed_lifecycle_root_has_bootstrap_safe_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)

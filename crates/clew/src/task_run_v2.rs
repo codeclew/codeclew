@@ -8,7 +8,9 @@ use crate::generation_service::{
 use crate::incremental_v2::{Coverage, Support};
 use crate::process_isolation::isolate_controller_authority;
 use crate::python_project_model::PYTHON_GRAMMAR_AUTHORITY;
-use crate::repository_snapshot::{LEGACY_EXCLUDES, capture};
+use crate::repository_snapshot::{
+    LEGACY_EXCLUDES, LocalTargetRefKind, capture, isolated_git_command, resolve_local_target_ref,
+};
 use crate::session::{ContextObject, PlanObject, SessionAuthority, SessionLanguage};
 use crate::state::{StateAuthority, create_private_directory};
 use serde::{Deserialize, Serialize};
@@ -17,14 +19,14 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 pub const PLAN_V2_SCHEMA: &str = "codeclew-task-plan/2.0";
 pub const PREPARED_V2_SCHEMA: &str = "codeclew-prepared-candidate/5.0";
@@ -323,8 +325,9 @@ pub fn prepare(
         ));
     }
     let repo = mutation_git_repository(session)?;
+    let target = require_preparation_mutation_branch(session, &repo)?;
     if git(&repo, &["rev-parse", "HEAD"])? != session.base_revision
-        || git(&repo, &["rev-parse", &session.target_ref])? != session.target_oid
+        || target.commit_oid != session.target_oid
     {
         return Err(ClewError::new(
             ErrorCode::StaleRequiresReslice,
@@ -1203,6 +1206,7 @@ pub fn publish(
     let state = StateAuthority::process_default()?;
     let repository = state.repository(&repo)?;
     let _publish_lock = RepositoryPublishLock::acquire(&state, &repository.key)?;
+    let target = require_publication_mutation_branch(session, &repo)?;
     let worktree = candidate_root.join("worktree");
     let source = if session.language == SessionLanguage::Python {
         None
@@ -1238,8 +1242,14 @@ pub fn publish(
         }
         false
     };
-    let current = git(&repo, &["rev-parse", &session.target_ref])?;
+    let current = target.commit_oid;
     if current == prepared.candidate_commit {
+        let recovered = require_publication_mutation_branch(session, &repo)?;
+        if recovered.commit_oid != prepared.candidate_commit {
+            return Err(ref_cas_failed(
+                "target ref moved during publication recovery",
+            ));
+        }
         synchronize_checked_out_target(&repo, prepared)?;
         publish_candidate_generation(session, &semantic).map_err(publication_recovery_error)?;
         verify_published_worktrees(session, prepared, &repo, &inventory)?;
@@ -1258,41 +1268,15 @@ pub fn publish(
             "target ref moved after session open",
         ));
     }
-    let checked_out = git_optional(&repo, &["symbolic-ref", "-q", "HEAD"])?.as_deref()
-        == Some(session.target_ref.as_str());
     require_clean(&repo)?;
-    if checked_out {
-        git_status(
-            Command::new("git")
-                .args([
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "-c",
-                    "commit.gpgSign=false",
-                    "merge",
-                    "--ff-only",
-                    "--no-edit",
-                    &prepared.candidate_commit,
-                ])
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_MERGE_AUTOEDIT", "no")
-                .current_dir(&repo),
-            "checked-out target fast-forward failed",
-        )?;
-    } else {
-        git_status(
-            Command::new("git")
-                .args([
-                    "update-ref",
-                    &session.target_ref,
-                    &prepared.candidate_commit,
-                    &prepared.target_oid,
-                ])
-                .current_dir(&repo),
-            "target compare-and-swap failed",
-        )?;
-    }
-    if git(&repo, &["rev-parse", &session.target_ref])? != prepared.candidate_commit {
+    compare_and_swap_direct_branch(
+        &repo,
+        &session.target_ref,
+        &prepared.target_oid,
+        &prepared.candidate_commit,
+    )?;
+    let published = require_publication_mutation_branch(session, &repo)?;
+    if published.commit_oid != prepared.candidate_commit {
         return Err(ClewError::new(
             ErrorCode::WorktreeRecoveryRequired,
             "target publication result is inconsistent",
@@ -1336,6 +1320,449 @@ fn require_mutation_branch(session: &SessionAuthority) -> Result<(), ClewError> 
         ));
     }
     Ok(())
+}
+
+fn require_live_mutation_branch(
+    session: &SessionAuthority,
+    repo: &Path,
+) -> Result<crate::repository_snapshot::LocalTargetRef, ClewError> {
+    require_mutation_branch(session)?;
+    let target = resolve_local_target_ref(repo, &session.target_ref)?;
+    if target.kind != LocalTargetRefKind::Branch || target.reference != session.target_ref {
+        return Err(unsupported_profile(
+            "mutation requires a direct target ref that identifies the bound local branch",
+        ));
+    }
+    Ok(target)
+}
+
+fn require_preparation_mutation_branch(
+    session: &SessionAuthority,
+    repo: &Path,
+) -> Result<crate::repository_snapshot::LocalTargetRef, ClewError> {
+    require_live_mutation_branch(session, repo).map_err(|_| {
+        ClewError::new(
+            ErrorCode::StaleRequiresReslice,
+            "session target branch authority changed before preparation",
+        )
+    })
+}
+
+fn require_publication_mutation_branch(
+    session: &SessionAuthority,
+    repo: &Path,
+) -> Result<crate::repository_snapshot::LocalTargetRef, ClewError> {
+    require_live_mutation_branch(session, repo)
+        .map_err(|_| ref_cas_failed("target branch authority changed before publication"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HeadAuthority {
+    Symbolic(String),
+    Detached(String),
+}
+
+impl HeadAuthority {
+    fn checked_out(&self, target_ref: &str) -> bool {
+        matches!(self, Self::Symbolic(reference) if reference == target_ref)
+    }
+}
+
+fn capture_head_authority(repo: &Path) -> Result<HeadAuthority, ClewError> {
+    let output = isolated_git_command(repo)
+        .args(["symbolic-ref", "-q", "--no-recurse", "HEAD"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(io_error)?;
+    match output.status.code() {
+        Some(0) => {
+            let reference = String::from_utf8(output.stdout)
+                .map_err(|_| invalid("Git HEAD symbolic authority is not UTF-8"))?
+                .trim()
+                .to_owned();
+            if !reference.starts_with("refs/") || reference.contains(['\n', '\r']) {
+                return Err(invalid("Git HEAD symbolic authority is invalid"));
+            }
+            Ok(HeadAuthority::Symbolic(reference))
+        }
+        Some(1) => {
+            let oid = git(repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+            if !git_oid(&oid) {
+                return Err(invalid("Git detached HEAD authority is invalid"));
+            }
+            Ok(HeadAuthority::Detached(oid))
+        }
+        _ => Err(invalid("Git HEAD authority is unavailable")),
+    }
+}
+
+fn head_lock_path(repo: &Path) -> Result<PathBuf, ClewError> {
+    let value = git(repo, &["rev-parse", "--git-path", "HEAD"])?;
+    let head = PathBuf::from(value);
+    let head = if head.is_absolute() {
+        head
+    } else {
+        repo.join(head)
+    };
+    if head.file_name() != Some(OsStr::new("HEAD")) {
+        return Err(invalid("Git HEAD path authority is invalid"));
+    }
+    let parent = head
+        .parent()
+        .ok_or_else(|| invalid("Git HEAD path has no parent"))?;
+    let metadata = fs::symlink_metadata(parent).map_err(io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(invalid("Git HEAD path parent is unsafe"));
+    }
+    Ok(head.with_file_name("HEAD.lock"))
+}
+
+struct HeadReferenceLock {
+    file: File,
+    path: PathBuf,
+}
+
+impl HeadReferenceLock {
+    fn acquire(repo: &Path, expected: &HeadAuthority) -> Result<HeadReferenceLock, ClewError> {
+        let path = head_lock_path(repo)?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).read(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let lock = Self {
+            file: options
+                .open(&path)
+                .map_err(|_| ref_cas_failed("Git HEAD authority is busy"))?,
+            path,
+        };
+        if &capture_head_authority(repo)? != expected {
+            return Err(ref_cas_failed(
+                "Git HEAD authority changed before publication",
+            ));
+        }
+        Ok(lock)
+    }
+}
+
+impl Drop for HeadReferenceLock {
+    fn drop(&mut self) {
+        let remove = match (self.file.metadata(), fs::symlink_metadata(&self.path)) {
+            (Ok(open), Ok(path)) => {
+                #[cfg(unix)]
+                {
+                    open.dev() == path.dev()
+                        && open.ino() == path.ino()
+                        && path.file_type().is_file()
+                }
+                #[cfg(not(unix))]
+                {
+                    path.file_type().is_file()
+                }
+            }
+            _ => false,
+        };
+        if remove {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn require_no_added_path_collision(
+    repo: &Path,
+    expected_oid: &str,
+    candidate_oid: &str,
+) -> Result<(), ClewError> {
+    let added = nul_paths(
+        repo,
+        &[
+            "diff",
+            "--name-only",
+            "-z",
+            "--diff-filter=A",
+            "--no-renames",
+            expected_oid,
+            candidate_oid,
+            "--",
+        ],
+    )?;
+    for relative in added {
+        let path = Path::new(&relative);
+        let components: Vec<_> = path.components().collect();
+        let mut cursor = repo.to_path_buf();
+        for (index, component) in components.iter().enumerate() {
+            let Component::Normal(component) = component else {
+                return Err(invalid("candidate added path is unsafe"));
+            };
+            cursor.push(component);
+            match fs::symlink_metadata(&cursor) {
+                Ok(metadata) if index + 1 == components.len() => {
+                    return Err(ClewError::new(
+                        ErrorCode::PreconditionFailed,
+                        "candidate added path collides with an existing worktree entry",
+                    ));
+                }
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err(ClewError::new(
+                        ErrorCode::PreconditionFailed,
+                        "candidate added path has an unsafe worktree parent",
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn compare_and_swap_direct_branch(
+    repo: &Path,
+    target_ref: &str,
+    expected_oid: &str,
+    candidate_oid: &str,
+) -> Result<(), ClewError> {
+    let head = capture_head_authority(repo)?;
+    compare_and_swap_direct_branch_with_head(repo, target_ref, expected_oid, candidate_oid, &head)
+}
+
+fn compare_and_swap_direct_branch_with_head(
+    repo: &Path,
+    target_ref: &str,
+    expected_oid: &str,
+    candidate_oid: &str,
+    head: &HeadAuthority,
+) -> Result<(), ClewError> {
+    let _head_lock = if head.checked_out(target_ref) {
+        None
+    } else {
+        Some(HeadReferenceLock::acquire(repo, head)?)
+    };
+    let mut command = isolated_git_command(repo);
+    let mut child = command
+        .args(["update-ref", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(io_error)?;
+    let mut input = child.stdin.take().ok_or_else(|| {
+        io_error(std::io::Error::other(
+            "Git ref transaction stdin is missing",
+        ))
+    })?;
+    let output = child.stdout.take().ok_or_else(|| {
+        io_error(std::io::Error::other(
+            "Git ref transaction stdout is missing",
+        ))
+    })?;
+    let mut output = BufReader::new(output);
+    let request = format!(
+        "start\noption no-deref\nupdate {target_ref} {candidate_oid} {expected_oid}\nprepare\n"
+    );
+    if input
+        .write_all(request.as_bytes())
+        .and_then(|_| input.flush())
+        .is_err()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ref_cas_failed(
+            "target ref transaction could not be prepared",
+        ));
+    }
+    let mut prepared = false;
+    for _ in 0..4 {
+        let mut line = String::new();
+        match output.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.trim() == "prepare: ok" => {
+                prepared = true;
+                break;
+            }
+            Ok(_) => {}
+        }
+    }
+    if !prepared {
+        drop(input);
+        let _ = child.wait();
+        return Err(ref_cas_failed(
+            "target ref compare-and-swap preparation failed",
+        ));
+    }
+
+    let current_head = match capture_head_authority(repo) {
+        Ok(head) => head,
+        Err(error) => {
+            let _ = input.write_all(b"abort\n");
+            let _ = input.flush();
+            drop(input);
+            let _ = output.read_to_end(&mut Vec::new());
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    if &current_head != head {
+        let _ = input.write_all(b"abort\n");
+        let _ = input.flush();
+        drop(input);
+        let _ = output.read_to_end(&mut Vec::new());
+        let _ = child.wait();
+        return Err(ref_cas_failed(
+            "Git HEAD authority changed before publication",
+        ));
+    }
+    if head.checked_out(target_ref) {
+        let lock = head_lock_path(repo).and_then(|path| {
+            let metadata = fs::symlink_metadata(path).map_err(io_error)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(invalid("Git HEAD transaction lock is unsafe"));
+            }
+            Ok(())
+        });
+        if lock.is_err() {
+            let _ = input.write_all(b"abort\n");
+            let _ = input.flush();
+            drop(input);
+            let _ = output.read_to_end(&mut Vec::new());
+            let _ = child.wait();
+            return Err(ref_cas_failed(
+                "checked-out Git HEAD was not locked with its branch",
+            ));
+        }
+    }
+
+    let symbolic = match isolated_git_command(repo)
+        .args(["symbolic-ref", "-q", "--no-recurse", target_ref])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = input.write_all(b"abort\n");
+            let _ = input.flush();
+            drop(input);
+            let _ = output.read_to_end(&mut Vec::new());
+            let _ = child.wait();
+            return Err(io_error(error));
+        }
+    };
+    if symbolic.code() != Some(1) {
+        let _ = input.write_all(b"abort\n");
+        let _ = input.flush();
+        drop(input);
+        let _ = output.read_to_end(&mut Vec::new());
+        let _ = child.wait();
+        return Err(ref_cas_failed(if symbolic.success() {
+            "target branch became symbolic before publication"
+        } else {
+            "target branch symbolic authority became unavailable"
+        }));
+    }
+
+    let mut synchronized = false;
+    if head.checked_out(target_ref) {
+        if let Err(error) = require_no_added_path_collision(repo, expected_oid, candidate_oid) {
+            let _ = input.write_all(b"abort\n");
+            let _ = input.flush();
+            drop(input);
+            let _ = output.read_to_end(&mut Vec::new());
+            let _ = child.wait();
+            return Err(error);
+        }
+        if git_status(
+            isolated_git_command(repo).args(["read-tree", "-m", "-u", expected_oid, candidate_oid]),
+            "checked-out target synchronization failed",
+        )
+        .is_err()
+        {
+            let _ = input.write_all(b"abort\n");
+            let _ = input.flush();
+            drop(input);
+            let _ = output.read_to_end(&mut Vec::new());
+            let _ = child.wait();
+            return Err(ClewError::new(
+                ErrorCode::WorktreeRecoveryRequired,
+                "checked-out target synchronization failed before publication",
+            ));
+        }
+        synchronized = true;
+    }
+
+    let committed = input
+        .write_all(b"commit\n")
+        .and_then(|_| input.flush())
+        .is_ok();
+    drop(input);
+    let mut response = String::new();
+    let read = output.read_to_string(&mut response).is_ok();
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(_) => {
+            return Err(ClewError::new(
+                ErrorCode::WorktreeRecoveryRequired,
+                "target ref transaction outcome is unavailable; inspect and recover the bound run",
+            ));
+        }
+    };
+    if committed && read && status.success() && response.lines().any(|line| line == "commit: ok") {
+        return Ok(());
+    }
+    reconcile_failed_branch_transaction(repo, target_ref, expected_oid, candidate_oid, synchronized)
+}
+
+fn reconcile_failed_branch_transaction(
+    repo: &Path,
+    target_ref: &str,
+    expected_oid: &str,
+    candidate_oid: &str,
+    synchronized: bool,
+) -> Result<(), ClewError> {
+    let observed = resolve_local_target_ref(repo, target_ref).ok();
+    if observed.as_ref().is_some_and(|target| {
+        target.kind == LocalTargetRefKind::Branch
+            && target.reference == target_ref
+            && target.commit_oid == expected_oid
+    }) {
+        if synchronized
+            && git_status(
+                isolated_git_command(repo).args([
+                    "read-tree",
+                    "-m",
+                    "-u",
+                    candidate_oid,
+                    expected_oid,
+                ]),
+                "checked-out target rollback failed",
+            )
+            .is_err()
+        {
+            return Err(ClewError::new(
+                ErrorCode::WorktreeRecoveryRequired,
+                "target ref transaction failed and checked-out worktree rollback is required",
+            ));
+        }
+        return Err(ref_cas_failed("target ref compare-and-swap failed"));
+    }
+    Err(ClewError::new(
+        ErrorCode::WorktreeRecoveryRequired,
+        if observed
+            .as_ref()
+            .is_some_and(|target| target.commit_oid == candidate_oid)
+        {
+            "target ref publication completed without a confirmed transaction response"
+        } else {
+            "target ref transaction outcome differs from its bound authority"
+        },
+    ))
+}
+
+fn ref_cas_failed(message: &str) -> ClewError {
+    ClewError::new(ErrorCode::RefCompareAndSwapFailed, message)
 }
 
 fn qualified_mutation_profile(
@@ -2507,6 +2934,289 @@ mod tests {
             assert_eq!(guarded.code, ErrorCode::UnsupportedProjectConfiguration);
             assert!(guarded.message.contains("local branch"));
         }
+    }
+
+    #[test]
+    fn direct_branch_cas_rejects_symbolic_tag_aliases_without_changing_refs() {
+        let repo = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.name", "Codeclew Test"]);
+        run(&["config", "user.email", "codeclew-test@localhost"]);
+        fs::write(repo.path().join("source.txt"), "base\n").unwrap();
+        run(&["add", "source.txt"]);
+        run(&["commit", "-qm", "base"]);
+        let base = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+        run(&["checkout", "-qb", "candidate"]);
+        fs::write(repo.path().join("source.txt"), "candidate\n").unwrap();
+        run(&["commit", "-qam", "candidate"]);
+        let candidate = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+        run(&["checkout", "-q", "main"]);
+        run(&["tag", "release-light", &base]);
+        run(&["tag", "-a", "release-annotated", "-m", "release", &base]);
+
+        run(&["update-ref", "refs/heads/publish", &base]);
+        compare_and_swap_direct_branch(repo.path(), "refs/heads/publish", &base, &candidate)
+            .unwrap();
+        assert_eq!(
+            git(repo.path(), &["rev-parse", "refs/heads/publish"]).unwrap(),
+            candidate
+        );
+        assert_eq!(
+            git(repo.path(), &["rev-parse", "refs/tags/release-light"]).unwrap(),
+            base
+        );
+
+        for tag in ["release-light", "release-annotated"] {
+            run(&["update-ref", "--no-deref", "-d", "refs/heads/publish"]);
+            run(&[
+                "symbolic-ref",
+                "refs/heads/publish",
+                &format!("refs/tags/{tag}"),
+            ]);
+            let before = git(
+                repo.path(),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(symref)",
+                ],
+            )
+            .unwrap();
+            let error = compare_and_swap_direct_branch(
+                repo.path(),
+                "refs/heads/publish",
+                &base,
+                &candidate,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, ErrorCode::RefCompareAndSwapFailed);
+            assert_eq!(
+                git(
+                    repo.path(),
+                    &[
+                        "for-each-ref",
+                        "--format=%(refname) %(objectname) %(symref)",
+                    ],
+                )
+                .unwrap(),
+                before,
+                "symbolic alias to {tag} changed ref inventory"
+            );
+        }
+
+        run(&["update-ref", "--no-deref", "-d", "refs/heads/publish"]);
+        let session = SessionAuthority {
+            schema: crate::session::SESSION_SCHEMA.into(),
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            session_id: format!("session:{}", uuid::Uuid::new_v4()),
+            repository_key: "b".repeat(64),
+            base_revision: base.clone(),
+            target_ref: "refs/heads/main".into(),
+            target_oid: base.clone(),
+            runtime_key: format!("sha256:{}", "c".repeat(64)),
+            runtime_mode: crate::runtime::RuntimeMode::Development,
+            language: SessionLanguage::Python,
+            compilations: vec!["python:.#src".into()],
+            generation_jobs: None,
+            model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            created_unix_ms: 1,
+        };
+        require_live_mutation_branch(&session, repo.path()).unwrap();
+        run(&["symbolic-ref", "refs/heads/main", "refs/tags/release-light"]);
+        let before = git(
+            repo.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+            ],
+        )
+        .unwrap();
+        let error = require_live_mutation_branch(&session, repo.path()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert_eq!(
+            require_preparation_mutation_branch(&session, repo.path())
+                .unwrap_err()
+                .code,
+            ErrorCode::StaleRequiresReslice
+        );
+        assert_eq!(
+            require_publication_mutation_branch(&session, repo.path())
+                .unwrap_err()
+                .code,
+            ErrorCode::RefCompareAndSwapFailed
+        );
+        assert_eq!(
+            git(
+                repo.path(),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(symref)",
+                ],
+            )
+            .unwrap(),
+            before,
+            "prepare-time live revalidation changed ref inventory"
+        );
+        run(&["update-ref", "--no-deref", "refs/heads/main", &base]);
+        fs::write(repo.path().join("source.txt"), "user edit\n").unwrap();
+        let before = git(
+            repo.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+            ],
+        )
+        .unwrap();
+        let error =
+            compare_and_swap_direct_branch(repo.path(), "refs/heads/main", &base, &candidate)
+                .unwrap_err();
+        assert_eq!(error.code, ErrorCode::WorktreeRecoveryRequired);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("source.txt")).unwrap(),
+            "user edit\n",
+            "checked-out synchronization overwrote a concurrent edit"
+        );
+        assert_eq!(
+            git(
+                repo.path(),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(symref)",
+                ],
+            )
+            .unwrap(),
+            before,
+            "failed checked-out synchronization changed ref inventory"
+        );
+        fs::write(repo.path().join("source.txt"), "base\n").unwrap();
+
+        run(&["checkout", "-qb", "ignored-candidate", &base]);
+        fs::write(repo.path().join("user.tmp"), "candidate-owned\n").unwrap();
+        run(&["add", "-f", "user.tmp"]);
+        run(&["commit", "-qm", "add ignored path"]);
+        let ignored_candidate = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+        run(&["checkout", "-q", "main"]);
+        fs::write(repo.path().join(".git/info/exclude"), "user.tmp\n").unwrap();
+        fs::write(repo.path().join("user.tmp"), "user-owned\n").unwrap();
+        assert_eq!(git(repo.path(), &["status", "--porcelain=v1"]).unwrap(), "");
+        let before = git(
+            repo.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+            ],
+        )
+        .unwrap();
+        let error = compare_and_swap_direct_branch(
+            repo.path(),
+            "refs/heads/main",
+            &base,
+            &ignored_candidate,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("user.tmp")).unwrap(),
+            "user-owned\n",
+            "checked-out synchronization overwrote an ignored collision"
+        );
+        assert_eq!(
+            git(
+                repo.path(),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(symref)",
+                ],
+            )
+            .unwrap(),
+            before,
+            "ignored collision changed ref inventory"
+        );
+        fs::remove_file(repo.path().join("user.tmp")).unwrap();
+
+        let checked_out_main = capture_head_authority(repo.path()).unwrap();
+        run(&["checkout", "-q", "candidate"]);
+        let before = git(
+            repo.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+            ],
+        )
+        .unwrap();
+        let error = compare_and_swap_direct_branch_with_head(
+            repo.path(),
+            "refs/heads/main",
+            &base,
+            &candidate,
+            &checked_out_main,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RefCompareAndSwapFailed);
+        assert_eq!(
+            git(
+                repo.path(),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(symref)",
+                ],
+            )
+            .unwrap(),
+            before,
+            "HEAD transition away from the target changed ref inventory"
+        );
+
+        let checked_out_candidate = capture_head_authority(repo.path()).unwrap();
+        run(&["checkout", "-q", "main"]);
+        let before = git(
+            repo.path(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+            ],
+        )
+        .unwrap();
+        let error = compare_and_swap_direct_branch_with_head(
+            repo.path(),
+            "refs/heads/main",
+            &base,
+            &candidate,
+            &checked_out_candidate,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::RefCompareAndSwapFailed);
+        assert_eq!(
+            git(
+                repo.path(),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname) %(symref)",
+                ],
+            )
+            .unwrap(),
+            before,
+            "HEAD transition onto the target changed ref inventory"
+        );
+
+        compare_and_swap_direct_branch(repo.path(), "refs/heads/main", &base, &candidate).unwrap();
+        assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]).unwrap(), candidate);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("source.txt")).unwrap(),
+            "candidate\n"
+        );
+        assert_eq!(git(repo.path(), &["status", "--porcelain=v1"]).unwrap(), "");
+        assert_eq!(
+            git(repo.path(), &["rev-parse", "refs/tags/release-light"]).unwrap(),
+            base
+        );
     }
 
     #[test]

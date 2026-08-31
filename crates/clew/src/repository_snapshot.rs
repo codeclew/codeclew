@@ -871,6 +871,12 @@ pub(crate) fn resolve_local_target_ref(
         }
     };
 
+    if local_ref_is_symbolic(repo, &reference)? {
+        return Err(invalid(
+            "target ref must be a direct local branch or tag, not a symbolic ref",
+        ));
+    }
+
     let peeled = format!("{reference}^{{commit}}");
     let mut command = isolated_git_command(repo);
     let output = command
@@ -893,6 +899,23 @@ pub(crate) fn resolve_local_target_ref(
         commit_oid,
         kind,
     })
+}
+
+fn local_ref_is_symbolic(repo: &Path, reference: &str) -> Result<bool, ClewError> {
+    let status = isolated_git_command(repo)
+        .args(["symbolic-ref", "-q", reference])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(io_error)?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(invalid(
+            "local target ref symbolic authority is unavailable",
+        )),
+    }
 }
 
 fn require_valid_ref_name(repo: &Path, reference: &str) -> Result<(), ClewError> {
@@ -1425,6 +1448,16 @@ mod tests {
             resolve_local_target_ref(repo.path(), "refs/tags/v-test").unwrap(),
             short_tag
         );
+
+        Command::new("git")
+            .args(["symbolic-ref", "refs/heads/publish", "refs/tags/v-test"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let symbolic_error =
+            resolve_local_target_ref(repo.path(), "refs/heads/publish").unwrap_err();
+        assert_eq!(symbolic_error.code, ErrorCode::InvalidInput);
+        assert!(symbolic_error.message.contains("symbolic ref"));
 
         Command::new("git")
             .args(["branch", "v-test"])
