@@ -178,7 +178,7 @@ impl JvmMethodDescriptorParser<'_> {
         self.bytes.get(self.offset).copied()
     }
 
-    fn field_type(&mut self) -> Result<(), ClewError> {
+    fn field_type(&mut self) -> Result<u16, ClewError> {
         let mut dimensions = 0_u16;
         while self.peek() == Some(b'[') {
             dimensions += 1;
@@ -190,11 +190,15 @@ impl JvmMethodDescriptorParser<'_> {
             self.offset += 1;
         }
         match self.peek() {
-            Some(b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z') => {
+            Some(token @ (b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z')) => {
                 self.offset += 1;
-                Ok(())
+                Ok(if dimensions == 0 && matches!(token, b'D' | b'J') {
+                    2
+                } else {
+                    1
+                })
             }
-            Some(b'L') => self.object_type(),
+            Some(b'L') => self.object_type().map(|()| 1),
             Some(b'V') if dimensions > 0 => Err(payload_invalid(
                 "JVM method descriptor array component cannot be void",
             )),
@@ -257,6 +261,7 @@ fn parse_jvm_method_descriptor(descriptor: &str) -> Result<ParsedJvmMethodDescri
     }
     parser.offset += 1;
     let mut parameter_count = 0_usize;
+    let mut parameter_slots = 0_u16;
     loop {
         match parser.peek() {
             Some(b')') => {
@@ -264,7 +269,15 @@ fn parse_jvm_method_descriptor(descriptor: &str) -> Result<ParsedJvmMethodDescri
                 break;
             }
             Some(_) => {
-                parser.field_type()?;
+                let slots = parser.field_type()?;
+                parameter_slots = parameter_slots.checked_add(slots).ok_or_else(|| {
+                    payload_invalid("JVM method descriptor parameter length overflow")
+                })?;
+                if parameter_slots > 255 {
+                    return Err(payload_invalid(
+                        "JVM method descriptor parameter length exceeds 255 units",
+                    ));
+                }
                 parameter_count = parameter_count.checked_add(1).ok_or_else(|| {
                     payload_invalid("JVM method descriptor parameter count overflow")
                 })?;
@@ -650,6 +663,15 @@ pub(crate) fn has_quarantinable_exact_jvm_descriptor(value: &Value) -> bool {
             };
             if validate_partial_jvm_signature(signature).is_err() {
                 return false;
+            }
+            if let Some(descriptor) = value.get("jvmDescriptor") {
+                let Some(descriptor) = descriptor.as_str() else {
+                    return false;
+                };
+                if descriptor != signature {
+                    return false;
+                }
+                normalized["jvmDescriptor"] = Value::String("()V".to_owned());
             }
             normalized["symbolIdentity"] = Value::String(format!("{prefix}()V"));
         }
@@ -1121,6 +1143,7 @@ pub(crate) fn validate_declaration_descriptor_boundary(value: &Value) -> Result<
                     | "DESCRIPTOR_SOURCE_NOT_IN_COMPILATION"
                     | "INVALID_DESCRIPTOR_SOURCE_RANGE"
                     | "UNRESOLVED_DESCRIPTOR_TYPE"
+                    | "JVM_NAME_OVERRIDE_UNSUPPORTED"
                     | "SYNTAX_ONLY"
             )
         )
@@ -2965,6 +2988,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                         | "DESCRIPTOR_SOURCE_NOT_IN_COMPILATION"
                         | "INVALID_DESCRIPTOR_SOURCE_RANGE"
                         | "UNRESOLVED_DESCRIPTOR_TYPE"
+                        | "JVM_NAME_OVERRIDE_UNSUPPORTED"
                         | "SYNTAX_ONLY"
                 )
             )
@@ -3464,7 +3488,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_jvm_method_descriptor_parser_accepts_the_complete_field_grammar() {
+    fn strict_jvm_method_descriptor_parser_accepts_the_supported_field_grammar() {
         for descriptor in [
             "()V",
             "(BCDFIJSZ)I",
@@ -3476,6 +3500,9 @@ mod tests {
         }
         let maximum_array = format!("({}I)V", "[".repeat(255));
         validate_jvm_method_descriptor(&maximum_array).unwrap();
+        validate_jvm_method_descriptor(&format!("({})V", "I".repeat(255))).unwrap();
+        validate_jvm_method_descriptor(&format!("({}I)V", "J".repeat(127))).unwrap();
+        validate_jvm_method_descriptor(&format!("({})V", "[J".repeat(255))).unwrap();
     }
 
     #[test]
@@ -3505,6 +3532,9 @@ mod tests {
         }
         let oversized_array = format!("({}I)V", "[".repeat(256));
         assert!(validate_jvm_method_descriptor(&oversized_array).is_err());
+        assert!(validate_jvm_method_descriptor(&format!("({})V", "I".repeat(256))).is_err());
+        assert!(validate_jvm_method_descriptor(&format!("({})V", "J".repeat(128))).is_err());
+        assert!(validate_jvm_method_descriptor(&format!("({})V", "[J".repeat(256))).is_err());
     }
 
     #[test]
@@ -3721,6 +3751,34 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_snapshot_accepts_k2_jvm_name_override_boundary() {
+        let mut facts = verified_facts();
+        facts["declarationDescriptors"]["boundaries"][0]["code"] =
+            json!("JVM_NAME_OVERRIDE_UNSUPPORTED");
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+
+        validate_declaration_descriptor_snapshot(&facts).unwrap();
+    }
+
+    #[test]
+    fn descriptor_snapshot_rejects_unknown_k2_boundary_code() {
+        let mut facts = verified_facts();
+        facts["declarationDescriptors"]["boundaries"][0]["code"] =
+            json!("FUTURE_UNRECOGNIZED_BOUNDARY");
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+
+        assert!(validate_declaration_descriptor_snapshot(&facts).is_err());
+    }
+
+    #[test]
     fn granular_descriptor_validation_rejects_bad_jvm_grammar_and_identity_substitution() {
         for identity in [
             "callable:p/Derived.read#jvm:read(I",
@@ -3752,6 +3810,19 @@ mod tests {
             &incomplete_constructor
         ));
         assert!(!has_quarantinable_exact_jvm_descriptor(&constructor_fact()));
+
+        let mut incomplete_function =
+            verified_facts()["declarationDescriptors"]["descriptors"][0].clone();
+        incomplete_function["symbolIdentity"] =
+            json!("callable:p/Derived.read#jvm:(Lcompiler.rendered.Type;)I");
+        incomplete_function["jvmDescriptor"] = json!("(Lcompiler.rendered.Type;)I");
+        assert!(has_quarantinable_exact_jvm_descriptor(&incomplete_function));
+
+        let mut inconsistent_function = incomplete_function.clone();
+        inconsistent_function["jvmDescriptor"] = json!("(Ljava/lang/String;)I");
+        assert!(!has_quarantinable_exact_jvm_descriptor(
+            &inconsistent_function
+        ));
 
         let mut inconsistent_constructor = incomplete_constructor.clone();
         inconsistent_constructor["ownerIdentity"] = json!("class:p/Decoy");

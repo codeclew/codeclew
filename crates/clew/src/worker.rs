@@ -1175,13 +1175,28 @@ fn normalize_optional_relation_evidence(facts: &mut Value) -> Result<(), ClewErr
         let argument_mapping = relation.get("argumentToParameter");
         let has_argument_mapping_evidence = argument_mapping
             .is_some_and(|value| value.as_array().is_none_or(|rows| !rows.is_empty()));
-        if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS") && argument_mapping.is_some() {
+        let has_exact_target_contract = matches!(kind.as_str(), "CALLS" | "CONSTRUCTS")
+            && [
+                "targetCompilerCallableId",
+                "targetJvmDescriptor",
+                "receiverSelection",
+                "omittedDefaultParameterIndices",
+            ]
+            .into_iter()
+            .all(|field| relation.get(field).is_some());
+        if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS")
+            && argument_mapping.is_some()
+            && !has_exact_target_contract
+        {
             relation
                 .as_object_mut()
                 .expect("relation was already an object")
                 .remove("argumentToParameter");
         }
-        if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS") && has_argument_mapping_evidence {
+        if matches!(kind.as_str(), "CALLS" | "CONSTRUCTS")
+            && has_argument_mapping_evidence
+            && !has_exact_target_contract
+        {
             normalized_rows
                 .entry("ARGUMENT_MAPPING_UNAVAILABLE".to_owned())
                 .or_default()
@@ -5150,6 +5165,37 @@ mod tests {
         })
     }
 
+    fn function_descriptor_normalization_facts(jvm_descriptor: &str) -> Value {
+        let descriptor = json!({
+            "schema":"declaration-descriptor/0.1",
+            "file":"A.kt","start":0,"end":12,
+            "symbolIdentity":format!("callable:p/read#jvm:{jvm_descriptor}"),
+            "declarationKind":"FUNCTION","ownerIdentity":"package:p",
+            "containment":[],"visibility":"public",
+            "effectiveVisibility":"public","exportBoundary":"PUBLIC_API",
+            "modality":"FINAL","compilerCallableId":"p/read","isOverride":false,
+            "jvmDescriptor":jvm_descriptor,
+            "returnType":"kotlin/Unit","returnNullable":false,
+            "parameterTypes":[{"index":0,"type":"p/Outer.Inner","nullable":false}],
+            "typeParameters":[],"module":":","sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "compilerAuthority":"fir-facts-extractor/0.6",
+            "resolution":"PROVEN","provider":"K2_FIR"
+        });
+        let graph = json!({
+            "schema":"declaration-descriptor-graph/0.1",
+            "compilation":":/main",
+            "coverage":"COMPLETE_SUPPORTED_SUBSET",
+            "descriptors":[descriptor],
+            "boundaries":[],
+            "provenance":{},
+        });
+        json!({
+            "declarationDescriptorHash":crate::canonical::hash(&graph).unwrap(),
+            "declarationDescriptors":graph,
+        })
+    }
+
     fn local_cfg_graph(owner: &str) -> Value {
         let mut graph = json!({
             "schema":"local-cfg/0.1",
@@ -5335,11 +5381,43 @@ mod tests {
     }
 
     #[test]
+    fn non_jvms_exact_function_descriptor_is_quarantined_as_typed_unknown() {
+        let malformed = "(Lp/Outer.Inner;)V";
+        let mut facts = function_descriptor_normalization_facts(malformed);
+        let raw_hash =
+            crate::canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap();
+
+        let quarantined = normalize_invalid_jvm_descriptors(&mut facts).unwrap();
+
+        assert_eq!(quarantined, 1);
+        let graph = &facts["declarationDescriptors"];
+        assert_eq!(graph["coverage"], "PARTIAL");
+        assert!(graph["descriptors"].as_array().unwrap().is_empty());
+        let boundary = &graph["boundaries"][0];
+        assert_eq!(boundary["code"], "INVALID_JVM_DESCRIPTOR");
+        assert_eq!(boundary["provider"], "CODECLEW_DESCRIPTOR_NORMALIZER");
+        assert_eq!(boundary["rawRowHash"], raw_hash);
+        crate::semantic_validation::validate_declaration_descriptor_boundary(boundary).unwrap();
+        assert_eq!(
+            facts["declarationDescriptorHash"],
+            crate::canonical::hash(graph).unwrap()
+        );
+    }
+
+    #[test]
     fn valid_exact_descriptor_is_not_normalized_and_forged_hash_is_rejected() {
         let mut valid = descriptor_normalization_facts("(Ljava/lang/String;)V");
         let original = valid.clone();
         assert_eq!(normalize_invalid_jvm_descriptors(&mut valid).unwrap(), 0);
         assert_eq!(valid, original);
+
+        let mut valid_function = function_descriptor_normalization_facts("(Ljava/lang/String;)V");
+        let original_function = valid_function.clone();
+        assert_eq!(
+            normalize_invalid_jvm_descriptors(&mut valid_function).unwrap(),
+            0
+        );
+        assert_eq!(valid_function, original_function);
 
         let mut forged = descriptor_normalization_facts("(Lcompiler.rendered.Type;)V");
         forged["declarationDescriptorHash"] = json!("sha256:forged");
@@ -5393,6 +5471,43 @@ mod tests {
             graph["boundaries"][0]["rawRowsHash"],
             crate::canonical::hash(&json!([raw_hash])).unwrap()
         );
+        assert_eq!(
+            facts["declarationRelationHash"],
+            crate::canonical::hash(graph).unwrap()
+        );
+    }
+
+    #[test]
+    fn exact_call_argument_mapping_survives_optional_evidence_normalization() {
+        let call = json!({
+            "schema":"declaration-relation/0.1",
+            "file":"A.kt","start":10,"end":40,
+            "kind":"CALLS","owner":"p/Caller.run",
+            "target":"callable:p/Api.pick#jvm:(Ljava/lang/String;I)Ljava/lang/String;",
+            "targetCompilerCallableId":"p/Api.pick",
+            "targetJvmDescriptor":"(Ljava/lang/String;I)Ljava/lang/String;",
+            "resolution":"PROVEN","provider":"K2_FIR","cfgNodeIds":[7],
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES",
+            "orderProvenance":"K2_FIR_CFG","orderKey":10,
+            "resultType":"kotlin/String","receiverSelection":"EXPLICIT",
+            "receiverType":"p/Api","omittedDefaultParameterIndices":[1],
+            "argumentToParameter":[{
+                "argumentStart":20,"argumentEnd":25,"argumentName":"value",
+                "argumentType":"kotlin/String","parameter":"value",
+                "parameterIndex":0,"parameterType":"kotlin/String"
+            }]
+        });
+        crate::semantic_validation::validate_declaration_relation_fact(&call).unwrap();
+        let mut facts = relation_normalization_facts(vec![call.clone()]);
+
+        normalize_optional_relation_evidence(&mut facts).unwrap();
+
+        let graph = &facts["declarationRelations"];
+        assert_eq!(graph["coverage"], "COMPLETE_SUPPORTED_SUBSET");
+        assert!(graph["boundaries"].as_array().unwrap().is_empty());
+        assert_eq!(graph["relations"][0], call);
+        crate::semantic_validation::validate_declaration_relation_fact(&graph["relations"][0])
+            .unwrap();
         assert_eq!(
             facts["declarationRelationHash"],
             crate::canonical::hash(graph).unwrap()

@@ -158,10 +158,7 @@ private fun compilerJvmMethodDescriptor21(declaration: FirFunction): String? = r
     ?.substringAfter('(', "")
     ?.takeIf(String::isNotEmpty)
     ?.let { "($it" }
-    ?.takeIf { descriptor ->
-        descriptor.startsWith('(') && descriptor.indexOf(')') > 0 &&
-            descriptor.none(Char::isWhitespace)
-    }
+    ?.let(::canonicalJvmMethodDescriptor)
 
 private data class ResolvedCallableTarget21(
     val compilerCallableId: String,
@@ -857,8 +854,7 @@ private class FirFactsCfgChecker(
             put("end", source.endOffset)
             put("name", graph.name)
             (declaration.symbol as? FirCallableSymbol<*>)?.let { put("symbol", it.callableId.toString()) }
-            runCatching { declaration.computeJvmDescriptor(null, true).substringAfter('(', "") }
-                .getOrNull()?.takeIf(String::isNotEmpty)?.let { put("jvmDescriptor", "($it") }
+            compilerJvmMethodDescriptor21(declaration)?.let { put("jvmDescriptor", it) }
             put(
                 "returnType",
                 (declaration.returnTypeRef as? FirResolvedTypeRef)?.coneType?.toString() ?: "<unresolved>",

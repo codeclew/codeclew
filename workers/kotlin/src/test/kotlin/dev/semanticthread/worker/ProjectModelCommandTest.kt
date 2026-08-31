@@ -438,6 +438,83 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun k2EmitsCanonicalNestedDescriptorsAndTypedJvmNameBoundaries() {
+        val repo = Files.createTempDirectory("worker-k2-descriptor-boundaries").toRealPath()
+        val root = Files.createTempDirectory("worker-k2-descriptor-boundary-state").toRealPath()
+        try {
+            val sourcePath = repo.resolve("src/main/kotlin/p/Descriptors.kt")
+            sourcePath.parent.createDirectories()
+            val source = """
+                package p
+
+                class Outer { class Inner }
+
+                fun nested(value: Outer.Inner): Outer.Inner = value
+
+                class Api {
+                    @JvmName("renamedOnJvm")
+                    fun jvmNamed(value: String): String = value
+                }
+
+                fun caller(api: Api): String = api.jvmNamed("value")
+            """.trimIndent() + "\n"
+            sourcePath.writeText(source)
+            repo.resolve("settings.gradle.kts").writeText("rootProject.name = \"k2-descriptor-boundaries\"\n")
+            repo.resolve("build.gradle.kts").writeText("plugins { kotlin(\"jvm\") version \"2.4.10\" }\n")
+            val classpath = System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)
+                .map(java.nio.file.Path::of)
+                .filter { path ->
+                    path.fileName.toString().let { name ->
+                        name.startsWith("kotlin-stdlib-") || name.startsWith("annotations-")
+                    }
+                }
+                .map { it.toAbsolutePath().normalize().toString() }
+                .distinct()
+            assertTrue(classpath.any { it.contains("kotlin-stdlib-") })
+            val modelLine = "__SEMANTIC_THREAD_MODEL__${gradleFixtureModel(repo, sourcePath, "21", classpath)}"
+            require('\'' !in modelLine) { "fixture model cannot be shell-quoted safely" }
+            repo.resolve("gradlew").writeText("#!/bin/sh\nprintf '%s\\n' '$modelLine'\n")
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            prepareFixtureBuildState(root)
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+
+            val index = Worker(root).use { worker ->
+                Json.parseToJsonElement(worker.handle(3, request)).jsonObject
+            }
+
+            assertEquals(true, index["k2Validated"]?.jsonPrimitive?.boolean)
+            val descriptors = index["declarationDescriptors"]!!.jsonObject["descriptors"]!!.jsonArray
+                .map { it.jsonObject }
+            val nested = descriptors.single {
+                it["compilerCallableId"]?.jsonPrimitive?.content == "p/nested"
+            }
+            assertEquals(
+                "(Lp/Outer\$Inner;)Lp/Outer\$Inner;",
+                nested["jvmDescriptor"]?.jsonPrimitive?.content,
+            )
+            assertTrue(nested["symbolIdentity"]!!.jsonPrimitive.content.endsWith("#jvm:(Lp/Outer\$Inner;)Lp/Outer\$Inner;"))
+
+            val descriptorBoundaries = index["declarationDescriptors"]!!.jsonObject["boundaries"]!!.jsonArray
+                .map { it.jsonObject }
+            assertNotNull(descriptorBoundaries.singleOrNull {
+                it["code"]?.jsonPrimitive?.content == "JVM_NAME_OVERRIDE_UNSUPPORTED"
+            })
+            val relationBoundaries = index["declarationRelations"]!!.jsonObject["boundaries"]!!.jsonArray
+                .map { it.jsonObject }
+            assertNotNull(relationBoundaries.singleOrNull {
+                it["code"]?.jsonPrimitive?.content == "JVM_NAME_OVERRIDE_UNSUPPORTED"
+            })
+        } finally {
+            repo.toFile().deleteRecursively()
+            root.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     @Ignore("exact named-argument metadata is not emitted for the default-parameter call")
     fun k2RelationsBindExactOverloadDefaultsTypealiasErasureAndUtf8Coordinates() {
         val repo = Files.createTempDirectory("worker-k2-exact-call-target").toRealPath()
@@ -645,6 +722,11 @@ class ProjectModelCommandTest {
                 setOf("callable:p/RuntimeOrchestrator.restart#jvm:(Ljava/lang/String;)Ljava/lang/String;"),
                 exactCalls.map { it["target"]?.jsonPrimitive?.content }.toSet(),
             )
+            exactCalls.forEach { call ->
+                val mapping = call["argumentToParameter"]!!.jsonArray.single().jsonObject
+                assertEquals(0, mapping["parameterIndex"]?.jsonPrimitive?.content?.toInt())
+                assertEquals("value", mapping["parameter"]?.jsonPrimitive?.content)
+            }
             val bytes = source.toByteArray()
             val callSources = exactCalls.map { call ->
                 val start = call["start"]!!.jsonPrimitive.content.toInt()
