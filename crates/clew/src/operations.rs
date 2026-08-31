@@ -91,7 +91,7 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
             "primaryAnalysisOpenCommand":"nav query",
             "readinessSchema":"codeclew-doctor/2.0",
             "skillDigest":agent_skill_digest(),
-            "skillPackageVersion":"0.2.9",
+            "skillPackageVersion":"0.2.10",
             "sourceFallbackAllowed":false,
         },
         "packagedWorkers":packaged_workers,
@@ -663,7 +663,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:e7348facd7908ed5b06fac442d255f6fab6fd7e73babb0bf58bbd2ff2eda9d55"
+            "sha256:8fec4c61c92cadebcdf280f28a34e98f99026d938880dfb3c1ec1648f08658ad"
         );
     }
 
