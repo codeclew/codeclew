@@ -117,7 +117,12 @@ function renderNode(id) {
   });
 }
 
-nodeButtons.forEach((button) => button.addEventListener("click", () => renderNode(button.dataset.docNode)));
+nodeButtons.forEach((button) => button.addEventListener("click", () => {
+  renderNode(button.dataset.docNode);
+  if (window.matchMedia("(max-width: 820px)").matches) {
+    document.querySelector(".evidence-inspector")?.scrollIntoView({ block: "start" });
+  }
+}));
 
 levelButtons.forEach((button) => {
   button.addEventListener("click", () => {
