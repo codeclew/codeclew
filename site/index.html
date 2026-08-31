@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Codeclew gives coding agents bounded, compiler-backed context and isolated, explicitly published changes.">
+    <meta name="description" content="Codeclew gives coding agents bounded, compiler-backed context. See preliminary evidence and the strict validation still ahead.">
     <meta name="theme-color" content="#0b0d0c">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
@@ -17,6 +17,7 @@
       </a>
       <nav aria-label="Primary navigation">
         <a href="#how">How it works</a>
+        <a href="#evidence">Evidence</a>
         <a href="#support">Support</a>
         <a href="https://github.com/codeclew/codeclew">GitHub</a>
       </nav>
@@ -24,9 +25,9 @@
 
     <main id="top">
       <section class="hero shell">
-        <div class="eyebrow"><span></span> Public macOS pilot</div>
+        <div class="eyebrow"><span></span> Public macOS pilot · preliminary evidence</div>
         <h1>Give code agents<br><em>evidence, not guesses.</em></h1>
-        <p class="lede">Codeclew builds bounded compiler-backed context, validates changes in an isolated worktree, and publishes only with explicit approval.</p>
+        <p class="lede">Codeclew builds bounded compiler-backed context, validates changes in an isolated worktree, and publishes only with explicit approval. Early measurements show large savings on one prepared task; general superiority remains unproven.</p>
 
         <div class="install" aria-label="Install Codeclew">
           <div class="install-label"><span>Install on macOS</span><span>Apple Silicon + Intel</span></div>
@@ -50,6 +51,61 @@
           <div><strong>Compiler-backed</strong><span>Kotlin K2 semantic authority</span></div>
           <div><strong>Transactional</strong><span>Isolated prepare and CAS publish</span></div>
           <div><strong>Private by default</strong><span>No automatic code upload</span></div>
+        </div>
+      </section>
+
+      <section class="section shell evidence-preview" id="evidence">
+        <div class="section-heading">
+          <div class="kicker">Preliminary evidence</div>
+          <h2>Promising on prepared cases.<br>Not a general result yet.</h2>
+          <p>Each number below has its own evidence and limitation. We publish the boundary with the result instead of extending a single run into a universal claim.</p>
+        </div>
+
+        <div class="evidence-grid">
+          <article class="metric-card">
+            <small>One prepared warm Q1 run</small>
+            <strong>3.795×</strong>
+            <h3>fewer effective tokens</h3>
+            <p>Both Codeclew and the default arm were source-correct. Codeclew used 10,560 effective tokens versus 40,075.</p>
+            <div class="claim-links"><a href="./evidence.html#q1-effective-tokens">Evidence</a><a href="./evidence.html#q1-limitations">Limits</a></div>
+          </article>
+          <article class="metric-card">
+            <small>The same prepared warm Q1 run</small>
+            <strong>40.28×</strong>
+            <h3>less tool output</h3>
+            <p>Codeclew returned 15,307 bytes of tool output; the counterbalanced default arm returned 616,573 bytes.</p>
+            <div class="claim-links"><a href="./evidence.html#q1-tool-output">Evidence</a><a href="./evidence.html#q1-limitations">Limits</a></div>
+          </article>
+          <article class="metric-card">
+            <small>Exploratory development candidate</small>
+            <strong>17 → 1 → 1</strong>
+            <h3>test scope to source candidate</h3>
+            <p>A sealed model selected 17 test files. Two literal hits collapsed into one exact Vitest block and one compiler-bound production candidate.</p>
+            <div class="claim-links"><a href="./evidence.html#typescript-chain">Evidence</a><a href="./evidence.html#typescript-limitations">Limits</a></div>
+          </article>
+          <article class="metric-card metric-stop">
+            <small>The same exploratory chain</small>
+            <strong>3 calls</strong>
+            <h3>bounded evidence to an explanation</h3>
+            <p>Query → exact test bridge → exact production source was enough to explain the stale-poll guard. This is development-candidate behavior, not a release or superiority claim.</p>
+            <div class="claim-links"><a href="./evidence.html#typescript-value">Evidence</a><a href="./evidence.html#typescript-limitations">Limits</a></div>
+          </article>
+        </div>
+
+        <div class="unproven">
+          <div>
+            <div class="kicker">What remains unproven</div>
+            <h3>The next claim requires a stricter gate.</h3>
+          </div>
+          <ul>
+            <li>held-out engineering tasks;</li>
+            <li>balanced execution order;</li>
+            <li>symmetric warm state;</li>
+            <li>the same model and runner;</li>
+            <li>frozen raw hashes;</li>
+            <li>a blinded correctness oracle.</li>
+          </ul>
+          <a href="./evidence.html#strict-gate">Read the evidence protocol <span>→</span></a>
         </div>
       </section>
 
@@ -106,7 +162,7 @@
         </div>
         <div class="privacy-copy">
           <p>Raw diagnostics remain in a caller-owned private file. The support exporter uses an allowlist and removes source, paths, symbols, diffs, arguments, repository identity, and credentials.</p>
-          <code>clew support summarize --input /private/result.json</code>
+          <code>clew support summarize --input private-result.json</code>
           <a href="https://github.com/codeclew/codeclew/blob/main/docs/operations/p0-runbook.md#8-errors-and-investigation-material">Incident runbook <span>→</span></a>
         </div>
       </section>

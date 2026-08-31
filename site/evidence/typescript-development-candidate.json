@@ -1,0 +1,47 @@
+{
+  "schema": "codeclew-public-exploratory-evidence/1.0",
+  "claimScope": "one frozen Launchpad task on an unreleased development candidate",
+  "candidateCommit": "f4e06e27bc90535f1acda40e08767970dfb2b4a3",
+  "repositoryRevision": "89e8020d7807e31eea8b52afea75f57c7aa5f7be",
+  "compilation": "tsconfig:launchpad-ui/tsconfig.app.json",
+  "chain": {
+    "commandCount": 3,
+    "externalSearchOrCatalogCalls": 0,
+    "sessionOpenDurationMs": 22140,
+    "selectedTestPathCount": 17,
+    "scannedBytes": 164652,
+    "literalMatchCount": 2,
+    "exactTestBlockCount": 1,
+    "exactTestBlockBytes": 999,
+    "observedCompilerBoundCandidateCount": 1,
+    "testBridgeDurationMs": 1583,
+    "productionSourceDurationMs": 693
+  },
+  "evidenceDigests": {
+    "runtimeKey": "sha256:1d8c13dd93eaa181d9ffae4060291e697aed81cbb46b390eb19a8a2aa6c2239b",
+    "runtimeManifest": "sha256:6c4df2d5bfa8dcca6f64cc56f58be8bf8f0d8c346b0f3d11d8d5ea76391dc6a6",
+    "sessionContext": "sha256:3b83a9feb128c6d2fc3477a602e34c8f7770e0182f0e9d114190b233a9519fa8",
+    "request": "sha256:1938a4379acf477a1492e0108f33c61e9ff1ad98810a418d7b16bb54da969541",
+    "sourceSnapshot": "sha256:b09b442e9c74ab4c81f43a55c4a965e9468e50bf8f1fc9b68eb720dc09e813e4",
+    "selectedPaths": "sha256:2958c6f160ed137af3c4cc4ecceccd5f178e4932beb4732b0a82be570934515e",
+    "testContent": "sha256:2309dd05aeb7b7ff66dab848acb312374677fed298a1c8ec5c4c022654e521ed",
+    "productionDeclarationFact": "sha256:064dc25ff457ccc2e7a2e41900386f502c35e114d87419ef7f38ad774bf3fa42",
+    "productionSource": "sha256:cdab9daec519aeb44424c658770e2088eb14bcad981e4954e22e0c544efa0dfc",
+    "expandedContext": "sha256:bad1b388a1c69d9b68ea8819f4791735b397ad78534664afdfed282bb783283f",
+    "privateQualifiedReceiptSha256": "1128d8b1fee30fb7c6cf836965b1426db9d03e87b8df4b7a452396ef1feba39b"
+  },
+  "engineeringAssessment": {
+    "sufficientForConciseExplanation": true,
+    "mechanism": "Unmount invalidates the mounted flag and stream scope and clears the active stream identity. Every poll receives a monotonically increasing request id; handlers mutate state only while both the stream scope and request id remain current.",
+    "testDirectlyCoversDelayedPollGuard": false,
+    "testDirectlyCovers": "active stream teardown on unmount"
+  },
+  "limitations": [
+    "development candidate, not installed or released behavior",
+    "single frozen task",
+    "not a causal comparison or evidence of general superiority",
+    "session context was PARTIAL/UNSURE and one explicit query term remained unmatched",
+    "the returned test block covers teardown, not the delayed-response guard itself",
+    "raw stdout was not separately retained; integrity uses context, request, snapshot, fact, and source digests"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "codeclew-public-qualified-evidence/1.0",
+  "claimScope": "Q1-SINGLE-ANALYSIS, one prepared warm C-to-D run",
+  "candidateCommit": "0e0c372013e025e317fd656d67c115a1118b2130",
+  "outcome": {
+    "codeclewCorrect": true,
+    "defaultCorrect": true,
+    "codeclewEffectiveTokens": 10560,
+    "defaultEffectiveTokens": 40075,
+    "effectiveTokenRatio": 3.795,
+    "codeclewToolOutputBytes": 15307,
+    "defaultToolOutputBytes": 616573,
+    "toolOutputRatio": 40.28
+  },
+  "evidenceDigests": {
+    "privatePairedReceiptSha256": "61ec5bcc2583b09e9d1c6d4539055e46031762118b62bbe87de4aa68da808ab2",
+    "deterministicGateSha256": "216034ba2095db927c53d60bb35f1a3b9aeb144cc5f9e27ecf779d6fc6cd38fc"
+  },
+  "limitations": [
+    "single prepared task",
+    "warm-state result",
+    "not a held-out benchmark",
+    "not evidence of general agent superiority",
+    "private raw receipt is identified by digest but not published because it contains local execution metadata"
+  ]
+}
