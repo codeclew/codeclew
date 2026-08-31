@@ -2173,23 +2173,7 @@ fn nav_locate(args: NavLocateArgs) -> Result<Value, ClewError> {
     let (request, request_digest) = clew::source_locate::parse_request(&source)?;
     match (args.session, args.context, args.repo, args.target_ref) {
         (Some(session_id), Some(context_id), None, None) => {
-            let (session, _) = SessionAuthority::load(&session_id)?;
-            let _admission = session.open_admission()?;
-            let context = session.load_context(&context_id)?;
-            let repository = session.repository_path()?;
-            clew::source_locate::locate(
-                &repository,
-                clew::source_locate::SourceLocateAuthority {
-                    session_id: session.session_id,
-                    session_authority_digest: session.authority_digest,
-                    context_id: context.context_id,
-                    context_evidence_digest: context.evidence_digest,
-                    repository_key: session.repository_key,
-                    base_revision: session.base_revision,
-                },
-                &request,
-                &request_digest,
-            )
+            clew::source_locate::locate_session(&session_id, &context_id, &request, &request_digest)
         }
         (None, None, Some(repository), Some(target_ref)) => {
             clew::source_locate::locate_direct(&repository, &target_ref, &request, &request_digest)

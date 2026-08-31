@@ -1,8 +1,18 @@
 use crate::canonical;
+use crate::cas::{CasObject, CasStore};
+use crate::derived_manifest::{DERIVED_MANIFEST_SCHEMA, DerivedAnalysisInputManifest};
 use crate::error::{ClewError, ErrorCode};
+use crate::generation_service::load_session_generation;
+use crate::generation_v2::{GENERATION_SCHEMA, GenerationManifest};
 use crate::repository_snapshot;
-use crate::state;
+use crate::session::{ContextObject, SessionAuthority, SessionLanguage};
+use crate::state::{self, StateAuthority};
 use crate::text_authority;
+use crate::typescript_adapter_v2::TYPESCRIPT_LANGUAGE;
+use crate::typescript_project_model::{
+    TYPESCRIPT_MODEL_SCHEMA, TypeScriptCompilationSelector, TypeScriptProjectModel, verify_model,
+};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -11,9 +21,13 @@ use std::path::{Component, Path};
 use std::process::Stdio;
 
 pub const SOURCE_LOCATE_REQUEST_SCHEMA: &str = "codeclew-source-locate-request/1.0";
+pub const SCOPED_SOURCE_LOCATE_REQUEST_SCHEMA: &str = "codeclew-source-locate-request/1.1";
 pub const SOURCE_LOCATE_RESULT_SCHEMA: &str = "codeclew-source-locate-result/1.0";
 pub const DIRECT_SOURCE_LOCATE_RESULT_SCHEMA: &str = "codeclew-source-locate-result/1.1";
+pub const SCOPED_SOURCE_LOCATE_RESULT_SCHEMA: &str = "codeclew-source-locate-result/1.2";
 const DIRECT_AUTHORITY_SCHEMA: &str = "codeclew-direct-git-source-authority/1.0";
+const PATH_SELECTION_SCHEMA: &str = "codeclew-source-locate-path-selection/1.0";
+const BRIDGE_SCHEMA: &str = "codeclew-source-locate-bridge/1.0";
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_PATHS: usize = 1000;
 const MAX_PATH_BYTES: usize = 4096;
@@ -24,14 +38,31 @@ const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESULT_BYTES: usize = 64 * 1024;
 const MAX_TREE_ENTRIES: usize = 200_000;
 const MAX_TREE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_SEALED_AUTHORITY_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceLocateRequest {
     pub schema: String,
     pub literal: String,
-    pub paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<SourceLocateScope>,
     pub max_matches: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceLocateScope {
+    pub kind: SourceLocateScopeKind,
+    pub compilation: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SourceLocateScopeKind {
+    CompilationTestCandidates,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,6 +83,20 @@ struct SourceMatch {
     byte_start: usize,
     byte_end: usize,
     content_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourcePathSelection {
+    schema: String,
+    kind: SourceLocateScopeKind,
+    compilation: String,
+    authority: String,
+    generation_digest: String,
+    model_digest: String,
+    paths_digest: String,
+    path_count: usize,
+    conventions: Vec<String>,
 }
 
 pub fn max_request_bytes() -> usize {
@@ -78,17 +123,77 @@ pub fn locate(
     request_digest: &str,
 ) -> Result<serde_json::Value, ClewError> {
     validate_request(request)?;
-    if !canonical_digest(request_digest) {
-        return Err(invalid("source locate request digest is invalid"));
+    let paths = request
+        .paths
+        .as_deref()
+        .ok_or_else(|| invalid("scoped source locate requires session context authority"))?;
+    locate_session_paths(root, authority, request, request_digest, paths, None)
+}
+
+pub fn locate_session(
+    session_id: &str,
+    context_id: &str,
+    request: &SourceLocateRequest,
+    request_digest: &str,
+) -> Result<serde_json::Value, ClewError> {
+    validate_request(request)?;
+    verify_request_digest(request, request_digest)?;
+    let (session, _) = SessionAuthority::load(session_id)?;
+    let _admission = session.open_admission()?;
+    let context = session.load_context(context_id)?;
+    let root = session.repository_path()?;
+    let authority = SourceLocateAuthority {
+        session_id: session.session_id.clone(),
+        session_authority_digest: session.authority_digest.clone(),
+        context_id: context.context_id.clone(),
+        context_evidence_digest: context.evidence_digest.clone(),
+        repository_key: session.repository_key.clone(),
+        base_revision: session.base_revision.clone(),
+    };
+    match (&request.paths, &request.scope) {
+        (Some(paths), None) => {
+            locate_session_paths(&root, authority, request, request_digest, paths, None)
+        }
+        (None, Some(scope)) => {
+            let (paths, selection) = compilation_test_candidate_paths(&session, &context, scope)?;
+            if paths.is_empty() {
+                return scoped_abstention(authority, request, request_digest, selection);
+            }
+            locate_session_paths(
+                &root,
+                authority,
+                request,
+                request_digest,
+                &paths,
+                Some(selection),
+            )
+        }
+        _ => Err(invalid("source locate path authority is invalid")),
     }
+}
+
+fn locate_session_paths(
+    root: &Path,
+    authority: SourceLocateAuthority,
+    request: &SourceLocateRequest,
+    request_digest: &str,
+    paths: &[String],
+    selection: Option<SourcePathSelection>,
+) -> Result<serde_json::Value, ClewError> {
+    verify_request_digest(request, request_digest)?;
     let root = root.canonicalize().map_err(io_error)?;
     if !root.is_dir() {
         return Err(invalid("source locate root is not a directory"));
     }
 
-    let mut contents = Vec::with_capacity(request.paths.len());
+    if paths.is_empty() || paths.len() > MAX_PATHS {
+        return Err(resource(
+            "source locate path scope exceeds its 1-1000 path budget",
+        ));
+    }
+    let mut contents = Vec::with_capacity(paths.len());
     let mut scanned_bytes = 0usize;
-    for relative in &request.paths {
+    for relative in paths {
         let path = verified_regular_file(&root, relative)?;
         let metadata = fs::metadata(&path).map_err(io_error)?;
         let file_bytes = usize::try_from(metadata.len())
@@ -106,19 +211,39 @@ pub fn locate(
         contents.push((relative.clone(), content));
     }
 
-    let source_snapshot_digest = canonical::hash(&serde_json::json!({
-        "sessionAuthorityDigest":&authority.session_authority_digest,
-        "repositoryKey":&authority.repository_key,
-        "baseRevision":&authority.base_revision,
-    }))
+    let path_selection_digest = selection
+        .as_ref()
+        .map(canonical::hash)
+        .transpose()
+        .map_err(internal)?;
+    let source_snapshot_digest = if let Some(path_selection_digest) = path_selection_digest {
+        canonical::hash(&serde_json::json!({
+            "sessionAuthorityDigest":&authority.session_authority_digest,
+            "repositoryKey":&authority.repository_key,
+            "baseRevision":&authority.base_revision,
+            "pathSelectionDigest":path_selection_digest,
+        }))
+    } else {
+        canonical::hash(&serde_json::json!({
+            "sessionAuthorityDigest":&authority.session_authority_digest,
+            "repositoryKey":&authority.repository_key,
+            "baseRevision":&authority.base_revision,
+        }))
+    }
     .map_err(internal)?;
     locate_contents(
-        SOURCE_LOCATE_RESULT_SCHEMA,
+        if selection.is_some() {
+            SCOPED_SOURCE_LOCATE_RESULT_SCHEMA
+        } else {
+            SOURCE_LOCATE_RESULT_SCHEMA
+        },
         serde_json::to_value(authority).map_err(|error| internal(error.into()))?,
         source_snapshot_digest,
         request,
         request_digest,
+        paths,
         contents,
+        selection,
     )
 }
 
@@ -142,9 +267,10 @@ fn locate_direct_with_hook(
     after_authority: impl FnOnce(&Path, &str) -> Result<(), ClewError>,
 ) -> Result<serde_json::Value, ClewError> {
     validate_request(request)?;
-    if !canonical_digest(request_digest) {
-        return Err(invalid("source locate request digest is invalid"));
-    }
+    let paths = request.paths.as_deref().ok_or_else(|| {
+        invalid("direct source locate rejects compiler-scoped source locate requests")
+    })?;
+    verify_request_digest(request, request_digest)?;
     let repo = canonical_repository(repo)?;
     let qualified_ref = repository_snapshot::resolve_local_target_ref(&repo, target_ref)?.reference;
     let revision = verify_direct_authority(&repo, &qualified_ref, None)?;
@@ -157,7 +283,7 @@ fn locate_direct_with_hook(
     }
     after_authority(&repo, &revision)?;
 
-    let contents = read_commit_paths(&repo, &revision, &request.paths)?;
+    let contents = read_commit_paths(&repo, &revision, paths)?;
     let repository_key = state::repository_key(&repo)?;
     verify_direct_authority(&repo, &qualified_ref, Some(&revision))?;
     let target_ref_digest = canonical::hash_bytes(qualified_ref.as_bytes());
@@ -185,7 +311,9 @@ fn locate_direct_with_hook(
         source_snapshot_digest,
         request,
         request_digest,
+        paths,
         contents,
+        None,
     )
 }
 
@@ -195,7 +323,9 @@ fn locate_contents(
     source_snapshot_digest: String,
     request: &SourceLocateRequest,
     request_digest: &str,
+    paths: &[String],
     contents: Vec<(String, Vec<u8>)>,
+    selection: Option<SourcePathSelection>,
 ) -> Result<serde_json::Value, ClewError> {
     let needle = request.literal.as_bytes();
     let mut observed_match_count = 0usize;
@@ -257,12 +387,17 @@ fn locate_contents(
         "requestDigest":request_digest,
         "literalDigest":literal_digest,
         "literalBytes":needle.len(),
-        "requestedPathCount":request.paths.len(),
-        "scannedPathCount":request.paths.len(),
+        "requestedPathCount":paths.len(),
+        "scannedPathCount":paths.len(),
         "scannedBytes":scanned_bytes,
         "observedMatchCount":observed_match_count,
         "matches":visible_matches,
     });
+    if let Some(selection) = selection {
+        result["pathSelection"] =
+            serde_json::to_value(selection).map_err(|error| internal(error.into()))?;
+        result["bridge"] = bridge_unavailable();
+    }
     if canonical::bytes(&result)
         .map_err(internal)?
         .len()
@@ -286,6 +421,237 @@ fn locate_contents(
         ));
     }
     Ok(result)
+}
+
+fn compilation_test_candidate_paths(
+    session: &SessionAuthority,
+    context: &ContextObject,
+    scope: &SourceLocateScope,
+) -> Result<(Vec<String>, SourcePathSelection), ClewError> {
+    if session.language != SessionLanguage::TypeScript
+        || !session
+            .compilations
+            .iter()
+            .any(|compilation| compilation == &scope.compilation)
+    {
+        return Err(invalid(
+            "compilation test candidate scope requires a bound TypeScript compilation",
+        ));
+    }
+    let ready_set = load_session_generation(session)?;
+    let ready = ready_set
+        .compilations
+        .iter()
+        .find(|ready| ready.compilation == scope.compilation)
+        .ok_or_else(|| invalid("scoped compilation generation is unavailable"))?;
+    verify_context_generation_binding(context, &ready_set.repository_snapshot, ready)?;
+
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
+    let generation: GenerationManifest = read_canonical_cas(
+        &store,
+        &ready.generation,
+        GENERATION_SCHEMA,
+        "TypeScript generation",
+    )?;
+    generation.verify_manifest(&store)?;
+    if generation.derived_input_manifest != ready.derived_input_manifest {
+        return Err(corrupt(
+            "scoped generation differs from its sealed input manifest",
+        ));
+    }
+    let manifest: DerivedAnalysisInputManifest = read_canonical_cas(
+        &store,
+        &ready.derived_input_manifest,
+        DERIVED_MANIFEST_SCHEMA,
+        "TypeScript derived input manifest",
+    )?;
+    manifest.verify(&store)?;
+    if manifest.repository_snapshot != ready.repository_snapshot
+        || manifest.provider_models.len() != 1
+        || manifest.provider_models[0].handshake.provider_id != "project-native-typescript"
+        || manifest.provider_models[0].handshake.build_system_uris != ["build:tsconfig"]
+        || manifest.provider_models[0].build_model.compilations.len() != 1
+    {
+        return Err(corrupt(
+            "scoped TypeScript compiler model authority is ambiguous",
+        ));
+    }
+    let provider = &manifest.provider_models[0];
+    let descriptor = &provider.build_model.compilations[0];
+    if descriptor.canonical_options != provider.build_model.model
+        || descriptor.source_roots.len() != 1
+        || descriptor.source_roots[0].tree != ready.repository_snapshot
+        || descriptor.canonical_options.object_schema != TYPESCRIPT_MODEL_SCHEMA
+    {
+        return Err(corrupt(
+            "scoped TypeScript compilation descriptor is inconsistent",
+        ));
+    }
+    let model: TypeScriptProjectModel = read_canonical_cas(
+        &store,
+        &descriptor.canonical_options,
+        TYPESCRIPT_MODEL_SCHEMA,
+        "TypeScript project model",
+    )?;
+    verify_model(&model)?;
+    if model.language != TYPESCRIPT_LANGUAGE
+        || model.compilation != scope.compilation
+        || model.compiler_version != ready.compiler_version
+    {
+        return Err(corrupt(
+            "scoped TypeScript project model differs from its compilation",
+        ));
+    }
+    let paths = typescript_test_candidate_paths(&model.source_files)?;
+    let selection = SourcePathSelection {
+        schema: PATH_SELECTION_SCHEMA.into(),
+        kind: scope.kind,
+        compilation: scope.compilation.clone(),
+        authority: "SEALED_TYPESCRIPT_PROJECT_MODEL".into(),
+        generation_digest: ready.generation.digest.clone(),
+        model_digest: model.model_digest,
+        paths_digest: canonical::hash(&paths).map_err(internal)?,
+        path_count: paths.len(),
+        conventions: vec![
+            "*.spec.ts".into(),
+            "*.spec.tsx".into(),
+            "*.test.ts".into(),
+            "*.test.tsx".into(),
+        ],
+    };
+    Ok((paths, selection))
+}
+
+fn verify_context_generation_binding(
+    context: &ContextObject,
+    repository_snapshot: &CasObject,
+    ready: &crate::generation_service::ReadyGeneration,
+) -> Result<(), ClewError> {
+    let snapshot = context
+        .evidence
+        .pointer("/context/snapshot")
+        .ok_or_else(|| corrupt("context snapshot authority is unavailable"))?;
+    let repository_value =
+        serde_json::to_value(repository_snapshot).map_err(|error| internal(error.into()))?;
+    let generation_value =
+        serde_json::to_value(&ready.generation).map_err(|error| internal(error.into()))?;
+    let query_index_value =
+        serde_json::to_value(&ready.query_index).map_err(|error| internal(error.into()))?;
+    let bound = snapshot
+        .get("compilations")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("compilation").and_then(serde_json::Value::as_str)
+                    == Some(ready.compilation.as_str())
+            })
+        });
+    if snapshot.get("repositorySnapshot") != Some(&repository_value)
+        || bound.and_then(|row| row.get("generation")) != Some(&generation_value)
+        || bound.and_then(|row| row.get("queryIndex")) != Some(&query_index_value)
+    {
+        return Err(corrupt(
+            "scoped compilation is not bound by the retained context",
+        ));
+    }
+    Ok(())
+}
+
+fn typescript_test_candidate_paths(source_files: &[String]) -> Result<Vec<String>, ClewError> {
+    let paths = source_files
+        .iter()
+        .filter(|path| {
+            [".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx"]
+                .iter()
+                .any(|suffix| path.ends_with(suffix))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if paths.len() > MAX_PATHS {
+        return Err(resource(
+            "compilation test candidate scope exceeds the 1000 path budget",
+        ));
+    }
+    for path in &paths {
+        validate_relative_path(path)?;
+    }
+    if !paths.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(corrupt(
+            "sealed TypeScript source file authority is not canonical",
+        ));
+    }
+    Ok(paths)
+}
+
+fn read_canonical_cas<T: DeserializeOwned + Serialize>(
+    store: &CasStore,
+    object: &CasObject,
+    expected_schema: &str,
+    subject: &str,
+) -> Result<T, ClewError> {
+    if object.object_schema != expected_schema {
+        return Err(corrupt(&format!("{subject} schema is invalid")));
+    }
+    let limit = usize::try_from(object.size)
+        .map_err(|_| resource(&format!("{subject} exceeds the host size")))?;
+    if limit > MAX_SEALED_AUTHORITY_BYTES {
+        return Err(resource(&format!("{subject} exceeds the 64 MiB budget")));
+    }
+    let lease = store.read(object, limit)?;
+    let value: T = serde_json::from_slice(lease.bytes())
+        .map_err(|_| corrupt(&format!("{subject} is invalid")))?;
+    if canonical::bytes(&value).map_err(internal)? != lease.bytes() {
+        return Err(corrupt(&format!("{subject} is not canonical")));
+    }
+    Ok(value)
+}
+
+fn scoped_abstention(
+    authority: SourceLocateAuthority,
+    request: &SourceLocateRequest,
+    request_digest: &str,
+    selection: SourcePathSelection,
+) -> Result<serde_json::Value, ClewError> {
+    verify_request_digest(request, request_digest)?;
+    let selection_digest = canonical::hash(&selection).map_err(internal)?;
+    let source_snapshot_digest = canonical::hash(&serde_json::json!({
+        "sessionAuthorityDigest":authority.session_authority_digest,
+        "repositoryKey":authority.repository_key,
+        "baseRevision":authority.base_revision,
+        "pathSelectionDigest":selection_digest,
+    }))
+    .map_err(internal)?;
+    Ok(serde_json::json!({
+        "schema":SCOPED_SOURCE_LOCATE_RESULT_SCHEMA,
+        "status":"ABSTAIN",
+        "reasonCode":"NO_COMPILATION_TEST_CANDIDATES",
+        "completeness":"INCOMPLETE_SCOPE",
+        "truncated":false,
+        "semanticResolution":"NONE",
+        "authority":"SNAPSHOT_EXACT_BYTES",
+        "sourceSnapshotDigest":source_snapshot_digest,
+        "source":authority,
+        "requestDigest":request_digest,
+        "literalDigest":canonical::hash_bytes(request.literal.as_bytes()),
+        "literalBytes":request.literal.len(),
+        "requestedPathCount":0,
+        "scannedPathCount":0,
+        "scannedBytes":0,
+        "observedMatchCount":0,
+        "matches":[],
+        "pathSelection":selection,
+        "bridge":bridge_unavailable(),
+    }))
+}
+
+fn bridge_unavailable() -> serde_json::Value {
+    serde_json::json!({
+        "schema":BRIDGE_SCHEMA,
+        "status":"ABSTAIN",
+        "reasonCode":"IMPORT_LOCAL_MODULE_UNIQUE_DECLARATION_BRIDGE_UNAVAILABLE",
+        "semanticResolution":"NONE",
+    })
 }
 
 fn canonical_repository(repo: &Path) -> Result<std::path::PathBuf, ClewError> {
@@ -534,9 +900,6 @@ fn valid_git_oid(value: &str) -> bool {
 }
 
 fn validate_request(request: &SourceLocateRequest) -> Result<(), ClewError> {
-    if request.schema != SOURCE_LOCATE_REQUEST_SCHEMA {
-        return Err(invalid("unsupported source locate request schema"));
-    }
     if request.literal.is_empty()
         || request.literal.len() > MAX_LITERAL_BYTES
         || request.literal.contains('\0')
@@ -546,24 +909,40 @@ fn validate_request(request: &SourceLocateRequest) -> Result<(), ClewError> {
             "source locate literal must be non-empty NFC UTF-8 no larger than 512 bytes",
         ));
     }
-    if request.paths.is_empty()
-        || request.paths.len() > MAX_PATHS
-        || request.max_matches == 0
-        || request.max_matches > MAX_MATCHES
-    {
-        return Err(invalid(
-            "source locate request requires 1-1000 paths and maxMatches 1-64",
-        ));
+    if request.max_matches == 0 || request.max_matches > MAX_MATCHES {
+        return Err(invalid("source locate maxMatches must be between 1 and 64"));
     }
-    let mut previous: Option<&str> = None;
-    for path in &request.paths {
-        validate_relative_path(path)?;
-        if previous.is_some_and(|value| value >= path.as_str()) {
+    match (
+        request.schema.as_str(),
+        request.paths.as_deref(),
+        request.scope.as_ref(),
+    ) {
+        (SOURCE_LOCATE_REQUEST_SCHEMA, Some(paths), None) => {
+            if paths.is_empty() || paths.len() > MAX_PATHS {
+                return Err(invalid(
+                    "source locate request requires between 1 and 1000 paths",
+                ));
+            }
+            let mut previous: Option<&str> = None;
+            for path in paths {
+                validate_relative_path(path)?;
+                if previous.is_some_and(|value| value >= path.as_str()) {
+                    return Err(invalid(
+                        "source locate paths must be sorted and unique by UTF-8 bytes",
+                    ));
+                }
+                previous = Some(path);
+            }
+        }
+        (SCOPED_SOURCE_LOCATE_REQUEST_SCHEMA, None, Some(scope)) => {
+            TypeScriptCompilationSelector::parse(&scope.compilation)?;
+        }
+        (SOURCE_LOCATE_REQUEST_SCHEMA | SCOPED_SOURCE_LOCATE_REQUEST_SCHEMA, _, _) => {
             return Err(invalid(
-                "source locate paths must be sorted and unique by UTF-8 bytes",
+                "source locate request must select exactly the path authority allowed by its schema",
             ));
         }
-        previous = Some(path);
+        _ => return Err(invalid("unsupported source locate request schema")),
     }
     Ok(())
 }
@@ -664,8 +1043,24 @@ fn canonical_digest(value: &str) -> bool {
     })
 }
 
+fn verify_request_digest(
+    request: &SourceLocateRequest,
+    request_digest: &str,
+) -> Result<(), ClewError> {
+    if !canonical_digest(request_digest)
+        || canonical::hash(request).map_err(internal)? != request_digest
+    {
+        return Err(invalid("source locate request digest is invalid"));
+    }
+    Ok(())
+}
+
 fn invalid(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
+}
+
+fn corrupt(message: &str) -> ClewError {
+    ClewError::new(ErrorCode::StateCorrupt, message)
 }
 
 fn resource(message: &str) -> ClewError {
@@ -695,8 +1090,22 @@ mod tests {
         SourceLocateRequest {
             schema: SOURCE_LOCATE_REQUEST_SCHEMA.into(),
             literal: literal.into(),
-            paths: paths.iter().map(|path| (*path).into()).collect(),
+            paths: Some(paths.iter().map(|path| (*path).into()).collect()),
+            scope: None,
             max_matches,
+        }
+    }
+
+    fn scoped_request(literal: &str, compilation: &str) -> SourceLocateRequest {
+        SourceLocateRequest {
+            schema: SCOPED_SOURCE_LOCATE_REQUEST_SCHEMA.into(),
+            literal: literal.into(),
+            paths: None,
+            scope: Some(SourceLocateScope {
+                kind: SourceLocateScopeKind::CompilationTestCandidates,
+                compilation: compilation.into(),
+            }),
+            max_matches: 4,
         }
     }
 
@@ -708,6 +1117,25 @@ mod tests {
             context_evidence_digest: format!("sha256:{}", "4".repeat(64)),
             repository_key: format!("sha256:{}", "2".repeat(64)),
             base_revision: "0123456789abcdef0123456789abcdef01234567".into(),
+        }
+    }
+
+    fn scoped_selection(paths: &[String]) -> SourcePathSelection {
+        SourcePathSelection {
+            schema: PATH_SELECTION_SCHEMA.into(),
+            kind: SourceLocateScopeKind::CompilationTestCandidates,
+            compilation: "tsconfig:launchpad-ui/tsconfig.json".into(),
+            authority: "SEALED_TYPESCRIPT_PROJECT_MODEL".into(),
+            generation_digest: format!("sha256:{}", "5".repeat(64)),
+            model_digest: format!("sha256:{}", "6".repeat(64)),
+            paths_digest: canonical::hash(&paths.to_vec()).unwrap(),
+            path_count: paths.len(),
+            conventions: vec![
+                "*.spec.ts".into(),
+                "*.spec.tsx".into(),
+                "*.test.ts".into(),
+                "*.test.tsx".into(),
+            ],
         }
     }
 
@@ -811,6 +1239,115 @@ mod tests {
         let missing = request("x", &["missing.kt"], 1);
         let digest = canonical::hash(&missing).unwrap();
         assert!(locate(temporary.path(), authority(), &missing, &digest).is_err());
+
+        let present = request("x", &["A.kt"], 1);
+        let different_digest = canonical::hash(&request("y", &["A.kt"], 1)).unwrap();
+        assert!(locate(temporary.path(), authority(), &present, &different_digest).is_err());
+    }
+
+    #[test]
+    fn scoped_source_locate_request_is_session_only_and_schema_bound() {
+        let scoped = scoped_request("unmount", "tsconfig:launchpad-ui/tsconfig.json");
+        let encoded = canonical::bytes(&scoped).unwrap();
+        let (parsed, digest) = parse_request(&encoded).unwrap();
+        assert_eq!(parsed, scoped);
+        assert!(canonical_digest(&digest));
+        assert_eq!(canonical::hash(&parsed).unwrap(), digest);
+
+        let legacy = request("x", &["A.kt"], 1);
+        assert_eq!(
+            String::from_utf8(canonical::bytes(&legacy).unwrap()).unwrap(),
+            "{\"literal\":\"x\",\"maxMatches\":1,\"paths\":[\"A.kt\"],\"schema\":\"codeclew-source-locate-request/1.0\"}"
+        );
+
+        let mut wrong_schema = scoped.clone();
+        wrong_schema.schema = SOURCE_LOCATE_REQUEST_SCHEMA.into();
+        assert!(validate_request(&wrong_schema).is_err());
+        let mut both = scoped.clone();
+        both.paths = Some(vec!["src/DataToolsPage.test.tsx".into()]);
+        assert!(validate_request(&both).is_err());
+
+        let (_temporary, repository, _revision) = direct_repository();
+        assert!(locate_direct(&repository, "main", &scoped, &digest).is_err());
+
+        let selection = scoped_selection(&[]);
+        let invalid_digest = format!("sha256:{}", "0".repeat(64));
+        assert!(
+            scoped_abstention(authority(), &scoped, &invalid_digest, selection.clone()).is_err()
+        );
+        let abstention = scoped_abstention(authority(), &scoped, &digest, selection).unwrap();
+        assert_eq!(abstention["status"], "ABSTAIN");
+        assert_eq!(abstention["reasonCode"], "NO_COMPILATION_TEST_CANDIDATES");
+    }
+
+    #[test]
+    fn scoped_source_locate_uses_only_fixed_typescript_test_conventions() {
+        let source_files = vec![
+            "src/DataToolsPage.test.tsx".into(),
+            "src/DataToolsPage.tsx".into(),
+            "src/KafkaFlowExplorerPage.spec.ts".into(),
+            "src/A.TEST.ts".into(),
+            "src/A.test.d.ts".into(),
+            "src/contest.ts".into(),
+            "src/test-utils.ts".into(),
+            "src/Other.test.js".into(),
+            "src/Snapshot.test.tsx.snap".into(),
+        ];
+        assert_eq!(
+            typescript_test_candidate_paths(&source_files).unwrap(),
+            vec![
+                "src/DataToolsPage.test.tsx".to_owned(),
+                "src/KafkaFlowExplorerPage.spec.ts".to_owned(),
+            ]
+        );
+
+        let over_limit = (0..=MAX_PATHS)
+            .map(|index| format!("src/{index:04}.test.ts"))
+            .collect::<Vec<_>>();
+        assert!(typescript_test_candidate_paths(&over_limit).is_err());
+    }
+
+    #[test]
+    fn scoped_result_keeps_privacy_and_hides_partial_matches() {
+        let temporary = TempDir::new().unwrap();
+        let path = "src/A.test.ts";
+        fs::create_dir(temporary.path().join("src")).unwrap();
+        fs::write(temporary.path().join(path), b"secret secret secret").unwrap();
+        let scoped = scoped_request("secret", "tsconfig:launchpad-ui/tsconfig.json");
+        let digest = canonical::hash(&scoped).unwrap();
+        let paths = vec![path.to_owned()];
+        let result = locate_session_paths(
+            temporary.path(),
+            authority(),
+            &scoped,
+            &digest,
+            &paths,
+            Some(scoped_selection(&paths)),
+        )
+        .unwrap();
+        assert_eq!(result["schema"], SCOPED_SOURCE_LOCATE_RESULT_SCHEMA);
+        assert_eq!(result["status"], "COMPLETE");
+        assert_eq!(result["observedMatchCount"], 3);
+        assert_eq!(result["matches"].as_array().unwrap().len(), 3);
+        assert_eq!(result["bridge"]["status"], "ABSTAIN");
+        let encoded = canonical::compact(&result).unwrap();
+        assert!(!encoded.contains("secret"));
+        assert!(!encoded.contains(temporary.path().to_str().unwrap()));
+
+        let mut limited = scoped.clone();
+        limited.max_matches = 2;
+        let limited_digest = canonical::hash(&limited).unwrap();
+        let result = locate_session_paths(
+            temporary.path(),
+            authority(),
+            &limited,
+            &limited_digest,
+            &paths,
+            Some(scoped_selection(&paths)),
+        )
+        .unwrap();
+        assert_eq!(result["status"], "TRUNCATED");
+        assert_eq!(result["matches"], json!([]));
     }
 
     #[cfg(unix)]
