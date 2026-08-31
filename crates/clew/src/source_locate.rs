@@ -146,7 +146,7 @@ fn locate_direct_with_hook(
         return Err(invalid("source locate request digest is invalid"));
     }
     let repo = canonical_repository(repo)?;
-    let qualified_ref = qualify_target_ref(&repo, target_ref)?;
+    let qualified_ref = repository_snapshot::resolve_local_target_ref(&repo, target_ref)?.reference;
     let revision = verify_direct_authority(&repo, &qualified_ref, None)?;
     let tree_oid = isolated_git_text(
         &repo,
@@ -318,25 +318,6 @@ fn canonical_repository(repo: &Path) -> Result<std::path::PathBuf, ClewError> {
         ));
     }
     Ok(canonical)
-}
-
-fn qualify_target_ref(repo: &Path, value: &str) -> Result<String, ClewError> {
-    let qualified = if value.starts_with("refs/heads/") {
-        value.to_owned()
-    } else if !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-_/.".contains(&byte))
-        && !value.contains("..")
-    {
-        format!("refs/heads/{value}")
-    } else {
-        return Err(invalid("direct source locate target ref is invalid"));
-    };
-    if isolated_git_bytes(repo, &["check-ref-format", &qualified]).is_err() {
-        return Err(invalid("direct source locate target ref is invalid"));
-    }
-    Ok(qualified)
 }
 
 fn verify_direct_authority(
@@ -895,6 +876,35 @@ mod tests {
                 .unwrap()
                 .contains("refs/heads/main")
         );
+    }
+
+    #[test]
+    fn direct_git_locate_accepts_an_annotated_local_tag_and_peels_its_commit() {
+        let (_temporary, repository, revision) = direct_repository();
+        git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=codeclew@localhost",
+                "tag",
+                "-a",
+                "v-test",
+                "-m",
+                "annotated fixture",
+            ],
+        );
+        let tag_object = git(&repository, &["rev-parse", "refs/tags/v-test"]);
+        assert_ne!(tag_object, revision);
+
+        let query = request("needle", &["A.kt"], 2);
+        let digest = canonical::hash(&query).unwrap();
+        for target_ref in ["v-test", "refs/tags/v-test"] {
+            let result = locate_direct(&repository, target_ref, &query, &digest).unwrap();
+            assert_eq!(result["source"]["baseRevision"], revision);
+            assert_eq!(result["observedMatchCount"], 1);
+        }
     }
 
     #[test]

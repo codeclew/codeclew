@@ -1,6 +1,8 @@
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
-use crate::repository_snapshot::isolated_git_command;
+use crate::repository_snapshot::{
+    LocalTargetRefKind, isolated_git_command, resolve_local_target_ref,
+};
 use crate::runtime::RuntimeAuthority;
 use crate::session::SessionLanguage;
 use crate::state::StateAuthority;
@@ -369,11 +371,15 @@ fn task_checks(
             _ => {}
         }
     }
-    checks.extend(repository_checks(repository, target_ref));
+    checks.extend(repository_checks(repository, target_ref, task.operation));
     checks
 }
 
-fn repository_checks(repository: &Path, target_ref: Option<&str>) -> Vec<DoctorCheck> {
+fn repository_checks(
+    repository: &Path,
+    target_ref: Option<&str>,
+    operation: DoctorOperation,
+) -> Vec<DoctorCheck> {
     let Ok(repository) = repository.canonicalize() else {
         return vec![check(
             "repository.available",
@@ -405,14 +411,31 @@ fn repository_checks(repository: &Path, target_ref: Option<&str>) -> Vec<DoctorC
         "CLEAN_TARGET_WORKTREE",
     ));
     if let Some(target_ref) = target_ref {
+        let target = resolve_local_target_ref(&repository, target_ref).ok();
+        checks.push(check(
+            "repository.target-ref-local",
+            target.is_some(),
+            true,
+            "SELECT_LOCAL_TARGET_REF",
+        ));
+        if operation == DoctorOperation::Mutation {
+            checks.push(check(
+                "repository.target-ref-mutation-branch",
+                target
+                    .as_ref()
+                    .is_some_and(|value| value.kind == LocalTargetRefKind::Branch),
+                true,
+                "SELECT_LOCAL_BRANCH_REF",
+            ));
+        }
         let head = isolated_git(&repository, &["rev-parse", "--verify", "HEAD^{commit}"]);
-        let target = isolated_git(
-            &repository,
-            &["rev-parse", "--verify", &format!("{target_ref}^{{commit}}")],
-        );
+        let target_commit = target.as_ref().map(|value| value.commit_oid.as_bytes());
         checks.push(check(
             "repository.target-ref-at-head",
-            head.is_some() && head == target,
+            head.as_deref()
+                .and_then(|value| value.strip_suffix(b"\n"))
+                .zip(target_commit)
+                .is_some_and(|(head, target)| head == target),
             true,
             "CHECKOUT_TARGET_REF_AT_HEAD",
         ));
@@ -658,6 +681,71 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn doctor_git_fixture() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        for arguments in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "test@example.invalid"],
+            vec!["config", "user.name", "Codeclew Test"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(arguments)
+                    .current_dir(repo.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        fs::write(repo.path().join("README.md"), b"fixture\n").unwrap();
+        for arguments in [
+            vec!["add", "README.md"],
+            vec!["commit", "-qm", "fixture"],
+            vec!["tag", "-a", "v-test", "-m", "annotated test tag"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(arguments)
+                    .current_dir(repo.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        repo
+    }
+
+    fn doctor_check<'a>(checks: &'a [DoctorCheck], id: &str) -> &'a DoctorCheck {
+        checks.iter().find(|check| check.id == id).unwrap()
+    }
+
+    #[test]
+    fn doctor_and_admission_share_tag_authority_but_mutation_requires_a_branch() {
+        let repo = doctor_git_fixture();
+        let analysis = repository_checks(repo.path(), Some("v-test"), DoctorOperation::Analysis);
+        assert!(doctor_check(&analysis, "repository.target-ref-local").passed);
+        assert!(doctor_check(&analysis, "repository.target-ref-at-head").passed);
+        assert!(
+            analysis
+                .iter()
+                .all(|check| check.id != "repository.target-ref-mutation-branch")
+        );
+
+        let mutation = repository_checks(repo.path(), Some("v-test"), DoctorOperation::Mutation);
+        assert!(doctor_check(&mutation, "repository.target-ref-local").passed);
+        assert!(!doctor_check(&mutation, "repository.target-ref-mutation-branch").passed);
+        assert_eq!(
+            doctor_check(&mutation, "repository.target-ref-mutation-branch").remediation,
+            Some("SELECT_LOCAL_BRANCH_REF")
+        );
+        assert!(doctor_check(&mutation, "repository.target-ref-at-head").passed);
+
+        let branch = repository_checks(repo.path(), Some("main"), DoctorOperation::Mutation);
+        assert!(doctor_check(&branch, "repository.target-ref-local").passed);
+        assert!(doctor_check(&branch, "repository.target-ref-mutation-branch").passed);
+        assert!(doctor_check(&branch, "repository.target-ref-at-head").passed);
+    }
 
     #[test]
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {

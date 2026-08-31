@@ -140,6 +140,13 @@ def build_candidate(root: Path, output: Path, profile: str) -> dict[str, object]
             != metadata["runtimeManifestDigest"]
         ):
             raise release.ReleaseError("candidate runtime identity is invalid")
+        if profile == "core":
+            release.verify_annotated_tag_navigation(
+                root,
+                launcher,
+                environment,
+                temporary / "navigation-smoke",
+            )
 
         os.replace(package, destination)
         destination.chmod(0o700)

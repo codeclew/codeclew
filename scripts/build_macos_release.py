@@ -400,6 +400,101 @@ def verify_cli_version(
         raise ReleaseError("release CLI version does not match the semantic version tag")
 
 
+def verify_annotated_tag_navigation(
+    root: Path,
+    launcher: Path,
+    environment: dict[str, str],
+    work: Path,
+) -> None:
+    """Exercise the packaged launcher against branch and annotated-tag authority."""
+    source = work / "source"
+    shutil.copytree(root / "fixtures" / "kotlin-basic", source)
+    run(["git", "init", "-q", "-b", "main"], source)
+    run(["git", "add", "."], source)
+    identity = [
+        "-c",
+        "user.name=Codeclew Release Smoke",
+        "-c",
+        "user.email=codeclew-release-smoke@localhost",
+    ]
+    run(["git", *identity, "commit", "-q", "-m", "fixture"], source)
+    run(
+        ["git", *identity, "tag", "-a", "v-release-smoke", "-m", "annotated fixture"],
+        source,
+    )
+    revision = git_text(source, "rev-parse", "HEAD")
+    if git_text(source, "rev-parse", "refs/tags/v-release-smoke") == revision:
+        raise ReleaseError("navigation smoke tag is not annotated")
+
+    linked = work / "linked-worktree"
+    clone = work / "standalone-clone"
+    run(
+        ["git", "worktree", "add", "-q", "--detach", str(linked), "v-release-smoke"],
+        source,
+    )
+    run(
+        ["git", "clone", "-q", "--no-local", "--branch", "v-release-smoke", str(source), str(clone)],
+        work,
+    )
+
+    for repository, target_ref, expected_ref in [
+        (source, "main", "refs/heads/main"),
+        (linked, "v-release-smoke", "refs/tags/v-release-smoke"),
+        (clone, "v-release-smoke", "refs/tags/v-release-smoke"),
+    ]:
+        output = run(
+            [
+                str(launcher),
+                "nav",
+                "query",
+                "--repo",
+                str(repository),
+                "--target-ref",
+                target_ref,
+                "--language",
+                "kotlin",
+                "--profile",
+                "kotlin-2.4.10-gradle-single",
+                "--compilation",
+                ":/main",
+                "--term",
+                "IntegerSource",
+                "--term",
+                "NumericSource",
+                "--term",
+                "callSource",
+                "--source",
+            ],
+            repository,
+            environment=environment,
+        )
+        try:
+            result = json.loads(output)
+            session = result["session"]
+            admission = result["admission"]
+            session_id = session["sessionId"]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ReleaseError("packaged navigation smoke output is invalid") from error
+        if (
+            result.get("status") != "OPEN"
+            or admission.get("status") != "PASS"
+            or admission.get("runtimeMode") != "RELEASE"
+            or session.get("targetRef") != expected_ref
+            or session.get("baseRevision") != revision
+        ):
+            raise ReleaseError("packaged navigation smoke authority is invalid")
+        run(
+            [str(launcher), "session", "close", "--session", str(session_id)],
+            repository,
+            environment=environment,
+        )
+        run(
+            [str(launcher), "session", "gc", "--session", str(session_id)],
+            repository,
+            environment=environment,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
@@ -479,6 +574,13 @@ def main() -> int:
             }
             if observed_workers != expected_workers:
                 raise ReleaseError("packaged profile worker set is invalid")
+            if profile == "core":
+                verify_annotated_tag_navigation(
+                    root,
+                    launcher,
+                    environment,
+                    temporary / "navigation-smoke",
+                )
             asset, checksum = write_archive(
                 package, output, platform.machine(), profile
             )

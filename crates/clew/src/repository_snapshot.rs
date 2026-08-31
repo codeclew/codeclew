@@ -799,6 +799,131 @@ fn validate_oid(oid: &str) -> Result<(), ClewError> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalTargetRefKind {
+    Branch,
+    Tag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalTargetRef {
+    pub reference: String,
+    pub commit_oid: String,
+    pub kind: LocalTargetRefKind,
+}
+
+/// Resolves one explicit local branch or tag to its peeled commit identity.
+///
+/// Short names are accepted only when exactly one local branch or tag has that
+/// name. Commit hashes, pseudo-refs such as HEAD, remote-tracking refs, and
+/// ambiguous branch/tag names are deliberately outside this authority.
+pub(crate) fn resolve_local_target_ref(
+    repo: &Path,
+    value: &str,
+) -> Result<LocalTargetRef, ClewError> {
+    if value == "HEAD"
+        || matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid(
+            "target ref must identify a local branch or tag, not a commit or pseudo-ref",
+        ));
+    }
+
+    let explicit = if value.starts_with("refs/heads/") {
+        Some((value.to_owned(), LocalTargetRefKind::Branch))
+    } else if value.starts_with("refs/tags/") {
+        Some((value.to_owned(), LocalTargetRefKind::Tag))
+    } else if value.starts_with("refs/") {
+        return Err(invalid("target ref must identify a local branch or tag"));
+    } else {
+        None
+    };
+
+    let (reference, kind) = if let Some(explicit) = explicit {
+        require_valid_ref_name(repo, &explicit.0)?;
+        if !local_ref_exists(repo, &explicit.0)? {
+            return Err(invalid(
+                "target ref must identify an existing local branch or tag",
+            ));
+        }
+        explicit
+    } else {
+        let branch = format!("refs/heads/{value}");
+        let tag = format!("refs/tags/{value}");
+        require_valid_ref_name(repo, &branch)?;
+        require_valid_ref_name(repo, &tag)?;
+        match (
+            local_ref_exists(repo, &branch)?,
+            local_ref_exists(repo, &tag)?,
+        ) {
+            (true, false) => (branch, LocalTargetRefKind::Branch),
+            (false, true) => (tag, LocalTargetRefKind::Tag),
+            (true, true) => {
+                return Err(invalid(
+                    "target ref is ambiguous between a local branch and tag",
+                ));
+            }
+            (false, false) => {
+                return Err(invalid(
+                    "target ref must identify an existing local branch or tag",
+                ));
+            }
+        }
+    };
+
+    let peeled = format!("{reference}^{{commit}}");
+    let mut command = isolated_git_command(repo);
+    let output = command
+        .args(["rev-parse", "--verify", &peeled])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("target ref does not resolve to a local commit"));
+    }
+    let commit_oid = String::from_utf8(output.stdout)
+        .map_err(|_| invalid("target ref commit identity is not UTF-8"))?
+        .trim()
+        .to_owned();
+    validate_oid(&commit_oid)?;
+    Ok(LocalTargetRef {
+        reference,
+        commit_oid,
+        kind,
+    })
+}
+
+fn require_valid_ref_name(repo: &Path, reference: &str) -> Result<(), ClewError> {
+    let status = isolated_git_command(repo)
+        .args(["check-ref-format", reference])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(io_error)?;
+    if !status.success() {
+        return Err(invalid("target ref name is invalid"));
+    }
+    Ok(())
+}
+
+fn local_ref_exists(repo: &Path, reference: &str) -> Result<bool, ClewError> {
+    let status = isolated_git_command(repo)
+        .args(["show-ref", "--verify", "--quiet", reference])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(io_error)?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(invalid("local target ref authority is unavailable")),
+    }
+}
+
 pub(crate) fn isolated_git_command(repo: &Path) -> Command {
     let mut command = Command::new("git");
     command
@@ -1272,6 +1397,66 @@ mod tests {
         let authority = StateAuthority::open(state.path().join("v2")).unwrap();
         let store = CasStore::open(&authority).unwrap();
         (repo, state, store)
+    }
+
+    #[test]
+    fn local_target_ref_resolver_peels_tags_and_rejects_ambiguous_or_nonlocal_authority() {
+        let (repo, _state, _store) = fixture();
+        let head = git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap();
+        let head = String::from_utf8(head).unwrap().trim().to_owned();
+        let branch = git_command(repo.path(), &["symbolic-ref", "--short", "HEAD"], None).unwrap();
+        let branch = String::from_utf8(branch).unwrap().trim().to_owned();
+
+        let short_branch = resolve_local_target_ref(repo.path(), &branch).unwrap();
+        assert_eq!(short_branch.kind, LocalTargetRefKind::Branch);
+        assert_eq!(short_branch.reference, format!("refs/heads/{branch}"));
+        assert_eq!(short_branch.commit_oid, head);
+
+        Command::new("git")
+            .args(["tag", "-a", "v-test", "-m", "annotated test tag"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        let short_tag = resolve_local_target_ref(repo.path(), "v-test").unwrap();
+        assert_eq!(short_tag.kind, LocalTargetRefKind::Tag);
+        assert_eq!(short_tag.reference, "refs/tags/v-test");
+        assert_eq!(short_tag.commit_oid, head);
+        assert_eq!(
+            resolve_local_target_ref(repo.path(), "refs/tags/v-test").unwrap(),
+            short_tag
+        );
+
+        Command::new("git")
+            .args(["branch", "v-test"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        assert!(resolve_local_target_ref(repo.path(), "v-test").is_err());
+        assert_eq!(
+            resolve_local_target_ref(repo.path(), "refs/heads/v-test")
+                .unwrap()
+                .kind,
+            LocalTargetRefKind::Branch
+        );
+        assert_eq!(
+            resolve_local_target_ref(repo.path(), "refs/tags/v-test")
+                .unwrap()
+                .kind,
+            LocalTargetRefKind::Tag
+        );
+
+        for rejected in [
+            "HEAD",
+            &head,
+            "refs/remotes/origin/main",
+            "refs/tags/missing",
+            "missing",
+        ] {
+            assert!(
+                resolve_local_target_ref(repo.path(), rejected).is_err(),
+                "unexpectedly accepted {rejected}"
+            );
+        }
     }
 
     #[test]

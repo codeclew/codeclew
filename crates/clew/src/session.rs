@@ -11,7 +11,7 @@ use crate::python_adapter_v2::{
 use crate::python_project_model::PythonCompilationSelector;
 use crate::repository_snapshot::{
     LEGACY_EXCLUDES, RepositoryInputSnapshot, SNAPSHOT_SCHEMA, TrackedScopeLimits,
-    capture_commit_scope, isolated_git_command,
+    capture_commit_scope, isolated_git_command, resolve_local_target_ref,
 };
 use crate::runtime::{RuntimeAuthority, RuntimeMode};
 use crate::state::StateAuthority;
@@ -282,7 +282,6 @@ impl SessionAuthority {
         let repo = repo.canonicalize().map_err(io_error)?;
         let state = StateAuthority::process_default()?;
         let repository = state.repository(&repo)?;
-        let target_ref = qualify_ref(target_ref)?;
         let compilations = canonical_compilations(language, compilations)?;
         if !model_cache_policy_is_valid(language, model_cache_policy) {
             return Err(invalid(
@@ -297,14 +296,9 @@ impl SessionAuthority {
         } else {
             git_output(&repo, &["rev-parse", "HEAD"])?
         };
-        let target_oid = if language == SessionLanguage::Python {
-            isolated_git_output(
-                &repo,
-                &["rev-parse", "--verify", &format!("{target_ref}^{{commit}}")],
-            )?
-        } else {
-            git_output(&repo, &["rev-parse", &target_ref])?
-        };
+        let target = resolve_local_target_ref(&repo, target_ref)?;
+        let target_ref = target.reference;
+        let target_oid = target.commit_oid;
         if target_oid != base_revision {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
@@ -493,7 +487,14 @@ impl SessionAuthority {
         let expected_target_oid = session_terminal_target_oid(self, &runs)?;
         if state.repository(&repository)?.key != self.repository_key
             || git_output(&repository, &["rev-parse", "HEAD"])? != expected_target_oid
-            || git_output(&repository, &["rev-parse", &self.target_ref])? != expected_target_oid
+            || git_output(
+                &repository,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    &format!("{}^{{commit}}", self.target_ref),
+                ],
+            )? != expected_target_oid
             || git_output(
                 &repository,
                 &["rev-parse", &format!("{}^{{commit}}", self.base_revision)],
@@ -1410,7 +1411,14 @@ fn garbage_collect_session_with_state(
         .canonicalize()
         .map_err(io_error)?;
     let expected_target_oid = session_terminal_target_oid(authority, &runs)?;
-    let current_target_oid = git_output(&target, &["rev-parse", &authority.target_ref])?;
+    let current_target_oid = git_output(
+        &target,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{}^{{commit}}", authority.target_ref),
+        ],
+    )?;
     let expected_is_ancestor = if current_target_oid == expected_target_oid {
         true
     } else {
@@ -2228,21 +2236,6 @@ fn store_cas_json<T: Serialize>(
         return Ok(());
     }
     state.write_private_atomic(&path, &canonical::bytes(value).map_err(internal)?)
-}
-
-fn qualify_ref(value: &str) -> Result<String, ClewError> {
-    if value.starts_with("refs/heads/") {
-        Ok(value.into())
-    } else if !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-_/.".contains(&byte))
-        && !value.contains("..")
-    {
-        Ok(format!("refs/heads/{value}"))
-    } else {
-        Err(invalid("target ref is invalid"))
-    }
 }
 
 fn id_filename(value: &str) -> Result<String, ClewError> {

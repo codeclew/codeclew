@@ -300,6 +300,7 @@ pub fn prepare(
     plan_object: &PlanObject,
     candidate_root: &Path,
 ) -> Result<PreparedCandidateV2, ClewError> {
+    require_mutation_branch(session)?;
     let plan = require_mutation_request(session, context, plan_object)?;
     if context.session_id != session.session_id
         || plan_object.context_id != context.context_id
@@ -1185,6 +1186,7 @@ pub fn publish(
     candidate_root: &Path,
     approval: Option<&ConditionalPublicationApproval>,
 ) -> Result<Value, ClewError> {
+    require_mutation_branch(session)?;
     validate_prepared(session, prepared)?;
     if prepared.publication_blocked && approval.is_none() {
         return Err(ClewError::new(
@@ -1320,10 +1322,20 @@ pub fn require_mutation_request(
     context: &ContextObject,
     plan_object: &PlanObject,
 ) -> Result<TaskPlanV2, ClewError> {
+    require_mutation_branch(session)?;
     let plan = validate_plan_value(&plan_object.plan)?;
     let profile = qualified_mutation_profile(session, context)?;
     require_profile_validation(profile, &plan)?;
     Ok(plan)
+}
+
+fn require_mutation_branch(session: &SessionAuthority) -> Result<(), ClewError> {
+    if !session.target_ref.starts_with("refs/heads/") {
+        return Err(unsupported_profile(
+            "mutation requires a target ref that identifies a local branch",
+        ));
+    }
+    Ok(())
 }
 
 fn qualified_mutation_profile(
@@ -2407,6 +2419,94 @@ mod tests {
             ErrorCode::UnsupportedProjectConfiguration
         );
         assert!(typescript_error.message.contains("read-only"));
+    }
+
+    #[test]
+    fn mutation_authority_requires_a_local_branch_even_after_read_only_tag_admission() {
+        let mut session = SessionAuthority {
+            schema: crate::session::SESSION_SCHEMA.into(),
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            session_id: format!("session:{}", uuid::Uuid::new_v4()),
+            repository_key: "b".repeat(64),
+            base_revision: "1".repeat(40),
+            target_ref: "refs/heads/main".into(),
+            target_oid: "1".repeat(40),
+            runtime_key: format!("sha256:{}", "c".repeat(64)),
+            runtime_mode: crate::runtime::RuntimeMode::Development,
+            language: SessionLanguage::Kotlin,
+            compilations: vec![":/main".into()],
+            generation_jobs: None,
+            model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
+            model_cache_authority: None,
+            created_unix_ms: 1,
+        };
+        require_mutation_branch(&session).unwrap();
+
+        session.target_ref = "refs/tags/v-test".into();
+        let error = require_mutation_branch(&session).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(error.message.contains("local branch"));
+
+        let context = ContextObject {
+            schema: "test".into(),
+            context_id: "context:test".into(),
+            session_id: session.session_id.clone(),
+            session_authority_digest: session.authority_digest.clone(),
+            parent_context_id: None,
+            intent: "test".into(),
+            terms: vec![],
+            evidence_digest: format!("sha256:{}", "d".repeat(64)),
+            evidence_ref: reference(),
+            projection: json!({}),
+            evidence: json!({}),
+        };
+        let plan = PlanObject {
+            schema: "test".into(),
+            plan_id: "plan:test".into(),
+            session_id: session.session_id.clone(),
+            session_authority_digest: session.authority_digest.clone(),
+            context_id: context.context_id.clone(),
+            context_digest: format!("sha256:{}", "e".repeat(64)),
+            base_revision: session.base_revision.clone(),
+            runtime_key: session.runtime_key.clone(),
+            source_digest: format!("sha256:{}", "f".repeat(64)),
+            plan: json!({}),
+        };
+        let prepared = PreparedCandidateV2 {
+            schema: PREPARED_V2_SCHEMA.into(),
+            session_id: session.session_id.clone(),
+            context_id: context.context_id.clone(),
+            context_evidence_digest: context.evidence_digest.clone(),
+            plan_id: plan.plan_id.clone(),
+            base_revision: session.base_revision.clone(),
+            target_ref: session.target_ref.clone(),
+            target_oid: session.target_oid.clone(),
+            candidate_commit: "2".repeat(40),
+            candidate_snapshot: reference(),
+            semantic_generation: reference(),
+            semantic_generation_key: format!("sha256:{}", "3".repeat(64)),
+            changed_files: vec![],
+            validation_evidence: vec![],
+            qualified_obligations: vec![],
+            conditional_publish_eligible: false,
+            diff: CandidateDiff {
+                digest: canonical::hash_bytes(b""),
+                byte_size: 0,
+                over_limit: false,
+                patch: Some(String::new()),
+            },
+            derived_outputs: vec![],
+            prepared_authority_digest: format!("sha256:{}", "4".repeat(64)),
+            publication_blocked: false,
+        };
+        let candidate = tempfile::tempdir().unwrap();
+        for guarded in [
+            prepare(&session, &context, &plan, candidate.path()).unwrap_err(),
+            publish(&session, &prepared, candidate.path(), None).unwrap_err(),
+        ] {
+            assert_eq!(guarded.code, ErrorCode::UnsupportedProjectConfiguration);
+            assert!(guarded.message.contains("local branch"));
+        }
     }
 
     #[test]

@@ -1146,6 +1146,8 @@ fn doctor_check_label(id: &str) -> &str {
         "repository.available" => "Target repository is available",
         "repository.git" => "Target is a Git repository",
         "repository.clean" => "Target worktree is clean",
+        "repository.target-ref-local" => "Target ref is an unambiguous local branch or tag",
+        "repository.target-ref-mutation-branch" => "Mutation target ref is a local branch",
         "repository.target-ref-at-head" => "Target ref points to HEAD",
         other => other,
     }
@@ -1170,6 +1172,8 @@ fn remediation_label(id: &str) -> &str {
         "SELECT_EXISTING_REPOSITORY" => "select an existing repository",
         "SELECT_GIT_REPOSITORY" => "select a valid Git repository",
         "CLEAN_TARGET_WORKTREE" => "commit, stash, or use a separate clean worktree",
+        "SELECT_LOCAL_TARGET_REF" => "select one unambiguous local branch or tag",
+        "SELECT_LOCAL_BRANCH_REF" => "select a local branch for mutation",
         "CHECKOUT_TARGET_REF_AT_HEAD" => "check out the target ref at HEAD",
         other => other,
     }
