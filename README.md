@@ -83,16 +83,29 @@ fact-bound decision cards with exact one-line source previews in one command:
   --profile rust-syntax \
   --compilation 'cargo:crates/clew/Cargo.toml#clew#lib#clew' \
   --term fair_fact_selection \
+  --decision-identifier fair_fact_selection \
   --source
 ```
 
 The response retains `sessionId`, `contextId`, and the full evidence digest.
-`--source` returns a `codeclew-navigation-agent-card/1.0`: the exact retained
-source and its declaration-to-window bindings for the highest-ranked card,
-attested previews for the alternatives, and only supporting anchors outside
-the returned source window. The complete immutable evidence remains bound by
-`evidenceDigest`; the compact card removes fields that do not help the next
-agent decision. Omit `--source` when names and locations are enough.
+Every response also contains
+`codeclew-navigation-decision-authority/1.0`. A candidate becomes the selected
+code identity only when the caller explicitly supplies its task-derived exact
+name or identity with `--decision-identifier`, exactly one retained declaration
+matches it, boundary-safe declaration evidence covers every normalized query
+term, and the underlying query is not truncated. With `--source`, that
+`SUPPORTED/UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE` candidate receives exact
+retained source and declaration-to-window bindings. Generic search terms alone,
+unmatched terms, underlying query truncation, ambiguous identities, or partial
+local coverage produce `ABSTAIN`: cards remain discovery evidence,
+`decisionSource` is unavailable, reference follow is disabled, and one
+structured refinement names the next missing discriminator. The legacy
+`truncated` flag combines underlying query truncation with the three-card
+presentation cap; `queryCoverageTruncated` and `candidateListTruncated` separate
+those cases. Candidate uniqueness is evaluated across all retained declaration
+facts, so list truncation alone does not authorize or veto a decision. Candidate
+and stdout caps remain unchanged. The complete immutable evidence remains bound
+by `evidenceDigest`; omit `--source` when names and locations are enough.
 Select one to three cards in one call to receive each complete retained fact
 and its single exact source window without retransmitting every alternative:
 

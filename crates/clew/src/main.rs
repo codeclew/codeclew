@@ -594,7 +594,10 @@ struct NavQueryArgs {
     intent: Option<String>,
     #[arg(long = "term", required = true)]
     terms: Vec<String>,
-    /// Include the exact retained source of the highest-ranked decision card.
+    /// Exact task-supplied declaration identity allowed to become the decision.
+    #[arg(long, value_name = "IDENTIFIER")]
+    decision_identifier: Option<String>,
+    /// Include exact retained source for the supported decision, if one exists.
     #[arg(long)]
     source: bool,
     /// Follow up to three lexically related unresolved direct call paths and
@@ -623,6 +626,14 @@ struct NavExpandArgs {
     context: String,
     #[arg(long = "term", num_args = 1..)]
     terms: Vec<String>,
+    /// Exact task-supplied declaration identity for this term refinement.
+    #[arg(
+        long,
+        value_name = "IDENTIFIER",
+        requires = "terms",
+        conflicts_with_all = ["candidates", "file"]
+    )]
+    decision_identifier: Option<String>,
     /// Select one to three fact-bound decision cards. Repeat for a batch.
     #[arg(long = "candidate", num_args = 1, action = clap::ArgAction::Append)]
     candidates: Vec<String>,
@@ -1985,10 +1996,42 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
     }))
 }
 
+fn navigation_decision_candidate_id(navigation: &Value) -> Option<&str> {
+    (navigation
+        .pointer("/decisionAuthority/status")
+        .and_then(Value::as_str)
+        == Some("SUPPORTED"))
+    .then(|| {
+        navigation
+            .pointer("/decisionAuthority/candidateId")
+            .and_then(Value::as_str)
+    })
+    .flatten()
+}
+
+fn navigation_no_decision_reason(navigation: &Value) -> &'static str {
+    if navigation
+        .pointer("/decisionAuthority/status")
+        .and_then(Value::as_str)
+        == Some("ABSTAIN")
+    {
+        "DECISION_AUTHORITY_ABSTAINED"
+    } else {
+        "NO_CANDIDATE"
+    }
+}
+
 fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
     let include_top_source = args.source;
     let follow_references = args.follow_references;
     let follow_max_roots = args.max_roots.max(4);
+    let decision_identifier = args.decision_identifier;
+    let mut terms = args.terms;
+    if let Some(identifier) = decision_identifier.as_deref()
+        && !terms.iter().any(|term| term == identifier)
+    {
+        terms.push(identifier.to_owned());
+    }
     let intent = args
         .intent
         .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());
@@ -1997,16 +2040,19 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         &args.profile,
         DoctorOperationArg::Analysis,
         intent,
-        args.terms,
+        terms,
         args.max_roots,
     )?;
-    let mut navigation = clew::navigation::query(&opened.context, &[])
-        .map_err(|error| compensate_opened_context(error, &opened))?;
+    let mut navigation = clew::navigation::query_with_decision_identifier(
+        &opened.context,
+        &[],
+        decision_identifier.as_deref(),
+    )
+    .map_err(|error| compensate_opened_context(error, &opened))?;
     if include_top_source {
-        let decision_candidate_id = navigation
-            .pointer("/candidates/0/candidateId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let decision_candidate_id =
+            navigation_decision_candidate_id(&navigation).map(str::to_owned);
+        let no_decision_reason = navigation_no_decision_reason(&navigation);
         let decision_source = decision_candidate_id
             .as_deref()
             .map(|candidate_id| {
@@ -2014,7 +2060,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
             })
             .transpose()
             .map_err(|error| compensate_opened_context(error, &opened))?
-            .unwrap_or_else(|| json!({"status":"UNAVAILABLE","reason":"NO_CANDIDATE"}));
+            .unwrap_or_else(|| json!({"status":"UNAVAILABLE","reason":no_decision_reason}));
         navigation
             .as_object_mut()
             .ok_or_else(|| ClewError::new(ErrorCode::Internal, "navigation result is invalid"))?
@@ -2023,7 +2069,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
             let reference_follow = match decision_candidate_id.as_deref() {
                 None => json!({
                     "status":"UNAVAILABLE",
-                    "reason":"NO_CANDIDATE",
+                    "reason":no_decision_reason,
                     "selectionAuthority":"LEXICAL_QUERY_TERM_OVERLAP",
                     "targetResolution":"UNRESOLVED",
                     "semanticRelation":"UNKNOWN",
@@ -2177,7 +2223,7 @@ fn validate_nav_query_stdout(
     clew::navigation::validate_stdout(result)
 }
 
-fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
+fn nav_expand(mut args: NavExpandArgs) -> Result<Value, ClewError> {
     let (session, _) = SessionAuthority::load(&args.session)?;
     let parent = session.load_context(&args.context)?;
     if !args.candidates.is_empty() {
@@ -2243,6 +2289,12 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         clew::navigation::validate_stdout(&result)?;
         return Ok(result);
     }
+    let decision_identifier = args.decision_identifier.take();
+    if let Some(identifier) = decision_identifier.as_deref()
+        && !args.terms.iter().any(|term| term == identifier)
+    {
+        args.terms.push(identifier.to_owned());
+    }
     if args.source && args.file.is_none() {
         return Err(ClewError::new(
             ErrorCode::InvalidInput,
@@ -2290,11 +2342,12 @@ fn nav_expand(args: NavExpandArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
     )?;
-    let navigation = clew::navigation::expand_delta(
+    let navigation = clew::navigation::expand_delta_with_decision_identifier(
         &parent,
         &context,
         &requested_terms,
         &navigation_facets(&args.facets),
+        decision_identifier.as_deref(),
     )?;
     let result = json!({
         "schema":clew::navigation::NAV_EXPAND_SCHEMA,
@@ -4452,7 +4505,16 @@ mod tests {
             panic!("nav query did not parse as a navigation query");
         };
         assert_eq!(args.max_roots, 4);
+        assert!(args.decision_identifier.is_none());
         assert!(Cli::try_parse_from(base.into_iter().chain(["--source"])).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--decision-identifier",
+                "Target",
+                "--source"
+            ]))
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from(base.into_iter().chain(["--source", "--follow-references"]))
                 .is_ok()
@@ -4473,6 +4535,22 @@ mod tests {
                 "context:authority",
                 "--term",
                 "Caller",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "clew",
+                "nav",
+                "expand",
+                "--session",
+                "session:authority",
+                "--from",
+                "context:authority",
+                "--term",
+                "Target",
+                "--decision-identifier",
+                "Target",
             ])
             .is_ok()
         );
@@ -4587,6 +4665,35 @@ mod tests {
     }
 
     #[test]
+    fn navigation_source_selection_obeys_typed_decision_authority() {
+        let abstained = json!({
+            "decisionAuthority":{
+                "status":"ABSTAIN",
+                "classification":"UNMATCHED_EXPLICIT_TERMS"
+            },
+            "candidates":[{"candidateId":"c:popular-analogue"}]
+        });
+        assert_eq!(navigation_decision_candidate_id(&abstained), None);
+        assert_eq!(
+            navigation_no_decision_reason(&abstained),
+            "DECISION_AUTHORITY_ABSTAINED"
+        );
+
+        let supported = json!({
+            "decisionAuthority":{
+                "status":"SUPPORTED",
+                "candidateId":"c:precise-target"
+            },
+            "candidates":[{"candidateId":"c:popular-analogue"}]
+        });
+        assert_eq!(
+            navigation_decision_candidate_id(&supported),
+            Some("c:precise-target")
+        );
+        assert_eq!(navigation_no_decision_reason(&supported), "NO_CANDIDATE");
+    }
+
+    #[test]
     fn optional_reference_follow_abstains_instead_of_breaking_stdout_budget() {
         let navigation = clew::navigation::agent_card(&json!({
             "schema":clew::navigation::NAV_RESULT_SCHEMA,
@@ -4596,6 +4703,12 @@ mod tests {
             "terms":["target"],
             "candidates":[],
             "candidateCount":{"returned":0,"total":0,"omitted":0},
+            "decisionAuthority":{
+                "schema":clew::navigation::NAV_DECISION_AUTHORITY_SCHEMA,
+                "status":"SUPPORTED",
+                "classification":"UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE",
+                "candidateId":"c:source"
+            },
             "decisionSource":{
                 "candidateId":"c:source",
                 "selectionAuthority":"TOP_CANDIDATE",
@@ -4619,6 +4732,8 @@ mod tests {
             },
             "termAnchors":[],
             "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "queryCoverageTruncated":false,
+            "candidateListTruncated":false,
             "truncated":false,
             "nextAction":{"refine":"nav expand ..."},
             "nextActions":{

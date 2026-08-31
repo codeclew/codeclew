@@ -796,7 +796,7 @@ fn collect_json_strings(
     Ok(())
 }
 
-fn normalize_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+pub(crate) fn normalize_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut terms = BTreeSet::new();
     for value in values {
         let mut current = String::new();
@@ -821,7 +821,7 @@ fn normalize_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String>
     terms.into_iter().collect()
 }
 
-fn normalize_index_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+pub(crate) fn normalize_index_terms<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let values = values.into_iter().collect::<Vec<_>>();
     let mut terms = normalize_terms(values.iter().copied())
         .into_iter()

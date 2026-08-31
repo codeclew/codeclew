@@ -6,11 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const NAV_QUERY_SCHEMA: &str = "codeclew-nav-query/2.0";
 pub const NAV_EXPAND_SCHEMA: &str = "codeclew-nav-expand/2.0";
-pub const NAV_RESULT_SCHEMA: &str = "codeclew-navigation-result/2.0";
-pub const NAV_DELTA_SCHEMA: &str = "codeclew-navigation-delta/2.0";
+pub const NAV_RESULT_SCHEMA: &str = "codeclew-navigation-result/2.1";
+pub const NAV_DELTA_SCHEMA: &str = "codeclew-navigation-delta/2.1";
 pub const NAV_DETAIL_SCHEMA: &str = "codeclew-navigation-detail/1.1";
-pub const NAV_AGENT_CARD_SCHEMA: &str = "codeclew-navigation-agent-card/1.0";
+pub const NAV_AGENT_CARD_SCHEMA: &str = "codeclew-navigation-agent-card/1.1";
 pub const NAV_ACTION_SCHEMA: &str = "codeclew-navigation-actions/1.0";
+pub const NAV_DECISION_AUTHORITY_SCHEMA: &str = "codeclew-navigation-decision-authority/1.0";
 pub const NAV_QUERY_INTENT: &str = "NAVIGATION_QUERY";
 pub const MAX_NAV_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_NAV_CANDIDATES: usize = 3;
@@ -31,8 +32,16 @@ pub enum NavigationFacet {
 }
 
 pub fn query(context: &ContextObject, facets: &[NavigationFacet]) -> Result<Value, ClewError> {
+    query_with_decision_identifier(context, facets, None)
+}
+
+pub fn query_with_decision_identifier(
+    context: &ContextObject,
+    facets: &[NavigationFacet],
+    decision_identifier: Option<&str>,
+) -> Result<Value, ClewError> {
     let retained = retained_context(context)?;
-    let result = assemble(
+    let result = assemble_with_decision_identifier(
         &context.session_id,
         &context.context_id,
         &context.evidence_digest,
@@ -41,6 +50,7 @@ pub fn query(context: &ContextObject, facets: &[NavigationFacet]) -> Result<Valu
         retained,
         retained_query_truncated(context),
         facets,
+        decision_identifier,
     )?;
     validate_stdout(&result)?;
     Ok(result)
@@ -60,6 +70,10 @@ pub fn agent_card(result: &Value) -> Result<Value, ClewError> {
     let decision_source = result
         .get("decisionSource")
         .ok_or_else(|| invalid("navigation result has no decision source"))?;
+    let decision_authority = result
+        .get("decisionAuthority")
+        .ok_or_else(|| invalid("navigation result has no decision authority"))?;
+    validate_agent_card_decision_contract(result, decision_authority, decision_source)?;
     let compact_source = compact_decision_source(decision_source)?;
     let supporting_anchors = result
         .get("termAnchors")
@@ -85,6 +99,14 @@ pub fn agent_card(result: &Value) -> Result<Value, ClewError> {
         .get("truncated")
         .and_then(Value::as_bool)
         .ok_or_else(|| invalid("navigation result has no truncated flag"))?;
+    let query_coverage_truncated = result
+        .get("queryCoverageTruncated")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("navigation result has no query coverage truncation flag"))?;
+    let candidate_list_truncated = result
+        .get("candidateListTruncated")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("navigation result has no candidate list truncation flag"))?;
     let next_action = result
         .get("nextAction")
         .and_then(Value::as_object)
@@ -97,9 +119,12 @@ pub fn agent_card(result: &Value) -> Result<Value, ClewError> {
         "terms":terms,
         "candidates":candidates,
         "candidateCount":candidate_count,
+        "decisionAuthority":decision_authority,
         "decisionSource":compact_source,
         "supportingAnchors":supporting_anchors,
         "completeness":completeness,
+        "queryCoverageTruncated":query_coverage_truncated,
+        "candidateListTruncated":candidate_list_truncated,
         "truncated":truncated,
         "nextAction":next_action,
     });
@@ -114,6 +139,53 @@ pub fn agent_card(result: &Value) -> Result<Value, ClewError> {
             .insert("referenceFollow".into(), reference_follow.clone());
     }
     Ok(card)
+}
+
+fn validate_agent_card_decision_contract(
+    result: &Value,
+    authority: &Value,
+    decision_source: &Value,
+) -> Result<(), ClewError> {
+    if authority.get("schema").and_then(Value::as_str) != Some(NAV_DECISION_AUTHORITY_SCHEMA) {
+        return Err(invalid(
+            "navigation decision authority has an invalid schema",
+        ));
+    }
+    match authority.get("status").and_then(Value::as_str) {
+        Some("ABSTAIN") => {
+            if decision_source.get("status").and_then(Value::as_str) != Some("UNAVAILABLE")
+                || decision_source.get("reason").and_then(Value::as_str)
+                    != Some("DECISION_AUTHORITY_ABSTAINED")
+            {
+                return Err(invalid(
+                    "abstained navigation decision must not carry a decision source",
+                ));
+            }
+            if let Some(reference_follow) = result.get("referenceFollow")
+                && (reference_follow.get("status").and_then(Value::as_str) != Some("UNAVAILABLE")
+                    || reference_follow.get("reason").and_then(Value::as_str)
+                        != Some("DECISION_AUTHORITY_ABSTAINED"))
+            {
+                return Err(invalid(
+                    "abstained navigation decision must not carry reference follow evidence",
+                ));
+            }
+        }
+        Some("SUPPORTED") => {
+            let candidate_id = required_value_string(authority, "candidateId")?;
+            if decision_source.get("candidateId").and_then(Value::as_str) != Some(candidate_id) {
+                return Err(invalid(
+                    "supported navigation decision source does not match its authority",
+                ));
+            }
+        }
+        _ => {
+            return Err(invalid(
+                "navigation decision authority has an invalid status",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn compact_agent_candidate(candidate: &Value) -> Result<Value, ClewError> {
@@ -290,6 +362,16 @@ pub fn expand_delta(
     requested_terms: &[String],
     facets: &[NavigationFacet],
 ) -> Result<Value, ClewError> {
+    expand_delta_with_decision_identifier(parent, child, requested_terms, facets, None)
+}
+
+pub fn expand_delta_with_decision_identifier(
+    parent: &ContextObject,
+    child: &ContextObject,
+    requested_terms: &[String],
+    facets: &[NavigationFacet],
+    decision_identifier: Option<&str>,
+) -> Result<Value, ClewError> {
     if requested_terms.is_empty()
         || parent.session_id != child.session_id
         || child.parent_context_id.as_deref() != Some(parent.context_id.as_str())
@@ -308,7 +390,7 @@ pub fn expand_delta(
         retained_query_truncated(parent),
         &[],
     )?;
-    let child_view = assemble(
+    let child_view = assemble_with_decision_identifier(
         &child.session_id,
         &child.context_id,
         &child.evidence_digest,
@@ -317,6 +399,7 @@ pub fn expand_delta(
         retained_context(child)?,
         retained_query_truncated(child),
         facets,
+        decision_identifier,
     )?;
     let parent_candidates = candidate_map(&parent_view)?;
     let child_candidates = candidate_map(&child_view)?;
@@ -361,7 +444,10 @@ pub fn expand_delta(
         },
         "termAnchors":child_view["termAnchors"],
         "facets":child_view["facets"],
+        "decisionAuthority":child_view["decisionAuthority"],
         "completeness":child_view["completeness"],
+        "queryCoverageTruncated":child_view["queryCoverageTruncated"],
+        "candidateListTruncated":child_view["candidateListTruncated"],
         "truncated":child_view["truncated"],
     });
     validate_stdout(&result)?;
@@ -1529,6 +1615,31 @@ fn assemble(
     query_truncated: bool,
     requested_facets: &[NavigationFacet],
 ) -> Result<Value, ClewError> {
+    assemble_with_decision_identifier(
+        session_id,
+        context_id,
+        evidence_digest,
+        intent,
+        terms,
+        retained,
+        query_truncated,
+        requested_facets,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_with_decision_identifier(
+    session_id: &str,
+    context_id: &str,
+    evidence_digest: &str,
+    intent: &str,
+    terms: &[String],
+    retained: &Value,
+    query_truncated: bool,
+    requested_facets: &[NavigationFacet],
+    decision_identifier: Option<&str>,
+) -> Result<Value, ClewError> {
     let matches = retained
         .get("matches")
         .and_then(Value::as_array)
@@ -1538,11 +1649,28 @@ fn assemble(
         .and_then(Value::as_array)
         .ok_or_else(|| invalid("retained navigation context has no source array"))?;
 
-    let normalized_terms = terms
-        .iter()
-        .map(|term| term.to_lowercase())
-        .filter(|term| !term.is_empty())
+    let normalized_terms = crate::query_v2::normalize_terms(terms.iter().map(String::as_str))
+        .into_iter()
         .collect::<BTreeSet<_>>();
+    if let Some(identifier) = decision_identifier {
+        if identifier.is_empty()
+            || identifier.len() > 1024
+            || identifier.trim() != identifier
+            || identifier.chars().any(char::is_control)
+        {
+            return Err(invalid("navigation decision identifier is invalid"));
+        }
+        let identifier_terms = crate::query_v2::normalize_terms(std::iter::once(identifier));
+        if identifier_terms.is_empty()
+            || identifier_terms
+                .iter()
+                .any(|term| !normalized_terms.contains(term))
+        {
+            return Err(invalid(
+                "navigation decision identifier is not bound to the query terms",
+            ));
+        }
+    }
     let mut ranked_candidates = Vec::new();
     let mut handles = BTreeMap::new();
     for (ordinal, matched) in matches.iter().enumerate() {
@@ -1561,11 +1689,15 @@ fn assemble(
         {
             return Err(invalid("navigation candidate handle collision"));
         }
+        let covered_terms = candidate_authority_term_hits(payload, sources, &normalized_terms);
+        let decision_identifier_match = decision_identifier
+            .is_some_and(|identifier| candidate_matches_declared_identifier(payload, identifier));
         let (term_coverage, name_coverage, occurrences) =
             candidate_relevance(payload, sources, &normalized_terms);
         let (window_coverage, window_occurrences) =
             source_window_relevance(sources, payload, &normalized_terms);
         ranked_candidates.push((
+            usize::from(decision_identifier_match),
             window_coverage,
             term_coverage,
             name_coverage,
@@ -1575,6 +1707,8 @@ fn assemble(
             candidate_id,
             matched,
             payload,
+            covered_terms,
+            decision_identifier_match,
         ));
     }
     ranked_candidates.sort_by(|left, right| {
@@ -1585,13 +1719,40 @@ fn assemble(
             .then_with(|| right.2.cmp(&left.2))
             .then_with(|| right.3.cmp(&left.3))
             .then_with(|| right.4.cmp(&left.4))
-            .then_with(|| left.5.cmp(&right.5))
+            .then_with(|| right.5.cmp(&left.5))
+            .then_with(|| left.6.cmp(&right.6))
     });
     let total_candidates = ranked_candidates.len();
+    let full_coverage_candidate_count = (!normalized_terms.is_empty())
+        .then(|| {
+            ranked_candidates
+                .iter()
+                .filter(|candidate| candidate.10.len() == normalized_terms.len())
+                .count()
+        })
+        .unwrap_or(0);
+    let exact_identifier_candidate_count = ranked_candidates
+        .iter()
+        .filter(|candidate| candidate.0 > 0)
+        .count();
     let mut candidates = Vec::new();
+    let mut returned_candidate_coverage = BTreeMap::new();
+    let mut returned_candidate_exact_identifiers = BTreeMap::new();
     let mut candidate_identities = BTreeSet::new();
-    for (_, _, _, _, _, _, candidate_id, matched, payload) in
-        ranked_candidates.into_iter().take(MAX_NAV_CANDIDATES)
+    for (
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        candidate_id,
+        matched,
+        payload,
+        covered_terms,
+        decision_identifier_match,
+    ) in ranked_candidates.into_iter().take(MAX_NAV_CANDIDATES)
     {
         let fact_key = required_string(matched, "factKey")?;
         let compilation = required_string(matched, "compilation")?;
@@ -1607,6 +1768,9 @@ fn assemble(
             bounded_optional_string(payload.get("symbolIdentity").and_then(Value::as_str), 512);
         let (file, file_truncated) = bounded_optional_string(file, 512);
         let preview = exact_source_preview(sources, payload);
+        returned_candidate_coverage.insert(candidate_id.clone(), covered_terms);
+        returned_candidate_exact_identifiers
+            .insert(candidate_id.clone(), decision_identifier_match);
         candidates.push(json!({
             "candidateId":candidate_id,
             "candidateKey":{"compilation":compilation,"factKey":fact_key},
@@ -1648,6 +1812,20 @@ fn assemble(
         requested_facets.contains(&NavigationFacet::Tests),
     );
 
+    let decision_authority = navigation_decision_authority(
+        session_id,
+        context_id,
+        &normalized_terms,
+        &candidates,
+        &returned_candidate_coverage,
+        &returned_candidate_exact_identifiers,
+        full_coverage_candidate_count,
+        exact_identifier_candidate_count,
+        decision_identifier.is_some(),
+        query_truncated,
+        total_candidates > candidates.len(),
+        retained.get("completeness"),
+    )?;
     let result = json!({
         "schema":NAV_RESULT_SCHEMA,
         "sessionId":session_id,
@@ -1662,6 +1840,9 @@ fn assemble(
             "total":total_candidates,
             "omitted":total_candidates.saturating_sub(candidates.len()),
         },
+        "queryCoverageTruncated":query_truncated,
+        "candidateListTruncated":total_candidates > candidates.len(),
+        "decisionAuthority":decision_authority,
         "facets":{
             "declaration":supported("RETAINED_DECLARATION_FACT"),
             "source":supported("BOUNDED_SESSION_SOURCE"),
@@ -1703,6 +1884,154 @@ fn assemble(
         },
     });
     Ok(result)
+}
+
+fn navigation_decision_authority(
+    session_id: &str,
+    context_id: &str,
+    required_terms: &BTreeSet<String>,
+    candidates: &[Value],
+    returned_candidate_coverage: &BTreeMap<String, BTreeSet<String>>,
+    returned_candidate_exact_identifiers: &BTreeMap<String, bool>,
+    full_coverage_candidate_count: usize,
+    exact_identifier_candidate_count: usize,
+    decision_identifier_declared: bool,
+    query_truncated: bool,
+    candidate_list_truncated: bool,
+    completeness: Option<&Value>,
+) -> Result<Value, ClewError> {
+    let unmatched_terms = completeness
+        .and_then(|value| value.get("unmatchedTerms"))
+        .and_then(Value::as_array)
+        .map(|terms| {
+            terms
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_lowercase)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let returned_coverage = candidates
+        .iter()
+        .map(|candidate| {
+            let candidate_id = required_value_string(candidate, "candidateId")?;
+            let covered_terms = returned_candidate_coverage
+                .get(candidate_id)
+                .ok_or_else(|| internal("returned navigation candidate has no coverage"))?;
+            let decision_identifier_match = returned_candidate_exact_identifiers
+                .get(candidate_id)
+                .ok_or_else(|| {
+                    internal("returned navigation candidate has no exact identifier coverage")
+                })?;
+            let missing_terms = required_terms
+                .difference(covered_terms)
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "candidateId":candidate_id,
+                "coveredTermCount":covered_terms.len(),
+                "missingTermCount":missing_terms.len(),
+                "decisionIdentifierMatch":decision_identifier_match,
+                "complete":missing_terms.is_empty() && !required_terms.is_empty(),
+            }))
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    let exact_identifier_candidate = returned_coverage.iter().find(|candidate| {
+        candidate
+            .get("decisionIdentifierMatch")
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
+    if !required_terms.is_empty()
+        && unmatched_terms.is_empty()
+        && !query_truncated
+        && exact_identifier_candidate_count == 1
+        && exact_identifier_candidate
+            .and_then(|candidate| candidate.get("complete"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        let candidate = exact_identifier_candidate.ok_or_else(|| {
+            internal("unique exact-identifier navigation candidate was not returned")
+        })?;
+        return Ok(json!({
+            "schema":NAV_DECISION_AUTHORITY_SCHEMA,
+            "status":"SUPPORTED",
+            "classification":"UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE",
+            "basis":"EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE",
+            "candidateId":required_value_string(candidate, "candidateId")?,
+            "requiredTermCount":required_terms.len(),
+            "coveredTermCount":required_terms.len(),
+            "returnedCandidateCoverage":returned_coverage,
+            "observedFullCoverageCandidateCount":full_coverage_candidate_count,
+            "observedExactIdentifierCandidateCount":exact_identifier_candidate_count,
+            "queryCoverageTruncated":query_truncated,
+            "candidateListTruncated":candidate_list_truncated,
+        }));
+    }
+
+    let best_candidate_id = candidates
+        .first()
+        .and_then(|candidate| candidate.get("candidateId"))
+        .and_then(Value::as_str);
+    let best_covered_terms = best_candidate_id
+        .and_then(|candidate_id| returned_candidate_coverage.get(candidate_id))
+        .cloned()
+        .unwrap_or_default();
+    let best_missing_terms = required_terms
+        .difference(&best_covered_terms)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let (classification, next_missing_term) = if required_terms.is_empty() {
+        ("NO_EXPLICIT_TERMS", None)
+    } else if !unmatched_terms.is_empty() {
+        (
+            "UNMATCHED_EXPLICIT_TERMS",
+            unmatched_terms.iter().next().cloned(),
+        )
+    } else if query_truncated {
+        (
+            "TRUNCATED_QUERY_COVERAGE",
+            best_missing_terms.iter().next().cloned(),
+        )
+    } else if !decision_identifier_declared {
+        ("NO_DECLARED_DECISION_IDENTIFIER", None)
+    } else if exact_identifier_candidate_count > 1 {
+        ("AMBIGUOUS_EXACT_IDENTIFIER", None)
+    } else if exact_identifier_candidate_count == 0 {
+        ("NO_EXACT_IDENTIFIER", None)
+    } else if exact_identifier_candidate.is_none() {
+        ("EXACT_IDENTIFIER_NOT_RETURNED", None)
+    } else {
+        (
+            "PARTIAL_EXACT_IDENTIFIER_COVERAGE",
+            best_missing_terms.iter().next().cloned(),
+        )
+    };
+    let authority = json!({
+        "schema":NAV_DECISION_AUTHORITY_SCHEMA,
+        "status":"ABSTAIN",
+        "classification":classification,
+        "basis":"EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE",
+        "requiredTermCount":required_terms.len(),
+        "unmatchedTermCount":unmatched_terms.len(),
+        "bestCandidateCoveredTermCount":best_covered_terms.len(),
+        "bestCandidateMissingTermCount":best_missing_terms.len(),
+        "returnedCandidateCoverage":returned_coverage,
+        "observedFullCoverageCandidateCount":full_coverage_candidate_count,
+        "observedExactIdentifierCandidateCount":exact_identifier_candidate_count,
+        "queryCoverageTruncated":query_truncated,
+        "candidateListTruncated":candidate_list_truncated,
+        "refinement":{
+            "kind":"ADD_TASK_DISCRIMINANT",
+            "command":format!(
+                "nav expand --session {session_id} --from {context_id} --term <task-derived-exact-identifier> --decision-identifier <same-task-derived-exact-identifier>"
+            ),
+            "requiredCoverage":next_missing_term.iter().collect::<Vec<_>>(),
+            "instruction":"Add one task-derived exact identifier that disambiguates the missing coverage; if none is available, keep the task unresolved.",
+        },
+    });
+    Ok(authority)
 }
 
 type CandidateKey = (String, String);
@@ -1879,6 +2208,40 @@ fn candidate_relevance(
     (term_coverage, name_coverage, occurrences)
 }
 
+fn candidate_authority_term_hits(
+    payload: &Map<String, Value>,
+    sources: &[Value],
+    terms: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let identity_text = ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let declaration_text = boundary_safe_declaration_text(sources, payload);
+    let mut authority_text = identity_text;
+    if let Some(declaration_text) = declaration_text.as_deref() {
+        authority_text.push(declaration_text);
+    }
+    let lexical_terms = crate::query_v2::normalize_index_terms(authority_text)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    terms
+        .iter()
+        .filter(|term| lexical_terms.contains(term.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn candidate_matches_declared_identifier(
+    payload: &Map<String, Value>,
+    decision_identifier: &str,
+) -> bool {
+    ["name", "qualifiedName", "symbolIdentity"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .any(|candidate| candidate == decision_identifier)
+}
+
 fn source_window_relevance(
     sources: &[Value],
     payload: &Map<String, Value>,
@@ -1941,6 +2304,44 @@ fn exact_declaration_text(sources: &[Value], payload: &Map<String, Value>) -> Op
         .collect::<Vec<_>>();
     let end = start.checked_add(count)?;
     (end <= lines.len()).then(|| lines[start..end].join("\n"))
+}
+
+fn boundary_safe_declaration_text(
+    sources: &[Value],
+    payload: &Map<String, Value>,
+) -> Option<String> {
+    let source = exact_source(sources, payload)?;
+    let text = source.window.get("text").and_then(Value::as_str)?;
+    if source
+        .row
+        .get("completeFile")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && source.window.get("startLine").and_then(Value::as_u64) == Some(1)
+    {
+        let start = payload
+            .get("start")
+            .or_else(|| payload.get("rangeStart"))
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
+        let end = payload
+            .get("end")
+            .or_else(|| payload.get("rangeEnd"))
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok());
+        if let (Some(start), Some(end)) = (start, end)
+            && start < end
+            && end <= text.len()
+            && text.is_char_boundary(start)
+            && text.is_char_boundary(end)
+        {
+            return Some(text[start..end].to_owned());
+        }
+    }
+
+    let declaration = exact_declaration_text(sources, payload)?;
+    let lines = declaration.split('\n').collect::<Vec<_>>();
+    (lines.len() > 2).then(|| lines[1..lines.len() - 1].join("\n"))
 }
 
 fn retained_context(context: &ContextObject) -> Result<&Value, ClewError> {
@@ -2405,13 +2806,14 @@ mod tests {
     #[test]
     fn range_based_syntax_candidate_builds_a_compact_bound_source_card() {
         let retained = projection();
-        let authority = context(
+        let mut authority = context(
             "context:range-source-card",
             None,
             "sha256:evidence",
             retained,
         );
-        let mut result = query(&authority, &[]).unwrap();
+        authority.terms = vec!["Target".into()];
+        let mut result = query_with_decision_identifier(&authority, &[], Some("Target")).unwrap();
         let candidate_id = result["candidates"][0]["candidateId"]
             .as_str()
             .unwrap()
@@ -2635,6 +3037,12 @@ mod tests {
                 }
             ],
             "candidateCount":{"returned":2,"total":4,"omitted":2},
+            "decisionAuthority":{
+                "schema":NAV_DECISION_AUTHORITY_SCHEMA,
+                "status":"SUPPORTED",
+                "classification":"UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE",
+                "candidateId":"c:one"
+            },
             "decisionSource":{
                 "candidateId":"c:one",
                 "selectionAuthority":"TOP_CANDIDATE",
@@ -2662,6 +3070,8 @@ mod tests {
             ],
             "facets":{"callers":{"status":"NOT_REQUESTED"}},
             "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "queryCoverageTruncated":false,
+            "candidateListTruncated":true,
             "truncated":true,
             "nextAction":{"detail":"nav expand ..."},
         });
@@ -2669,6 +3079,10 @@ mod tests {
         let card = agent_card(&result).unwrap();
 
         assert_eq!(card["schema"], NAV_AGENT_CARD_SCHEMA);
+        assert_eq!(
+            card["decisionAuthority"]["classification"],
+            "UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE"
+        );
         assert_eq!(card["candidates"][0]["candidateId"], "c:one");
         assert_eq!(card["candidates"][1]["preview"]["status"], "EXACT");
         assert_eq!(
@@ -2710,6 +3124,17 @@ mod tests {
         assert_eq!(card["supportingAnchors"][0]["file"], "src/service.test.ts");
         assert!(card.get("facets").is_none());
         assert!(canonical::bytes(&card).unwrap().len() < canonical::bytes(&result).unwrap().len());
+
+        let mut conflicting = result.clone();
+        conflicting["decisionAuthority"] = json!({
+            "schema":NAV_DECISION_AUTHORITY_SCHEMA,
+            "status":"ABSTAIN",
+            "classification":"NO_DECLARED_DECISION_IDENTIFIER"
+        });
+        assert_eq!(
+            agent_card(&conflicting).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
     }
 
     #[test]
@@ -2728,12 +3153,20 @@ mod tests {
                 "preview":{"status":"UNAVAILABLE","reason":"NO_EXACT_DECLARATION_WINDOW"}
             }],
             "candidateCount":{"returned":1,"total":1,"omitted":0},
+            "decisionAuthority":{
+                "schema":NAV_DECISION_AUTHORITY_SCHEMA,
+                "status":"SUPPORTED",
+                "classification":"UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE",
+                "candidateId":"c:one"
+            },
             "decisionSource":{
                 "candidateId":"c:one",
                 "source":{"status":"UNSUPPORTED","reason":"NO_EXACT_DECLARATION_WINDOW"}
             },
             "termAnchors":[],
             "completeness":{"status":"CONDITIONAL_TASK","coverage":"PARTIAL","certainty":"UNSURE"},
+            "queryCoverageTruncated":false,
+            "candidateListTruncated":false,
             "truncated":false,
             "nextAction":{"refine":"nav expand ..."},
         });
@@ -4447,6 +4880,329 @@ mod tests {
     }
 
     #[test]
+    fn typed_abstention_blocks_a_popular_analogue_when_explicit_terms_are_unmatched() {
+        let declaration = |name: &str, file: &str, line: u64, identity: &str| {
+            json!({
+                "compilation":"tsconfig:app/tsconfig.json",
+                "factKey":format!("fact:{name}"),
+                "payload":{
+                    "kind":"declaration",
+                    "name":name,
+                    "symbolIdentity":identity,
+                    "file":file,
+                    "startLine":line,
+                    "endLine":line,
+                }
+            })
+        };
+        let retained = json!({
+            "matches":[
+                declaration(
+                    "KafkaFlowExplorerPage",
+                    "src/KafkaFlowExplorerPage.tsx",
+                    1,
+                    "symbol:KafkaFlowExplorerPage"
+                ),
+                declaration(
+                    "DataToolsPage",
+                    "src/DataToolsPage.tsx",
+                    1,
+                    "symbol:DataToolsPage"
+                ),
+                declaration("KafkaPanel", "src/KafkaPanel.tsx", 1, "symbol:KafkaPanel"),
+                declaration("PollingPanel", "src/PollingPanel.tsx", 1, "symbol:PollingPanel"),
+                {
+                    "compilation":"tsconfig:app/tsconfig.json",
+                    "factKey":"edge:data-tools-stale-poll-test",
+                    "payload":{
+                        "kind":"relation",
+                        "relationKind":"TEST_COVERS",
+                        "sourceIdentity":"test:staleOldStreamPollAfterResubscribe",
+                        "targetIdentity":"symbol:DataToolsPage"
+                    }
+                }
+            ],
+            "sources":[
+                {
+                    "fileId":"src/KafkaFlowExplorerPage.tsx",
+                    "contentRef":{"digest":"sha256:popular"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"function KafkaFlowExplorerPage() { kafka(); poll(); kafka(); poll(); }"}]
+                },
+                {
+                    "fileId":"src/DataToolsPage.tsx",
+                    "contentRef":{"digest":"sha256:target"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"function DataToolsPage() { kafka(); poll(); streamPollRequestIdRef.current += 1 }"}]
+                },
+                {
+                    "fileId":"src/KafkaPanel.tsx",
+                    "contentRef":{"digest":"sha256:kafka"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"function KafkaPanel() { kafka() }"}]
+                },
+                {
+                    "fileId":"src/PollingPanel.tsx",
+                    "contentRef":{"digest":"sha256:poll"},
+                    "windows":[{"startLine":1,"endLine":1,"text":"function PollingPanel() { poll() }"}]
+                }
+            ],
+            "completeness":{
+                "status":"CONDITIONAL_TASK",
+                "coverage":"PARTIAL",
+                "certainty":"UNSURE",
+                "unmatchedTerms":["subscription"]
+            },
+            "truncated":false
+        });
+        let result = assemble(
+            "session:frozen-docs",
+            "context:frozen-docs",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &["kafka".into(), "poll".into(), "subscription".into()],
+            &retained,
+            false,
+            &[NavigationFacet::Tests],
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["candidateCount"],
+            json!({"returned":3,"total":4,"omitted":1})
+        );
+        assert_eq!(
+            result["candidates"][0]["displayName"],
+            "KafkaFlowExplorerPage"
+        );
+        assert_eq!(result["decisionAuthority"]["status"], "ABSTAIN");
+        assert_eq!(
+            result["decisionAuthority"]["classification"],
+            "UNMATCHED_EXPLICIT_TERMS"
+        );
+        assert_eq!(
+            result["decisionAuthority"]["refinement"]["requiredCoverage"],
+            json!(["subscription"])
+        );
+        assert!(
+            !canonical::compact(&result["decisionAuthority"])
+                .unwrap()
+                .contains(":null")
+        );
+        assert_eq!(
+            result["facets"]["tests"]["edges"].as_array().unwrap().len(),
+            1
+        );
+        validate_stdout(&result).unwrap();
+    }
+
+    #[test]
+    fn declared_identifier_beats_a_popular_analogue_without_raising_the_cap() {
+        let declaration = |name: &str, file: &str, end_line: u64| {
+            json!({
+                "compilation":"cargo:demo",
+                "factKey":format!("fact:{name}"),
+                "payload":{
+                    "kind":"declaration",
+                    "name":name,
+                    "symbolIdentity":format!("symbol:{name}"),
+                    "file":file,
+                    "startLine":1,
+                    "endLine":end_line,
+                }
+            })
+        };
+        let retained = json!({
+            "matches":[
+                declaration("PopularAnalogue", "src/popular.rs", 4),
+                declaration("PreciseTarget", "src/target.rs", 5),
+                declaration("AlphaOnly", "src/alpha.rs", 3),
+                declaration("BetaOnly", "src/beta.rs", 3),
+            ],
+            "sources":[
+                {
+                    "fileId":"src/popular.rs",
+                    "contentRef":{"digest":"sha256:popular"},
+                    "windows":[{"startLine":1,"endLine":4,"text":"fn PopularAnalogue() {\n alpha(); beta(); alpha(); beta();\n alpha(); beta();\n}"}]
+                },
+                {
+                    "fileId":"src/target.rs",
+                    "contentRef":{"digest":"sha256:target"},
+                    "windows":[{"startLine":1,"endLine":5,"text":"fn PreciseTarget() {\n alpha();\n beta();\n gamma();\n}"}]
+                },
+                {
+                    "fileId":"src/alpha.rs",
+                    "contentRef":{"digest":"sha256:alpha"},
+                    "windows":[{"startLine":1,"endLine":3,"text":"fn AlphaOnly() {\n alpha();\n}"}]
+                },
+                {
+                    "fileId":"src/beta.rs",
+                    "contentRef":{"digest":"sha256:beta"},
+                    "windows":[{"startLine":1,"endLine":3,"text":"fn BetaOnly() {\n beta();\n}"}]
+                }
+            ],
+            "completeness":{
+                "status":"COMPLETE_TASK",
+                "coverage":"QUERY_COMPLETE",
+                "certainty":"VERIFIED",
+                "unmatchedTerms":[]
+            },
+            "truncated":false
+        });
+        let result = assemble_with_decision_identifier(
+            "session:adversarial",
+            "context:adversarial",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &[
+                "PreciseTarget".into(),
+                "alpha".into(),
+                "beta".into(),
+                "gamma".into(),
+            ],
+            &retained,
+            false,
+            &[],
+            Some("PreciseTarget"),
+        )
+        .unwrap();
+
+        assert_eq!(result["candidates"][0]["displayName"], "PreciseTarget");
+        assert_eq!(
+            result["decisionAuthority"]["returnedCandidateCoverage"][0]["complete"],
+            true
+        );
+        assert_eq!(
+            result["candidateCount"],
+            json!({"returned":3,"total":4,"omitted":1})
+        );
+        assert_eq!(result["decisionAuthority"]["status"], "SUPPORTED");
+        assert_eq!(
+            result["decisionAuthority"]["classification"],
+            "UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE"
+        );
+        assert_eq!(
+            result["decisionAuthority"]["candidateId"],
+            result["candidates"][0]["candidateId"]
+        );
+        assert_eq!(result["queryCoverageTruncated"], false);
+        assert_eq!(result["candidateListTruncated"], true);
+        assert_eq!(result["truncated"], true);
+        validate_stdout(&result).unwrap();
+
+        let generic_only = assemble(
+            "session:adversarial",
+            "context:generic-only",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &["alpha".into(), "beta".into(), "gamma".into()],
+            &retained,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(generic_only["decisionAuthority"]["status"], "ABSTAIN");
+        assert_eq!(
+            generic_only["decisionAuthority"]["classification"],
+            "NO_DECLARED_DECISION_IDENTIFIER"
+        );
+
+        let phrase = assemble_with_decision_identifier(
+            "session:adversarial",
+            "context:phrase",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &["PreciseTarget alpha-beta gamma".into()],
+            &retained,
+            false,
+            &[],
+            Some("PreciseTarget"),
+        )
+        .unwrap();
+        assert_eq!(phrase["decisionAuthority"]["requiredTermCount"], 4);
+        assert_eq!(phrase["decisionAuthority"]["status"], "SUPPORTED");
+    }
+
+    #[test]
+    fn same_line_neighbor_cannot_complete_declared_identifier_coverage() {
+        let retained = json!({
+            "matches":[{
+                "compilation":"tsconfig:app/tsconfig.json",
+                "factKey":"fact:target",
+                "payload":{
+                    "kind":"declaration",
+                    "name":"Target",
+                    "symbolIdentity":"symbol:Target",
+                    "file":"src/target.ts",
+                    "startLine":1,
+                    "endLine":1
+                }
+            }],
+            "sources":[{
+                "fileId":"src/target.ts",
+                "contentRef":{"digest":"sha256:source"},
+                "windows":[{
+                    "startLine":1,
+                    "endLine":1,
+                    "text":"function Target() {} function Poll() {}"
+                }]
+            }],
+            "completeness":{
+                "status":"COMPLETE_TASK",
+                "coverage":"QUERY_COMPLETE",
+                "certainty":"VERIFIED",
+                "unmatchedTerms":[]
+            },
+            "truncated":false
+        });
+        let result = assemble_with_decision_identifier(
+            "session:same-line",
+            "context:same-line",
+            "sha256:evidence",
+            NAV_QUERY_INTENT,
+            &["Target".into(), "Poll".into()],
+            &retained,
+            false,
+            &[],
+            Some("Target"),
+        )
+        .unwrap();
+
+        assert_eq!(result["decisionAuthority"]["status"], "ABSTAIN");
+        assert_eq!(
+            result["decisionAuthority"]["classification"],
+            "PARTIAL_EXACT_IDENTIFIER_COVERAGE"
+        );
+        assert_eq!(
+            result["decisionAuthority"]["returnedCandidateCoverage"][0]["missingTermCount"],
+            1
+        );
+    }
+
+    #[test]
+    fn declared_identifier_is_case_sensitive_and_never_inherited_from_owner() {
+        let payload = |value: Value| value.as_object().unwrap().clone();
+
+        assert!(candidate_matches_declared_identifier(
+            &payload(json!({"name":"Target"})),
+            "Target"
+        ));
+        assert!(!candidate_matches_declared_identifier(
+            &payload(json!({"name":"target"})),
+            "Target"
+        ));
+        assert!(!candidate_matches_declared_identifier(
+            &payload(json!({"name":"child","ownerIdentity":"Target"})),
+            "Target"
+        ));
+        assert!(candidate_matches_declared_identifier(
+            &payload(json!({"qualifiedName":"pkg.Target"})),
+            "pkg.Target"
+        ));
+        assert!(candidate_matches_declared_identifier(
+            &payload(json!({"symbolIdentity":"symbol:Target"})),
+            "symbol:Target"
+        ));
+    }
+
+    #[test]
     fn decision_card_relevance_does_not_leak_from_a_distant_same_file_window() {
         let retained = json!({
             "matches":[
@@ -4777,6 +5533,11 @@ mod tests {
         assert_eq!(result["candidateDelta"]["unchangedCount"], 1);
         assert_eq!(result["parentEvidenceDigest"], "sha256:parent");
         assert_eq!(result["evidenceDigest"], "sha256:child");
+        assert_eq!(
+            result["decisionAuthority"]["schema"],
+            NAV_DECISION_AUTHORITY_SCHEMA
+        );
+        assert_eq!(result["decisionAuthority"]["status"], "ABSTAIN");
     }
 
     #[test]

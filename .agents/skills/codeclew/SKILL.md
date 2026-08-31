@@ -96,12 +96,34 @@ recursion, collection ordering, representation, failure type, and timing are
 not interchangeable evidence and must not be closed as one vague item.
 
 The first response contains at most three fact-bound decision cards with exact
-one-line previews. `--source` returns a compact, evidence-bound agent card: the
-exact retained source and declaration-to-window bindings for the highest-ranked
-card, attested previews for alternatives, and only anchors outside that source
-window. Treat its `completeness` and `truncated` fields as authoritative; the
-full immutable evidence remains bound by `evidenceDigest`. Omit `--source` when
-names and locations are enough.
+one-line previews. Generic terms produce discovery cards only. When the task
+itself supplies an exact declaration name or full identity, repeat it with
+`--decision-identifier`; never invent one from a top-ranked card. With
+`--source`, a compact evidence-bound agent card contains exact retained source
+and declaration-to-window bindings only for a supported decision, attested
+previews for alternatives, and anchors outside that source window. Otherwise
+`decisionSource` is explicitly unavailable. Omit `--source` when names and
+locations are enough.
+Treat `decisionAuthority.schema=codeclew-navigation-decision-authority/1.0` as
+the authority for promoting one discovery card into the task's selected code
+identity. `status=SUPPORTED` with
+`classification=UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE` means only that one
+retained declaration exactly matches the caller-declared identifier and its
+boundary-safe evidence covers the normalized query terms. It does not prove the
+private checklist, a relation, or a test outcome. When `status=ABSTAIN`, every
+returned card is provisional discovery evidence: never turn the first card or
+its local mechanism into a task-level conclusion and do not follow references
+from it. Execute the single structured `refinement` only when the task supplies
+a genuinely discriminating exact identifier; pass it both as `--term` and
+`--decision-identifier`. Otherwise mark candidate identity and dependent
+checklist items `UNPROVEN` and report the named missing, unmatched, ambiguous,
+or truncated coverage. Do not repeat a generic unmatched term.
+`returnedCandidateCoverage` is bounded lexical coverage of exact identity text,
+an exact full-file byte range when available, or conservative interior
+declaration lines; it is not semantic correctness or proof that omitted
+candidates are absent. The legacy `truncated` flag combines query and card-list
+truncation; use `queryCoverageTruncated` for authority and
+`candidateListTruncated` for presentation loss.
 Treat `nextActions.schema=codeclew-navigation-actions/1.0` as the structured
 command contract while legacy `nextAction` strings remain compatible. In
 particular, `exactSource.sameFileRequired=true` means every repeated term must have
@@ -192,10 +214,12 @@ Use this command-selection loop while checklist items remain open:
    helper is not a new checklist item. Reserve the remaining command budget for
    explicit open items; if it cannot close one, report that item as unproven.
 
-Automatic `nav query --follow-references` follows lexical overlap from the
-automatically ranked top card. Omit it when candidate identity matters; select
-the intended card first and then use explicit retained-reference follow. Never
-present automatic follow as semantic resolution.
+Automatic `nav query --follow-references` is available only from a
+`SUPPORTED` decision whose exact identity was supplied with
+`--decision-identifier`; it is unavailable for provisional ranked cards. It
+still follows lexical overlap and remains unresolved, so use explicit
+retained-reference choices when a particular helper identity matters. Never
+present either form of follow as semantic resolution.
 
 When a selected card reports `referenceChoices.status=SUPPORTED` and an open
 checklist item depends on a helper, follow one to three relevant retained
