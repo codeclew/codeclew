@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="An interactive, evidence-bound documentation example for Codeclew itself.">
+    <meta name="theme-color" content="#0b0d0c">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <title>Codeclew — documentation example</title>
+  </head>
+  <body>
+    <header class="nav shell">
+      <a class="brand" href="./index.html" aria-label="Codeclew home">
+        <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg>
+        <span>Codeclew</span>
+      </a>
+      <nav aria-label="Primary navigation"><a href="./index.html">Overview</a><a href="./evidence.html">Evidence</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
+    </header>
+
+    <main class="docs-page shell">
+      <section class="docs-hero">
+        <div class="kicker">Evidence-bound documentation example</div>
+        <h1>Follow one<br><em>computational thread.</em></h1>
+        <p class="lede">This page documents Codeclew with Codeclew's released public contract. Select a node to see the claim, the exact supporting fragment, its authority, and what it does not establish.</p>
+        <div class="docs-note"><b>Generation boundary.</b> This is contract-level self-documentation at repository revision <code>1035a2a</code>. A fresh code-level self-index stopped at a bounded catalog resource limit, so this page makes no new internal implementation claims.</div>
+      </section>
+
+      <section class="docs-controls" aria-label="Documentation detail level">
+        <div>
+          <span class="control-label">Detail level</span>
+          <div class="segmented" role="group" aria-label="Choose documentation detail">
+            <button type="button" data-doc-level="overview">Overview</button>
+            <button type="button" data-doc-level="engineering" aria-pressed="true">Engineering</button>
+            <button type="button" data-doc-level="evidence">Evidence</button>
+          </div>
+        </div>
+        <a class="machine-link" href="./evidence/codeclew-self-documentation.json">Machine-readable claims <span>→</span></a>
+      </section>
+
+      <section class="docs-workbench" data-doc-detail="engineering">
+        <div class="thread-panel">
+          <div class="panel-heading"><span>Scenario</span><b>From intent to a safely published change</b></div>
+          <div class="thread-graph" aria-label="Codeclew change lifecycle graph">
+            <button class="thread-node is-active" type="button" data-doc-node="admit"><small>01 · Authority</small><b>Admit</b><span>Bind release, repo, ref, language and compilation.</span></button>
+            <span class="thread-arrow" aria-hidden="true">→</span>
+            <button class="thread-node" type="button" data-doc-node="navigate"><small>02 · Discover</small><b>Navigate</b><span>Return bounded fact-bound decision cards.</span></button>
+            <span class="thread-arrow" aria-hidden="true">→</span>
+            <button class="thread-node" type="button" data-doc-node="select"><small>03 · Decide</small><b>Select exact source</b><span>Resolve one declaration or fail with a typed result.</span></button>
+            <span class="thread-arrow" aria-hidden="true">→</span>
+            <button class="thread-node" type="button" data-doc-node="document"><small>04 · Explain</small><b>Record evidence</b><span>Keep proven facts separate from obligations.</span></button>
+            <span class="thread-arrow" aria-hidden="true">→</span>
+            <button class="thread-node" type="button" data-doc-node="prepare"><small>05 · Isolate</small><b>Prepare</b><span>Validate a closed plan in a candidate worktree.</span></button>
+            <span class="thread-arrow" aria-hidden="true">→</span>
+            <button class="thread-node" type="button" data-doc-node="publish"><small>06 · Mutate</small><b>Publish</b><span>Recheck freshness and require explicit approval.</span></button>
+            <div class="thread-branch" aria-hidden="true"><span>↘</span></div>
+            <button class="thread-node recovery-node" type="button" data-doc-node="recover"><small>07 · Exception</small><b>Recover or stop</b><span>Preserve developer work when authority changes.</span></button>
+          </div>
+          <div class="dot-source" aria-label="DOT representation">
+            <div><span>DOT view</span><button type="button" id="toggle-dot" aria-expanded="false">Show</button></div>
+            <pre id="dot-code" hidden>digraph safe_change {
+  Admit -&gt; Navigate -&gt; SelectExactSource -&gt; RecordEvidence;
+  RecordEvidence -&gt; Prepare -&gt; Publish;
+  Publish -&gt; RecoverOrStop [label="authority changed"];
+}</pre>
+          </div>
+        </div>
+
+        <aside class="evidence-inspector" aria-live="polite">
+          <div class="inspector-topline"><span id="node-step">01 · Authority</span><span class="authority-badge" id="node-authority">Released contract</span></div>
+          <h2 id="node-title">Admit the exact task authority</h2>
+          <p class="node-summary" id="node-summary">Codeclew starts from one installed release, repository, target ref, language and compilation instead of inferring a convenient project boundary.</p>
+          <div class="engineering-detail">
+            <h3>Mechanism</h3>
+            <p id="node-mechanism">The admission result must report RELEASE runtime authority, the installed launcher and no source fallback.</p>
+            <pre><code id="node-command">clew context open --repo … --target-ref … --language … --compilation …</code></pre>
+          </div>
+          <div class="evidence-detail">
+            <h3>Bound fact</h3>
+            <blockquote id="node-excerpt">Require runtimeMode=RELEASE, launcherAuthority=INSTALLED_RELEASE, and sourceFallbackAllowed=false.</blockquote>
+            <div class="evidence-meta"><span id="node-kind">Public agent contract</span><span id="node-certainty">DECLARED · EXACT REVISION</span></div>
+            <a id="node-source" href="https://github.com/codeclew/codeclew/blob/1035a2aa51528d5b328d951f916c1aa86151c84b/.agents/skills/codeclew/SKILL.md#L20-L43">Open supporting fragment <span>↗</span></a>
+          </div>
+          <div class="node-limit"><b>Boundary</b><p id="node-limit">This proves the released task-admission contract. It does not prove that every repository is supported or that a later analysis is complete.</p></div>
+        </aside>
+      </section>
+
+      <section class="docs-takeaway">
+        <div><div class="kicker">Why this format matters</div><h2>Documentation remains useful when confidence is local.</h2></div>
+        <div><p>A reader can inspect each statement independently. A released contract, a syntax observation, a compiler fact and an unresolved obligation do not inherit one another's confidence merely because they appear in the same graph.</p><a href="./evidence.html">See measured product evidence <span>→</span></a></div>
+      </section>
+    </main>
+
+    <footer class="shell"><span>Codeclew · Apache-2.0</span><div><a href="./index.html">Home</a><a href="./evidence.html">Evidence</a><a href="https://github.com/codeclew/codeclew">Source</a></div></footer>
+    <script src="./app.js" defer></script>
+    <script src="./documentation.js" defer></script>
+  </body>
+</html>

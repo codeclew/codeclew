@@ -1,0 +1,26 @@
+{
+  "schema": "codeclew-public-documentation-example/1.0",
+  "title": "From intent to a safely published change",
+  "repositoryRevision": "1035a2aa51528d5b328d951f916c1aa86151c84b",
+  "authority": "released public contract and repository documentation",
+  "generationBoundary": {
+    "freshCodeLevelSelfIndex": false,
+    "reason": "RESOURCE_LIMIT: CAS catalog snapshot exceeds its bounded size",
+    "fallbackSourceCrawlUsed": false,
+    "claimBoundary": "No new internal implementation claims are made."
+  },
+  "nodes": [
+    {"id":"admit","authority":"RELEASED_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L20-L43"},
+    {"id":"navigate","authority":"RELEASED_CONTRACT","evidence":"README.md#L72-L95"},
+    {"id":"select","authority":"RELEASED_CONTRACT","evidence":"README.md#L109-L126"},
+    {"id":"document","authority":"AGENT_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L245-L267"},
+    {"id":"prepare","authority":"MUTATION_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L286-L299"},
+    {"id":"publish","authority":"MUTATION_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L295-L304"},
+    {"id":"recover","authority":"RECOVERY_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L312-L334"}
+  ],
+  "limitations": [
+    "Contract documentation is not an execution trace.",
+    "The graph does not prove support for every repository or task.",
+    "Syntax, compiler, and runtime evidence must retain their own authority in generated project documentation."
+  ]
+}
