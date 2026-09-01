@@ -52,6 +52,7 @@ The safe cleanup requested on 2026-09-01 produced this current local state:
 | Status | Meaning | Default action |
 |---|---|---|
 | `INTEGRATED` | The recorded tip is an ancestor of `origin/main`. | Branch ref may be removed after worktree and evidence checks. |
+| `STAGED_FOR_MAIN` | The product slice is committed and gated on the current integration branch but is not yet in `origin/main`. | Preserve the integration branch and publish only after the final combined gate. |
 | `PATCH_EQUIVALENT` | The commit identity differs, but Git patch comparison finds the change in `origin/main`. | Confirm behavior, then remove the redundant ref. |
 | `PRODUCT_CANDIDATE` | The branch contains product changes not present in `origin/main`. | Review against current main, run its focused gate, then cherry-pick or rebase the minimal coherent slice. |
 | `SUPERSEDED` | A later branch contains the intended fix or a hardened replacement. | Do not merge; retain only until the successor is integrated and evidence is located. |
@@ -79,6 +80,35 @@ The local `main` is `LOCAL_DIVERGED`: at this snapshot it was one commit ahead
 of and 59 commits behind `origin/main`. It is not an integration authority and
 may also contain unrelated working-copy changes.
 
+## Current integration batch
+
+`codex/branch-map-20260901` stages the following work for `main`:
+
+- `9611a1c`: this branch inventory and the safe-cleanup record;
+- `af857a9`, `c19c18f`, `f85e13e`: explicit navigation decision
+  authority, fail-closed refinement, and the matching embedded skill digest;
+- `e8045aa`, `df505c7`: sealed TypeScript/Vitest test-scope location and
+  source-candidate evidence binding.
+
+The navigation slice passed 57 library navigation tests, two CLI navigation
+tests, and the embedded skill digest test. The TypeScript slice passed 18
+`source_locate` unit tests and two managed CLI tests. These slices are
+`STAGED_FOR_MAIN`; this statement does not make their source branches product
+authorities.
+
+Two apparent candidates required no product code transfer:
+
+- The behavior of `codex/kotlin-relation-coordinate-domain-20260830` is already
+  present in `origin/main` in a newer form, including UTF-16 to UTF-8
+  normalization, fail-closed invalid-coordinate handling, and focused Unicode
+  and surrogate tests.
+- The three Gradle behaviors from `research/q1-gradle-model-integration` are
+  already present in `origin/main`: selected classpath build dependencies are
+  materialized, the target compile task is excluded, and the regression fixture
+  runs offline. Replaying `69ad2c0` while preserving current hardening produced
+  an empty diff. The focused multi-module Gradle test passed on this integration
+  branch.
+
 ## Product integration queue
 
 These branches contain the clearest unintegrated product value. The commit
@@ -88,10 +118,7 @@ counts are relative to the snapshot authority and overlap between branches.
 |---:|---|---:|---:|---:|---|---|---|
 | 1 | `codex/q1-roadmap` | `cc1341b` | 31 | 16 | `PRUNABLE` | Bounded navigation, exact selection, source windows, reference following, and evidence coverage. | Treat as the main navigation stack. Rebase and gate as milestones; do not reconstruct it from descendant research branches. |
 | 2 | `research/launchpad-literal-locate` | `4cef051` | 30 | 16 | `PRUNABLE` | Snapshot-bound direct Git literal navigation. | Resolve the Q1 stack first, then review only the literal-navigation delta (`2ab5347`, `4cef051`). |
-| 3 | `codex/product-recovery-integration-20260831` | `f4e06e2` | 5 | 5 | `VALID` | Fail-closed navigation authority/refinement and sealed TypeScript test evidence. | Review the five commits individually against current navigation schemas; keep research evidence separate from runtime changes. |
-| 4 | `research/q1-gradle-model-integration` | `457d9b7` | 4 | 16 | `VALID` | Materialized Gradle project dependencies, offline regression coverage, and target-compile exclusion. | This is the hardened Gradle candidate. Resolve its `dd6080d` navigation base, then take `69ad2c0`, `523c70d`, and `457d9b7` together. |
-| 5 | `codex/kotlin-relation-coordinate-domain-20260830` | `7b8b6cd` | 1 | 16 | `PRUNABLE` | Normalizes all Kotlin FIR positional coordinates from UTF-16 to UTF-8. | Rebase the focused fix, rebuild trusted workers, and rerun Unicode relation validation. |
-| 6 | `research/rank2-k2-exact-target` | `1389dc7` | 16 | 16 | `PRUNABLE` | Exact FIR targets, stable owners, argument mapping, nested JVM descriptors, and worker receipts. | Extract independently justified Kotlin product commits. Never merge the whole research history as one unit. |
+| 3 | `research/rank2-k2-exact-target` | `1389dc7` | 16 | 16 | `PRUNABLE` | Exact FIR targets, stable owners, argument mapping, nested JVM descriptors, and worker receipts. | Extract independently justified Kotlin product commits. Never merge the whole research history as one unit. |
 
 The ordering expresses dependency and review safety, not a promise to merge
 every candidate. A candidate is removed from this queue only after one of
@@ -102,8 +129,10 @@ with rationale, or retained as research-only.
 
 | Branch | Tip | Status | Successor or reason |
 |---|---:|---|---|
-| `research/accidental-gradle-fix-preserve` | `f76deb3` | `SUPERSEDED` | Early producer-materialization patch; use `research/q1-gradle-model-integration`. |
-| `research/gradle-model-project-deps` | `0e0914a` | `SUPERSEDED` | Intermediate two-commit Gradle variant; hardened in `research/q1-gradle-model-integration`. |
+| `codex/kotlin-relation-coordinate-domain-20260830` | `7b8b6cd` | `SUPERSEDED` | The coordinate normalization and adversarial tests already exist in newer `origin/main` implementations. |
+| `research/q1-gradle-model-integration` | `457d9b7` | `SUPERSEDED` | Its Gradle product behavior already exists in `origin/main`; its remaining navigation parent belongs to the separate Q1 roadmap. |
+| `research/accidental-gradle-fix-preserve` | `f76deb3` | `SUPERSEDED` | Early producer-materialization patch; current `origin/main` contains the hardened behavior. |
+| `research/gradle-model-project-deps` | `0e0914a` | `SUPERSEDED` | Intermediate Gradle variant; current `origin/main` contains the hardened behavior. |
 | `research/rank2-k2-integration` | `0f1aeeb` | `SUPERSEDED` | Intermediate K2/Gradle integration tip; later exact-target work contains the useful product slices. |
 | `research/rank2-k2-release-preflight` | `0f1aeeb` | `SUPERSEDED` | Same intermediate tip as `research/rank2-k2-integration`. |
 
