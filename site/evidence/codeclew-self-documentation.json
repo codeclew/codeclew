@@ -1,13 +1,14 @@
 {
   "schema": "codeclew-public-documentation-example/1.0",
   "title": "From intent to a safely published change",
-  "repositoryRevision": "1035a2aa51528d5b328d951f916c1aa86151c84b",
-  "authority": "released public contract and repository documentation",
+  "repositoryRevision": "6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1",
+  "authority": "released public contract, exact Kotlin source fragments, and focused executable checks",
   "generationBoundary": {
-    "freshCodeLevelSelfIndex": false,
-    "reason": "RESOURCE_LIMIT: CAS catalog snapshot exceeds its bounded size",
-    "fallbackSourceCrawlUsed": false,
-    "claimBoundary": "No new internal implementation claims are made."
+    "kotlinConcerns": 5,
+    "focusedChecksPassed": 16,
+    "focusedChecksFailed": 0,
+    "codeFragmentsVisible": true,
+    "methodology": "https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf"
   },
   "nodes": [
     {"id":"admit","authority":"RELEASED_CONTRACT","evidence":".agents/skills/codeclew/SKILL.md#L20-L43"},

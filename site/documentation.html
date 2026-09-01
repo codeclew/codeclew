@@ -22,23 +22,23 @@
       <section class="docs-hero">
         <div class="kicker">Evidence-bound documentation example</div>
         <h1>Follow one<br><em>computational thread.</em></h1>
-        <p class="lede">This page documents Codeclew with Codeclew's released public contract. Select a node to see the claim, the exact supporting fragment, its authority, and what it does not establish.</p>
-        <div class="docs-note"><b>Generation boundary.</b> This is contract-level self-documentation at repository revision <code>1035a2a</code>. A fresh code-level self-index stopped at a bounded catalog resource limit, so this page makes no new internal implementation claims.</div>
+        <p class="lede">This page documents Codeclew with evidence from its released contract and Kotlin implementation. Select a node, then choose Evidence to inspect the exact supporting code, its authority, digest and local boundary.</p>
+        <div class="docs-note"><b>Kotlin evidence study.</b> Five representative engineering concerns are bound to exact source fragments and 16/16 focused checks at repository revision <code>6281138</code>. The full method and limitations are recorded in the PDF paper.</div>
       </section>
 
       <section class="docs-controls" aria-label="Documentation detail level">
         <div>
           <span class="control-label">Detail level</span>
           <div class="segmented" role="group" aria-label="Choose documentation detail">
-            <button type="button" data-doc-level="overview">Overview</button>
-            <button type="button" data-doc-level="engineering" aria-pressed="true">Engineering</button>
-            <button type="button" data-doc-level="evidence">Evidence</button>
+            <button type="button" data-doc-level="overview" aria-pressed="false">Overview</button>
+            <button type="button" data-doc-level="engineering" aria-pressed="false">Engineering</button>
+            <button type="button" data-doc-level="evidence" aria-pressed="true">Evidence</button>
           </div>
         </div>
         <a class="machine-link" href="./evidence/codeclew-self-documentation.json">Machine-readable claims <span>→</span></a>
       </section>
 
-      <section class="docs-workbench" data-doc-detail="engineering">
+      <section class="docs-workbench" data-doc-detail="evidence">
         <div class="thread-panel">
           <div class="panel-heading"><span>Scenario</span><b>From intent to a safely published change</b></div>
           <div class="thread-graph" aria-label="Codeclew change lifecycle graph">
@@ -78,8 +78,14 @@
           <div class="evidence-detail">
             <h3>Bound fact</h3>
             <blockquote id="node-excerpt">Require runtimeMode=RELEASE, launcherAuthority=INSTALLED_RELEASE, and sourceFallbackAllowed=false.</blockquote>
+            <h3>Source fragment</h3>
+            <pre class="evidence-code"><code id="node-code">{
+  "runtimeMode": "RELEASE",
+  "launcherAuthority": "INSTALLED_RELEASE",
+  "sourceFallbackAllowed": false
+}</code></pre>
             <div class="evidence-meta"><span id="node-kind">Public agent contract</span><span id="node-certainty">DECLARED · EXACT REVISION</span></div>
-            <a id="node-source" href="https://github.com/codeclew/codeclew/blob/1035a2aa51528d5b328d951f916c1aa86151c84b/.agents/skills/codeclew/SKILL.md#L20-L43">Open supporting fragment <span>↗</span></a>
+            <a id="node-source" href="https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/.agents/skills/codeclew/SKILL.md#L20-L43">Open supporting fragment <span>↗</span></a>
           </div>
           <div class="node-limit"><b>Boundary</b><p id="node-limit">This proves the released task-admission contract. It does not prove that every repository is supported or that a later analysis is complete.</p></div>
         </aside>
@@ -87,7 +93,7 @@
 
       <section class="docs-takeaway">
         <div><div class="kicker">Why this format matters</div><h2>Documentation remains useful when confidence is local.</h2></div>
-        <div><p>A reader can inspect each statement independently. A released contract, a syntax observation, a compiler fact and an unresolved obligation do not inherit one another's confidence merely because they appear in the same graph.</p><a href="./evidence.html">See measured product evidence <span>→</span></a></div>
+        <div><p>A reader can inspect each statement independently. A released contract, a syntax observation, a compiler fact and an unresolved obligation do not inherit one another's confidence merely because they appear in the same graph.</p><a href="./evidence.html">See measured product evidence <span>→</span></a><br><a href="https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf">Read the PDF study <span>→</span></a></div>
       </section>
     </main>
 

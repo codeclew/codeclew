@@ -1,0 +1,59 @@
+{
+  "schema": "codeclew-kotlin-evidence-sample/1.0",
+  "date": "2026-09-01",
+  "purpose": "Small product-value study; not a publication-grade agent benchmark.",
+  "sourceAuthority": {
+    "repository": "codeclew/codeclew",
+    "revision": "6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1",
+    "profile": "kotlin-2.4.10-gradle-single",
+    "compilation": ":workers:kotlin/main"
+  },
+  "sample": {
+    "selection": "Five manually selected, practically distinct Kotlin engineering concerns.",
+    "concernCount": 5,
+    "focusedTestCount": 16,
+    "focusedTestFailures": 0,
+    "focusedTestSkipped": 0,
+    "warmFocusedDurationMillis": 784,
+    "concerns": [
+      {"id":"K1","name":"compiler compatibility policy","tests":4,"source":"workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt#L114-L174"},
+      {"id":"K2","name":"UTF-16 to UTF-8 relation coordinates","tests":6,"source":"workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt#L344-L405"},
+      {"id":"K3","name":"Maven reactor authority","tests":1,"source":"workers/kotlin/src/main/kotlin/dev/semanticthread/worker/MavenProjectModel.kt#L502-L542"},
+      {"id":"K4","name":"bounded local control-flow graphs","tests":3,"source":"workers/kotlin/src/main/kotlin/dev/semanticthread/worker/LocalCfgIndex.kt#L118-L150"},
+      {"id":"K5","name":"semantic input manifest authority","tests":2,"source":"workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SemanticInputManifestAuthority.kt#L11-L25"}
+    ]
+  },
+  "textSearchBaseline": {
+    "commandClass": "rg -n with the same three terms per concern",
+    "totalMatchingLines": 160,
+    "totalFileTaskCombinations": 11,
+    "cases": [
+      {"id":"K1","matchingLines":5,"files":1},
+      {"id":"K2","matchingLines":21,"files":2},
+      {"id":"K3","matchingLines":82,"files":2},
+      {"id":"K4","matchingLines":22,"files":2},
+      {"id":"K5","matchingLines":30,"files":4}
+    ],
+    "interpretation": "Text search provides lexical locations. It does not itself provide compilation authority, compiler-resolved declaration identity, exact-source binding or an evidence digest."
+  },
+  "preservedReleaseNavigationReceipt": {
+    "status": "PASS",
+    "profile": "kotlin-2.4.10-gradle-single",
+    "runtimeMode": "RELEASE",
+    "sourceRevision": "d668271eb3e9a3320593c35612df2b691265f54a",
+    "returnedCandidates": 3,
+    "exactSourceWindowLines": 115,
+    "sourceAuthority": "EXACT_SNAPSHOT_TEXT",
+    "compilerIdentity": "K2_FIR declaration descriptor",
+    "receiptSha256": "ea21155aa47f533394a64e67b6f8dda29e1b0f98d27ddf29e6af24414e4b85b4",
+    "evidenceDigest": "sha256:77e62260f60ac7bfe9bf1a5b2f0d089eef7e9bb03b69c5194f1be36af453154b"
+  },
+  "freshAttempt": {
+    "countedAsSuccess": false,
+    "status": "RESOURCE_LIMIT",
+    "message": "CAS catalog snapshot exceeds its bounded size",
+    "interpretation": "Operational accumulated-state blocker; the attempt produced no facts and is excluded from the positive sample."
+  },
+  "claim": "In this five-concern Kotlin sample, Codeclew's evidence path is backed by exact source fragments and 16 passing focused checks; a preserved released navigation receipt demonstrates one bounded response carrying exact source, compiler identity and evidence digests.",
+  "claimBoundary": "This is a sample-scoped descriptive claim, not an estimate of population-wide agent success or token reduction."
+}

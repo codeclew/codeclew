@@ -1,0 +1,68 @@
+{
+  "schema": "codeclew-public-kotlin-evidence/1.0",
+  "date": "2026-09-01",
+  "headline": "Five Kotlin engineering concerns, sixteen focused checks, zero failures.",
+  "claim": "Codeclew can provide decision-ready, freshness-bound Kotlin evidence instead of only lexical locations.",
+  "authority": {
+    "repository": "codeclew/codeclew",
+    "revision": "6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1",
+    "profile": "kotlin-2.4.10-gradle-single",
+    "compilation": ":workers:kotlin/main"
+  },
+  "results": {
+    "concernsCovered": 5,
+    "focusedTests": 16,
+    "failures": 0,
+    "skipped": 0,
+    "textSearchMatchingLines": 160,
+    "preservedBoundedReleaseReceipts": 1
+  },
+  "concerns": [
+    {
+      "id": "K1",
+      "title": "Compatibility decisions are typed",
+      "fact": "An absent project/engine row returns REJECTED with PROJECT_ENGINE_ROW_NOT_QUALIFIED before analysis is admitted.",
+      "tests": 4,
+      "source": "https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt#L114-L174",
+      "sourceSha256": "b4a5bdd058e9d400e2955dbc8115893b0911909fc446abc5a08c5c86992d4e44",
+      "code": "val row = QUALIFIED_KOTLIN_ENGINE_ROWS.singleOrNull {\n    it.projectCompilerVersion == project.projectCompilerVersion &&\n        it.engineCompilerVersion == engine.analyzerCompilerVersion\n} ?: return KotlinEngineCompatibilityDecision(\n    status = \"REJECTED\",\n    kind = \"UNQUALIFIED\",\n    reason = \"PROJECT_ENGINE_ROW_NOT_QUALIFIED\",\n    btaEligible = false,\n)"
+    },
+    {
+      "id": "K2",
+      "title": "Unicode coordinates share one byte domain",
+      "fact": "Top-level and nested relation positions are converted from compiler UTF-16 offsets to UTF-8 byte ranges and fail closed on invalid positions.",
+      "tests": 6,
+      "source": "https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt#L344-L405",
+      "sourceSha256": "b4a5bdd058e9d400e2955dbc8115893b0911909fc446abc5a08c5c86992d4e44",
+      "code": "val byteRange = coordinates.range(start, end) ?: return null\nnormalized += rebuild(argument, mapOf(\n    \"argumentStart\" to JsonPrimitive(byteRange.first),\n    \"argumentEnd\" to JsonPrimitive(byteRange.last + 1),\n))"
+    },
+    {
+      "id": "K3",
+      "title": "Maven reactor selection stays inside the repository",
+      "fact": "Escaping, absent and ambiguous reactor modules become typed UNSUPPORTED_PROJECT_CONFIGURATION failures.",
+      "tests": 1,
+      "source": "https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/workers/kotlin/src/main/kotlin/dev/semanticthread/worker/MavenProjectModel.kt#L502-L542",
+      "sourceSha256": "9c5ae9638c36e7072d50cce1f2518f5672e42a4075dda2d543404310cf6b386e",
+      "code": "if (!canonicalPom.startsWith(canonicalRepo)) {\n    throw WorkerFailure(\n        \"UNSUPPORTED_PROJECT_CONFIGURATION\",\n        \"Maven reactor module escapes repository\",\n    )\n}"
+    },
+    {
+      "id": "K4",
+      "title": "Oversized CFGs become explicit boundaries",
+      "fact": "A local compiler graph above 4,096 nodes or 8,192 edges returns LOCAL_CFG_BUDGET_EXCEEDED rather than an unbounded payload.",
+      "tests": 3,
+      "source": "https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/workers/kotlin/src/main/kotlin/dev/semanticthread/worker/LocalCfgIndex.kt#L118-L150",
+      "sourceSha256": "07dd66f68183c25df4d56b3b814769bdd8f898a490d3e368e2e8f7a1fd8a06e3",
+      "code": "if (rawNodes.size > 4_096 || rawEdges.size > 8_192) {\n    return localCfgBoundary(\n        \"LOCAL_CFG_BUDGET_EXCEEDED\", ...\n    )\n}"
+    },
+    {
+      "id": "K5",
+      "title": "Semantic input authority is canonical",
+      "fact": "A stale semanticInputManifestHash is removed, the canonical manifest is hashed, and one fresh SHA-256 authority is attached.",
+      "tests": 2,
+      "source": "https://github.com/codeclew/codeclew/blob/6281138ecbf73bc5de1a9c7eaeb2cdf7009e6ca1/workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SemanticInputManifestAuthority.kt#L11-L25",
+      "sourceSha256": "8dbffc93e43a5ba236f91229f99c7343ff64cfdac4c270f1c5150c98529d7ea4",
+      "code": "val manifest = unhashed[\"semanticInputManifest\"] ?: unhashed\nval digest = MessageDigest.getInstance(\"SHA-256\")\n    .digest(canonicalSemanticJson(manifest).toByteArray())\n...\nput(\"semanticInputManifestHash\", digest)"
+    }
+  ],
+  "methodology": "https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf"
+}
