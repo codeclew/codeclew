@@ -493,10 +493,18 @@ transitively, and deletes only wholly unreachable packs, redundant/unreachable
 loose objects, and publication-orphan pack files. A pack containing even one
 reachable object is retained. Repository source trees, candidate worktrees, and
 compiler-store payloads are intentionally opaque: only Codeclew-owned metadata
-around them participates in reachability. Session/thread `gc` remains the
-command for owned worktrees and terminal metadata; it is not physical CAS
-deletion. Never remove managed objects manually. If state corruption is
-reported, retain a local incident and stop writing rather than forcing cleanup.
+around them participates in reachability. `session close` retains evidence;
+`session gc` removes proven-owned worktrees and releases the fully verified
+session/run CAS roots. It still performs no physical CAS deletion: bytes are
+removed only by the explicit storage command above, and any evidence shared by
+another retained authority remains live.
+
+If the dry-run reports `collectionBlocked: true`, one or more retained CAS
+objects are physically absent. The report intentionally proposes zero deletion
+and `--apply` refuses to proceed because the missing object could have named
+additional descendants. Existing-but-tampered bytes remain `STATE_CORRUPT`.
+Never remove managed objects manually; preserve the typed diagnostic and repair
+or release the owning terminal state first.
 
 ### Dirty worktree
 

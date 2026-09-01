@@ -339,6 +339,13 @@ Managed CAS space is accounted separately from session/worktree cleanup:
 ./clew storage gc --apply  # reclaim exactly the reported unreachable bytes
 ```
 
+`session close` preserves the session's evidence roots. `session gc` is the
+explicit retention boundary: after its hash-chained lifecycle reaches
+`GARBAGE_COLLECTED`, that session and its exact verified runs no longer keep CAS
+objects alive. Physical bytes are still removed only by the separate
+`storage gc --apply` command; evidence also referenced by a mission, workspace,
+thread, repository, or another retained root remains reachable.
+
 GC follows every retained repository, session, mission, workspace, thread,
 run, and generation metadata CAS reference transitively. Repository source
 trees, candidate worktrees, and the compiler store are opaque derived payloads,
@@ -348,6 +355,14 @@ unpublished attempt. It removes a pack only when every member is unreachable;
 mixed packs remain intact. An
 exclusive CAS lease delays physical deletion while any Codeclew reader or
 writer is active.
+
+The dry-run reports `collectionBlocked: true` and proposes zero reclaimable
+bytes when retained metadata names an object that is physically absent. Apply
+then fails closed; corrupt bytes at an existing location remain
+`STATE_CORRUPT`. Catalog snapshots are compact maintenance over the durable
+append-only journal. An oversized snapshot is deferred while a bounded journal
+allows REMOVE records to shrink the catalog; new ADD records stop before
+publication if that recovery bound is exhausted.
 
 ### Durable development missions
 

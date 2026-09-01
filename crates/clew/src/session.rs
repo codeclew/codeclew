@@ -217,6 +217,15 @@ pub struct SessionLifecycle {
     pub updated_unix_ms: u128,
 }
 
+/// Exact managed-state subtrees whose retained CAS evidence was released by a
+/// fully verified `session gc` transition. The names are path components, not
+/// user paths, so the CAS collector can exclude only the matching authorities.
+#[derive(Debug, Default)]
+pub(crate) struct ReleasedSessionCasRoots {
+    pub session_components: std::collections::BTreeMap<String, (u64, u64)>,
+    pub run_components: std::collections::BTreeMap<String, (u64, u64)>,
+}
+
 pub struct SessionAdmission {
     session_id: String,
     _lock: SessionLifecycleLock,
@@ -410,14 +419,7 @@ impl SessionAuthority {
         let root = state.session_root(session_id)?;
         let authority: Self =
             read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
-        if authority.schema != SESSION_SCHEMA
-            || authority.session_id != session_id
-            || !compilations_are_canonical(authority.language, &authority.compilations)
-            || !generation_jobs_are_valid(authority.generation_jobs)
-            || authority.authority_digest != session_authority_digest(&authority)?
-        {
-            return Err(invalid("session authority identity is invalid"));
-        }
+        validate_session_authority(&authority, session_id)?;
         let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
             ClewError::new(
                 ErrorCode::WorkerPreparationRequired,
@@ -1005,6 +1007,21 @@ impl SessionAuthority {
     }
 }
 
+fn validate_session_authority(
+    authority: &SessionAuthority,
+    expected_session_id: &str,
+) -> Result<(), ClewError> {
+    if authority.schema != SESSION_SCHEMA
+        || authority.session_id != expected_session_id
+        || !compilations_are_canonical(authority.language, &authority.compilations)
+        || !generation_jobs_are_valid(authority.generation_jobs)
+        || authority.authority_digest != session_authority_digest(authority)?
+    {
+        return Err(invalid("session authority identity is invalid"));
+    }
+    Ok(())
+}
+
 fn open_session_admission_with_state(
     authority: &SessionAuthority,
     state: &StateAuthority,
@@ -1084,6 +1101,23 @@ fn load_session_lifecycle_unlocked(
     root: &Path,
     authority: &SessionAuthority,
 ) -> Result<SessionLifecycle, ClewError> {
+    load_session_lifecycle_unlocked_with_repair(state, root, authority, true)
+}
+
+fn verify_session_lifecycle_unlocked(
+    state: &StateAuthority,
+    root: &Path,
+    authority: &SessionAuthority,
+) -> Result<SessionLifecycle, ClewError> {
+    load_session_lifecycle_unlocked_with_repair(state, root, authority, false)
+}
+
+fn load_session_lifecycle_unlocked_with_repair(
+    state: &StateAuthority,
+    root: &Path,
+    authority: &SessionAuthority,
+    repair_projection: bool,
+) -> Result<SessionLifecycle, ClewError> {
     let path = root.join("lifecycle.jsonl");
     let bytes = state
         .read_private_file(&path, MAX_SESSION_LIFECYCLE_BYTES as usize)
@@ -1136,7 +1170,7 @@ fn load_session_lifecycle_unlocked(
         read_managed_json::<SessionLifecycle>(state, &projection_path, MAX_PLAN_BYTES).is_ok_and(
             |projection| canonical::bytes(&projection).ok() == canonical::bytes(&current).ok(),
         );
-    if !projection_matches {
+    if repair_projection && !projection_matches {
         state.write_private_atomic(
             &projection_path,
             &canonical::bytes(&current).map_err(internal)?,
@@ -1322,6 +1356,15 @@ fn load_session_runs(
     session_root: &Path,
     session: &SessionAuthority,
 ) -> Result<Vec<RunRecord>, ClewError> {
+    load_session_runs_with_repair(state, session_root, session, true)
+}
+
+fn load_session_runs_with_repair(
+    state: &StateAuthority,
+    session_root: &Path,
+    session: &SessionAuthority,
+    repair_projection: bool,
+) -> Result<Vec<RunRecord>, ClewError> {
     let references_root = session_root.join("runs");
     let references = state.directory_at(&references_root)?.entries()?;
     let mut runs = Vec::with_capacity(references.len());
@@ -1339,15 +1382,89 @@ fn load_session_runs(
         {
             return Err(invalid("session run reference authority is invalid"));
         }
-        let run_root = state.run_root(&reference.run_id)?;
+        let run_root = if repair_projection {
+            state.run_root(&reference.run_id)?
+        } else {
+            state
+                .root()
+                .join("runs")
+                .join(id_component(&reference.run_id, "run:")?)
+        };
         let _run_lock = RunLedgerLock::acquire(state, &run_root)?;
-        let run = load_run_projection(state, &run_root, &reference.run_id)?;
+        let run = load_run_projection_with_repair(
+            state,
+            &run_root,
+            &reference.run_id,
+            repair_projection,
+        )?;
         if run.session_id != session.session_id || run.request_digest != reference.request_digest {
             return Err(invalid("session run ledger does not match its reference"));
         }
         runs.push(run);
     }
     Ok(runs)
+}
+
+/// Resolve the retention decision already committed by `session gc` without
+/// trusting directory names or lifecycle projections alone. A forged or
+/// truncated lifecycle, run reference, or run ledger fails closed before any
+/// subtree can be removed from CAS reachability.
+pub(crate) fn released_session_cas_roots(
+    state: &StateAuthority,
+) -> Result<ReleasedSessionCasRoots, ClewError> {
+    let sessions = state.directory(Path::new("sessions"))?;
+    let mut released = ReleasedSessionCasRoots::default();
+    let mut retained_runs = std::collections::BTreeSet::new();
+    for name in sessions.entries()? {
+        if sessions.entry_kind(&name)? == crate::state::ManagedEntryKind::File {
+            // Some global retained roots intentionally live directly under
+            // `sessions`; only authority directories participate here.
+            continue;
+        }
+        let component = name
+            .to_str()
+            .ok_or_else(|| invalid("managed session directory name is not UTF-8"))?;
+        let expected_session_id = format!("session:{component}");
+        let root = state.root().join("sessions").join(component);
+        if !state.private_file_exists(&root.join("authority.json"))? {
+            continue;
+        }
+        let authority: SessionAuthority =
+            read_managed_json(state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
+        validate_session_authority(&authority, &expected_session_id)?;
+        if id_component(&authority.session_id, "session:")? != component {
+            return Err(invalid("managed session directory authority is invalid"));
+        }
+        let _lock = SessionLifecycleLock::acquire(state, &root)?;
+        let lifecycle = verify_session_lifecycle_unlocked(state, &root, &authority)?;
+        let runs = load_session_runs_with_repair(state, &root, &authority, false)?;
+        if lifecycle.status != SessionStatus::GarbageCollected {
+            retained_runs.extend(
+                runs.iter()
+                    .map(|run| id_component(&run.run_id, "run:").map(str::to_owned))
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            continue;
+        }
+        released
+            .session_components
+            .insert(component.to_owned(), state.directory_at(&root)?.identity()?);
+        for run in runs {
+            let component = id_component(&run.run_id, "run:")?;
+            let run_root = state.root().join("runs").join(component);
+            released.run_components.insert(
+                component.to_owned(),
+                state.directory_at(&run_root)?.identity()?,
+            );
+        }
+    }
+    // A run identity is normally session-bound. This final subtraction keeps
+    // reachability fail-closed even if retained metadata contains a conflicting
+    // cross-session reference: the shared run subtree remains live.
+    for component in retained_runs {
+        released.run_components.remove(&component);
+    }
+    Ok(released)
 }
 
 #[derive(Debug)]
@@ -1977,6 +2094,15 @@ fn load_run_projection(
     root: &Path,
     expected_run_id: &str,
 ) -> Result<RunRecord, ClewError> {
+    load_run_projection_with_repair(state, root, expected_run_id, true)
+}
+
+fn load_run_projection_with_repair(
+    state: &StateAuthority,
+    root: &Path,
+    expected_run_id: &str,
+    repair_projection: bool,
+) -> Result<RunRecord, ClewError> {
     let path = root.join("ledger.jsonl");
     let bytes = state
         .read_private_file(&path, MAX_RUN_LEDGER_BYTES as usize)
@@ -2036,7 +2162,7 @@ fn load_run_projection(
         read_managed_json::<RunRecord>(state, &projection_path, MAX_PLAN_BYTES).is_ok_and(
             |record| canonical::bytes(&record).ok() == canonical::bytes(&projected).ok(),
         );
-    if !projection_matches {
+    if repair_projection && !projection_matches {
         state.write_private_atomic(
             &projection_path,
             &canonical::bytes(&projected).map_err(internal)?,
@@ -3203,6 +3329,86 @@ mod tests {
         bytes[0] = b'[';
         fs::write(path, bytes).unwrap();
         assert!(load_session_lifecycle(&state, &root, &authority).is_err());
+    }
+
+    #[test]
+    fn storage_retains_closed_session_evidence_and_releases_it_after_session_gc() {
+        let (_temporary, state, root, authority) = initialized_session();
+        write_managed_json_create_new(&state, &root.join("authority.json"), &authority).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let evidence = store
+            .put("test/session-retention/1", b"terminal evidence")
+            .unwrap();
+        state
+            .write_private_atomic(
+                &root.join("evidence.json"),
+                &canonical::bytes(&json!({"evidence":evidence})).unwrap(),
+            )
+            .unwrap();
+
+        let open = crate::cas::storage_status(&state).unwrap();
+        assert_eq!(open.released_sessions, 0);
+        assert_eq!(open.reclaimable_loose_objects, 0);
+        let closed = transition_session_terminal_with_state(
+            &authority,
+            SessionStatus::Closed,
+            &state,
+            &root,
+        )
+        .unwrap();
+        let retained = crate::cas::storage_status(&state).unwrap();
+        assert_eq!(retained.released_sessions, 0);
+        assert_eq!(retained.reclaimable_loose_objects, 0);
+
+        append_session_lifecycle(
+            &state,
+            &root,
+            SessionLifecycle {
+                schema: SESSION_LIFECYCLE_SCHEMA.into(),
+                session_id: authority.session_id.clone(),
+                session_authority_digest: authority.authority_digest.clone(),
+                sequence: closed.sequence + 1,
+                previous_event_hash: Some(closed.event_hash),
+                status: SessionStatus::GarbageCollected,
+                event_hash: String::new(),
+                updated_unix_ms: unix_ms(),
+            },
+        )
+        .unwrap();
+        let released = crate::cas::storage_status(&state).unwrap();
+        assert_eq!(released.released_sessions, 1);
+        assert_eq!(released.released_runs, 0);
+        assert_eq!(released.reclaimable_loose_objects, 1);
+    }
+
+    #[test]
+    fn forged_garbage_collected_lifecycle_cannot_hide_cas_roots() {
+        let (_temporary, state, root, authority) = initialized_session();
+        write_managed_json_create_new(&state, &root.join("authority.json"), &authority).unwrap();
+        let mut projection: SessionLifecycle =
+            read_managed_json(&state, &root.join("lifecycle.json"), MAX_PLAN_BYTES).unwrap();
+        projection.status = SessionStatus::GarbageCollected;
+        state
+            .write_private_atomic(
+                &root.join("lifecycle.json"),
+                &canonical::bytes(&projection).unwrap(),
+            )
+            .unwrap();
+
+        // The verified ledger, not the forged projection, remains authoritative.
+        let released = released_session_cas_roots(&state).unwrap();
+        assert!(released.session_components.is_empty());
+        assert_eq!(
+            load_session_lifecycle(&state, &root, &authority)
+                .unwrap()
+                .status,
+            SessionStatus::Open
+        );
+
+        let mut ledger = fs::read(root.join("lifecycle.jsonl")).unwrap();
+        ledger[0] ^= 1;
+        fs::write(root.join("lifecycle.jsonl"), ledger).unwrap();
+        assert!(released_session_cas_roots(&state).is_err());
     }
 
     #[test]

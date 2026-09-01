@@ -1,5 +1,6 @@
 use crate::canonical;
 use crate::error::{ClewError, ErrorCode};
+use crate::session::released_session_cas_roots;
 use crate::state::{ManagedDirectory, ManagedEntryKind, StateAuthority};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -23,13 +24,16 @@ const PACK_VERIFICATION_SCHEMA: &str = "codeclew-cas-pack-verification/1.0";
 const CATALOG_HEAD_SCHEMA: &str = "codeclew-cas-catalog-head/1.0";
 const CATALOG_SNAPSHOT_SCHEMA: &str = "codeclew-cas-catalog-snapshot/1.0";
 const CATALOG_RECORD_SCHEMA: &str = "codeclew-cas-catalog-record/1.0";
+const CATALOG_DEFERRED_SCHEMA: &str = "codeclew-cas-catalog-deferred/1.0";
 const MAX_PACK_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PACK_VERIFICATION_BYTES: usize = 4096;
 const MAX_CATALOG_HEAD_BYTES: usize = 4096;
+const MAX_CATALOG_DEFERRED_BYTES: usize = 4096;
 const MAX_CATALOG_SNAPSHOT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CATALOG_RECORD_BYTES: usize = MAX_PACK_INDEX_BYTES + 4096;
 const CATALOG_SNAPSHOT_INTERVAL: u64 = 64;
 const CATALOG_SNAPSHOT_TAIL_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_CATALOG_RECOVERY_TAIL_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -79,6 +83,16 @@ struct CatalogHead {
     last_record_digest: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogDeferred {
+    schema: String,
+    base_snapshot_digest: String,
+    base_snapshot_sequence: u64,
+    deferred_sequence: u64,
+    snapshot_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum CatalogOperation {
@@ -96,7 +110,7 @@ struct CatalogRecord {
     pack: CatalogPack,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct CatalogState {
     initialized: bool,
     sequence: u64,
@@ -104,6 +118,8 @@ struct CatalogState {
     last_record_digest: Option<String>,
     snapshot_digest: Option<String>,
     tail_bytes: u64,
+    deferred_since_sequence: Option<u64>,
+    deferred_snapshot_bytes: u64,
     packs: BTreeMap<String, PackManifest>,
     locations: HashMap<String, PackLocation>,
 }
@@ -141,7 +157,7 @@ pub struct CasObject {
     pub size: u64,
 }
 
-pub const STORAGE_REPORT_SCHEMA: &str = "codeclew-storage-report/1.0";
+pub const STORAGE_REPORT_SCHEMA: &str = "codeclew-storage-report/2.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -169,6 +185,15 @@ pub struct StorageReport {
     pub reclaimable_bytes: u64,
     pub reclaimed_bytes: u64,
     pub retained_mixed_packs: u64,
+    pub released_sessions: u64,
+    pub released_runs: u64,
+    pub dangling_objects: u64,
+    pub collection_blocked: bool,
+    pub catalog_snapshot_deferred: bool,
+    pub deferred_snapshot_bytes: u64,
+    pub catalog_snapshot_limit_bytes: u64,
+    pub catalog_tail_bytes: u64,
+    pub catalog_tail_limit_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -223,10 +248,14 @@ pub struct CasStore {
     quarantine: ManagedDirectory,
     _world_lease: Arc<File>,
     pack_catalog: SharedCatalog,
+    catalog_snapshot_byte_limit: usize,
+    catalog_recovery_tail_byte_limit: u64,
     #[cfg(test)]
     full_pack_verifications: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     catalog_bootstrap_scans: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    catalog_snapshot_serializations: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl CasStore {
@@ -276,10 +305,14 @@ impl CasStore {
             quarantine: authority.directory(Path::new("quarantine"))?,
             _world_lease: world_lease,
             pack_catalog,
+            catalog_snapshot_byte_limit: MAX_CATALOG_SNAPSHOT_BYTES,
+            catalog_recovery_tail_byte_limit: MAX_CATALOG_RECOVERY_TAIL_BYTES,
             #[cfg(test)]
             full_pack_verifications: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             catalog_bootstrap_scans: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            catalog_snapshot_serializations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         store.ensure_catalog_initialized()?;
         Ok(store)
@@ -445,6 +478,10 @@ impl CasStore {
         let component = digest_component(&manifest_digest)?;
         let data_name = format!("{component}.pack");
         let index_name = format!("{component}.json");
+        if let Err(error) = self.ensure_catalog_add_capacity_locked(&data_name, &manifest) {
+            let _ = self.packs.remove_file(OsStr::new(&temporary));
+            return Err(error);
+        }
         let data_exists = self.packs.file_exists(OsStr::new(&data_name))?;
         let index_exists = self.packs.file_exists(OsStr::new(&index_name))?;
         match (data_exists, index_exists) {
@@ -481,7 +518,7 @@ impl CasStore {
             }
         }
         self.verify_pack_pair(&data_name, &index_name, Some(&manifest))?;
-        self.append_catalog_record_locked(CatalogOperation::Add, &data_name, &manifest)?;
+        self.append_catalog_record_locked(CatalogOperation::Add, &data_name, &manifest, true)?;
         self.prune_pack_metadata(&data_name)?;
         Ok(())
     }
@@ -666,8 +703,56 @@ impl CasStore {
             state.last_record_digest = Some(record_digest);
             state.tail_bytes = state.tail_bytes.saturating_add(bytes.len() as u64);
         }
+        self.load_catalog_deferred_locked(&head)?;
         self.prune_catalog_metadata_locked(&head.snapshot_name, head.snapshot_sequence)?;
         self.prune_redundant_pack_metadata_locked()
+    }
+
+    fn load_catalog_deferred_locked(&self, head: &CatalogHead) -> Result<(), ClewError> {
+        if !self.catalog.file_exists(OsStr::new("deferred.json"))? {
+            let mut state = self
+                .pack_catalog
+                .write()
+                .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+            state.deferred_since_sequence = None;
+            state.deferred_snapshot_bytes = 0;
+            return Ok(());
+        }
+        let bytes = self
+            .catalog
+            .read_file(OsStr::new("deferred.json"), MAX_CATALOG_DEFERRED_BYTES)
+            .map_err(|_| corrupt("CAS deferred catalog marker is unsafe"))?;
+        let marker: CatalogDeferred = serde_json::from_slice(&bytes)
+            .map_err(|_| corrupt("CAS deferred catalog marker is invalid"))?;
+        if marker.schema != CATALOG_DEFERRED_SCHEMA
+            || canonical::bytes(&marker).map_err(internal)? != bytes
+            || digest_component(&marker.base_snapshot_digest).is_err()
+            || marker.snapshot_bytes == 0
+        {
+            return Err(corrupt("CAS deferred catalog marker authority mismatch"));
+        }
+        let mut state = self
+            .pack_catalog
+            .write()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        if marker.deferred_sequence <= head.snapshot_sequence {
+            // A crash may leave the old tiny marker after the newer snapshot
+            // head committed. It is obsolete and cannot suppress maintenance.
+            state.deferred_since_sequence = None;
+            state.deferred_snapshot_bytes = 0;
+            return Ok(());
+        }
+        if marker.base_snapshot_digest != head.snapshot_digest
+            || marker.base_snapshot_sequence != head.snapshot_sequence
+            || marker.deferred_sequence > state.sequence
+        {
+            return Err(corrupt(
+                "CAS deferred catalog marker differs from its journal",
+            ));
+        }
+        state.deferred_since_sequence = Some(marker.deferred_sequence);
+        state.deferred_snapshot_bytes = marker.snapshot_bytes;
+        Ok(())
     }
 
     fn bootstrap_catalog_snapshot(&self) -> Result<CatalogSnapshot, ClewError> {
@@ -715,6 +800,7 @@ impl CasStore {
         operation: CatalogOperation,
         data_name: &str,
         manifest: &PackManifest,
+        snapshot_after: bool,
     ) -> Result<(), ClewError> {
         let state = self
             .pack_catalog
@@ -764,21 +850,124 @@ impl CasStore {
             state.last_record_digest = Some(digest);
             state.tail_bytes = state.tail_bytes.saturating_add(bytes.len() as u64);
         }
-        self.maybe_snapshot_catalog_locked()
+        if snapshot_after {
+            self.maybe_snapshot_catalog_locked(false)?;
+        }
+        Ok(())
     }
 
-    fn maybe_snapshot_catalog_locked(&self) -> Result<(), ClewError> {
+    /// Keep the append-only journal as the recovery path when the monolithic
+    /// snapshot is temporarily too large, but bound how far normal writes may
+    /// extend that path. The check runs before pack/catalog publication.
+    fn ensure_catalog_add_capacity_locked(
+        &self,
+        data_name: &str,
+        manifest: &PackManifest,
+    ) -> Result<(), ClewError> {
+        let record_bytes = {
+            let state = self
+                .pack_catalog
+                .read()
+                .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+            let record = CatalogRecord {
+                schema: CATALOG_RECORD_SCHEMA.into(),
+                sequence: state
+                    .sequence
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt("CAS catalog sequence overflow"))?,
+                previous_record_digest: state.last_record_digest.clone(),
+                operation: CatalogOperation::Add,
+                pack: CatalogPack {
+                    data_name: data_name.into(),
+                    manifest: manifest.clone(),
+                },
+            };
+            canonical::bytes(&record).map_err(internal)?.len() as u64
+        };
+        let projected_tail = self
+            .pack_catalog
+            .read()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?
+            .tail_bytes
+            .saturating_add(record_bytes);
+        if projected_tail <= self.catalog_recovery_tail_byte_limit {
+            return Ok(());
+        }
+        self.maybe_snapshot_catalog_locked(false)?;
+        let tail = self
+            .pack_catalog
+            .read()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?
+            .tail_bytes;
+        if tail.saturating_add(record_bytes) <= self.catalog_recovery_tail_byte_limit {
+            return Ok(());
+        }
+        Err(ClewError::new(
+            ErrorCode::ResourceLimit,
+            "CAS catalog recovery journal is full; run storage gc after releasing terminal session evidence",
+        ))
+    }
+
+    fn maybe_snapshot_catalog_locked(&self, force: bool) -> Result<(), ClewError> {
         let snapshot = {
             let state = self
                 .pack_catalog
                 .read()
                 .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
-            if !catalog_snapshot_due(&state) {
+            if state.deferred_since_sequence.is_some() && !force {
                 return Ok(());
             }
+            if !force && !catalog_snapshot_due(&state) {
+                return Ok(());
+            }
+            #[cfg(test)]
+            self.catalog_snapshot_serializations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             snapshot_from_catalog_state(&state)
         };
+        let snapshot_bytes = canonical::bytes(&snapshot).map_err(internal)?;
+        if snapshot_bytes.len() > self.catalog_snapshot_byte_limit {
+            // The journal is already the durable authority. Snapshotting is
+            // maintenance, so an oversized projection must not turn a
+            // committed ADD/REMOVE into a reported command failure.
+            self.defer_catalog_snapshot_locked(&snapshot, snapshot_bytes.len() as u64)?;
+            return Ok(());
+        }
         self.publish_catalog_snapshot_locked(&snapshot)
+    }
+
+    fn defer_catalog_snapshot_locked(
+        &self,
+        snapshot: &CatalogSnapshot,
+        snapshot_bytes: u64,
+    ) -> Result<(), ClewError> {
+        let marker = {
+            let state = self
+                .pack_catalog
+                .read()
+                .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+            CatalogDeferred {
+                schema: CATALOG_DEFERRED_SCHEMA.into(),
+                base_snapshot_digest: state
+                    .snapshot_digest
+                    .clone()
+                    .ok_or_else(|| corrupt("CAS catalog snapshot authority is missing"))?,
+                base_snapshot_sequence: state.snapshot_sequence,
+                deferred_sequence: snapshot.sequence,
+                snapshot_bytes,
+            }
+        };
+        self.catalog.atomic_write(
+            OsStr::new("deferred.json"),
+            &canonical::bytes(&marker).map_err(internal)?,
+        )?;
+        let mut state = self
+            .pack_catalog
+            .write()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        state.deferred_since_sequence = Some(marker.deferred_sequence);
+        state.deferred_snapshot_bytes = marker.snapshot_bytes;
+        Ok(())
     }
 
     fn publish_catalog_snapshot_locked(&self, snapshot: &CatalogSnapshot) -> Result<(), ClewError> {
@@ -823,7 +1012,14 @@ impl CasStore {
             }
         }
         self.prune_catalog_metadata_locked(&snapshot_name, snapshot.sequence)?;
-        self.prune_redundant_pack_metadata_locked()
+        self.prune_redundant_pack_metadata_locked()?;
+        if self.catalog.file_exists(OsStr::new("deferred.json"))? {
+            // The new head makes any old deferred marker obsolete. Failure to
+            // remove after the commit is safe: reopen ignores a marker already
+            // covered by the head sequence.
+            let _ = self.catalog.remove_file(OsStr::new("deferred.json"));
+        }
+        Ok(())
     }
 
     fn prune_catalog_metadata_locked(
@@ -1017,6 +1213,27 @@ impl CasStore {
         ))
     }
 
+    /// Distinguish an absent retained object (recoverable reachability blocker)
+    /// from corrupt bytes at an existing authoritative location (hard state
+    /// corruption). The latter must still flow through `read` and fail closed.
+    fn object_has_authoritative_location(&self, object: &CasObject) -> Result<bool, ClewError> {
+        let (directory, name) = self.object_location(&object.digest)?;
+        if directory.file_exists(OsStr::new(&name))? {
+            return Ok(true);
+        }
+        let catalog = self
+            .pack_catalog
+            .read()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        match catalog.locations.get(&object.digest) {
+            Some(location) if location.entry.object == *object => {
+                self.packs.file_exists(OsStr::new(&location.data_name))
+            }
+            Some(_) => Err(corrupt("CAS catalog object authority is inconsistent")),
+            None => Ok(false),
+        }
+    }
+
     fn lock(&self, digest: &str, mode: LockMode) -> Result<File, ClewError> {
         let component = digest_component(digest)?;
         let name = format!("cas-{component}.lock");
@@ -1049,7 +1266,11 @@ impl CasStore {
         Ok(directory.path().join(name))
     }
 
-    fn storage_plan(&self, authority: &StateAuthority) -> Result<StoragePlan, ClewError> {
+    fn storage_plan(
+        &self,
+        authority: &StateAuthority,
+        released: &crate::session::ReleasedSessionCasRoots,
+    ) -> Result<StoragePlan, ClewError> {
         let mut roots = BTreeMap::<String, CasObject>::new();
         let mut root_files_scanned = 0u64;
         let mut root_bytes_scanned = 0u64;
@@ -1070,10 +1291,12 @@ impl CasStore {
                 &mut root_files_scanned,
                 &mut root_bytes_scanned,
                 &mut roots,
+                released,
             )?;
         }
 
         let mut reachable = BTreeSet::new();
+        let mut dangling = BTreeSet::new();
         let mut pending = roots.values().cloned().collect::<VecDeque<_>>();
         let mut authorities = roots;
         while let Some(object) = pending.pop_front() {
@@ -1093,6 +1316,10 @@ impl CasStore {
                     "CAS reachability object exceeds the 512 MiB safety bound",
                 ));
             }
+            if !self.object_has_authoritative_location(&object)? {
+                dangling.insert(object.digest.clone());
+                continue;
+            }
             let lease = self.read(&object, limit)?;
             if let Ok(value) = serde_json::from_slice::<Value>(lease.bytes()) {
                 collect_cas_references(&value, &mut authorities, &mut pending)?;
@@ -1103,6 +1330,9 @@ impl CasStore {
             .pack_catalog
             .read()
             .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        let catalog_snapshot_deferred = catalog.deferred_since_sequence.is_some();
+        let deferred_snapshot_bytes = catalog.deferred_snapshot_bytes;
+        let catalog_tail_bytes = catalog.tail_bytes;
         let mut dead_packs = Vec::new();
         let mut packed_objects = 0u64;
         let mut pack_bytes = 0u64;
@@ -1119,7 +1349,7 @@ impl CasStore {
             expected_pack_files.insert(data_name.clone());
             expected_pack_files.insert(index_name.clone());
             expected_pack_files.insert(receipt_name.clone());
-            let physical_bytes = self.packs.file_len(OsStr::new(data_name))?
+            let physical_bytes = optional_file_len(&self.packs, data_name)?
                 + optional_file_len(&self.packs, &index_name)?
                 + optional_file_len(&self.packs, &receipt_name)?;
             pack_bytes = pack_bytes.saturating_add(physical_bytes);
@@ -1189,6 +1419,16 @@ impl CasStore {
             }
         }
 
+        if !dangling.is_empty() {
+            // A missing object may have referenced descendants that are still
+            // physically present. Without those bytes no deletion plan can be
+            // proven complete, so dry-run reports the blocker and proposes
+            // nothing.
+            dead_packs.clear();
+            dead_loose.clear();
+            orphan_pack_files.clear();
+            reclaimable_bytes = 0;
+        }
         let catalog_metadata_bytes = catalog_metadata_bytes(self)?;
         Ok(StoragePlan {
             report: StorageReport {
@@ -1208,6 +1448,15 @@ impl CasStore {
                 reclaimable_bytes,
                 reclaimed_bytes: 0,
                 retained_mixed_packs,
+                released_sessions: released.session_components.len() as u64,
+                released_runs: released.run_components.len() as u64,
+                dangling_objects: dangling.len() as u64,
+                collection_blocked: !dangling.is_empty(),
+                catalog_snapshot_deferred,
+                deferred_snapshot_bytes,
+                catalog_snapshot_limit_bytes: MAX_CATALOG_SNAPSHOT_BYTES as u64,
+                catalog_tail_bytes,
+                catalog_tail_limit_bytes: MAX_CATALOG_RECOVERY_TAIL_BYTES,
             },
             dead_packs,
             dead_loose,
@@ -1223,15 +1472,28 @@ const MAX_REACHABILITY_ROOT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_REACHABILITY_DEPTH: usize = 64;
 
 pub fn storage_status(authority: &StateAuthority) -> Result<StorageReport, ClewError> {
-    Ok(CasStore::open(authority)?.storage_plan(authority)?.report)
+    // Session lifecycle locks precede the CAS world lease everywhere. A
+    // session can only move monotonically into GARBAGE_COLLECTED after this
+    // snapshot, so a concurrent transition causes safe over-retention.
+    let released = released_session_cas_roots(authority)?;
+    Ok(CasStore::open(authority)?
+        .storage_plan(authority, &released)?
+        .report)
 }
 
 pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageReport, ClewError> {
+    let released = released_session_cas_roots(authority)?;
     let locks = authority.directory(Path::new("locks"))?;
     let world_lease = Arc::new(acquire_world_lease(&locks, LockMode::Exclusive)?);
     let store =
         CasStore::open_with_catalog_and_lease(authority, false, locks, Arc::clone(&world_lease))?;
-    let mut plan = store.storage_plan(authority)?;
+    let mut plan = store.storage_plan(authority, &released)?;
+    if plan.report.collection_blocked {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "CAS collection is blocked by dangling retained references; release or repair their owning state before applying GC",
+        ));
+    }
     let batch_lock = store.batch_lock()?;
     store.sync_catalog_locked()?;
     for pack in &plan.dead_packs {
@@ -1239,6 +1501,7 @@ pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageRepo
             CatalogOperation::Remove,
             &pack.data_name,
             &pack.manifest,
+            false,
         )?;
         let component = Path::new(&pack.data_name)
             .file_stem()
@@ -1265,6 +1528,18 @@ pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageRepo
             store.packs.remove_file(name)?;
         }
     }
+    // REMOVE records are the recovery path for an oversized catalog. Publish
+    // at most one compact snapshot after the whole batch has reduced it.
+    store.maybe_snapshot_catalog_locked(true)?;
+    {
+        let catalog = store
+            .pack_catalog
+            .read()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        plan.report.catalog_snapshot_deferred = catalog.deferred_since_sequence.is_some();
+        plan.report.deferred_snapshot_bytes = catalog.deferred_snapshot_bytes;
+        plan.report.catalog_tail_bytes = catalog.tail_bytes;
+    }
     drop(batch_lock);
     plan.report.action = StorageAction::Applied;
     plan.report.reclaimed_bytes = plan.report.reclaimable_bytes;
@@ -1281,6 +1556,7 @@ fn scan_managed_roots(
     files_scanned: &mut u64,
     bytes_scanned: &mut u64,
     references: &mut BTreeMap<String, CasObject>,
+    released: &crate::session::ReleasedSessionCasRoots,
 ) -> Result<(), ClewError> {
     if depth > MAX_REACHABILITY_DEPTH {
         return Err(ClewError::new(
@@ -1292,6 +1568,29 @@ fn scan_managed_roots(
         match directory.entry_kind(&name)? {
             ManagedEntryKind::Directory => {
                 let child_relative = relative.join(&name);
+                let released_identity = relative.as_os_str().is_empty()
+                    && name.to_str().is_some_and(|component| match root {
+                        "sessions" => released.session_components.contains_key(component),
+                        "runs" => released.run_components.contains_key(component),
+                        _ => false,
+                    });
+                if released_identity {
+                    let component = name
+                        .to_str()
+                        .ok_or_else(|| corrupt("released root name is not UTF-8"))?;
+                    let expected = match root {
+                        "sessions" => released.session_components.get(component),
+                        "runs" => released.run_components.get(component),
+                        _ => None,
+                    }
+                    .ok_or_else(|| corrupt("released root authority is missing"))?;
+                    if &directory.existing_child(&name)?.identity()? != expected {
+                        return Err(corrupt(
+                            "released root directory changed after lifecycle validation",
+                        ));
+                    }
+                    continue;
+                }
                 if is_opaque_reachability_subtree(root, &child_relative) {
                     continue;
                 }
@@ -1303,6 +1602,7 @@ fn scan_managed_roots(
                     files_scanned,
                     bytes_scanned,
                     references,
+                    released,
                 )?;
             }
             ManagedEntryKind::File => {
@@ -1422,7 +1722,8 @@ fn optional_file_len(directory: &ManagedDirectory, name: &str) -> Result<u64, Cl
 }
 
 fn catalog_metadata_bytes(store: &CasStore) -> Result<u64, ClewError> {
-    let mut bytes = optional_file_len(&store.catalog, "head.json")?;
+    let mut bytes = optional_file_len(&store.catalog, "head.json")?
+        .saturating_add(optional_file_len(&store.catalog, "deferred.json")?);
     for directory in [&store.catalog_snapshots, &store.catalog_records] {
         for name in directory.entries()? {
             if directory.entry_kind(&name)? != ManagedEntryKind::File {
@@ -1495,6 +1796,8 @@ fn catalog_state_from_snapshot(
         last_record_digest: snapshot.last_record_digest.clone(),
         snapshot_digest: Some(snapshot_digest.into()),
         tail_bytes: 0,
+        deferred_since_sequence: None,
+        deferred_snapshot_bytes: 0,
         packs,
         locations,
     })
@@ -2082,6 +2385,142 @@ mod tests {
     }
 
     #[test]
+    fn oversized_snapshot_is_deferred_but_add_journal_is_bounded() {
+        let (root, mut store) = store();
+        store
+            .put_batch(
+                (0..16)
+                    .map(|index| {
+                        (
+                            "test/oversized-snapshot/1".into(),
+                            format!("payload-{index}").into_bytes(),
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        store.catalog_snapshot_byte_limit = 512;
+        store.pack_catalog.write().unwrap().tail_bytes = CATALOG_SNAPSHOT_TAIL_BYTES;
+        let sequence = store.pack_catalog.read().unwrap().sequence;
+
+        // The ADD record remains the durable authority; optional snapshot
+        // maintenance cannot turn the successful publication into an error.
+        store
+            .put_batch(vec![(
+                "test/oversized-snapshot/1".into(),
+                b"one-more".to_vec(),
+            )])
+            .unwrap();
+        let attempts = store
+            .catalog_snapshot_serializations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(attempts, 1);
+        assert!(
+            store
+                .catalog
+                .file_exists(OsStr::new("deferred.json"))
+                .unwrap()
+        );
+        store
+            .put_batch(vec![(
+                "test/oversized-snapshot/1".into(),
+                b"skip-repeat".to_vec(),
+            )])
+            .unwrap();
+        assert_eq!(
+            store
+                .catalog_snapshot_serializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            attempts
+        );
+        assert_eq!(store.pack_catalog.read().unwrap().sequence, sequence + 2);
+        assert!(store.pack_catalog.read().unwrap().tail_bytes > 0);
+
+        drop(store);
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let mut reopened = CasStore::open_with_catalog(&authority, false).unwrap();
+        reopened.catalog_snapshot_byte_limit = 512;
+        reopened
+            .put_batch(vec![(
+                "test/oversized-snapshot/1".into(),
+                b"skip-after-reopen".to_vec(),
+            )])
+            .unwrap();
+        assert_eq!(
+            reopened
+                .catalog_snapshot_serializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        reopened.catalog_recovery_tail_byte_limit = 1;
+        let sequence = reopened.pack_catalog.read().unwrap().sequence;
+        let packs = reopened.pack_catalog.read().unwrap().packs.len();
+        assert_eq!(
+            reopened
+                .put_batch(vec![(
+                    "test/oversized-snapshot/1".into(),
+                    b"blocked-before-publication".to_vec(),
+                )])
+                .unwrap_err()
+                .code,
+            ErrorCode::ResourceLimit
+        );
+        assert_eq!(reopened.pack_catalog.read().unwrap().sequence, sequence);
+        assert_eq!(reopened.pack_catalog.read().unwrap().packs.len(), packs);
+    }
+
+    #[test]
+    fn remove_records_can_shrink_an_oversized_snapshot_and_compact_once() {
+        let (_root, mut store) = store();
+        for payload in [b"first".as_slice(), b"second".as_slice()] {
+            store
+                .put_batch(vec![("test/remove-recovery/1".into(), payload.to_vec())])
+                .unwrap();
+        }
+        let removed = {
+            let state = store.pack_catalog.read().unwrap();
+            state
+                .packs
+                .iter()
+                .next()
+                .map(|(name, manifest)| (name.clone(), manifest.clone()))
+                .unwrap()
+        };
+        let compact_limit = {
+            let mut state = store.pack_catalog.read().unwrap().clone();
+            state.packs.remove(&removed.0);
+            canonical::bytes(&snapshot_from_catalog_state(&state))
+                .unwrap()
+                .len()
+        };
+        store.catalog_snapshot_byte_limit = compact_limit;
+        store.pack_catalog.write().unwrap().tail_bytes = CATALOG_SNAPSHOT_TAIL_BYTES;
+        store.maybe_snapshot_catalog_locked(false).unwrap();
+        assert!(store.pack_catalog.read().unwrap().tail_bytes > 0);
+        assert!(
+            store
+                .catalog
+                .file_exists(OsStr::new("deferred.json"))
+                .unwrap()
+        );
+
+        store
+            .append_catalog_record_locked(CatalogOperation::Remove, &removed.0, &removed.1, false)
+            .unwrap();
+        store.maybe_snapshot_catalog_locked(true).unwrap();
+        assert_eq!(store.pack_catalog.read().unwrap().tail_bytes, 0);
+        assert!(store.catalog_records.entries().unwrap().is_empty());
+        assert!(
+            !store
+                .catalog
+                .file_exists(OsStr::new("deferred.json"))
+                .unwrap()
+        );
+        assert_eq!(store.pack_catalog.read().unwrap().packs.len(), 1);
+    }
+
+    #[test]
     fn catalog_snapshot_is_due_by_count_or_tail_bytes() {
         let mut state = CatalogState {
             sequence: CATALOG_SNAPSHOT_INTERVAL,
@@ -2191,6 +2630,9 @@ mod tests {
         let applied = garbage_collect_storage(&authority).unwrap();
         assert_eq!(applied.action, StorageAction::Applied);
         assert_eq!(applied.reclaimed_bytes, applied.reclaimable_bytes);
+        assert!(!applied.catalog_snapshot_deferred);
+        assert_eq!(applied.deferred_snapshot_bytes, 0);
+        assert_eq!(applied.catalog_tail_bytes, 0);
         let reopened = CasStore::open(&authority).unwrap();
         assert_eq!(
             reopened.read(&live_pack, 1024).unwrap().bytes(),
@@ -2252,6 +2694,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn storage_gc_reports_missing_root_without_proposing_deletion() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&authority).unwrap();
+        let dead = store.put("test/dead/1", b"otherwise reclaimable").unwrap();
+        let missing = CasObject::for_bytes("test/missing/1", b"never persisted").unwrap();
+        authority
+            .write_private_atomic(
+                &authority.root().join("sessions/missing-root.json"),
+                &canonical::bytes(&serde_json::json!({"missing":missing})).unwrap(),
+            )
+            .unwrap();
+
+        let report = storage_status(&authority).unwrap();
+        assert!(report.collection_blocked);
+        assert_eq!(report.dangling_objects, 1);
+        assert_eq!(report.reclaimable_bytes, 0);
+        assert_eq!(report.reclaimable_loose_objects, 0);
+        drop(store);
+        assert_eq!(
+            garbage_collect_storage(&authority).unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+        assert_eq!(
+            CasStore::open(&authority)
+                .unwrap()
+                .read(&dead, 1024)
+                .unwrap()
+                .bytes(),
+            b"otherwise reclaimable"
+        );
+    }
+
+    #[test]
+    fn storage_gc_reports_missing_packed_root_but_rejects_tampered_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&authority).unwrap();
+        let packed = store
+            .put_batch(vec![("test/packed-root/1".into(), b"packed".to_vec())])
+            .unwrap()
+            .remove(0);
+        authority
+            .write_private_atomic(
+                &authority.root().join("sessions/packed-root.json"),
+                &canonical::bytes(&serde_json::json!({"packed":packed})).unwrap(),
+            )
+            .unwrap();
+        let data_name = store
+            .pack_catalog
+            .read()
+            .unwrap()
+            .locations
+            .get(&packed.digest)
+            .unwrap()
+            .data_name
+            .clone();
+        store.packs.remove_file(OsStr::new(&data_name)).unwrap();
+        let report = storage_status(&authority).unwrap();
+        assert!(report.collection_blocked);
+        assert_eq!(report.dangling_objects, 1);
+        assert_eq!(report.reclaimable_bytes, 0);
+
+        let second_root = tempfile::tempdir().unwrap();
+        let second_authority = StateAuthority::open(second_root.path().join("v2")).unwrap();
+        let second_store = CasStore::open(&second_authority).unwrap();
+        let loose = second_store.put("test/tamper/1", b"trusted").unwrap();
+        second_authority
+            .write_private_atomic(
+                &second_authority.root().join("sessions/tamper-root.json"),
+                &canonical::bytes(&serde_json::json!({"loose":loose})).unwrap(),
+            )
+            .unwrap();
+        fs::write(second_store.object_path(&loose.digest).unwrap(), b"changed").unwrap();
+        assert_eq!(
+            storage_status(&second_authority).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn storage_gc_ignores_known_opaque_derived_subtrees() {
@@ -2289,6 +2812,32 @@ mod tests {
 
         assert_eq!(
             storage_status(&authority).unwrap_err().code,
+            ErrorCode::StateCorrupt
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn released_root_replacement_fails_before_reachability_is_suppressed() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let session = authority.directory(Path::new("sessions/released")).unwrap();
+        let mut released = crate::session::ReleasedSessionCasRoots::default();
+        released
+            .session_components
+            .insert("released".into(), session.identity().unwrap());
+        let displaced = authority.root().join("sessions/displaced");
+        fs::rename(session.path(), &displaced).unwrap();
+        fs::create_dir(authority.root().join("sessions/released")).unwrap();
+        fs::set_permissions(
+            authority.root().join("sessions/released"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let store = CasStore::open(&authority).unwrap();
+
+        assert_eq!(
+            store.storage_plan(&authority, &released).unwrap_err().code,
             ErrorCode::StateCorrupt
         );
     }
