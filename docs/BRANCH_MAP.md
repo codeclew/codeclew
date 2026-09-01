@@ -52,7 +52,6 @@ The safe cleanup requested on 2026-09-01 produced this current local state:
 | Status | Meaning | Default action |
 |---|---|---|
 | `INTEGRATED` | The recorded tip is an ancestor of `origin/main`. | Branch ref may be removed after worktree and evidence checks. |
-| `STAGED_FOR_MAIN` | The product slice is committed and gated on the current integration branch but is not yet in `origin/main`. | Preserve the integration branch and publish only after the final combined gate. |
 | `PATCH_EQUIVALENT` | The commit identity differs, but Git patch comparison finds the change in `origin/main`. | Confirm behavior, then remove the redundant ref. |
 | `PRODUCT_CANDIDATE` | The branch contains product changes not present in `origin/main`. | Review against current main, run its focused gate, then cherry-pick or rebase the minimal coherent slice. |
 | `SUPERSEDED` | A later branch contains the intended fix or a hardened replacement. | Do not merge; retain only until the successor is integrated and evidence is located. |
@@ -80,9 +79,9 @@ The local `main` is `LOCAL_DIVERGED`: at this snapshot it was one commit ahead
 of and 59 commits behind `origin/main`. It is not an integration authority and
 may also contain unrelated working-copy changes.
 
-## Current integration batch
+## Integrated 2026-09-01 batch
 
-`codex/branch-map-20260901` stages the following work for `main`:
+`codex/branch-map-20260901` integrated the following work into `main`:
 
 - `9611a1c`: this branch inventory and the safe-cleanup record;
 - `af857a9`, `c19c18f`, `f85e13e`: explicit navigation decision
@@ -93,7 +92,7 @@ may also contain unrelated working-copy changes.
 The navigation slice passed 57 library navigation tests, two CLI navigation
 tests, and the embedded skill digest test. The TypeScript slice passed 18
 `source_locate` unit tests and two managed CLI tests. These slices are
-`STAGED_FOR_MAIN`; this statement does not make their source branches product
+`INTEGRATED`; this statement does not make their source branches product
 authorities.
 
 Two apparent candidates required no product code transfer:
