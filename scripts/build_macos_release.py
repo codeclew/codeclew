@@ -427,6 +427,33 @@ def verify_cli_version(
         raise ReleaseError("release CLI version does not match the semantic version tag")
 
 
+def navigation_smoke_query(
+    launcher: Path,
+    repository: Path,
+    target_ref: str,
+) -> list[str]:
+    return [
+        str(launcher),
+        "nav",
+        "query",
+        "--repo",
+        str(repository),
+        "--target-ref",
+        target_ref,
+        "--language",
+        "python",
+        "--profile",
+        "python-syntax",
+        "--compilation",
+        "python:.#.",
+        "--term",
+        "Counter",
+        "--decision-identifier",
+        "Counter",
+        "--source",
+    ]
+
+
 def verify_annotated_tag_navigation(
     root: Path,
     launcher: Path,
@@ -435,7 +462,7 @@ def verify_annotated_tag_navigation(
 ) -> None:
     """Exercise the packaged launcher against branch and annotated-tag authority."""
     source = work / "source"
-    shutil.copytree(root / "fixtures" / "kotlin-basic", source)
+    shutil.copytree(root / "fixtures" / "python-basic", source)
     run(["git", "init", "-q", "-b", "main"], source)
     run(["git", "add", "."], source)
     identity = [
@@ -491,28 +518,7 @@ def verify_annotated_tag_navigation(
         if before_head != revision or before_status:
             raise ReleaseError("navigation smoke repository authority is invalid")
         output = run(
-            [
-                str(launcher),
-                "nav",
-                "query",
-                "--repo",
-                str(repository),
-                "--target-ref",
-                target_ref,
-                "--language",
-                "kotlin",
-                "--profile",
-                "kotlin-2.4.10-gradle-single",
-                "--compilation",
-                ":/main",
-                "--term",
-                "IntegerSource",
-                "--term",
-                "NumericSource",
-                "--term",
-                "callSource",
-                "--source",
-            ],
+            navigation_smoke_query(launcher, repository, target_ref),
             repository,
             environment=environment,
         )
@@ -523,6 +529,7 @@ def verify_annotated_tag_navigation(
             agent_contract = admission["agentContract"]
             navigation = result["navigation"]
             candidates = navigation["candidates"]
+            decision_authority = navigation["decisionAuthority"]
             decision_source = navigation["decisionSource"]["source"]
             session_id = session["sessionId"]
         except (KeyError, TypeError, ValueError) as error:
@@ -541,6 +548,10 @@ def verify_annotated_tag_navigation(
             or session.get("baseRevision") != revision
             or not isinstance(candidates, list)
             or not candidates
+            or not isinstance(decision_authority, dict)
+            or decision_authority.get("status") != "SUPPORTED"
+            or decision_authority.get("classification")
+            != "UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE"
             or not isinstance(decision_source, dict)
             or decision_source.get("status") != "SUPPORTED"
             or not decision_source.get("windows")

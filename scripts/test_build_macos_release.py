@@ -18,6 +18,25 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def test_navigation_smoke_declares_the_exact_decision_identifier(self) -> None:
+        arguments = release.navigation_smoke_query(
+            Path("/release/bin/clew"),
+            Path("/repository"),
+            "v-release-smoke",
+        )
+
+        self.assertEqual(
+            arguments[arguments.index("--decision-identifier") + 1],
+            "Counter",
+        )
+        self.assertEqual(
+            [arguments[index + 1] for index, value in enumerate(arguments) if value == "--term"],
+            ["Counter"],
+        )
+        self.assertEqual(arguments[arguments.index("--language") + 1], "python")
+        self.assertEqual(arguments[arguments.index("--profile") + 1], "python-syntax")
+        self.assertIn("--source", arguments)
+
     def test_release_archive_is_reopened_and_extracted_from_produced_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
