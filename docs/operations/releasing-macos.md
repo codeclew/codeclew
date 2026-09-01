@@ -55,7 +55,7 @@ workflow verifies `uname -m` before construction and refuses a runtime in
    ```bash
    curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
    clew capabilities --human
-   clew doctor --human
+   clew doctor attach --human
    clew pack install kotlin23
    clew pack list
    clew pack remove kotlin23

@@ -2619,6 +2619,7 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         b"[project]\nname='fixture'\n",
     )
     .unwrap();
+    fs::write(repository.join("app.py"), b"value = 1\n").unwrap();
     run_git(&repository, &["init", "-q", "-b", "main"]);
     run_git(&repository, &["add", "."]);
     run_git(
@@ -2731,6 +2732,69 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
                     && check["checkId"] != "state.free-space"
             })
     );
+
+    let repository_doctor = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "doctor",
+            "repository",
+            "--repo",
+            repository.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(repository_doctor.status.success());
+    let repository_doctor_value: Value = serde_json::from_slice(&repository_doctor.stdout).unwrap();
+    assert_eq!(
+        repository_doctor_value["schema"],
+        "codeclew-repository-diagnostic/1.0"
+    );
+    assert_eq!(repository_doctor_value["status"], "READY_FOR_TASK_DOCTOR");
+    assert_eq!(repository_doctor_value["nextAction"], "RUN_TASK_DOCTOR");
+    assert_eq!(
+        repository_doctor_value["contours"][0]["profileId"],
+        "python-syntax"
+    );
+    assert_eq!(
+        repository_doctor_value["contours"][0]["compilations"][0],
+        "python:.#."
+    );
+    assert_eq!(
+        repository_doctor_value["privacyAssertions"]["containsAbsolutePaths"],
+        false
+    );
+    assert_eq!(
+        repository_doctor_value["privacyAssertions"]["containsRepositoryIdentity"],
+        true
+    );
+    assert!(
+        !String::from_utf8_lossy(&repository_doctor.stdout).contains(repository.to_str().unwrap())
+    );
+
+    let repository_doctor_human = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "doctor",
+            "repository",
+            "--repo",
+            repository.to_str().unwrap(),
+            "--human",
+        ],
+        None,
+    );
+    assert!(repository_doctor_human.status.success());
+    assert!(repository_doctor_human.stderr.is_empty());
+    let repository_doctor_report = String::from_utf8(repository_doctor_human.stdout).unwrap();
+    assert!(repository_doctor_report.contains("Codeclew repository diagnostic"));
+    assert!(repository_doctor_report.contains("PYTHON / python-syntax"));
+    assert!(repository_doctor_report.contains("Compilation: python:.#."));
+    assert!(!repository_doctor_report.contains(repository.to_str().unwrap()));
 
     let doctor = run_managed(
         &runtime_binary,

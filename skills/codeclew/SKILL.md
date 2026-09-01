@@ -24,7 +24,15 @@ Preserve the user's scope and Codeclew's authority boundaries.
    build Codeclew or silently fall back to a source checkout.
 2. Identify the absolute repository path, exact target ref, language, and exact
    compilation. Use explicit user input or authoritative project configuration;
-   do not infer them from names. Ask when any remains ambiguous.
+   do not infer them from names. When those authorities are not already exact,
+   run `clew doctor repository --repo <absolute-repo>` once. This is bounded
+   discovery, not task admission: use only contours whose status is
+   `READY_FOR_TASK_DOCTOR`, then pass their exact `targetRef`, `profileId`, and
+   `compilations` to the public atomic admission path below. Preserve reported
+   blockers, unsupported languages, and `nextAction`; ask when more than one
+   ready contour could match the task. The discovery report contains repository
+   identity even though it omits absolute paths and source, so keep its raw JSON
+   local.
 3. Admit the task through one of the two public atomic paths below. Their
    `admission` object is the runtime authority; do not spend a separate call on
    `clew capabilities` during an ordinary task. Require `runtimeMode=RELEASE`,

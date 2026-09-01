@@ -85,7 +85,7 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
         "agentContract":{
             "schema":"codeclew-agent-contract/1.0",
             "admissionCommands":["nav query", "context open"],
-            "diagnosticCommands":["doctor attach", "doctor task"],
+            "diagnosticCommands":["doctor attach", "doctor repository", "doctor task"],
             "launcherAuthority":"INSTALLED_RELEASE",
             "mutationPrepareCommand":"change prepare",
             "mutationPrepareWaitsForActionableState":true,
@@ -751,7 +751,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:ca8b8cb048b16a1ba83209873a5fecc5b9ed045f09e3a3270706f9300e560167"
+            "sha256:782bd7304d75aed6d49a67ce06623c5ea6d6f387392fef992f8881b944c11edf"
         );
     }
 

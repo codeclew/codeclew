@@ -2,8 +2,9 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use clew::canonical;
 use clew::error::{ClewError, ErrorCode};
 use clew::operations::{
-    DoctorOperation, DoctorScope, DoctorTask, capabilities, doctor, support_summary,
+    DoctorOperation, DoctorScope, DoctorTask, capabilities, doctor, support_matrix, support_summary,
 };
+use clew::repository_diagnostic::diagnose_repository;
 use clew::runtime::RuntimeAuthority;
 use clew::session::mission;
 use clew::session::{
@@ -244,6 +245,7 @@ enum SessionLanguageArg {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DoctorScopeArg {
     Attach,
+    Repository,
     Task,
     Provision,
 }
@@ -327,10 +329,11 @@ struct SessionOpenArgs {
 
 #[derive(Args)]
 struct DoctorArgs {
-    /// Readiness contour to inspect. Attach never probes project toolchains.
+    /// Readiness contour to inspect. Repository discovers task candidates;
+    /// attach never probes project toolchains.
     #[arg(value_enum)]
     scope: DoctorScopeArg,
-    /// Exact target repository for task readiness.
+    /// Target repository for repository discovery or exact task readiness.
     #[arg(long)]
     repo: Option<PathBuf>,
     /// Exact ref that must resolve to the checked-out HEAD.
@@ -1040,6 +1043,9 @@ fn human_capabilities(value: &Value) -> String {
 }
 
 fn human_doctor(value: &Value) -> String {
+    if value["schema"] == "codeclew-repository-diagnostic/1.0" {
+        return human_repository_diagnostic(value);
+    }
     let status = value["status"].as_str().unwrap_or("UNKNOWN");
     let runtime_mode = value["runtimeMode"].as_str().unwrap_or("UNKNOWN");
     let scope = value["scope"].as_str().unwrap_or("UNKNOWN");
@@ -1091,6 +1097,65 @@ fn human_doctor(value: &Value) -> String {
     let _ = write!(
         report,
         "\nPrivacy: this report contains no source, repository identity, or absolute paths.\n\
+         Run without --human for canonical JSON."
+    );
+    report
+}
+
+fn human_repository_diagnostic(value: &Value) -> String {
+    let status = value["status"].as_str().unwrap_or("UNKNOWN");
+    let runtime_mode = value["runtimeMode"].as_str().unwrap_or("UNKNOWN");
+    let mut report = String::new();
+    let _ = writeln!(report, "Codeclew repository diagnostic");
+    let _ = writeln!(report, "Status: {}", status.replace('_', " "));
+    let _ = writeln!(report, "Runtime: {runtime_mode}");
+    if let Some(target_ref) = value["repository"]["targetRef"].as_str() {
+        let _ = writeln!(report, "Target ref: {target_ref}");
+    }
+    let _ = writeln!(report, "\nResearch contours:");
+    if let Some(contours) = value["contours"].as_array() {
+        if contours.is_empty() {
+            let _ = writeln!(report, "  - No supported Codeclew contour detected");
+        }
+        for contour in contours {
+            let language = contour["language"].as_str().unwrap_or("UNKNOWN");
+            let profile = contour["profileId"].as_str().unwrap_or("unknown-profile");
+            let contour_status = contour["status"].as_str().unwrap_or("UNKNOWN");
+            let authority = contour["analysisAuthority"].as_str().unwrap_or("UNKNOWN");
+            let _ = writeln!(
+                report,
+                "  [{contour_status}] {language} / {profile} ({authority})"
+            );
+            if let Some(compilations) = contour["compilations"].as_array() {
+                for compilation in compilations.iter().filter_map(Value::as_str) {
+                    let _ = writeln!(report, "    Compilation: {compilation}");
+                }
+            }
+            if let Some(blockers) = contour["blockers"].as_array() {
+                for blocker in blockers {
+                    if let Some(remediation) = blocker["remediationId"].as_str() {
+                        let _ = writeln!(report, "    Next: {}", remediation_label(remediation));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(languages) = value["unsupportedLanguages"].as_array()
+        && !languages.is_empty()
+    {
+        let labels = languages
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(report, "\nUnsupported source languages detected: {labels}");
+    }
+    if let Some(next_action) = value["nextAction"].as_str() {
+        let _ = writeln!(report, "\nNext action: {}", remediation_label(next_action));
+    }
+    let _ = write!(
+        report,
+        "\nPrivacy: this report contains repository-relative selectors and ref identity, but no source or absolute paths.\n\
          Run without --human for canonical JSON."
     );
     report
@@ -1160,6 +1225,7 @@ fn doctor_check_label(id: &str) -> &str {
         "repository.target-ref-local" => "Target ref is an unambiguous local branch or tag",
         "repository.target-ref-mutation-branch" => "Mutation target ref is a local branch",
         "repository.target-ref-at-head" => "Target ref points to HEAD",
+        "repository.discovery-complete" => "Repository discovery stayed within its bounded scan",
         other => other,
     }
 }
@@ -1186,6 +1252,16 @@ fn remediation_label(id: &str) -> &str {
         "SELECT_LOCAL_TARGET_REF" => "select one unambiguous local branch or tag",
         "SELECT_LOCAL_BRANCH_REF" => "select a local branch for mutation",
         "CHECKOUT_TARGET_REF_AT_HEAD" => "check out the target ref at HEAD",
+        "DISCOVER_CARGO_COMPILATIONS" => "repair Cargo metadata so exact targets can be discovered",
+        "INSTALL_TYPESCRIPT_5" => "install project-resolvable TypeScript 5.x",
+        "NARROW_REPOSITORY_DISCOVERY_SCOPE" => {
+            "exclude generated trees or select a narrower repository root"
+        }
+        "RUN_TASK_DOCTOR" => "run clew doctor task with one returned contour",
+        "SELECT_SUPPORTED_BUILD_SYSTEM" => "select a root Gradle-wrapper or Maven project",
+        "SELECT_SUPPORTED_REPOSITORY" => "select a repository containing a supported contour",
+        "SELECT_TSCONFIG" => "add or select an exact tsconfig project",
+        "SELECT_UNAMBIGUOUS_BUILD_SYSTEM" => "select a repository root with one JVM build system",
         other => other,
     }
 }
@@ -1721,15 +1797,14 @@ fn active_runtime() -> Result<RuntimeAuthority, ClewError> {
 
 fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
     let runtime = active_runtime()?;
-    let has_task_arguments = args.repo.is_some()
-        || args.target_ref.is_some()
+    let has_exact_task_arguments = args.target_ref.is_some()
         || args.language.is_some()
         || args.profile.is_some()
         || !args.compilation.is_empty()
         || args.operation.is_some();
     match args.scope {
         DoctorScopeArg::Attach => {
-            if has_task_arguments {
+            if args.repo.is_some() || has_exact_task_arguments {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "attach doctor does not accept task or provision arguments",
@@ -1738,13 +1813,25 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
             doctor(&runtime, DoctorScope::Attach, None, None, None)
         }
         DoctorScopeArg::Provision => {
-            if has_task_arguments {
+            if args.repo.is_some() || has_exact_task_arguments {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "provision doctor does not accept task arguments",
                 ));
             }
             doctor(&runtime, DoctorScope::Provision, None, None, None)
+        }
+        DoctorScopeArg::Repository => {
+            if has_exact_task_arguments {
+                return Err(ClewError::new(
+                    ErrorCode::InvalidInput,
+                    "repository doctor accepts only --repo and optional --human",
+                ));
+            }
+            let repository = args.repo.as_deref().ok_or_else(|| {
+                ClewError::new(ErrorCode::InvalidInput, "repository doctor requires --repo")
+            })?;
+            diagnose_repository(&runtime, &support_matrix()?, repository)
         }
         DoctorScopeArg::Task => {
             let repository = args.repo.as_deref().ok_or_else(|| {
@@ -3487,6 +3574,11 @@ mod tests {
         assert!(Cli::try_parse_from(["clew", "doctor"]).is_err());
         assert!(Cli::try_parse_from(["clew", "doctor", "attach"]).is_ok());
         assert!(Cli::try_parse_from(["clew", "doctor", "attach", "--human"]).is_ok());
+        assert!(Cli::try_parse_from(["clew", "doctor", "repository", "--repo", "."]).is_ok());
+        assert!(
+            Cli::try_parse_from(["clew", "doctor", "repository", "--repo", ".", "--human",])
+                .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "clew",
@@ -3842,6 +3934,40 @@ mod tests {
         assert!(report.contains("[PASS] Git is available (required)"));
         assert!(report.contains("[ACTION_REQUIRED] Target worktree is clean (required)"));
         assert!(report.contains("commit, stash, or use a separate clean worktree"));
+        assert!(!report.contains("/private/"));
+    }
+
+    #[test]
+    fn human_repository_diagnostic_preserves_selectors_and_privacy_boundary() {
+        let value = json!({
+            "schema":"codeclew-repository-diagnostic/1.0",
+            "status":"PARTIALLY_READY",
+            "nextAction":"RUN_TASK_DOCTOR",
+            "runtimeMode":"RELEASE",
+            "repository":{
+                "targetRef":"refs/heads/main"
+            },
+            "contours":[{
+                "analysisAuthority":"TREE_SITTER_SYNTAX",
+                "blockers":[],
+                "compilations":["python:.#."],
+                "language":"PYTHON",
+                "profileId":"python-syntax",
+                "status":"READY_FOR_TASK_DOCTOR"
+            }],
+            "unsupportedLanguages":["GO"]
+        });
+
+        let report = human_doctor(&value);
+
+        assert!(report.contains("Codeclew repository diagnostic"));
+        assert!(report.contains("Status: PARTIALLY READY"));
+        assert!(report.contains("Target ref: refs/heads/main"));
+        assert!(report.contains("PYTHON / python-syntax"));
+        assert!(report.contains("Compilation: python:.#."));
+        assert!(report.contains("Unsupported source languages detected: GO"));
+        assert!(report.contains("run clew doctor task"));
+        assert!(report.contains("repository-relative selectors"));
         assert!(!report.contains("/private/"));
     }
 

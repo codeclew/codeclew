@@ -77,7 +77,7 @@ After installation:
 
 ```bash
 clew capabilities --human
-clew doctor --human
+clew doctor attach --human
 ```
 
 The default `core` profile downloads only Kotlin 2.4.10. Enable or remove the
@@ -129,7 +129,7 @@ chmod 700 "$CODECLEW_HOME"
 
 ./clew --bootstrap-component-preflight
 ./clew capabilities --human
-./clew doctor --human
+./clew doctor attach --human
 ```
 
 The checkout must be unchanged and pinned to an approved commit or tag.
@@ -143,17 +143,33 @@ launch verifies and reuses it. After deployment, run both commands again without
 `--human` and retain the `capabilities` and `doctor` JSON as the baseline for
 that machine; both responses intentionally omit paths and repository identity.
 
-Run a separate check for the target repository:
+Discover what Codeclew can investigate in an unfamiliar target repository:
 
 ```bash
-./clew doctor \
-  --repo /absolute/path/to/target-repository \
-  --target-ref refs/heads/feature/codeclew-task
+./clew doctor repository --repo /absolute/path/to/target-repository
 ```
 
-The command can exit with code 0 and `status: ACTION_REQUIRED`. Automation must
-inspect the JSON and proceed only when every item with `required: true` has
-`status: PASS`.
+The bounded report detects language contours, exact compilation selectors,
+checked-out ref identity, blockers, and known unsupported languages without
+returning source or an absolute path. It contains repository identity, so keep
+the raw JSON local. `READY_FOR_TASK_DOCTOR` means that a contour is ready for
+the next admission check; it is not itself admission. Confirm the selected
+contour with all exact arguments, for example:
+
+```bash
+./clew doctor task \
+  --repo /absolute/path/to/target-repository \
+  --target-ref refs/heads/feature/codeclew-task \
+  --language kotlin \
+  --profile kotlin-2.4.10-gradle-single \
+  --compilation :app/main \
+  --operation analysis
+```
+
+A doctor command can exit with code 0 and `status: ACTION_REQUIRED`,
+`PARTIALLY_READY`, or `UNSUPPORTED`. Automation must inspect the JSON and
+proceed only after task admission reports `status: PASS` and every required
+check passes.
 
 ## 3. Connecting Codex, Claude, and other agents
 
@@ -182,11 +198,11 @@ clew skill install --destination /absolute/path/to/client-skills
 ```
 
 Installation is atomic and idempotent. A different existing `codeclew` skill is
-preserved unless `--force` is explicit. The skill prefers `clew` on `PATH`, runs
-canonical `capabilities` and `doctor`, forbids guessing the language or exact
-compilation, checks freshness, and prevents publication without explicit user
-approval. Run the installer again after upgrading Codeclew so the skill remains
-version-matched.
+preserved unless `--force` is explicit. The skill prefers `clew` on `PATH`, uses
+`doctor repository` to discover exact contours when necessary, requires atomic
+task admission before research, checks freshness, and prevents publication
+without explicit user approval. Run the installer again after upgrading
+Codeclew so the skill remains version-matched.
 
 To test discovery, explicitly ask the agent to apply `codeclew` to a safe,
 read-only task. A correctly configured agent reports admission results

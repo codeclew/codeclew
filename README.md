@@ -16,10 +16,10 @@ curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
 The installer resolves `latest` to one immutable version, downloads that exact
 GitHub Release asset and checksum, verifies SHA-256, installs it below
 `~/.local/share/codeclew`, and atomically links `clew` into `~/.local/bin`. It
-never compiles Codeclew on the target machine. Run `clew doctor --human` after
-installation and `clew upgrade` to install a newer release. The source launcher
-`./clew` remains the supported development entrypoint and is updated through Git,
-not `clew upgrade`. Existing
+never compiles Codeclew on the target machine. Run
+`clew doctor attach --human` after installation and `clew upgrade` to install a
+newer release. The source launcher `./clew` remains the supported development
+entrypoint and is updated through Git, not `clew upgrade`. Existing
 installations older than v0.1.3 need the one-line installer once more to acquire
 the updater; their later updates use `clew upgrade`.
 
@@ -285,18 +285,39 @@ separate decision after 20 recorded in-contour cases meet its numerical gate.
 ## Operational admission
 
 Before opening a session, inspect the runtime-bound support contract and host
-readiness. For a terminal-friendly report, run:
+readiness. When auditing an unfamiliar repository, first discover its bounded
+research contours:
 
 ```bash
 ./clew capabilities --human
-./clew doctor --repo /absolute/path/to/repository --target-ref refs/heads/feature --human
+./clew doctor repository --repo /absolute/path/to/repository --human
+```
+
+The repository report identifies the checked-out ref, detected languages,
+supported profiles, and exact compilation selectors. Its
+`READY_FOR_TASK_DOCTOR` contours are candidates, not task admission. Choose the
+contour that matches the requested work and confirm it with the exact task
+doctor arguments:
+
+```bash
+./clew doctor task \
+  --repo /absolute/path/to/repository \
+  --target-ref refs/heads/feature \
+  --language python \
+  --profile python-syntax \
+  --compilation 'python:.#.' \
+  --operation analysis \
+  --human
 ```
 
 The support matrix is also retained as
 [`crates/clew/support-matrix.json`](crates/clew/support-matrix.json). Automation
 uses the canonical JSON emitted when `--human` is omitted and must inspect the
-doctor's status and required checks. The command can return a valid
-`ACTION_REQUIRED` report without treating that report as a CLI failure.
+doctor's status and required checks. A doctor command can return a valid
+`ACTION_REQUIRED`, `PARTIALLY_READY`, or `UNSUPPORTED` report without treating
+that report as a CLI failure. Repository discovery contains ref and relative
+selector identity, but never source or an absolute repository path; keep its raw
+JSON local.
 
 Before prepare and publish, verify that the session still owns the checked-out
 target authority:

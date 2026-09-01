@@ -240,5 +240,5 @@ printf 'Launcher: %s\n' "$BIN_DIR/clew"
 printf 'Update later: clew upgrade\n'
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) printf 'Add %s to PATH, then run: clew doctor --human\n' "$BIN_DIR" ;;
+  *) printf 'Add %s to PATH, then run: clew doctor attach --human\n' "$BIN_DIR" ;;
 esac
