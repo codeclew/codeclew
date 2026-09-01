@@ -25,6 +25,7 @@ pub mod process_isolation;
 pub mod python_adapter_v2;
 pub mod python_project_model;
 pub mod query_v2;
+pub mod repository_diagnostic;
 pub mod repository_snapshot;
 pub mod runtime;
 pub mod rust_adapter_v2;
