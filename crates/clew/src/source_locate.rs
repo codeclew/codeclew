@@ -276,21 +276,21 @@ fn locate_session_paths_with_bridge(
         }))
     }
     .map_err(internal)?;
-    locate_contents(
-        if selection.is_some() {
+    locate_contents(LocateContentsInput {
+        result_schema: if selection.is_some() {
             SCOPED_SOURCE_LOCATE_RESULT_SCHEMA
         } else {
             SOURCE_LOCATE_RESULT_SCHEMA
         },
-        serde_json::to_value(authority).map_err(|error| internal(error.into()))?,
+        authority: serde_json::to_value(authority).map_err(|error| internal(error.into()))?,
         source_snapshot_digest,
         request,
         request_digest,
         paths,
         contents,
         selection,
-        bridge,
-    )
+        bridge_authority: bridge,
+    })
 }
 
 /// Locates exact bytes directly in a clean repository's pinned Git commit.
@@ -351,30 +351,43 @@ fn locate_direct_with_hook(
         "treeOid":authority["treeOid"],
     }))
     .map_err(internal)?;
-    locate_contents(
-        DIRECT_SOURCE_LOCATE_RESULT_SCHEMA,
+    locate_contents(LocateContentsInput {
+        result_schema: DIRECT_SOURCE_LOCATE_RESULT_SCHEMA,
         authority,
         source_snapshot_digest,
         request,
         request_digest,
         paths,
         contents,
-        None,
-        None,
-    )
+        selection: None,
+        bridge_authority: None,
+    })
 }
 
-fn locate_contents(
-    result_schema: &str,
+struct LocateContentsInput<'a> {
+    result_schema: &'a str,
     authority: serde_json::Value,
     source_snapshot_digest: String,
-    request: &SourceLocateRequest,
-    request_digest: &str,
-    paths: &[String],
+    request: &'a SourceLocateRequest,
+    request_digest: &'a str,
+    paths: &'a [String],
     contents: Vec<(String, Vec<u8>)>,
     selection: Option<SourcePathSelection>,
     bridge_authority: Option<ScopedBridgeAuthority>,
-) -> Result<serde_json::Value, ClewError> {
+}
+
+fn locate_contents(input: LocateContentsInput<'_>) -> Result<serde_json::Value, ClewError> {
+    let LocateContentsInput {
+        result_schema,
+        authority,
+        source_snapshot_digest,
+        request,
+        request_digest,
+        paths,
+        contents,
+        selection,
+        bridge_authority,
+    } = input;
     let needle = request.literal.as_bytes();
     let mut observed_match_count = 0usize;
     let mut matches = Vec::with_capacity(request.max_matches);
@@ -468,10 +481,9 @@ fn locate_contents(
         .len()
         .saturating_add(1)
         > MAX_RESULT_BYTES
+        && result.get("bridge").is_some()
     {
-        if result.get("bridge").is_some() {
-            result["bridge"] = bridge_abstention("BRIDGE_OUTPUT_LIMIT");
-        }
+        result["bridge"] = bridge_abstention("BRIDGE_OUTPUT_LIMIT");
     }
     if canonical::bytes(&result)
         .map_err(internal)?
@@ -1004,9 +1016,8 @@ fn typescript_bridge_from_facts(
 
     let imported_modules = relations
         .iter()
-        .filter_map(|(kind, _, target, file, _, _)| {
-            (*kind == "IMPORTS").then(|| ((*file).to_owned(), (*target).to_owned()))
-        })
+        .filter(|&(kind, _, _, _, _, _)| *kind == "IMPORTS")
+        .map(|(_, _, target, file, _, _)| ((*file).to_owned(), (*target).to_owned()))
         .collect::<BTreeSet<_>>();
     let mut observed_targets = BTreeSet::new();
     for window in &windows {

@@ -1274,25 +1274,30 @@ impl CasStore {
         let mut roots = BTreeMap::<String, CasObject>::new();
         let mut root_files_scanned = 0u64;
         let mut root_bytes_scanned = 0u64;
-        for name in [
-            "repos",
-            "sessions",
-            "missions",
-            "workspaces",
-            "threads",
-            "runs",
-            "generations",
-        ] {
-            scan_managed_roots(
-                &authority.directory(Path::new(name))?,
-                name,
-                Path::new(""),
-                0,
-                &mut root_files_scanned,
-                &mut root_bytes_scanned,
-                &mut roots,
+        {
+            let mut scan = ManagedRootScan {
+                files_scanned: &mut root_files_scanned,
+                bytes_scanned: &mut root_bytes_scanned,
+                references: &mut roots,
                 released,
-            )?;
+            };
+            for name in [
+                "repos",
+                "sessions",
+                "missions",
+                "workspaces",
+                "threads",
+                "runs",
+                "generations",
+            ] {
+                scan_managed_roots(
+                    &authority.directory(Path::new(name))?,
+                    name,
+                    Path::new(""),
+                    0,
+                    &mut scan,
+                )?;
+            }
         }
 
         let mut reachable = BTreeSet::new();
@@ -1548,15 +1553,19 @@ pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageRepo
     Ok(plan.report)
 }
 
+struct ManagedRootScan<'a> {
+    files_scanned: &'a mut u64,
+    bytes_scanned: &'a mut u64,
+    references: &'a mut BTreeMap<String, CasObject>,
+    released: &'a crate::session::ReleasedSessionCasRoots,
+}
+
 fn scan_managed_roots(
     directory: &ManagedDirectory,
     root: &str,
     relative: &Path,
     depth: usize,
-    files_scanned: &mut u64,
-    bytes_scanned: &mut u64,
-    references: &mut BTreeMap<String, CasObject>,
-    released: &crate::session::ReleasedSessionCasRoots,
+    scan: &mut ManagedRootScan<'_>,
 ) -> Result<(), ClewError> {
     if depth > MAX_REACHABILITY_DEPTH {
         return Err(ClewError::new(
@@ -1570,8 +1579,8 @@ fn scan_managed_roots(
                 let child_relative = relative.join(&name);
                 let released_identity = relative.as_os_str().is_empty()
                     && name.to_str().is_some_and(|component| match root {
-                        "sessions" => released.session_components.contains_key(component),
-                        "runs" => released.run_components.contains_key(component),
+                        "sessions" => scan.released.session_components.contains_key(component),
+                        "runs" => scan.released.run_components.contains_key(component),
                         _ => false,
                     });
                 if released_identity {
@@ -1579,8 +1588,8 @@ fn scan_managed_roots(
                         .to_str()
                         .ok_or_else(|| corrupt("released root name is not UTF-8"))?;
                     let expected = match root {
-                        "sessions" => released.session_components.get(component),
-                        "runs" => released.run_components.get(component),
+                        "sessions" => scan.released.session_components.get(component),
+                        "runs" => scan.released.run_components.get(component),
                         _ => None,
                     }
                     .ok_or_else(|| corrupt("released root authority is missing"))?;
@@ -1599,10 +1608,7 @@ fn scan_managed_roots(
                     root,
                     &child_relative,
                     depth + 1,
-                    files_scanned,
-                    bytes_scanned,
-                    references,
-                    released,
+                    scan,
                 )?;
             }
             ManagedEntryKind::File => {
@@ -1610,8 +1616,8 @@ fn scan_managed_roots(
                 if extension != Some(OsStr::new("json")) && extension != Some(OsStr::new("jsonl")) {
                     continue;
                 }
-                *files_scanned = files_scanned.saturating_add(1);
-                if *files_scanned > MAX_REACHABILITY_ROOT_FILES {
+                *scan.files_scanned = scan.files_scanned.saturating_add(1);
+                if *scan.files_scanned > MAX_REACHABILITY_ROOT_FILES {
                     return Err(ClewError::new(
                         ErrorCode::ResourceLimit,
                         "managed-state reachability file count exceeds its bound",
@@ -1620,8 +1626,8 @@ fn scan_managed_roots(
                 let bytes = directory
                     .read_file(&name, MAX_REACHABILITY_ROOT_FILE_BYTES)
                     .map_err(|_| corrupt("managed-state reachability root is unsafe"))?;
-                *bytes_scanned = bytes_scanned.saturating_add(bytes.len() as u64);
-                if *bytes_scanned > MAX_REACHABILITY_ROOT_BYTES {
+                *scan.bytes_scanned = scan.bytes_scanned.saturating_add(bytes.len() as u64);
+                if *scan.bytes_scanned > MAX_REACHABILITY_ROOT_BYTES {
                     return Err(ClewError::new(
                         ErrorCode::ResourceLimit,
                         "managed-state reachability bytes exceed the 8 GiB bound",
@@ -1635,12 +1641,12 @@ fn scan_managed_roots(
                         let value: Value = serde_json::from_slice(line).map_err(|_| {
                             corrupt("managed-state JSONL reachability root is invalid")
                         })?;
-                        collect_root_cas_references(&value, references)?;
+                        collect_root_cas_references(&value, scan.references)?;
                     }
                 } else {
                     let value: Value = serde_json::from_slice(&bytes)
                         .map_err(|_| corrupt("managed-state JSON reachability root is invalid"))?;
-                    collect_root_cas_references(&value, references)?;
+                    collect_root_cas_references(&value, scan.references)?;
                 }
             }
         }

@@ -1723,14 +1723,14 @@ fn assemble_with_decision_identifier(
             .then_with(|| left.6.cmp(&right.6))
     });
     let total_candidates = ranked_candidates.len();
-    let full_coverage_candidate_count = (!normalized_terms.is_empty())
-        .then(|| {
-            ranked_candidates
-                .iter()
-                .filter(|candidate| candidate.10.len() == normalized_terms.len())
-                .count()
-        })
-        .unwrap_or(0);
+    let full_coverage_candidate_count = if normalized_terms.is_empty() {
+        0
+    } else {
+        ranked_candidates
+            .iter()
+            .filter(|candidate| candidate.10.len() == normalized_terms.len())
+            .count()
+    };
     let exact_identifier_candidate_count = ranked_candidates
         .iter()
         .filter(|candidate| candidate.0 > 0)
@@ -1812,20 +1812,20 @@ fn assemble_with_decision_identifier(
         requested_facets.contains(&NavigationFacet::Tests),
     );
 
-    let decision_authority = navigation_decision_authority(
+    let decision_authority = navigation_decision_authority(NavigationDecisionAuthorityInput {
         session_id,
         context_id,
-        &normalized_terms,
-        &candidates,
-        &returned_candidate_coverage,
-        &returned_candidate_exact_identifiers,
+        required_terms: &normalized_terms,
+        candidates: &candidates,
+        returned_candidate_coverage: &returned_candidate_coverage,
+        returned_candidate_exact_identifiers: &returned_candidate_exact_identifiers,
         full_coverage_candidate_count,
         exact_identifier_candidate_count,
-        decision_identifier.is_some(),
+        decision_identifier_declared: decision_identifier.is_some(),
         query_truncated,
-        total_candidates > candidates.len(),
-        retained.get("completeness"),
-    )?;
+        candidate_list_truncated: total_candidates > candidates.len(),
+        completeness: retained.get("completeness"),
+    })?;
     let result = json!({
         "schema":NAV_RESULT_SCHEMA,
         "sessionId":session_id,
@@ -1886,20 +1886,38 @@ fn assemble_with_decision_identifier(
     Ok(result)
 }
 
-fn navigation_decision_authority(
-    session_id: &str,
-    context_id: &str,
-    required_terms: &BTreeSet<String>,
-    candidates: &[Value],
-    returned_candidate_coverage: &BTreeMap<String, BTreeSet<String>>,
-    returned_candidate_exact_identifiers: &BTreeMap<String, bool>,
+struct NavigationDecisionAuthorityInput<'a> {
+    session_id: &'a str,
+    context_id: &'a str,
+    required_terms: &'a BTreeSet<String>,
+    candidates: &'a [Value],
+    returned_candidate_coverage: &'a BTreeMap<String, BTreeSet<String>>,
+    returned_candidate_exact_identifiers: &'a BTreeMap<String, bool>,
     full_coverage_candidate_count: usize,
     exact_identifier_candidate_count: usize,
     decision_identifier_declared: bool,
     query_truncated: bool,
     candidate_list_truncated: bool,
-    completeness: Option<&Value>,
+    completeness: Option<&'a Value>,
+}
+
+fn navigation_decision_authority(
+    input: NavigationDecisionAuthorityInput<'_>,
 ) -> Result<Value, ClewError> {
+    let NavigationDecisionAuthorityInput {
+        session_id,
+        context_id,
+        required_terms,
+        candidates,
+        returned_candidate_coverage,
+        returned_candidate_exact_identifiers,
+        full_coverage_candidate_count,
+        exact_identifier_candidate_count,
+        decision_identifier_declared,
+        query_truncated,
+        candidate_list_truncated,
+        completeness,
+    } = input;
     let unmatched_terms = completeness
         .and_then(|value| value.get("unmatchedTerms"))
         .and_then(Value::as_array)
