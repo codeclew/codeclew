@@ -404,22 +404,35 @@ impl SessionAuthority {
     }
 
     pub fn load(session_id: &str) -> Result<(Self, PathBuf), ClewError> {
-        Self::load_with_runtime_policy(session_id, true)
+        Self::load_with_runtime_policy(session_id, true, false)
     }
 
     pub fn load_for_cleanup(session_id: &str) -> Result<(Self, PathBuf), ClewError> {
-        Self::load_with_runtime_policy(session_id, false)
+        Self::load_with_runtime_policy(session_id, false, false)
+    }
+
+    /// Load authority for explicit terminal lifecycle cleanup. This is the
+    /// only session command path allowed to recognize the digest-valid legacy
+    /// `TYPE_SCRIPT` spelling.
+    pub fn load_for_lifecycle_cleanup(session_id: &str) -> Result<(Self, PathBuf), ClewError> {
+        Self::load_with_runtime_policy(session_id, false, true)
     }
 
     fn load_with_runtime_policy(
         session_id: &str,
         require_runtime_match: bool,
+        allow_legacy_typescript: bool,
     ) -> Result<(Self, PathBuf), ClewError> {
         let state = StateAuthority::process_default()?;
         let root = state.session_root(session_id)?;
-        let authority: Self =
-            read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
-        validate_session_authority(&authority, session_id)?;
+        let authority = if allow_legacy_typescript {
+            read_session_authority_for_cleanup(&state, &root.join("authority.json"), session_id)?
+        } else {
+            let authority: Self =
+                read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
+            validate_session_authority(&authority, session_id)?;
+            authority
+        };
         let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
             ClewError::new(
                 ErrorCode::WorkerPreparationRequired,
@@ -1011,11 +1024,21 @@ fn validate_session_authority(
     authority: &SessionAuthority,
     expected_session_id: &str,
 ) -> Result<(), ClewError> {
+    validate_session_authority_shape(authority, expected_session_id)?;
+    if authority.authority_digest != session_authority_digest(authority)? {
+        return Err(invalid("session authority identity is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_session_authority_shape(
+    authority: &SessionAuthority,
+    expected_session_id: &str,
+) -> Result<(), ClewError> {
     if authority.schema != SESSION_SCHEMA
         || authority.session_id != expected_session_id
         || !compilations_are_canonical(authority.language, &authority.compilations)
         || !generation_jobs_are_valid(authority.generation_jobs)
-        || authority.authority_digest != session_authority_digest(authority)?
     {
         return Err(invalid("session authority identity is invalid"));
     }
@@ -1429,9 +1452,11 @@ pub(crate) fn released_session_cas_roots(
         if !state.private_file_exists(&root.join("authority.json"))? {
             continue;
         }
-        let authority: SessionAuthority =
-            read_managed_json(state, &root.join("authority.json"), MAX_PLAN_BYTES)?;
-        validate_session_authority(&authority, &expected_session_id)?;
+        let authority = read_session_authority_for_cleanup(
+            state,
+            &root.join("authority.json"),
+            &expected_session_id,
+        )?;
         if id_component(&authority.session_id, "session:")? != component {
             return Err(invalid("managed session directory authority is invalid"));
         }
@@ -2430,6 +2455,62 @@ fn read_managed_json<T: for<'de> Deserialize<'de>>(
     serde_json::from_slice(&bytes).map_err(parse_error)
 }
 
+/// Read a session authority for retention or explicit cleanup only.
+///
+/// Development capsules predating the stable TypeScript spelling serialized
+/// `SessionLanguage::TypeScript` as `TYPE_SCRIPT`. Those bytes remain part of
+/// the stored authority digest, so cleanup verifies the legacy representation
+/// in place and never rewrites it. Ordinary session loading stays strict and
+/// accepts only the current `TYPESCRIPT` contract.
+fn read_session_authority_for_cleanup(
+    state: &StateAuthority,
+    path: &Path,
+    expected_session_id: &str,
+) -> Result<SessionAuthority, ClewError> {
+    let bytes = state
+        .read_private_file(path, MAX_PLAN_BYTES)
+        .map_err(|_| invalid("managed JSON object is missing or exceeds its limit"))?;
+
+    if let Ok(authority) = serde_json::from_slice::<SessionAuthority>(&bytes) {
+        validate_session_authority(&authority, expected_session_id)?;
+        return Ok(authority);
+    }
+
+    let legacy = canonical::parse_json_strict(&bytes).map_err(parse_error)?;
+    if canonical::bytes(&legacy).map_err(internal)? != bytes {
+        return Err(invalid("legacy session authority is not canonical"));
+    }
+    let object = legacy
+        .as_object()
+        .ok_or_else(|| invalid("legacy session authority is invalid"))?;
+    if object.get("language").and_then(Value::as_str) != Some("TYPE_SCRIPT") {
+        return Err(invalid("session authority language is invalid"));
+    }
+    let stored_digest = object
+        .get("authorityDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("legacy session authority digest is invalid"))?
+        .to_owned();
+
+    let mut unsigned = legacy.clone();
+    unsigned
+        .as_object_mut()
+        .expect("legacy authority was checked as an object")
+        .insert("authorityDigest".into(), Value::String(String::new()));
+    if canonical::hash(&unsigned).map_err(internal)? != stored_digest {
+        return Err(invalid("legacy session authority identity is invalid"));
+    }
+
+    let mut normalized = legacy;
+    normalized
+        .as_object_mut()
+        .expect("legacy authority was checked as an object")
+        .insert("language".into(), Value::String("TYPESCRIPT".into()));
+    let authority: SessionAuthority = serde_json::from_value(normalized).map_err(parse_error)?;
+    validate_session_authority_shape(&authority, expected_session_id)?;
+    Ok(authority)
+}
+
 fn create_filtered_detached_worktree(
     repository: &Path,
     destination: &Path,
@@ -2957,6 +3038,26 @@ mod tests {
         (temporary, state, root, authority)
     }
 
+    fn legacy_typescript_authority() -> (SessionAuthority, Vec<u8>) {
+        let mut authority = test_session();
+        authority.language = SessionLanguage::TypeScript;
+        authority.compilations = vec!["tsconfig:tsconfig.json".into()];
+        authority.authority_digest.clear();
+
+        let mut legacy = canonical::value(&authority).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .insert("language".into(), Value::String("TYPE_SCRIPT".into()));
+        let digest = canonical::hash(&legacy).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .insert("authorityDigest".into(), Value::String(digest.clone()));
+        authority.authority_digest = digest;
+        (authority, canonical::bytes(&legacy).unwrap())
+    }
+
     fn test_run() -> RunRecord {
         let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         RunRecord {
@@ -3379,6 +3480,68 @@ mod tests {
         assert_eq!(released.released_sessions, 1);
         assert_eq!(released.released_runs, 0);
         assert_eq!(released.reclaimable_loose_objects, 1);
+    }
+
+    #[test]
+    fn cleanup_accepts_digest_valid_legacy_typescript_without_relaxing_normal_loading() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let (authority, legacy_bytes) = legacy_typescript_authority();
+        let root = state.session_root(&authority.session_id).unwrap();
+        for child in ["runs", "candidates"] {
+            create_private_directory(&root.join(child)).unwrap();
+        }
+        state
+            .write_private_atomic(&root.join("authority.json"), &legacy_bytes)
+            .unwrap();
+        initialize_session_lifecycle(&state, &root, &authority).unwrap();
+
+        let normal: Result<SessionAuthority, _> =
+            read_managed_json(&state, &root.join("authority.json"), MAX_PLAN_BYTES);
+        assert!(normal.is_err());
+
+        let loaded = read_session_authority_for_cleanup(
+            &state,
+            &root.join("authority.json"),
+            &authority.session_id,
+        )
+        .unwrap();
+        assert_eq!(loaded.language, SessionLanguage::TypeScript);
+        assert_eq!(loaded.authority_digest, authority.authority_digest);
+        assert!(
+            released_session_cas_roots(&state)
+                .unwrap()
+                .session_components
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cleanup_rejects_tampered_legacy_typescript_authority() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let (authority, legacy_bytes) = legacy_typescript_authority();
+        let root = state.session_root(&authority.session_id).unwrap();
+        let mut tampered = canonical::parse_json_strict(&legacy_bytes).unwrap();
+        tampered.as_object_mut().unwrap().insert(
+            "baseRevision".into(),
+            Value::String("2222222222222222222222222222222222222222".into()),
+        );
+        state
+            .write_private_atomic(
+                &root.join("authority.json"),
+                &canonical::bytes(&tampered).unwrap(),
+            )
+            .unwrap();
+
+        assert!(
+            read_session_authority_for_cleanup(
+                &state,
+                &root.join("authority.json"),
+                &authority.session_id,
+            )
+            .is_err()
+        );
     }
 
     #[test]

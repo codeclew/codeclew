@@ -1431,14 +1431,14 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Close(args),
         } => {
-            let (session, _) = SessionAuthority::load_for_cleanup(&args.session)?;
+            let (session, _) = SessionAuthority::load_for_lifecycle_cleanup(&args.session)?;
             let lifecycle = session.close()?;
             Ok(json!({"schema":"codeclew-session-lifecycle-result/1.0","lifecycle":lifecycle}))
         }
         Command::Session {
             command: SessionCommand::Abort(args),
         } => {
-            let (session, _) = SessionAuthority::load_for_cleanup(&args.session)?;
+            let (session, _) = SessionAuthority::load_for_lifecycle_cleanup(&args.session)?;
             let lifecycle = session.abort()?;
             Ok(json!({"schema":"codeclew-session-lifecycle-result/1.0","lifecycle":lifecycle}))
         }
@@ -1455,7 +1455,7 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Session {
             command: SessionCommand::Gc(args),
         } => {
-            let (session, _) = SessionAuthority::load_for_cleanup(&args.session)?;
+            let (session, _) = SessionAuthority::load_for_lifecycle_cleanup(&args.session)?;
             let lifecycle = session.gc(args.force)?;
             Ok(json!({"schema":"codeclew-session-gc-result/1.0","lifecycle":lifecycle}))
         }
