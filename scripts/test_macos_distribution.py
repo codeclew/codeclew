@@ -167,6 +167,52 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertIn("codeclew-capabilities/1.0", result.stdout)
 
+                local_environment = dict(environment)
+                local_environment.update(
+                    {
+                        "CODECLEW_ASSET_DIR": str(initial_asset.parent.resolve()),
+                        "CODECLEW_BIN_DIR": str(temporary / "local-bin"),
+                        "CODECLEW_INSTALL_ROOT": str(temporary / "local-install"),
+                        "CODECLEW_RELEASE_API": "not-a-network-url",
+                        "CODECLEW_RELEASE_BASE": "not-a-network-url",
+                        "CODECLEW_VERSION": "v0.1.0",
+                    }
+                )
+                local = subprocess.run(
+                    ["/bin/sh", str(INSTALLER)],
+                    cwd=ROOT,
+                    env=local_environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(local.returncode, 0, local.stderr)
+                self.assertIn("Codeclew v0.1.0 installed", local.stdout)
+                self.assertIn(
+                    "[3/7] Loading the local macOS arm64 core profile",
+                    local.stderr,
+                )
+                self.assertNotIn("Downloading", local.stderr)
+
+                local_environment["CODECLEW_VERSION"] = "latest"
+                ambiguous_local = subprocess.run(
+                    ["/bin/sh", str(INSTALLER)],
+                    cwd=ROOT,
+                    env=local_environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertNotEqual(ambiguous_local.returncode, 0)
+                self.assertIn(
+                    "CODECLEW_VERSION must be explicit",
+                    ambiguous_local.stderr,
+                )
+
                 current = subprocess.run(
                     [str(installed), "upgrade"],
                     env=environment,

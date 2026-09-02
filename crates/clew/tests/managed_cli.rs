@@ -1948,7 +1948,7 @@ fn managed_storage_gc_is_dry_run_until_apply() {
         String::from_utf8_lossy(&applied.stdout)
     );
     let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
-    assert_eq!(applied["schema"], "codeclew-storage-report/2.0");
+    assert_eq!(applied["schema"], "codeclew-storage-report/2.1");
     assert_eq!(applied["action"], "APPLIED");
     assert!(applied["reclaimedBytes"].as_u64().unwrap() > 0);
     assert_eq!(applied["catalogSnapshotDeferred"], false);

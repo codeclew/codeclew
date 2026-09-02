@@ -157,7 +157,7 @@ pub struct CasObject {
     pub size: u64,
 }
 
-pub const STORAGE_REPORT_SCHEMA: &str = "codeclew-storage-report/2.0";
+pub const STORAGE_REPORT_SCHEMA: &str = "codeclew-storage-report/2.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -181,6 +181,7 @@ pub struct StorageReport {
     pub catalog_metadata_bytes: u64,
     pub reclaimable_packs: u64,
     pub reclaimable_loose_objects: u64,
+    pub reclaimable_orphan_loose_files: u64,
     pub reclaimable_orphan_pack_files: u64,
     pub reclaimable_bytes: u64,
     pub reclaimed_bytes: u64,
@@ -201,6 +202,7 @@ struct StoragePlan {
     report: StorageReport,
     dead_packs: Vec<CatalogPack>,
     dead_loose: Vec<String>,
+    orphan_loose_files: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     orphan_pack_files: Vec<std::ffi::OsString>,
 }
 
@@ -1396,6 +1398,7 @@ impl CasStore {
         let mut loose_objects = 0u64;
         let mut loose_bytes = 0u64;
         let mut dead_loose = Vec::new();
+        let mut orphan_loose_files = Vec::new();
         for prefix in self.objects.entries()? {
             let prefix_text = prefix
                 .to_str()
@@ -1408,10 +1411,19 @@ impl CasStore {
             for name in directory.entries()? {
                 let name_text = name
                     .to_str()
-                    .filter(|value| is_lower_hex(value, 62))
                     .ok_or_else(|| corrupt("CAS loose-object name is invalid"))?;
                 if directory.entry_kind(&name)? != ManagedEntryKind::File {
                     return Err(corrupt("CAS loose object is not a regular file"));
+                }
+                if !is_lower_hex(name_text, 62) {
+                    if !is_reclaimable_orphan_loose_file(name_text) {
+                        return Err(corrupt("CAS loose-object name is invalid"));
+                    }
+                    let bytes = directory.file_len(&name)?;
+                    loose_bytes = loose_bytes.saturating_add(bytes);
+                    reclaimable_bytes = reclaimable_bytes.saturating_add(bytes);
+                    orphan_loose_files.push((prefix.clone(), name));
+                    continue;
                 }
                 let digest = format!("sha256:{prefix_text}{name_text}");
                 let bytes = directory.file_len(&name)?;
@@ -1431,6 +1443,7 @@ impl CasStore {
             // nothing.
             dead_packs.clear();
             dead_loose.clear();
+            orphan_loose_files.clear();
             orphan_pack_files.clear();
             reclaimable_bytes = 0;
         }
@@ -1449,6 +1462,7 @@ impl CasStore {
                 catalog_metadata_bytes,
                 reclaimable_packs: dead_packs.len() as u64,
                 reclaimable_loose_objects: dead_loose.len() as u64,
+                reclaimable_orphan_loose_files: orphan_loose_files.len() as u64,
                 reclaimable_orphan_pack_files: orphan_pack_files.len() as u64,
                 reclaimable_bytes,
                 reclaimed_bytes: 0,
@@ -1465,6 +1479,7 @@ impl CasStore {
             },
             dead_packs,
             dead_loose,
+            orphan_loose_files,
             orphan_pack_files,
         })
     }
@@ -1526,6 +1541,12 @@ pub fn garbage_collect_storage(authority: &StateAuthority) -> Result<StorageRepo
         let (directory, name) = store.object_location(digest)?;
         if directory.file_exists(OsStr::new(&name))? {
             directory.remove_file(OsStr::new(&name))?;
+        }
+    }
+    for (prefix, name) in &plan.orphan_loose_files {
+        let directory = store.objects.existing_child(prefix)?;
+        if directory.file_exists(name)? {
+            directory.remove_file(name)?;
         }
     }
     for name in &plan.orphan_pack_files {
@@ -1748,6 +1769,24 @@ fn is_reclaimable_orphan_pack_file(name: &str) -> bool {
     ["pack", "json", "verified"].iter().any(|extension| {
         name.strip_suffix(&format!(".{extension}"))
             .is_some_and(|component| is_lower_hex(component, 64))
+    })
+}
+
+fn is_reclaimable_orphan_loose_file(name: &str) -> bool {
+    [".tmp-", ".derived-"]
+        .iter()
+        .any(|prefix| name.strip_prefix(prefix).is_some_and(is_canonical_uuid_v4))
+}
+
+fn is_canonical_uuid_v4(value: &str) -> bool {
+    if value.len() != 36 {
+        return false;
+    }
+    value.bytes().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => byte == b'-',
+        14 => byte == b'4',
+        19 => matches!(byte, b'8' | b'9' | b'a' | b'b'),
+        _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
     })
 }
 
@@ -2657,6 +2696,64 @@ mod tests {
             ErrorCode::StateCorrupt
         );
         assert_eq!(storage_status(&authority).unwrap().reclaimable_bytes, 0);
+    }
+
+    #[test]
+    fn storage_gc_reclaims_only_known_loose_crash_orphans() {
+        let root = tempfile::tempdir().unwrap();
+        let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&authority).unwrap();
+        let prefix = store.objects.child(Path::new("ab")).unwrap();
+        let temporary = OsStr::new(".tmp-00000000-0000-4000-8000-000000000001");
+        let derived = OsStr::new(".derived-00000000-0000-4000-8000-000000000002");
+        let temporary_bytes = b"partial publication";
+        let derived_bytes = b"obsolete derived cache";
+        let expected_bytes = (temporary_bytes.len() + derived_bytes.len()) as u64;
+        prefix.atomic_write(temporary, temporary_bytes).unwrap();
+        prefix.atomic_write(derived, derived_bytes).unwrap();
+
+        let report = storage_status(&authority).unwrap();
+        assert_eq!(report.reclaimable_orphan_loose_files, 2);
+        assert_eq!(report.reclaimable_loose_objects, 0);
+        assert_eq!(report.reclaimable_bytes, expected_bytes);
+        assert_eq!(report.reclaimed_bytes, 0);
+
+        drop(store);
+        let applied = garbage_collect_storage(&authority).unwrap();
+        assert_eq!(applied.action, StorageAction::Applied);
+        assert_eq!(applied.reclaimable_orphan_loose_files, 2);
+        assert_eq!(applied.reclaimed_bytes, expected_bytes);
+        assert!(!prefix.file_exists(temporary).unwrap());
+        assert!(!prefix.file_exists(derived).unwrap());
+        assert_eq!(
+            storage_status(&authority)
+                .unwrap()
+                .reclaimable_orphan_loose_files,
+            0
+        );
+    }
+
+    #[test]
+    fn storage_gc_rejects_unknown_or_noncanonical_loose_orphans() {
+        for name in [
+            ".derived-not-a-uuid",
+            ".tmp-00000000-0000-1000-8000-000000000000",
+            ".tmp-00000000-0000-4000-C000-000000000000",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let authority = StateAuthority::open(root.path().join("v2")).unwrap();
+            let store = CasStore::open(&authority).unwrap();
+            store
+                .objects
+                .child(Path::new("ab"))
+                .unwrap()
+                .atomic_write(OsStr::new(name), b"unknown")
+                .unwrap();
+            assert_eq!(
+                storage_status(&authority).unwrap_err().code,
+                ErrorCode::StateCorrupt
+            );
+        }
     }
 
     #[test]

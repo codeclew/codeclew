@@ -91,3 +91,28 @@ Do not replace an existing version directory with different bytes. The pilot
 uses SHA-256 transport integrity; Apple code signing, notarization, immutable
 release enforcement, and independent signature verification remain required
 before a general-availability claim.
+
+## Installing from manually downloaded assets
+
+When GitHub API or release downloads are unavailable from the target machine,
+download these three files on any machine or through a browser and copy them
+into one local directory:
+
+- `install.sh` from the Codeclew repository;
+- `codeclew-macos-arm64.tar.gz` (or `codeclew-macos-x86_64.tar.gz`);
+- the matching `.tar.gz.sha256` file.
+
+Install the exact version without any network access:
+
+```bash
+CODECLEW_VERSION=v0.2.15 \
+CODECLEW_ASSET_DIR="$PWD" \
+/bin/sh ./install.sh
+```
+
+The directory must be an absolute, non-symlink path. Local mode refuses
+`CODECLEW_VERSION=latest`, selects the archive for the current architecture,
+rejects symlinked inputs, verifies SHA-256, and then performs the same embedded
+version, profile, and runtime checks as the online installer. Set
+`CODECLEW_PACKS=kotlin23` and download the matching `codeclew-kotlin23-*` pair
+to install that optional profile.

@@ -23,6 +23,18 @@ entrypoint and is updated through Git, not `clew upgrade`. Existing
 installations older than v0.1.3 need the one-line installer once more to acquire
 the updater; their later updates use `clew upgrade`.
 
+If GitHub downloads return 403, download `install.sh`, the archive for your Mac
+architecture, and its matching `.sha256` file into one directory. Install those
+local bytes without network access by pinning their release tag:
+
+```bash
+CODECLEW_VERSION=v0.2.15 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+```
+
+Local mode performs the same checksum, embedded-version, profile, and runtime
+verification as the online installer. It refuses `latest`, relative asset
+directories, and symlinked archive or checksum inputs.
+
 The default `core` profile contains Kotlin 2.4.10. Kotlin 2.3.0 remains an
 optional read-only preview and is downloaded only when requested:
 

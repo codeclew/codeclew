@@ -9,6 +9,7 @@ INSTALL_ROOT=${CODECLEW_INSTALL_ROOT:-"$HOME/.local/share/codeclew"}
 BIN_DIR=${CODECLEW_BIN_DIR:-"$HOME/.local/bin"}
 REQUESTED_VERSION=${CODECLEW_VERSION:-latest}
 REQUESTED_PACKS=${CODECLEW_PACKS:-}
+LOCAL_ASSET_DIR=${CODECLEW_ASSET_DIR:-}
 
 fail() {
   printf 'codeclew installer: %s\n' "$1" >&2
@@ -21,13 +22,22 @@ progress() {
 
 progress '[1/7] Checking macOS and required tools...'
 
-case "$RELEASE_BASE" in
-  https://*) ;;
-  http://127.0.0.1:*|http://localhost:*)
-    [ "${CODECLEW_ALLOW_INSECURE_DOWNLOAD:-}" = 1 ] || fail "release URL must use HTTPS"
-    ;;
-  *) fail "release URL must use HTTPS" ;;
-esac
+if [ -n "$LOCAL_ASSET_DIR" ]; then
+  case "$LOCAL_ASSET_DIR" in
+    /*) ;;
+    *) fail "CODECLEW_ASSET_DIR must be an absolute path" ;;
+  esac
+  [ -d "$LOCAL_ASSET_DIR" ] && [ ! -L "$LOCAL_ASSET_DIR" ] \
+    || fail "CODECLEW_ASSET_DIR must be a real directory"
+else
+  case "$RELEASE_BASE" in
+    https://*) ;;
+    http://127.0.0.1:*|http://localhost:*)
+      [ "${CODECLEW_ALLOW_INSECURE_DOWNLOAD:-}" = 1 ] || fail "release URL must use HTTPS"
+      ;;
+    *) fail "release URL must use HTTPS" ;;
+  esac
+fi
 
 case "$REQUESTED_PACKS" in
   '') PROFILE=core ;;
@@ -37,6 +47,8 @@ esac
 
 case "$REQUESTED_VERSION" in
   latest)
+    [ -z "$LOCAL_ASSET_DIR" ] \
+      || fail "CODECLEW_VERSION must be explicit when CODECLEW_ASSET_DIR is set"
     case "$RELEASE_API" in
       https://*) ;;
       http://127.0.0.1:*|http://localhost:*)
@@ -56,7 +68,7 @@ case "$(uname -m)" in
   *) fail "unsupported macOS architecture" ;;
 esac
 
-command -v curl >/dev/null 2>&1 || fail "curl is required"
+[ -n "$LOCAL_ASSET_DIR" ] || command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v git >/dev/null 2>&1 || fail "Git is required"
 command -v python3 >/dev/null 2>&1 || fail "Python 3.11 or newer is required"
 python3 -I -S -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
@@ -119,11 +131,24 @@ PY
   ) || fail "release metadata is invalid"
 fi
 
-DOWNLOAD_ROOT=$RELEASE_BASE/download/$RESOLVED_VERSION
-progress "[3/7] Downloading the macOS $ARCH $PROFILE profile..."
-download "$DOWNLOAD_ROOT/$ASSET" "$TMP_ROOT/$ASSET"
-progress '[4/7] Downloading and verifying the SHA-256 checksum...'
-download "$DOWNLOAD_ROOT/$CHECKSUM" "$TMP_ROOT/$CHECKSUM"
+if [ -n "$LOCAL_ASSET_DIR" ]; then
+  LOCAL_ASSET=$LOCAL_ASSET_DIR/$ASSET
+  LOCAL_CHECKSUM=$LOCAL_ASSET_DIR/$CHECKSUM
+  [ -f "$LOCAL_ASSET" ] && [ ! -L "$LOCAL_ASSET" ] \
+    || fail "local release archive is missing or is a symlink"
+  [ -f "$LOCAL_CHECKSUM" ] && [ ! -L "$LOCAL_CHECKSUM" ] \
+    || fail "local release checksum is missing or is a symlink"
+  progress "[3/7] Loading the local macOS $ARCH $PROFILE profile..."
+  cp "$LOCAL_ASSET" "$TMP_ROOT/$ASSET"
+  progress '[4/7] Loading and verifying the local SHA-256 checksum...'
+  cp "$LOCAL_CHECKSUM" "$TMP_ROOT/$CHECKSUM"
+else
+  DOWNLOAD_ROOT=$RELEASE_BASE/download/$RESOLVED_VERSION
+  progress "[3/7] Downloading the macOS $ARCH $PROFILE profile..."
+  download "$DOWNLOAD_ROOT/$ASSET" "$TMP_ROOT/$ASSET"
+  progress '[4/7] Downloading and verifying the SHA-256 checksum...'
+  download "$DOWNLOAD_ROOT/$CHECKSUM" "$TMP_ROOT/$CHECKSUM"
+fi
 
 EXPECTED=$(awk 'NR == 1 { print $1 }' "$TMP_ROOT/$CHECKSUM")
 case "$EXPECTED" in
