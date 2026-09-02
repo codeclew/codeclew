@@ -93,7 +93,7 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
             "primaryAnalysisOpenCommand":"nav query",
             "readinessSchema":"codeclew-doctor/2.0",
             "skillDigest":agent_skill_digest(),
-            "skillPackageVersion":"0.2.14",
+            "skillPackageVersion":"0.2.15",
             "sourceFallbackAllowed":false,
         },
         "packagedWorkers":packaged_workers,
