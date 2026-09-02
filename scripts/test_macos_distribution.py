@@ -196,6 +196,43 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertNotIn("Downloading", local.stderr)
 
+                local_environment.update(
+                    {
+                        "CODECLEW_ASSET_DIR": str(
+                            (
+                                document_root
+                                / "releases"
+                                / "download"
+                                / "v0.1.1"
+                            ).resolve()
+                        ),
+                        "CODECLEW_VERSION": "v0.1.1",
+                    }
+                )
+                local_upgrade = subprocess.run(
+                    ["/bin/sh", str(INSTALLER)],
+                    cwd=ROOT,
+                    env=local_environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(local_upgrade.returncode, 0, local_upgrade.stderr)
+                self.assertIn("Codeclew v0.1.1 installed", local_upgrade.stdout)
+                self.assertNotIn("Downloading", local_upgrade.stderr)
+                local_version = subprocess.run(
+                    [str(temporary / "local-bin" / "clew"), "--version"],
+                    env=local_environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                )
+                self.assertEqual(local_version.returncode, 0, local_version.stderr)
+                self.assertEqual(local_version.stdout.strip(), "clew 0.1.1")
+
                 local_environment["CODECLEW_VERSION"] = "latest"
                 ambiguous_local = subprocess.run(
                     ["/bin/sh", str(INSTALLER)],
