@@ -116,3 +116,19 @@ rejects symlinked inputs, verifies SHA-256, and then performs the same embedded
 version, profile, and runtime checks as the online installer. Set
 `CODECLEW_PACKS=kotlin23` and download the matching `codeclew-kotlin23-*` pair
 to install that optional profile.
+
+Upgrade from local files by downloading the newer archive/checksum pair and
+re-running the installer with the newer explicit tag. Use the same install and
+bin roots as the existing installation; their defaults already match:
+
+```bash
+CODECLEW_VERSION=vNEWER \
+CODECLEW_ASSET_DIR=/absolute/path/to/newer-assets \
+/bin/sh /absolute/path/to/install.sh
+clew --version
+```
+
+The versions remain side by side under `CODECLEW_INSTALL_ROOT/releases`; the
+launcher symlink is switched atomically only after checksum, embedded-version,
+profile, and runtime verification pass. Managed state in `CODECLEW_HOME` is
+not migrated or rewritten by installation or upgrade.

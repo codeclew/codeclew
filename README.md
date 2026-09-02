@@ -33,7 +33,19 @@ CODECLEW_VERSION=v0.2.17 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
 verification as the online installer. It refuses `latest`, relative asset
-directories, and symlinked archive or checksum inputs.
+directories, and symlinked archive or checksum inputs. To upgrade without
+GitHub access, put the newer archive and checksum in a local directory and run
+the same command with its newer explicit tag. Keep the same
+`CODECLEW_INSTALL_ROOT` and `CODECLEW_BIN_DIR` (or omit both to keep their
+defaults); the installer adds the new version side by side and atomically
+switches the `clew` launcher. It does not modify `CODECLEW_HOME`:
+
+```bash
+CODECLEW_VERSION=vNEWER \
+CODECLEW_ASSET_DIR=/absolute/path/to/downloads \
+/bin/sh /absolute/path/to/install.sh
+clew --version
+```
 
 The default `core` profile contains Kotlin 2.4.10. Kotlin 2.3.0 remains an
 optional read-only preview and is downloaded only when requested:
