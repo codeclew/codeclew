@@ -1545,44 +1545,47 @@ fn garbage_collect_session_with_state(
     let locator: RepositoryLocator =
         read_managed_json(state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
     validate_locator(&locator)?;
-    let target = locator
-        .target_repository_path
-        .canonicalize()
-        .map_err(io_error)?;
-    let expected_target_oid = session_terminal_target_oid(authority, &runs)?;
-    let current_target_oid = git_output(
-        &target,
-        &[
-            "rev-parse",
-            "--verify",
-            &format!("{}^{{commit}}", authority.target_ref),
-        ],
-    )?;
-    let expected_is_ancestor = if current_target_oid == expected_target_oid {
-        true
-    } else {
-        let output = Command::new("git")
-            .args([
-                "merge-base",
-                "--is-ancestor",
-                &expected_target_oid,
-                &current_target_oid,
-            ])
-            .current_dir(&target)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .map_err(io_error)?;
-        match output.status.code() {
-            Some(0) => true,
-            Some(1) => false,
-            _ => return Err(invalid("Git target ancestry is unavailable")),
-        }
+    let target = match locator.target_repository_path.canonicalize() {
+        Ok(target) => Some(target),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(io_error(error)),
     };
-    if state.repository(&target)?.key != authority.repository_key || !expected_is_ancestor {
-        return Err(ClewError::new(
-            ErrorCode::PreconditionFailed,
-            "session target authority diverged before GC",
-        ));
+    if let Some(target) = target.as_ref() {
+        let expected_target_oid = session_terminal_target_oid(authority, &runs)?;
+        let current_target_oid = git_output(
+            target,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("{}^{{commit}}", authority.target_ref),
+            ],
+        )?;
+        let expected_is_ancestor = if current_target_oid == expected_target_oid {
+            true
+        } else {
+            let output = Command::new("git")
+                .args([
+                    "merge-base",
+                    "--is-ancestor",
+                    &expected_target_oid,
+                    &current_target_oid,
+                ])
+                .current_dir(target)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .map_err(io_error)?;
+            match output.status.code() {
+                Some(0) => true,
+                Some(1) => false,
+                _ => return Err(invalid("Git target ancestry is unavailable")),
+            }
+        };
+        if state.repository(target)?.key != authority.repository_key || !expected_is_ancestor {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session target authority diverged before GC",
+            ));
+        }
     }
 
     // Validate every relevant worktree before deleting any of them. This makes
@@ -1590,6 +1593,12 @@ fn garbage_collect_session_with_state(
     let mut removals = Vec::new();
     let source = root.join("source");
     if source.exists() {
+        if target.is_none() {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session target is unavailable while its source worktree remains",
+            ));
+        }
         let metadata = fs::symlink_metadata(&source).map_err(io_error)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
             return Err(invalid("session source worktree is unsafe"));
@@ -1646,6 +1655,12 @@ fn garbage_collect_session_with_state(
         let worktree = candidate_root.join("worktree");
         if !worktree.exists() {
             continue;
+        }
+        if target.is_none() {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "session target is unavailable while a candidate worktree remains",
+            ));
         }
         let metadata = fs::symlink_metadata(&worktree).map_err(io_error)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -1709,8 +1724,14 @@ fn garbage_collect_session_with_state(
     for (worktree, expected) in &derived_output_cleanups {
         crate::task_run_v2::remove_exact_derived_outputs(worktree, expected)?;
     }
-    for removal in removals {
-        remove_managed_worktree(&target, &removal)?;
+    if let Some(target) = target.as_ref() {
+        for removal in removals {
+            remove_managed_worktree(target, &removal)?;
+        }
+    } else if !removals.is_empty() {
+        return Err(internal(
+            "missing target retained a managed worktree removal",
+        ));
     }
     for run in &runs {
         cleanup_candidate_derived_state_with_authority(state, root, run)?;
@@ -1729,6 +1750,66 @@ fn garbage_collect_session_with_state(
     append_session_lifecycle(state, root, next)?;
     load_session_lifecycle_unlocked(state, root, authority)
 }
+
+#[cfg(test)]
+#[test]
+fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
+    let temporary = tempfile::tempdir().unwrap();
+    let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let mut authority = SessionAuthority {
+        schema: SESSION_SCHEMA.into(),
+        authority_digest: String::new(),
+        session_id: format!("session:{digest}"),
+        repository_key: format!("repo:{digest}"),
+        base_revision: "1111111111111111111111111111111111111111".into(),
+        target_ref: "refs/heads/main".into(),
+        target_oid: "1111111111111111111111111111111111111111".into(),
+        runtime_key: format!("runtime:{digest}"),
+        runtime_mode: RuntimeMode::Development,
+        language: SessionLanguage::Rust,
+        compilations: vec!["cargo:Cargo.toml#fixture#lib#fixture".into()],
+        generation_jobs: None,
+        model_cache_policy: ModelCachePolicy::NonCacheable,
+        model_cache_authority: None,
+        created_unix_ms: 1,
+    };
+    authority.authority_digest = session_authority_digest(&authority).unwrap();
+    let root = state.session_root(&authority.session_id).unwrap();
+    for child in ["runs", "candidates"] {
+        create_private_directory(&root.join(child)).unwrap();
+    }
+    initialize_session_lifecycle(&state, &root, &authority).unwrap();
+    write_managed_json_create_new(
+        &state,
+        &root.join("locator.json"),
+        &RepositoryLocator {
+            schema: "codeclew-repository-locator/3.0".into(),
+            target_repository_path: root.join("missing-target"),
+            source_repository_path: root.join("source"),
+            external_build_state_path: None,
+        },
+    )
+    .unwrap();
+    transition_session_terminal_with_state(
+        &authority,
+        SessionStatus::Closed,
+        &state,
+        &root,
+    )
+    .unwrap();
+
+    fs::create_dir(root.join("source")).unwrap();
+    let retained =
+        garbage_collect_session_with_state(&authority, false, &state, &root).unwrap_err();
+    assert_eq!(retained.code, ErrorCode::PreconditionFailed);
+    fs::remove_dir(root.join("source")).unwrap();
+
+    let lifecycle =
+        garbage_collect_session_with_state(&authority, false, &state, &root).unwrap();
+    assert_eq!(lifecycle.status, SessionStatus::GarbageCollected);
+}
+
 
 fn managed_source_clean(root: &Path) -> Result<bool, ClewError> {
     match candidate_untracked_after_clean_tracked_check(root) {
