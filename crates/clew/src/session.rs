@@ -1791,13 +1791,8 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
         },
     )
     .unwrap();
-    transition_session_terminal_with_state(
-        &authority,
-        SessionStatus::Closed,
-        &state,
-        &root,
-    )
-    .unwrap();
+    transition_session_terminal_with_state(&authority, SessionStatus::Closed, &state, &root)
+        .unwrap();
 
     fs::create_dir(root.join("source")).unwrap();
     let retained =
@@ -1805,11 +1800,9 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
     assert_eq!(retained.code, ErrorCode::PreconditionFailed);
     fs::remove_dir(root.join("source")).unwrap();
 
-    let lifecycle =
-        garbage_collect_session_with_state(&authority, false, &state, &root).unwrap();
+    let lifecycle = garbage_collect_session_with_state(&authority, false, &state, &root).unwrap();
     assert_eq!(lifecycle.status, SessionStatus::GarbageCollected);
 }
-
 
 fn managed_source_clean(root: &Path) -> Result<bool, ClewError> {
     match candidate_untracked_after_clean_tracked_check(root) {

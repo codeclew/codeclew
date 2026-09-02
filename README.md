@@ -28,7 +28,7 @@ architecture, and its matching `.sha256` file into one directory. Install those
 local bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.2.18 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.2.19 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
