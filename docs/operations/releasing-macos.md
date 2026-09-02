@@ -11,7 +11,8 @@ The `macOS release` GitHub Actions workflow builds four fixed asset names:
 - `codeclew-macos-x86_64.tar.gz`;
 - `codeclew-kotlin23-macos-arm64.tar.gz`;
 - `codeclew-kotlin23-macos-x86_64.tar.gz`;
-- one `.sha256` file for each archive.
+- one `.sha256` file for each archive;
+- `install.sh` and `install.sh.sha256` for offline installation.
 
 The default archive contains the Kotlin 2.4.10 `core` profile. The optional
 `kotlin23` archive adds the Kotlin 2.3.0 read-only preview. Each archive contains
@@ -95,12 +96,19 @@ before a general-availability claim.
 ## Installing from manually downloaded assets
 
 When GitHub API or release downloads are unavailable from the target machine,
-download these three files on any machine or through a browser and copy them
+download these four files from one Codeclew Release on any machine or through a
+browser and copy them
 into one local directory:
 
-- `install.sh` from the Codeclew repository;
+- `install.sh` and `install.sh.sha256`;
 - `codeclew-macos-arm64.tar.gz` (or `codeclew-macos-x86_64.tar.gz`);
 - the matching `.tar.gz.sha256` file.
+
+Optionally verify the installer before running it:
+
+```bash
+shasum -a 256 -c install.sh.sha256
+```
 
 Install the exact version without any network access:
 

@@ -85,13 +85,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_VERSION }}
       - uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/release-assets
           merge-multiple: true
+      - name: Stage offline installer
+        run: |
+          install -m 0755 site/install.sh "$RUNNER_TEMP/release-assets/install.sh"
+          cd "$RUNNER_TEMP/release-assets"
+          sha256sum install.sh >install.sh.sha256
       - name: Verify checksums
         working-directory: ${{ runner.temp }}/release-assets
         run: |
+          sha256sum --check install.sh.sha256
           sha256sum --check codeclew-macos-arm64.tar.gz.sha256
           sha256sum --check codeclew-macos-x86_64.tar.gz.sha256
           sha256sum --check codeclew-kotlin23-macos-arm64.tar.gz.sha256
@@ -111,6 +120,7 @@ jobs:
             '```' \
             '' \
             'The installer verifies the published SHA-256 checksum and never compiles Codeclew locally.' \
+            'For an offline install, download install.sh, install.sh.sha256, the archive for your architecture, and its matching .sha256 file from this release. Set CODECLEW_VERSION to this tag and CODECLEW_ASSET_DIR to their local directory.' \
             'The default profile contains Kotlin 2.4.10 plus operationally pilot-ready conditional Rust and Python mutation. Rust/Python evidence remains PARTIAL/UNSURE and requires native validation plus explicit obligation acknowledgement.' \
             'Install the optional Kotlin 2.3.0 preview later with `clew pack install kotlin23`.' \
             >"$notes"

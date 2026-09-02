@@ -23,9 +23,10 @@ entrypoint and is updated through Git, not `clew upgrade`. Existing
 installations older than v0.1.3 need the one-line installer once more to acquire
 the updater; their later updates use `clew upgrade`.
 
-If GitHub downloads return 403, download `install.sh`, the archive for your Mac
-architecture, and its matching `.sha256` file into one directory. Install those
-local bytes without network access by pinning their release tag:
+If GitHub downloads return 403, manually download `install.sh`,
+`install.sh.sha256`, the archive for your Mac architecture, and its matching
+`.sha256` file from one Codeclew Release into one directory. Install those local
+bytes without network access by pinning their release tag:
 
 ```bash
 CODECLEW_VERSION=v0.2.19 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh

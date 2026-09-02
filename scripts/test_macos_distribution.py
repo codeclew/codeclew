@@ -20,6 +20,7 @@ SOURCE_LAUNCHER = ROOT / "clew"
 INSTALLER = ROOT / "site" / "install.sh"
 LAUNCHER = ROOT / "packaging" / "macos" / "clew"
 UPGRADER = ROOT / "packaging" / "macos" / "upgrade"
+RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release-macos.yml"
 
 
 class QuietHandler(SimpleHTTPRequestHandler):
@@ -28,6 +29,15 @@ class QuietHandler(SimpleHTTPRequestHandler):
 
 
 class MacosDistributionTest(unittest.TestCase):
+    def test_release_publishes_the_offline_installer_and_checksum(self) -> None:
+        workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            'install -m 0755 site/install.sh "$RUNNER_TEMP/release-assets/install.sh"',
+            workflow,
+        )
+        self.assertIn("sha256sum install.sh >install.sh.sha256", workflow)
+        self.assertIn("sha256sum --check install.sh.sha256", workflow)
+
     def test_installer_is_idempotent_and_never_builds_locally(self) -> None:
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
