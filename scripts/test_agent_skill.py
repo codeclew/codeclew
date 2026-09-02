@@ -43,7 +43,7 @@ class AgentSkillTest(unittest.TestCase):
 
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("version: \"0.2.15\"", skill)
+        self.assertIn("version: \"0.2.16\"", skill)
         self.assertIn("codeclew-agent-contract/1.0", skill)
         self.assertIn("clew context open", skill)
         self.assertIn("clew nav query", skill)
