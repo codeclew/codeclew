@@ -105,7 +105,7 @@ into one local directory:
 Install the exact version without any network access:
 
 ```bash
-CODECLEW_VERSION=v0.2.16 \
+CODECLEW_VERSION=v0.2.17 \
 CODECLEW_ASSET_DIR="$PWD" \
 /bin/sh ./install.sh
 ```
