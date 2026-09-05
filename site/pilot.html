@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="An anonymized real-service pilot: 15 Spring computation roots checked against committed source, with explicit coverage and runtime limits.">
+    <meta name="description" content="An anonymized two-service pilot: 31 Spring computation roots checked against committed source, with explicit coverage and runtime limits.">
     <meta name="theme-color" content="#0b0d0c">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
@@ -18,33 +18,40 @@
     <main class="architecture-page shell">
       <section class="docs-hero">
         <div class="kicker">Anonymized private-service pilot · September 2026</div>
-        <h1>A real repository.<br><em>An auditable inventory.</em></h1>
-        <p class="lede">Codeclew found 15 Spring computation roots in Service A. An independent inventory of the same committed source matched all 15, with no extra roots in the selected production compilation. One scheduled job was missing from the service's existing documentation.</p>
-        <div class="docs-note"><b>A scoped result.</b> This pilot checks annotation-declared computation roots in one private repository. It does not establish runtime activation, programmatic registration coverage, or general compatibility with every Kotlin and Spring project.</div>
+        <h1>Two real services.<br><em>An auditable inventory.</em></h1>
+        <p class="lede">Codeclew found 31 Spring computation roots across Service A and Service B. Independent inventories of the same committed source matched all 31, with no extra roots in the selected production compilations. One scheduled job was missing from Service A's existing documentation.</p>
+        <div class="docs-note"><b>A scoped result.</b> This pilot checks annotation-declared computation roots in two private repositories. It does not establish runtime activation, programmatic registration coverage, or general compatibility with every Kotlin and Spring project.</div>
       </section>
 
       <section class="architecture-section" id="result">
         <div class="kicker">Verified result</div>
         <h2>Three trigger families.<br>One missing documentation entry.</h2>
         <div class="architecture-table-wrap"><table class="architecture-table pilot-table">
-          <caption>Service A · committed production compilation · independent source inventory</caption>
+          <caption>Two services · committed production compilations · independent source inventories</caption>
           <thead><tr><th scope="col">Scope</th><th scope="col">HTTP</th><th scope="col">Kafka</th><th scope="col">Scheduled</th><th scope="col">Total</th></tr></thead>
-          <tbody><tr><th scope="row">Service A</th><td>11</td><td>1</td><td>3</td><td>15</td></tr></tbody>
+          <tbody><tr><th scope="row">Service A</th><td>11</td><td>1</td><td>3</td><td>15</td></tr><tr><th scope="row">Service B</th><td>8</td><td>3</td><td>5</td><td>16</td></tr><tr><th scope="row">Combined</th><td>19</td><td>4</td><td>8</td><td>31</td></tr></tbody>
         </table></div>
-        <p>The independent committed-source audit and the catalogue agreed on 15 of 15 roots, with no extras within that scope. Comparing the result with existing documentation exposed one omitted scheduled job. This is an inventory and documentation result; no speed or token-saving claim was measured in this pilot.</p>
+        <p>The independent committed-source audits and the catalogue agreed on 31 of 31 roots, with no extras within those scopes. Each annotation anchor fell within its corresponding declaration range. The combined catalogue returned two pages (30 + 1) with one stable catalogue digest, no duplicates and a final null cursor. Comparing Service A with its existing documentation exposed one omitted scheduled job. No speed or token-saving claim was measured in this pilot.</p>
       </section>
 
       <section class="architecture-section" id="method">
         <div class="kicker">How the result was checked</div>
         <h2>Bind the scope.<br>Compare the complete inventory.</h2>
         <ol class="architecture-extension">
-          <li><b>Use the packaged candidate.</b> Run the v0.3.1 core release candidate in <code>RELEASE</code> mode against a real Kotlin 2.3.0 / Java 21 Maven and Spring repository. Kotlin analysis uses the packaged K2 engine and retains the native-project version separately.</li>
+          <li><b>Use the packaged candidate.</b> Run the v0.3.1 core release candidate in <code>RELEASE</code> mode against two related private services. Both use Kotlin 2.3.0 / Java 21, Maven and Spring. Kotlin analysis uses the packaged K2 engine and retains the native-project version separately.</li>
           <li><b>Select committed production source.</b> Use explicit <code>--committed</code> analysis. The developer checkout contained local edits; those edits stayed in place and were excluded from the snapshot.</li>
           <li><b>Enumerate the selected compilation.</b> Open the admitted analysis context and read the Spring catalogue with its callable identities, source anchors and coverage boundaries. Root enumeration is independent of which search terms started navigation.</li>
-          <li><b>Audit the same committed bytes independently.</b> Inventory HTTP handlers, Kafka listeners and scheduled jobs from source, then compare membership in both directions. The 15/15 result includes the check for unexpected extra roots.</li>
+          <li><b>Audit the same committed bytes independently.</b> Inventory HTTP handlers, Kafka listeners and scheduled jobs from source, then compare membership in both directions. The 31/31 result includes the check for unexpected extra roots. Five outbound Feign client methods were excluded from the inbound HTTP inventory after the pilot exposed and corrected their misclassification.</li>
           <li><b>Compare with the document.</b> Use the audited inventory to identify missing documentation. The observed gap was one scheduled job.</li>
         </ol>
         <p><a href="./architecture.html#committed">Read the committed-analysis workflow →</a></p>
+      </section>
+
+      <section class="architecture-section" id="source-findings">
+        <div class="kicker">From a catalogue entry to an explanation</div>
+        <h2>Inspect the send.<br>Keep the handoff conditional.</h2>
+        <p>In both services, an exact Kafka callable identity from the catalogue led to a supported source result. Inspection of retained outbox source distinguished successful, failed and unresolved sends, giving the agent a concrete basis for describing delivery behavior.</p>
+        <p>A possible handoff between the services remained unproven because the committed topic declarations differed. The document therefore retains a candidate relationship and its unresolved boundary; root enumeration alone does not establish an integration edge.</p>
       </section>
 
       <section class="architecture-section" id="limits">
@@ -61,12 +68,12 @@
       <section class="architecture-section" id="provenance">
         <div class="kicker">Provenance and public regression checks</div>
         <h2>Read the implementation.<br>Keep distinct studies distinct.</h2>
-        <p>This report describes a packaged v0.3.1 core <code>RELEASE</code> candidate. Public regressions exercise the catalogue contract, annotation resolution and cross-repository pagination; they complement the private-service audit without reproducing its confidential inputs.</p>
+        <p>This report describes the verified packaged v0.3.1 core <code>RELEASE</code> candidate built from public Codeclew source <a href="https://github.com/codeclew/codeclew/commit/e1d4e6b">e1d4e6b</a>. Public regressions exercise the catalogue contract, annotation resolution and cross-repository pagination; they complement the private-service audits without reproducing their confidential inputs.</p>
         <div class="architecture-source-links">
-          <a href="https://github.com/codeclew/codeclew/blob/main/docs/releases/v0.3.1.md">Candidate change notes ↗</a>
-          <a href="https://github.com/codeclew/codeclew/blob/main/scripts/spring-entrypoints-smoke.py">Public two-repository CLI smoke ↗</a>
-          <a href="https://github.com/codeclew/codeclew/blob/main/workers/kotlin/src/test/kotlin/dev/semanticthread/worker/SpringAnnotationFactsTest.kt">K2 Spring regression tests ↗</a>
-          <a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/java_adapter_v2.rs">Java Spring qualification tests ↗</a>
+          <a href="https://github.com/codeclew/codeclew/blob/v0.3.1/docs/releases/v0.3.1.md">Candidate change notes ↗</a>
+          <a href="https://github.com/codeclew/codeclew/blob/v0.3.1/scripts/spring-entrypoints-smoke.py">Public two-repository CLI smoke ↗</a>
+          <a href="https://github.com/codeclew/codeclew/blob/v0.3.1/workers/kotlin/src/test/kotlin/dev/semanticthread/worker/SpringAnnotationFactsTest.kt">K2 Spring regression tests ↗</a>
+          <a href="https://github.com/codeclew/codeclew/blob/v0.3.1/crates/clew/src/java_adapter_v2.rs">Java Spring qualification tests ↗</a>
         </div>
         <p>The <a href="./evidence.html#kotlin-checks">earlier 16/16 Kotlin engineering study</a> covers a separate test ledger. Its historical paired-task measurements do not measure this pilot or promise performance for the current release.</p>
       </section>
