@@ -892,16 +892,28 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
             assert_eq!(spring_for("Impostor#fake()V")["entries"], json!([]));
             let outbound = spring_for("OutboundClient#remote()Ljava/lang/String;");
             assert_eq!(outbound["entries"], json!([]));
-            assert!(outbound["boundaries"].as_array().unwrap().contains(
-                &json!("OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT")
-            ));
-            assert_eq!(spring_for("LocalServer#remote()Ljava/lang/String;")["entries"][0]["kind"], "HTTP_ENDPOINT");
-            assert_eq!(spring_for("class:example.InheritedServer")["entries"][0]["kind"], "HTTP_ENDPOINT");
+            assert!(
+                outbound["boundaries"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT"))
+            );
+            assert_eq!(
+                spring_for("LocalServer#remote()Ljava/lang/String;")["entries"][0]["kind"],
+                "HTTP_ENDPOINT"
+            );
+            assert_eq!(
+                spring_for("class:example.InheritedServer")["entries"][0]["kind"],
+                "HTTP_ENDPOINT"
+            );
             let unknown = spring_for("UnknownMapping#read()Ljava/lang/String;");
             assert_eq!(unknown["entries"][0]["kind"], "HTTP_ENDPOINT");
-            assert!(unknown["boundaries"].as_array().unwrap().contains(
-                &json!("CONTROLLER_REGISTRATION_UNPROVEN")
-            ));
+            assert!(
+                unknown["boundaries"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("CONTROLLER_REGISTRATION_UNPROVEN"))
+            );
             let inherited = spring_for("class:example.InheritedHandlers");
             let inherited_entries = inherited["entries"].as_array().unwrap();
             assert!(!inherited_entries.is_empty());
