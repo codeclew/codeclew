@@ -517,7 +517,7 @@ fn exact_declaration_term_matches(payload: &Value, term: &str) -> bool {
         .and_then(Value::as_str)
         .is_some_and(|kind| kind.eq_ignore_ascii_case("declaration"))
         || (payload.contains_key("declarationKind") && payload.contains_key("symbolIdentity"));
-    declaration && payload.get("name").and_then(Value::as_str) == Some(term)
+    declaration && crate::query_v2::declaration_identifiers(payload).contains(term)
 }
 
 fn validate_exact_file_selector(file: &str) -> Result<(), ClewError> {
@@ -1032,10 +1032,9 @@ fn create_with_selector(
             .iter()
             .map(|selected| {
                 let payload = load_fact_payload(&store, &selected.fact)?;
-                let term = payload
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .filter(|term| terms.iter().any(|requested| requested == *term))
+                let term = terms
+                    .iter()
+                    .find(|term| exact_declaration_term_matches(&payload, term))
                     .ok_or_else(|| {
                         internal("exact expansion fact has no requested name authority")
                     })?;
@@ -2299,6 +2298,49 @@ mod tests {
     use crate::state::StateAuthority;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn kotlin_exact_file_selection_matches_identity_and_keeps_overload_ambiguity() {
+        let symbol = "callable:sample/Receiver.accept#jvm:(Ljava/util/List;)V";
+        let payload = json!({
+            "declarationKind":"FUNCTION", "symbolIdentity":symbol,
+            "compilerCallableId":"sample/Receiver.accept", "ownerIdentity":"class:sample/Receiver",
+            "file":"Receiver.kt"
+        });
+        assert!(exact_declaration_file_term_matches(
+            &payload,
+            "Receiver.kt",
+            symbol
+        ));
+        assert!(exact_declaration_file_term_matches(
+            &payload,
+            "Receiver.kt",
+            "accept"
+        ));
+        assert!(!exact_declaration_file_term_matches(
+            &payload, "Other.kt", symbol
+        ));
+        assert!(!exact_declaration_term_matches(
+            &payload,
+            "class:sample/Receiver"
+        ));
+        let hit = |name: &str| CompilationFactHit {
+            compilation: ":/main".into(),
+            fact: FactHit {
+                fact_key: name.into(),
+                domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                payload: crate::cas::CasObject::for_bytes("test/payload/1", name.as_bytes())
+                    .unwrap(),
+            },
+        };
+        assert_eq!(
+            select_unique_exact_match(BTreeSet::from([hit("first"), hit("second")]), false)
+                .unwrap_err()
+                .code,
+            ErrorCode::AmbiguousSymbol
+        );
+        assert!(select_unique_exact_match(BTreeSet::from([hit("first")]), false).is_ok());
+    }
 
     #[test]
     fn required_exact_fact_survives_query_merge_and_evidence_limits() {

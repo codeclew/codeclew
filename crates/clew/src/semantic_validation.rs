@@ -27,6 +27,35 @@ pub(crate) struct DeclarationDescriptorSnapshot {
     pub(crate) provenance: Value,
 }
 
+// K2 renders function types as `(A) -> B?`: the trailing marker belongs to
+// the return type. Only a wrapped function `((A) -> B?)?` is nullable itself.
+fn rendered_root_nullable(rendered: &str) -> bool {
+    let bytes = rendered.trim_end().as_bytes();
+    if bytes.last() != Some(&b'?') {
+        return false;
+    }
+    let mut parentheses = 0usize;
+    let mut generics = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' => parentheses += 1,
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'<' => generics += 1,
+            b'>' => generics = generics.saturating_sub(1),
+            b'-' if bytes.get(index + 1) == Some(&b'>') => {
+                if parentheses == 0 && generics == 0 {
+                    return false;
+                }
+                index += 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    true
+}
+
 fn declaration_source_binding(facts: &Value) -> Result<Value, ClewError> {
     let invalid = |message: &str| ClewError::new(ErrorCode::InvalidInput, message);
     let compilation = facts
@@ -1450,7 +1479,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
         if start < 0
             || end <= start
             || nullable != expected_nullable
-            || nullable != rendered.trim_end().ends_with('?')
+            || nullable != rendered_root_nullable(rendered)
             || rendered.contains("..")
             || rendered.contains('!')
             || rendered.contains("<ERROR")
@@ -1472,7 +1501,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
                 "return-value relation contains an unresolved compiler type",
             ));
         }
-        Ok(rendered.trim_end().ends_with('?'))
+        Ok(rendered_root_nullable(rendered))
     }
     fn occurrence_range_and_node(
         occurrence: &Value,
@@ -2511,7 +2540,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "flexible, platform, or unresolved compiler type cannot be PROVEN",
             ));
         }
-        if nullable != rendered.trim_end().ends_with('?') {
+        if nullable != rendered_root_nullable(rendered) {
             return Err(invalid(format!(
                 "declaration descriptor {null_field} disagrees with compiler type rendering"
             )));
@@ -3174,7 +3203,7 @@ pub(crate) fn descriptor_validation_diagnostic(facts: &Value) -> Value {
         !rendered.contains("..")
             && !rendered.contains('!')
             && !rendered.contains("<ERROR")
-            && nullable == rendered.trim_end().ends_with('?')
+            && nullable == rendered_root_nullable(rendered)
     }
     fn report(stage: &str, ordinal: usize, row: &Value) -> Value {
         let fields = [
@@ -3824,6 +3853,43 @@ mod tests {
                 .message
                 .contains("constructor compiler/JVM identity is inconsistent")
         );
+    }
+
+    #[test]
+    fn function_parameter_nullability_is_distinct_from_its_return_type() {
+        for (rendered, nullable) in [
+            ("(T?) -> T?", false),
+            ("((T?) -> T?)?", true),
+            ("suspend (kotlin/String) -> kotlin/String?", false),
+            ("kotlin/String.() -> kotlin/String?", false),
+            ("(kotlin/Int) -> (() -> kotlin/String?)?", false),
+            ("kotlin/collections/List<() -> kotlin/String?>?", true),
+            ("kotlin/collections/List<kotlin/String?>", false),
+            ("kotlin/String?", true),
+        ] {
+            assert_eq!(rendered_root_nullable(rendered), nullable, "{rendered}");
+            let mut facts = verified_facts();
+            facts["declarationDescriptors"]["descriptors"][0]["parameterTypes"] = json!([
+                {"index":0,"type":rendered,"nullable":nullable,"hasDefault":false}
+            ]);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            validate_declaration_descriptor_snapshot(&facts).unwrap();
+            facts["declarationDescriptors"]["descriptors"][0]["parameterTypes"][0]["nullable"] =
+                json!(!nullable);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            assert!(
+                validate_declaration_descriptor_snapshot(&facts).is_err(),
+                "inverted nullability accepted: {rendered}"
+            );
+        }
     }
 
     #[test]

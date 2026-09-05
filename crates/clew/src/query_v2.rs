@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/4.0";
+pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/5.0";
 pub const QUERY_SHARD_SCHEMA: &str = "codeclew-query-shard/2.0";
 pub const QUERY_CONTEXT_SCHEMA: &str = "codeclew-query-context/2.0";
 pub const MAX_QUERY_SHARD_BYTES: usize = 8 * 1024 * 1024;
@@ -143,10 +143,7 @@ pub fn build_query_index(
             postings.entry(term).or_default().insert(hit.clone());
         }
         for term in direct_terms {
-            postings
-                .entry(direct_name_term(&term))
-                .or_default()
-                .insert(hit.clone());
+            postings.entry(term).or_default().insert(hit.clone());
         }
         Ok(())
     })?;
@@ -300,13 +297,12 @@ pub fn exact_name_query(
     term: &str,
 ) -> Result<ExactNameQuery, ClewError> {
     verify_index_manifest(store, index)?;
-    let normalized = normalize_terms(std::iter::once(term));
-    if normalized.len() != 1 {
+    if term.is_empty() || term.len() > 4096 || term.chars().any(char::is_control) {
         return Err(invalid(
-            "exact declaration lookup requires one normalized identifier",
+            "exact declaration lookup requires a nonempty name or full symbol identity of at most 4096 bytes",
         ));
     }
-    let direct_term = direct_name_term(&normalized[0]);
+    let direct_term = exact_identity_term(term);
     let mut shards_read = BTreeSet::new();
     let facts = read_term_matches(store, index, &direct_term, &mut shards_read)?;
     Ok(ExactNameQuery {
@@ -734,8 +730,28 @@ fn fact_query_terms(
     let mut direct_terms = Vec::new();
     if let Ok(value) = serde_json::from_slice::<Value>(lease.bytes()) {
         collect_json_strings(&value, &mut values, 0)?;
-        if let Some(name) = value.get("name").and_then(Value::as_str) {
-            direct_terms = normalize_index_terms(std::iter::once(name));
+        if let Some(payload) = value.as_object() {
+            let identifiers = declaration_identifiers(payload);
+            // Lexical queries still prioritize declaration names and aliases.
+            // Exact selection has a separate case-sensitive, punctuation-safe
+            // posting so a complete JVM symbol can distinguish overloads.
+            for identifier in identifiers {
+                direct_terms.push(exact_identity_term(identifier));
+            }
+            for name in payload
+                .get("name")
+                .and_then(Value::as_str)
+                .into_iter()
+                .chain(kotlin_declaration_name(payload))
+            {
+                direct_terms.extend(
+                    normalize_index_terms(std::iter::once(name))
+                        .into_iter()
+                        .map(|term| direct_name_term(&term)),
+                );
+            }
+            direct_terms.sort();
+            direct_terms.dedup();
         }
     }
     Ok((
@@ -747,6 +763,47 @@ fn fact_query_terms(
 #[cfg(test)]
 fn terms_for_fact(store: &CasStore, fact: &FactRecord) -> Result<Vec<String>, ClewError> {
     fact_query_terms(store, fact).map(|(terms, _)| terms)
+}
+
+/// Declaration identities emitted by supported adapters. Kotlin FIR facts
+/// deliberately do not carry a display `name`; derive it from compiler identity
+/// rather than parsing source or splitting a JVM descriptor.
+pub(crate) fn declaration_identifiers(payload: &serde_json::Map<String, Value>) -> BTreeSet<&str> {
+    let mut identifiers = ["name", "qualifiedName", "symbolIdentity"]
+        .into_iter()
+        .filter_map(|key| payload.get(key).and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    if let Some(identity) = kotlin_compiler_identity(payload) {
+        identifiers.insert(identity);
+    }
+    if let Some(name) = kotlin_declaration_name(payload) {
+        identifiers.insert(name);
+    }
+    identifiers
+}
+
+fn kotlin_compiler_identity(payload: &serde_json::Map<String, Value>) -> Option<&str> {
+    let compiler_key = match payload.get("declarationKind").and_then(Value::as_str) {
+        Some("CLASS") => "compilerClassId",
+        Some("FUNCTION" | "CONSTRUCTOR" | "PROPERTY" | "MUTABLE_PROPERTY") => "compilerCallableId",
+        _ => return None,
+    };
+    payload.get(compiler_key).and_then(Value::as_str)
+}
+
+fn kotlin_declaration_name(payload: &serde_json::Map<String, Value>) -> Option<&str> {
+    kotlin_compiler_identity(payload)?
+        .rsplit(['/', '.'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn exact_identity_term(identity: &str) -> String {
+    format!(
+        "codeclewexactidentity_{}",
+        hex::encode(Sha256::digest(identity.as_bytes()))
+    )
 }
 
 fn direct_name_term(term: &str) -> String {
@@ -943,6 +1000,88 @@ mod tests {
     use crate::derived_manifest::DERIVED_MANIFEST_SCHEMA;
     use crate::generation_v2::{AttemptAuthority, FactRunWriter, finalize_generation};
     use crate::state::StateAuthority;
+
+    #[test]
+    fn kotlin_exact_identity_postings_preserve_overloads_and_short_name_priority() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let mut writer = FactRunWriter::create(&state).unwrap();
+        let first = "callable:sample/Receiver.accept#jvm:(Ljava/util/List;)V";
+        let second = "callable:sample/Receiver.accept#jvm:(I)V";
+        for (key, symbol) in [("method:first", first), ("method:second", second)] {
+            let value = serde_json::json!({
+                "declarationKind":"FUNCTION", "symbolIdentity":symbol,
+                "compilerCallableId":"sample/Receiver.accept", "file":"Receiver.kt"
+            });
+            let fact = FactRecord {
+                fact_key: key.into(),
+                domain_uri: CapabilityUri::parse("analysis:symbol").unwrap(),
+                payload: store
+                    .put("test/payload/1", &canonical::bytes(&value).unwrap())
+                    .unwrap(),
+            };
+            let (_, direct) = fact_query_terms(&store, &fact).unwrap();
+            assert!(direct.contains(&direct_name_term("accept")));
+            assert!(!direct.contains(&direct_name_term("java")));
+            assert!(!direct.contains(&direct_name_term("list")));
+            writer.push(&fact).unwrap();
+        }
+        let attempt = AttemptAuthority {
+            compilation_id: "main".into(),
+            capability: CapabilityUri::parse("analysis:symbol").unwrap(),
+            completion: AnalysisAttemptComplete {
+                scope_digest: format!("sha256:{}", "c".repeat(64)),
+                completeness_receipt: receipt,
+                fact_count: 2,
+            },
+        };
+        let (generation, generation_object) = finalize_generation(
+            &store,
+            derived,
+            vec![attempt],
+            vec![writer.finish().unwrap()],
+        )
+        .unwrap();
+        let (index, _) = build_query_index(&store, &generation, generation_object).unwrap();
+        let exact = exact_name_query(&store, &index, first).unwrap();
+        assert_eq!(exact.facts.len(), 1);
+        assert_eq!(exact.facts[0].fact_key, "method:first");
+        assert_eq!(
+            exact_name_query(&store, &index, second).unwrap().facts[0].fact_key,
+            "method:second"
+        );
+        assert_eq!(
+            exact_name_query(&store, &index, "accept")
+                .unwrap()
+                .facts
+                .len(),
+            2
+        );
+        assert_eq!(
+            exact_name_query(&store, &index, "sample/Receiver.accept")
+                .unwrap()
+                .facts
+                .len(),
+            2
+        );
+        assert!(
+            exact_name_query(&store, &index, "Accept")
+                .unwrap()
+                .facts
+                .is_empty()
+        );
+        assert!(exact_name_query(&store, &index, "bad\nidentity").is_err());
+        assert_eq!(
+            query(&store, &index, &["accept".into()], 2)
+                .unwrap()
+                .facts
+                .len(),
+            2
+        );
+    }
 
     #[test]
     fn index_is_deterministic_and_query_reads_only_term_buckets() {
@@ -1632,53 +1771,57 @@ mod tests {
                 payload: payload.clone(),
             })
             .collect::<Vec<_>>();
-        let posting_term = direct_name_term("popular");
-        let (bounded, overflow_terms) = bound_postings(BTreeMap::from([(
-            posting_term.clone(),
-            facts.iter().cloned().collect(),
-        )]));
-        let retained = bounded[&posting_term].iter().cloned().collect::<Vec<_>>();
-        let posting = TermPosting {
-            term: posting_term.clone(),
-            facts: retained.clone(),
-        };
-        let posting_bucket = bucket(&posting_term);
-        let mut references = Vec::new();
-        publish_bucket(&store, &posting_bucket, vec![posting], &mut references).unwrap();
-        assert!(
-            references
-                .windows(2)
-                .all(|pair| pair[0].sequence < pair[1].sequence)
-        );
-        let recovered = references
-            .iter()
-            .flat_map(|reference| {
-                let lease = store
-                    .read(&reference.object, MAX_QUERY_SHARD_BYTES)
-                    .unwrap();
-                let shard: QueryShard = serde_json::from_slice(lease.bytes()).unwrap();
-                verify_shard(reference, &shard, lease.bytes()).unwrap();
-                shard.postings.into_iter().flat_map(|posting| posting.facts)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(recovered, retained);
-        assert_eq!(recovered.len(), MAX_QUERY_FACTS_PER_TERM);
-        let mut index = QueryIndexManifest {
-            schema: QUERY_INDEX_SCHEMA.into(),
-            index_id: String::new(),
-            generation: store.put(GENERATION_SCHEMA, b"generation").unwrap(),
-            shards: references,
-            term_count: 1,
-            posting_count: retained.len() as u64,
-            overflow_terms,
-        };
-        index.index_id = canonical::hash(&index).unwrap();
-        verify_index(&store, &index).unwrap();
-        let result = query(&store, &index, &["popular".into()], MAX_CONTEXT_FACTS).unwrap();
-        assert_eq!(result.facts.len(), MAX_QUERY_FACTS_PER_TERM);
-        assert!(result.truncated);
-        let exact = exact_name_query(&store, &index, "popular").unwrap();
-        assert_eq!(exact.facts.len(), MAX_QUERY_FACTS_PER_TERM);
-        assert!(exact.truncated);
+        for posting_term in [direct_name_term("popular"), exact_identity_term("popular")] {
+            let (bounded, overflow_terms) = bound_postings(BTreeMap::from([(
+                posting_term.clone(),
+                facts.iter().cloned().collect(),
+            )]));
+            let retained = bounded[&posting_term].iter().cloned().collect::<Vec<_>>();
+            let posting = TermPosting {
+                term: posting_term.clone(),
+                facts: retained.clone(),
+            };
+            let posting_bucket = bucket(&posting_term);
+            let mut references = Vec::new();
+            publish_bucket(&store, &posting_bucket, vec![posting], &mut references).unwrap();
+            assert!(
+                references
+                    .windows(2)
+                    .all(|pair| pair[0].sequence < pair[1].sequence)
+            );
+            let recovered = references
+                .iter()
+                .flat_map(|reference| {
+                    let lease = store
+                        .read(&reference.object, MAX_QUERY_SHARD_BYTES)
+                        .unwrap();
+                    let shard: QueryShard = serde_json::from_slice(lease.bytes()).unwrap();
+                    verify_shard(reference, &shard, lease.bytes()).unwrap();
+                    shard.postings.into_iter().flat_map(|posting| posting.facts)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(recovered, retained);
+            assert_eq!(recovered.len(), MAX_QUERY_FACTS_PER_TERM);
+            let mut index = QueryIndexManifest {
+                schema: QUERY_INDEX_SCHEMA.into(),
+                index_id: String::new(),
+                generation: store.put(GENERATION_SCHEMA, b"generation").unwrap(),
+                shards: references,
+                term_count: 1,
+                posting_count: retained.len() as u64,
+                overflow_terms,
+            };
+            index.index_id = canonical::hash(&index).unwrap();
+            verify_index(&store, &index).unwrap();
+            if posting_term == direct_name_term("popular") {
+                let result = query(&store, &index, &["popular".into()], MAX_CONTEXT_FACTS).unwrap();
+                assert_eq!(result.facts.len(), MAX_QUERY_FACTS_PER_TERM);
+                assert!(result.truncated);
+            } else {
+                let exact = exact_name_query(&store, &index, "popular").unwrap();
+                assert_eq!(exact.facts.len(), MAX_QUERY_FACTS_PER_TERM);
+                assert!(exact.truncated);
+            }
+        }
     }
 }
