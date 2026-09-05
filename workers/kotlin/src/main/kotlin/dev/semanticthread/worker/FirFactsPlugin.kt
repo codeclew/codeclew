@@ -256,7 +256,7 @@ private class FirFactsConstructorDescriptorChecker(
 
 private fun FirCallableSymbol<*>.relationSymbol(): String = callableId.toString()
 
-private fun compilerJvmMethodDescriptor(declaration: FirFunction): String? = runCatching {
+internal fun compilerJvmMethodDescriptor(declaration: FirFunction): String? = runCatching {
     declaration.computeJvmDescriptor(null, true)
 }.getOrNull()
     ?.substringAfter('(', "")
@@ -467,6 +467,7 @@ private class FirFactsFunctionDescriptorChecker(
         record["compilerCallableId"] = JsonPrimitive(callableId.toString())
         record["jvmDescriptor"] = JsonPrimitive(jvmDescriptor)
         record["isOverride"] = JsonPrimitive(status.isOverride)
+        record["spring"] = springAnnotationFacts24(declaration, context)
         record["returnType"] = JsonPrimitive(returnType.toString())
         record["returnNullable"] = JsonPrimitive(returnType.isMarkedNullable)
         record["parameterTypes"] = kotlinx.serialization.json.JsonArray(
@@ -582,6 +583,7 @@ private class FirFactsClassDescriptorChecker(
             status.modality.name,
         ).toMutableMap()
         record["compilerClassId"] = JsonPrimitive(symbol.classId.toString())
+        record["spring"] = springClassAnnotationFacts24(declaration, context)
         record["typeParameters"] = kotlinx.serialization.json.JsonArray(typeParameters)
         appendFact(output, kotlinx.serialization.json.JsonObject(record))
     }

@@ -29,7 +29,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.2.19 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.3.0 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
@@ -76,6 +76,24 @@ The portable source package is public at
 the open Agent Skills format; `skills/codeclew` in this repository is the exact
 package bundled with releases.
 
+## Start JVM analysis with your agent
+
+After `clew skill install`, ask the agent to analyze the repository or document
+its Spring computation roots. The skill uses bounded repository discovery to
+select an available analysis profile and exact compilation:
+
+```bash
+clew doctor repository --repo /absolute/path/to/repository
+```
+
+The agent carries the returned `targetRef`, `profileId` and compilation into
+`clew context open` or `clew nav query`. You do not need to choose an engine pack
+for ordinary Kotlin/Java baseline analysis. The tool preserves the project's
+compiler version and reports any analyzer differences; baseline access does not
+enable mutation. See the support contract below for qualified capabilities and
+[the architecture guide](https://codeclew.github.io/codeclew/architecture.html)
+for the data flow and extension boundaries.
+
 ## Source-build requirements
 
 - macOS or Linux
@@ -93,6 +111,16 @@ verifies and reuses it without running Cargo, Rustc, Gradle, or Maven. The
 workers execute directly from that sealed capsule under its shared lease; the
 runtime warm path does not copy their distributions. Project analysis may still
 invoke the project wrapper under the model-cache policy described below.
+
+### Developing Codeclew itself
+
+The installed agent skill governs use of Codeclew on a target repository.
+Contributions to Codeclew itself use this checkout's native workflow: inspect
+and edit the source, use the pinned `./clew` launcher where needed, and run the
+relevant Rust, worker or packaging checks. Consumer task admission is not a
+prerequisite for maintainer edits. Preserve unrelated work and use an isolated
+worktree when appropriate; a consumer `CLEAN_TARGET_WORKTREE` result does not
+require cleaning the contributor's checkout or stopping implementation.
 
 ## Practical code navigation
 
@@ -1048,6 +1076,41 @@ fail-closed for stale authorities, ambiguous anchors, unsupported project
 models, dirty checked-out publication targets, and recovery uncertainty.
 Each cold generation also retains a private `dag-report.json` with total work,
 critical path, observed parallelism, and the number of sealed compiler streams.
+
+## Spring computation-root catalogue
+
+Once a Kotlin or Java analysis session has produced its sealed generation,
+enumerate HTTP endpoints, Kafka listeners and scheduled jobs directly:
+
+```bash
+clew entrypoints --session <session-id> --limit 100
+```
+
+Repeat `--session <session-id>` for additional selected sessions. A bound
+multi-repository thread can supply its members instead:
+
+```bash
+clew entrypoints --thread <thread-id> --limit 100
+```
+
+Session selection and thread selection are mutually exclusive. Results contain
+`catalogueDigest`, `total`, `entries`, per-compilation `scopes` and `nextCursor`.
+When the cursor is non-null, repeat the same selection with
+`--cursor <returned-cursor>` until all pages are consumed. `--limit` accepts
+1–100; the output byte budget may return fewer entries. A cursor is valid only
+for its original immutable catalogue.
+
+Each root retains a callable identity, source anchor, annotation binding and
+fact/generation evidence. Use those identities for subsequent context and
+thread analysis. Annotation identities and attributes come from K2 or the Java
+Compiler API; Spring interpretation uses stable annotation names rather than a
+Boot patch-version check. Coverage boundaries remain visible, including missing
+extraction, unresolved expressions and runtime activation. An empty page is not
+proof that every runtime trigger has been discovered. Transport names alone do
+not prove HTTP/Kafka handoffs across repositories.
+
+See [Spring acceptance scope](docs/plans/spring-entrypoints.md) and the
+[modular JVM rollout plan](docs/plans/modular-jvm-roadmap.md).
 
 ## Repository map
 

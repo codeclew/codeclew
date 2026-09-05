@@ -111,28 +111,42 @@ internal fun currentKotlinSemanticEngine(): KotlinSemanticEngineCapabilities {
     )
 }
 
+internal fun baselineKotlinAnalysisSupported(project: KotlinProjectSemantics): Boolean {
+    if (!Regex("[0-9]+\\.[0-9]+\\.[0-9]+").matches(project.projectCompilerVersion)) return false
+    fun line(value: String): Pair<Int, Int>? {
+        val parts = value.split('.')
+        if (parts.size != 2) return null
+        return (parts[0].toIntOrNull() ?: return null) to (parts[1].toIntOrNull() ?: return null)
+    }
+    val version = line(project.projectCompilerVersion.substringBeforeLast('.')) ?: return false
+    fun rank(value: Pair<Int, Int>) = value.first * 100 + value.second
+    if (!(version == (1 to 9) || version.first == 2 && version.second in 0..4)) return false
+    return listOf(project.languageVersion, project.apiVersion).all {
+        val mode = line(it) ?: return@all false
+        rank(mode) in 109..rank(version)
+    }
+}
+
+internal fun kotlinAnalysisLanguageVersion(projectLanguageVersion: String?): String? =
+    if (projectLanguageVersion == "1.9") "2.0" else projectLanguageVersion
+
 internal fun kotlinEngineCompatibilityDecision(
     project: KotlinProjectSemantics,
     engine: KotlinSemanticEngineCapabilities = currentKotlinSemanticEngine(),
 ): KotlinEngineCompatibilityDecision {
+    val qualificationMode = System.getenv("CODECLEW_KOTLIN_QUALIFICATION_ENGINE") == engine.engineId
     val row = QUALIFIED_KOTLIN_ENGINE_ROWS.singleOrNull {
         it.projectCompilerVersion == project.projectCompilerVersion &&
-            it.engineCompilerVersion == engine.analyzerCompilerVersion
-    } ?: return KotlinEngineCompatibilityDecision(
+            it.engineCompilerVersion == engine.analyzerCompilerVersion &&
+            (it.defaultRoute || qualificationMode)
+    } ?: if (engine.analyzerCompilerVersion == "2.4.10" && baselineKotlinAnalysisSupported(project)) {
+        QualifiedKotlinEngineRow(project.projectCompilerVersion, "2.4.10", "COMPATIBLE_ANALYSIS", true, false, true)
+    } else return KotlinEngineCompatibilityDecision(
         status = "REJECTED",
         kind = "UNQUALIFIED",
         reason = "PROJECT_ENGINE_ROW_NOT_QUALIFIED",
         btaEligible = false,
     )
-    val qualificationMode = System.getenv("CODECLEW_KOTLIN_QUALIFICATION_ENGINE") == engine.engineId
-    if (!row.defaultRoute && !qualificationMode) {
-        return KotlinEngineCompatibilityDecision(
-            status = "REJECTED",
-            kind = "UNQUALIFIED",
-            reason = "QUALIFICATION_ONLY_ROW",
-            btaEligible = false,
-        )
-    }
     if (row.kind != "EXACT_COMPILER_ABI" && project.unstableCompilerOptions.isNotEmpty()) {
         return KotlinEngineCompatibilityDecision(
             status = "REJECTED",
@@ -1523,7 +1537,12 @@ internal class Worker(
             put("fieldBoundaries", buildModel["fieldBoundaries"] ?: buildJsonObject {
                 listOf("libraries", "friendPaths", "compilerPlugins", "freeCompilerArguments", "optIns", "languageVersion", "apiVersion", "jvmTarget", "compilerVersion").forEach { field -> put(field, "UNAVAILABLE_PROVIDER") }
             })
-            put("buildModelBoundaries", buildModel["buildModelBoundaries"] ?: JsonArray(emptyList()))
+            putJsonArray("buildModelBoundaries") {
+                buildModel["buildModelBoundaries"]?.jsonArray?.forEach(::add)
+                if (engineCompatibility.kind == "COMPATIBLE_ANALYSIS") add("KOTLIN_ANALYSIS_USES_DIFFERENT_COMPILER")
+                if (languageVersion == "1.9") add("KOTLIN_ANALYSIS_LANGUAGE_UPGRADED_FROM_1_9_TO_2_0")
+                if (apiVersion == "1.9") add("KOTLIN_ANALYSIS_API_UPGRADED_FROM_1_9_TO_2_0")
+            }
             put("dependencyCoordinates", buildModel["dependencyCoordinates"] ?: JsonArray(emptyList()))
             put("repositories", buildModel["repositories"] ?: JsonArray(emptyList()))
             put("reactorPoms", buildModel["reactorPoms"] ?: JsonArray(emptyList()))
@@ -2076,8 +2095,8 @@ internal class Worker(
             val factsFile = temp.resolve("facts.jsonl"); val outputDir = temp.resolve("classes").also(Path::createDirectories)
             val classpath = model["classpath"]?.jsonArray?.joinToString(File.pathSeparator) { it.jsonPrimitive.content }.orEmpty()
             val command = mutableListOf("-d", outputDir.toString(), "-classpath", classpath, "-no-stdlib", "-no-reflect", "-jdk-home", model["jdkHome"]!!.jsonPrimitive.content, "-jvm-target", model["jvmTarget"]?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
-            model["languageVersion"]?.jsonPrimitive?.contentOrNull?.let { command += listOf("-language-version", it) }
-            model["apiVersion"]?.jsonPrimitive?.contentOrNull?.let { command += listOf("-api-version", it) }
+            kotlinAnalysisLanguageVersion(model["languageVersion"]?.jsonPrimitive?.contentOrNull)?.let { command += listOf("-language-version", it) }
+            kotlinAnalysisLanguageVersion(model["apiVersion"]?.jsonPrimitive?.contentOrNull)?.let { command += listOf("-api-version", it) }
             val friendPaths = model["friendPaths"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
             if (friendPaths.isNotEmpty()) command += "-Xfriend-paths=${friendPaths.joinToString(File.pathSeparator)}"
             model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }?.let(command::addAll)

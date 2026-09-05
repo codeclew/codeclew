@@ -1,10 +1,10 @@
 ---
 name: codeclew
-description: Use Codeclew for bounded compiler- or syntax-backed code context, safe changes, multi-repository analysis, freshness checks, recovery, and privacy-safe diagnostics. Trigger when a task asks to inspect, explain, trace, or change supported source code through the clew CLI, or to diagnose a Codeclew run.
+description: Use Codeclew for bounded compiler- or syntax-backed code context, safe changes, multi-repository analysis, freshness checks, recovery, and privacy-safe diagnostics. Trigger when a task asks to inspect, explain, trace, or change supported source code through the clew CLI, or to diagnose a Codeclew run. Development of Codeclew itself follows its repository-native contributor workflow.
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.19"
+  version: "0.3.0"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -14,6 +14,15 @@ Use Codeclew to obtain bounded evidence before reading or changing supported
 code. The skill supports Codex, Claude Code, and Agent Skills-compatible agents;
 it requires the `clew` CLI, Git, and the host dependencies reported by doctor.
 Preserve the user's scope and Codeclew's authority boundaries.
+
+## Choose the workflow
+
+This is the installed-product workflow for analyzing or changing a target
+repository. When the task is to develop Codeclew itself, follow that checkout's
+README and native build/test workflow, including its source launcher. Consumer
+admission is not a prerequisite for maintainer edits; a dirty target-admission
+result must not block unrelated authorized work on Codeclew's implementation.
+Do not use this distinction to bypass consumer-session or publication guards.
 
 ## Resolve and admit
 
@@ -29,8 +38,13 @@ Preserve the user's scope and Codeclew's authority boundaries.
    discovery, not task admission: use only contours whose status is
    `READY_FOR_TASK_DOCTOR`, then pass their exact `targetRef`, `profileId`, and
    `compilations` to the public atomic admission path below. Preserve reported
-   blockers, unsupported languages, and `nextAction`; ask when more than one
-   ready contour could match the task. The discovery report contains repository
+   blockers, unsupported languages, and `nextAction`. For read-only Kotlin/Java
+   work, select the ready project-native analysis contour matching the detected
+   build system; an exact supported compiler contour takes preference over the
+   broad baseline. Multiple engine profiles alone do not require the user to
+   choose a version. Ask only when repository or compilation scope is ambiguous;
+   include all relevant compilations when the user explicitly requests the whole
+   repository. The discovery report contains repository
    identity even though it omits absolute paths and source, so keep its raw JSON
    local.
 3. Admit the task through one of the two public atomic paths below. Their
@@ -58,6 +72,18 @@ Preserve the user's scope and Codeclew's authority boundaries.
 
 Never describe syntax-only, partial, declared, conditional, or unsure evidence
 as compiler-verified behavior.
+
+For Kotlin baseline analysis, discovery can return `kotlin-jvm-gradle-analysis`
+or `kotlin-jvm-maven-analysis`; Java baseline uses
+`java-17plus-gradle-read-only` or `java-17plus-maven-read-only`. Pass the returned
+profile to admission, rather than asking the user to select a compiler pack.
+The packaged Kotlin engine remains 2.4.10. Baseline supports stable project
+versions from 1.9 through the 2.4 line with explicit analyzer differences:
+Kotlin 1.9 is analyzed in language/API mode 2.0, so retain the upgrade boundaries.
+Unknown plugins, unstable options and unresolved compilation inputs remain
+unsupported. Java uses the project-selected JDK 17+; 17 and 21 have fixture
+coverage. These baseline profiles are read-only. Kotlin 2.4.x analysis does not
+imply that every patch is mutation-qualified.
 
 Codeclew sessions require write access to private `CODECLEW_HOME` managed state
 and to Codeclew-owned Git worktree administration under the repository's Git
@@ -331,6 +357,26 @@ admission.
 Use `clew <command> --help` only when the relevant syntax is not already given
 by this skill or the installed command rejects it. Treat session and context
 output as evidence tied to their recorded base commit.
+
+## Catalogue Spring computation roots
+
+For all HTTP endpoints, Kafka listeners or scheduled jobs, enumerate the sealed
+catalogue instead of treating a search result as exhaustive:
+
+```bash
+clew entrypoints --session <session-id> --limit 100
+clew entrypoints --thread <thread-id> --limit 100
+```
+
+Use one mode: repeat `--session` for explicitly selected sessions, or supply a
+bound thread. Follow every returned `nextCursor` with the same selection and
+`--cursor <next-cursor>` until it is null. Preserve the catalogue digest,
+per-scope coverage and boundaries; an unavailable extractor is not an empty
+inventory. Each entry retains its exact symbol, source and evidence reference.
+Use those returned identities to seed subsequent context or thread analysis.
+Keep dynamic configuration and runtime activation unproven, and never infer a
+cross-repository call from matching routes or topic names. Document the selected
+repository/compilation scope and unresolved edges with the resulting thread.
 
 ## Prepare a change
 

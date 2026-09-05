@@ -1778,21 +1778,7 @@ fn qualified_mutation_profile(
             "context language differs from the session mutation authority",
         ));
     }
-    let versions = evidence
-        .get("compilerVersions")
-        .and_then(Value::as_object)
-        .ok_or_else(|| unsupported_profile("context compiler authority is missing"))?;
-    if versions.len() != session.compilations.len()
-        || session.compilations.iter().any(|compilation| {
-            !versions
-                .get(compilation)
-                .is_some_and(|version| version.is_string())
-        })
-    {
-        return Err(unsupported_profile(
-            "context compilation authority differs from the session",
-        ));
-    }
+    let versions = mutation_compiler_versions(session.language, &session.compilations, evidence)?;
     let has_gradle_wrapper = if session.language == SessionLanguage::Kotlin {
         let repository = session.target_repository_path()?;
         let wrapper = repository.join("gradlew");
@@ -1807,6 +1793,42 @@ fn qualified_mutation_profile(
         versions,
         has_gradle_wrapper,
     )
+}
+
+fn mutation_compiler_versions<'a>(
+    language: SessionLanguage,
+    compilations: &[String],
+    evidence: &'a Value,
+) -> Result<&'a serde_json::Map<String, Value>, ClewError> {
+    let analyzer = evidence
+        .get("compilerVersions")
+        .and_then(Value::as_object)
+        .ok_or_else(|| unsupported_profile("context compiler authority is missing"))?;
+    let project = if language == SessionLanguage::Kotlin {
+        evidence.get("projectCompilerVersions").and_then(Value::as_object)
+            .ok_or_else(|| unsupported_profile("context project compiler authority is missing; regenerate context before mutation"))?
+    } else {
+        analyzer
+    };
+    for versions in [analyzer, project] {
+        if versions.len() != compilations.len()
+            || compilations.iter().any(|compilation| {
+                !versions.get(compilation).is_some_and(|version| {
+                    version.as_str().is_some_and(|version| !version.is_empty())
+                })
+            })
+        {
+            return Err(unsupported_profile(
+                "context compilation authority differs from the session",
+            ));
+        }
+    }
+    if language == SessionLanguage::Kotlin && analyzer != project {
+        return Err(unsupported_profile(
+            "Kotlin compatibility analysis is read-only; project and analyzer compiler authorities differ",
+        ));
+    }
+    Ok(project)
 }
 
 fn mutation_profile_for(
@@ -2755,6 +2777,41 @@ mod tests {
                 &plan("GRADLE", json!(["test"])),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn compatibility_analyzer_cannot_authorize_older_project_mutation() {
+        let compilations = vec![":/main".into()];
+        for project in ["1.9.25", "2.0.21", "2.1.21", "2.3.0", "2.4.0"] {
+            let evidence = json!({
+                "compilerVersions":{":/main":"2.4.10"},
+                "projectCompilerVersions":{":/main":project}
+            });
+            assert!(
+                mutation_compiler_versions(SessionLanguage::Kotlin, &compilations, &evidence)
+                    .is_err()
+            );
+        }
+        for evidence in [
+            json!({"compilerVersions":{":/main":"2.4.10"}}),
+            json!({"compilerVersions":{":/main":"2.4.10"},"projectCompilerVersions":{}}),
+            json!({"compilerVersions":{":/main":"2.4.10"},"projectCompilerVersions":{":other/main":"2.4.10"}}),
+        ] {
+            assert!(
+                mutation_compiler_versions(SessionLanguage::Kotlin, &compilations, &evidence)
+                    .is_err()
+            );
+        }
+        let qualified = json!({
+            "compilerVersions":{":/main":"2.4.10"},
+            "projectCompilerVersions":{":/main":"2.4.10"}
+        });
+        let versions =
+            mutation_compiler_versions(SessionLanguage::Kotlin, &compilations, &qualified).unwrap();
+        assert_eq!(
+            mutation_profile_for(SessionLanguage::Kotlin, &compilations, versions, true).unwrap(),
+            MutationProfile::Kotlin24Gradle
         );
     }
 

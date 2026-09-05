@@ -259,3 +259,43 @@ footer a:hover { color: var(--ink); }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+/* Architecture remains readable without JavaScript or external diagram assets. */
+.architecture-page { padding-bottom: 90px; }
+.architecture-jump, .architecture-source-links { display: flex; flex-wrap: wrap; gap: 16px 28px; margin-top: 30px; font-size: 14px; }
+.architecture-page a { color: var(--acid); }
+.architecture-page a:hover { text-decoration: underline; text-underline-offset: 4px; }
+.architecture-section { padding: 60px 0; border-top: 1px solid var(--line); scroll-margin-top: 24px; }
+.architecture-section h2 { margin: 18px 0 26px; font-size: clamp(32px, 4.5vw, 58px); line-height: 1.04; letter-spacing: -.045em; }
+.architecture-section > p { max-width: 900px; color: var(--muted); font-size: 17px; line-height: 1.7; }
+.architecture-page code { color: var(--acid-soft); font-size: .88em; overflow-wrap: anywhere; }
+.architecture-pipeline { list-style: none; padding: 0; margin: 36px 0 24px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.architecture-pipeline li, .architecture-cards article { padding: 26px; border: 1px solid var(--line); background: var(--surface-2); }
+.architecture-pipeline small { color: var(--acid); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; }
+.architecture-pipeline h3, .architecture-cards h3 { font-size: 21px; letter-spacing: -.02em; }
+.architecture-pipeline p, .architecture-cards p, .architecture-branch p { color: var(--muted); font-size: 15px; line-height: 1.65; }
+.architecture-pipeline a, .architecture-branch a { font-size: 12px; }
+.architecture-branch { padding: 24px 28px; border-left: 3px solid var(--acid); background: var(--surface-2); }
+.architecture-branch p { margin: 8px 0 12px; }
+.architecture-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 32px 0; }
+.architecture-cards h3 { margin-top: 0; }
+.architecture-cards p { margin-bottom: 0; }
+.architecture-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.architecture-table-wrap { overflow-x: auto; margin: 32px 0; }
+.architecture-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; line-height: 1.6; }
+.architecture-table caption { text-align: left; color: var(--muted); padding-bottom: 16px; font-size: 13px; }
+.architecture-table th, .architecture-table td { padding: 18px; vertical-align: top; border-bottom: 1px solid var(--line); }
+.architecture-table thead th { background: var(--surface-2); color: var(--acid); }
+.architecture-table tbody th { width: 19%; }
+.architecture-table td { width: 40.5%; color: var(--muted); }
+.architecture-extension { max-width: 930px; padding-left: 24px; color: var(--muted); font-size: 16px; line-height: 1.75; }
+.architecture-extension li { padding: 0 0 20px 10px; }
+.architecture-extension b { color: var(--ink); }
+@media (max-width: 820px) {
+  .architecture-pipeline, .architecture-cards { grid-template-columns: 1fr; }
+  .architecture-section { padding-block: 44px; }
+  .architecture-table th, .architecture-table td { padding: 12px 8px; }
+  .architecture-table { font-size: 12px; }
+}
+
+.architecture-command { padding: 20px; border: 1px solid var(--line); background: var(--surface-2); overflow-x: auto; font-size: 14px; line-height: 1.8; }

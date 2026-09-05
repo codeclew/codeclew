@@ -152,6 +152,7 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
         "task",
         "compilations",
         "compilerVersions",
+        "projectCompilerVersions",
         "generationAuthority",
         "completeness",
         "verificationObligations",
@@ -935,6 +936,8 @@ fn create_with_selector(
         "CONDITIONAL_TASK"
     };
     let certainty = if verified { "VERIFIED" } else { "UNSURE" };
+    let project_compiler_versions =
+        retained_project_compiler_versions(&store, session.language, &ready.compilations)?;
     let context = json!({
         "schema":BOUNDED_CONTEXT_SCHEMA,
         "language":session.language.uri(),
@@ -954,6 +957,7 @@ fn create_with_selector(
         "compilerVersions":ready.compilations.iter().map(|compilation| {
             (compilation.compilation.clone(), compilation.compiler_version.clone())
         }).collect::<BTreeMap<_, _>>(),
+        "projectCompilerVersions":project_compiler_versions,
         "generationAuthority":{
             "coverage":ready.coverage,
             "certainty":ready.certainty,
@@ -1849,6 +1853,53 @@ fn snippet(
     (start + 1, end, text)
 }
 
+fn retained_project_compiler_versions(
+    store: &CasStore,
+    language: crate::session::SessionLanguage,
+    compilations: &[crate::generation_service::ReadyGeneration],
+) -> Result<BTreeMap<String, String>, ClewError> {
+    let mut versions = BTreeMap::new();
+    for compilation in compilations {
+        let version = if language == crate::session::SessionLanguage::Kotlin {
+            let lease = store.read(&compilation.derived_input_manifest, MAX_PAYLOAD_BYTES)?;
+            let derived: crate::derived_manifest::DerivedAnalysisInputManifest =
+                serde_json::from_slice(lease.bytes())
+                    .map_err(|_| invalid("retained project input authority is invalid"))?;
+            if derived.repository_snapshot != compilation.repository_snapshot {
+                return Err(invalid("retained project snapshot differs from generation"));
+            }
+            let provider = derived
+                .provider_models
+                .iter()
+                .find(|provider| provider.build_model.provider_id == "project-native-kotlin")
+                .ok_or_else(|| invalid("retained Kotlin project model is missing"))?;
+            let lease = store.read(&provider.build_model.model, MAX_PAYLOAD_BYTES)?;
+            let model: Value = serde_json::from_slice(lease.bytes())
+                .map_err(|_| invalid("retained Kotlin project model is invalid"))?;
+            retained_kotlin_compiler_version(&model, &compilation.compilation)?
+        } else {
+            compilation.compiler_version.clone()
+        };
+        versions.insert(compilation.compilation.clone(), version);
+    }
+    Ok(versions)
+}
+
+fn retained_kotlin_compiler_version(model: &Value, compilation: &str) -> Result<String, ClewError> {
+    if model["schema"] != "codeclew-project-native-model/2.0" || model["compilation"] != compilation
+    {
+        return Err(invalid(
+            "retained Kotlin model compilation authority differs",
+        ));
+    }
+    model
+        .pointer("/projectSemantics/projectCompilerVersion")
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| invalid("retained project Kotlin compiler authority is missing"))
+}
+
 fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
     let mut projection = json!({
         "schema":BOUNDED_CONTEXT_PROJECTION_SCHEMA,
@@ -1864,6 +1915,9 @@ fn bounded_projection(context: &Value) -> Result<Value, ClewError> {
         "verificationObligations":context["verificationObligations"],
         "truncated":false,
     });
+    if let Some(versions) = context.get("projectCompilerVersions") {
+        projection["projectCompilerVersions"] = versions.clone();
+    }
     let mut projected_bytes = canonical::bytes(&projection).map_err(internal)?.len();
     // Structured semantic facts are the primary navigation authority. Large
     // source snippets are useful supporting evidence, but must not consume the
@@ -2548,6 +2602,28 @@ mod tests {
             ]
         });
         assert!(exact_selection_authorities(&oversized).is_err());
+    }
+
+    #[test]
+    fn retained_project_version_does_not_use_analyzer_version() {
+        let model = json!({
+            "schema":"codeclew-project-native-model/2.0", "compilation":":/main",
+            "projectSemantics":{"projectCompilerVersion":"1.9.25"},
+            "semanticEngine":{"analyzerCompilerVersion":"2.4.10"}
+        });
+        assert_eq!(
+            super::retained_kotlin_compiler_version(&model, ":/main").unwrap(),
+            "1.9.25"
+        );
+        assert!(super::retained_kotlin_compiler_version(&model, ":other/main").is_err());
+        let mut missing = model.clone();
+        missing["projectSemantics"] = json!({});
+        assert!(super::retained_kotlin_compiler_version(&missing, ":/main").is_err());
+        let context = json!({"projectCompilerVersions":{":/main":"1.9.25"}});
+        assert_eq!(
+            bounded_projection(&context).unwrap()["projectCompilerVersions"],
+            context["projectCompilerVersions"]
+        );
     }
 
     #[test]

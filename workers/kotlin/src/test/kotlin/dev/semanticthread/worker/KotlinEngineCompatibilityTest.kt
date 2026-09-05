@@ -47,7 +47,7 @@ class KotlinEngineCompatibilityTest {
     }
 
     @Test
-    fun experimentalProjectCompilerRemainsQualificationOnly() {
+    fun olderProjectCompilerHasReadOnlyBaseline() {
         val project = KotlinProjectSemantics(
             projectCompilerVersion = "2.1.21",
             compilerVersionAuthority = "KOTLIN_COMPILER_VERSION_CLASSLOADER_FALLBACK",
@@ -59,8 +59,8 @@ class KotlinEngineCompatibilityTest {
         )
 
         val decision = kotlinEngineCompatibilityDecision(project)
-        assertEquals("REJECTED", decision.status)
-        assertEquals("UNQUALIFIED", decision.kind)
+        assertEquals("QUALIFIED", decision.status)
+        assertEquals("COMPATIBLE_ANALYSIS", decision.kind)
         assertFalse(decision.btaEligible)
     }
 

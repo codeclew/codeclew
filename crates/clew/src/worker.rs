@@ -2233,7 +2233,21 @@ impl WorkerClient {
             let desired = if let Some(engine) = self.qualification_engine {
                 KotlinEngineRegistry.qualify(&project_semantics, engine)?
             } else {
-                KotlinEngineRegistry.select(&project_semantics)?
+                let runtime = RuntimeAuthority::from_environment()?;
+                let available = KotlinSemanticEngine::all_known()
+                    .into_iter()
+                    .filter(|engine| {
+                        runtime.as_ref().is_none_or(|runtime| {
+                            runtime
+                                .workers
+                                .get(engine.runtime_name())
+                                .is_some_and(|worker| {
+                                    worker.compiler_version == engine.analyzer_compiler_version()
+                                })
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                select_available_project_engine(&project_semantics, &available)?
             };
             if desired != self.engine {
                 let tried = tried_discovery_variants | self.engine.discovery_bit();
@@ -3021,6 +3035,22 @@ fn worker_launcher(workspace: &Path, engine: KotlinSemanticEngine) -> PathBuf {
             workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin")
         }
     }
+}
+
+// Default discovery may use the core analysis engine when an optional exact
+// engine is absent. Explicit qualification requests bypass this selection.
+fn select_available_project_engine(
+    project: &KotlinProjectSemantics,
+    available: &[KotlinSemanticEngine],
+) -> Result<KotlinSemanticEngine, ClewError> {
+    let desired = KotlinEngineRegistry.select(project)?;
+    if desired == KotlinSemanticEngine::Kotlin23
+        && !available.contains(&desired)
+        && available.contains(&KotlinSemanticEngine::Kotlin24)
+    {
+        return KotlinEngineRegistry.qualify(project, KotlinSemanticEngine::Kotlin24);
+    }
+    Ok(desired)
 }
 
 fn prepare_trusted_worker_distribution(
@@ -5084,6 +5114,45 @@ mod tests {
     }
 
     #[test]
+    fn default_project_engine_uses_core_when_optional_kotlin23_is_absent() {
+        let mut model = serde_json::json!({
+            "declaredCompilerVersion":"2.3.0", "languageVersion":"2.3", "apiVersion":"2.3",
+            "jvmTarget":"17", "requestedCompilerPlugins":[], "freeCompilerArguments":[]
+        });
+        let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
+        assert_eq!(
+            select_available_project_engine(&project, &[KotlinSemanticEngine::Kotlin24]).unwrap(),
+            KotlinSemanticEngine::Kotlin24
+        );
+        assert_eq!(
+            select_available_project_engine(
+                &project,
+                &[
+                    KotlinSemanticEngine::Kotlin23,
+                    KotlinSemanticEngine::Kotlin24
+                ]
+            )
+            .unwrap(),
+            KotlinSemanticEngine::Kotlin23
+        );
+        assert_eq!(
+            select_available_project_engine(&project, &[]).unwrap(),
+            KotlinSemanticEngine::Kotlin23
+        );
+        assert_eq!(
+            KotlinEngineRegistry
+                .qualify(&project, KotlinSemanticEngine::Kotlin23)
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin23
+        );
+        model["freeCompilerArguments"] = serde_json::json!(["-Xcontext-parameters"]);
+        let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
+        assert!(
+            select_available_project_engine(&project, &[KotlinSemanticEngine::Kotlin24]).is_err()
+        );
+    }
+
+    #[test]
     fn project_semantics_route_through_qualified_engine_registry() {
         for (version, expected) in [
             ("2.3.0", KotlinSemanticEngine::Kotlin23),
@@ -5101,7 +5170,7 @@ mod tests {
             .unwrap();
             assert_eq!(KotlinEngineRegistry.select(&project).unwrap(), expected);
         }
-        for version in ["2.1.21", "2.3.10", "2.3.20", "1.9.25"] {
+        for version in ["2.1.21", "1.9.25", "1.8.22", "2.5.0"] {
             let project = KotlinProjectSemantics::from_project_model(&serde_json::json!({
                 "declaredCompilerVersion":version,
                 "languageVersion":"2.3",

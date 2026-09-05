@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="How Codeclew transforms Kotlin and Java repositories into evidence, Spring computation roots and reviewable changes. Explore module boundaries and the JVM compatibility roadmap.">
+    <meta name="theme-color" content="#0b0d0c">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <title>Codeclew — architecture</title>
+  </head>
+  <body>
+    <header class="nav shell">
+      <a class="brand" href="./index.html" aria-label="Codeclew home"><svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg><span>Codeclew</span></a>
+      <nav aria-label="Primary navigation"><a href="./index.html">Overview</a><a href="./architecture.html" aria-current="page">Architecture</a><a href="./documentation.html">Documentation</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
+    </header>
+
+    <main class="architecture-page shell">
+      <section class="docs-hero">
+        <div class="kicker">Architecture · Kotlin, Java and Spring</div>
+        <h1>From repositories<br><em>to explainable threads.</em></h1>
+        <p class="lede">Codeclew turns source and build configuration into facts an agent can inspect, connect and cite. The agent supplies the engineering question and writes the explanation; Codeclew preserves where each answer came from.</p>
+        <nav class="architecture-jump" aria-label="On this page"><a href="#pipeline">Data flow</a><a href="#spring">Spring roots</a><a href="#compatibility">Compatibility</a><a href="#extend">Extend Codeclew</a></nav>
+      </section>
+
+      <section class="architecture-section" id="pipeline">
+        <div class="kicker">The evidence pipeline</div>
+        <h2>Each stage adds information<br>and keeps its limits visible.</h2>
+        <p>A compilation is one build target with its own source roots, dependencies and compiler options. A repository may contain many compilations. Codeclew keeps those boundaries instead of merging every file into one imaginary application.</p>
+        <ol class="architecture-pipeline" aria-label="Source-to-evidence transformation">
+          <li><small>01 · Capture</small><h3>Repository → snapshot</h3><p>Pin source content and repository state. Hash the inputs so later answers refer to the same bytes.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/repository_snapshot.rs">Snapshot implementation ↗</a></li>
+          <li><small>02 · Describe</small><h3>Build → compilation model</h3><p>A build-model provider identifies sources, classpath, toolchain and options. Missing inputs remain explicit.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/adapter_v2.rs">BuildModelProvider contract ↗</a></li>
+          <li><small>03 · Analyze</small><h3>Model → language facts</h3><p>An adapter runs the selected analyzer. K2 supplies Kotlin identities; the JDK Compiler API supplies Java facts. Each result carries its authority.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/kotlin_adapter_v2.rs">Kotlin adapter ↗</a></li>
+          <li><small>04 · Seal</small><h3>Facts → reusable generation</h3><p>Store facts by content digest with a completeness receipt. Reuse them only when their input authority still matches.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/generation_v2.rs">Generation lifecycle ↗</a></li>
+          <li><small>05 · Connect</small><h3>Generation → bounded context</h3><p>Retrieve declarations, source anchors and supported relations. Framework rules derive Spring roots; thread services connect selected members.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/context_v2.rs">Context implementation ↗</a></li>
+          <li><small>06 · Explain</small><h3>Context → engineering document</h3><p>The agent follows a root, records evidence and names unresolved steps. A reader can distinguish a compiler fact from a proposed interpretation.</p><a href="./documentation.html">Explore an example →</a></li>
+        </ol>
+        <div class="architecture-branch"><b>Optional change path</b><p>For an admitted mutation capability: context → immutable edit plan → isolated candidate and validation → reviewed publication. Analysis access alone never enables writes.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/workspace_prepare.rs">Preparation implementation ↗</a></div>
+      </section>
+
+      <section class="architecture-section" id="spring">
+        <div class="kicker">Where a computational thread begins</div>
+        <h2>Start with the trigger,<br>then follow the callable.</h2>
+        <p>HTTP handlers, Kafka listeners and scheduled jobs are roots of application work. A useful catalogue preserves the repository, revision, compilation, callable identity, source location and annotation evidence for each root.</p>
+        <div class="architecture-cards">
+          <article><h3>HTTP</h3><p><code>RequestMapping</code> and method shortcuts describe routes and request conditions. Class and method paths combine; inherited and composed annotations need resolved identities.</p></article>
+          <article><h3>Kafka</h3><p><code>KafkaListener</code>, containers and <code>KafkaHandler</code> describe subscriptions and dispatch methods. A topic expression is retained separately from its runtime value.</p></article>
+          <article><h3>Scheduling</h3><p><code>Scheduled</code> and <code>Schedules</code> describe cron, rate and delay triggers. Repeated schedules stay separate; a disabled or dynamic value stays visible.</p></article>
+        </div>
+        <p>Rules recognize stable Spring annotation identities rather than a Spring Boot patch number. K2 extraction handles Kotlin annotation resolution; framework interpretation is a separate layer above language facts. The Java Compiler API also extracts Spring attributes and inherited class registrations into the common catalogue contract.</p>
+        <div class="docs-note"><b>A root is evidence of a declaration.</b> Bean registration, active profiles, property placeholders, SpEL, proxies and programmatic registrations may require configuration or runtime evidence. Matching an HTTP path or Kafka topic between repositories does not prove a call. “All roots” must state which repositories, compilations and extraction capabilities were covered.</div>
+        <p>After opening an analysis session, list its computation roots. For a bound multi-repository thread, use the second command instead.</p>
+        <pre class="architecture-command"><code>clew entrypoints --session &lt;session-id&gt; --limit 100
+clew entrypoints --thread &lt;thread-id&gt; --limit 100</code></pre>
+        <p>Repeat <code>--session</code> to select several sessions. Continue with the returned <code>--cursor</code> until <code>nextCursor</code> is null; the cursor binds every page to the same catalogue. Keep each scope's coverage and unresolved boundaries in the resulting documentation.</p>
+        <p><a href="https://github.com/codeclew/codeclew/blob/main/docs/plans/spring-entrypoints.md">Spring catalogue acceptance and scope ↗</a></p>
+      </section>
+
+      <section class="architecture-section" id="compatibility">
+        <div class="kicker">Two levels of capability</div>
+        <h2>Broad analysis.<br>Qualified advanced engines.</h2>
+        <p>The product direction is simple: install <code>clew</code>, install its bundled skill with <code>clew skill install</code>, and let the tool choose the strongest supported capability. Project language versions and the analyzer's exact binary version are separate facts.</p>
+        <div class="architecture-table-wrap"><table class="architecture-table">
+          <caption>Implementation boundaries and the intended JVM support model</caption>
+          <thead><tr><th scope="col">Layer</th><th scope="col">Current foundation</th><th scope="col">Acceptance target</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Baseline analysis</th><td>Read-only Kotlin 1.9–2.4 analysis uses the packaged K2 engine; Java uses a project-selected JDK 17+ with tested 17/21 fixtures. Kotlin 1.9 uses mode 2.0 and reports the difference.</td><td>Broaden real-repository qualification and reduce setup friction while retaining unsupported plugin, build-input and language-mode boundaries.</td></tr>
+            <tr><th scope="row">Advanced Kotlin</th><td>The default engine remains pinned to Kotlin 2.4.10; optional exact engines keep their own identities and qualification.</td><td>Qualify the Kotlin 2.4.x project line against packaged engines. Unsupported patch combinations retain baseline analysis and a visible reason.</td></tr>
+            <tr><th scope="row">Spring interpretation</th><td>Kotlin K2 and Java compiler extraction feed a paged Spring catalogue, including annotation attributes and inherited class registrations.</td><td>Broaden framework edge-case coverage and configuration evidence while preserving the shared HTTP, Kafka and scheduling contract.</td></tr>
+            <tr><th scope="row">Multiple repositories</th><td>Thread members preserve independent compilation and evidence authority; JVM navigation distinguishes identity from artifact ownership.</td><td>Root enumeration accepts selected sessions or a bound thread. Complete runtime handoff documentation still requires evidence for unresolved integration boundaries.</td></tr>
+          </tbody>
+        </table></div>
+        <p>These targets are not a blanket compatibility guarantee. The <a href="https://github.com/codeclew/codeclew#practical-code-navigation">README support contract</a> and each command's returned capability are authoritative for the installed release. Analyzer runtime requirements can differ from the Java or Kotlin version used by a project.</p>
+      </section>
+
+      <section class="architecture-section">
+        <div class="kicker">Who does what</div>
+        <h2>A precise tool.<br>An accountable engineering agent.</h2>
+        <div class="architecture-cards architecture-pair">
+          <article><h3>Codeclew</h3><p>Captures inputs, extracts language facts, derives supported framework facts, binds source evidence, limits retrieval, reports gaps and checks freshness. For admitted writes, it isolates and validates a candidate before publication.</p></article>
+          <article><h3>The agent and engineer</h3><p>Choose the scope, inspect returned evidence, decide which computational thread matters, investigate unresolved boundaries and write its explanation. They review behavior and validation before approving a change.</p></article>
+        </div>
+      </section>
+
+      <section class="architecture-section" id="extend">
+        <div class="kicker">Extension guide</div>
+        <h2>Extend one boundary<br>with a testable contract.</h2>
+        <p>The Rust core owns snapshots, storage, sessions and publication. Build providers and language adapters are explicit interfaces; version-sensitive compiler code stays in workers. These are implementation extension seams, not a promise of a runtime third-party plugin loader.</p>
+        <ol class="architecture-extension">
+          <li><b>A new build system:</b> implement <code>BuildModelProvider</code> probing and extraction. Return compilation descriptors with hashed inputs and honest completeness. Register it through <code>AdapterRegistry</code>.</li>
+          <li><b>A language or analyzer:</b> implement <code>LanguageAdapter</code> handshake, generation analysis, cancellation and shutdown. Emit fact shards plus a completeness receipt. Declare capability and toolchain authority; version the payload and translation digest when semantics change.</li>
+          <li><b>A framework:</b> extract resolved annotation identities and attributes in the language layer. Interpret them in a framework module with stable rules, source anchors and unresolved-value reporting. Add fixtures for aliases, composition, inheritance and false matches.</li>
+          <li><b>A new engine patch:</b> keep packaged binaries exact. Add compatibility qualification and regression fixtures for the project/engine pair; grant mutation only after its validation gate passes. Never obtain wider support by lowering the existing engine version.</li>
+          <li><b>A new agent workflow:</b> expose a bounded CLI response and update the bundled skill together. Test the installed launcher path, pagination, unsupported cases and source freshness, then add one end-to-end example.</li>
+        </ol>
+        <div class="architecture-source-links"><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/adapter_v2.rs">Provider and adapter interfaces ↗</a><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/kotlin_engine.rs">Engine authority ↗</a><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/java_adapter_v2.rs">Java compiler adapter ↗</a><a href="https://github.com/codeclew/codeclew/blob/main/docs/plans/modular-jvm-roadmap.md">Delivery plan and acceptance gates ↗</a></div>
+      </section>
+    </main>
+    <footer class="shell"><span>Codeclew · Apache-2.0</span><div><a href="./index.html">Home</a><a href="./architecture.html">Architecture</a><a href="./documentation.html">Documentation</a><a href="https://github.com/codeclew/codeclew">Source</a></div></footer>
+  </body>
+</html>

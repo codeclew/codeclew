@@ -751,7 +751,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:967d601b45cca61f8d1affd1944f2d58fa9d5bfc3d49517f122e60e8676ba492"
+            "sha256:79dca5a76eb7a6bf8022ca6605612097c6cb8583c7f0df4b4cc1520aa312803b"
         );
     }
 
@@ -776,10 +776,10 @@ mod tests {
             .iter()
             .filter(|profile| profile["language"] == "java")
             .collect::<Vec<_>>();
-        assert_eq!(java.len(), 2);
+        assert_eq!(java.len(), 4);
         assert!(java.iter().all(|profile| {
             profile["analysisAuthority"] == "COMPILER_BACKED_JDK"
-                && profile["compilerVersion"] == "21"
+                && matches!(profile["compilerVersion"].as_str(), Some("21" | "17+"))
                 && profile["mutation"] == false
                 && profile["status"] == "READ_ONLY_PREVIEW"
         }));

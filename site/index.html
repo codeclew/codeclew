@@ -15,7 +15,7 @@
         <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg>
         <span>Codeclew</span>
       </a>
-      <nav aria-label="Primary navigation">
+      <nav aria-label="Primary navigation"><a href="./architecture.html">Architecture</a>
         <a href="#how">How it works</a>
         <a href="./documentation.html">Documentation</a>
         <a href="#evidence">Evidence</a>
@@ -28,7 +28,7 @@
       <section class="hero shell">
         <div class="eyebrow"><span></span> Kotlin evidence study · 16/16 focused checks</div>
         <h1>Give code agents<br><em>evidence, not guesses.</em></h1>
-        <p class="lede">Codeclew turns Kotlin code into decision-ready evidence: exact source, K2 declaration identity, explicit boundaries and stable digests an agent can carry from analysis into a reviewable change.</p>
+        <p class="lede">Codeclew turns Kotlin and Java repositories into evidence: exact source, compiler identities, Spring computation roots and explicit boundaries. Agents can carry these facts from analysis into documentation or a qualified, reviewable change.</p>
 
         <div class="install" aria-label="Install Codeclew">
           <div class="install-label"><span>Install on macOS</span><span>Apple Silicon + Intel</span></div>
@@ -36,7 +36,7 @@
             <code id="install-command">curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh</code>
             <button id="copy-command" type="button" aria-label="Copy installation command"><span>Copy</span></button>
           </div>
-          <p>Update later with <code>clew upgrade</code>.</p>
+          <p>Then run <code>clew skill install</code> for your agent. Update later with <code>clew upgrade</code>.</p>
         </div>
 
         <div class="hero-links">
@@ -147,6 +147,8 @@
           <div class="matrix" role="table" aria-label="Codeclew support matrix">
             <div class="matrix-row matrix-head" role="row"><span>Profile</span><span>Context</span><span>Change</span></div>
             <div class="matrix-row" role="row"><span><b>Kotlin 2.4.10</b><small>Gradle · one compilation</small></span><span class="yes">K2</span><span class="pilot">Pilot</span></div>
+            <div class="matrix-row" role="row"><span><b>Kotlin 1.9–2.4</b><small>Gradle / Maven · conditional analysis</small></span><span class="yes">K2</span><span>Read only</span></div>
+            <div class="matrix-row" role="row"><span><b>Java 17+</b><small>Project JDK · tested 17 / 21</small></span><span class="yes">Compiler</span><span>Read only</span></div>
             <div class="matrix-row" role="row"><span><b>Kotlin 2.3.0</b><small>Maven · optional pack</small></span><span class="yes">K2</span><span>Read only</span></div>
             <div class="matrix-row" role="row"><span><b>Python</b><small>Tree-sitter syntax</small></span><span>Preview</span><span>Read only</span></div>
             <div class="matrix-row" role="row"><span><b>Rust</b><small>Bounded syntax</small></span><span>Preview</span><span>Read only</span></div>
@@ -178,7 +180,7 @@
 
     <footer class="shell">
       <span>Codeclew · Apache-2.0</span>
-      <div><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/security">Security</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div>
+      <div><a href="./architecture.html">Architecture</a><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/security">Security</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div>
     </footer>
     <script src="./app.js" defer></script>
   </body>

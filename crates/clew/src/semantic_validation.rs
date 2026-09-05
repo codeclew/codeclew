@@ -479,6 +479,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
             if !partial {
                 allowed.extend([
                     "isOverride",
+                    "spring",
                     "returnType",
                     "returnNullable",
                     "parameterTypes",
@@ -498,7 +499,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
                 allowed.extend(["isOverride", "declaredType", "declaredNullable"]);
             }
         }
-        "CLASS" => allowed.push("compilerClassId"),
+        "CLASS" => allowed.extend(["compilerClassId", "spring"]),
         _ => return Err(payload_invalid("unknown declaration descriptor kind")),
     }
     Ok(allowed)
@@ -542,6 +543,9 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
     }
     validate_payload_location(value, "declaration descriptor")?;
     validate_optional_descriptor_lines(value)?;
+    if let Some(spring) = value.get("spring") {
+        crate::spring_entrypoints::validate_metadata(spring, "K2_RESOLVED_ANNOTATIONS")?;
+    }
     for field in ["symbolIdentity", "ownerIdentity", "module", "sourceSet"] {
         payload_string(value, field)?;
     }
@@ -2564,6 +2568,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "compilerCallableId",
                 "jvmDescriptor",
                 "isOverride",
+                "spring",
                 "returnType",
                 "returnNullable",
                 "parameterTypes",
@@ -2582,7 +2587,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "declaredType",
                 "declaredNullable",
             ]),
-            "CLASS" => allowed.extend(["compilerClassId"]),
+            "CLASS" => allowed.extend(["compilerClassId", "spring"]),
             _ => return Err(invalid("unknown declaration descriptor kind")),
         }
         let object = value
@@ -2852,6 +2857,9 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         }
         validate_type_parameters(descriptor)?;
         validate_field_closure(descriptor, declaration_kind)?;
+        if let Some(spring) = descriptor.get("spring") {
+            crate::spring_entrypoints::validate_metadata(spring, "K2_RESOLVED_ANNOTATIONS")?;
+        }
         match declaration_kind {
             "FUNCTION" => {
                 let callable = required_string(descriptor, "compilerCallableId")?;

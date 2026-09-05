@@ -736,6 +736,7 @@ pub(crate) fn translate_facts(
         "analyzerCompilerVersion":index.get("analyzerCompilerVersion").or_else(|| index.get("compilerVersion")),
         "kotlinProjectSemantics":index.get("kotlinProjectSemantics"),
         "kotlinSemanticEngine":index.get("kotlinSemanticEngine"),
+        "buildModelBoundaries":index.get("buildModelBoundaries"),
         "projectModelHash":index.get("projectModelHash"),
         "classpathHash":index.get("classpathHash"),
         "compilerOptionsHash":index.get("compilerOptionsHash"),
@@ -1046,7 +1047,18 @@ pub(crate) fn completeness_receipt(
         .pointer("/declarationRelations/coverage")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("Kotlin relation coverage is unavailable"))?;
-    let unsure = index.get("analysisCertainty").and_then(Value::as_str) == Some("UNSURE");
+    let compatible_analysis = index
+        .get("buildModelBoundaries")
+        .and_then(Value::as_array)
+        .is_some_and(|boundaries| {
+            boundaries.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("KOTLIN_ANALYSIS_"))
+            })
+        });
+    let unsure = compatible_analysis
+        || index.get("analysisCertainty").and_then(Value::as_str) == Some("UNSURE");
     let complete = !unsure
         && descriptor_coverage == "COMPLETE_SUPPORTED_SUBSET"
         && relation_coverage == "COMPLETE_SUPPORTED_SUBSET";
@@ -1063,6 +1075,8 @@ pub(crate) fn completeness_receipt(
         ],
         "obligations":if complete {
             Vec::<String>::new()
+        } else if compatible_analysis {
+            vec!["verify-compatible-kotlin-analysis".to_owned()]
         } else if unsure {
             vec!["restore-k2-semantic-analysis".to_owned()]
         } else {
@@ -1496,6 +1510,26 @@ mod tests {
         let value: Value = serde_json::from_slice(lease.bytes()).unwrap();
         assert_eq!(value["domains"][0]["certainty"], "UNSURE");
         assert_eq!(value["obligations"][0], "restore-k2-semantic-analysis");
+    }
+
+    #[test]
+    fn compatible_compiler_analysis_never_claims_verified_completeness() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let index = json!({
+            "analysisCertainty":"VERIFIED",
+            "declarationDescriptors":{"coverage":"COMPLETE_SUPPORTED_SUBSET"},
+            "declarationRelations":{"coverage":"COMPLETE_SUPPORTED_SUBSET"},
+            "buildModelBoundaries":["KOTLIN_ANALYSIS_USES_DIFFERENT_COMPILER"]
+        });
+        let receipt =
+            completeness_receipt(&store, &index, &format!("sha256:{}", "1".repeat(64))).unwrap();
+        let lease = store.read(&receipt, 4096).unwrap();
+        let value: Value = serde_json::from_slice(lease.bytes()).unwrap();
+        assert_eq!(value["domains"][0]["coverage"], "PARTIAL");
+        assert_eq!(value["domains"][0]["certainty"], "UNSURE");
+        assert_eq!(value["obligations"][0], "verify-compatible-kotlin-analysis");
     }
 
     #[cfg(unix)]

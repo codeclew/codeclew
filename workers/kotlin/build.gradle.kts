@@ -34,6 +34,9 @@ dependencies {
     }
     runtimeOnly("org.jetbrains.kotlin:kotlin-compiler-runner:2.4.10")
     testImplementation(kotlin("test"))
+    // Test artifacts only: extraction recognizes stable annotation FQNs, not library versions.
+    testImplementation("org.springframework:spring-web:6.1.2")
+    testImplementation("org.springframework.kafka:spring-kafka:3.0.16")
 }
 
 application { mainClass.set("dev.semanticthread.worker.MainKt") }

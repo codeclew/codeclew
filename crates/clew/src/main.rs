@@ -42,6 +42,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Enumerate Spring HTTP, Kafka and scheduled roots in retained JVM generations.
+    Entrypoints(EntrypointsArgs),
     /// Print the exact product support matrix bound to the active runtime.
     Capabilities(CapabilitiesArgs),
     /// Check host, runtime, state, and optional target-repository readiness.
@@ -97,6 +99,22 @@ enum Command {
     },
     #[command(name = "__task-run-execute", hide = true)]
     InternalTaskRunExecute(InternalTaskRunArgs),
+}
+
+#[derive(Args)]
+struct EntrypointsArgs {
+    #[arg(
+        long = "session",
+        required_unless_present = "thread",
+        conflicts_with = "thread"
+    )]
+    sessions: Vec<String>,
+    #[arg(long)]
+    thread: Option<String>,
+    #[arg(long)]
+    cursor: Option<String>,
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=100))]
+    limit: u32,
 }
 
 #[derive(Args)]
@@ -1268,6 +1286,29 @@ fn remediation_label(id: &str) -> &str {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     match cli.command {
+        Command::Entrypoints(args) => {
+            let sessions = if let Some(thread) = args.thread {
+                let (thread, _) = clew::thread::ThreadAuthority::load(&thread)?;
+                return clew::spring_entrypoints::thread_catalogue(
+                    &thread,
+                    args.cursor.as_deref(),
+                    args.limit as usize,
+                );
+            } else {
+                args.sessions
+                    .iter()
+                    .map(|id| {
+                        let (session, _) = SessionAuthority::load(id)?;
+                        Ok((session.session_id.clone(), session))
+                    })
+                    .collect::<Result<Vec<_>, ClewError>>()?
+            };
+            clew::spring_entrypoints::catalogue(
+                sessions,
+                args.cursor.as_deref(),
+                args.limit as usize,
+            )
+        }
         Command::Capabilities(_) => capabilities(&active_runtime()?),
         Command::Doctor(args) => run_doctor(&args),
         Command::Upgrade => Err(ClewError::new(

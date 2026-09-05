@@ -50,6 +50,8 @@ pub enum JavaCompilerFact {
         jvm_descriptor: Option<String>,
         modifiers: Vec<String>,
         annotations: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spring: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         interfaces: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,7 +134,7 @@ pub fn java_adapter_digest() -> Result<String, ClewError> {
         "factSchema":JAVA_FACT_SCHEMA,
         "capability":JAVA_COMPILER_FACTS_CAPABILITY,
         "analyzerDigest":canonical::hash_bytes(JAVA_ANALYZER_SOURCE.as_bytes()),
-        "jdkCompilerApi":"jdk.compiler/21",
+        "jdkCompilerApi":"jdk.compiler/17+",
     }))
     .map_err(internal)
 }
@@ -173,7 +175,7 @@ pub fn build_java_compiler_index(
     let output = Command::new(&operational.java_executable)
         .args([
             "--source",
-            "21",
+            "17",
             analyzer
                 .to_str()
                 .ok_or_else(|| internal("Java analyzer path is not UTF-8"))?,
@@ -186,7 +188,7 @@ pub fn build_java_compiler_index(
             classpath
                 .to_str()
                 .ok_or_else(|| internal("Java classpath manifest path is not UTF-8"))?,
-            "21",
+            &operational.authority.release.to_string(),
         ])
         .current_dir(&repository)
         .stdin(Stdio::null())
@@ -420,6 +422,13 @@ fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
         {
             return Err(corrupt("Java compiler fact authority is invalid"));
         }
+        if let JavaCompilerFact::Declaration {
+            spring: Some(spring),
+            ..
+        } = fact
+        {
+            crate::spring_entrypoints::validate_metadata(spring, "JAVAC_RESOLVED_ANNOTATIONS")?;
+        }
         let bytes = canonical::bytes(fact).map_err(internal)?;
         if bytes.len() > MAX_FACT_BYTES
             || previous.as_ref().is_some_and(|previous| previous >= &bytes)
@@ -582,6 +591,327 @@ mod tests {
         )));
         let encoded = serde_json::to_string(&index).unwrap();
         assert!(!encoded.contains(temporary.path().to_str().unwrap()));
+    }
+
+    #[test]
+    #[ignore = "qualification launches the JDK compiler analyzer"]
+    fn spring_entrypoints_use_resolved_annotations_on_java_17_and_21() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repository");
+        fs::create_dir_all(&root).unwrap();
+        let annotations = [
+            (
+                "org.springframework.stereotype",
+                "Controller",
+                "String value() default \"\";",
+                "",
+            ),
+            (
+                "org.springframework.web.bind.annotation",
+                "RestController",
+                "",
+                "@org.springframework.stereotype.Controller",
+            ),
+            (
+                "org.springframework.web.bind.annotation",
+                "RequestMapping",
+                "String[] value() default {}; String[] path() default {}; RequestMethod[] method() default {}; String[] produces() default {};",
+                "",
+            ),
+            (
+                "org.springframework.web.bind.annotation",
+                "GetMapping",
+                "String[] value() default {}; String[] path() default {};",
+                "",
+            ),
+            (
+                "org.springframework.core.annotation",
+                "AliasFor",
+                "String value() default \"\"; String attribute() default \"\"; Class<? extends java.lang.annotation.Annotation> annotation() default java.lang.annotation.Annotation.class;",
+                "",
+            ),
+            (
+                "org.springframework.kafka.annotation",
+                "KafkaListener",
+                "String[] topics() default {}; String groupId() default \"\";",
+                "@java.lang.annotation.Repeatable(KafkaListeners.class)",
+            ),
+            (
+                "org.springframework.kafka.annotation",
+                "KafkaListeners",
+                "KafkaListener[] value();",
+                "",
+            ),
+            (
+                "org.springframework.kafka.annotation",
+                "KafkaHandler",
+                "boolean isDefault() default false;",
+                "",
+            ),
+            (
+                "org.springframework.scheduling.annotation",
+                "Scheduled",
+                "String cron() default \"\"; long fixedDelay() default -1; long fixedRate() default -1;",
+                "@java.lang.annotation.Repeatable(Schedules.class)",
+            ),
+            (
+                "org.springframework.scheduling.annotation",
+                "Schedules",
+                "Scheduled[] value();",
+                "",
+            ),
+        ];
+        let mut sources = Vec::new();
+        for (package, name, members, meta) in annotations {
+            let relative = format!("{}/{name}.java", package.replace('.', "/"));
+            let file = root.join(&relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(
+                file,
+                format!("package {package}; {meta} public @interface {name} {{ {members} }}"),
+            )
+            .unwrap();
+            sources.push(relative);
+        }
+        let fixtures = [
+            (
+                "org/springframework/web/bind/annotation/RequestMethod.java",
+                "package org.springframework.web.bind.annotation; public enum RequestMethod { GET, POST }",
+            ),
+            (
+                "example/Handlers.java",
+                r#"
+package example;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.kafka.annotation.*;
+import org.springframework.scheduling.annotation.*;
+import org.springframework.core.annotation.AliasFor;
+@RequestMapping(method = RequestMethod.POST, produces = "application/json")
+@interface PostJson {
+    @AliasFor(annotation = RequestMapping.class, attribute = "path") String[] value();
+}
+@RequestMapping(method = RequestMethod.GET)
+@interface JsonGet {
+    @AliasFor(annotation = RequestMapping.class, attribute = "path") String[] route() default {};
+}
+@JsonGet
+@interface Route {
+    @AliasFor(annotation = JsonGet.class, attribute = "route") String[] value();
+}
+@RequestMapping(path = "/default")
+@interface ValueRoute {
+    @AliasFor(annotation = RequestMapping.class, attribute = "value") String[] value();
+}
+interface Api { @GetMapping("/inherited") String inherited(int id); }
+@RestController @RequestMapping("/v1") @KafkaListener(topics = "events")
+class Handlers implements Api {
+    static final String PATH = "/items";
+    @GetMapping(PATH) String load() { return ""; }
+    @GetMapping(path = "/items/{id}") String load(int id) { return ""; }
+    @PostJson("/composed") void post() {}
+    @Route("/multi-level") void multiLevel() {}
+    @ValueRoute("/override") void valueAlias() {}
+    @Override public String inherited(int id) { return ""; }
+    @KafkaListener(topics = {"one", "two"}, groupId = "${group}")
+    @KafkaListener(topics = "three") void consume(String message) {}
+    @KafkaHandler(isDefault = true) void dispatch(Object message) {}
+    @Scheduled(fixedDelay = 1000 * 60) @Scheduled(cron = "0 * * * * *") void tick() {}
+}
+@interface Scheduled { long fixedRate() default 0; }
+class Impostor { @example.Scheduled(fixedRate = 1) void fake() {} }
+@RestController @RequestMapping("/child") @KafkaListener(topics = "child-events")
+class InheritedHandlers extends Handlers { @Override String load(int id) { return ""; } }
+abstract class AbstractInherited extends Handlers {}
+"#,
+            ),
+        ];
+        // The impostor uses a distinct simple name in another package so the real import remains unambiguous.
+        for (relative, body) in fixtures {
+            let file = root.join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(
+                file,
+                body.replace(
+                    "@Scheduled(fixedDelay",
+                    "@org.springframework.scheduling.annotation.Scheduled(fixedDelay",
+                )
+                .replace(
+                    "@Scheduled(cron",
+                    "@org.springframework.scheduling.annotation.Scheduled(cron",
+                ),
+            )
+            .unwrap();
+            sources.push(relative.into());
+        }
+        let analyzer = temp.path().join("CodeclewJavaAnalyzer.java");
+        fs::write(&analyzer, JAVA_ANALYZER_SOURCE).unwrap();
+        let manifest = temp.path().join("sources.txt");
+        fs::write(&manifest, sources.join("\n")).unwrap();
+        let classpath = temp.path().join("classpath.txt");
+        fs::write(&classpath, "").unwrap();
+        for release in ["17", "21"] {
+            let java = std::env::var_os("JAVA_HOME")
+                .map(|home| std::path::PathBuf::from(home).join("bin/java"))
+                .unwrap_or_else(|| "java".into());
+            let output = Command::new(java)
+                .arg("--source")
+                .arg("17")
+                .arg(&analyzer)
+                .arg(&root)
+                .arg(&manifest)
+                .arg(&classpath)
+                .arg(release)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let facts: Vec<JavaCompilerFact> = String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let boundaries: Vec<_> = facts
+                .iter()
+                .filter_map(|fact| match fact {
+                    JavaCompilerFact::Boundary { code, .. } => Some(code.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert!(boundaries.is_empty(), "{boundaries:?}");
+            let spring_for = |suffix: &str| {
+                facts
+                    .iter()
+                    .find_map(|fact| match fact {
+                        JavaCompilerFact::Declaration {
+                            symbol_identity,
+                            spring: Some(spring),
+                            file,
+                            start: Some(_),
+                            end: Some(_),
+                            ..
+                        } if symbol_identity.ends_with(suffix) => {
+                            assert_eq!(file, "example/Handlers.java");
+                            assert_eq!(spring["authority"], "JAVAC_RESOLVED_ANNOTATIONS");
+                            Some(spring)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("missing {suffix}"))
+            };
+            let load = spring_for("Handlers#load()Ljava/lang/String;");
+            assert_eq!(load["entries"][0]["attributes"]["path"], json!(["/items"]));
+            assert_eq!(
+                load["entries"][0]["classAttributes"][0]["path"],
+                json!(["/v1"])
+            );
+            assert_eq!(load["entries"][0]["controller"], true);
+            assert_eq!(load["entries"][0]["registration"], "RUNTIME_CONDITIONAL");
+            assert_eq!(
+                spring_for("Handlers#load(I)Ljava/lang/String;")["entries"][0]["attributes"]["path"],
+                json!(["/items/{id}"])
+            );
+            let post = spring_for("Handlers#post()V");
+            assert_eq!(
+                post["entries"][0]["attributes"]["path"],
+                json!(["/composed"])
+            );
+            assert_eq!(post["entries"][0]["attributes"]["method"], json!(["POST"]));
+            assert_eq!(
+                post["entries"][0]["annotationChain"],
+                json!([
+                    "example.PostJson",
+                    "org.springframework.web.bind.annotation.RequestMapping"
+                ])
+            );
+            assert_eq!(
+                spring_for("Handlers#inherited(I)Ljava/lang/String;")["entries"][0]["attributes"]["path"],
+                json!(["/inherited"])
+            );
+            let multi_level = spring_for("Handlers#multiLevel()V");
+            assert_eq!(
+                multi_level["entries"][0]["attributes"]["path"],
+                json!(["/multi-level"])
+            );
+            assert_eq!(
+                multi_level["entries"][0]["attributes"]["method"],
+                json!(["GET"])
+            );
+            assert!(
+                multi_level["entries"][0]["attributes"]
+                    .get("route")
+                    .is_none()
+            );
+            assert_eq!(
+                multi_level["entries"][0]["annotationChain"],
+                json!([
+                    "example.Route",
+                    "example.JsonGet",
+                    "org.springframework.web.bind.annotation.RequestMapping"
+                ])
+            );
+            assert_eq!(
+                spring_for("Handlers#valueAlias()V")["entries"][0]["attributes"]["path"],
+                json!(["/override"])
+            );
+            let consume = spring_for("Handlers#consume(Ljava/lang/String;)V");
+            assert_eq!(consume["entries"].as_array().unwrap().len(), 2);
+            assert_eq!(consume["entries"][0]["kind"], "KAFKA_LISTENER");
+            assert!(
+                consume["boundaries"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("RUNTIME_EXPRESSION"))
+            );
+            assert_eq!(
+                spring_for("Handlers#dispatch(Ljava/lang/Object;)V")["entries"][0]["handlerAttributes"]
+                    ["isDefault"],
+                true
+            );
+            let scheduled = spring_for("Handlers#tick()V");
+            assert_eq!(scheduled["entries"].as_array().unwrap().len(), 2);
+            assert_eq!(scheduled["entries"][0]["attributes"]["fixedDelay"], 60000);
+            assert_eq!(spring_for("Impostor#fake()V")["entries"], json!([]));
+            let inherited = spring_for("class:example.InheritedHandlers");
+            let inherited_entries = inherited["entries"].as_array().unwrap();
+            assert!(!inherited_entries.is_empty());
+            assert!(
+                inherited_entries
+                    .iter()
+                    .all(|entry| entry["beanClass"] == "class:example.InheritedHandlers")
+            );
+            let inherited_http = inherited_entries
+                .iter()
+                .find(|entry| {
+                    entry["targetSymbol"]
+                        == "method:class:example.Handlers#load()Ljava/lang/String;"
+                })
+                .unwrap();
+            assert_eq!(
+                inherited_http["classAttributes"][0]["path"],
+                json!(["/child"])
+            );
+            assert!(!inherited_entries.iter().any(|entry| entry["targetSymbol"]
+                == "method:class:example.Handlers#load(I)Ljava/lang/String;"));
+            let inherited_kafka = inherited_entries
+                .iter()
+                .find(|entry| {
+                    entry["targetSymbol"]
+                        == "method:class:example.Handlers#dispatch(Ljava/lang/Object;)V"
+                })
+                .unwrap();
+            assert_eq!(
+                inherited_kafka["attributes"]["topics"],
+                json!(["child-events"])
+            );
+            assert_eq!(inherited_kafka["handlerAttributes"]["isDefault"], true);
+            assert_eq!(
+                spring_for("class:example.AbstractInherited")["entries"],
+                json!([])
+            );
+        }
     }
 
     #[test]

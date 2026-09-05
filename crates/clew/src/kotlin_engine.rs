@@ -238,6 +238,7 @@ impl KotlinProjectSemantics {
 enum CompatibilityKind {
     ExactCompilerAbi,
     QualifiedPatchLine,
+    CompatibleAnalysis,
     QualificationCandidate,
     ExperimentalCandidate,
 }
@@ -344,6 +345,15 @@ fn select_from_rows(
     default_only: bool,
     requested_engine: Option<KotlinSemanticEngine>,
 ) -> Result<KotlinSemanticEngine, ClewError> {
+    let baseline = QualifiedCompatibility {
+        project_compiler_version: "",
+        language_version: None,
+        api_version: None,
+        engine: KotlinSemanticEngine::Kotlin24,
+        kind: CompatibilityKind::CompatibleAnalysis,
+        default_route: true,
+        allow_serialization_rebind: true,
+    };
     let row = rows.iter().find(|row| {
         row.project_compiler_version == project.project_compiler_version
             && row
@@ -354,6 +364,12 @@ fn select_from_rows(
                 .is_none_or(|version| project.api_version.as_deref() == Some(version))
             && (!default_only || row.default_route)
             && requested_engine.is_none_or(|engine| row.engine == engine)
+    });
+    let row = row.or_else(|| {
+        (default_only
+            && baseline_analysis_supported(project)
+            && requested_engine.is_none_or(|engine| engine == KotlinSemanticEngine::Kotlin24))
+        .then_some(&baseline)
     });
     let Some(row) = row else {
         return Err(unsupported(
@@ -388,6 +404,40 @@ fn select_from_rows(
         }
     }
     Ok(row.engine)
+}
+
+// A baseline route is compiler-backed analysis under the packaged engine,
+// not a qualification of native project compiler behavior or mutation.
+fn baseline_analysis_supported(project: &KotlinProjectSemantics) -> bool {
+    let pieces = project
+        .project_compiler_version
+        .split('.')
+        .collect::<Vec<_>>();
+    if pieces.len() != 3
+        || pieces
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
+    let Some(line) = language_line(&pieces[..2].join(".")) else {
+        return false;
+    };
+    if !((1, 9)..=(2, 4)).contains(&line) || (line.0 == 1 && line.1 != 9) {
+        return false;
+    }
+    [&project.language_version, &project.api_version]
+        .into_iter()
+        .all(|value| {
+            value.as_deref().is_none_or(|value| {
+                language_line(value).is_some_and(|mode| mode >= (1, 9) && mode <= line)
+            })
+        })
+}
+
+fn language_line(value: &str) -> Option<(u16, u16)> {
+    let (major, minor) = value.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 fn unsupported(message: &str) -> ClewError {
@@ -439,6 +489,37 @@ mod tests {
     }
 
     #[test]
+    fn baseline_routes_stable_versions_without_claiming_native_abi() {
+        for (version, mode) in [
+            ("1.9.25", "1.9"),
+            ("2.0.21", "2.0"),
+            ("2.1.21", "2.1"),
+            ("2.2.20", "2.2"),
+            ("2.3.20", "2.3"),
+            ("2.4.11", "2.4"),
+        ] {
+            assert_eq!(
+                KotlinEngineRegistry
+                    .select(&project(version, mode, &[]))
+                    .unwrap(),
+                KotlinSemanticEngine::Kotlin24
+            );
+        }
+        for (version, mode) in [
+            ("1.8.22", "1.8"),
+            ("1.9.25", "2.3"),
+            ("2.5.0", "2.5"),
+            ("2.4.11-RC", "2.4"),
+        ] {
+            assert!(
+                KotlinEngineRegistry
+                    .select(&project(version, mode, &[]))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn language_version_does_not_select_the_engine_line() {
         let registry = KotlinEngineRegistry;
         assert_eq!(
@@ -484,10 +565,12 @@ mod tests {
     }
 
     #[test]
-    fn experimental_row_is_not_a_production_route() {
+    fn older_project_has_baseline_route_and_retains_explicit_qualification() {
         let registry = KotlinEngineRegistry;
-        let error = registry.select(&project("2.1.21", "2.1", &[])).unwrap_err();
-        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert_eq!(
+            registry.select(&project("2.1.21", "2.1", &[])).unwrap(),
+            KotlinSemanticEngine::Kotlin24
+        );
         assert_eq!(
             registry
                 .qualify(
