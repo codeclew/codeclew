@@ -396,6 +396,7 @@ final class CodeclewJavaAnalyzer {
             private static final String KAFKA = "org.springframework.kafka.annotation.";
             private static final String SCHEDULE = "org.springframework.scheduling.annotation.";
             private static final String CONTROLLER = "org.springframework.stereotype.Controller";
+            private static final String FEIGN_CLIENT = "org.springframework.cloud.openfeign.FeignClient";
             private static final String ALIAS = "org.springframework.core.annotation.AliasFor";
             private final Set<String> boundaries = new TreeSet<>();
             private int visits;
@@ -430,9 +431,14 @@ final class CodeclewJavaAnalyzer {
                 List<SpringBinding> typeMappings = firstFamily(classBindings, WEB + "RequestMapping");
                 boolean controller = classBindings.stream().flatMap(List::stream)
                         .anyMatch(binding -> binding.annotation().equals(CONTROLLER));
+                boolean outboundFeign = classBindings.get(0).stream().anyMatch(binding -> binding.annotation().equals(FEIGN_CLIENT)) && !controller;
                 List<Map<String, Object>> entries = new ArrayList<>();
                 if (mappings.size() > 1 || typeMappings.size() > 1) boundaries.add("MULTIPLE_REQUEST_MAPPINGS_ON_ELEMENT");
                 for (SpringBinding binding : mappings) {
+                    if (outboundFeign) {
+                        boundaries.add("OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT");
+                        continue;
+                    }
                     Map<String, Object> entry = entry(binding, "HTTP_ENDPOINT");
                     entry.put("controller", controller);
                     entry.put("classAttributes", typeMappings.stream().map(SpringBinding::attributes).toList());
@@ -569,7 +575,7 @@ final class CodeclewJavaAnalyzer {
                     attributes.put("method", List.of(method));
                     return List.of(new SpringBinding(WEB + "RequestMapping", chain, attributes));
                 }
-                if (Set.of(WEB + "RequestMapping", KAFKA + "KafkaListener", KAFKA + "KafkaHandler", SCHEDULE + "Scheduled", CONTROLLER).contains(name)) {
+                if (Set.of(WEB + "RequestMapping", KAFKA + "KafkaListener", KAFKA + "KafkaHandler", SCHEDULE + "Scheduled", CONTROLLER, FEIGN_CLIENT).contains(name)) {
                     return List.of(new SpringBinding(name, chain, name.equals(WEB + "RequestMapping") ? aliases(attributes) : attributes));
                 }
                 TypeElement declaration = (TypeElement) annotation.getAnnotationType().asElement();

@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Codeclew gives coding agents decision-ready Kotlin source, compiler identity, bounded context and reviewable evidence.">
+    <meta name="description" content="Discover Kotlin and Java repositories, catalogue Spring computation roots, inspect exact source and document the results with traceable evidence.">
     <meta name="theme-color" content="#0b0d0c">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <title>Codeclew — semantic context for coding agents</title>
+    <title>Codeclew — Kotlin and Java repository analysis</title>
   </head>
   <body>
     <header class="nav shell">
@@ -18,7 +18,7 @@
       <nav aria-label="Primary navigation"><a href="./architecture.html">Architecture</a>
         <a href="#how">How it works</a>
         <a href="./documentation.html">Documentation</a>
-        <a href="#evidence">Evidence</a>
+        <a href="./pilot.html">Real service pilot</a>
         <a href="#support">Support</a>
         <a href="https://github.com/codeclew/codeclew">GitHub</a>
       </nav>
@@ -26,9 +26,9 @@
 
     <main id="top">
       <section class="hero shell">
-        <div class="eyebrow"><span></span> Kotlin evidence study · 16/16 focused checks</div>
-        <h1>Give code agents<br><em>evidence, not guesses.</em></h1>
-        <p class="lede">Codeclew turns Kotlin and Java repositories into evidence: exact source, compiler identities, Spring computation roots and explicit boundaries. Agents can carry these facts from analysis into documentation or a qualified, reviewable change.</p>
+        <div class="eyebrow"><span></span> Kotlin + Java · Spring repository analysis</div>
+        <h1>Find where your<br><em>application starts.</em></h1>
+        <p class="lede">Codeclew helps agents discover a repository, catalogue its Spring HTTP handlers, Kafka listeners and scheduled jobs, then inspect exact source and document the work behind each trigger. Compiler identities and explicit coverage limits stay attached to the evidence.</p>
 
         <div class="install" aria-label="Install Codeclew">
           <div class="install-label"><span>Install on macOS</span><span>Apple Silicon + Intel</span></div>
@@ -41,25 +41,40 @@
 
         <div class="hero-links">
           <a class="primary" href="https://github.com/codeclew/codeclew/releases/latest">Download release <span>↗</span></a>
-          <a class="secondary" href="./documentation.html">Explore a documented thread</a>
+          <a class="secondary" href="./pilot.html">See the real service pilot</a>
         </div>
         <p class="requirements">Requires macOS, Git, Python 3.11+, and JDK 21 for Kotlin project analysis. Codeclew itself is prebuilt.</p>
       </section>
 
       <section class="proof-strip" aria-label="Codeclew guarantees">
         <div class="shell proof-grid">
-          <div><strong>16/16 checks</strong><span>Five Kotlin engineering concerns, zero focused failures</span></div>
-          <div><strong>K2-backed</strong><span>Compiler identity attached to selected source</span></div>
-          <div><strong>Transactional</strong><span>Isolated prepare and CAS publish</span></div>
+          <div><strong>15/15 roots</strong><span>One private service, checked against an independent committed-source inventory</span></div>
+          <div><strong>Kotlin + Java</strong><span>K2 and JDK analysis with source and compiler authority</span></div>
+          <div><strong>Committed analysis</strong><span>Explicit snapshot mode preserves local checkout edits</span></div>
           <div><strong>Private by default</strong><span>No automatic code upload</span></div>
         </div>
       </section>
 
+      <section class="section shell" id="how">
+        <div class="section-heading">
+          <div class="kicker">The everyday analysis flow</div>
+          <h2>Discover. Catalogue.<br>Inspect. Document.</h2>
+          <p>Install Codeclew and its skill, then ask your agent to explain a service. It carries the returned scope and evidence through each step.</p>
+        </div>
+        <div class="steps">
+          <article><span class="number">01</span><h3>Discover the build</h3><p>Identify the project, supported profile and exact compilation. Choose committed analysis when local edits should stay outside the snapshot.</p><code>clew doctor repository …</code></article>
+          <article><span class="number">02</span><h3>Catalogue the roots</h3><p>Open analysis context, then enumerate Spring triggers across the selected sessions. Follow every page and retain coverage boundaries.</p><code>clew entrypoints …</code></article>
+          <article><span class="number">03</span><h3>Inspect exact source</h3><p>Use each returned callable identity to inspect its declaration and supported relations. Overloads keep distinct identities.</p><code>clew nav expand … --file … --source</code></article>
+          <article><span class="number">04</span><h3>Write the explanation</h3><p>The agent describes each thread, cites the retained source and names unresolved configuration or integration steps.</p><code>Evidence → engineering document</code></article>
+        </div>
+        <p class="requirements">A private service pilot recovered one scheduled job missing from its existing documentation. <a href="./pilot.html">Read the method, result and limits →</a></p>
+      </section>
+
       <section class="section shell evidence-preview" id="evidence">
         <div class="section-heading">
-          <div class="kicker">Measured product evidence</div>
+          <div class="kicker">Separate historical engineering study</div>
           <h2>Kotlin evidence an agent<br>can actually act on.</h2>
-          <p>A small public study covers compatibility policy, Unicode coordinates, Maven topology, bounded control-flow graphs and semantic-input authority. Each result links to exact source and an executable check.</p>
+          <p>These earlier public checks cover compatibility policy, Unicode coordinates, Maven topology, bounded control-flow graphs and semantic-input authority. Their 16/16 result and paired-task measurements are separate from the Spring service pilot; they are not current-release performance guarantees.</p>
         </div>
 
         <div class="evidence-grid">
@@ -109,34 +124,6 @@
         </div>
       </section>
 
-      <section class="section shell" id="how">
-        <div class="section-heading">
-          <div class="kicker">The operating model</div>
-          <h2>A narrow path from intent to verified change.</h2>
-          <p>Every step retains its authority. Unknowns remain obligations instead of being polished into confidence.</p>
-        </div>
-        <div class="steps">
-          <article>
-            <span class="number">01</span>
-            <h3>Open exact context</h3>
-            <p>Bind a clean repository, target ref, language, compilation, and intent to an immutable session.</p>
-            <code>clew change open …</code>
-          </article>
-          <article>
-            <span class="number">02</span>
-            <h3>Prepare in isolation</h3>
-            <p>Validate a closed edit plan and compile or test the candidate in a managed worktree.</p>
-            <code>clew change prepare …</code>
-          </article>
-          <article>
-            <span class="number">03</span>
-            <h3>Publish explicitly</h3>
-            <p>Recheck freshness, review evidence and obligations, then move the ref with compare-and-swap.</p>
-            <code>clew change publish …</code>
-          </article>
-        </div>
-      </section>
-
       <section class="section contrast" id="support">
         <div class="shell support-layout">
           <div class="section-heading">
@@ -171,7 +158,7 @@
 
       <section class="cta shell">
         <div>
-          <div class="kicker">Start with a clean ref</div>
+          <div class="kicker">Start with an explicit source scope</div>
           <h2>Install once. Let agents ask better questions.</h2>
         </div>
         <a href="#top">Install Codeclew <span>↑</span></a>
@@ -180,7 +167,7 @@
 
     <footer class="shell">
       <span>Codeclew · Apache-2.0</span>
-      <div><a href="./architecture.html">Architecture</a><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/security">Security</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div>
+      <div><a href="./architecture.html">Architecture</a><a href="./pilot.html">Real service pilot</a><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/security">Security</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div>
     </footer>
     <script src="./app.js" defer></script>
   </body>

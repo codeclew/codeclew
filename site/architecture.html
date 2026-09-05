@@ -12,7 +12,7 @@
   <body>
     <header class="nav shell">
       <a class="brand" href="./index.html" aria-label="Codeclew home"><svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg><span>Codeclew</span></a>
-      <nav aria-label="Primary navigation"><a href="./index.html">Overview</a><a href="./architecture.html" aria-current="page">Architecture</a><a href="./documentation.html">Documentation</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
+      <nav aria-label="Primary navigation"><a href="./index.html">Overview</a><a href="./architecture.html" aria-current="page">Architecture</a><a href="./documentation.html">Documentation</a><a href="./pilot.html">Real service pilot</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
     </header>
 
     <main class="architecture-page shell">
@@ -20,7 +20,7 @@
         <div class="kicker">Architecture · Kotlin, Java and Spring</div>
         <h1>From repositories<br><em>to explainable threads.</em></h1>
         <p class="lede">Codeclew turns source and build configuration into facts an agent can inspect, connect and cite. The agent supplies the engineering question and writes the explanation; Codeclew preserves where each answer came from.</p>
-        <nav class="architecture-jump" aria-label="On this page"><a href="#pipeline">Data flow</a><a href="#spring">Spring roots</a><a href="#compatibility">Compatibility</a><a href="#extend">Extend Codeclew</a></nav>
+        <nav class="architecture-jump" aria-label="On this page"><a href="#pipeline">Data flow</a><a href="#spring">Spring roots</a><a href="#committed">Committed analysis</a><a href="#recovery">Recovery</a><a href="#compatibility">Compatibility</a><a href="#extend">Extend Codeclew</a></nav>
       </section>
 
       <section class="architecture-section" id="pipeline">
@@ -28,7 +28,7 @@
         <h2>Each stage adds information<br>and keeps its limits visible.</h2>
         <p>A compilation is one build target with its own source roots, dependencies and compiler options. A repository may contain many compilations. Codeclew keeps those boundaries instead of merging every file into one imaginary application.</p>
         <ol class="architecture-pipeline" aria-label="Source-to-evidence transformation">
-          <li><small>01 · Capture</small><h3>Repository → snapshot</h3><p>Pin source content and repository state. Hash the inputs so later answers refer to the same bytes.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/repository_snapshot.rs">Snapshot implementation ↗</a></li>
+          <li><small>01 · Capture</small><h3>Repository → snapshot</h3><p>Pin committed source and repository state. Explicit committed mode permits a checkout with local edits while excluding those edits from the snapshot. Hash the inputs so later answers refer to the same bytes.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/repository_snapshot.rs">Snapshot implementation ↗</a></li>
           <li><small>02 · Describe</small><h3>Build → compilation model</h3><p>A build-model provider identifies sources, classpath, toolchain and options. Missing inputs remain explicit.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/adapter_v2.rs">BuildModelProvider contract ↗</a></li>
           <li><small>03 · Analyze</small><h3>Model → language facts</h3><p>An adapter runs the selected analyzer. K2 supplies Kotlin identities; the JDK Compiler API supplies Java facts. Each result carries its authority.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/kotlin_adapter_v2.rs">Kotlin adapter ↗</a></li>
           <li><small>04 · Seal</small><h3>Facts → reusable generation</h3><p>Store facts by content digest with a completeness receipt. Reuse them only when their input authority still matches.</p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/generation_v2.rs">Generation lifecycle ↗</a></li>
@@ -54,6 +54,31 @@
 clew entrypoints --thread &lt;thread-id&gt; --limit 100</code></pre>
         <p>Repeat <code>--session</code> to select several sessions. Continue with the returned <code>--cursor</code> until <code>nextCursor</code> is null; the cursor binds every page to the same catalogue. Keep each scope's coverage and unresolved boundaries in the resulting documentation.</p>
         <p><a href="https://github.com/codeclew/codeclew/blob/main/docs/plans/spring-entrypoints.md">Spring catalogue acceptance and scope ↗</a></p>
+      </section>
+
+      <section class="architecture-section" id="committed">
+        <div class="kicker">Work with a real developer checkout</div>
+        <h2>Select the committed snapshot.<br>Keep local edits in place.</h2>
+        <p>For read-only analysis, <code>--committed</code> explicitly selects committed HEAD even when the checkout has local changes. Codeclew reports that those changes are excluded and leaves the checkout intact. Carry the same option from discovery into context or navigation admission.</p>
+        <pre class="architecture-command"><code>clew doctor repository --repo &lt;repository&gt; --committed
+clew context open --repo &lt;repository&gt; --committed \
+  --target-ref &lt;returned-ref&gt; --language kotlin \
+  --profile &lt;returned-profile&gt; --compilation &lt;returned-compilation&gt; \
+  --operation analysis --intent "Document Spring roots" --term &lt;root-name&gt;</code></pre>
+        <p>Use the exact profile and compilation returned by discovery. If the intended evidence includes local edits, commit them before opening the analysis session. Committed mode grants no mutation authority; the qualified change path retains its clean-target requirements.</p>
+        <p><a href="./pilot.html">See how committed analysis was checked on a private Spring service →</a></p>
+      </section>
+
+      <section class="architecture-section" id="recovery">
+        <div class="kicker">When analysis needs attention</div>
+        <h2>Recover at the stage<br>that reported the problem.</h2>
+        <div class="architecture-cards">
+          <article><h3>Repository or build</h3><p>Read the returned next action. For local edits, select committed analysis explicitly. For dependency, authentication, TLS or JDK errors, run the project wrapper locally and fix that build prerequisite before reopening context.</p></article>
+          <article><h3>Runtime or profile</h3><p>Use the named doctor command and <code>clew capabilities --human</code> to inspect the installed runtime. Update with <code>clew upgrade</code> when appropriate. Ordinary baseline analysis can use the core engine; an unavailable exact pack should remain a visible capability limit.</p></article>
+          <article><h3>Evidence or navigation</h3><p>An internal evidence rejection is a Codeclew validation failure to investigate. Retain its private diagnostic and validation stage. After an upgrade, reopen context to use the updated query index; use the exact returned symbol when a short name is ambiguous.</p></article>
+        </div>
+        <p>Conditional Kotlin analysis preserves the project compiler version separately from the packaged analyzer. Keep that difference and unresolved boundaries in the document. A successful command alone does not prove that runtime registrations or cross-service calls were observed.</p>
+        <p><a href="https://github.com/codeclew/codeclew/blob/main/docs/operations/p0-runbook.md#8-errors-and-investigation-material">Diagnostic and recovery runbook ↗</a></p>
       </section>
 
       <section class="architecture-section" id="compatibility">

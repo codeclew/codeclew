@@ -601,6 +601,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let annotations = [
             (
+                "org.springframework.cloud.openfeign",
+                "FeignClient",
+                "String name();",
+                "",
+            ),
+            (
                 "org.springframework.stereotype",
                 "Controller",
                 "String value() default \"\";",
@@ -722,6 +728,16 @@ class Impostor { @example.Scheduled(fixedRate = 1) void fake() {} }
 @RestController @RequestMapping("/child") @KafkaListener(topics = "child-events")
 class InheritedHandlers extends Handlers { @Override String load(int id) { return ""; } }
 abstract class AbstractInherited extends Handlers {}
+@org.springframework.cloud.openfeign.FeignClient(name = "remote")
+interface OutboundClient { @GetMapping("/remote") String remote(); }
+@RestController class LocalServer implements OutboundClient {
+    @Override public String remote() { return "local"; }
+}
+@org.springframework.cloud.openfeign.FeignClient(name = "base")
+interface DefaultClient { @GetMapping("/default") default String defaultRead() { return "local"; } }
+@RestController class InheritedServer implements DefaultClient {}
+@interface FeignClient {}
+@FeignClient class UnknownMapping { @GetMapping("/unknown") String read() { return "unknown"; } }
 "#,
             ),
         ];
@@ -874,6 +890,18 @@ abstract class AbstractInherited extends Handlers {}
             assert_eq!(scheduled["entries"].as_array().unwrap().len(), 2);
             assert_eq!(scheduled["entries"][0]["attributes"]["fixedDelay"], 60000);
             assert_eq!(spring_for("Impostor#fake()V")["entries"], json!([]));
+            let outbound = spring_for("OutboundClient#remote()Ljava/lang/String;");
+            assert_eq!(outbound["entries"], json!([]));
+            assert!(outbound["boundaries"].as_array().unwrap().contains(
+                &json!("OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT")
+            ));
+            assert_eq!(spring_for("LocalServer#remote()Ljava/lang/String;")["entries"][0]["kind"], "HTTP_ENDPOINT");
+            assert_eq!(spring_for("class:example.InheritedServer")["entries"][0]["kind"], "HTTP_ENDPOINT");
+            let unknown = spring_for("UnknownMapping#read()Ljava/lang/String;");
+            assert_eq!(unknown["entries"][0]["kind"], "HTTP_ENDPOINT");
+            assert!(unknown["boundaries"].as_array().unwrap().contains(
+                &json!("CONTROLLER_REGISTRATION_UNPROVEN")
+            ));
             let inherited = spring_for("class:example.InheritedHandlers");
             let inherited_entries = inherited["entries"].as_array().unwrap();
             assert!(!inherited_entries.is_empty());

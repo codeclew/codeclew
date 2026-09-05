@@ -101,12 +101,12 @@ h1 em { color: var(--acid); font-style: normal; font-weight: 570; }
 .section-heading { max-width: 690px; }
 .section h2, .cta h2 { margin: 17px 0 20px; font-size: clamp(39px, 5.2vw, 68px); line-height: 1; letter-spacing: -.055em; }
 .section-heading > p, .privacy-copy > p { color: var(--muted); font-size: 18px; line-height: 1.6; }
-.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 70px; }
+.steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 70px; }
 .steps article { background: var(--surface); padding: 32px; min-height: 310px; display: flex; flex-direction: column; }
 .steps .number { color: var(--acid); font: 13px ui-monospace, monospace; }
 .steps h3 { margin: 72px 0 12px; font-size: 23px; letter-spacing: -.03em; }
 .steps p { margin: 0; color: var(--muted); line-height: 1.55; font-size: 15px; }
-.steps code { margin-top: auto; color: #cbd3c8; font-size: 12px; }
+.steps code { overflow-wrap: anywhere; padding-top: 20px; margin-top: auto; color: #cbd3c8; font-size: 12px; }
 
 .contrast { width: 100%; background: #e9eee5; color: #111510; }
 .contrast .kicker { color: #4c701e; }
@@ -299,3 +299,6 @@ footer a:hover { color: var(--ink); }
 }
 
 .architecture-command { padding: 20px; border: 1px solid var(--line); background: var(--surface-2); overflow-x: auto; font-size: 14px; line-height: 1.8; }
+
+.pilot-table th, .pilot-table td { width: auto; }
+.pilot-result { margin-top: 32px; }

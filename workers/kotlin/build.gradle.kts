@@ -42,6 +42,7 @@ dependencies {
     testImplementation(kotlin("test"))
     // Test artifacts only: extraction recognizes stable annotation FQNs, not library versions.
     testImplementation("org.springframework:spring-web:6.1.2")
+    testImplementation("org.springframework.cloud:spring-cloud-openfeign-core:4.1.0") { isTransitive = false }
     testImplementation("jakarta.persistence:jakarta.persistence-api:3.1.0")
     testImplementation("org.springframework.kafka:spring-kafka:3.0.16")
 }

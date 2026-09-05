@@ -27,6 +27,7 @@ internal fun springClassAnnotationFacts24(owner: FirRegularClass, context: Check
 private const val WEB = "org.springframework.web.bind.annotation."
 private const val KAFKA = "org.springframework.kafka.annotation."
 private const val SCHEDULING = "org.springframework.scheduling.annotation."
+private const val FEIGN_CLIENT = "org.springframework.cloud.openfeign.FeignClient"
 private const val ALIAS = "org.springframework.core.annotation.AliasFor"
 private val HTTP_METHODS = mapOf(
     "GetMapping" to "GET", "PostMapping" to "POST", "PutMapping" to "PUT",
@@ -34,7 +35,7 @@ private val HTTP_METHODS = mapOf(
 )
 private val ROOT_ANNOTATIONS = setOf(
     WEB + "RequestMapping", KAFKA + "KafkaListener", KAFKA + "KafkaHandler",
-    SCHEDULING + "Scheduled", "org.springframework.stereotype.Controller",
+    SCHEDULING + "Scheduled", "org.springframework.stereotype.Controller", FEIGN_CLIENT,
 )
 private val CONTAINERS = mapOf(
     KAFKA + "KafkaListeners" to KAFKA + "KafkaListener",
@@ -64,6 +65,7 @@ private class SpringAnnotationReader24(private val context: CheckerContext) {
         val typeMappings = classBindings.firstOrNull { list -> list.any { it.annotation == WEB + "RequestMapping" } }
             .orEmpty().filter { it.annotation == WEB + "RequestMapping" }
         val controller = classBindings.flatten().any { it.annotation == "org.springframework.stereotype.Controller" }
+        val outboundFeign = classBindings.firstOrNull().orEmpty().any { it.annotation == FEIGN_CLIENT } && !controller
         val entries = mutableListOf<JsonObject>()
         fun entry(binding: SpringBinding24, kind: String, extra: Map<String, JsonElement> = emptyMap()) {
             entries += buildJsonObject {
@@ -79,6 +81,10 @@ private class SpringAnnotationReader24(private val context: CheckerContext) {
         val mappings = bindings.filter { it.annotation == WEB + "RequestMapping" }
         if (mappings.size > 1 || typeMappings.size > 1) boundaries += "MULTIPLE_REQUEST_MAPPINGS_ON_ELEMENT"
         mappings.forEach { binding ->
+            if (outboundFeign) {
+                boundaries += "OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT"
+                return@forEach
+            }
             if (!controller) boundaries += "CONTROLLER_REGISTRATION_UNPROVEN"
             entry(binding, "HTTP_ENDPOINT", mapOf(
                 "controller" to JsonPrimitive(controller),

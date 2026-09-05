@@ -154,6 +154,39 @@ class SpringAnnotationFactsTest {
         assertEquals(listOf("child-events"), strings(entries.single { it["kind"]!!.jsonPrimitive.content == "KAFKA_LISTENER" }["attributes"]!!.jsonObject["topics"]))
     }
 
+    @Test
+    fun resolvedFeignClientsAreOutboundButControllerImplementationsRemainEntrypoints() {
+        val rows = compile("""
+            package clientroles
+            import org.springframework.web.bind.annotation.*
+            import org.springframework.cloud.openfeign.FeignClient as RemoteClient
+            @RemoteClient(name = "remote") interface Client {
+                @GetMapping("/remote") fun read(): String
+            }
+            @RestController class Server : Client {
+                override fun read(): String = "local"
+            }
+            @RemoteClient(name = "base") interface DefaultClient {
+                @GetMapping("/default") fun defaultRead(): String = "local"
+            }
+            @RestController class InheritedServer : DefaultClient
+            annotation class FeignClient
+            @FeignClient class Unregistered {
+                @GetMapping("/unknown") fun read(): String = "unknown"
+            }
+        """.trimIndent())
+        fun metadata(id: String) = rows.single { it["compilerCallableId"]?.jsonPrimitive?.content == id }["spring"]!!.jsonObject
+        val client = metadata("clientroles/Client.read")
+        assertTrue(client["entries"]!!.jsonArray.isEmpty())
+        assertTrue("OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT" in strings(client["boundaries"]))
+        assertEquals("HTTP_ENDPOINT", metadata("clientroles/Server.read")["entries"]!!.jsonArray.single().jsonObject["kind"]!!.jsonPrimitive.content)
+        val inherited = rows.single { it["declarationKind"]?.jsonPrimitive?.content == "CLASS" && it["compilerClassId"]?.jsonPrimitive?.content == "clientroles/InheritedServer" }
+        assertEquals("HTTP_ENDPOINT", inherited["spring"]!!.jsonObject["entries"]!!.jsonArray.single().jsonObject["kind"]!!.jsonPrimitive.content)
+        val unknown = metadata("clientroles/Unregistered.read")
+        assertEquals(1, unknown["entries"]!!.jsonArray.size)
+        assertTrue("CONTROLLER_REGISTRATION_UNPROVEN" in strings(unknown["boundaries"]))
+    }
+
     private fun strings(value: JsonElement?): List<String> = when (value) {
         is JsonArray -> value.map { it.jsonPrimitive.content }
         null -> emptyList()
