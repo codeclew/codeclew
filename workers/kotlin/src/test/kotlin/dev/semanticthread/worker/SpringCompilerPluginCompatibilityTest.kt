@@ -15,6 +15,36 @@ import kotlin.test.*
 
 class SpringCompilerPluginCompatibilityTest {
     @Test
+    fun annotationDefaultTargetPreservesConstructorAndFieldAnnotationsInBaseline() {
+        val option = "-Xannotation-default-target=param-property"
+        val semantics = KotlinProjectSemantics("2.3.0", "TEST", "2.3", "2.3", "17", emptyList(), listOf(option))
+        val decision = kotlinEngineCompatibilityDecision(semantics)
+        assertEquals("QUALIFIED", decision.status)
+        assertFalse(decision.btaEligible)
+        assertEquals("REJECTED", kotlinEngineCompatibilityDecision(semantics.copy(unstableCompilerOptions = listOf("-Xunqualified-option"))).status)
+        val root = Files.createTempDirectory("annotation-target-qualification").toRealPath()
+        try {
+            val source = Files.writeString(root.resolve("Fixture.kt"), """
+                package annotationfixture
+                @Target(AnnotationTarget.FIELD, AnnotationTarget.VALUE_PARAMETER)
+                @Retention(AnnotationRetention.RUNTIME)
+                annotation class Marker
+                class Annotated(@Marker val name: String)
+            """.trimIndent())
+            val classes = root.resolve("classes")
+            val arguments = arrayOf("-no-stdlib", "-no-reflect", "-language-version", "2.3", "-api-version", "2.3", "-jvm-target", "17", "-classpath", System.getProperty("java.class.path"), "-d", classes.toString(), option, source.toString())
+            val output = ByteArrayOutputStream()
+            val status = PrintStream(output).use { stream -> synchronized(K2JVMCompiler::class.java) { K2JVMCompiler().exec(stream, *arguments) } }
+            assertEquals(0, status.code, output.toString())
+            URLClassLoader(arrayOf(classes.toUri().toURL()), javaClass.classLoader).use { loader ->
+                val type = loader.loadClass("annotationfixture.Annotated")
+                assertEquals("annotationfixture.Marker", type.getDeclaredField("name").annotations.single().annotationClass.java.name)
+                assertEquals("annotationfixture.Marker", type.getDeclaredConstructor(String::class.java).parameterAnnotations.single().single().annotationClass.java.name)
+            }
+        } finally { root.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun realMavenPluginsRebindAndPreserveSpringJpaAndCustomOptions() {
         val requested = System.getProperty("codeclew.test.projectCompilerPlugins").split(File.pathSeparator).map(Path::of)
         assertEquals(2, requested.size)

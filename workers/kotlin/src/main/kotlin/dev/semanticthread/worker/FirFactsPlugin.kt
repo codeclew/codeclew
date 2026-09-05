@@ -200,15 +200,16 @@ private class FirFactsConstructorDescriptorChecker(
             )
             return
         }
-        val ownerClass = context.containingElements
-            .filterIsInstance<FirRegularClass>()
-            .lastOrNull()
+        // Enum-entry bodies have a compiler-owned anonymous subclass which is
+        // absent from containingElements' FirRegularClass list. The constructor
+        // callable identity, not the enclosing enum, binds its actual owner.
+        val ownerClassId = callableId.classId
         val parameterTypes = declaration.valueParameters.map {
             resolvedDescriptorType(it.returnTypeRef)
         }
         val status = runCatching { declaration.symbol.resolvedStatus }.getOrNull()
         val jvmDescriptor = compilerJvmMethodDescriptor(declaration)
-        if (ownerClass == null || parameterTypes.any { it == null }
+        if (ownerClassId == null || parameterTypes.any { it == null }
             || status == null || jvmDescriptor.isNullOrEmpty()
         ) {
             appendFact(
@@ -238,7 +239,10 @@ private class FirFactsConstructorDescriptorChecker(
             "FINAL",
         ).toMutableMap()
         record["compilerCallableId"] = JsonPrimitive(callableId.toString())
-        record["compilerClassId"] = JsonPrimitive(ownerClass.symbol.classId.toString())
+        val owner = constructorOwnerAuthority(ownerClassId.toString(), descriptorContainment(context, declaration))
+        record["compilerClassId"] = JsonPrimitive(owner.compilerClassId)
+        record["ownerIdentity"] = JsonPrimitive(owner.ownerIdentity)
+        record["containment"] = JsonArray(owner.containment.map(::JsonPrimitive))
         record["isPrimary"] = JsonPrimitive(declaration.isPrimary)
         record["jvmDescriptor"] = JsonPrimitive(jvmDescriptor)
         record["parameterTypes"] = JsonArray(

@@ -3759,6 +3759,74 @@ mod tests {
     }
 
     #[test]
+    fn partial_enum_entry_constructor_snapshot_requires_actual_compiler_class_owner() {
+        let mut facts = verified_facts();
+        let identity = "constructor:p/Choice.FIRST.FIRST#jvm:()V";
+        let mut descriptor = constructor_fact();
+        descriptor["symbolIdentity"] = json!(identity);
+        descriptor["compilerCallableId"] = json!("p/Choice.FIRST.FIRST");
+        descriptor["compilerClassId"] = json!("p/Choice.FIRST");
+        descriptor["ownerIdentity"] = json!("class:p/Choice.FIRST");
+        descriptor["containment"] = json!([
+            "class:p/Choice",
+            "callable:p/Choice.FIRST",
+            "class:p/Choice.FIRST"
+        ]);
+        descriptor["jvmDescriptor"] = json!("()V");
+        let object = descriptor.as_object_mut().unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isPrimary",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            object.remove(field);
+        }
+        object.insert("attributeCoverage".into(), json!("PARTIAL"));
+        object.insert(
+            "sourceRowHash".into(),
+            json!(format!("sha256:{}", "c".repeat(64))),
+        );
+        facts["declarationDescriptors"]["descriptors"] = json!([descriptor]);
+        facts["declarationDescriptors"]["boundaries"] = json!([{
+            "schema":"declaration-descriptor-boundary/0.1", "file":"A.kt", "start":0, "end":12,
+            "symbolIdentity":identity, "stage":"NORMALIZE", "code":"UNKNOWN_EFFECTIVE_VISIBILITY",
+            "resolution":"UNKNOWN", "provider":"COMPILER_DESCRIPTOR_NORMALIZER", "module":":", "sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES", "compilerAuthority":"fir-facts-extractor/0.6",
+            "rawRowHash":format!("sha256:{}", "c".repeat(64)),
+            "retainedDescriptorHash":canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap()
+        }]);
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        validate_declaration_descriptor_snapshot(&facts).unwrap();
+        // The pre-fix extractor mixed the enum class with the enum-entry callable owner.
+        facts["declarationDescriptors"]["descriptors"][0]["compilerClassId"] = json!("p/Choice");
+        facts["declarationDescriptors"]["descriptors"][0]["ownerIdentity"] =
+            json!("callable:p/Choice.FIRST");
+        facts["declarationDescriptors"]["descriptors"][0]["containment"] =
+            json!(["class:p/Choice", "callable:p/Choice.FIRST"]);
+        facts["declarationDescriptors"]["boundaries"][0]["retainedDescriptorHash"] =
+            json!(canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap());
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        let error = validate_declaration_descriptor_snapshot(&facts).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("constructor compiler/JVM identity is inconsistent")
+        );
+    }
+
+    #[test]
     fn descriptor_snapshot_accepts_k2_jvm_name_override_boundary() {
         let mut facts = verified_facts();
         facts["declarationDescriptors"]["boundaries"][0]["code"] =

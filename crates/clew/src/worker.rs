@@ -674,16 +674,29 @@ pub struct WorkerRequestCounters {
 }
 
 fn verified_index_failure_stage(error: &ClewError, default: &str) -> String {
-    error
+    let candidate = error
         .evidence
         .iter()
         .find_map(|value| value.strip_prefix("verified-index-stage:"))
-        .unwrap_or(default)
-        .to_owned()
+        .unwrap_or(default);
+    match candidate {
+        "RAW_SCHEMA_HASH"
+        | "SOURCE_BINDING"
+        | "K2_VALIDATION"
+        | "DESCRIPTOR_NORMALIZATION"
+        | "DESCRIPTOR_LINE_PROOF"
+        | "DESCRIPTOR_GRAPH"
+        | "LOCAL_CFG_GRAPH"
+        | "RELATION_NORMALIZATION"
+        | "RELATION_GRAPH"
+        | "CROSS_GRAPH_CONSISTENCY"
+        | "DISTRIBUTION_PROVENANCE" => candidate.to_owned(),
+        _ => "INDEX_VALIDATION".into(),
+    }
 }
 
 fn attach_verified_index_failure(
-    mut error: ClewError,
+    error: ClewError,
     default_stage: &str,
     facts: Option<&Value>,
 ) -> ClewError {
@@ -696,29 +709,6 @@ fn attach_verified_index_failure(
         crate::canonical::hash(value.unwrap_or(&Value::Null))
             .unwrap_or_else(|_| "unavailable".into())
     };
-    let worker_diagnostics = facts
-        .and_then(|value| value.get("diagnostics"))
-        .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .take(16)
-                .map(|row| {
-                    let message = row
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let mut bounded = message.chars().take(1_024).collect::<String>();
-                    if message.chars().count() > 1_024 {
-                        bounded.push('…');
-                    }
-                    serde_json::json!({
-                        "severity":row.get("severity").and_then(Value::as_str).unwrap_or("INFO"),
-                        "message":bounded,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     let diagnostic = serde_json::json!({
         "schema":"verified-index-failure-diagnostic/0.1",
         "stage":stage,
@@ -733,7 +723,9 @@ fn attach_verified_index_failure(
         "descriptorCount":descriptor_graph.and_then(|value| value.get("descriptors")).and_then(Value::as_array).map_or(0, Vec::len),
         "descriptorBoundaryCount":descriptor_graph.and_then(|value| value.get("boundaries")).and_then(Value::as_array).map_or(0, Vec::len),
         "workerDiagnosticCount":facts.and_then(|value| value.get("diagnostics")).and_then(Value::as_array).map_or(0, Vec::len),
-        "workerDiagnostics":worker_diagnostics,
+        "workerDiagnosticsOmitted":true,
+        "validationErrorCode":error.code,
+        "validationMessageHash":crate::canonical::hash_bytes(error.message.as_bytes()),
         "descriptorFailure":if stage == "DESCRIPTOR_GRAPH" {
             facts
                 .map(crate::semantic_validation::descriptor_validation_diagnostic)
@@ -742,6 +734,19 @@ fn attach_verified_index_failure(
             Value::Null
         },
     });
+    // This boundary validates a worker-produced response, not user input. Do
+    // not forward raw diagnostics, anchors, or evidence from that response.
+    let code = if error.code == ErrorCode::InvalidInput {
+        ErrorCode::WorkerProtocolMismatch
+    } else {
+        error.code
+    };
+    let mut error = ClewError::new(
+        code,
+        format!(
+            "Codeclew could not verify compiler evidence at the internal {stage} stage. No verified analysis result was produced. Report the Codeclew version, this error code, stage and attached hash-only diagnostic to Codeclew maintainers; do not include source code or raw compiler logs."
+        ),
+    );
     if let Ok(encoded) = serde_json::to_string(&diagnostic) {
         error.evidence.push(encoded);
     }
@@ -4011,6 +4016,76 @@ mod tests {
     use serde_json::json;
     use std::ffi::OsStr;
     use walkdir::WalkDir;
+
+    #[test]
+    fn verified_index_failure_exposes_only_safe_shapes_and_recovery() {
+        let secret = "/private/service/Secret.kt: val token = \"sentinel-token\"";
+        let mut error = ClewError::new(ErrorCode::InvalidInput, secret)
+            .with_relevant(secret)
+            .with_transaction(secret)
+            .with_snapshot(secret);
+        error.evidence.push(secret.into());
+        let facts = json!({
+            "schema":"kotlin-semantic-facts/0.1",
+            "diagnostics":[{"severity":"WARNING","message":secret,"file":secret}],
+            "declarationDescriptors":{"descriptors":[{
+                "declarationKind":"CONSTRUCTOR", "symbolIdentity":secret,
+                "compilerClassId":secret
+            }]}
+        });
+        let result = attach_verified_index_failure(error, "DESCRIPTOR_GRAPH", Some(&facts));
+        assert_eq!(result.code, ErrorCode::WorkerProtocolMismatch);
+        assert!(result.message.contains("internal DESCRIPTOR_GRAPH stage"));
+        assert!(result.message.contains("Report the Codeclew version"));
+        assert!(result.message.contains("Codeclew maintainers"));
+        assert!(result.relevant_anchors_or_symbols.is_empty());
+        assert!(result.transaction_id.is_none());
+        assert!(result.snapshot_id.is_none());
+        let diagnostic: Value = serde_json::from_str(&result.evidence[0]).unwrap();
+        assert_eq!(diagnostic["workerDiagnosticCount"], 1);
+        assert_eq!(diagnostic["workerDiagnosticsOmitted"], true);
+        assert!(diagnostic.get("workerDiagnostics").is_none());
+        assert_eq!(
+            diagnostic["payloadHash"],
+            crate::canonical::hash(&facts).unwrap()
+        );
+        assert!(
+            diagnostic["descriptorFailure"]["rowHash"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        let encoded = serde_json::to_string(&result).unwrap();
+        assert!(!encoded.contains("/private/service"));
+        assert!(!encoded.contains("sentinel-token"));
+        assert!(!encoded.contains("Secret.kt"));
+    }
+
+    #[test]
+    fn verified_index_failure_stage_rejects_untrusted_labels() {
+        let mut error = ClewError::new(ErrorCode::IncompleteSemanticAnalysis, "private failure");
+        error
+            .evidence
+            .push("verified-index-stage:/private/sentinel".into());
+        let result = attach_verified_index_failure(error, "K2_VALIDATION", None);
+        assert_eq!(result.code, ErrorCode::IncompleteSemanticAnalysis);
+        assert!(result.message.contains("internal INDEX_VALIDATION stage"));
+        assert!(
+            !serde_json::to_string(&result)
+                .unwrap()
+                .contains("/private/sentinel")
+        );
+        let mut error = ClewError::new(ErrorCode::InvalidInput, "invalid graph");
+        error
+            .evidence
+            .push("verified-index-stage:CROSS_GRAPH_CONSISTENCY".into());
+        let result = attach_verified_index_failure(error, "RELATION_GRAPH", None);
+        assert!(
+            result
+                .message
+                .contains("internal CROSS_GRAPH_CONSISTENCY stage")
+        );
+    }
 
     #[cfg(unix)]
     #[test]

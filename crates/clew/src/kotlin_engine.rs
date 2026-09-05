@@ -383,9 +383,13 @@ fn select_from_rows(
         ));
     };
     if row.kind.is_cross_engine() {
-        if !project.unstable_compiler_options.is_empty() {
+        if project
+            .unstable_compiler_options
+            .iter()
+            .any(|option| option != "-Xannotation-default-target=param-property")
+        {
             return Err(unsupported(
-                "cross-engine Kotlin analysis has unqualified unstable compiler options",
+                "cross-engine Kotlin analysis has unqualified unstable compiler options. The qualified analysis option is -Xannotation-default-target=param-property; keep required project flags enabled and report unsupported options for Codeclew qualification.",
             ));
         }
         let has_unknown_plugin = project
@@ -531,6 +535,28 @@ mod tests {
         assert_eq!(
             registry.select(&project("2.4.10", "2.3", &[])).unwrap(),
             KotlinSemanticEngine::Kotlin24
+        );
+    }
+
+    #[test]
+    fn baseline_preserves_qualified_annotation_target_option_only() {
+        let registry = KotlinEngineRegistry;
+        let mut configured = project("2.3.20", "2.3", &[]);
+        configured.unstable_compiler_options =
+            vec!["-Xannotation-default-target=param-property".into()];
+        assert_eq!(
+            registry.select(&configured).unwrap(),
+            KotlinSemanticEngine::Kotlin24
+        );
+        configured
+            .unstable_compiler_options
+            .push("-Xunqualified-option".into());
+        let error = registry.select(&configured).unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(
+            error
+                .message
+                .contains("keep required project flags enabled")
         );
     }
 

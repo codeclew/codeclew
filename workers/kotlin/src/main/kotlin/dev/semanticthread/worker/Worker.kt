@@ -147,7 +147,10 @@ internal fun kotlinEngineCompatibilityDecision(
         reason = "PROJECT_ENGINE_ROW_NOT_QUALIFIED",
         btaEligible = false,
     )
-    if (row.kind != "EXACT_COMPILER_ABI" && project.unstableCompilerOptions.isNotEmpty()) {
+    if (row.kind != "EXACT_COMPILER_ABI" && project.unstableCompilerOptions.any {
+            it != "-Xannotation-default-target=param-property"
+        }
+    ) {
         return KotlinEngineCompatibilityDecision(
             status = "REJECTED",
             kind = row.kind,
