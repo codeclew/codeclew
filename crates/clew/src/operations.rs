@@ -93,7 +93,7 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
             "primaryAnalysisOpenCommand":"nav query",
             "readinessSchema":"codeclew-doctor/2.0",
             "skillDigest":agent_skill_digest(),
-            "skillPackageVersion":"0.2.19",
+            "skillPackageVersion":env!("CARGO_PKG_VERSION"),
             "sourceFallbackAllowed":false,
         },
         "packagedWorkers":packaged_workers,
@@ -133,6 +133,7 @@ pub struct DoctorTask<'a> {
     pub profile_id: &'a str,
     pub operation: DoctorOperation,
     pub compilations: &'a [String],
+    pub committed: bool,
 }
 
 impl DoctorCheck {
@@ -160,12 +161,22 @@ pub fn doctor(
         DoctorScope::Task => {
             let repository = repository.ok_or_else(|| invalid("task doctor requires --repo"))?;
             let task = task.ok_or_else(|| invalid("task doctor requires exact task authority"))?;
+            if task.committed && task.operation != DoctorOperation::Analysis {
+                return Err(invalid(
+                    "--committed is analysis-only; mutation requires a clean target worktree",
+                ));
+            }
             checks.extend(task_checks(runtime, &matrix, repository, target_ref, &task));
             Some(json!({
                 "compilationCount":task.compilations.len(),
                 "language":task.language,
                 "operation":task.operation,
                 "profileId":task.profile_id,
+                "sourceSelection":{
+                    "kind":"COMMITTED_HEAD",
+                    "uncommittedChangesIncluded":false,
+                    "dirtyWorktreeAllowed":task.committed,
+                },
             }))
         }
         DoctorScope::Provision => {
@@ -371,7 +382,12 @@ fn task_checks(
             _ => {}
         }
     }
-    checks.extend(repository_checks(repository, target_ref, task.operation));
+    checks.extend(repository_checks(
+        repository,
+        target_ref,
+        task.operation,
+        task.committed,
+    ));
     checks
 }
 
@@ -379,6 +395,7 @@ fn repository_checks(
     repository: &Path,
     target_ref: Option<&str>,
     operation: DoctorOperation,
+    committed: bool,
 ) -> Vec<DoctorCheck> {
     let Ok(repository) = repository.canonicalize() else {
         return vec![check(
@@ -407,8 +424,12 @@ fn repository_checks(
     checks.push(check(
         "repository.clean",
         clean,
-        true,
-        "CLEAN_TARGET_WORKTREE",
+        !(committed && operation == DoctorOperation::Analysis),
+        if operation == DoctorOperation::Analysis {
+            "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE"
+        } else {
+            "CLEAN_TARGET_WORKTREE"
+        },
     ));
     if let Some(target_ref) = target_ref {
         let target = resolve_local_target_ref(&repository, target_ref).ok();
@@ -721,9 +742,37 @@ mod tests {
     }
 
     #[test]
+    fn dirty_worktree_requires_explicit_committed_analysis_and_never_relaxes_mutation() {
+        let repo = doctor_git_fixture();
+        fs::write(repo.path().join("README.md"), b"local edits\n").unwrap();
+        fs::write(repo.path().join("private-untracked.txt"), b"local file\n").unwrap();
+        for (operation, committed, required) in [
+            (DoctorOperation::Analysis, false, true),
+            (DoctorOperation::Analysis, true, false),
+            (DoctorOperation::Mutation, false, true),
+            (DoctorOperation::Mutation, true, true),
+        ] {
+            let checks = repository_checks(repo.path(), Some("main"), operation, committed);
+            let clean = doctor_check(&checks, "repository.clean");
+            assert!(!clean.passed);
+            assert_eq!(clean.required, required);
+        }
+        assert_eq!(
+            fs::read(repo.path().join("README.md")).unwrap(),
+            b"local edits\n"
+        );
+        assert!(repo.path().join("private-untracked.txt").exists());
+    }
+
+    #[test]
     fn doctor_and_admission_share_tag_authority_but_mutation_requires_a_branch() {
         let repo = doctor_git_fixture();
-        let analysis = repository_checks(repo.path(), Some("v-test"), DoctorOperation::Analysis);
+        let analysis = repository_checks(
+            repo.path(),
+            Some("v-test"),
+            DoctorOperation::Analysis,
+            false,
+        );
         assert!(doctor_check(&analysis, "repository.target-ref-local").passed);
         assert!(doctor_check(&analysis, "repository.target-ref-at-head").passed);
         assert!(
@@ -732,7 +781,12 @@ mod tests {
                 .all(|check| check.id != "repository.target-ref-mutation-branch")
         );
 
-        let mutation = repository_checks(repo.path(), Some("v-test"), DoctorOperation::Mutation);
+        let mutation = repository_checks(
+            repo.path(),
+            Some("v-test"),
+            DoctorOperation::Mutation,
+            false,
+        );
         assert!(doctor_check(&mutation, "repository.target-ref-local").passed);
         assert!(!doctor_check(&mutation, "repository.target-ref-mutation-branch").passed);
         assert_eq!(
@@ -741,7 +795,7 @@ mod tests {
         );
         assert!(doctor_check(&mutation, "repository.target-ref-at-head").passed);
 
-        let branch = repository_checks(repo.path(), Some("main"), DoctorOperation::Mutation);
+        let branch = repository_checks(repo.path(), Some("main"), DoctorOperation::Mutation, false);
         assert!(doctor_check(&branch, "repository.target-ref-local").passed);
         assert!(doctor_check(&branch, "repository.target-ref-mutation-branch").passed);
         assert!(doctor_check(&branch, "repository.target-ref-at-head").passed);
@@ -751,7 +805,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:79dca5a76eb7a6bf8022ca6605612097c6cb8583c7f0df4b4cc1520aa312803b"
+            "sha256:754b33638243a89c1b49c6e99aa3f5a41f1cf79d223b4fb8a0c8886695fa43ad"
         );
     }
 

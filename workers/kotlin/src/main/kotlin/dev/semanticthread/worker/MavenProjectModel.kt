@@ -110,10 +110,7 @@ internal class MavenProjectModelExtractor(
             val output = process.inputStream.bufferedReader().readText()
             val status = process.waitFor()
             if (status != 0 || !effectivePom.isRegularFile() || !classpathFile.isRegularFile()) {
-                throw WorkerFailure(
-                    "UNSUPPORTED_PROJECT_CONFIGURATION",
-                    "Maven model extraction failed: ${output.takeLast(MAX_MAVEN_ERROR_CHARS)}",
-                )
+                throw buildModelFailure(ProjectModelBuildTool.MAVEN, output)
             }
 
             val project = parse(effectivePom).documentElement
@@ -142,7 +139,7 @@ internal class MavenProjectModelExtractor(
             if (selectedSources.isEmpty()) {
                 throw WorkerFailure(
                     "UNSUPPORTED_PROJECT_CONFIGURATION",
-                    "Maven Kotlin source set '$sourceSet' is empty",
+                    "Maven Kotlin source set '$sourceSet' is empty. Run clew doctor repository and select a module/compilation containing Kotlin sources; verify sourceDirs in the effective Kotlin Maven plugin configuration.",
                 )
             }
             val classpathEntries = classpathFile.toFile().readText()
@@ -154,7 +151,7 @@ internal class MavenProjectModelExtractor(
             if (missingClasspath.isNotEmpty()) {
                 throw WorkerFailure(
                     "UNSUPPORTED_PROJECT_CONFIGURATION",
-                    "Maven classpath contains missing entries: ${missingClasspath.take(3).joinToString()}",
+                    "Maven classpath contains ${missingClasspath.size} missing entries. From the selected module directory run mvn -e dependency:build-classpath (use the project mvnw when present), restore the resolved artifacts in the local dependency cache, then retry.",
                 )
             }
             val classpath = classpathEntries
@@ -298,7 +295,7 @@ internal class MavenProjectModelExtractor(
         if (executableOnPath("mvn")) return listOf("mvn")
         throw WorkerFailure(
             "UNSUPPORTED_PROJECT_CONFIGURATION",
-            "neither executable ./mvnw nor Maven on PATH is available",
+            "MAVEN_LAUNCHER_UNAVAILABLE: neither executable ./mvnw nor Maven on PATH is available. In the same terminal or agent environment run command -v mvn and mvn --version; restore the project wrapper or expose the Maven installation on PATH, then retry.",
         )
     }
 
@@ -361,10 +358,7 @@ internal class MavenProjectModelExtractor(
         )
         val output = process.inputStream.bufferedReader().readText()
         if (process.waitFor() != 0) {
-            throw WorkerFailure(
-                "UNSUPPORTED_PROJECT_CONFIGURATION",
-                "Maven compiler plugin resolution failed: ${output.takeLast(MAX_MAVEN_ERROR_CHARS)}",
-            )
+            throw buildModelFailure(ProjectModelBuildTool.MAVEN, output)
         }
     }
 
@@ -492,10 +486,10 @@ internal class MavenProjectModelExtractor(
                 ProjectModelBuildTool.MAVEN.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
             ).start()
         }
-    } catch (error: IOException) {
+    } catch (_: IOException) {
         throw WorkerFailure(
             "UNSUPPORTED_PROJECT_CONFIGURATION",
-            "$operation could not start: ${error.message}",
+            "BUILD_LAUNCHER_START_FAILED: $operation could not start. In the same terminal or agent environment verify mvn --version (or ./mvnw --version), wrapper executable permissions, and JAVA_HOME; then retry.",
         )
     }
 
@@ -535,7 +529,7 @@ internal class MavenProjectModelExtractor(
         val selectedPom = if (requestedSelector == null) canonicalRepo.resolve("pom.xml").toRealPath() else {
             val expected = canonicalRepo.resolve(requestedSelector).normalize().resolve("pom.xml")
             ordered.singleOrNull { it == runCatching { expected.toRealPath() }.getOrNull() }
-                ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "requested Maven reactor module is absent or ambiguous")
+                ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "requested Maven reactor module is absent or ambiguous. Run clew doctor repository and select a reported module/compilation; verify the module is listed by the root pom.xml.")
         }
         return ReactorSelection(
             projectPath = requested,
@@ -626,7 +620,4 @@ internal class MavenProjectModelExtractor(
 
     private fun Element.textValue(): String? = textContent?.trim()?.takeIf(String::isNotEmpty)
 
-    private companion object {
-        const val MAX_MAVEN_ERROR_CHARS = 2_000
-    }
 }

@@ -48,6 +48,15 @@ pub fn diagnose_repository(
     matrix: &Value,
     repository: &Path,
 ) -> Result<Value, ClewError> {
+    diagnose_repository_with_source(runtime, matrix, repository, false)
+}
+
+pub fn diagnose_repository_with_source(
+    runtime: &RuntimeAuthority,
+    matrix: &Value,
+    repository: &Path,
+    committed: bool,
+) -> Result<Value, ClewError> {
     let matrix_profiles = matrix
         .get("profiles")
         .and_then(Value::as_array)
@@ -67,8 +76,8 @@ pub fn diagnose_repository(
             check(
                 "repository.clean",
                 state.clean,
-                true,
-                "CLEAN_TARGET_WORKTREE",
+                !committed,
+                "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE",
             ),
             check(
                 "repository.target-ref-local",
@@ -108,7 +117,7 @@ pub fn diagnose_repository(
         }
     }
 
-    let common_blockers = common_blockers(&state, &inventory);
+    let common_blockers = common_blockers(&state, &inventory, committed);
     let mut contours = Vec::new();
     if inventory.rust {
         let compilations = inventory
@@ -252,6 +261,12 @@ pub fn diagnose_repository(
             .cmp(&right["language"].as_str())
             .then_with(|| left["profileId"].as_str().cmp(&right["profileId"].as_str()))
     });
+    if committed {
+        for contour in &mut contours {
+            contour["supportedOperations"] = json!(["ANALYSIS"]);
+            contour["sourceArguments"] = json!(["--committed"]);
+        }
+    }
     let ready_count = contours
         .iter()
         .filter(|contour| contour["status"] == "READY_FOR_TASK_DOCTOR")
@@ -287,6 +302,20 @@ pub fn diagnose_repository(
         "schema":SCHEMA,
         "status":status,
         "nextAction":next_action,
+        "sourceSelection":{
+            "kind":"COMMITTED_HEAD",
+            "uncommittedChangesIncluded":false,
+            "dirtyWorktreeAllowed":committed,
+        },
+        "nextActions":if state.git && !state.clean && !committed {
+            json!({
+                "reason":"LOCAL_EDITS_PRESENT",
+                "message":"For read-only analysis of committed HEAD, repeat doctor repository with --committed and pass --committed to context open or nav query. Local edits are excluded from the snapshot. To analyze those edits, commit them first; do not discard or stash work just to run Codeclew.",
+                "argumentsToAdd":["--committed"],
+                "operation":"ANALYSIS",
+                "uncommittedChangesIncluded":false,
+            })
+        } else { Value::Null },
         "runtimeMode":runtime.mode,
         "runtimeKey":runtime.runtime_key,
         "runtimeManifestDigest":runtime.manifest_digest,
@@ -366,7 +395,11 @@ fn unique_tag_at_head(repository: &Path) -> Option<String> {
     (tags.len() == 1).then(|| tags[0].to_owned())
 }
 
-fn common_blockers(state: &RepositoryState, inventory: &RepositoryInventory) -> Vec<Value> {
+fn common_blockers(
+    state: &RepositoryState,
+    inventory: &RepositoryInventory,
+    committed: bool,
+) -> Vec<Value> {
     let mut blockers = Vec::new();
     if !state.git {
         blockers.push(blocker(
@@ -374,10 +407,10 @@ fn common_blockers(state: &RepositoryState, inventory: &RepositoryInventory) -> 
             "the selected directory is not a Git worktree",
         ));
     }
-    if state.git && !state.clean {
+    if state.git && !state.clean && !committed {
         blockers.push(blocker(
-            "CLEAN_TARGET_WORKTREE",
-            "Codeclew task admission requires a clean target worktree",
+            "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE",
+            "Local edits are present. Use --committed for read-only analysis of committed HEAD, excluding those edits; mutation requires a clean worktree.",
         ));
     }
     if state.git && state.target_ref.is_none() {
@@ -483,13 +516,13 @@ fn add_build_tool_blockers(
         "GRADLE_WRAPPER" if !executable_file(&repository.join("gradlew")) => {
             blockers.push(blocker(
                 "INSTALL_PROJECT_WRAPPER",
-                "the Gradle wrapper is not executable",
+                "the Gradle wrapper is missing or not executable; restore the project wrapper, then run chmod +x ./gradlew and ./gradlew --version from the repository root",
             ))
         }
         "MAVEN" if !executable_file(&repository.join("mvnw")) && !executable_available("mvn") => {
             blockers.push(blocker(
                 "INSTALL_PROJECT_LAUNCHER",
-                "neither an executable Maven wrapper nor Maven on PATH was found",
+                "no executable Maven launcher was found in this process environment; from the same terminal or agent environment run command -v mvn and mvn --version, then expose Maven on PATH or restore an executable ./mvnw and rerun doctor repository",
             ));
         }
         _ => {}
@@ -788,7 +821,13 @@ fn executable_available(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|directory| executable_file(&directory.join(name)))
+    std::env::split_paths(&path).any(|directory| executable_on_search_path(&directory.join(name)))
+}
+
+// Host package managers commonly expose tools through symlinks. Repository
+// wrappers retain their separate, non-symlink authority check below.
+fn executable_on_search_path(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && executable_permissions(&metadata))
 }
 
 fn executable_file(path: &Path) -> bool {
@@ -844,14 +883,33 @@ fn internal(error: impl std::fmt::Display) -> ClewError {
 mod tests {
     use super::{
         MAX_COMPILATIONS, RepositoryInventory, add_jvm_compilation, diagnose_repository,
-        safe_relative, scan_repository,
+        diagnose_repository_with_source, safe_relative, scan_repository,
     };
     use crate::operations::support_matrix;
     use crate::runtime::{RuntimeAuthority, RuntimeMode};
+    use serde_json::json;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
+
+    #[cfg(unix)]
+    #[test]
+    fn path_tools_accept_package_manager_symlinks_but_wrappers_do_not() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let tool = root.path().join("maven-launcher");
+        let link = root.path().join("mvn");
+        fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&tool, &link).unwrap();
+        assert!(super::executable_on_search_path(&link));
+        assert!(!super::executable_file(&link));
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!super::executable_on_search_path(&link));
+        fs::remove_file(&tool).unwrap();
+        assert!(!super::executable_on_search_path(&link));
+    }
 
     #[test]
     fn scan_is_bounded_and_discovers_mixed_language_candidates() {
@@ -960,6 +1018,31 @@ mod tests {
         assert_eq!(value["nextAction"], "RUN_TASK_DOCTOR");
         assert_eq!(value["contours"][0]["language"], "PYTHON");
         assert_eq!(value["contours"][0]["compilations"][0], "python:.#.");
+        fs::write(repository.path().join("app.py"), "local = 2\n").unwrap();
+        let dirty =
+            diagnose_repository(&runtime(), &support_matrix().unwrap(), repository.path()).unwrap();
+        assert_eq!(dirty["status"], "ACTION_REQUIRED");
+        assert_eq!(
+            dirty["nextActions"]["argumentsToAdd"],
+            json!(["--committed"])
+        );
+        let committed = diagnose_repository_with_source(
+            &runtime(),
+            &support_matrix().unwrap(),
+            repository.path(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(committed["status"], "READY_FOR_TASK_DOCTOR");
+        assert_eq!(committed["repository"]["clean"], false);
+        assert_eq!(
+            committed["sourceSelection"]["uncommittedChangesIncluded"],
+            false
+        );
+        assert_eq!(
+            committed["contours"][0]["supportedOperations"],
+            json!(["ANALYSIS"])
+        );
         assert_eq!(value["privacyAssertions"]["containsAbsolutePaths"], false);
         assert_eq!(
             value["privacyAssertions"]["containsRepositoryIdentity"],

@@ -4,7 +4,7 @@ use clew::error::{ClewError, ErrorCode};
 use clew::operations::{
     DoctorOperation, DoctorScope, DoctorTask, capabilities, doctor, support_matrix, support_summary,
 };
-use clew::repository_diagnostic::diagnose_repository;
+use clew::repository_diagnostic::diagnose_repository_with_source;
 use clew::runtime::RuntimeAuthority;
 use clew::session::mission;
 use clew::session::{
@@ -372,6 +372,9 @@ struct DoctorArgs {
     /// Render an actionable human-readable report instead of canonical JSON.
     #[arg(long)]
     human: bool,
+    /// Analyze committed HEAD even when local edits exist. Analysis only.
+    #[arg(long)]
+    committed: bool,
 }
 
 #[derive(Args)]
@@ -587,6 +590,10 @@ struct ContextOpenArgs {
     terms: Vec<String>,
     #[arg(long, default_value_t = 2)]
     max_roots: usize,
+    /// Analyze committed HEAD in an isolated snapshot, excluding local edits.
+    /// Analysis only; never permits mutation of a dirty worktree.
+    #[arg(long)]
+    committed: bool,
 }
 
 #[derive(Args)]
@@ -627,6 +634,9 @@ struct NavQueryArgs {
     follow_references: bool,
     #[arg(long, default_value_t = 4)]
     max_roots: usize,
+    /// Analyze committed HEAD in an isolated snapshot, excluding local edits.
+    #[arg(long)]
+    committed: bool,
 }
 
 #[derive(Args)]
@@ -1080,6 +1090,12 @@ fn human_doctor(value: &Value) -> String {
     );
     let _ = writeln!(report, "Scope: {scope}");
     let _ = writeln!(report, "Runtime: {runtime_mode}");
+    if value["taskAuthority"]["sourceSelection"]["dirtyWorktreeAllowed"] == true {
+        let _ = writeln!(
+            report,
+            "Source: committed HEAD snapshot; local edits excluded (--committed)"
+        );
+    }
     let _ = writeln!(report, "\nChecks:");
 
     if let Some(checks) = value["checks"].as_array() {
@@ -1127,6 +1143,12 @@ fn human_repository_diagnostic(value: &Value) -> String {
     let _ = writeln!(report, "Codeclew repository diagnostic");
     let _ = writeln!(report, "Status: {}", status.replace('_', " "));
     let _ = writeln!(report, "Runtime: {runtime_mode}");
+    if value["sourceSelection"]["dirtyWorktreeAllowed"] == true {
+        let _ = writeln!(
+            report,
+            "Source: committed HEAD snapshot; local edits excluded (--committed)"
+        );
+    }
     if let Some(target_ref) = value["repository"]["targetRef"].as_str() {
         let _ = writeln!(report, "Target ref: {target_ref}");
     }
@@ -1263,10 +1285,15 @@ fn remediation_label(id: &str) -> &str {
         "SELECT_SUPPORTED_OPERATION" => "select an operation admitted by the exact profile",
         "SELECT_EXACT_COMPILATION" => "provide the exact project compilation selector",
         "INSTALL_PROJECT_WRAPPER" => "restore the executable project Gradle wrapper",
-        "INSTALL_PROJECT_LAUNCHER" => "restore the Maven wrapper or install Maven",
+        "INSTALL_PROJECT_LAUNCHER" => {
+            "run command -v mvn and mvn --version in this terminal; restore executable ./mvnw or make Maven available on PATH"
+        }
         "SELECT_EXISTING_REPOSITORY" => "select an existing repository",
         "SELECT_GIT_REPOSITORY" => "select a valid Git repository",
-        "CLEAN_TARGET_WORKTREE" => "commit, stash, or use a separate clean worktree",
+        "CLEAN_TARGET_WORKTREE" => "finish local edits before mutation; preserve existing work",
+        "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE" => {
+            "repeat this analysis command with --committed to analyze committed HEAD, excluding local edits; commit edits first if they must be included"
+        }
         "SELECT_LOCAL_TARGET_REF" => "select one unambiguous local branch or tag",
         "SELECT_LOCAL_BRANCH_REF" => "select a local branch for mutation",
         "CHECKOUT_TARGET_REF_AT_HEAD" => "check out the target ref at HEAD",
@@ -1845,7 +1872,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
         || args.operation.is_some();
     match args.scope {
         DoctorScopeArg::Attach => {
-            if args.repo.is_some() || has_exact_task_arguments {
+            if args.repo.is_some() || has_exact_task_arguments || args.committed {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "attach doctor does not accept task or provision arguments",
@@ -1854,7 +1881,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
             doctor(&runtime, DoctorScope::Attach, None, None, None)
         }
         DoctorScopeArg::Provision => {
-            if args.repo.is_some() || has_exact_task_arguments {
+            if args.repo.is_some() || has_exact_task_arguments || args.committed {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "provision doctor does not accept task arguments",
@@ -1866,13 +1893,18 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
             if has_exact_task_arguments {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
-                    "repository doctor accepts only --repo and optional --human",
+                    "repository doctor accepts --repo, optional --human and --committed",
                 ));
             }
             let repository = args.repo.as_deref().ok_or_else(|| {
                 ClewError::new(ErrorCode::InvalidInput, "repository doctor requires --repo")
             })?;
-            diagnose_repository(&runtime, &support_matrix()?, repository)
+            diagnose_repository_with_source(
+                &runtime,
+                &support_matrix()?,
+                repository,
+                args.committed,
+            )
         }
         DoctorScopeArg::Task => {
             let repository = args.repo.as_deref().ok_or_else(|| {
@@ -1913,6 +1945,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
                         DoctorOperationArg::Mutation => DoctorOperation::Mutation,
                     },
                     compilations: &args.compilation,
+                    committed: args.committed,
                 }),
             )
         }
@@ -2059,6 +2092,7 @@ fn admit_and_open_context(
     intent: String,
     terms: Vec<String>,
     max_roots: usize,
+    committed: bool,
 ) -> Result<AdmittedContext, ClewError> {
     let runtime = active_runtime()?;
     let repository = absolute(&session_args.repo)?;
@@ -2075,6 +2109,7 @@ fn admit_and_open_context(
                 DoctorOperationArg::Mutation => DoctorOperation::Mutation,
             },
             compilations: &session_args.compilation,
+            committed,
         }),
     )?;
     require_task_ready(&readiness)?;
@@ -2112,6 +2147,7 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
         args.intent,
         args.terms,
         args.max_roots,
+        args.committed,
     )?;
     let context = bounded_context_stdout(&opened.context)
         .map_err(|error| compensate_opened_context(error, &opened))?;
@@ -2170,6 +2206,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         intent,
         terms,
         args.max_roots,
+        args.committed,
     )?;
     let mut navigation = clew::navigation::query_with_decision_identifier(
         &opened.context,
@@ -2518,7 +2555,10 @@ fn require_task_ready(readiness: &Value) -> Result<(), ClewError> {
         .unwrap_or("REVIEW_TASK_READINESS");
     Err(ClewError::new(
         ErrorCode::PreconditionFailed,
-        format!("task readiness requires action: {next_action}"),
+        format!(
+            "task readiness requires action: {next_action}. {}",
+            remediation_label(next_action)
+        ),
     ))
 }
 
@@ -3974,8 +4014,24 @@ mod tests {
         assert!(report.contains("Scope: TASK"));
         assert!(report.contains("[PASS] Git is available (required)"));
         assert!(report.contains("[ACTION_REQUIRED] Target worktree is clean (required)"));
-        assert!(report.contains("commit, stash, or use a separate clean worktree"));
+        assert!(report.contains("finish local edits before mutation; preserve existing work"));
         assert!(!report.contains("/private/"));
+    }
+
+    #[test]
+    fn dirty_analysis_error_explains_source_choice_without_guessing() {
+        let error = require_task_ready(&json!({
+            "status":"ACTION_REQUIRED",
+            "nextAction":"SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE"
+        }))
+        .unwrap_err();
+        assert!(!error.retryable);
+        assert!(error.message.contains("--committed"));
+        assert!(error.message.contains("excluding local edits"));
+        assert!(
+            Cli::try_parse_from(["clew", "doctor", "repository", "--repo", ".", "--committed"])
+                .is_ok()
+        );
     }
 
     #[test]

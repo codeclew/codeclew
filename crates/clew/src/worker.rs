@@ -2179,7 +2179,8 @@ impl WorkerClient {
                     && failure.code == ErrorCode::UnsupportedCompilerPluginAbi
                 {
                     let tried = tried_discovery_variants | self.engine.discovery_bit();
-                    if let Some(next) = KotlinEngineRegistry::next_untried_for_discovery(tried) {
+                    let available = available_project_engines()?;
+                    if let Some(next) = next_available_discovery_engine(tried, &available) {
                         self.switch_engine(next)?;
                         return self.request_with_discovery_variants(kind, payload, tried);
                     }
@@ -2233,20 +2234,7 @@ impl WorkerClient {
             let desired = if let Some(engine) = self.qualification_engine {
                 KotlinEngineRegistry.qualify(&project_semantics, engine)?
             } else {
-                let runtime = RuntimeAuthority::from_environment()?;
-                let available = KotlinSemanticEngine::all_known()
-                    .into_iter()
-                    .filter(|engine| {
-                        runtime.as_ref().is_none_or(|runtime| {
-                            runtime
-                                .workers
-                                .get(engine.runtime_name())
-                                .is_some_and(|worker| {
-                                    worker.compiler_version == engine.analyzer_compiler_version()
-                                })
-                        })
-                    })
-                    .collect::<Vec<_>>();
+                let available = available_project_engines()?;
                 select_available_project_engine(&project_semantics, &available)?
             };
             if desired != self.engine {
@@ -3035,6 +3023,35 @@ fn worker_launcher(workspace: &Path, engine: KotlinSemanticEngine) -> PathBuf {
             workspace.join("workers/kotlin/build/install/kotlin/bin/kotlin")
         }
     }
+}
+
+fn available_project_engines() -> Result<Vec<KotlinSemanticEngine>, ClewError> {
+    let runtime = RuntimeAuthority::from_environment()?;
+    Ok(KotlinSemanticEngine::all_known()
+        .into_iter()
+        .filter(|engine| {
+            runtime.as_ref().is_none_or(|runtime| {
+                runtime
+                    .workers
+                    .get(engine.runtime_name())
+                    .is_some_and(|worker| {
+                        worker.compiler_version == engine.analyzer_compiler_version()
+                    })
+            })
+        })
+        .collect())
+}
+
+// A compiler-plugin rejection must not trigger preparation of an optional
+// engine absent from the verified runtime. Preserve the original rejection
+// when no available engine remains instead of masking it with a missing pack.
+fn next_available_discovery_engine(
+    tried: u8,
+    available: &[KotlinSemanticEngine],
+) -> Option<KotlinSemanticEngine> {
+    KotlinSemanticEngine::packaged_by_preference()
+        .into_iter()
+        .find(|engine| tried & engine.discovery_bit() == 0 && available.contains(engine))
 }
 
 // Default discovery may use the core analysis engine when an optional exact
@@ -5111,6 +5128,29 @@ mod tests {
             }
         );
         worker.shutdown().unwrap();
+    }
+
+    #[test]
+    fn plugin_discovery_never_selects_an_absent_optional_engine() {
+        let core = KotlinSemanticEngine::Kotlin24;
+        let optional = KotlinSemanticEngine::Kotlin23;
+        assert_eq!(next_available_discovery_engine(0, &[core]), Some(core));
+        assert_eq!(
+            next_available_discovery_engine(core.discovery_bit(), &[core]),
+            None
+        );
+        assert_eq!(
+            next_available_discovery_engine(core.discovery_bit(), &[core, optional]),
+            Some(optional)
+        );
+        assert_eq!(
+            next_available_discovery_engine(
+                core.discovery_bit() | optional.discovery_bit(),
+                &[core, optional]
+            ),
+            None
+        );
+        assert_eq!(next_available_discovery_engine(0, &[]), None);
     }
 
     #[test]

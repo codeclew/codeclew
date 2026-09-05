@@ -660,13 +660,29 @@ fn bounded_output(command: &mut Command, message: &str) -> Result<String, ClewEr
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|_| unsupported(message))?;
-    if !output.status.success()
-        || output.stdout.len().saturating_add(output.stderr.len()) > MAX_MODEL_OUTPUT_BYTES
-    {
-        return Err(unsupported(message));
+        .map_err(|_| build_command_failure(message, "BUILD_LAUNCHER_START_FAILED", "Verify the build launcher is executable and available in the same terminal or agent PATH; check JAVA_HOME."))?;
+    if output.stdout.len().saturating_add(output.stderr.len()) > MAX_MODEL_OUTPUT_BYTES {
+        return Err(resource(
+            "BUILD_MODEL_OUTPUT_LIMIT: Java build model output exceeded the supported size. Select a narrower module/compilation and retry.",
+        ));
+    }
+    if !output.status.success() {
+        return Err(build_command_failure(
+            message,
+            "BUILD_COMMAND_FAILED",
+            "Resolve the native build's first error (including dependency access, credentials or JDK configuration), then retry Codeclew. Build output is omitted because it may contain private data.",
+        ));
     }
     String::from_utf8(output.stdout).map_err(|_| unsupported("Java model output is not UTF-8"))
+}
+
+fn build_command_failure(stage: &str, reason: &str, action: &str) -> ClewError {
+    let diagnostic = if stage.starts_with("Maven") {
+        "From the selected module directory run mvn --version and mvn -e -DskipTests dependency:build-classpath help:evaluate -Dexpression=maven.compiler.release (use the repository's executable mvnw when present)."
+    } else {
+        "From the repository root run ./gradlew --version and ./gradlew --stacktrace tasks --all."
+    };
+    unsupported(&format!("{reason}: {stage}. {action} {diagnostic}"))
 }
 
 fn string_paths(value: Option<&Value>, max: usize) -> Result<Vec<PathBuf>, ClewError> {
@@ -732,6 +748,37 @@ fn io_error(error: std::io::Error) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_build_launcher_has_a_recovery_command() {
+        let missing = tempfile::tempdir().unwrap();
+        let error = super::bounded_output(
+            &mut Command::new(missing.path().join("missing-launcher")),
+            "Maven Java classpath extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_LAUNCHER_START_FAILED"));
+        assert!(error.message.contains("mvn --version"));
+        assert!(error.message.contains("same terminal or agent PATH"));
+        assert!(!error.message.contains(missing.path().to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_build_failure_preserves_action_without_private_output() {
+        let error = super::bounded_output(
+            Command::new("/bin/sh").args([
+                "-c",
+                "echo 'https://private.invalid?token=secret' >&2; exit 1",
+            ]),
+            "Gradle Java model extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
+        assert!(error.message.contains("./gradlew --stacktrace tasks --all"));
+        assert!(!error.message.contains("private.invalid"));
+        assert!(!error.message.contains("secret"));
+    }
 
     #[test]
     fn selector_is_exact_and_bounded() {

@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.3.0"
+  version: "0.3.1"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -63,7 +63,14 @@ Do not use this distinction to bypass consumer-session or publication guards.
    `--compilation` and `--term` only for explicit additional authorities and
    roots. Require `admission.status=PASS` and retain the returned session and
    context identifiers.
-5. On a typed readiness failure, run only the named diagnostic (`clew doctor
+5. When discovery reports `SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE`, use
+   `--committed` on discovery and the analysis admission command if the task
+   concerns the committed repository. Explain that the evidence excludes local
+   edits and retain `sourceSelection` plus the base revision. This is an explicit
+   read-only snapshot choice, not permission to clean or stash developer work.
+   If the user specifically requests uncommitted changes, do not substitute a
+   committed snapshot; report that this source mode is not supported.
+6. On another typed readiness failure, run only the named diagnostic (`clew doctor
    attach` or the same exact `clew doctor task ...`) once, report its
    `nextAction`, and stop. `doctor provision` is a maintainer/bootstrap
    diagnostic and is not an admission step for an installed product task. A
@@ -408,6 +415,9 @@ Freshness results are binding: continue on `FRESH`; stop and preserve developer
 work on `DIRTY`; rebuild the session, context, and plan on `STALE`; repair access
 on `UNAVAILABLE`; open a new session for more work after `TERMINAL`. Never clean,
 reset, rebase, or replay user work to make a result fresh.
+An explicitly admitted `--committed` analysis may continue using its immutable
+base-revision snapshot when the target checkout is dirty; it must not describe
+that snapshot as the current edited source. Mutation freshness rules are unchanged.
 
 ## Work across repositories
 

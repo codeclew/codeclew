@@ -4236,8 +4236,17 @@ mod tests {
                 .success()
         );
         let revision = git_output(&repository, &["rev-parse", "HEAD"]).unwrap();
+        fs::write(repository.join("README.md"), b"uncommitted edits\n").unwrap();
+        fs::write(repository.join("local-only.txt"), b"untracked\n").unwrap();
         create_filtered_detached_worktree(&repository, &source, &revision).unwrap();
         assert!(source.join("README.md").is_file());
+        assert_eq!(fs::read(source.join("README.md")).unwrap(), b"fixture\n");
+        assert!(!source.join("local-only.txt").exists());
+        assert_eq!(
+            fs::read(repository.join("README.md")).unwrap(),
+            b"uncommitted edits\n"
+        );
+        assert!(repository.join("local-only.txt").exists());
         assert!(!source.join(".semantic-thread").exists());
         assert!(filtered_worktree_clean(&source).unwrap());
         seal_source_worktree(&source).unwrap();

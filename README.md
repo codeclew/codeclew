@@ -29,7 +29,7 @@ If GitHub downloads return 403, manually download `install.sh`,
 bytes without network access by pinning their release tag:
 
 ```bash
-CODECLEW_VERSION=v0.3.0 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
+CODECLEW_VERSION=v0.3.1 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
@@ -111,6 +111,15 @@ verifies and reuses it without running Cargo, Rustc, Gradle, or Maven. The
 workers execute directly from that sealed capsule under its shared lease; the
 runtime warm path does not copy their distributions. Project analysis may still
 invoke the project wrapper under the model-cache policy described below.
+
+### Analysis with local edits
+
+For read-only analysis in a checkout with local edits, add `--committed` to
+`doctor repository`, `doctor task`, `context open` or `nav query`. Codeclew
+analyzes an immutable snapshot of committed HEAD and reports that local edits
+are excluded. The target checkout is preserved. This option is analysis-only;
+mutation still requires a clean target. If local edits must be included in the
+evidence, commit them before opening the session.
 
 ### Developing Codeclew itself
 

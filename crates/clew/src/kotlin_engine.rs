@@ -118,6 +118,8 @@ pub struct KotlinEngineCapabilities {
 pub enum KotlinCompilerPluginKind {
     KotlinSerialization,
     KotlinScripting,
+    KotlinAllOpen,
+    KotlinNoArg,
     Unknown,
 }
 
@@ -188,6 +190,10 @@ impl KotlinProjectSemantics {
                     .starts_with("kotlin-serialization-compiler-plugin-embeddable-")
                 {
                     KotlinCompilerPluginKind::KotlinSerialization
+                } else if artifact_name == "kotlin-allopen-compiler-plugin-embeddable-2.4.10.jar" {
+                    KotlinCompilerPluginKind::KotlinAllOpen
+                } else if artifact_name == "kotlin-noarg-compiler-plugin-embeddable-2.4.10.jar" {
+                    KotlinCompilerPluginKind::KotlinNoArg
                 } else if artifact_name.starts_with("kotlin-scripting-compiler-embeddable-") {
                     KotlinCompilerPluginKind::KotlinScripting
                 } else {
@@ -667,6 +673,43 @@ mod tests {
                 .qualify(&project, KotlinSemanticEngine::Kotlin24)
                 .unwrap(),
             KotlinSemanticEngine::Kotlin24,
+        );
+    }
+
+    #[test]
+    fn bundled_spring_plugins_are_analysis_known_and_other_versions_are_not() {
+        let model = serde_json::json!({
+            "declaredCompilerVersion":"2.3.0", "languageVersion":"2.3", "apiVersion":"2.3", "jvmTarget":"17",
+            "compilerPlugins":["kotlin-allopen-compiler-plugin-embeddable-2.4.10.jar", "kotlin-noarg-compiler-plugin-embeddable-2.4.10.jar"],
+            "freeCompilerArguments":[]
+        });
+        let project = KotlinProjectSemantics::from_project_model(&model).unwrap();
+        assert_eq!(
+            project.compiler_plugins[0].kind,
+            KotlinCompilerPluginKind::KotlinAllOpen
+        );
+        assert_eq!(
+            project.compiler_plugins[1].kind,
+            KotlinCompilerPluginKind::KotlinNoArg
+        );
+        assert_eq!(
+            KotlinEngineRegistry
+                .qualify(&project, KotlinSemanticEngine::Kotlin24)
+                .unwrap(),
+            KotlinSemanticEngine::Kotlin24
+        );
+        let mut unknown = model;
+        unknown["compilerPlugins"] =
+            serde_json::json!(["kotlin-allopen-compiler-plugin-embeddable-2.3.0.jar"]);
+        assert_eq!(
+            KotlinEngineRegistry
+                .qualify(
+                    &KotlinProjectSemantics::from_project_model(&unknown).unwrap(),
+                    KotlinSemanticEngine::Kotlin24
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::UnsupportedCompilerPluginAbi
         );
     }
 
