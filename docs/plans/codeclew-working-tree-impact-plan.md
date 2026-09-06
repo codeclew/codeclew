@@ -1,6 +1,6 @@
 # Working-tree analysis and change consequences
 
-Status: Deliveries 1–3 implemented and fixture-qualified in `feature/working-tree-impact`; retained explanation follows.
+Status: Deliveries 1–4 implemented and fixture-qualified in `feature/working-tree-impact`; daily-use qualification follows.
 Prepared: 2026-09-06.
 Source baseline: `b666129b750b0db3225a090d3570fd528897c983`.
 
@@ -276,3 +276,27 @@ a static inference, separate from the relation and any runtime/test outcome.
 - Graph budgets, overload abstention, stale removed-edge claims and failed-after
   unresolved claims have focused regression coverage. The public qualification
   verifies unchanged index/refs and comparison cleanup.
+
+## Delivery 4 evidence (2026-09-06)
+
+`change render --comparison <id> --output <new-report.html>` produces an offline
+HTML graph with selectable nodes/edges, exact before/after source, file hunks,
+verification suggestions and downloadable machine-readable claims. It reuses
+the existing claim-authority and freshness enums, with single-repository source
+anchors instead of inventing a thread pair. Source pagination is available via
+`change source --comparison <id> --file <path> --side after --offset <byte>`.
+
+- Public Kotlin qualification passes retained rendering, `FRESH` immediately
+  after capture, `LIVE_CHANGED` plus valid retained evidence after a later edit,
+  identical repeated HTML and exact saved-source reads. Render/repeat took
+  9.728/9.682 s, freshness 9.879/9.901 s and exact source 9.660 s.
+- The managed Rust regression proves identical rendering after session/storage
+  GC and with an empty executable search path: no Git, Cargo or Gradle command
+  is required. A focused regression rejects source escaping into executable
+  HTML. Output and embedded-source budgets remain explicit.
+- Browser inspection verified selection of a removed before-call and an
+  unchanged direct consumer. The inspector showed original and saved code;
+  partial relation coverage kept the removed-edge claim unresolved.
+- All three repository skill copies include the retained comparison workflow;
+  portable skill tests and Clippy pass. The report writes to a new local file
+  and performs no live freshness check or publication implicitly.

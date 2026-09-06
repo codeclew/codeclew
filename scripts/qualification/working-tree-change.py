@@ -111,9 +111,20 @@ fun documented(): Int { /* old comment */ return 7 }
             assert test_graph["testScope"] == "EXPLICIT_GRADLE_TEST_COMPILATION_SELECTED_RELATION_EVIDENCE_ONLY", test_graph
             assert any(c["selectedTestCompilation"] and c["source"]["file"].endswith("PriceTest.kt") for c in test_graph["candidates"]), test_graph
             assert test_graph["testsExecuted"] is False
+            rendered = args.output / "report.html"
+            run("change", "render", "--comparison", result["comparisonId"], "--output", str(rendered.resolve()))
+            initial_html = rendered.read_bytes()
+            assert run("change", "check-freshness", "--comparison", result["comparisonId"])["liveStatus"] == "FRESH"
             retained = run("change", "show", "--comparison", result["comparisonId"])
             source.write_text(saved + "\nfun broken( = missing\n")
             assert run("change", "show", "--comparison", result["comparisonId"]) == retained
+            freshness = run("change", "check-freshness", "--comparison", result["comparisonId"])
+            assert freshness["liveStatus"] == "LIVE_CHANGED" and freshness["retainedEvidenceValid"]
+            repeated = args.output / "report-repeated.html"
+            run("change", "render", "--comparison", result["comparisonId"], "--output", str(repeated.resolve()))
+            assert repeated.read_bytes() == initial_html
+            exact = run("change", "source", "--comparison", result["comparisonId"], "--file", "src/main/kotlin/Price.kt", "--side", "after")
+            assert exact["text"] == saved and exact["nextOffset"] is None
             broken = run(*command)
             reports.append(broken["comparisonId"])
             assert broken["status"] == "INCOMPLETE" or "DECLARATION_COVERAGE_IS_PARTIAL" in broken["obligations"], broken
@@ -135,7 +146,7 @@ fun documented(): Int { /* old comment */ return 7 }
                "checks": ["saved-not-staged", "body-change", "signature-change", "comment-only-no-behavior-claim",
                           "added-deleted-renamed", "retained-after-edit", "broken-after-preserves-text",
                           "changed-build-model-binding", "index-and-refs-preserved", "session-cleanup",
-                          "direct-consumers", "removed-before-call", "jvm-main-evidence", "selected-test-relations-without-test-run"],
+                          "direct-consumers", "removed-before-call", "jvm-main-evidence", "selected-test-relations-without-test-run", "retained-offline-render", "live-freshness-separate-from-validity", "exact-source-after-edit"],
                "commandSeconds": [row["seconds"] for row in transcript]}
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))

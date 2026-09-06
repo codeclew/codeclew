@@ -3248,10 +3248,88 @@ fn working_tree_comparison_retains_exact_diff_after_session_and_storage_gc() {
     );
     let id = inspected["comparisonId"].as_str().unwrap();
     let before_show = run(&["change", "show", "--comparison", id]);
+    let fresh = run(&["change", "check-freshness", "--comparison", id]);
+    assert_eq!(fresh["liveStatus"], "FRESH");
+    assert_eq!(fresh["retainedEvidenceValid"], true);
+    let rendered = temporary.path().join("change.html");
+    run(&[
+        "change",
+        "render",
+        "--comparison",
+        id,
+        "--output",
+        rendered.to_str().unwrap(),
+    ]);
+    let initial_html = fs::read(&rendered).unwrap();
+    let source = run(&[
+        "change",
+        "source",
+        "--comparison",
+        id,
+        "--file",
+        "src/lib.rs",
+        "--side",
+        "after",
+        "--limit",
+        "20",
+    ]);
+    assert_eq!(source["text"], std::str::from_utf8(&saved[..20]).unwrap());
+    assert_eq!(source["nextOffset"], 20);
     fs::write(repo.join("src/lib.rs"), b"pub fn later() {}\n").unwrap();
     run(&["storage", "gc", "--apply"]);
     let retained = run(&["change", "show", "--comparison", id]);
     assert_eq!(retained, before_show);
+    let stale = run(&["change", "check-freshness", "--comparison", id]);
+    assert_eq!(stale["liveStatus"], "LIVE_CHANGED");
+    assert_eq!(stale["retainedEvidenceValid"], true);
+    let repeated = temporary.path().join("change-repeated.html");
+    run(&[
+        "change",
+        "render",
+        "--comparison",
+        id,
+        "--output",
+        repeated.to_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(repeated).unwrap(), initial_html);
+    let no_tools = temporary.path().join("no-tools");
+    fs::create_dir(&no_tools).unwrap();
+    let offline_report = temporary.path().join("offline.html");
+    let offline = run_managed_exact_path(
+        &binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "change",
+            "render",
+            "--comparison",
+            id,
+            "--output",
+            offline_report.to_str().unwrap(),
+        ],
+        &no_tools,
+    );
+    assert!(
+        offline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&offline.stdout)
+    );
+    assert_eq!(fs::read(offline_report).unwrap(), initial_html);
+    let source = run(&[
+        "change",
+        "source",
+        "--comparison",
+        id,
+        "--file",
+        "src/lib.rs",
+        "--side",
+        "after",
+        "--offset",
+        "20",
+    ]);
+    assert_eq!(source["text"], std::str::from_utf8(&saved[20..]).unwrap());
+    assert_eq!(source["nextOffset"], Value::Null);
     assert!(
         retained["files"]
             .to_string()

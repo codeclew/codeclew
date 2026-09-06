@@ -132,10 +132,14 @@ enum ChangeCommand {
     Show(ComparisonIdArgs),
     /// Read bounded direct relation evidence from the retained comparison.
     Graph(ComparisonIdArgs),
+    /// Render an offline HTML explanation from retained evidence.
+    Render(ChangeRenderArgs),
+    /// Read exact retained source bytes for a node or file.
+    Source(ChangeSourceArgs),
     /// Release one retained comparison; normal storage GC reclaims unshared bytes.
     Forget(ComparisonIdArgs),
     Open(ChangeOpenArgs),
-    CheckFreshness(SessionIdArgs),
+    CheckFreshness(ChangeFreshnessArgs),
     Prepare(ChangePrepareArgs),
     Status(RunIdArgs),
     Publish(SessionPublishArgs),
@@ -414,6 +418,40 @@ struct ChangeInspectArgs {
 struct ComparisonIdArgs {
     #[arg(long)]
     comparison: String,
+}
+
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("selection").required(true).args(["session", "comparison"])))]
+struct ChangeFreshnessArgs {
+    #[arg(long)]
+    session: Option<String>,
+    #[arg(long)]
+    comparison: Option<String>,
+}
+
+#[derive(Args)]
+struct ChangeRenderArgs {
+    #[arg(long)]
+    comparison: String,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("selection").required(true).args(["node", "file"])))]
+struct ChangeSourceArgs {
+    #[arg(long)]
+    comparison: String,
+    #[arg(long)]
+    node: Option<String>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long, value_parser=["before", "after"])]
+    side: String,
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
+    #[arg(long, default_value_t = 16384)]
+    limit: usize,
 }
 
 #[derive(Args)]
@@ -1402,6 +1440,19 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             command: ChangeCommand::Graph(args),
         } => clew::working_tree_change_service::graph(&args.comparison),
         Command::Change {
+            command: ChangeCommand::Render(args),
+        } => clew::working_tree_render::render(&args.comparison, &args.output),
+        Command::Change {
+            command: ChangeCommand::Source(args),
+        } => clew::working_tree_render::source(
+            &args.comparison,
+            args.node.as_deref(),
+            args.file.as_deref(),
+            &args.side,
+            args.offset,
+            args.limit,
+        ),
+        Command::Change {
             command: ChangeCommand::Forget(args),
         } => clew::working_tree_change_service::forget(&args.comparison),
         Command::Change {
@@ -1410,8 +1461,12 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Change {
             command: ChangeCommand::CheckFreshness(args),
         } => {
-            let (session, _) = SessionAuthority::load(&args.session)?;
-            serde_json::to_value(session.freshness()?).map_err(internal)
+            if let Some(comparison) = args.comparison {
+                clew::working_tree_render::freshness(&comparison)
+            } else {
+                let (session, _) = SessionAuthority::load(args.session.as_deref().unwrap())?;
+                serde_json::to_value(session.freshness()?).map_err(internal)
+            }
         }
         Command::Change {
             command: ChangeCommand::Prepare(args),

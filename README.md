@@ -155,6 +155,9 @@ repository, ref, language, profile and compilation flags:
 clew change inspect --repo <repo> --target-ref <branch> --language kotlin \
   --profile kotlin-jvm-gradle-analysis --compilation :/main --working-tree
 clew change show --comparison <comparison-id>
+clew change graph --comparison <comparison-id>
+clew change render --comparison <comparison-id> --output <new-report.html>
+clew change check-freshness --comparison <comparison-id>
 clew change forget --comparison <comparison-id>
 ```
 

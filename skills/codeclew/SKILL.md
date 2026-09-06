@@ -431,6 +431,38 @@ Use supported explanation freshness operations when applicable; otherwise check
 the cited source bindings and report the limitation. Do not advertise automatic
 freshness or universal language support merely because the diagram renders.
 
+
+## Explain current saved edits
+
+For a single Kotlin/Gradle or Rust repository, use `change inspect --repo
+<repo> --target-ref <branch> --language <language> --profile <profile>
+--compilation <compilation> --working-tree --base HEAD`. Repeat compilation
+only for explicitly selected scopes. Retain its comparison ID; the command
+collects temporary sessions while preserving comparison evidence.
+
+Read `change graph --comparison <id>` for bounded direct consequences and
+`change source --comparison <id> --node <returned-node-id> --side before|after`
+for exact retained source. `--file <returned-file>` is an alternative to node;
+follow `nextOffset` using `--offset` when a source window is truncated. Do not
+invent compiler-resolved edges for Rust syntax observations or Kotlin family
+candidates. A direct consumer is a verification candidate, not a proven failure.
+Test compilation selection, a test relationship and a successful test run are
+three separate facts. Preserve every failed analysis and omitted scope.
+
+Create the local visual explanation with `change render --comparison <id>
+--output <new-report.html>`. This deterministic offline artifact contains a
+selectable graph, before/after code, machine-readable claims and verification
+obligations. Write any additional narrative from those retained claims and label
+it agent-authored; do not promote static observations into behavioral equivalence.
+An unchanged neighboring declaration may still be affected by a changed callee.
+The report does not refresh itself. `change check-freshness --comparison <id>`
+separates retained claim evidence validity, live snapshot match and coverage.
+`LIVE_CHANGED` requires a new comparison for current edits; it does not invalidate
+the earlier evidence. Rendering again performs no compilation. Keep the HTML
+local unless publication is authorized, and never fabricate committed-source
+links for saved uncommitted bytes. `change forget --comparison <id>` releases the
+retention root after the evidence is no longer needed.
+
 ## Prepare a change
 
 Mutation is allowed only when the active support matrix marks the exact profile
