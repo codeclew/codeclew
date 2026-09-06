@@ -2856,15 +2856,92 @@ fn required_digest(value: &Value, field: &str) -> Result<String, ClewError> {
     Ok(digest.into())
 }
 
-struct CollectedAnalysisSink {
-    facts: Vec<FactRecord>,
-    completion: Option<AnalysisAttemptComplete>,
+const FACT_RUN_BATCH_FACTS: usize = 256;
+
+enum FactRunTarget {
+    Direct(Box<FactRunWriter>),
+    Channel(crossbeam_channel::Sender<Vec<FactRecord>>),
 }
 
-impl AnalysisSink for CollectedAnalysisSink {
+struct StreamingAnalysisSink<'a> {
+    target: FactRunTarget,
+    buffer: Vec<FactRecord>,
+    fact_count: u64,
+    completion: Option<AnalysisAttemptComplete>,
+    cancelled: &'a std::sync::atomic::AtomicBool,
+}
+
+fn check_analysis_cancelled(cancelled: &std::sync::atomic::AtomicBool) -> Result<(), ClewError> {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(resource("analysis fact stream cancelled"));
+    }
+    Ok(())
+}
+
+impl StreamingAnalysisSink<'_> {
+    fn flush(&mut self) -> Result<(), ClewError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let FactRunTarget::Channel(sender) = &self.target else {
+            return Err(internal("direct fact writer unexpectedly buffered facts"));
+        };
+        let mut batch = std::mem::take(&mut self.buffer);
+        loop {
+            check_analysis_cancelled(self.cancelled)?;
+            match sender.send_timeout(batch, std::time::Duration::from_millis(50)) {
+                Ok(()) => return Ok(()),
+                Err(crossbeam_channel::SendTimeoutError::Timeout(pending)) => batch = pending,
+                Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
+                    return Err(internal("analysis fact writers stopped"));
+                }
+            }
+        }
+    }
+
+    fn seal(&mut self, completion: &AnalysisAttemptComplete) -> Result<(), ClewError> {
+        check_analysis_cancelled(self.cancelled)?;
+        if self.completion.as_ref() != Some(completion)
+            || completion.fact_count != self.fact_count
+            || self.fact_count == 0
+        {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "adapter completion differs from the spooled fact stream",
+            ));
+        }
+        self.flush()
+    }
+}
+
+impl AnalysisSink for StreamingAnalysisSink<'_> {
     fn accept(&mut self, event: AnalysisEvent) -> Result<(), ClewError> {
+        check_analysis_cancelled(self.cancelled)?;
+        if self.completion.is_some() {
+            return Err(ClewError::new(
+                ErrorCode::WorkerProtocolMismatch,
+                "adapter emitted data after completion",
+            ));
+        }
         match event {
-            AnalysisEvent::FactShard(shard) => self.facts.extend(shard.facts),
+            AnalysisEvent::FactShard(shard) => {
+                for fact in shard.facts {
+                    check_analysis_cancelled(self.cancelled)?;
+                    match &mut self.target {
+                        FactRunTarget::Direct(writer) => writer.push(&fact)?,
+                        FactRunTarget::Channel(_) => {
+                            self.buffer.push(fact);
+                            if self.buffer.len() == FACT_RUN_BATCH_FACTS {
+                                self.flush()?;
+                            }
+                        }
+                    }
+                    self.fact_count = self
+                        .fact_count
+                        .checked_add(1)
+                        .ok_or_else(|| resource("analysis fact count overflow"))?;
+                }
+            }
             AnalysisEvent::AttemptComplete(completion) => self.completion = Some(completion),
         }
         Ok(())
@@ -2876,6 +2953,92 @@ struct AnalysisDagResult {
     runs: Vec<FactRun>,
 }
 
+/// Spool the already sorted, conformance-checked stream into private runs. The
+/// returned runs become eligible for finalization only after completion is sealed.
+fn stream_analysis_runs(
+    state: &StateAuthority,
+    jobs: usize,
+    cancelled: &std::sync::atomic::AtomicBool,
+    analyze: impl FnOnce(&mut dyn AnalysisSink) -> Result<AnalysisAttemptComplete, ClewError>,
+) -> Result<AnalysisDagResult, ClewError> {
+    if jobs == 0 {
+        return Err(resource("analysis fact writer count is empty"));
+    }
+    if jobs == 1 {
+        let mut sink = StreamingAnalysisSink {
+            target: FactRunTarget::Direct(Box::new(FactRunWriter::create(state)?)),
+            buffer: Vec::new(),
+            fact_count: 0,
+            completion: None,
+            cancelled,
+        };
+        let completion = analyze(&mut sink)?;
+        sink.seal(&completion)?;
+        let FactRunTarget::Direct(writer) = sink.target else {
+            unreachable!()
+        };
+        return Ok(AnalysisDagResult {
+            completion,
+            runs: vec![writer.finish()?],
+        });
+    }
+    // Reserve one admitted CPU for the adapter/producer; the others normalize
+    // and write runs concurrently. The queue is bounded by twice the consumers.
+    std::thread::scope(|scope| {
+        let writers = jobs - 1;
+        let (sender, receiver) = crossbeam_channel::bounded::<Vec<FactRecord>>(writers * 2);
+        let mut handles = Vec::with_capacity(writers);
+        for partition in 0..writers {
+            let receiver = receiver.clone();
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("clew-fact-run-{partition}"))
+                    .spawn_scoped(scope, move || -> Result<FactRun, ClewError> {
+                        let mut writer = FactRunWriter::create(state)?;
+                        for batch in receiver {
+                            for fact in batch {
+                                check_analysis_cancelled(cancelled)?;
+                                writer.push(&fact)?;
+                            }
+                        }
+                        check_analysis_cancelled(cancelled)?;
+                        writer.finish()
+                    })
+                    .map_err(io_error)?,
+            );
+        }
+        drop(receiver);
+        let produced = {
+            let mut sink = StreamingAnalysisSink {
+                target: FactRunTarget::Channel(sender),
+                buffer: Vec::new(),
+                fact_count: 0,
+                completion: None,
+                cancelled,
+            };
+            analyze(&mut sink).and_then(|completion| {
+                sink.seal(&completion)?;
+                Ok(completion)
+            })
+            // Dropping the sender lets every writer exit, including after failure.
+        };
+        let results = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| internal("analysis fact writer panicked"))?
+            })
+            .collect::<Vec<Result<_, ClewError>>>();
+        let written = results.into_iter().collect::<Result<Vec<_>, ClewError>>();
+        let completion = produced?;
+        Ok(AnalysisDagResult {
+            completion,
+            runs: written?,
+        })
+    })
+}
+
 fn execute_analysis_dag_with_jobs(
     state: &StateAuthority,
     registry: Arc<AdapterRegistry>,
@@ -2884,24 +3047,13 @@ fn execute_analysis_dag_with_jobs(
     jobs: usize,
 ) -> Result<AnalysisDagResult, ClewError> {
     if jobs == 0 || jobs > resources.logical_cpu {
-        return Err(ClewError::new(
-            ErrorCode::ResourceLimit,
-            "analysis job count exceeds the host authority",
-        ));
+        return Err(resource("analysis job count exceeds the host authority"));
     }
-    let analysis = Arc::new(Mutex::new(
-        None::<(Arc<Vec<FactRecord>>, AnalysisAttemptComplete)>,
-    ));
-    let runs = Arc::new(Mutex::new(BTreeMap::<usize, FactRun>::new()));
+    let analysis = Arc::new(Mutex::new(None::<AnalysisDagResult>));
     let worker_rss = resources
         .codeclew_memory_budget_bytes
-        .clamp(1, 2 * 1024 * 1024 * 1024);
-    let run_rss = resources
-        .codeclew_memory_budget_bytes
-        .checked_div(jobs as u64)
-        .unwrap_or(0)
-        .clamp(1, 128 * 1024 * 1024);
-    let mut stages = vec![StageSpec {
+        .clamp(1, 2 * 1024 * 1024 * 1024 + jobs as u64 * 8 * 1024 * 1024);
+    let stages = vec![StageSpec {
         id: "adapter-analysis".into(),
         dependencies: Vec::new(),
         resources: ResourceDescriptor {
@@ -2909,8 +3061,8 @@ fn execute_analysis_dag_with_jobs(
             min_rss_bytes: 1,
             expected_rss_bytes: worker_rss,
             max_rss_bytes: worker_rss,
-            min_cpu: 1,
-            max_cpu: 1,
+            min_cpu: jobs,
+            max_cpu: jobs,
             max_instances: 1,
             exclusivity_key: Some(format!(
                 "compiler-store-{}",
@@ -2920,24 +3072,6 @@ fn execute_analysis_dag_with_jobs(
         operation_uri: "core:adapter-analysis".into(),
         input: Value::Null,
     }];
-    for partition in 0..jobs {
-        stages.push(StageSpec {
-            id: format!("fact-run-{partition:04}"),
-            dependencies: vec!["adapter-analysis".into()],
-            resources: ResourceDescriptor {
-                class: "fact-run-writer".into(),
-                min_rss_bytes: 1,
-                expected_rss_bytes: run_rss,
-                max_rss_bytes: run_rss,
-                min_cpu: 1,
-                max_cpu: 1,
-                max_instances: jobs,
-                exclusivity_key: None,
-            },
-            operation_uri: "core:fact-run".into(),
-            input: json!({"partition":partition,"partitions":jobs}),
-        });
-    }
     let observer = Arc::new(CompositeProgress::new(vec![
         Arc::new(PersistentProgress::open(state, &request.attempt_id)?),
         Arc::new(StderrProgress),
@@ -2946,75 +3080,34 @@ fn execute_analysis_dag_with_jobs(
     let attempt_id = request.attempt_id.clone();
     let state_for_executor = state.clone();
     let analysis_for_executor = Arc::clone(&analysis);
-    let runs_for_executor = Arc::clone(&runs);
     let report = scheduler.execute(
         DagPlan {
             schema: DAG_SCHEMA.into(),
             stages,
         },
-        move |stage, cancelled| match stage.operation_uri.as_str() {
-            "core:adapter-analysis" => {
-                let mut sink = CollectedAnalysisSink {
-                    facts: Vec::new(),
-                    completion: None,
-                };
-                let completion =
-                    registry.analyze_generation_into(&request, &mut sink, cancelled)?;
-                if sink.completion.as_ref() != Some(&completion)
-                    || completion.fact_count != sink.facts.len() as u64
-                    || sink.facts.is_empty()
-                {
-                    return Err(ClewError::new(
-                        ErrorCode::WorkerProtocolMismatch,
-                        "adapter completion differs from the collected fact stream",
-                    ));
-                }
-                *analysis_for_executor.lock().map_err(poisoned)? =
-                    Some((Arc::new(sink.facts), completion.clone()));
-                Ok(json!({"factCount":completion.fact_count,"sealedCompilerStreams":1}))
+        move |stage, cancelled| {
+            if stage.operation_uri != "core:adapter-analysis" {
+                return Err(corrupt("cold-start DAG contains an unknown operation"));
             }
-            "core:fact-run" => {
-                let partition = stage
-                    .input
-                    .get("partition")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| usize::try_from(value).ok())
-                    .ok_or_else(|| corrupt("fact-run partition is invalid"))?;
-                let (facts, _) = analysis_for_executor
-                    .lock()
-                    .map_err(poisoned)?
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| corrupt("fact-run started before adapter completion"))?;
-                let start = facts.len().saturating_mul(partition) / jobs;
-                let end = facts.len().saturating_mul(partition + 1) / jobs;
-                let mut writer = FactRunWriter::create(&state_for_executor)?;
-                for fact in &facts[start..end] {
-                    writer.push(fact)?;
-                }
-                runs_for_executor
-                    .lock()
-                    .map_err(poisoned)?
-                    .insert(partition, writer.finish()?);
-                Ok(json!({"factCount":end-start,"partition":partition}))
-            }
-            _ => Err(corrupt("cold-start DAG contains an unknown operation")),
+            let result = stream_analysis_runs(&state_for_executor, jobs, cancelled, |sink| {
+                registry.analyze_generation_into(&request, sink, cancelled)
+            })?;
+            let output = json!({
+                "factCount":result.completion.fact_count, "sealedCompilerStreams":1,
+                "factRunWriters":jobs.saturating_sub(1).max(1),
+                "maxQueuedFactBatches":if jobs == 1 { 0 } else { (jobs - 1) * 2 },
+                "maxFactsPerBatch":FACT_RUN_BATCH_FACTS,
+            });
+            *analysis_for_executor.lock().map_err(poisoned)? = Some(result);
+            Ok(output)
         },
     )?;
     crate::cold_start::persist_dag_report(state, &attempt_id, &report)?;
-    let completion = analysis
+    analysis
         .lock()
         .map_err(poisoned)?
-        .as_ref()
-        .map(|(_, completion)| completion.clone())
-        .ok_or_else(|| corrupt("adapter DAG produced no completion"))?;
-    let runs = std::mem::take(&mut *runs.lock().map_err(poisoned)?)
-        .into_values()
-        .collect::<Vec<_>>();
-    if runs.len() != jobs {
-        return Err(corrupt("adapter DAG produced an incomplete fact-run set"));
-    }
-    Ok(AnalysisDagResult { completion, runs })
+        .take()
+        .ok_or_else(|| corrupt("adapter DAG produced no sealed fact runs"))
 }
 
 fn completeness_from_index(
@@ -4334,6 +4427,125 @@ mod tests {
         .unwrap();
         assert_eq!(single_generation, parallel_generation);
         assert_eq!(single_object, parallel_object);
+    }
+
+    #[test]
+    fn streamed_runs_are_private_until_completion_and_removed_on_failure_or_cancel() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/fact/1", b"payload").unwrap();
+        let receipt = store.put("test/receipt/1", b"complete").unwrap();
+        let facts = (0..4096)
+            .map(|index| FactRecord {
+                fact_key: format!("stream:{index:06}"),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload: payload.clone(),
+            })
+            .collect::<Vec<_>>();
+        let completion = AnalysisAttemptComplete {
+            scope_digest: format!("sha256:{}", "a".repeat(64)),
+            completeness_receipt: receipt,
+            fact_count: facts.len() as u64,
+        };
+        let run_root = root.path().join("v2/attempts/fact-runs");
+        for jobs in [1, 4] {
+            for failure in ["producer", "count", "missing-completion", "cancel"] {
+                let cancelled = AtomicBool::new(false);
+                let result = stream_analysis_runs(&state, jobs, &cancelled, |sink| {
+                    sink.accept(AnalysisEvent::FactShard(crate::adapter_v2::FactShard {
+                        sequence: 0,
+                        facts: facts.clone(),
+                    }))?;
+                    // More than the queue capacity has been consumed before any receipt exists.
+                    assert!(
+                        std::fs::read_dir(&run_root)
+                            .unwrap()
+                            .any(|entry| { entry.unwrap().metadata().unwrap().len() > 0 })
+                    );
+                    if failure == "producer" {
+                        return Err(internal("fixture producer failed"));
+                    }
+                    if failure == "cancel" {
+                        cancelled.store(true, Ordering::Release);
+                    }
+                    let mut emitted = completion.clone();
+                    if failure == "count" {
+                        emitted.fact_count += 1;
+                    }
+                    if failure != "missing-completion" {
+                        sink.accept(AnalysisEvent::AttemptComplete(emitted.clone()))?;
+                    }
+                    Ok(emitted)
+                });
+                assert!(result.is_err(), "{failure} with {jobs} jobs must fail");
+                assert_eq!(
+                    std::fs::read_dir(&run_root).unwrap().count(),
+                    0,
+                    "{failure} leaked private runs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_runs_match_a_serial_reference_across_batch_boundaries() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/fact/1", b"payload").unwrap();
+        let derived = store.put(DERIVED_MANIFEST_SCHEMA, b"derived").unwrap();
+        let completion = AnalysisAttemptComplete {
+            scope_digest: format!("sha256:{}", "b".repeat(64)),
+            completeness_receipt: store.put("test/receipt/1", b"complete").unwrap(),
+            fact_count: 4097,
+        };
+        let facts = (0..completion.fact_count)
+            .map(|index| FactRecord {
+                fact_key: format!("stream:{index:06}"),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload: payload.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut reference_writer = FactRunWriter::create(&state).unwrap();
+        for fact in &facts {
+            reference_writer.push(fact).unwrap();
+        }
+        let authority = |completion| {
+            vec![AttemptAuthority {
+                compilation_id: "main".into(),
+                capability: CapabilityUri::parse("analysis:test").unwrap(),
+                completion,
+            }]
+        };
+        let reference = finalize_generation(
+            &store,
+            derived.clone(),
+            authority(completion.clone()),
+            vec![reference_writer.finish().unwrap()],
+        )
+        .unwrap();
+        for jobs in [1, 4] {
+            let result = stream_analysis_runs(&state, jobs, &AtomicBool::new(false), |sink| {
+                for (sequence, chunk) in facts.chunks(777).enumerate() {
+                    sink.accept(AnalysisEvent::FactShard(crate::adapter_v2::FactShard {
+                        sequence: sequence as u32,
+                        facts: chunk.to_vec(),
+                    }))?;
+                }
+                sink.accept(AnalysisEvent::AttemptComplete(completion.clone()))?;
+                Ok(completion.clone())
+            })
+            .unwrap();
+            let actual = finalize_generation(
+                &store,
+                derived.clone(),
+                authority(result.completion),
+                result.runs,
+            )
+            .unwrap();
+            assert_eq!(actual, reference);
+        }
     }
 
     #[test]

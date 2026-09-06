@@ -330,7 +330,7 @@ fn repository_state(repository: Option<&Path>) -> RepositoryState {
     let clean = git
         && isolated_git(
             repository,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
         )
         .is_some_and(|value| value.is_empty());
     let branch = git
@@ -377,7 +377,7 @@ fn common_blockers(state: &RepositoryState, inventory: &RepositoryInventory) -> 
     if state.git && !state.clean {
         blockers.push(blocker(
             "CLEAN_TARGET_WORKTREE",
-            "Codeclew task admission requires a clean target worktree",
+            "Codeclew task admission requires no staged or tracked worktree changes",
         ));
     }
     if state.git && state.target_ref.is_none() {
@@ -934,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_reports_a_clean_python_repository_as_ready() {
+    fn diagnostic_ignores_untracked_plans_but_reports_tracked_changes() {
         let repository = tempfile::tempdir().unwrap();
         fs::write(repository.path().join("app.py"), "value = 1\n").unwrap();
         git(repository.path(), &["init"]);
@@ -952,6 +952,12 @@ mod tests {
             ],
         );
 
+        fs::create_dir_all(repository.path().join("docs/plans")).unwrap();
+        fs::write(
+            repository.path().join("docs/plans/local.md"),
+            "local plan\n",
+        )
+        .unwrap();
         let value =
             diagnose_repository(&runtime(), &support_matrix().unwrap(), repository.path()).unwrap();
 
@@ -970,6 +976,19 @@ mod tests {
                 .to_string()
                 .contains(repository.path().to_str().unwrap())
         );
+
+        fs::write(repository.path().join("app.py"), "value = 2\n").unwrap();
+        let dirty =
+            diagnose_repository(&runtime(), &support_matrix().unwrap(), repository.path()).unwrap();
+        assert_eq!(dirty["repository"]["clean"], false);
+        assert_eq!(dirty["nextAction"], "CLEAN_TARGET_WORKTREE");
+
+        fs::write(repository.path().join("app.py"), "value = 1\n").unwrap();
+        git(repository.path(), &["add", "docs/plans/local.md"]);
+        let staged =
+            diagnose_repository(&runtime(), &support_matrix().unwrap(), repository.path()).unwrap();
+        assert_eq!(staged["repository"]["clean"], false);
+        assert_eq!(staged["nextAction"], "CLEAN_TARGET_WORKTREE");
     }
 
     #[test]

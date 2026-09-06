@@ -626,7 +626,7 @@ impl SessionAuthority {
         );
         let clean = isolated_git_bytes(
             &repository,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
         )
         .map(|value| value.is_empty());
         Ok(classify_freshness(

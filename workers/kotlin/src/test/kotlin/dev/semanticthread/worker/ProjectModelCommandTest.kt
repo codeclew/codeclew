@@ -391,6 +391,70 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun openAndIndexShareOneRawModelExtraction() {
+        val repo = Files.createTempDirectory("worker-model-once").toRealPath()
+        try {
+            val source = repo.resolve("src/main/kotlin/Answer.kt")
+            source.parent.createDirectories()
+            // A failed analysis still exercises the production model and index path.
+            source.writeText("fun answer() = unresolvedFixtureValue\n")
+            repo.resolve("model.json").writeText(gradleFixtureModel(repo, source, "21").toString())
+            repo.resolve("gradlew").writeText(
+                """#!/bin/sh
+                |printf 'extracted\n' >> model-invocations.txt
+                |printf '%s' '__SEMANTIC_THREAD_MODEL__'
+                |cat model.json
+                |printf '\n'
+                |""".trimMargin(),
+            )
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            val request = buildJsonObject {
+                put("repo", repo.toString())
+                put("compilation", ":/main")
+            }.toString().toByteArray()
+            Worker(null).use { worker ->
+                worker.handle(2, request)
+                worker.handle(3, request)
+                assertEquals(listOf("extracted"), Files.readAllLines(repo.resolve("model-invocations.txt")))
+                // The next request must observe configuration changes, even in the same worker.
+                repo.resolve("gradle.properties").writeText("fixture.changed=true\n")
+                worker.handle(3, request)
+                assertEquals(2, Files.readAllLines(repo.resolve("model-invocations.txt")).size)
+            }
+        } finally { repo.toFile().deleteRecursively() }
+    }
+
+    @Test
+    fun extractionCannotCacheAModelUnderInputsItChanged() {
+        val repo = Files.createTempDirectory("worker-model-mutating").toRealPath()
+        try {
+            val source = repo.resolve("src/main/kotlin/Answer.kt")
+            source.parent.createDirectories()
+            source.writeText("fun answer() = 42\n")
+            repo.resolve("model.json").writeText(gradleFixtureModel(repo, source, "21").toString())
+            repo.resolve("gradlew").writeText(
+                """#!/bin/sh
+                |printf 'fixture.changed=true\n' > gradle.properties
+                |printf 'extracted\n' >> model-invocations.txt
+                |printf '%s' '__SEMANTIC_THREAD_MODEL__'
+                |cat model.json
+                |printf '\n'
+                |""".trimMargin(),
+            )
+            assertTrue(repo.resolve("gradlew").toFile().setExecutable(true))
+            val request = buildJsonObject { put("repo", repo.toString()); put("compilation", ":/main") }
+                .toString().toByteArray()
+            Worker(null).use { worker ->
+                val failure = assertFailsWith<WorkerFailure> { worker.handle(2, request) }
+                assertEquals("PROJECT_MODEL_CHANGED", failure.code)
+                val retried = Json.parseToJsonElement(worker.handle(2, request)).jsonObject
+                assertEquals("21", retried["jvmTarget"]!!.jsonPrimitive.content)
+                assertEquals(2, Files.readAllLines(repo.resolve("model-invocations.txt")).size)
+            }
+        } finally { repo.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun invalidCandidateOverrideCannotReuseBaselineK2Analysis() {
         val repo = Files.createTempDirectory("worker-k2-override-cache").toRealPath()
         try {

@@ -2636,6 +2636,9 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
         ],
     );
 
+    fs::create_dir_all(repository.join("docs/plans")).unwrap();
+    fs::write(repository.join("docs/plans/local.md"), b"local plan\n").unwrap();
+
     let state_root = temporary.path().join("state/v2");
     let runtime_digest = "1".repeat(64);
     let runtime = state_root.join("runtimes").join(&runtime_digest);
@@ -2902,6 +2905,17 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
     let opened_value: Value = serde_json::from_slice(&opened.stdout).unwrap();
     let session_id = opened_value["session"]["sessionId"].as_str().unwrap();
 
+    let source = state_root
+        .join("sessions")
+        .join(session_id.strip_prefix("session:").unwrap())
+        .join("source");
+    assert!(source.join("README.md").is_file());
+    assert!(!source.join("docs/plans/local.md").exists());
+    assert_eq!(
+        fs::read(repository.join("docs/plans/local.md")).unwrap(),
+        b"local plan\n"
+    );
+
     let freshness = |session_id: &str| {
         run_managed(
             &runtime_binary,
@@ -2917,6 +2931,13 @@ fn managed_operational_commands_are_path_free_and_support_recovery() {
     let fresh_value: Value = serde_json::from_slice(&fresh.stdout).unwrap();
     assert_eq!(fresh_value["status"], "FRESH");
     assert_eq!(fresh_value["remediationId"], "NONE");
+
+    fs::write(repository.join("notes.md"), b"notes after session open\n").unwrap();
+    let with_notes = freshness(session_id);
+    assert!(with_notes.status.success());
+    let with_notes_value: Value = serde_json::from_slice(&with_notes.stdout).unwrap();
+    assert_eq!(with_notes_value["status"], "FRESH");
+    assert_eq!(with_notes_value["targetWorktreeClean"], true);
 
     fs::write(repository.join("README.md"), b"dirty\n").unwrap();
     let dirty = freshness(session_id);

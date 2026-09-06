@@ -1268,7 +1268,7 @@ pub fn publish(
             "target ref moved after session open",
         ));
     }
-    require_clean(&repo)?;
+    require_target_clean(&repo)?;
     compare_and_swap_direct_branch(
         &repo,
         &session.target_ref,
@@ -1992,7 +1992,7 @@ fn require_publish_worktrees(
                     "session target ref is checked out by an unexpected worktree",
                 ));
             }
-            require_clean(&path)?;
+            require_target_clean(&path)?;
         }
         if source.as_ref().is_some_and(|source| path == *source) {
             source_found = item.branch.is_none() && item.head == session.base_revision;
@@ -2049,7 +2049,7 @@ fn verify_published_worktrees(
                     "published target worktree is inconsistent",
                 ));
             }
-            require_clean(&target)?;
+            require_target_clean(&target)?;
         }
     }
     Ok(())
@@ -2497,7 +2497,8 @@ fn synchronize_checked_out_target(
     if git(repo, &["rev-parse", "HEAD"])? == prepared.candidate_commit {
         return Ok(());
     }
-    require_clean(repo)?;
+    require_target_clean(repo)?;
+    require_no_added_path_collision(repo, &prepared.target_oid, &prepared.candidate_commit)?;
     git_status(
         Command::new("git")
             .args([
@@ -2517,6 +2518,34 @@ fn synchronize_checked_out_target(
         code: ErrorCode::WorktreeRecoveryRequired,
         ..error
     })
+}
+
+// User-owned untracked files are outside the pinned source snapshot. They only
+// block publication when they collide with a candidate path (checked separately).
+// Managed candidates still use require_clean, including untracked outputs.
+fn require_target_clean(repo: &Path) -> Result<(), ClewError> {
+    let output = isolated_git_command(repo)
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=no",
+            "--",
+            ".",
+        ])
+        .args(LEGACY_EXCLUDES)
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(invalid("target worktree cleanliness is unavailable"));
+    }
+    if !output.stdout.is_empty() {
+        return Err(ClewError::new(
+            ErrorCode::PreconditionFailed,
+            "target has staged or tracked worktree changes",
+        ));
+    }
+    Ok(())
 }
 
 fn require_clean(repo: &Path) -> Result<(), ClewError> {
@@ -2933,6 +2962,66 @@ mod tests {
         ] {
             assert_eq!(guarded.code, ErrorCode::UnsupportedProjectConfiguration);
             assert!(guarded.message.contains("local branch"));
+        }
+    }
+
+    #[test]
+    fn publication_preserves_untracked_files_and_rejects_path_collisions() {
+        for collision in [false, true] {
+            let repo = tempfile::tempdir().unwrap();
+            let run = |args: &[&str]| {
+                let output = Command::new("git")
+                    .args(args)
+                    .current_dir(repo.path())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "git command failed: {args:?}");
+            };
+            run(&["init", "-q", "-b", "main"]);
+            run(&["config", "user.name", "Codeclew Test"]);
+            run(&["config", "user.email", "codeclew-test@localhost"]);
+            fs::write(repo.path().join("source.txt"), "base\n").unwrap();
+            run(&["add", "source.txt"]);
+            run(&["commit", "-qm", "base"]);
+            let base = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+            run(&["checkout", "-qb", "candidate"]);
+            fs::write(repo.path().join("new.txt"), "candidate\n").unwrap();
+            run(&["add", "new.txt"]);
+            run(&["commit", "-qm", "candidate"]);
+            let candidate = git(repo.path(), &["rev-parse", "HEAD"]).unwrap();
+            run(&["checkout", "-q", "main"]);
+
+            let local_path = repo
+                .path()
+                .join(if collision { "new.txt" } else { "plan.md" });
+            fs::write(&local_path, "user-owned\n").unwrap();
+            require_target_clean(repo.path()).unwrap();
+            assert!(
+                require_clean(repo.path()).is_err(),
+                "candidate checks must stay strict"
+            );
+            fs::write(repo.path().join("source.txt"), "user edit\n").unwrap();
+            assert!(require_target_clean(repo.path()).is_err());
+            fs::write(repo.path().join("source.txt"), "base\n").unwrap();
+            run(&["add", local_path.file_name().unwrap().to_str().unwrap()]);
+            assert!(require_target_clean(repo.path()).is_err());
+            run(&["reset", "-q", "HEAD"]);
+
+            let result =
+                compare_and_swap_direct_branch(repo.path(), "refs/heads/main", &base, &candidate);
+            if collision {
+                assert_eq!(result.unwrap_err().code, ErrorCode::PreconditionFailed);
+                assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]).unwrap(), base);
+            } else {
+                result.unwrap();
+                assert_eq!(git(repo.path(), &["rev-parse", "HEAD"]).unwrap(), candidate);
+                assert_eq!(
+                    fs::read_to_string(repo.path().join("new.txt")).unwrap(),
+                    "candidate\n"
+                );
+            }
+            assert_eq!(fs::read_to_string(&local_path).unwrap(), "user-owned\n");
+            require_target_clean(repo.path()).unwrap();
         }
     }
 

@@ -19,6 +19,36 @@ start a compiler analysis implicitly.
 The design is language-neutral. Kotlin 2.1, 2.3, and 2.4 are the first adapters,
 not assumptions embedded in the core.
 
+Ready-context retrieval retains one shared CAS catalog across generation
+authority verification and bounded query reads. Closed catalog metadata types
+serialize directly in canonical key order, preserving existing bytes and
+digests without allocating a generic JSON value tree. Catalogs with at least
+32,768 objects across multiple packs validate independent pack manifests on at
+most two threads when the host supports it; location-map assembly and error
+selection retain serial order. Small catalogs and thread-allocation failures
+use the serial path. Snapshot, chain, manifest and selected-object digest
+checks remain required.
+
+Large snapshots also publish a derived `lookup-v1` index: sorted 56-byte
+records contain a binary digest, pack/schema ordinals, size and offset. A small
+page directory selects 256-record pages by digest range; only selected pages
+are read and hash-checked, with a bounded 32-page cache. Admission binds the
+directory digest and the snapshot/data file identities to a receipt, using the
+same device/inode/size/mtime/ctime assumptions as pack verification receipts.
+Changed snapshot metadata requires full JSON verification. Changed lookup
+data or invalid page hashes fail closed. Existing selected-object digest
+checks still verify the actual payload bytes.
+
+The canonical JSON snapshot and hash-chained journal remain the publication
+and recovery authority. An absent lookup commit receipt selects that path and
+rebuilds the derived files; the receipt is committed last. Journal additions
+form a small in-memory overlay, checked against the base in digest order so
+each required page is visited at most once during journal replay.
+Removals, batch publication and storage GC
+materialize the full catalog. Old readers retain open immutable index files
+across snapshot rotation. Lookup files are pruned with superseded snapshots;
+catalogs below 1,024 objects retain the original path.
+
 ## Observed baseline
 
 The cancelled 2026-08-21 K21 context attempt ran for more than 60 minutes.
@@ -217,8 +247,27 @@ subset protocol exists it records the execution honestly as `FULL` with subset
 support false. Compaction publishes a new immutable generation and never
 mutates parents. Compiler output from a crashed attempt remains attempt-private
 and cannot be reused. Only verified snapshot, model, and derived-manifest
-objects may survive retry. Rust normalization starts only after a sealed
-`AnalysisAttemptComplete`.
+objects may survive retry. The core validates and spools incoming facts into
+attempt-private sorted runs while the adapter is producing them. With one admitted CPU it writes
+directly; with more CPUs it reserves one for the producer and uses the rest
+for writers, with at most two queued batches per writer and 256 facts per
+batch. Runs are eligible for finalization only after the adapter's completion,
+fact count, and stream conformance have been verified. Failed or cancelled
+attempts discard their runs. Kotlin's compiler result and fact translation
+still materialize complete adapter-side collections; the bounded core sink
+does not establish a whole-worker memory bound.
+
+Initial indexing also uses per-analysis Kotlin fact lookup tables keyed by
+exact repository-relative path, request-scoped project inventories with
+directory pruning, and a shared raw model for its canonical view. Inventories
+are refreshed after build-tool extraction and at the next RPC. Extraction
+that changes inventoried inputs fails before caching the model. Snapshot blobs are published
+in batches bounded by 8 MiB and 1024 objects; an individually admitted larger
+blob uses direct publication. Query postings retain their ordered bounded
+prefix during insertion, and query packing accounts for encoded record sizes
+without repeatedly serializing a growing shard. These changes preserve CAS
+object identities for equivalent inputs; fixing ambiguous suffix-based file
+matches intentionally prevents facts from another file entering the index.
 
 ## Completeness and conditional evidence
 

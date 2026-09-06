@@ -194,7 +194,7 @@ fn build_scoped_snapshot(
         .iter()
         .filter(|entry| matches!(entry.mode, 0o100644 | 0o100755))
         .map(|entry| entry.oid.as_str());
-    let blobs = read_git_blobs(repo, regular)?;
+    let blobs = publish_git_blobs(repo, regular, store)?;
     let mut index = Vec::with_capacity(selected.len());
     for entry in selected {
         let content = if entry.mode == 0o120000 {
@@ -207,10 +207,10 @@ fn build_scoped_snapshot(
                 .map_err(internal)?,
             )?
         } else {
-            let bytes = blobs
+            blobs
                 .get(&entry.oid)
-                .ok_or_else(|| corrupt_input("selected Git blob was not returned by cat-file"))?;
-            store.put(BLOB_SCHEMA, bytes)?
+                .ok_or_else(|| corrupt_input("selected Git blob was not returned by cat-file"))?
+                .clone()
         };
         index.push(IndexEntry {
             path: entry.path.clone(),
@@ -397,11 +397,15 @@ fn capture_with_hook(
     let raw_index = parse_index(&before.staged)?;
     let cached = parse_paths(&before.cached)?;
     let untracked = parse_paths(&before.untracked)?;
-    let staged_blobs = read_git_blobs(&repo, raw_index.iter().map(|entry| entry.oid.as_str()))?;
+    let staged_blobs = publish_git_blobs(
+        &repo,
+        raw_index.iter().map(|entry| entry.oid.as_str()),
+        store,
+    )?;
     let index = raw_index
         .into_iter()
         .map(|entry| {
-            let bytes = staged_blobs
+            let content = staged_blobs
                 .get(&entry.oid)
                 .ok_or_else(|| corrupt_input("staged Git object was not returned by cat-file"))?;
             Ok(IndexEntry {
@@ -409,7 +413,7 @@ fn capture_with_hook(
                 mode: entry.mode,
                 stage: entry.stage,
                 git_oid: entry.oid,
-                content: store.put(BLOB_SCHEMA, bytes)?,
+                content: content.clone(),
             })
         })
         .collect::<Result<Vec<_>, ClewError>>()?;
@@ -419,6 +423,7 @@ fn capture_with_hook(
     worktree_paths.dedup();
     let root = FdRoot::open(&repo)?;
     let mut worktree = Vec::with_capacity(worktree_paths.len());
+    let mut worktree_blobs = SnapshotBlobBatch::new(store);
     for path in worktree_paths {
         let first = root.read(&path)?;
         between_reads(&path)?;
@@ -426,25 +431,34 @@ fn capture_with_hook(
         if first != second {
             return Err(mutated("repository input changed while it was captured"));
         }
-        let (kind, mode, content) = match first {
-            RawWorktreeEntry::Missing => (WorktreeKind::Missing, 0, None),
-            RawWorktreeEntry::Regular { mode, bytes } => (
-                WorktreeKind::Regular,
-                mode,
-                Some(store.put(BLOB_SCHEMA, &bytes)?),
-            ),
-            RawWorktreeEntry::Symlink { mode, target } => (
-                WorktreeKind::Symlink,
-                mode,
-                Some(store.put(BLOB_SCHEMA, &target)?),
-            ),
+        let (kind, mode) = match first {
+            RawWorktreeEntry::Missing => (WorktreeKind::Missing, 0),
+            RawWorktreeEntry::Regular { mode, bytes } => {
+                worktree_blobs.push(path.clone(), bytes)?;
+                (WorktreeKind::Regular, mode)
+            }
+            RawWorktreeEntry::Symlink { mode, target } => {
+                worktree_blobs.push(path.clone(), target)?;
+                (WorktreeKind::Symlink, mode)
+            }
         };
         worktree.push(WorktreeEntry {
             path,
             kind,
             mode,
-            content,
+            content: None,
         });
+    }
+    let references = worktree_blobs.finish()?;
+    for entry in &mut worktree {
+        if entry.kind != WorktreeKind::Missing {
+            entry.content = Some(
+                references
+                    .get(&entry.path)
+                    .ok_or_else(|| corrupt_input("captured worktree content is unavailable"))?
+                    .clone(),
+            );
+        }
     }
     let after = git_views(&repo, additional_excludes)?;
     if before != after {
@@ -991,11 +1005,95 @@ pub(crate) fn isolated_git_command(repo: &Path) -> Command {
     command
 }
 
+const SNAPSHOT_BLOB_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const SNAPSHOT_BLOB_BATCH_OBJECTS: usize = 1024;
+
+struct SnapshotBlobBatch<'a> {
+    store: &'a CasStore,
+    pending: Vec<(String, Vec<u8>)>,
+    pending_bytes: usize,
+    references: BTreeMap<String, CasObject>,
+}
+
+impl<'a> SnapshotBlobBatch<'a> {
+    fn new(store: &'a CasStore) -> Self {
+        Self {
+            store,
+            pending: Vec::new(),
+            pending_bytes: 0,
+            references: BTreeMap::new(),
+        }
+    }
+
+    fn push(&mut self, key: String, bytes: Vec<u8>) -> Result<(), ClewError> {
+        if bytes.len() > SNAPSHOT_BLOB_BATCH_BYTES {
+            self.flush()?;
+            // A single admitted large blob bypasses the pack's extra buffers.
+            self.references
+                .insert(key, self.store.put(BLOB_SCHEMA, &bytes)?);
+            return Ok(());
+        }
+        if self.pending.len() >= SNAPSHOT_BLOB_BATCH_OBJECTS
+            || self.pending_bytes + bytes.len() > SNAPSHOT_BLOB_BATCH_BYTES
+        {
+            self.flush()?;
+        }
+        self.pending_bytes += bytes.len();
+        self.pending.push((key, bytes));
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), ClewError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let (keys, objects): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(|(key, bytes)| (key, (BLOB_SCHEMA.to_owned(), bytes)))
+            .unzip();
+        let references = self.store.put_batch(objects)?;
+        self.references.extend(keys.into_iter().zip(references));
+        self.pending_bytes = 0;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<BTreeMap<String, CasObject>, ClewError> {
+        self.flush()?;
+        Ok(self.references)
+    }
+}
+
+fn publish_git_blobs<'a>(
+    repo: &Path,
+    oids: impl Iterator<Item = &'a str>,
+    store: &CasStore,
+) -> Result<BTreeMap<String, CasObject>, ClewError> {
+    let mut batch = SnapshotBlobBatch::new(store);
+    visit_git_blobs(repo, oids, |oid, bytes| batch.push(oid.to_owned(), bytes))?;
+    batch.finish()
+}
+
 pub(crate) fn read_git_blobs<'a>(
     repo: &Path,
     oids: impl Iterator<Item = &'a str>,
 ) -> Result<BTreeMap<String, Vec<u8>>, ClewError> {
+    let mut blobs = BTreeMap::new();
+    visit_git_blobs(repo, oids, |oid, bytes| {
+        blobs.insert(oid.to_owned(), bytes);
+        Ok(())
+    })?;
+    Ok(blobs)
+}
+
+fn visit_git_blobs<'a>(
+    repo: &Path,
+    oids: impl Iterator<Item = &'a str>,
+    mut visitor: impl FnMut(&str, Vec<u8>) -> Result<(), ClewError>,
+) -> Result<(), ClewError> {
     let unique = oids.map(str::to_owned).collect::<BTreeSet<_>>();
+    if unique.is_empty() {
+        return Ok(());
+    }
     let mut command = isolated_git_command(repo);
     command
         .args(["cat-file", "--batch"])
@@ -1020,40 +1118,46 @@ pub(crate) fn read_git_blobs<'a>(
         .take()
         .ok_or_else(|| internal("cat-file stdout is unavailable"))?;
     let mut reader = BufReader::new(stdout);
-    let mut blobs = BTreeMap::new();
-    for requested in &unique {
-        let mut header = String::new();
-        reader.read_line(&mut header).map_err(io_error)?;
-        let fields = header.trim_end().split(' ').collect::<Vec<_>>();
-        if fields.len() != 3 || fields[0] != requested || fields[1] != "blob" {
-            return Err(corrupt_input("cat-file returned an unexpected Git object"));
+    let result = (|| {
+        for requested in &unique {
+            let mut header = String::new();
+            reader.read_line(&mut header).map_err(io_error)?;
+            let fields = header.trim_end().split(' ').collect::<Vec<_>>();
+            if fields.len() != 3 || fields[0] != requested || fields[1] != "blob" {
+                return Err(corrupt_input("cat-file returned an unexpected Git object"));
+            }
+            let size = fields[2]
+                .parse::<u64>()
+                .map_err(|_| corrupt_input("cat-file returned an invalid blob size"))?;
+            if size > MAX_FILE_BYTES || size > usize::MAX as u64 {
+                return Err(resource("Git blob exceeds snapshot limit"));
+            }
+            let mut bytes = vec![0; size as usize];
+            reader.read_exact(&mut bytes).map_err(io_error)?;
+            let mut newline = [0];
+            reader.read_exact(&mut newline).map_err(io_error)?;
+            if newline != [b'\n'] {
+                return Err(corrupt_input("cat-file blob framing is invalid"));
+            }
+            visitor(requested, bytes)?;
         }
-        let size = fields[2]
-            .parse::<u64>()
-            .map_err(|_| corrupt_input("cat-file returned an invalid blob size"))?;
-        if size > MAX_FILE_BYTES || size > usize::MAX as u64 {
-            return Err(ClewError::new(
-                ErrorCode::ResourceLimit,
-                "Git blob exceeds snapshot limit",
-            ));
-        }
-        let mut bytes = vec![0; size as usize];
-        reader.read_exact(&mut bytes).map_err(io_error)?;
-        let mut newline = [0];
-        reader.read_exact(&mut newline).map_err(io_error)?;
-        if newline != [b'\n'] {
-            return Err(corrupt_input("cat-file blob framing is invalid"));
-        }
-        blobs.insert(requested.clone(), bytes);
+        Ok(())
+    })();
+    // Errors in decoding or CAS publication must not leave a blocked cat-file or writer.
+    if result.is_err() {
+        let _ = child.kill();
     }
-    writer
+    drop(reader);
+    let written = writer
         .join()
-        .map_err(|_| internal("cat-file request writer panicked"))?
-        .map_err(io_error)?;
-    if !child.wait().map_err(io_error)?.success() {
+        .map_err(|_| internal("cat-file request writer panicked"));
+    let status = child.wait().map_err(io_error);
+    result?;
+    written?.map_err(io_error)?;
+    if !status?.success() {
         return Err(corrupt_input("cat-file batch failed"));
     }
-    Ok(blobs)
+    Ok(())
 }
 
 pub(crate) fn read_git_blob_metadata<'a>(
@@ -1078,12 +1182,21 @@ pub(crate) fn read_git_blob_metadata<'a>(
         .stdin
         .take()
         .ok_or_else(|| internal("cat-file metadata stdin is unavailable"))?;
-    for oid in &unique {
-        stdin.write_all(oid.as_bytes()).map_err(io_error)?;
-        stdin.write_all(b"\n").map_err(io_error)?;
-    }
-    drop(stdin);
-    let output = child.wait_with_output().map_err(io_error)?;
+    // Drain stdout while writing requests: both pipes can fill for a large scope.
+    let requests = unique.iter().cloned().collect::<Vec<_>>();
+    let writer = std::thread::spawn(move || -> std::io::Result<()> {
+        for oid in requests {
+            stdin.write_all(oid.as_bytes())?;
+            stdin.write_all(b"\n")?;
+        }
+        Ok(())
+    });
+    let output = child.wait_with_output().map_err(io_error);
+    let written = writer
+        .join()
+        .map_err(|_| internal("cat-file metadata writer panicked"))?;
+    let output = output?;
+    written.map_err(io_error)?;
     if !output.status.success() {
         return Err(corrupt_input("cat-file metadata batch failed"));
     }
@@ -1386,6 +1499,72 @@ fn io_error(error: std::io::Error) -> ClewError {
 mod tests {
     use super::*;
     use crate::state::StateAuthority;
+
+    #[test]
+    fn snapshot_blob_batches_bound_bytes_and_objects_and_preserve_cas_identity() {
+        let (_repo, _state, store) = fixture();
+        let mut batch = SnapshotBlobBatch::new(&store);
+        let bytes = vec![b'x'; SNAPSHOT_BLOB_BATCH_BYTES / 2 + 1];
+        batch.push("first".into(), bytes.clone()).unwrap();
+        batch.push("second".into(), bytes.clone()).unwrap();
+        assert_eq!(batch.pending.len(), 1);
+        assert_eq!(batch.references.len(), 1);
+        for index in 0..=SNAPSHOT_BLOB_BATCH_OBJECTS {
+            batch.push(format!("empty-{index}"), Vec::new()).unwrap();
+            assert!(batch.pending.len() <= SNAPSHOT_BLOB_BATCH_OBJECTS);
+            assert!(batch.pending_bytes <= SNAPSHOT_BLOB_BATCH_BYTES);
+        }
+        let references = batch.finish().unwrap();
+        let loose = store.put(BLOB_SCHEMA, &bytes).unwrap();
+        assert_eq!(references["first"], loose);
+        assert_eq!(references["second"], loose);
+        assert_eq!(
+            store
+                .read(&references["first"], bytes.len())
+                .unwrap()
+                .bytes(),
+            bytes
+        );
+        assert_eq!(
+            references["empty-0"],
+            CasObject::for_bytes(BLOB_SCHEMA, b"").unwrap()
+        );
+    }
+
+    #[test]
+    fn streaming_git_blobs_and_metadata_handle_more_than_pipe_capacity() {
+        let (repo, _state, store) = fixture();
+        for index in 0..2048 {
+            fs::write(
+                repo.path().join(format!("src/file-{index}.zeta")),
+                format!("unique-{index}\n"),
+            )
+            .unwrap();
+        }
+        git_command(repo.path(), &["add", "."], None).unwrap();
+        let entries = parse_index(&git_views(repo.path(), &[]).unwrap().staged).unwrap();
+        let oids = || entries.iter().map(|entry| entry.oid.as_str());
+        let metadata = read_git_blob_metadata(repo.path(), oids()).unwrap();
+        let published = publish_git_blobs(repo.path(), oids(), &store).unwrap();
+        let legacy = read_git_blobs(repo.path(), oids()).unwrap();
+        assert_eq!(metadata.len(), entries.len());
+        for (oid, bytes) in legacy {
+            assert_eq!(metadata[&oid], ("blob".into(), bytes.len() as u64));
+            assert_eq!(
+                published[&oid],
+                CasObject::for_bytes(BLOB_SCHEMA, &bytes).unwrap()
+            );
+            assert_eq!(
+                store.read(&published[&oid], bytes.len()).unwrap().bytes(),
+                bytes
+            );
+        }
+        let error = visit_git_blobs(repo.path(), oids(), |_, _| {
+            Err(resource("consumer stopped"))
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimit);
+    }
 
     fn fixture() -> (tempfile::TempDir, tempfile::TempDir, CasStore) {
         let repo = tempfile::tempdir().unwrap();

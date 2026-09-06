@@ -1239,13 +1239,13 @@ fn verify_direct_authority(
             "status",
             "--porcelain=v1",
             "-z",
-            "--untracked-files=all",
+            "--untracked-files=no",
             "--ignore-submodules=none",
         ],
     )?;
     if !status.is_empty() {
         return Err(precondition(
-            "direct source locate requires a clean Git repository",
+            "direct source locate requires no staged or tracked worktree changes",
         ));
     }
     let head = isolated_git_text(repo, &["rev-parse", "--verify", "HEAD^{commit}"])?;
@@ -2339,6 +2339,24 @@ mod tests {
         let digest = canonical::hash(&gitlink).unwrap();
         let error = locate_direct(&repository, "main", &gitlink, &digest).unwrap_err();
         assert!(error.message.contains("regular Git blobs"));
+    }
+
+    #[test]
+    fn direct_git_locate_ignores_untracked_files_without_reading_them() {
+        let (_temporary, repository, _revision) = direct_repository();
+        let query = request("needle", &["A.kt"], 2);
+        let digest = canonical::hash(&query).unwrap();
+        let before = locate_direct(&repository, "main", &query, &digest).unwrap();
+        fs::write(repository.join("plan.md"), b"needle in local plan\n").unwrap();
+        let after = locate_direct(&repository, "main", &query, &digest).unwrap();
+        assert_eq!(before, after);
+
+        let untracked_query = request("needle", &["plan.md"], 2);
+        let untracked_digest = canonical::hash(&untracked_query).unwrap();
+        assert!(locate_direct(&repository, "main", &untracked_query, &untracked_digest).is_err());
+        git(&repository, &["add", "plan.md"]);
+        let error = locate_direct(&repository, "main", &query, &digest).unwrap_err();
+        assert_eq!(error.code, ErrorCode::PreconditionFailed);
     }
 
     #[test]

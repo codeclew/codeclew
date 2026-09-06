@@ -401,7 +401,7 @@ fn repository_checks(
     }
     let clean = isolated_git(
         &repository,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
     )
     .is_some_and(|value| value.is_empty());
     checks.push(check(
@@ -718,6 +718,35 @@ mod tests {
 
     fn doctor_check<'a>(checks: &'a [DoctorCheck], id: &str) -> &'a DoctorCheck {
         checks.iter().find(|check| check.id == id).unwrap()
+    }
+
+    #[test]
+    fn admission_ignores_untracked_files_but_rejects_tracked_and_staged_changes() {
+        let repo = doctor_git_fixture();
+        fs::create_dir_all(repo.path().join("docs/plans")).unwrap();
+        fs::write(repo.path().join("docs/plans/local.md"), b"local plan\n").unwrap();
+        let clean = || {
+            for operation in [DoctorOperation::Analysis, DoctorOperation::Mutation] {
+                let checks = repository_checks(repo.path(), Some("main"), operation);
+                assert!(doctor_check(&checks, "repository.clean").passed);
+            }
+        };
+        let dirty = || {
+            for operation in [DoctorOperation::Analysis, DoctorOperation::Mutation] {
+                let checks = repository_checks(repo.path(), Some("main"), operation);
+                assert!(!doctor_check(&checks, "repository.clean").passed);
+            }
+        };
+        clean();
+        fs::write(repo.path().join("README.md"), b"edited\n").unwrap();
+        dirty();
+        fs::write(repo.path().join("README.md"), b"fixture\n").unwrap();
+        clean();
+        assert!(isolated_git(repo.path(), &["add", "docs/plans/local.md"]).is_some());
+        dirty();
+        assert!(isolated_git(repo.path(), &["reset", "-q", "HEAD"]).is_some());
+        fs::remove_file(repo.path().join("README.md")).unwrap();
+        dirty();
     }
 
     #[test]

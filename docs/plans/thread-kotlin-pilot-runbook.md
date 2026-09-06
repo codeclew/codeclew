@@ -6,6 +6,16 @@ the checked Seatbelt policy. Linux may run the fast self-tests, but it may not
 publish a qualified adoption result until an equivalent sealed audit adapter
 exists.
 
+New pilot runs use GPT-6 Astra (`gpt-6-astra`) with `high` reasoning effort,
+matching the project default in `.codex/config.toml`. Codex loads that default
+for trusted projects; explicit CLI model and reasoning options take precedence.
+The pilot passes both settings explicitly from its sealed authority, so keep
+the `--model` and `--reasoning-effort` options in the preparation command below.
+Changing the model requires a new experiment and prepared authority; existing
+results retain the model recorded when they were produced. See the
+[OpenAI migration guide](https://developers.openai.com/api/docs/guides/latest-model)
+and [Codex configuration guide](https://learn.chatgpt.com/docs/config-file/config-basic).
+
 ## One-shot experiment authority
 
 Every attempt uses one brand-new `mktemp` root and one shell owner. There is no
@@ -100,7 +110,7 @@ python3 -I -S "$S4K_RUNNER" prepare \
   --g1k-evidence "$S4K_G1K" \
   --clew "$CODECLEW_REPO/clew" \
   --codex "$CODEX_BIN" \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   --reasoning-effort high \
   --private-shape-oracle "$S4K_PRIVATE_DIR/shape-oracle.json" \
   --private-shape-attestation "$S4K_PRIVATE_DIR/shape-attestation.json" \

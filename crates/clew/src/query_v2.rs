@@ -130,6 +130,7 @@ pub fn build_query_index(
         return Err(invalid("query index requires a generation manifest object"));
     }
     let mut postings = BTreeMap::<String, BTreeSet<FactHit>>::new();
+    let mut overflow_terms = BTreeSet::new();
     generation.visit_facts(store, |fact| {
         let hit = FactHit {
             fact_key: fact.fact_key.clone(),
@@ -140,13 +141,15 @@ pub fn build_query_index(
         terms.sort();
         terms.dedup();
         for term in terms {
-            postings.entry(term).or_default().insert(hit.clone());
+            insert_bounded_posting(&mut postings, &mut overflow_terms, term, hit.clone());
         }
         for term in direct_terms {
-            postings
-                .entry(direct_name_term(&term))
-                .or_default()
-                .insert(hit.clone());
+            insert_bounded_posting(
+                &mut postings,
+                &mut overflow_terms,
+                direct_name_term(&term),
+                hit.clone(),
+            );
         }
         Ok(())
     })?;
@@ -154,7 +157,6 @@ pub fn build_query_index(
         return Err(invalid("generation produced no queryable terms"));
     }
 
-    let (postings, overflow_terms) = bound_postings(postings);
     let term_count = postings.len() as u64;
     let posting_count = postings.values().map(|facts| facts.len() as u64).sum();
     let mut buckets = BTreeMap::<String, Vec<TermPosting>>::new();
@@ -522,6 +524,21 @@ pub fn verify_index_manifest(
     Ok(())
 }
 
+fn insert_bounded_posting(
+    postings: &mut BTreeMap<String, BTreeSet<FactHit>>,
+    overflow_terms: &mut BTreeSet<String>,
+    term: String,
+    hit: FactHit,
+) {
+    let facts = postings.entry(term.clone()).or_default();
+    facts.insert(hit);
+    if facts.len() > MAX_QUERY_FACTS_PER_TERM {
+        facts.pop_last();
+        overflow_terms.insert(term);
+    }
+}
+
+#[cfg(test)]
 fn bound_postings(
     mut postings: BTreeMap<String, BTreeSet<FactHit>>,
 ) -> (BTreeMap<String, BTreeSet<FactHit>>, BTreeSet<String>) {
@@ -554,37 +571,68 @@ fn publish_bucket(
 }
 
 fn build_bucket(bucket: &str, postings: Vec<TermPosting>) -> Result<Vec<QueryShard>, ClewError> {
-    let mut current = Vec::new();
+    build_bucket_with_limit(bucket, postings, MAX_QUERY_SHARD_BYTES)
+}
+
+fn build_bucket_with_limit(
+    bucket: &str,
+    postings: Vec<TermPosting>,
+    limit: usize,
+) -> Result<Vec<QueryShard>, ClewError> {
+    let mut current = Vec::<TermPosting>::new();
+    let mut current_bytes = 0usize;
     let mut shards = Vec::new();
     let mut sequence = 0u32;
     for posting in postings {
-        if canonical::bytes(&shard(bucket, sequence, std::slice::from_ref(&posting)))
-            .map_err(internal)?
-            .len()
-            > MAX_QUERY_SHARD_BYTES
+        let posting_bytes = canonical::bytes(&posting).map_err(internal)?.len();
+        if encoded_query_shard_len(
+            bucket,
+            sequence,
+            &posting.term,
+            &posting.term,
+            posting_bytes,
+            1,
+        )? > limit
         {
             if !current.is_empty() {
                 shards.push(shard(bucket, sequence, &current));
                 sequence = next_sequence(sequence)?;
                 current.clear();
+                current_bytes = 0;
             }
-            sequence = build_split_posting(bucket, sequence, posting, &mut shards)?;
+            sequence = build_split_posting(bucket, sequence, posting, &mut shards, limit)?;
             continue;
         }
-        current.push(posting);
-        let candidate = shard(bucket, sequence, &current);
-        let bytes = canonical::bytes(&candidate).map_err(internal)?;
-        if bytes.len() > MAX_QUERY_SHARD_BYTES {
-            let last = current.pop().expect("candidate contains one posting");
-            if current.is_empty() {
-                return Err(ClewError::new(
-                    ErrorCode::ResourceLimit,
-                    "one query posting exceeds the shard limit",
-                ));
-            }
+        if !current.is_empty()
+            && encoded_query_shard_len(
+                bucket,
+                sequence,
+                &current[0].term,
+                &posting.term,
+                current_bytes + posting_bytes,
+                current.len() + 1,
+            )? > limit
+        {
             shards.push(shard(bucket, sequence, &current));
             sequence = next_sequence(sequence)?;
-            current = vec![last];
+            current.clear();
+            current_bytes = 0;
+        }
+        // Advancing the sequence may increase the header's digit count.
+        if current.is_empty()
+            && encoded_query_shard_len(
+                bucket,
+                sequence,
+                &posting.term,
+                &posting.term,
+                posting_bytes,
+                1,
+            )? > limit
+        {
+            sequence = build_split_posting(bucket, sequence, posting, &mut shards, limit)?;
+        } else {
+            current_bytes += posting_bytes;
+            current.push(posting);
         }
     }
     if !current.is_empty() {
@@ -593,12 +641,54 @@ fn build_bucket(bucket: &str, postings: Vec<TermPosting>) -> Result<Vec<QuerySha
     Ok(shards)
 }
 
+fn encoded_query_shard_len(
+    bucket: &str,
+    sequence: u32,
+    first_term: &str,
+    last_term: &str,
+    postings_bytes: usize,
+    count: usize,
+) -> Result<usize, ClewError> {
+    let header = QueryShard {
+        schema: QUERY_SHARD_SCHEMA.into(),
+        bucket: bucket.into(),
+        sequence,
+        first_term: first_term.into(),
+        last_term: last_term.into(),
+        postings: Vec::new(),
+    };
+    canonical::bytes(&header)
+        .map_err(internal)?
+        .len()
+        .checked_add(postings_bytes)
+        .and_then(|size| size.checked_add(count.saturating_sub(1)))
+        .ok_or_else(|| invalid("query shard size overflow"))
+}
+
 fn build_split_posting(
     bucket: &str,
     mut sequence: u32,
     posting: TermPosting,
     shards: &mut Vec<QueryShard>,
+    limit: usize,
 ) -> Result<u32, ClewError> {
+    let empty = TermPosting {
+        term: posting.term.clone(),
+        facts: Vec::new(),
+    };
+    let posting_header_bytes = canonical::bytes(&empty).map_err(internal)?.len();
+    let mut prefix_bytes = Vec::with_capacity(posting.facts.len() + 1);
+    prefix_bytes.push(0usize);
+    for fact in &posting.facts {
+        let size = canonical::bytes(fact).map_err(internal)?.len();
+        prefix_bytes.push(
+            prefix_bytes
+                .last()
+                .unwrap()
+                .checked_add(size)
+                .ok_or_else(|| invalid("query posting size overflow"))?,
+        );
+    }
     let mut start = 0usize;
     while start < posting.facts.len() {
         let remaining = posting.facts.len() - start;
@@ -607,14 +697,16 @@ fn build_split_posting(
         let mut fitting = 0usize;
         while low <= high {
             let middle = low + (high - low) / 2;
-            let candidate = TermPosting {
-                term: posting.term.clone(),
-                facts: posting.facts[start..start + middle].to_vec(),
-            };
-            let size = canonical::bytes(&shard(bucket, sequence, &[candidate]))
-                .map_err(internal)?
-                .len();
-            if size <= MAX_QUERY_SHARD_BYTES {
+            let size = encoded_query_shard_len(
+                bucket,
+                sequence,
+                &posting.term,
+                &posting.term,
+                posting_header_bytes + prefix_bytes[start + middle] - prefix_bytes[start] + middle
+                    - 1,
+                1,
+            )?;
+            if size <= limit {
                 fitting = middle;
                 low = middle + 1;
             } else {
@@ -943,6 +1035,167 @@ mod tests {
     use crate::derived_manifest::DERIVED_MANIFEST_SCHEMA;
     use crate::generation_v2::{AttemptAuthority, FactRunWriter, finalize_generation};
     use crate::state::StateAuthority;
+
+    fn packing_posting(index: usize, count: usize) -> TermPosting {
+        TermPosting {
+            term: format!("term-{index:04}-\"é\\\n"),
+            facts: (0..count)
+                .map(|offset| FactHit {
+                    fact_key: format!("fact-{offset:04}-😀"),
+                    domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                    payload: CasObject::for_bytes("test/payload/1", b"payload").unwrap(),
+                })
+                .collect(),
+        }
+    }
+
+    // Deliberately serialize complete candidates as an independent packing oracle.
+    fn reference_bucket(bucket: &str, postings: &[TermPosting], limit: usize) -> Vec<QueryShard> {
+        let mut result = Vec::new();
+        let mut current = Vec::new();
+        let mut sequence = 0;
+        for posting in postings {
+            if canonical::bytes(&shard(bucket, sequence, std::slice::from_ref(posting)))
+                .unwrap()
+                .len()
+                > limit
+            {
+                if !current.is_empty() {
+                    result.push(shard(bucket, sequence, &current));
+                    sequence += 1;
+                    current.clear();
+                }
+                let mut start = 0;
+                while start < posting.facts.len() {
+                    let mut fitting = 0;
+                    for count in 1..=posting.facts.len() - start {
+                        let candidate = TermPosting {
+                            term: posting.term.clone(),
+                            facts: posting.facts[start..start + count].to_vec(),
+                        };
+                        if canonical::bytes(&shard(bucket, sequence, &[candidate]))
+                            .unwrap()
+                            .len()
+                            > limit
+                        {
+                            break;
+                        }
+                        fitting = count;
+                    }
+                    assert!(fitting > 0);
+                    result.push(shard(
+                        bucket,
+                        sequence,
+                        &[TermPosting {
+                            term: posting.term.clone(),
+                            facts: posting.facts[start..start + fitting].to_vec(),
+                        }],
+                    ));
+                    start += fitting;
+                    sequence += 1;
+                }
+            } else {
+                current.push(posting.clone());
+                if canonical::bytes(&shard(bucket, sequence, &current))
+                    .unwrap()
+                    .len()
+                    > limit
+                {
+                    let last = current.pop().unwrap();
+                    result.push(shard(bucket, sequence, &current));
+                    sequence += 1;
+                    current = vec![last];
+                }
+            }
+        }
+        if !current.is_empty() {
+            result.push(shard(bucket, sequence, &current));
+        }
+        result
+    }
+
+    #[test]
+    fn query_packing_matches_full_serialization_with_unicode_and_splits() {
+        let postings = (0..120)
+            .map(|index| packing_posting(index, 1 + index % 9))
+            .collect::<Vec<_>>();
+        for limit in [1024, 4096, 16_384] {
+            let actual = build_bucket_with_limit("ab", postings.clone(), limit).unwrap();
+            let expected = reference_bucket("ab", &postings, limit);
+            assert_eq!(
+                canonical::bytes(&actual).unwrap(),
+                canonical::bytes(&expected).unwrap()
+            );
+            assert!(
+                actual
+                    .iter()
+                    .all(|value| canonical::bytes(value).unwrap().len() <= limit)
+            );
+        }
+        let posting = packing_posting(0, 1);
+        let exact = canonical::bytes(&shard("ab", 0, std::slice::from_ref(&posting)))
+            .unwrap()
+            .len();
+        assert_eq!(
+            build_bucket_with_limit("ab", vec![posting.clone()], exact)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            build_bucket_with_limit("ab", vec![posting], exact - 1)
+                .unwrap_err()
+                .code,
+            ErrorCode::ResourceLimit
+        );
+    }
+
+    #[test]
+    fn bounded_postings_match_sorted_prefix_for_any_arrival_order_and_duplicates() {
+        let facts = packing_posting(0, MAX_QUERY_FACTS_PER_TERM * 3).facts;
+        let expected = bound_postings(BTreeMap::from([(
+            "popular".into(),
+            facts.iter().cloned().collect(),
+        )]));
+        for rows in [facts.clone(), facts.iter().rev().cloned().collect()] {
+            let mut postings = BTreeMap::new();
+            let mut overflow = BTreeSet::new();
+            for hit in rows.iter().chain(&rows) {
+                insert_bounded_posting(&mut postings, &mut overflow, "popular".into(), hit.clone());
+                assert!(postings["popular"].len() <= MAX_QUERY_FACTS_PER_TERM);
+            }
+            assert_eq!((postings, overflow), expected);
+        }
+        let mut postings = BTreeMap::new();
+        let mut overflow = BTreeSet::new();
+        for hit in facts[..MAX_QUERY_FACTS_PER_TERM]
+            .iter()
+            .cycle()
+            .take(MAX_QUERY_FACTS_PER_TERM * 3)
+        {
+            insert_bounded_posting(&mut postings, &mut overflow, "exact".into(), hit.clone());
+        }
+        assert!(overflow.is_empty());
+    }
+
+    #[test]
+    #[ignore = "focused before/after packing measurement"]
+    fn query_packing_measurement() {
+        let postings = (0..2000)
+            .map(|index| packing_posting(index, 1))
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let expected = reference_bucket("ab", &postings, MAX_QUERY_SHARD_BYTES);
+        let reference = started.elapsed();
+        let started = std::time::Instant::now();
+        let actual = build_bucket("ab", postings).unwrap();
+        let indexed = started.elapsed();
+        assert_eq!(
+            canonical::bytes(&actual).unwrap(),
+            canonical::bytes(&expected).unwrap()
+        );
+        eprintln!("query packing: reference={reference:?}, indexed={indexed:?}, postings=2000");
+    }
 
     #[test]
     fn index_is_deterministic_and_query_reads_only_term_buckets() {

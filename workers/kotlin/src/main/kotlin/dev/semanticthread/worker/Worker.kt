@@ -1292,6 +1292,7 @@ internal class Worker(
     private val json = Json { ignoreUnknownKeys = false; explicitNulls = false }
     private val analysisCache = mutableMapOf<String, K2Analysis>()
     private val projectModelCache = mutableMapOf<String, JsonObject>()
+    private val projectModelInventories = mutableMapOf<Path, ProjectModelInventory>()
     private val externalBuildStateCache = mutableMapOf<Path, BuildStateLayout>()
     private val externalBuildStateRuntimeRoots = mutableSetOf<Path>()
     private val projectModelCacheIsWorkerScoped = configuredBuildStateRoot != null
@@ -1313,6 +1314,7 @@ internal class Worker(
 
     fun handle(kind: Int, payload: ByteArray): String {
         IncrementalK2Runtime.reset()
+        projectModelInventories.clear()
         // Project-native model extraction inherits mutable build-tool state
         // that is intentionally outside the repository input hash. Keep its
         // in-memory cache scoped to the latest OpenProject so reopening observes
@@ -1416,8 +1418,8 @@ internal class Worker(
         require(requestedRepo.isDirectory()) { "repository does not exist: $requestedRepo" }
         val repo = requestedRepo.toRealPath()
         return cachedProjectModel(repo, compilation) {
-            val buildModel = validateProjectModelSourceFiles(repo, projectModel(repo, compilation))
-            val modelFiles = projectModelFiles(repo)
+            val buildModel = cachedProjectModel(repo, compilation)
+            val modelInputs = projectInventory(repo).modelInputs
         val sourceFiles = buildModel["sourceFiles"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }.orEmpty()
         val sourceRoots = sourceFiles.mapNotNull { sourceRoot(repo, it) }.distinct().sorted()
         val generatedRoots = sourceFiles.filter {
@@ -1540,7 +1542,7 @@ internal class Worker(
             buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
             put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown"))
             put("jdkHomeFingerprint", jdkFingerprint(Path.of(buildModel["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home"))))
-            putJsonArray("modelInputs") { modelFiles.map { buildJsonObject { put("path", repo.relativize(it).invariantSeparatorsPathString); put("hash", sha(it.readBytes())) } }.sortedBy { it.toString() }.forEach(::add) }
+            putJsonArray("modelInputs") { modelInputs.map { buildJsonObject { put("path", it.path); put("hash", it.hash) } }.sortedBy { it.toString() }.forEach(::add) }
         }
         val modelHash = sha(normalized.toString().toByteArray())
         val semanticInputManifest = buildJsonObject {
@@ -1766,13 +1768,9 @@ internal class Worker(
         requestCacheRequests++
         val keyStarted = System.nanoTime()
         val canonicalRepo = repo.toRealPath()
-        val inputHash = sha((listOf("projectModelSchema=7", "projectModelView=${if (extract == null) "RAW" else "CANONICAL"}") + projectModelFiles(canonicalRepo).map { file -> canonicalRepo.relativize(file).invariantSeparatorsPathString + ":" + sha(file.readBytes()) } +
-            Files.walk(canonicalRepo).use { paths -> paths.filter {
-                Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) && it.extension == "kt" &&
-                    !it.invariantSeparatorsPathString.contains("/build/") &&
-                    !it.invariantSeparatorsPathString.contains("/target/")
-            }.map { canonicalRepo.relativize(it).invariantSeparatorsPathString }.sorted().toList() }).joinToString("\n").toByteArray())
-        val key = "$canonicalRepo|${compilation ?: ":/main"}|$inputHash"
+        val view = if (extract == null) "RAW" else "CANONICAL"
+        val inventory = projectInventory(canonicalRepo)
+        val key = "$canonicalRepo|${compilation ?: ":/main"}|${inventory.inputHash(view)}"
         val keyMicros = elapsedMicros(keyStarted)
         val persistentRoot = System.getenv("CODECLEW_K2_INDEX_ROOT")
         val persistentCacheAuthorized = projectModelCacheIsWorkerScoped && extract != null
@@ -1818,10 +1816,17 @@ internal class Worker(
         val extractionStarted = System.nanoTime()
         val model = if (extract == null) {
             withSemanticInputManifestHash(
-                validateProjectModelSourceFiles(canonicalRepo, projectModel(canonicalRepo, compilation)),
+                validateProjectModelSourceFiles(canonicalRepo, projectModel(canonicalRepo, compilation).also {
+                    // Refresh after build-tool execution before admitting either model view.
+                    // A model must never be rebound to inputs changed by its own extraction.
+                    projectModelInventories.remove(canonicalRepo)
+                }),
             )
         } else {
             withSemanticInputManifestHash(extract())
+        }
+        if (projectInventory(canonicalRepo) != inventory) {
+            throw WorkerFailure("PROJECT_MODEL_CHANGED", "project model inputs changed during extraction")
         }
         val extractionMicros = elapsedMicros(extractionStarted)
         // The optional persistent copy lives only under the explicit private index root.
@@ -1909,17 +1914,8 @@ internal class Worker(
         }
     }
 
-    private fun projectModelFiles(repo: Path): List<Path> = Files.walk(repo).use { paths ->
-        paths.filter { Files.isRegularFile(it, java.nio.file.LinkOption.NOFOLLOW_LINKS) }.filter {
-            val relative = repo.relativize(it).invariantSeparatorsPathString
-            if (relative.split('/').any { part -> part in setOf("build", "target", ".gradle", ".kotlin", ".semantic-thread", ".git") }) return@filter false
-            val n = it.fileName.toString()
-                n == "settings.gradle" || n == "settings.gradle.kts" || n == "build.gradle" || n == "build.gradle.kts" ||
-                n == "gradle.properties" || n == "libs.versions.toml" || n == "gradle-wrapper.properties" || n == "gradle-wrapper.jar" || n == "gradlew" || n == "gradlew.bat" ||
-                n == "pom.xml" || n == "mvnw" || n == "mvnw.cmd" || relative.startsWith(".mvn/") ||
-                relative.startsWith("buildSrc/") || relative.startsWith("build-logic/") || relative.startsWith("gradle/")
-        }.sorted().toList()
-    }
+    private fun projectInventory(repo: Path): ProjectModelInventory =
+        projectModelInventories.getOrPut(repo) { ProjectModelInventory.capture(repo) }
 
     private fun sourceFiles(repo: Path): List<Path> = syntaxOnlyIndexSourceFiles(repo)
 
@@ -2157,7 +2153,7 @@ internal class Worker(
                 val declarationRelations = if (semanticAvailable) declarationRelationGraph(repo, selected, false, analysis, project!!) else JsonArray(emptyList())
                 val declarationDescriptors = if (semanticAvailable) declarationDescriptorGraph(repo, selected, false, analysis, project!!, module, sourceSet) else JsonArray(emptyList())
         val files = selectedFiles.map { path ->
-            val bytes = path.readBytes(); val kt = parse(path, if (syntaxOnly) bytes else null); val pkg = kt.packageFqName.asString()
+            val bytes = path.readBytes(); val kt = parse(path, bytes); val pkg = kt.packageFqName.asString()
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
                 .sortedBy { it.textOffset }.map { declarationJson(repo, path, pkg, it, analysis, module, sourceSet) }
@@ -2660,10 +2656,9 @@ internal class Worker(
         val containing = generateSequence(declaration.parent) { it.parent }.filterIsInstance<KtNamedDeclaration>().firstOrNull()?.let { symbolId(pkg, it, module.ifBlank { ":" }, sourceSet) }
         val relative = repo.relativize(path).invariantSeparatorsPathString
         val body = (declaration as? KtDeclarationWithBody)?.bodyExpression?.text.orEmpty()
-        val declarationFacts = analysis?.let { fileFacts(repo, path, it) }?.filter { fact ->
-            val start = fact["start"]?.jsonPrimitive?.intOrNull ?: -1; val end = fact["end"]?.jsonPrimitive?.intOrNull ?: -1
-            start >= declaration.textRange.startOffset && end <= declaration.textRange.endOffset
-        }.orEmpty()
+        val declarationFacts = analysis?.indexFor(repo)?.containedSemanticFacts(
+            path, declaration.textRange.startOffset, declaration.textRange.endOffset,
+        ).orEmpty()
         val signatureHash = sha(normalizeTokens(signature).toByteArray())
         val bodyHash = sha(normalizeTokens(body).toByteArray())
         val abiHash = sha(buildJsonObject { put("symbol", symbol); put("kind", declaration::class.simpleName.orEmpty()); put("signatureHash", signatureHash) }.toString().toByteArray())
@@ -2691,18 +2686,13 @@ internal class Worker(
     private fun resolvedIdentityTypes(repo: Path, path: Path, declaration: KtNamedDeclaration, analysis: K2Analysis?): JsonObject? {
         if (analysis == null) return null
         if (declaration is KtNamedFunction) {
-            return cfgRecords(repo, path, analysis).firstOrNull { fact ->
-                fact["start"]?.jsonPrimitive?.intOrNull == declaration.textRange.startOffset &&
-                    fact["end"]?.jsonPrimitive?.intOrNull == declaration.textRange.endOffset
-            }
+            return analysis.indexFor(repo).cfgAt(path, declaration.textRange.startOffset, declaration.textRange.endOffset)
         }
         if (declaration is KtProperty) {
             val initializer = declaration.initializer ?: return null
-            val fact = fileFacts(repo, path, analysis).filter { candidate ->
-                val start = candidate["start"]?.jsonPrimitive?.intOrNull ?: -1
-                val end = candidate["end"]?.jsonPrimitive?.intOrNull ?: -1
-                start >= initializer.textRange.startOffset && end <= initializer.textRange.endOffset
-            }.maxByOrNull { candidate ->
+            val fact = analysis.indexFor(repo).containedSemanticFacts(
+                path, initializer.textRange.startOffset, initializer.textRange.endOffset,
+            ).maxByOrNull { candidate ->
                 (candidate["end"]?.jsonPrimitive?.intOrNull ?: 0) - (candidate["start"]?.jsonPrimitive?.intOrNull ?: 0)
             }
             return fact?.get("type")?.let { type -> buildJsonObject { put("returnType", type) } }
@@ -2956,25 +2946,11 @@ internal class Worker(
         return enrichGraph(repo, path, graph, analysis)
     }
 
-    private fun fileFacts(repo: Path, path: Path, analysis: K2Analysis): List<JsonObject> {
-        val absolute = path.toAbsolutePath().normalize().invariantSeparatorsPathString
-        val relative = repo.relativize(path).invariantSeparatorsPathString
-        return analysis.facts.filter { fact ->
-            if (fact["recordType"]?.jsonPrimitive?.content != "SEMANTIC_FACT") return@filter false
-            val value = fact["file"]?.jsonPrimitive?.content?.replace('\\', '/') ?: return@filter false
-            value == absolute || value == relative || value.endsWith("/$relative")
-        }.sortedWith(compareBy({ it["start"]?.jsonPrimitive?.intOrNull ?: -1 }, { it["end"]?.jsonPrimitive?.intOrNull ?: -1 }, { it.toString() }))
-    }
+    private fun fileFacts(repo: Path, path: Path, analysis: K2Analysis): List<JsonObject> =
+        analysis.indexFor(repo).semanticFacts(path)
 
-    private fun cfgRecords(repo: Path, path: Path, analysis: K2Analysis): List<JsonObject> {
-        val absolute = path.toAbsolutePath().normalize().invariantSeparatorsPathString
-        val relative = repo.relativize(path).invariantSeparatorsPathString
-        return analysis.facts.filter { fact ->
-            if (fact["recordType"]?.jsonPrimitive?.content != "FIR_CFG") return@filter false
-            val value = fact["file"]?.jsonPrimitive?.content?.replace('\\', '/') ?: return@filter false
-            value == absolute || value == relative || value.endsWith("/$relative")
-        }
-    }
+    private fun cfgRecords(repo: Path, path: Path, analysis: K2Analysis): List<JsonObject> =
+        analysis.indexFor(repo).cfgRecords(path)
 
     private fun normalizeFirCfg(repo: Path, file: String, owner: String, kt: KtFile, fn: KtNamedFunction, cfg: JsonObject, analysis: K2Analysis, compilation: String): JsonObject {
         val rawNodes = cfg["nodes"]!!.jsonArray
@@ -3985,7 +3961,19 @@ internal class Worker(
 internal class WorkerFailure(val code: String, override val message: String) : RuntimeException(message)
 private data class CfgNext(val id: String, val edge: String = "CFG_NORMAL")
 private data class CfgLoopContext(val breakTarget: CfgNext, val continueTarget: CfgNext)
-private data class K2Analysis(val valid: Boolean, val facts: List<JsonObject>, val diagnostics: List<JsonObject>)
+private data class K2Analysis(val valid: Boolean, val facts: List<JsonObject>, val diagnostics: List<JsonObject>) {
+    private var indexedRepo: Path? = null
+    private var factIndex: CompilerFactIndex? = null
+
+    fun indexFor(repo: Path): CompilerFactIndex {
+        val normalized = repo.toAbsolutePath().normalize()
+        if (indexedRepo != normalized) {
+            factIndex = CompilerFactIndex(normalized, facts)
+            indexedRepo = normalized
+        }
+        return checkNotNull(factIndex)
+    }
+}
 private fun JsonObject.requiredString(name: String) = this[name]?.jsonPrimitive?.content ?: error("missing field $name")
 private fun JsonObject.requiredInt(name: String) = this[name]?.jsonPrimitive?.int ?: error("missing field $name")
 internal fun semanticK2CacheKey(extractorAuthority: JsonObject, semanticInput: String): String = sha(

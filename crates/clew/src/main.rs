@@ -1221,7 +1221,7 @@ fn doctor_check_label(id: &str) -> &str {
         "project.maven-launcher" => "Project Maven launcher is available",
         "repository.available" => "Target repository is available",
         "repository.git" => "Target is a Git repository",
-        "repository.clean" => "Target worktree is clean",
+        "repository.clean" => "Target has no staged or tracked worktree changes",
         "repository.target-ref-local" => "Target ref is an unambiguous local branch or tag",
         "repository.target-ref-mutation-branch" => "Mutation target ref is a local branch",
         "repository.target-ref-at-head" => "Target ref points to HEAD",
@@ -1248,7 +1248,9 @@ fn remediation_label(id: &str) -> &str {
         "INSTALL_PROJECT_LAUNCHER" => "restore the Maven wrapper or install Maven",
         "SELECT_EXISTING_REPOSITORY" => "select an existing repository",
         "SELECT_GIT_REPOSITORY" => "select a valid Git repository",
-        "CLEAN_TARGET_WORKTREE" => "commit, stash, or use a separate clean worktree",
+        "CLEAN_TARGET_WORKTREE" => {
+            "commit or stash staged/tracked changes, or use another worktree"
+        }
         "SELECT_LOCAL_TARGET_REF" => "select one unambiguous local branch or tag",
         "SELECT_LOCAL_BRANCH_REF" => "select a local branch for mutation",
         "CHECKOUT_TARGET_REF_AT_HEAD" => "check out the target ref at HEAD",
@@ -3932,8 +3934,10 @@ mod tests {
         assert!(report.contains("Status: ACTION REQUIRED"));
         assert!(report.contains("Scope: TASK"));
         assert!(report.contains("[PASS] Git is available (required)"));
-        assert!(report.contains("[ACTION_REQUIRED] Target worktree is clean (required)"));
-        assert!(report.contains("commit, stash, or use a separate clean worktree"));
+        assert!(report.contains(
+            "[ACTION_REQUIRED] Target has no staged or tracked worktree changes (required)"
+        ));
+        assert!(report.contains("commit or stash staged/tracked changes, or use another worktree"));
         assert!(!report.contains("/private/"));
     }
 

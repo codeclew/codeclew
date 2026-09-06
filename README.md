@@ -78,6 +78,10 @@ package bundled with releases.
 
 ## Source-build requirements
 
+For agent-assisted source development, start with [AGENTS.md](AGENTS.md).
+It defines the ordinary development workflow, focused verification, and the
+boundary between editing Codeclew and using its installed-release skill.
+
 - macOS or Linux
 - Python 3.11+
 - Git
@@ -196,8 +200,8 @@ request can be resolved directly from a clean repository's pinned Git commit:
   --request /absolute/private/source-locate.json
 ```
 
-This direct mode requires the canonical Git root, a clean worktree/index, and a
-branch resolving to the same commit as `HEAD`. It reads regular blobs from
+This direct mode requires the canonical Git root, no staged or tracked worktree
+changes, and a branch resolving to the same commit as `HEAD`. It reads regular blobs from
 that commit rather than live worktree files, rejects symlinks and submodules,
 and returns `codeclew-source-locate-result/1.1`. Its source authority exposes
 the pinned commit/tree and only digests for repository/branch identity; it
@@ -350,6 +354,14 @@ target authority:
 ```bash
 ./clew change check-freshness --session session:...
 ```
+
+Repository/task admission, direct source locate, and target freshness ignore
+untracked files, including local plans and notes. Analysis remains bound to the
+selected Git commit: untracked files are not included in its source snapshot.
+Staged additions and changes to tracked files still block these cleanliness
+checks. Publication preserves unrelated untracked files and rejects candidate
+paths that would overwrite them; managed candidate/source integrity and cleanup
+checks still account for untracked outputs.
 
 `DIRTY` preserves developer work and requires a human decision. `STALE`
 requires a new session/context/plan; Codeclew never rebases or replays the old

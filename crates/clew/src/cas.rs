@@ -14,6 +14,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
+mod lookup;
+
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 
@@ -34,14 +36,15 @@ const MAX_CATALOG_RECORD_BYTES: usize = MAX_PACK_INDEX_BYTES + 4096;
 const CATALOG_SNAPSHOT_INTERVAL: u64 = 64;
 const CATALOG_SNAPSHOT_TAIL_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CATALOG_RECOVERY_TAIL_BYTES: u64 = 256 * 1024 * 1024;
+const PARALLEL_CATALOG_MIN_OBJECTS: usize = 32 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PackManifest {
-    schema: String,
     data_sha256: String,
     data_size: u64,
     objects: Vec<PackEntry>,
+    schema: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,10 +70,10 @@ struct CatalogPack {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CatalogSnapshot {
-    schema: String,
-    sequence: u64,
     last_record_digest: Option<String>,
     packs: Vec<CatalogPack>,
+    schema: String,
+    sequence: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,11 +106,28 @@ enum CatalogOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CatalogRecord {
-    schema: String,
-    sequence: u64,
-    previous_record_digest: Option<String>,
     operation: CatalogOperation,
     pack: CatalogPack,
+    previous_record_digest: Option<String>,
+    schema: String,
+    sequence: u64,
+}
+
+// These closed catalog types and their nested structs declare fields in
+// canonical JSON key order. Serialize directly so validating a large catalog
+// does not allocate an additional serde_json::Value tree for every object.
+// Keep this allowlist closed; arbitrary Serialize types need canonical::bytes.
+trait CanonicalCatalogJson: Serialize {}
+impl CanonicalCatalogJson for PackManifest {}
+impl CanonicalCatalogJson for CatalogSnapshot {}
+impl CanonicalCatalogJson for CatalogRecord {}
+
+fn catalog_bytes(value: &impl CanonicalCatalogJson) -> Result<Vec<u8>, ClewError> {
+    serde_json::to_vec(value).map_err(internal)
+}
+
+fn catalog_hash(value: &impl CanonicalCatalogJson) -> Result<String, ClewError> {
+    Ok(canonical::hash_bytes(&catalog_bytes(value)?))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,6 +142,9 @@ struct CatalogState {
     deferred_snapshot_bytes: u64,
     packs: BTreeMap<String, PackManifest>,
     locations: HashMap<String, PackLocation>,
+    // When present, packs/locations contain journal additions only. Writers
+    // and GC first materialize the authoritative JSON snapshot through sync.
+    lookup: Option<Arc<lookup::Lookup>>,
 }
 
 type SharedCatalog = Arc<RwLock<CatalogState>>;
@@ -151,9 +174,10 @@ struct PackVerificationReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CasObject {
-    pub schema: String,
-    pub object_schema: String,
+    // Preserve canonical key order for the closed catalog serializer above.
     pub digest: String,
+    pub object_schema: String,
+    pub schema: String,
     pub size: u64,
 }
 
@@ -468,7 +492,7 @@ impl CasStore {
             data_size: offset,
             objects: entries,
         };
-        let bytes = canonical::bytes(&manifest).map_err(internal)?;
+        let bytes = catalog_bytes(&manifest)?;
         if bytes.len() > MAX_PACK_INDEX_BYTES {
             let _ = self.packs.remove_file(OsStr::new(&temporary));
             return Err(ClewError::new(
@@ -476,7 +500,7 @@ impl CasStore {
                 "CAS pack index exceeds its bounded size",
             ));
         }
-        let manifest_digest = canonical::hash(&manifest).map_err(internal)?;
+        let manifest_digest = canonical::hash_bytes(&bytes);
         let component = digest_component(&manifest_digest)?;
         let data_name = format!("{component}.pack");
         let index_name = format!("{component}.json");
@@ -530,13 +554,28 @@ impl CasStore {
         object: &CasObject,
         max_bytes: usize,
     ) -> Result<Option<Vec<u8>>, ClewError> {
-        let location = self
+        let catalog = self
             .pack_catalog
             .read()
-            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?
-            .locations
-            .get(&object.digest)
-            .cloned();
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))?;
+        let mut location = catalog.locations.get(&object.digest).cloned();
+        if let Some(lookup) = &catalog.lookup
+            && let Some(base) = lookup.find(&object.digest)?
+        {
+            if location
+                .as_ref()
+                .is_some_and(|added| added.entry.object != base.entry.object)
+            {
+                return Err(corrupt("CAS pack catalog has a digest collision"));
+            }
+            if location
+                .as_ref()
+                .is_none_or(|added| base.data_name < added.data_name)
+            {
+                location = Some(base);
+            }
+        }
+        drop(catalog);
         let Some(location) = location else {
             return Ok(None);
         };
@@ -568,12 +607,12 @@ impl CasStore {
             return Ok(());
         }
         let batch_lock = self.batch_lock()?;
-        if !self
+        let initialized = self
             .pack_catalog
             .read()
             .map_err(|_| internal("CAS pack catalog lock is poisoned"))?
-            .initialized
-        {
+            .initialized;
+        if !initialized && !self.try_lookup_catalog_locked()? {
             self.sync_catalog_locked()?;
         }
         drop(batch_lock);
@@ -585,6 +624,109 @@ impl CasStore {
         self.sync_catalog_locked()?;
         drop(batch_lock);
         Ok(())
+    }
+
+    fn read_catalog_head(&self) -> Result<CatalogHead, ClewError> {
+        let head_bytes = self
+            .catalog
+            .read_file(OsStr::new("head.json"), MAX_CATALOG_HEAD_BYTES)
+            .map_err(|_| corrupt("CAS catalog head is missing or unsafe"))?;
+        let head: CatalogHead = serde_json::from_slice(&head_bytes)
+            .map_err(|_| corrupt("CAS catalog head is invalid"))?;
+        if head.schema != CATALOG_HEAD_SCHEMA
+            || canonical::bytes(&head).map_err(internal)? != head_bytes
+            || digest_component(&head.snapshot_digest).is_err()
+            || Path::new(&head.snapshot_name).extension() != Some(OsStr::new("snapshot"))
+            || head.snapshot_name
+                != format!("{}.snapshot", digest_component(&head.snapshot_digest)?)
+        {
+            return Err(corrupt("CAS catalog head authority mismatch"));
+        }
+
+        Ok(head)
+    }
+
+    fn try_lookup_catalog_locked(&self) -> Result<bool, ClewError> {
+        if !self.catalog.file_exists(OsStr::new("head.json"))? {
+            return Ok(false);
+        }
+        let head = self.read_catalog_head()?;
+        let Some(lookup) = lookup::open(&self.catalog_snapshots, &head)? else {
+            return Ok(false);
+        };
+        let lookup = Arc::new(lookup);
+        let mut state = CatalogState {
+            initialized: true,
+            sequence: head.snapshot_sequence,
+            snapshot_sequence: head.snapshot_sequence,
+            last_record_digest: head.last_record_digest.clone(),
+            snapshot_digest: Some(head.snapshot_digest.clone()),
+            lookup: Some(Arc::clone(&lookup)),
+            ..CatalogState::default()
+        };
+        let mut names = self
+            .catalog_records
+            .entries()?
+            .into_iter()
+            .filter(|name| Path::new(name).extension() == Some(OsStr::new("record")))
+            .collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            let bytes = self
+                .catalog_records
+                .read_file(&name, MAX_CATALOG_RECORD_BYTES)
+                .map_err(|_| corrupt("CAS catalog record is missing or unsafe"))?;
+            let record: CatalogRecord = serde_json::from_slice(&bytes)
+                .map_err(|_| corrupt("CAS catalog record is invalid"))?;
+            let encoded = catalog_bytes(&record)?;
+            let digest = canonical::hash_bytes(&encoded);
+            if record.schema != CATALOG_RECORD_SCHEMA
+                || encoded != bytes
+                || name != OsStr::new(&catalog_record_name(record.sequence, &digest)?)
+            {
+                return Err(corrupt("CAS catalog record authority mismatch"));
+            }
+            if record.sequence <= state.sequence {
+                continue;
+            }
+            if record.sequence != state.sequence + 1
+                || record.previous_record_digest != state.last_record_digest
+            {
+                return Err(corrupt("CAS catalog record chain is discontinuous"));
+            }
+            // A removal can expose another copy of the same digest in an
+            // older pack. Recover the complete map instead of guessing it.
+            if record.operation == CatalogOperation::Remove {
+                return Ok(false);
+            }
+            if lookup.contains_pack(&record.pack.data_name) {
+                return Err(corrupt("CAS catalog adds an existing pack"));
+            }
+            apply_catalog_record(&mut state, &record)?;
+            state.sequence = record.sequence;
+            state.last_record_digest = Some(digest);
+            state.tail_bytes = state.tail_bytes.saturating_add(bytes.len() as u64);
+        }
+        // Visit the overlay in digest order. Validate it once after replay so
+        // large unsorted additions visit each base page at most once instead
+        // of churning the bounded cache for every journal entry.
+        let mut additions = state.locations.iter().collect::<Vec<_>>();
+        additions.sort_unstable_by_key(|(digest, _)| *digest);
+        for (digest, added) in additions {
+            if lookup
+                .find(digest)?
+                .is_some_and(|base| base.entry.object != added.entry.object)
+            {
+                return Err(corrupt("CAS pack catalog has a digest collision"));
+            }
+        }
+        *self
+            .pack_catalog
+            .write()
+            .map_err(|_| internal("CAS pack catalog lock is poisoned"))? = state;
+        // Deferred-snapshot admission still validates the same journal bound.
+        self.load_catalog_deferred_locked(&head)?;
+        Ok(true)
     }
 
     /// Synchronize only at process initialization, before publication, or on
@@ -611,21 +753,7 @@ impl CasStore {
             self.publish_catalog_snapshot_locked(&snapshot)?;
         }
 
-        let head_bytes = self
-            .catalog
-            .read_file(OsStr::new("head.json"), MAX_CATALOG_HEAD_BYTES)
-            .map_err(|_| corrupt("CAS catalog head is missing or unsafe"))?;
-        let head: CatalogHead = serde_json::from_slice(&head_bytes)
-            .map_err(|_| corrupt("CAS catalog head is invalid"))?;
-        if head.schema != CATALOG_HEAD_SCHEMA
-            || canonical::bytes(&head).map_err(internal)? != head_bytes
-            || digest_component(&head.snapshot_digest).is_err()
-            || Path::new(&head.snapshot_name).extension() != Some(OsStr::new("snapshot"))
-            || head.snapshot_name
-                != format!("{}.snapshot", digest_component(&head.snapshot_digest)?)
-        {
-            return Err(corrupt("CAS catalog head authority mismatch"));
-        }
+        let head = self.read_catalog_head()?;
 
         let needs_snapshot = {
             let state = self
@@ -638,7 +766,7 @@ impl CasStore {
             {
                 return Err(corrupt("CAS catalog head changed snapshot authority"));
             }
-            !state.initialized || head.snapshot_sequence > state.sequence
+            !state.initialized || state.lookup.is_some() || head.snapshot_sequence > state.sequence
         };
         if needs_snapshot {
             let bytes = self
@@ -651,7 +779,7 @@ impl CasStore {
             let snapshot: CatalogSnapshot = serde_json::from_slice(&bytes)
                 .map_err(|_| corrupt("CAS catalog snapshot is invalid"))?;
             if snapshot.schema != CATALOG_SNAPSHOT_SCHEMA
-                || canonical::bytes(&snapshot).map_err(internal)? != bytes
+                || catalog_bytes(&snapshot)? != bytes
                 || snapshot.sequence != head.snapshot_sequence
                 || snapshot.last_record_digest != head.last_record_digest
             {
@@ -662,6 +790,9 @@ impl CasStore {
                 .pack_catalog
                 .write()
                 .map_err(|_| internal("CAS pack catalog lock is poisoned"))? = rebuilt;
+            // This is a derived acceleration. Failure to publish its receipt
+            // leaves the fully verified JSON recovery path available.
+            let _ = lookup::publish(&self.catalog_snapshots, &snapshot, &head.snapshot_digest);
         }
 
         let mut record_names = self
@@ -681,9 +812,10 @@ impl CasStore {
                 .map_err(|_| corrupt("CAS catalog record is missing or unsafe"))?;
             let record: CatalogRecord = serde_json::from_slice(&bytes)
                 .map_err(|_| corrupt("CAS catalog record is invalid"))?;
-            let record_digest = canonical::hash(&record).map_err(internal)?;
+            let record_bytes = catalog_bytes(&record)?;
+            let record_digest = canonical::hash_bytes(&record_bytes);
             if record.schema != CATALOG_RECORD_SCHEMA
-                || canonical::bytes(&record).map_err(internal)? != bytes
+                || record_bytes != bytes
                 || catalog_record_name(record.sequence, &record_digest)? != name_text
             {
                 return Err(corrupt("CAS catalog record authority mismatch"));
@@ -822,14 +954,14 @@ impl CasStore {
             },
         };
         drop(state);
-        let bytes = canonical::bytes(&record).map_err(internal)?;
+        let bytes = catalog_bytes(&record)?;
         if bytes.len() > MAX_CATALOG_RECORD_BYTES {
             return Err(ClewError::new(
                 ErrorCode::ResourceLimit,
                 "CAS catalog record exceeds its bounded size",
             ));
         }
-        let digest = canonical::hash(&record).map_err(internal)?;
+        let digest = canonical::hash_bytes(&bytes);
         let name = catalog_record_name(record.sequence, &digest)?;
         if !self
             .catalog_records
@@ -884,7 +1016,7 @@ impl CasStore {
                     manifest: manifest.clone(),
                 },
             };
-            canonical::bytes(&record).map_err(internal)?.len() as u64
+            catalog_bytes(&record)?.len() as u64
         };
         let projected_tail = self
             .pack_catalog
@@ -927,7 +1059,7 @@ impl CasStore {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             snapshot_from_catalog_state(&state)
         };
-        let snapshot_bytes = canonical::bytes(&snapshot).map_err(internal)?;
+        let snapshot_bytes = catalog_bytes(&snapshot)?;
         if snapshot_bytes.len() > self.catalog_snapshot_byte_limit {
             // The journal is already the durable authority. Snapshotting is
             // maintenance, so an oversized projection must not turn a
@@ -973,14 +1105,14 @@ impl CasStore {
     }
 
     fn publish_catalog_snapshot_locked(&self, snapshot: &CatalogSnapshot) -> Result<(), ClewError> {
-        let bytes = canonical::bytes(snapshot).map_err(internal)?;
+        let bytes = catalog_bytes(snapshot)?;
         if bytes.len() > MAX_CATALOG_SNAPSHOT_BYTES {
             return Err(ClewError::new(
                 ErrorCode::ResourceLimit,
                 "CAS catalog snapshot exceeds its bounded size",
             ));
         }
-        let digest = canonical::hash(snapshot).map_err(internal)?;
+        let digest = canonical::hash_bytes(&bytes);
         let snapshot_name = format!("{}.snapshot", digest_component(&digest)?);
         if !self
             .catalog_snapshots
@@ -1013,6 +1145,7 @@ impl CasStore {
                 *state = catalog_state_from_snapshot(snapshot, &digest)?;
             }
         }
+        let _ = lookup::publish(&self.catalog_snapshots, snapshot, &digest);
         self.prune_catalog_metadata_locked(&snapshot_name, snapshot.sequence)?;
         self.prune_redundant_pack_metadata_locked()?;
         if self.catalog.file_exists(OsStr::new("deferred.json"))? {
@@ -1033,6 +1166,7 @@ impl CasStore {
             if name.to_string_lossy().starts_with(".tmp-")
                 || (Path::new(&name).extension() == Some(OsStr::new("snapshot"))
                     && name != OsStr::new(current_snapshot))
+                || lookup::obsolete(&name, current_snapshot)
             {
                 self.catalog_snapshots.remove_file(&name)?;
             }
@@ -1095,12 +1229,12 @@ impl CasStore {
             .map_err(|_| corrupt("CAS pack index is missing or unsafe"))?;
         let manifest: PackManifest =
             serde_json::from_slice(&bytes).map_err(|_| corrupt("CAS pack index is invalid"))?;
-        if canonical::bytes(&manifest).map_err(internal)? != bytes
+        if catalog_bytes(&manifest)? != bytes
             || expected.is_some_and(|expected| expected != &manifest)
         {
             return Err(corrupt("CAS pack authority mismatch"));
         }
-        let manifest_digest = canonical::hash(&manifest).map_err(internal)?;
+        let manifest_digest = canonical::hash_bytes(&bytes);
         let component = digest_component(&manifest_digest)?;
         validate_pack_manifest(data_name, &manifest)?;
         self.verify_pack_data(data_name, component, &manifest_digest, &manifest)?;
@@ -1273,6 +1407,8 @@ impl CasStore {
         authority: &StateAuthority,
         released: &crate::session::ReleasedSessionCasRoots,
     ) -> Result<StoragePlan, ClewError> {
+        // Reachability and physical reclamation require the complete pack set.
+        self.sync_catalog()?;
         let mut roots = BTreeMap::<String, CasObject>::new();
         let mut root_files_scanned = 0u64;
         let mut root_bytes_scanned = 0u64;
@@ -1816,6 +1952,37 @@ fn catalog_state_from_snapshot(
     snapshot: &CatalogSnapshot,
     snapshot_digest: &str,
 ) -> Result<CatalogState, ClewError> {
+    let large = snapshot.packs.len() > 1
+        && snapshot
+            .packs
+            .iter()
+            .map(|pack| pack.manifest.objects.len())
+            .sum::<usize>()
+            >= PARALLEL_CATALOG_MIN_OBJECTS;
+    // Only independent manifest checks run concurrently. Bound temporary
+    // serialization buffers and CPU use; small catalogs stay on the caller.
+    // Thread creation is an optimization, not a new admission requirement.
+    let pool = (large && std::thread::available_parallelism().is_ok_and(|cpus| cpus.get() > 1))
+        .then(|| rayon::ThreadPoolBuilder::new().num_threads(2).build().ok())
+        .flatten();
+    catalog_state_from_snapshot_in_pool(snapshot, snapshot_digest, pool.as_ref())
+}
+
+fn catalog_state_from_snapshot_in_pool(
+    snapshot: &CatalogSnapshot,
+    snapshot_digest: &str,
+    pool: Option<&rayon::ThreadPool>,
+) -> Result<CatalogState, ClewError> {
+    let mut checks = pool.map(|pool| {
+        pool.install(|| {
+            snapshot
+                .packs
+                .par_iter()
+                .map(|pack| validate_pack_manifest(&pack.data_name, &pack.manifest))
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+    });
     let mut packs = BTreeMap::new();
     let mut previous = None;
     for pack in &snapshot.packs {
@@ -1824,7 +1991,12 @@ fn catalog_state_from_snapshot(
                 "CAS catalog snapshot packs are not strictly sorted",
             ));
         }
-        validate_pack_manifest(&pack.data_name, &pack.manifest)?;
+        if let Some(checks) = &mut checks {
+            // Preserve the serial order of authority failures and insertion.
+            checks.next().expect("one check per catalog pack")?;
+        } else {
+            validate_pack_manifest(&pack.data_name, &pack.manifest)?;
+        }
         if packs
             .insert(pack.data_name.clone(), pack.manifest.clone())
             .is_some()
@@ -1845,6 +2017,7 @@ fn catalog_state_from_snapshot(
         deferred_snapshot_bytes: 0,
         packs,
         locations,
+        lookup: None,
     })
 }
 
@@ -1915,7 +2088,7 @@ fn validate_pack_manifest(data_name: &str, manifest: &PackManifest) -> Result<()
     if manifest.schema != CAS_PACK_SCHEMA {
         return Err(corrupt("CAS pack schema is invalid"));
     }
-    let manifest_digest = canonical::hash(manifest).map_err(internal)?;
+    let manifest_digest = catalog_hash(manifest)?;
     let component = digest_component(&manifest_digest)?;
     if data_name != format!("{component}.pack") {
         return Err(corrupt("CAS pack data name differs from its manifest"));
@@ -2073,6 +2246,149 @@ mod tests {
         let authority = StateAuthority::open(root.path().join("v2")).unwrap();
         let store = CasStore::open(&authority).unwrap();
         (root, store)
+    }
+
+    #[test]
+    fn catalog_serializer_preserves_legacy_object_and_metadata_identities() {
+        fn compatible(value: &impl CanonicalCatalogJson) {
+            assert_eq!(
+                catalog_bytes(value).unwrap(),
+                canonical::bytes(value).unwrap()
+            );
+            assert_eq!(
+                catalog_hash(value).unwrap(),
+                canonical::hash(value).unwrap()
+            );
+        }
+        let manifest = PackManifest {
+            schema: CAS_PACK_SCHEMA.into(),
+            data_sha256: canonical::hash_bytes(b"payload"),
+            data_size: u64::MAX,
+            objects: vec![
+                PackEntry {
+                    object: CasObject::for_bytes("test/catalog/1", b"").unwrap(),
+                    offset: 0,
+                },
+                PackEntry {
+                    object: CasObject {
+                        size: u64::MAX,
+                        ..CasObject::for_bytes("test/catalog/2", b"payload").unwrap()
+                    },
+                    offset: 1,
+                },
+            ],
+        };
+        compatible(&manifest);
+        let pack = CatalogPack {
+            data_name: format!(
+                "{}.pack",
+                digest_component(&canonical::hash(&manifest).unwrap()).unwrap()
+            ),
+            manifest,
+        };
+        for previous_record_digest in [None, Some(canonical::hash_bytes(b"previous"))] {
+            compatible(&CatalogSnapshot {
+                schema: CATALOG_SNAPSHOT_SCHEMA.into(),
+                sequence: u64::MAX,
+                last_record_digest: previous_record_digest.clone(),
+                packs: vec![pack.clone()],
+            });
+            for operation in [CatalogOperation::Add, CatalogOperation::Remove] {
+                compatible(&CatalogRecord {
+                    schema: CATALOG_RECORD_SCHEMA.into(),
+                    sequence: u64::MAX,
+                    previous_record_digest: previous_record_digest.clone(),
+                    operation,
+                    pack: pack.clone(),
+                });
+            }
+        }
+        compatible(&CatalogSnapshot {
+            schema: CATALOG_SNAPSHOT_SCHEMA.into(),
+            sequence: 0,
+            last_record_digest: None,
+            packs: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn parallel_catalog_checks_preserve_locations_and_first_failure() {
+        let (_root, store) = store();
+        store
+            .put_batch(vec![("test/catalog/1".into(), b"one".to_vec())])
+            .unwrap();
+        store
+            .put_batch(vec![("test/catalog/1".into(), b"two".to_vec())])
+            .unwrap();
+        let mut snapshot = snapshot_from_catalog_state(&store.pack_catalog.read().unwrap());
+        let digest = canonical::hash(&snapshot).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let serial = catalog_state_from_snapshot_in_pool(&snapshot, &digest, None).unwrap();
+        let parallel =
+            catalog_state_from_snapshot_in_pool(&snapshot, &digest, Some(&pool)).unwrap();
+        assert_eq!(serial.packs, parallel.packs);
+        assert_eq!(serial.sequence, parallel.sequence);
+        assert_eq!(serial.locations.len(), parallel.locations.len());
+        for (key, location) in &serial.locations {
+            let other = &parallel.locations[key];
+            assert_eq!(location.data_name, other.data_name);
+            assert_eq!(location.entry, other.entry);
+        }
+        snapshot.packs[0].manifest.schema = "invalid".into();
+        snapshot.packs[1].manifest.data_size += 1;
+        let serial = catalog_state_from_snapshot_in_pool(&snapshot, &digest, None).unwrap_err();
+        let parallel =
+            catalog_state_from_snapshot_in_pool(&snapshot, &digest, Some(&pool)).unwrap_err();
+        assert_eq!(serial.code, parallel.code);
+        assert_eq!(serial.message, "CAS pack schema is invalid");
+        assert_eq!(serial.message, parallel.message);
+    }
+
+    /// Read a copied catalog snapshot without opening or changing managed state.
+    #[test]
+    #[ignore = "local catalog loading measurement; requires CODECLEW_CATALOG_BENCHMARK_INPUT"]
+    fn catalog_loading_measurement() {
+        let path = std::env::var_os("CODECLEW_CATALOG_BENCHMARK_INPUT")
+            .expect("set CODECLEW_CATALOG_BENCHMARK_INPUT to a copied catalog snapshot");
+        let bytes = fs::read(path).unwrap();
+        let started = std::time::Instant::now();
+        let digest = canonical::hash_bytes(&bytes);
+        let snapshot: CatalogSnapshot = serde_json::from_slice(&bytes).unwrap();
+        let parsed = started.elapsed();
+        assert_eq!(catalog_bytes(&snapshot).unwrap(), bytes);
+        let checked = started.elapsed();
+        let state = catalog_state_from_snapshot(&snapshot, &digest).unwrap();
+        println!(
+            "catalog bytes={} packs={} objects={} parse={parsed:?} canonical={:?} rebuild={:?} total={:?}",
+            bytes.len(),
+            snapshot.packs.len(),
+            state.locations.len(),
+            checked - parsed,
+            started.elapsed() - checked,
+            started.elapsed(),
+        );
+        drop(state);
+        for jobs in [1, 2, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(jobs)
+                .build()
+                .unwrap();
+            let started = std::time::Instant::now();
+            pool.install(|| {
+                snapshot
+                    .packs
+                    .par_iter()
+                    .try_for_each(|pack| validate_pack_manifest(&pack.data_name, &pack.manifest))
+            })
+            .unwrap();
+            println!(
+                "catalog manifest validation jobs={jobs} elapsed={:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

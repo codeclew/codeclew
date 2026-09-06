@@ -671,13 +671,15 @@ fn create_with_selector(
     if terms.is_empty() || max_roots == 0 || max_roots > 256 {
         return Err(invalid("bounded context terms or root limit is invalid"));
     }
+    // Keep the shared CAS catalog alive while generation authority is loaded.
+    // Otherwise its last owner is dropped before context reads open it again.
+    let state = StateAuthority::process_default()?;
+    let store = CasStore::open(&state)?;
     let ready = if parent.is_some() {
         load_session_generation(session)?
     } else {
         ensure_session_generation(session)?
     };
-    let state = StateAuthority::process_default()?;
-    let store = CasStore::open(&state)?;
     let fact_limit = max_roots.saturating_mul(16).min(MAX_EVIDENCE_FACTS);
     let exact_expansion_terms =
         (parent.is_some() && exact_selector.is_none() && terms.len() <= MAX_EXACT_SELECTIONS)

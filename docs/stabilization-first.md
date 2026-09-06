@@ -2,6 +2,13 @@
 
 Status: independently reviewed, `PASS`.
 
+Scope: this policy governs the stabilization research and qualification
+protocol below. Its gates, receipts, and stop rules apply when executing that
+protocol. They do not gate ordinary source development or GitHub CI; use
+[`AGENTS.md`](../AGENTS.md) and the
+[README verification entrypoint](../README.md#verification) for that workflow.
+Self-host qualification remains subject to the protocol's gates.
+
 Codeclew must eventually change its Kotlin worker through the public managed
 Codeclew flow. That self-host contour is disabled until `G1 STABLE_CLEW`.
 Before `G0 FOUNDATION_ENTRY`, full edit/publish end-to-end checks and real
