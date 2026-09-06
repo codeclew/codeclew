@@ -27,9 +27,17 @@ class SourceComposedTestProjectModelTest {
             mainSource.writeText("package p\ninternal fun answer() = 42\n")
             testSource.writeText("package p\nfun checksAnswer() = answer() == 42\n")
             val missingOutput = repo.resolve("build/classes/kotlin/main")
+            val externalFriend = repo.resolveSibling("missing-external-friend.jar")
+            val unrelatedMissing = repo.resolve("libs/missing-dependency.jar")
             val selected = buildJsonObject {
                 putJsonArray("sourceFiles") { add(JsonPrimitive(testSource.toString())) }
-                putJsonArray("friendPaths") { add(JsonPrimitive(missingOutput.toString())) }
+                putJsonArray("friendPaths") { add(JsonPrimitive(missingOutput.toString())); add(JsonPrimitive(externalFriend.toString())) }
+                putJsonArray("classpath") {
+                    add(JsonPrimitive(missingOutput.toString()))
+                    add(JsonPrimitive(repo.resolve("build/resources/main").toString()))
+                    add(JsonPrimitive(unrelatedMissing.toString()))
+                    add(JsonPrimitive(externalFriend.toString()))
+                }
                 putJsonArray("buildModelBoundaries") {}
                 putJsonObject("fieldBoundaries") { put("friendPaths", "AVAILABLE_ORDERED") }
             }
@@ -54,6 +62,9 @@ class SourceComposedTestProjectModelTest {
                     composed["analysisSourceFiles"]?.jsonArray?.map { it.jsonPrimitive.content },
                 )
                 assertTrue(composed["friendPaths"]?.jsonArray?.isEmpty() == true)
+                assertEquals(listOf(unrelatedMissing.toString(), externalFriend.toString()), composed["classpath"]?.jsonArray?.map { it.jsonPrimitive.content })
+                assertTrue(composed["buildModelBoundaries"]?.jsonArray?.map { it.jsonPrimitive.content }
+                    ?.contains("KOTLIN_TEST_MAIN_CLASSPATH_OUTPUT_UNAVAILABLE_SOURCE_COMPOSED") == true)
                 assertEquals(
                     "SOURCE_COMPOSED_MAIN_SOURCES",
                     composed["fieldBoundaries"]?.jsonObject

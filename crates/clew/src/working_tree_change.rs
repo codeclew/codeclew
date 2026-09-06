@@ -186,6 +186,10 @@ pub struct Analysis {
     pub authority: String,
     pub ready: Option<ReadyGenerationSet>,
     pub declarations: Vec<Declaration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<crate::working_tree_consequences::Relation>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub relation_coverage_complete: bool,
     pub declaration_coverage_complete: bool,
     pub boundaries: Vec<Value>,
     pub failure: Option<Value>,
@@ -256,6 +260,8 @@ pub struct Comparison {
     pub comparability: String,
     pub obligations: Vec<String>,
     pub tests_executed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consequences: Option<crate::working_tree_consequences::Consequences>,
 }
 
 impl Comparison {
@@ -429,6 +435,7 @@ pub fn compare(
             "UNMATCHED_FILE_RENAMES_REMAIN_ADDITIONS_AND_DELETIONS".into(),
         ],
         tests_executed: false,
+        consequences: None,
     };
     if report.omitted_file_count > 0 || report.omitted_declaration_count > 0 {
         report
@@ -763,6 +770,10 @@ fn text_hunks(
         .collect())
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn invalid(message: &str) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
 }
@@ -857,6 +868,8 @@ mod tests {
             authority: "KOTLIN_COMPILER_SUPPORTED_SUBSET".into(),
             ready: None,
             declarations: vec![declaration],
+            relations: vec![],
+            relation_coverage_complete: false,
             declaration_coverage_complete: true,
             boundaries: vec![],
             failure: None,

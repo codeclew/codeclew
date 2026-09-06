@@ -41,14 +41,21 @@ def main() -> None:
         source = repo / "src/main/kotlin/Price.kt"
         source.parent.mkdir(parents=True)
         base = """package fixture
-fun price(): Int = 1
-fun consumer(): Int = price() + 1
-fun label(x: Int): String = x.toString()
-fun labelConsumer(): String = label(1)
+object Pricing {
+    fun price(): Int = 1
+    fun label(x: Int): String = x.toString()
+}
+fun consumer(): Int = Pricing.price() + 1
+fun labelConsumer(): String = Pricing.label(1)
+fun stopCalling(): Int = Pricing.price()
+fun main() { Pricing.price() }
 fun stable(): Int = 9
 fun documented(): Int { /* old comment */ return 7 }
 """
         source.write_text(base)
+        test = repo / "src/test/kotlin/PriceTest.kt"
+        test.parent.mkdir(parents=True)
+        test.write_text("package fixture\nimport kotlin.test.Test\nimport kotlin.test.assertEquals\nclass PriceTest { @Test fun priceCheck() { assertEquals(1, Pricing.price()) } }\n")
         deleted = source.parent / "Deleted.kt"
         deleted.write_text("package fixture\nfun removed(): Int = 4\n")
         renamed = source.parent / "Original.kt"
@@ -60,7 +67,7 @@ fun documented(): Int { /* old comment */ return 7 }
         git("-c", "user.name=Qualification", "-c", "user.email=test@codeclew.invalid", "commit", "-qm", "base")
         source.write_text(base.replace("= 1\n", "= 2\n"))
         git("add", ".")
-        saved = base.replace("= 1\n", "= 3\n").replace("x: Int", "x: Long").replace("label(1)", "label(1L)").replace("old comment", "new comment")
+        saved = base.replace("= 1\n", "= 3\n").replace("x: Int", "x: Long").replace("label(1)", "label(1L)").replace("old comment", "new comment").replace("stopCalling(): Int = Pricing.price()", "stopCalling(): Int = 0")
         source.write_text(saved)
         deleted.unlink()
         renamed.rename(source.parent / "Renamed.kt")
@@ -77,10 +84,10 @@ fun documented(): Int { /* old comment */ return 7 }
             changes = result["declarations"]
             def named(name):
                 return next(row for row in changes if name in json.dumps(row.get("after") or row.get("before")))
-            price = named("fixture/price")
+            price = named("fixture/Pricing.price")
             assert price["sourceTextChanged"] and not price["changedShapeFields"], price
             assert "3" in json.dumps(result["files"]), result
-            label = named("fixture/label#")
+            label = named("fixture/Pricing.label#")
             assert label["changedShapeFields"], label
             comment = named("fixture/documented")
             assert comment["sourceTextChanged"] and not comment["changedShapeFields"], comment
@@ -91,6 +98,19 @@ fun documented(): Int { /* old comment */ return 7 }
             assert kinds["Original.kt"] == "DELETED" and kinds["Renamed.kt"] == "ADDED", kinds
             assert result["testsExecuted"] is False
             assert all(row["status"] == "COLLECTED" for row in result["cleanup"]), result
+            graph = run("change", "graph", "--comparison", result["comparisonId"])
+            assert graph["testScope"] == "TEST_COMPILATION_NOT_ANALYZED", graph
+            assert graph["edges"] and graph["candidates"], graph
+            assert any(edge["presence"] == "BEFORE_ONLY" for edge in graph["edges"]), graph
+            assert any(node["entrypoints"] for node in graph["nodes"]), graph
+            assert all(c["authority"] == "STATIC_DERIVED_AFFECTED_CANDIDATE" for c in graph["candidates"]), graph
+            assert any("consumer" in json.dumps(node) for node in graph["nodes"]), graph
+            with_tests = run(*command, "--compilation", ":/test")
+            reports.append(with_tests["comparisonId"])
+            test_graph = run("change", "graph", "--comparison", with_tests["comparisonId"])
+            assert test_graph["testScope"] == "EXPLICIT_GRADLE_TEST_COMPILATION_SELECTED_RELATION_EVIDENCE_ONLY", test_graph
+            assert any(c["selectedTestCompilation"] and c["source"]["file"].endswith("PriceTest.kt") for c in test_graph["candidates"]), test_graph
+            assert test_graph["testsExecuted"] is False
             retained = run("change", "show", "--comparison", result["comparisonId"])
             source.write_text(saved + "\nfun broken( = missing\n")
             assert run("change", "show", "--comparison", result["comparisonId"]) == retained
@@ -114,7 +134,8 @@ fun documented(): Int { /* old comment */ return 7 }
     summary = {"schema": "codeclew-working-tree-change-qualification/1.0", "status": "PASS",
                "checks": ["saved-not-staged", "body-change", "signature-change", "comment-only-no-behavior-claim",
                           "added-deleted-renamed", "retained-after-edit", "broken-after-preserves-text",
-                          "changed-build-model-binding", "index-and-refs-preserved", "session-cleanup"],
+                          "changed-build-model-binding", "index-and-refs-preserved", "session-cleanup",
+                          "direct-consumers", "removed-before-call", "jvm-main-evidence", "selected-test-relations-without-test-run"],
                "commandSeconds": [row["seconds"] for row in transcript]}
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary))

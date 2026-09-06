@@ -130,6 +130,8 @@ enum ChangeCommand {
     Inspect(ChangeInspectArgs),
     /// Read a retained comparison without rebuilding either project snapshot.
     Show(ComparisonIdArgs),
+    /// Read bounded direct relation evidence from the retained comparison.
+    Graph(ComparisonIdArgs),
     /// Release one retained comparison; normal storage GC reclaims unshared bytes.
     Forget(ComparisonIdArgs),
     Open(ChangeOpenArgs),
@@ -1396,6 +1398,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         Command::Change {
             command: ChangeCommand::Show(args),
         } => clew::working_tree_change_service::show(&args.comparison),
+        Command::Change {
+            command: ChangeCommand::Graph(args),
+        } => clew::working_tree_change_service::graph(&args.comparison),
         Command::Change {
             command: ChangeCommand::Forget(args),
         } => clew::working_tree_change_service::forget(&args.comparison),

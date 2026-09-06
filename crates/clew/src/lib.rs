@@ -63,3 +63,5 @@ pub mod proto {
 
 pub mod working_tree_change;
 pub mod working_tree_change_service;
+
+pub mod working_tree_consequences;

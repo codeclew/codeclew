@@ -1757,23 +1757,48 @@ internal class Worker(
             )
         }
         val omittedFriendOutput = retainedFriendPaths.size != declaredFriendPaths.size
+        // Gradle's selected test libraries can also contain the same absent
+        // main output (notably classes/java/main in a Kotlin-only project).
+        // Source-compose declared local friend outputs and the selected project's
+        // conventional main resources output. Absence is a coverage boundary,
+        // not proof of resource/runtime equivalence. Other missing dependencies
+        // remain hard model errors.
+        val declaredFriendLocations = declaredFriendPaths.mapNotNull { value ->
+            runCatching { Path.of(value.jsonPrimitive.content) }.getOrNull()
+                ?.let { (if (it.isAbsolute) it else repo.resolve(it)).normalize() }
+        }.toSet()
+        val projectDirectory = selectedModel["projectDir"]?.jsonPrimitive?.contentOrNull
+            ?.let(Path::of)?.let { if (it.isAbsolute) it else repo.resolve(it) }?.normalize() ?: repo
+        val mainResourcesOutput = projectDirectory.resolve("build/resources/main").normalize()
+        val declaredClasspath = selectedModel["classpath"] as? JsonArray
+        val retainedClasspath = declaredClasspath?.filter { value ->
+            val parsed = runCatching { Path.of(value.jsonPrimitive.content) }.getOrNull()
+                ?: return@filter true
+            val path = (if (parsed.isAbsolute) parsed else repo.resolve(parsed)).normalize()
+            (path !in declaredFriendLocations && path != mainResourcesOutput) || !path.startsWith(repo) ||
+                Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        }
+        val omittedFriendClasspath = declaredClasspath != null && retainedClasspath!!.size != declaredClasspath.size
         val boundaries = selectedModel["buildModelBoundaries"]?.jsonArray
             ?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty() + listOfNotNull(
             "KOTLIN_TEST_ANALYSIS_INCLUDES_MAIN_SOURCES",
             "KOTLIN_TEST_FRIEND_OUTPUT_UNAVAILABLE_SOURCE_COMPOSED"
                 .takeIf { omittedFriendOutput },
+            "KOTLIN_TEST_MAIN_CLASSPATH_OUTPUT_UNAVAILABLE_SOURCE_COMPOSED"
+                .takeIf { omittedFriendClasspath },
         )
         val fieldBoundaries = selectedModel["fieldBoundaries"]?.jsonObject
 
         return buildJsonObject {
             selectedModel.forEach { (key, value) ->
-                if (key !in setOf("sourceFiles", "analysisSourceFiles", "friendPaths", "buildModelBoundaries", "fieldBoundaries")) {
+                if (key !in setOf("sourceFiles", "analysisSourceFiles", "friendPaths", "classpath", "buildModelBoundaries", "fieldBoundaries")) {
                     put(key, value)
                 }
             }
             putJsonArray("sourceFiles") { analysisSources.forEach(::add) }
             putJsonArray("analysisSourceFiles") { analysisSources.forEach(::add) }
             putJsonArray("friendPaths") { retainedFriendPaths.forEach(::add) }
+            retainedClasspath?.let { put("classpath", JsonArray(it)) }
             putJsonArray("buildModelBoundaries") { boundaries.distinct().sorted().forEach(::add) }
             putJsonObject("fieldBoundaries") {
                 fieldBoundaries?.forEach { (key, value) ->

@@ -1,6 +1,6 @@
 # Working-tree analysis and change consequences
 
-Status: Deliveries 1–2 implemented and Kotlin/Rust fixture-qualified in `feature/working-tree-impact`; direct consequences follow.
+Status: Deliveries 1–3 implemented and fixture-qualified in `feature/working-tree-impact`; retained explanation follows.
 Prepared: 2026-09-06.
 Source baseline: `b666129b750b0db3225a090d3570fd528897c983`.
 
@@ -254,3 +254,25 @@ both model manifests and separates exact source changes from projected shapes.
   outside Delivery 2; syntax evidence does not claim compiler-resolved callers.
 - Diff allocation and retained row/preview budgets are explicit. Large line
   diffs fall back to exact coarse replacement ranges, with full CAS anchors.
+
+## Delivery 3 evidence (2026-09-06)
+
+`change graph --comparison <id>` returns a bounded one-hop union of before and
+after Kotlin compiler relations. Exact callable identity and source containment
+are required; unresolved family targets remain boundaries. Candidate impact is
+a static inference, separate from the relation and any runtime/test outcome.
+
+- Public Kotlin qualification passes direct consumers, a removed before-call,
+  JVM main evidence and an actual `PriceTest.kt` consumer when `:/test` is
+  explicitly selected. Main-only reports unanalysed test scope.
+- Main comparison took 36.982 s; main plus tests took 22.292 s; retained graphs
+  took 5.095/5.063 s. Broken after-source remained incomplete with before
+  evidence. No test execution or universal no-impact claim is made.
+- Source-composed Kotlin test analysis now excludes only missing local declared
+  main friend outputs and the selected project's conventional main resource
+  output from its classpath, recording a coverage boundary. Missing external
+  dependencies remain errors. Focused worker tests pass; all three trusted
+  Kotlin distributions were rebuilt from the shared worker change.
+- Graph budgets, overload abstention, stale removed-edge claims and failed-after
+  unresolved claims have focused regression coverage. The public qualification
+  verifies unchanged index/refs and comparison cleanup.

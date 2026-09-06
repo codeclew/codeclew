@@ -25,3 +25,5 @@ preview.json
 # Repo-local scratch/render exports are private and never source authority.
 /tmp/
 /work/
+
+**/.kotlin/

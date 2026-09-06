@@ -103,7 +103,7 @@ pub fn inspect(request: InspectRequest) -> Result<Value, ClewError> {
         let after_object = after.working_tree.as_ref().unwrap().snapshot.clone();
         let before_analysis = analyze(&store, before_session, &before_snapshot);
         let after_analysis = analyze(&store, &after, &after_snapshot);
-        let report = change::compare(
+        let mut report = change::compare(
             &store,
             Side {
                 profile_id: request.profile_id.clone(),
@@ -120,6 +120,9 @@ pub fn inspect(request: InspectRequest) -> Result<Value, ClewError> {
             &before_snapshot,
             &after_snapshot,
         )?;
+        report.consequences = Some(crate::working_tree_consequences::build(&report)?);
+        report.seal()?;
+        report.verify()?;
         let bytes = canonical::bytes(&report).map_err(internal)?;
         if bytes.len() > change::MAX_REPORT_BYTES {
             return Err(resource("comparison evidence exceeds 64 MiB"));
@@ -164,7 +167,18 @@ fn analyze(
         Err(error) => return failed_analysis(authority, None, error),
     };
     match collect_declarations(store, session, snapshot, &ready) {
-        Ok((declarations, boundaries)) => Analysis {
+        Ok(CollectedFacts {
+            declarations,
+            relations,
+            boundaries,
+        }) => Analysis {
+            relation_coverage_complete: session.language == SessionLanguage::Kotlin
+                && boundaries.is_empty()
+                && ready
+                    .compilations
+                    .iter()
+                    .all(|c| c.coverage == "COMPLETE" && c.certainty == "VERIFIED"),
+            relations,
             status: "AVAILABLE".into(),
             authority: authority.into(),
             declaration_coverage_complete: boundaries.is_empty()
@@ -190,10 +204,18 @@ fn failed_analysis(
         authority: authority.into(),
         ready,
         declarations: vec![],
+        relations: vec![],
+        relation_coverage_complete: false,
         declaration_coverage_complete: false,
         boundaries: vec![],
         failure: Some(json!({"code":error.code,"message":error.message})),
     }
+}
+
+struct CollectedFacts {
+    declarations: Vec<Declaration>,
+    relations: Vec<crate::working_tree_consequences::Relation>,
+    boundaries: Vec<Value>,
 }
 
 fn collect_declarations(
@@ -201,10 +223,11 @@ fn collect_declarations(
     session: &SessionAuthority,
     snapshot: &RepositoryInputSnapshot,
     ready: &ReadyGenerationSet,
-) -> Result<(Vec<Declaration>, Vec<Value>), ClewError> {
+) -> Result<CollectedFacts, ClewError> {
     let sources = change::source_files(snapshot);
     let mut cache = change::SourceCache::default();
     let mut declarations = Vec::new();
+    let mut relations = Vec::new();
     let mut boundaries = Vec::new();
     let mut count = 0u64;
     let mut bytes = 0usize;
@@ -243,6 +266,22 @@ fn collect_declarations(
                 if boundaries.len() < change::MAX_DECLARATIONS { boundaries.push(payload); }
                 return Ok(());
             }
+            if kotlin && schema == "declaration-relation/0.1" {
+                crate::semantic_validation::validate_kotlin_semantic_payload(&payload)?;
+                if relations.len() == crate::working_tree_consequences::MAX_RELATIONS { return Err(resource("comparison exceeds direct relation budget")); }
+                let file = string(&payload, "file")?;
+                let source = sources.get(file).ok_or_else(|| invalid("relation source is absent from its input snapshot"))?;
+                let start = offset(&payload, "start")?;
+                let end = offset(&payload, "end")?;
+                if start >= end { return Err(invalid("relation source range is invalid")); }
+                relations.push(crate::working_tree_consequences::Relation {
+                    compilation:compilation.compilation.clone(), owner:string(&payload,"owner")?.into(), target:string(&payload,"target")?.into(),
+                    kind:string(&payload,"kind")?.into(), source:cache.anchor(store, file, &source.content, start, end)?,
+                    fact_key:fact.fact_key.clone(), payload:fact.payload.clone(),
+                    exact_call_target:payload.get("targetCompilerCallableId").is_some() && payload.get("targetJvmDescriptor").is_some(),
+                });
+                return Ok(());
+            }
             let declaration = if kotlin { schema == "declaration-descriptor/0.1" } else { payload["kind"] == "declaration" };
             if !declaration { return Ok(()); }
             if kotlin { crate::semantic_validation::validate_kotlin_semantic_payload(&payload)?; }
@@ -257,7 +296,7 @@ fn collect_declarations(
             let kind = string(&payload, "declarationKind")?.to_owned();
             let family = if kotlin { payload.get("compilerCallableId").and_then(Value::as_str).map(str::to_owned) }
                 else { Some(format!("syntax:{file}#{kind}:{}", string(&payload, "name")?)) };
-            let projected_shape = if kotlin { crate::thread_callables::projected_payload(&payload) }
+            let projected_shape = if kotlin { projected_declaration_shape(&payload) }
                 else { json!({"name":payload["name"], "declarationKind":kind, "cfgStatus":payload["cfgStatus"]}) };
             declarations.push(Declaration { compilation: compilation.compilation.clone(), symbol, family, kind,
                 source: anchor,
@@ -282,7 +321,21 @@ fn collect_declarations(
             declaration.complete_shape = false;
         }
     }
-    Ok((declarations, boundaries))
+    Ok(CollectedFacts {
+        declarations,
+        relations,
+        boundaries,
+    })
+}
+
+fn projected_declaration_shape(payload: &Value) -> Value {
+    let mut shape = crate::thread_callables::projected_payload(payload);
+    if let Some(fields) = shape.as_object_mut() {
+        for key in ["startLine", "endLine", "lineProvenance"] {
+            fields.remove(key);
+        }
+    }
+    shape
 }
 
 pub fn load(comparison_id: &str) -> Result<(ChangeRoot, Comparison), ClewError> {
@@ -321,6 +374,39 @@ pub fn show(comparison_id: &str) -> Result<Value, ClewError> {
     bounded_stdout(&root, &report)
 }
 
+pub fn graph(comparison_id: &str) -> Result<Value, ClewError> {
+    let (_, report) = load(comparison_id)?;
+    let graph = report
+        .consequences
+        .as_ref()
+        .ok_or_else(|| invalid("comparison predates direct relation evidence; inspect again"))?;
+    let mut value = json!({"schema":"codeclew-change-graph/1.0","comparisonId":comparison_id,
+        "status":graph.status,"scope":graph.scope,"beforeSnapshot":graph.before_snapshot,"afterSnapshot":graph.after_snapshot,
+        "nodes":graph.nodes.iter().take(16).collect::<Vec<_>>(),"edges":graph.edges.iter().take(32).collect::<Vec<_>>(),
+        "candidates":graph.candidates.iter().take(32).collect::<Vec<_>>(),"boundaries":graph.boundaries.iter().take(8).collect::<Vec<_>>(),
+        "testScope":graph.test_scope,"testsExecuted":false,"obligations":graph.obligations,"unresolvedRelations":graph.unresolved_relation_count});
+    loop {
+        value["omittedNodes"] = json!(
+            graph.omitted_node_count + graph.nodes.len() - value["nodes"].as_array().unwrap().len()
+        );
+        value["omittedEdges"] = json!(
+            graph.omitted_edge_count + graph.edges.len() - value["edges"].as_array().unwrap().len()
+        );
+        value["omittedCandidates"] =
+            json!(graph.candidates.len() - value["candidates"].as_array().unwrap().len());
+        value["omittedBoundaries"] =
+            json!(graph.boundaries.len() - value["boundaries"].as_array().unwrap().len());
+        if canonical::bytes(&value).map_err(internal)?.len() <= 60 * 1024 {
+            return Ok(value);
+        }
+        let field = ["nodes", "edges", "candidates", "boundaries"]
+            .into_iter()
+            .find(|field| !value[*field].as_array().unwrap().is_empty())
+            .ok_or_else(|| resource("direct relation summary exceeds stdout budget"))?;
+        value[field].as_array_mut().unwrap().pop();
+    }
+}
+
 fn model_bindings(analysis: &Analysis) -> Vec<Value> {
     analysis.ready.iter().flat_map(|ready| &ready.compilations).map(|compilation|
         json!({"compilation":compilation.compilation,"derivedInputManifest":compilation.derived_input_manifest,
@@ -341,6 +427,11 @@ pub fn bounded_stdout(root: &ChangeRoot, report: &Comparison) -> Result<Value, C
         "comparability":report.comparability,"obligations":report.obligations,"testsExecuted":false,
         "counts":{"changedFiles":report.total_changed_file_count,"changedDeclarations":report.total_changed_declaration_count,
             "unchangedDeclarations":report.unchanged_declaration_count,"omittedFiles":report.omitted_file_count,"omittedDeclarations":report.omitted_declaration_count},
+        "consequences":report.consequences.as_ref().map(|graph| json!({"status":graph.status,"scope":graph.scope,
+            "nodeCount":graph.nodes.len(),"edgeCount":graph.edges.len(),"candidateCount":graph.candidates.len(),
+            "omittedNodes":graph.omitted_node_count,"omittedEdges":graph.omitted_edge_count,"unresolvedRelations":graph.unresolved_relation_count,
+            "testScope":graph.test_scope,"testsExecuted":false,"obligations":graph.obligations,
+            "candidates":graph.candidates.iter().take(12).collect::<Vec<_>>() })),
         "files":report.files.iter().take(32).collect::<Vec<_>>(),
         "declarations":report.declarations.iter().take(24).collect::<Vec<_>>()});
     loop {
@@ -416,4 +507,23 @@ fn resource(message: &str) -> ClewError {
 }
 fn internal(message: impl std::fmt::Display) -> ClewError {
     ClewError::new(ErrorCode::Internal, message.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn source_line_movement_does_not_change_projected_declaration_shape() {
+        let before = json!({"schema":"declaration-descriptor/0.1","file":"A.kt","start":0,"end":10,
+            "startLine":1,"endLine":2,"lineProvenance":"UTF8_BYTE_RANGE_OVER_COMPILATION_SOURCE","symbolIdentity":"callable:p/f#jvm:()I"});
+        let mut after = before.clone();
+        after["startLine"] = json!(3);
+        after["endLine"] = json!(4);
+        after["start"] = json!(2);
+        after["end"] = json!(12);
+        assert_eq!(
+            projected_declaration_shape(&before),
+            projected_declaration_shape(&after)
+        );
+    }
 }
