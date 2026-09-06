@@ -126,6 +126,12 @@ struct CapabilitiesArgs {
 
 #[derive(Subcommand)]
 enum ChangeCommand {
+    /// Compare pinned HEAD with immutable saved Kotlin/Gradle or Rust inputs.
+    Inspect(ChangeInspectArgs),
+    /// Read a retained comparison without rebuilding either project snapshot.
+    Show(ComparisonIdArgs),
+    /// Release one retained comparison; normal storage GC reclaims unshared bytes.
+    Forget(ComparisonIdArgs),
     Open(ChangeOpenArgs),
     CheckFreshness(SessionIdArgs),
     Prepare(ChangePrepareArgs),
@@ -386,6 +392,26 @@ struct SupportSummarizeArgs {
     /// Absolute caller-owned mode-0600 file containing one Codeclew JSON result.
     #[arg(long)]
     input: PathBuf,
+}
+
+#[derive(Args)]
+struct ChangeInspectArgs {
+    #[command(flatten)]
+    session: SessionOpenArgs,
+    #[arg(long)]
+    profile: String,
+    /// Explicitly select saved files, including staged and unstaged changes.
+    #[arg(long, required = true)]
+    working_tree: bool,
+    /// The first comparison profile supports HEAD, pinned once during capture.
+    #[arg(long, default_value = "HEAD")]
+    base: String,
+}
+
+#[derive(Args)]
+struct ComparisonIdArgs {
+    #[arg(long)]
+    comparison: String,
 }
 
 #[derive(Args)]
@@ -1365,6 +1391,15 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             "this is a source checkout; update it through the approved Git commit or tag",
         )),
         Command::Change {
+            command: ChangeCommand::Inspect(args),
+        } => change_inspect(args),
+        Command::Change {
+            command: ChangeCommand::Show(args),
+        } => clew::working_tree_change_service::show(&args.comparison),
+        Command::Change {
+            command: ChangeCommand::Forget(args),
+        } => clew::working_tree_change_service::forget(&args.comparison),
+        Command::Change {
             command: ChangeCommand::Open(args),
         } => change_open(args),
         Command::Change {
@@ -2199,6 +2234,49 @@ fn admit_and_open_context(
             Ok(())
         })),
     }
+}
+
+fn change_inspect(args: ChangeInspectArgs) -> Result<Value, ClewError> {
+    if !args.working_tree
+        || args.base != "HEAD"
+        || !matches!(args.session.model_cache, ModelCachePolicyArg::NonCacheable)
+        || args.session.external_build_state.is_some()
+    {
+        return Err(invalid(
+            "change inspect requires --working-tree, --base HEAD and non-cacheable model authority",
+        ));
+    }
+    let runtime = active_runtime()?;
+    let repository = absolute(&args.session.repo)?;
+    let language = session_language(args.session.language);
+    let readiness = doctor(
+        &runtime,
+        DoctorScope::Task,
+        Some(&repository),
+        Some(&args.session.target_ref),
+        Some(DoctorTask {
+            language,
+            profile_id: &args.profile,
+            operation: DoctorOperation::Analysis,
+            compilations: &args.session.compilation,
+            committed: false,
+            working_tree: true,
+        }),
+    )?;
+    require_task_ready(&readiness)?;
+    let mut result = clew::working_tree_change_service::inspect(
+        clew::working_tree_change_service::InspectRequest {
+            repository,
+            target_ref: args.session.target_ref,
+            language,
+            compilations: args.session.compilation,
+            profile_id: args.profile,
+            generation_jobs: args.session.generation_jobs,
+        },
+    )?;
+    result["admission"] = json!({"status":"PASS", "taskAuthority":readiness["taskAuthority"],
+        "readinessDigest":canonical::hash(&readiness).map_err(internal)?, "runtimeKey":runtime.runtime_key, "runtimeMode":runtime.mode});
+    Ok(result)
 }
 
 fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {

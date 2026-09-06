@@ -148,6 +148,22 @@ To analyze committed HEAD while excluding local edits, use `--committed`.
 The two source flags conflict. Existing defaults and clean-target mutation
 requirements remain in effect. The user checkout, index and refs are preserved.
 
+Compare saved Kotlin/Gradle or Rust edits against pinned HEAD with the same
+repository, ref, language, profile and compilation flags:
+
+```sh
+clew change inspect --repo <repo> --target-ref <branch> --language kotlin \
+  --profile kotlin-jvm-gradle-analysis --compilation :/main --working-tree
+clew change show --comparison <comparison-id>
+clew change forget --comparison <comparison-id>
+```
+
+The retained report separates exact text changes, declaration correspondence,
+projected shape changes and unavailable analysis. It includes both model input
+bindings, explicit coverage limits and before/after source anchors. Inspect
+collects its temporary sessions; the report stays readable until forgotten.
+Tests are not executed by inspection.
+
 ### Developing Codeclew itself
 
 The installed agent skill governs use of Codeclew on a target repository.
@@ -157,6 +173,7 @@ relevant Rust, worker or packaging checks. Consumer task admission is not a
 prerequisite for maintainer edits. Preserve unrelated work and use an isolated
 worktree when appropriate; a consumer `CLEAN_TARGET_WORKTREE` result does not
 require cleaning the contributor's checkout or stopping implementation.
+
 
 ## Practical code navigation
 

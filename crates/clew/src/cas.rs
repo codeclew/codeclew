@@ -1291,6 +1291,7 @@ impl CasStore {
                 "threads",
                 "runs",
                 "generations",
+                "changes",
             ] {
                 scan_managed_roots(
                     &authority.directory(Path::new(name))?,

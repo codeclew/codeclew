@@ -60,3 +60,6 @@ pub mod workspace_publish;
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/semantic_thread.worker.v1.rs"));
 }
+
+pub mod working_tree_change;
+pub mod working_tree_change_service;

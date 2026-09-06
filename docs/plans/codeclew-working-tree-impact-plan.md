@@ -1,6 +1,6 @@
 # Working-tree analysis and change consequences
 
-Status: Delivery 1 implemented and Kotlin/Rust fixture-qualified in `feature/working-tree-impact`; comparison follows.
+Status: Deliveries 1–2 implemented and Kotlin/Rust fixture-qualified in `feature/working-tree-impact`; direct consequences follow.
 Prepared: 2026-09-06.
 Source baseline: `b666129b750b0db3225a090d3570fd528897c983`.
 
@@ -232,3 +232,25 @@ first result.
   with non-cacheable model authority. It never publishes shared incremental
   heads. The synthetic Git repository remains private; the source binding
   retains the original base commit and input snapshot.
+
+## Delivery 2 evidence (2026-09-06)
+
+`change inspect --working-tree --base HEAD` retains one bounded comparison
+against the pinned commit. `change show --comparison <id>` reads that evidence;
+`change forget --comparison <id>` releases its retention root. The result binds
+both model manifests and separates exact source changes from projected shapes.
+
+- `scripts/qualification/working-tree-change.py` passes for Kotlin bodies,
+  signature changes, comments, added/deleted/renamed files, broken after-source
+  and changed Gradle inputs. Index bytes and refs remain unchanged; temporary
+  sessions are collected. Broken after-source returns `INCOMPLETE` with exact
+  text and available before evidence.
+- The initial inspect including development capsule startup took 68.286 s;
+  retained reads took 5.104/5.328 s. Broken-source and changed-build inspections
+  took 13.190/15.489 s on this small fixture. These are observations, not a
+  general repository latency promise.
+- A managed Rust CLI regression proves retained comparison reads survive both
+  session GC and storage GC, plus later user edits. Direct consequences are
+  outside Delivery 2; syntax evidence does not claim compiler-resolved callers.
+- Diff allocation and retained row/preview budgets are explicit. Large line
+  diffs fall back to exact coarse replacement ranges, with full CAS anchors.

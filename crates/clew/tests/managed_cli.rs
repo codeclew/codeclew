@@ -3144,3 +3144,129 @@ fn working_tree_context_retains_saved_rust_files_and_cleans_its_own_snapshot() {
         b"pub fn later() -> i32 { 5 }\n"
     );
 }
+
+#[test]
+fn working_tree_comparison_retains_exact_diff_after_session_and_storage_gc() {
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repo = temporary.path().join("repo");
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(
+        repo.join("Cargo.toml"),
+        b"[package]\nname=\"fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("Cargo.lock"),
+        b"version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("src/lib.rs"),
+        b"pub fn price() -> i32 { 1 }\npub fn stable() -> i32 { 9 }\n",
+    )
+    .unwrap();
+    fs::write(repo.join("old.txt"), b"removed\n").unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@codeclew.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    );
+    fs::write(
+        repo.join("src/lib.rs"),
+        b"pub fn price() -> i32 { 2 }\npub fn stable() -> i32 { 9 }\n",
+    )
+    .unwrap();
+    run_git(&repo, &["add", "."]);
+    let saved = b"pub fn price() -> i32 { 3 }\npub fn stable() -> i32 { 9 }\n";
+    fs::write(repo.join("src/lib.rs"), saved).unwrap();
+    fs::remove_file(repo.join("old.txt")).unwrap();
+    fs::write(repo.join("new.txt"), b"added\n").unwrap();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    let state_root = temporary.path().join("state/v2");
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&digest);
+    let binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{digest}.lease"));
+    let run = |args: &[&str]| {
+        let output = run_managed(&binary, &state_root, &runtime, &lease, args, None);
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+            panic!(
+                "stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        assert!(output.status.success(), "{value}");
+        value
+    };
+    let inspected = run(&[
+        "change",
+        "inspect",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--target-ref",
+        "main",
+        "--language",
+        "rust",
+        "--profile",
+        "rust-syntax",
+        "--compilation",
+        "cargo:Cargo.toml#fixture#lib#fixture",
+        "--working-tree",
+    ]);
+    assert_eq!(inspected["status"], "BOUNDED_COMPARISON", "{inspected}");
+    assert_eq!(inspected["counts"]["changedFiles"], 3);
+    assert_eq!(inspected["counts"]["changedDeclarations"], 1);
+    assert_eq!(inspected["counts"]["unchangedDeclarations"], 1);
+    assert_eq!(
+        inspected["declarations"][0]["changes"][0],
+        "DECLARATION_SOURCE_TEXT_CHANGED"
+    );
+    assert_eq!(inspected["testsExecuted"], false);
+    assert!(
+        inspected["cleanup"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["status"] == "COLLECTED"),
+        "{inspected}"
+    );
+    let id = inspected["comparisonId"].as_str().unwrap();
+    let before_show = run(&["change", "show", "--comparison", id]);
+    fs::write(repo.join("src/lib.rs"), b"pub fn later() {}\n").unwrap();
+    run(&["storage", "gc", "--apply"]);
+    let retained = run(&["change", "show", "--comparison", id]);
+    assert_eq!(retained, before_show);
+    assert!(
+        retained["files"]
+            .to_string()
+            .contains("pub fn price() -> i32 { 3 }")
+    );
+    assert!(!retained["files"].to_string().contains("pub fn later"));
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    run(&["change", "forget", "--comparison", id]);
+    let missing = run_managed(
+        &binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &["change", "show", "--comparison", id],
+        None,
+    );
+    assert!(!missing.status.success());
+}
