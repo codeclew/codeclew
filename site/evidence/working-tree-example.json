@@ -1,0 +1,4672 @@
+{
+  "afterSnapshot": {
+    "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+    "objectSchema": "codeclew-repository-input-snapshot/2.0",
+    "schema": "codeclew-cas-object/2.0",
+    "size": 6726
+  },
+  "baseRevision": "3f5635f55fb676c87565278339597a9cb2cfc106",
+  "beforeSnapshot": {
+    "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+    "objectSchema": "codeclew-repository-input-snapshot/2.0",
+    "schema": "codeclew-cas-object/2.0",
+    "size": 6570
+  },
+  "claims": [
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 57,
+        "endLine": 3,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 37,
+        "startLine": 3
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 57,
+        "endLine": 3,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 37,
+        "startLine": 3
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:546abf65b5ccbbe4d3e3fefbb180905bbe5db82ae3975494a2366c52240569ef",
+          "family": "fixture/Pricing.price",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:070f810699addfee7ec28f6c028f4ccf97ea65af98b41cb9cc35caa75213eed3",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 910
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.price",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.price#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 57,
+            "endLine": 3,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 37,
+            "startLine": 3
+          },
+          "symbol": "callable:fixture/Pricing.price#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:546abf65b5ccbbe4d3e3fefbb180905bbe5db82ae3975494a2366c52240569ef",
+          "family": "fixture/Pricing.price",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:070f810699addfee7ec28f6c028f4ccf97ea65af98b41cb9cc35caa75213eed3",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 910
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.price",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.price#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 57,
+            "endLine": 3,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 37,
+            "startLine": 3
+          },
+          "symbol": "callable:fixture/Pricing.price#jvm:()I"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 328,
+        "endLine": 11,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 276,
+        "startLine": 11
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 340,
+        "endLine": 11,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 288,
+        "startLine": 11
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:7690ec44aa38cf2bafb68645b28c861f395cf0f026b389cb514944b5c7a37976",
+          "family": "fixture/documented",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:c93e52f6843fc63811349162c5719c17e284a1318488095778d0047e3ef458bc",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/documented",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/documented#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 328,
+            "endLine": 11,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 276,
+            "startLine": 11
+          },
+          "symbol": "callable:fixture/documented#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:1d42b16f78d0fac63f47e5b877425a0a93526dc3f72f3642dd03fc1e476e40c2",
+          "family": "fixture/documented",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:82276d34c9f52f33b47fd4ada2ee7275e72fe8439650c3c7d414105c04569422",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/documented",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/documented#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 340,
+            "endLine": 11,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 288,
+            "startLine": 11
+          },
+          "symbol": "callable:fixture/documented#jvm:()I"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:23317ba60dbff71c54f19e327d67d7a898674680fb2975dd5f3fa50d31f0a849",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:23317ba60dbff71c54f19e327d67d7a898674680fb2975dd5f3fa50d31f0a849",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 105,
+        "endLine": 5,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 104,
+        "endLine": 5,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:5e6f129735222e19ec3072974b68c09692c1f5265516b9f118cba4dcb76dc36c",
+          "family": null,
+          "kind": "CLASS",
+          "payload": {
+            "digest": "sha256:16f0869a31ba34c996c8764846c9eb08bab62d072340469c2ee1a4bdb373b5c9",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 743
+          },
+          "projectedShape": {
+            "compilerClassId": "fixture/Pricing",
+            "containment": [],
+            "declarationKind": "CLASS",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "class:fixture/Pricing",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 105,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "class:fixture/Pricing"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:70b1d1eb81af19b15bc722508502a2c6198b8a0c3d3889bc936bee8e83a4e411",
+          "family": null,
+          "kind": "CLASS",
+          "payload": {
+            "digest": "sha256:a7a567fd0c5c91f264f7264227c72e6539279d50c6d6e9bef874af107a2268c1",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 743
+          },
+          "projectedShape": {
+            "compilerClassId": "fixture/Pricing",
+            "containment": [],
+            "declarationKind": "CLASS",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "class:fixture/Pricing",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 104,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "class:fixture/Pricing"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:2621fe73e10baaefdb4fc2d1617467b0147799c76a6090b17c2d960f457b80cd",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:2621fe73e10baaefdb4fc2d1617467b0147799c76a6090b17c2d960f457b80cd",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:5870b4ada154415b07540c0d48598de46fb2c58187a10ac0b231adde53d3017a",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 37
+        },
+        "end": 36,
+        "endLine": 2,
+        "file": "src/main/kotlin/Added.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": null,
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:ea0a8d5578ab505ebbc4cdd32b80e4e3d1bfb5f1742e915d809104252e79deb2",
+          "family": "fixture/added",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:3b7285c2a1bd34e798b1dd9b2687fe9c33156d64fb694e7e3d643beadb0db420",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 865
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/added",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/added#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:5870b4ada154415b07540c0d48598de46fb2c58187a10ac0b231adde53d3017a",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 36,
+            "endLine": 2,
+            "file": "src/main/kotlin/Added.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/added#jvm:()I"
+        },
+        "before": null,
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:3eb86ddebf59e6f138ebcf68e1c25bb15304aa044c4609b0ae47c6687c30576d",
+        "changedShapeFields": [],
+        "changes": [
+          "ADDED"
+        ],
+        "correspondence": "UNMATCHED_AFTER_DECLARATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:3eb86ddebf59e6f138ebcf68e1c25bb15304aa044c4609b0ae47c6687c30576d",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 37
+        },
+        "end": 36,
+        "endLine": 2,
+        "file": "src/main/kotlin/Renamed.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 37
+        },
+        "end": 36,
+        "endLine": 2,
+        "file": "src/main/kotlin/Original.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:b0d3bd0ab20a19eb63a8ccf535a63b4c0dddeb9cd31c15820a0e427e2742c380",
+          "family": "fixture/moved",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:9fb438143ef22bb0b5f34988876fef828dfc036e7e9de60cfc743b980f17fde8",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 867
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/moved",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/moved#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 36,
+            "endLine": 2,
+            "file": "src/main/kotlin/Renamed.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/moved#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:ff745b16582134de0660c7f4482ab47b7ef2831799656d04c7b08b621ee275d0",
+          "family": "fixture/moved",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:36442a804032acc050dcf3cddc28e75889124f9266e8314a5415cd90ee03d6ef",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 868
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/moved",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/moved#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 36,
+            "endLine": 2,
+            "file": "src/main/kotlin/Original.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/moved#jvm:()I"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:408b922e47a5071f5db4da192d13fc96d18972e7de12c1fa5e130c6072424111",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_MOVED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": false
+      },
+      "claimId": "change:sha256:408b922e47a5071f5db4da192d13fc96d18972e7de12c1fa5e130c6072424111",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration has a recorded identity, location or projected-shape change."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 195,
+        "endLine": 7,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 148,
+        "startLine": 7
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 193,
+        "endLine": 7,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 147,
+        "startLine": 7
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:0f01d57719fd5eb1e5be0787388acf304442f1f846ab52af81a3e83d4d953e95",
+          "family": "fixture/labelConsumer",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:5d15fd555664ecdcf8d423f64858082541479bcf1bd3a8023f0e2911e77f8ce6",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 920
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/labelConsumer",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 195,
+            "endLine": 7,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 148,
+            "startLine": 7
+          },
+          "symbol": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:eea40415596ad89e97777d7526ad97cef48a1051a8c51bc644f359d7bac2b975",
+          "family": "fixture/labelConsumer",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:7159b4916160bbce90bb2bd6ede3cc5d6d31ec06d5566b95c5fe421225a308c4",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 920
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/labelConsumer",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 193,
+            "endLine": 7,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 147,
+            "startLine": 7
+          },
+          "symbol": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 222,
+        "endLine": 8,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 196,
+        "startLine": 8
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 234,
+        "endLine": 8,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 194,
+        "startLine": 8
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:918fc75f9b2137d82d392cb971070151766549734f2c4facf22d50ac413e68e1",
+          "family": "fixture/stopCalling",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:2b56674ab0ecad10c86a1d19f1bc6c0089120376146b58cc5def0da261ea31fe",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/stopCalling",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/stopCalling#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 222,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 196,
+            "startLine": 8
+          },
+          "symbol": "callable:fixture/stopCalling#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:e30f001a4a724d4d1a47b1fb45c5a6a65c1d507e1d6e45230e5d836825d0765b",
+          "family": "fixture/stopCalling",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:62dd2fad823e6e4a49485b80645967ba8e62f5e6e823c4bf9002df76793b7abf",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/stopCalling",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/stopCalling#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 234,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 194,
+            "startLine": 8
+          },
+          "symbol": "callable:fixture/stopCalling#jvm:()I"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 103,
+        "endLine": 4,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 62,
+        "startLine": 4
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 102,
+        "endLine": 4,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 62,
+        "startLine": 4
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:e528b68a4d2f0057a64c97d51ee0ea3dd51ee79fd91bbc273a8ecb17acd6786a",
+          "family": "fixture/Pricing.label",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:ebefbe70f69f2d835a0283011450d7531bb81cca4d787e15b74beaab7b8fb049",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 1018
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.label",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "(J)Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [
+              {
+                "hasDefault": false,
+                "index": 0,
+                "nullable": false,
+                "type": "kotlin/Long"
+              }
+            ],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.label#jvm:(J)Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 103,
+            "endLine": 4,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 62,
+            "startLine": 4
+          },
+          "symbol": "callable:fixture/Pricing.label#jvm:(J)Ljava/lang/String;"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:a67a95fa5cb336fd048fa74edede81a9dd83b7cd14f0c0cfb9e6c2cd234560a7",
+          "family": "fixture/Pricing.label",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:c0694f62d09f80b95eaa44c6b2aba0725ab6bb17fb3be746157482f5d879c51d",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 1017
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.label",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "(I)Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [
+              {
+                "hasDefault": false,
+                "index": 0,
+                "nullable": false,
+                "type": "kotlin/Int"
+              }
+            ],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.label#jvm:(I)Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 102,
+            "endLine": 4,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 62,
+            "startLine": 4
+          },
+          "symbol": "callable:fixture/Pricing.label#jvm:(I)Ljava/lang/String;"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5",
+        "changedShapeFields": [
+          "jvmDescriptor",
+          "parameterTypes",
+          "symbolIdentity"
+        ],
+        "changes": [
+          "PARTIAL_PROJECTED_SHAPE_CHANGED",
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "SINGLE_REMAINING_DECLARATION_IN_COMPILER_CALLABLE_FAMILY",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 105,
+        "endLine": 5,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 104,
+        "endLine": 5,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:9af7f31229ddcb2ad81887041a5d6d71c1ab3206b7ee0943ceb7eef106c19913",
+          "family": "fixture/Pricing.Pricing",
+          "kind": "CONSTRUCTOR",
+          "payload": {
+            "digest": "sha256:47c337c862341b00b14100023a8e014ec7004d297919dc05e3b86a1478cd50fa",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 806
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.Pricing",
+            "compilerClassId": "fixture/Pricing",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "CONSTRUCTOR",
+            "effectiveVisibility": "private-in-class",
+            "exportBoundary": "PRIVATE_API",
+            "isPrimary": true,
+            "jvmDescriptor": "()V",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "symbolIdentity": "constructor:fixture/Pricing.Pricing#jvm:()V",
+            "typeParameters": [],
+            "visibility": "private"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 105,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "constructor:fixture/Pricing.Pricing#jvm:()V"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:bbe2d65dab15a0d8daae84f25bde9f278db0199dcedd7571136fe206d069a911",
+          "family": "fixture/Pricing.Pricing",
+          "kind": "CONSTRUCTOR",
+          "payload": {
+            "digest": "sha256:1015480d09742db21235ab5a21d0b83e82041a34a3aaba60512abc2780c5932c",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 806
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.Pricing",
+            "compilerClassId": "fixture/Pricing",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "CONSTRUCTOR",
+            "effectiveVisibility": "private-in-class",
+            "exportBoundary": "PRIVATE_API",
+            "isPrimary": true,
+            "jvmDescriptor": "()V",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "symbolIdentity": "constructor:fixture/Pricing.Pricing#jvm:()V",
+            "typeParameters": [],
+            "visibility": "private"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 104,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "constructor:fixture/Pricing.Pricing#jvm:()V"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:e90160878e1e53e3f3fb5c5ea998ee0f5bea2c5c253ff9651ff22ffba5d60fc4",
+        "changedShapeFields": [],
+        "changes": [
+          "DECLARATION_SOURCE_TEXT_CHANGED"
+        ],
+        "correspondence": "EXACT_SYMBOL_AND_COMPILATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:e90160878e1e53e3f3fb5c5ea998ee0f5bea2c5c253ff9651ff22ffba5d60fc4",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": null,
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:71436194c2d0ccecf3d5c82fa000d32098ce3e21a7ab08e2155017fea87a6412",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 39
+        },
+        "end": 38,
+        "endLine": 2,
+        "file": "src/main/kotlin/Deleted.kt",
+        "start": 16,
+        "startLine": 2
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": {
+        "after": null,
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:8a86e5d3dde73eaad5bdb2f423d1884d4530a99d8a57e94ae7bc3f13e9323c11",
+          "family": "fixture/removed",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:7988f2f85e0dcfd6f86207a5989e86b79caa4aa87b0ef28d9b21677077a37f0b",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 871
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/removed",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/removed#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:71436194c2d0ccecf3d5c82fa000d32098ce3e21a7ab08e2155017fea87a6412",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 39
+            },
+            "end": 38,
+            "endLine": 2,
+            "file": "src/main/kotlin/Deleted.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/removed#jvm:()I"
+        },
+        "behavioralEquivalence": "NOT_PROVEN_BY_THIS_COMPARISON",
+        "changeId": "sha256:f81f9186d8a8ec210d075b8cb16ce8f28e8cc525d9999c14a3a4406bcd1a8695",
+        "changedShapeFields": [],
+        "changes": [
+          "REMOVED"
+        ],
+        "correspondence": "UNMATCHED_BEFORE_DECLARATION",
+        "sourceTextChanged": true
+      },
+      "claimId": "change:sha256:f81f9186d8a8ec210d075b8cb16ce8f28e8cc525d9999c14a3a4406bcd1a8695",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "The retained declaration text changed. Behavioral change is not proven by text alone."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 253,
+        "endLine": 9,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 223,
+        "startLine": 9
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 265,
+        "endLine": 9,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 235,
+        "startLine": 9
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": null,
+      "claimId": "sha256:55817576e35c7184c641a680d0f075ba059104abc8afb5196311a0c2510c6397",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "This directly connected declaration retains its own before/after evidence. Unchanged text does not prove it is unaffected at runtime."
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "end": 147,
+        "endLine": 6,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 106,
+        "startLine": 6
+      },
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "STATIC_DERIVED",
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "end": 146,
+        "endLine": 6,
+        "file": "src/main/kotlin/Price.kt",
+        "start": 105,
+        "startLine": 6
+      },
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "change": null,
+      "claimId": "sha256:f26c966a06f064275fe742a77c1f3d023aa1fe45af312ccd552a3d4f48727211",
+      "kind": "DECLARATION_OBSERVATION",
+      "statement": "This directly connected declaration retains its own before/after evidence. Unchanged text does not prove it is unaffected at runtime."
+    },
+    {
+      "after": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:a7c65fc62177c4f157277b6c312a6fc4e2ebfa62a5698c5e69bfd5c799d4c2d2",
+          "kind": "CALLS",
+          "owner": "fixture/labelConsumer",
+          "payload": {
+            "digest": "sha256:d458b8049bfb2ebe31069ccf523d60c78cebe375821817ee44673cbb0150b864",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 774
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 195,
+            "endLine": 7,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 178,
+            "startLine": 7
+          },
+          "target": "callable:fixture/Pricing.label#jvm:(J)Ljava/lang/String;"
+        }
+      ],
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "COMPILER_PROVEN",
+      "before": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:e4eae5e00ab353a15cfdf4760d050b5eaddf87f31230ca5590d692c76777e23c",
+          "kind": "CALLS",
+          "owner": "fixture/labelConsumer",
+          "payload": {
+            "digest": "sha256:330ee3d4a0ac7754a3f40a333570773d93d783a5f3ff50007e90e8cb1e197d41",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 772
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 193,
+            "endLine": 7,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 177,
+            "startLine": 7
+          },
+          "target": "callable:fixture/Pricing.label#jvm:(I)Ljava/lang/String;"
+        }
+      ],
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "claimId": "sha256:77ed3d25c12edf29e4ff87c2cf11bfe047458f8d7e60e28950e327961ee9523c",
+      "freshness": "CURRENT",
+      "kind": "DIRECT_RELATION",
+      "statement": "Compiler relation in the recorded side and supported subset; no runtime failure or execution order is implied."
+    },
+    {
+      "after": [],
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "COMPILER_PROVEN",
+      "before": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:1256796cc1685d061a735ef0ca0013c2bdad303be422902281f9ce1a73a81893",
+          "kind": "CALLS",
+          "owner": "fixture/stopCalling",
+          "payload": {
+            "digest": "sha256:2a4e8526b44c85f779b85e6da7db26511ea2a273cfb72c0265cc333ef597ff7e",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 598
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 234,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 219,
+            "startLine": 8
+          },
+          "target": "callable:fixture/Pricing.price#jvm:()I"
+        }
+      ],
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "claimId": "sha256:48dc9df2efa648f3977feeb40f9ef6d335b116f67ed3202e9b919bb997769e97",
+      "freshness": "UNRESOLVED",
+      "kind": "DIRECT_RELATION",
+      "statement": "Compiler relation in the recorded side and supported subset; no runtime failure or execution order is implied."
+    },
+    {
+      "after": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:4863ada00e79d96b08082a659deb8c37bcfc90cbddf32bd1ad1cf337e4d17b3f",
+          "kind": "CALLS",
+          "owner": "fixture/main",
+          "payload": {
+            "digest": "sha256:1dbd608d5a8e87993fca180dc845f3426c3a01de0530485e7e9137e57d13a1c2",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 588
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 251,
+            "endLine": 9,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 236,
+            "startLine": 9
+          },
+          "target": "callable:fixture/Pricing.price#jvm:()I"
+        }
+      ],
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "COMPILER_PROVEN",
+      "before": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:29e601b675d76d8174bdedda3c27e904f99386df04f945c82109526719e11dcc",
+          "kind": "CALLS",
+          "owner": "fixture/main",
+          "payload": {
+            "digest": "sha256:8503611158148284d61717bcbc65331be10a66f7d8f91e540c6f116779bc1430",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 588
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 263,
+            "endLine": 9,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 248,
+            "startLine": 9
+          },
+          "target": "callable:fixture/Pricing.price#jvm:()I"
+        }
+      ],
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "claimId": "sha256:4e5ad693be3c13e9c968dfdf03b687ec55eb8a23542531b704cc0fcff840cdfe",
+      "freshness": "CURRENT",
+      "kind": "DIRECT_RELATION",
+      "statement": "Compiler relation in the recorded side and supported subset; no runtime failure or execution order is implied."
+    },
+    {
+      "after": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:bb12d59e6bf10983772820703efdeb5b045f42b5504d8d906c0e0f2ddc962cdb",
+          "kind": "CALLS",
+          "owner": "fixture/consumer",
+          "payload": {
+            "digest": "sha256:8a3bfecbdf0036637cee8588e512d8524e46410e2c8ec642d86262268613f58d",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 606
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 143,
+            "endLine": 6,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 128,
+            "startLine": 6
+          },
+          "target": "callable:fixture/Pricing.price#jvm:()I"
+        }
+      ],
+      "afterSnapshot": {
+        "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6726
+      },
+      "authority": "COMPILER_PROVEN",
+      "before": [
+        {
+          "compilation": ":/main",
+          "exactCallTarget": true,
+          "factKey": "kotlin:relation:52aef1f04da6eb144c8c4b85d95f5102e0933a0029ff6441ea5d974665430480",
+          "kind": "CALLS",
+          "owner": "fixture/consumer",
+          "payload": {
+            "digest": "sha256:c118aff5414dd87001ce9ff9c4d022937ed7e8556268db9b681b07e039aa0b7d",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 606
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 142,
+            "endLine": 6,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 127,
+            "startLine": 6
+          },
+          "target": "callable:fixture/Pricing.price#jvm:()I"
+        }
+      ],
+      "beforeSnapshot": {
+        "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+        "objectSchema": "codeclew-repository-input-snapshot/2.0",
+        "schema": "codeclew-cas-object/2.0",
+        "size": 6570
+      },
+      "claimId": "sha256:a7d8626d5041c5fc54e5ccc8fdc57b9df6e8e0b8fdf4738ec95c57db9105623e",
+      "freshness": "CURRENT",
+      "kind": "DIRECT_RELATION",
+      "statement": "Compiler relation in the recorded side and supported subset; no runtime failure or execution order is implied."
+    }
+  ],
+  "comparisonId": "comparison:sha256:7a4fdee8c247753f345530f128e961b669b428f988b11fcb6084468d7d691e05",
+  "counts": {
+    "declarations": 10,
+    "files": 5,
+    "omittedDeclarations": 0,
+    "omittedFiles": 0,
+    "unchangedDeclarations": 3
+  },
+  "coverage": {
+    "afterAnalysis": "AVAILABLE",
+    "afterDeclarationsComplete": false,
+    "afterFailure": null,
+    "beforeAnalysis": "AVAILABLE",
+    "beforeDeclarationsComplete": false,
+    "beforeFailure": null,
+    "comparability": "SAME_SCOPE_PROFILE_RUNTIME",
+    "compilations": [
+      ":/main"
+    ],
+    "obligations": [
+      "TEXT_CHANGES_DO_NOT_PROVE_BEHAVIORAL_CHANGES",
+      "UNCHANGED_PROJECTED_SHAPE_DOES_NOT_PROVE_UNCHANGED_BEHAVIOR",
+      "ONLY_SELECTED_COMPILATIONS_ARE_ANALYZED",
+      "TESTS_WERE_NOT_EXECUTED",
+      "UNMATCHED_FILE_RENAMES_REMAIN_ADDITIONS_AND_DELETIONS",
+      "DECLARATION_COVERAGE_IS_PARTIAL"
+    ],
+    "status": "BOUNDED_COMPARISON",
+    "testsExecuted": false
+  },
+  "embeddedSourceBytes": 962,
+  "files": [
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:5870b4ada154415b07540c0d48598de46fb2c58187a10ac0b231adde53d3017a",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 37
+        },
+        "executable": false
+      },
+      "before": null,
+      "binary": false,
+      "file": "src/main/kotlin/Added.kt",
+      "hunks": [
+        {
+          "after": {
+            "content": {
+              "digest": "sha256:5870b4ada154415b07540c0d48598de46fb2c58187a10ac0b231adde53d3017a",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 37,
+            "endLine": 2,
+            "file": "src/main/kotlin/Added.kt",
+            "start": 0,
+            "startLine": 1
+          },
+          "afterText": "package fixture\nfun added(): Int = 5\n",
+          "before": null,
+          "beforeText": "",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        }
+      ],
+      "kind": "ADDED",
+      "scope": "SELECTED_DECLARATION_SOURCE",
+      "textChanged": true
+    },
+    {
+      "after": null,
+      "before": {
+        "content": {
+          "digest": "sha256:71436194c2d0ccecf3d5c82fa000d32098ce3e21a7ab08e2155017fea87a6412",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 39
+        },
+        "executable": false
+      },
+      "binary": false,
+      "file": "src/main/kotlin/Deleted.kt",
+      "hunks": [
+        {
+          "after": null,
+          "afterText": "",
+          "before": {
+            "content": {
+              "digest": "sha256:71436194c2d0ccecf3d5c82fa000d32098ce3e21a7ab08e2155017fea87a6412",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 39
+            },
+            "end": 39,
+            "endLine": 2,
+            "file": "src/main/kotlin/Deleted.kt",
+            "start": 0,
+            "startLine": 1
+          },
+          "beforeText": "package fixture\nfun removed(): Int = 4\n",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        }
+      ],
+      "kind": "DELETED",
+      "scope": "SELECTED_DECLARATION_SOURCE",
+      "textChanged": true
+    },
+    {
+      "after": null,
+      "before": {
+        "content": {
+          "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 37
+        },
+        "executable": false
+      },
+      "binary": false,
+      "file": "src/main/kotlin/Original.kt",
+      "hunks": [
+        {
+          "after": null,
+          "afterText": "",
+          "before": {
+            "content": {
+              "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 37,
+            "endLine": 2,
+            "file": "src/main/kotlin/Original.kt",
+            "start": 0,
+            "startLine": 1
+          },
+          "beforeText": "package fixture\nfun moved(): Int = 6\n",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        }
+      ],
+      "kind": "DELETED",
+      "scope": "SELECTED_DECLARATION_SOURCE",
+      "textChanged": true
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 329
+        },
+        "executable": false
+      },
+      "before": {
+        "content": {
+          "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 341
+        },
+        "executable": false
+      },
+      "binary": false,
+      "file": "src/main/kotlin/Price.kt",
+      "hunks": [
+        {
+          "after": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 104,
+            "endLine": 4,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 33,
+            "startLine": 3
+          },
+          "afterText": "    fun price(): Int = 3\n    fun label(x: Long): String = x.toString()\n",
+          "before": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 103,
+            "endLine": 4,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 33,
+            "startLine": 3
+          },
+          "beforeText": "    fun price(): Int = 1\n    fun label(x: Int): String = x.toString()\n",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        },
+        {
+          "after": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 223,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 148,
+            "startLine": 7
+          },
+          "afterText": "fun labelConsumer(): String = Pricing.label(1L)\nfun stopCalling(): Int = 0\n",
+          "before": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 235,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 147,
+            "startLine": 7
+          },
+          "beforeText": "fun labelConsumer(): String = Pricing.label(1)\nfun stopCalling(): Int = Pricing.price()\n",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        },
+        {
+          "after": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 329,
+            "endLine": 11,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 276,
+            "startLine": 11
+          },
+          "afterText": "fun documented(): Int { /* new comment */ return 7 }\n",
+          "before": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 341,
+            "endLine": 11,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 288,
+            "startLine": 11
+          },
+          "beforeText": "fun documented(): Int { /* old comment */ return 7 }\n",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        }
+      ],
+      "kind": "MODIFIED",
+      "scope": "SELECTED_DECLARATION_SOURCE",
+      "textChanged": true
+    },
+    {
+      "after": {
+        "content": {
+          "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+          "objectSchema": "codeclew-repository-input-blob/2.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 37
+        },
+        "executable": false
+      },
+      "before": null,
+      "binary": false,
+      "file": "src/main/kotlin/Renamed.kt",
+      "hunks": [
+        {
+          "after": {
+            "content": {
+              "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 37,
+            "endLine": 2,
+            "file": "src/main/kotlin/Renamed.kt",
+            "start": 0,
+            "startLine": 1
+          },
+          "afterText": "package fixture\nfun moved(): Int = 6\n",
+          "before": null,
+          "beforeText": "",
+          "granularity": "EXACT_LINE_DIFF",
+          "previewTruncated": false
+        }
+      ],
+      "kind": "ADDED",
+      "scope": "SELECTED_DECLARATION_SOURCE",
+      "textChanged": true
+    }
+  ],
+  "graph": {
+    "afterSnapshot": {
+      "digest": "sha256:25c0338831404941d58ab252b4fdb0e95aa7abdca43cea2537c615226cd35ab7",
+      "objectSchema": "codeclew-repository-input-snapshot/2.0",
+      "schema": "codeclew-cas-object/2.0",
+      "size": 6726
+    },
+    "beforeSnapshot": {
+      "digest": "sha256:9f11f44b1c03257734891f488fc95321d22ad4c1f01f5ad023f66540e091e6d1",
+      "objectSchema": "codeclew-repository-input-snapshot/2.0",
+      "schema": "codeclew-cas-object/2.0",
+      "size": 6570
+    },
+    "boundaries": [
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/consumer",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:9e6ca9233a90934ea263a39b16ddf50a5e61d45acd3cd043428d35e85cf36b1c",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 408
+        },
+        "rootProximity": "NOT_ESTABLISHED",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 142,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 127,
+          "startLine": 6
+        },
+        "target": "fixture/Pricing.price",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/Pricing.label",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:8b5a6d232894085ba83d7e32a3071a6dd68f80f3aa2ebd3844e174c08b8dc594",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 355
+        },
+        "rootProximity": "DIRECT",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 91,
+          "endLine": 4,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 90,
+          "startLine": 4
+        },
+        "target": "<local>/x",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/labelConsumer",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:63f0205da20a6d25f63250fa5325f4091d9b837e73ae2f72ee2848d06bb955c3",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 407
+        },
+        "rootProximity": "DIRECT",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 193,
+          "endLine": 7,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 177,
+          "startLine": 7
+        },
+        "target": "fixture/Pricing.label",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/Pricing.label",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:58eeeb3dd7c2a824e6cec5cfa1bcb70fc00f235b91864f788f286b466fc4b287",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 397
+        },
+        "rootProximity": "DIRECT",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 102,
+          "endLine": 4,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 90,
+          "startLine": 4
+        },
+        "target": "kotlin/Int.toString",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/main",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:156f16788a5c41acf6a7aa0351df501aeefcda97d839493b155de410a1762660",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 390
+        },
+        "rootProximity": "NOT_ESTABLISHED",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 263,
+          "endLine": 9,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 248,
+          "startLine": 9
+        },
+        "target": "fixture/Pricing.price",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/stopCalling",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:ba343d3fb24f42333474c88c42d387c590c08beb1452d63f73fbdd6c2358fb33",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 400
+        },
+        "rootProximity": "DIRECT",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 234,
+          "endLine": 8,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 219,
+          "startLine": 8
+        },
+        "target": "fixture/Pricing.price",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/consumer",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:fa767fdd6a6508ca785480ae88f15306f167bb4977d105ce8148f6be18cb0466",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 400
+        },
+        "rootProximity": "NOT_ESTABLISHED",
+        "side": "BEFORE",
+        "source": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 146,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 127,
+          "startLine": 6
+        },
+        "target": "kotlin/Int.plus",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/consumer",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:61cc7b9ed5d09296377cdb56c5f61ab7f61b8d65335f10f71b06c1e9abb48984",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 400
+        },
+        "rootProximity": "NOT_ESTABLISHED",
+        "side": "AFTER",
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 147,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 128,
+          "startLine": 6
+        },
+        "target": "kotlin/Int.plus",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/consumer",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:c72d8ea1032b8d97b6b3dbe27c01181fc600143de41aff336c0566098b898d32",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 408
+        },
+        "rootProximity": "NOT_ESTABLISHED",
+        "side": "AFTER",
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 143,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 128,
+          "startLine": 6
+        },
+        "target": "fixture/Pricing.price",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/labelConsumer",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:a6cd30247cc2c27339753253d39522f256df7767c62cd597198fcc9d26baced9",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 407
+        },
+        "rootProximity": "DIRECT",
+        "side": "AFTER",
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 195,
+          "endLine": 7,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 178,
+          "startLine": 7
+        },
+        "target": "fixture/Pricing.label",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/main",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:05bbb36c5e53f1405cda9d0fb39a58fb7329133b38b4443471c82c9a2b4b04f0",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 390
+        },
+        "rootProximity": "NOT_ESTABLISHED",
+        "side": "AFTER",
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 251,
+          "endLine": 9,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 236,
+          "startLine": 9
+        },
+        "target": "fixture/Pricing.price",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/Pricing.label",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:8c5fab2802f65f844fef27e6ff0edc1cc7fb0825eec5ddbe5a740b25abfc6893",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 356
+        },
+        "rootProximity": "DIRECT",
+        "side": "AFTER",
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 92,
+          "endLine": 4,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 91,
+          "startLine": 4
+        },
+        "target": "<local>/x",
+        "targetResolved": false
+      },
+      {
+        "code": "RELATION_ENDPOINT_UNRESOLVED_IN_SELECTED_SCOPE",
+        "exactCallTarget": false,
+        "kind": "REFERENCES",
+        "owner": "fixture/Pricing.label",
+        "ownerResolved": true,
+        "payload": {
+          "digest": "sha256:35276b6e140ab0647d3a7b87a63901f7e5a90342337a74694517c0c88d7796ab",
+          "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+          "schema": "codeclew-cas-object/2.0",
+          "size": 399
+        },
+        "rootProximity": "DIRECT",
+        "side": "AFTER",
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 103,
+          "endLine": 4,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 91,
+          "startLine": 4
+        },
+        "target": "kotlin/Long.toString",
+        "targetResolved": false
+      }
+    ],
+    "candidates": [
+      {
+        "authority": "STATIC_DERIVED_AFFECTED_CANDIDATE",
+        "changedNodeId": "change:sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5",
+        "compilation": ":/main",
+        "edgeId": "sha256:77ed3d25c12edf29e4ff87c2cf11bfe047458f8d7e60e28950e327961ee9523c",
+        "nodeId": "change:sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e",
+        "reason": "DIRECT_CONSUMER_OF_CHANGED_DECLARATION_IN_BEFORE_OR_AFTER",
+        "selectedTestCompilation": false,
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 195,
+          "endLine": 7,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 148,
+          "startLine": 7
+        },
+        "verification": "VERIFY_CHANGED_CONTRACT_AND_RELEVANT_TESTS; NO_RUNTIME_FAILURE_PROVEN"
+      },
+      {
+        "authority": "STATIC_DERIVED_AFFECTED_CANDIDATE",
+        "changedNodeId": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+        "compilation": ":/main",
+        "edgeId": "sha256:48dc9df2efa648f3977feeb40f9ef6d335b116f67ed3202e9b919bb997769e97",
+        "nodeId": "change:sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a",
+        "reason": "DIRECT_CONSUMER_OF_CHANGED_DECLARATION_IN_BEFORE_OR_AFTER",
+        "selectedTestCompilation": false,
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 222,
+          "endLine": 8,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 196,
+          "startLine": 8
+        },
+        "verification": "VERIFY_CHANGED_CONTRACT_AND_RELEVANT_TESTS; NO_RUNTIME_FAILURE_PROVEN"
+      },
+      {
+        "authority": "STATIC_DERIVED_AFFECTED_CANDIDATE",
+        "changedNodeId": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+        "compilation": ":/main",
+        "edgeId": "sha256:4e5ad693be3c13e9c968dfdf03b687ec55eb8a23542531b704cc0fcff840cdfe",
+        "nodeId": "sha256:55817576e35c7184c641a680d0f075ba059104abc8afb5196311a0c2510c6397",
+        "reason": "DIRECT_CONSUMER_OF_CHANGED_DECLARATION_IN_BEFORE_OR_AFTER",
+        "selectedTestCompilation": false,
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 253,
+          "endLine": 9,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 223,
+          "startLine": 9
+        },
+        "verification": "VERIFY_CHANGED_CONTRACT_AND_RELEVANT_TESTS; NO_RUNTIME_FAILURE_PROVEN"
+      },
+      {
+        "authority": "STATIC_DERIVED_AFFECTED_CANDIDATE",
+        "changedNodeId": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+        "compilation": ":/main",
+        "edgeId": "sha256:a7d8626d5041c5fc54e5ccc8fdc57b9df6e8e0b8fdf4738ec95c57db9105623e",
+        "nodeId": "sha256:f26c966a06f064275fe742a77c1f3d023aa1fe45af312ccd552a3d4f48727211",
+        "reason": "DIRECT_CONSUMER_OF_CHANGED_DECLARATION_IN_BEFORE_OR_AFTER",
+        "selectedTestCompilation": false,
+        "source": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 147,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 106,
+          "startLine": 6
+        },
+        "verification": "VERIFY_CHANGED_CONTRACT_AND_RELEVANT_TESTS; NO_RUNTIME_FAILURE_PROVEN"
+      }
+    ],
+    "edges": [
+      {
+        "after": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:a7c65fc62177c4f157277b6c312a6fc4e2ebfa62a5698c5e69bfd5c799d4c2d2",
+            "kind": "CALLS",
+            "owner": "fixture/labelConsumer",
+            "payload": {
+              "digest": "sha256:d458b8049bfb2ebe31069ccf523d60c78cebe375821817ee44673cbb0150b864",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 774
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 329
+              },
+              "end": 195,
+              "endLine": 7,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 178,
+              "startLine": 7
+            },
+            "target": "callable:fixture/Pricing.label#jvm:(J)Ljava/lang/String;"
+          }
+        ],
+        "afterOccurrences": 1,
+        "authority": "COMPILER_RESOLVED_DIRECT_RELATION",
+        "before": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:e4eae5e00ab353a15cfdf4760d050b5eaddf87f31230ca5590d692c76777e23c",
+            "kind": "CALLS",
+            "owner": "fixture/labelConsumer",
+            "payload": {
+              "digest": "sha256:330ee3d4a0ac7754a3f40a333570773d93d783a5f3ff50007e90e8cb1e197d41",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 772
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 341
+              },
+              "end": 193,
+              "endLine": 7,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 177,
+              "startLine": 7
+            },
+            "target": "callable:fixture/Pricing.label#jvm:(I)Ljava/lang/String;"
+          }
+        ],
+        "beforeOccurrences": 1,
+        "claimFreshness": "DIRECT_RELATION_PRESERVED_NOT_BEHAVIORAL_EQUIVALENCE",
+        "edgeId": "sha256:77ed3d25c12edf29e4ff87c2cf11bfe047458f8d7e60e28950e327961ee9523c",
+        "kind": "CALLS",
+        "omittedSupportCount": 0,
+        "ownerNode": "change:sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e",
+        "presence": "BOTH_SNAPSHOTS",
+        "targetNode": "change:sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5"
+      },
+      {
+        "after": [],
+        "afterOccurrences": 0,
+        "authority": "COMPILER_RESOLVED_DIRECT_RELATION",
+        "before": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:1256796cc1685d061a735ef0ca0013c2bdad303be422902281f9ce1a73a81893",
+            "kind": "CALLS",
+            "owner": "fixture/stopCalling",
+            "payload": {
+              "digest": "sha256:2a4e8526b44c85f779b85e6da7db26511ea2a273cfb72c0265cc333ef597ff7e",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 598
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 341
+              },
+              "end": 234,
+              "endLine": 8,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 219,
+              "startLine": 8
+            },
+            "target": "callable:fixture/Pricing.price#jvm:()I"
+          }
+        ],
+        "beforeOccurrences": 1,
+        "claimFreshness": "NOT_OBSERVED_AFTER_WITH_PARTIAL_COVERAGE",
+        "edgeId": "sha256:48dc9df2efa648f3977feeb40f9ef6d335b116f67ed3202e9b919bb997769e97",
+        "kind": "CALLS",
+        "omittedSupportCount": 0,
+        "ownerNode": "change:sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a",
+        "presence": "BEFORE_ONLY",
+        "targetNode": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c"
+      },
+      {
+        "after": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:4863ada00e79d96b08082a659deb8c37bcfc90cbddf32bd1ad1cf337e4d17b3f",
+            "kind": "CALLS",
+            "owner": "fixture/main",
+            "payload": {
+              "digest": "sha256:1dbd608d5a8e87993fca180dc845f3426c3a01de0530485e7e9137e57d13a1c2",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 588
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 329
+              },
+              "end": 251,
+              "endLine": 9,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 236,
+              "startLine": 9
+            },
+            "target": "callable:fixture/Pricing.price#jvm:()I"
+          }
+        ],
+        "afterOccurrences": 1,
+        "authority": "COMPILER_RESOLVED_DIRECT_RELATION",
+        "before": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:29e601b675d76d8174bdedda3c27e904f99386df04f945c82109526719e11dcc",
+            "kind": "CALLS",
+            "owner": "fixture/main",
+            "payload": {
+              "digest": "sha256:8503611158148284d61717bcbc65331be10a66f7d8f91e540c6f116779bc1430",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 588
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 341
+              },
+              "end": 263,
+              "endLine": 9,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 248,
+              "startLine": 9
+            },
+            "target": "callable:fixture/Pricing.price#jvm:()I"
+          }
+        ],
+        "beforeOccurrences": 1,
+        "claimFreshness": "DIRECT_RELATION_PRESERVED_NOT_BEHAVIORAL_EQUIVALENCE",
+        "edgeId": "sha256:4e5ad693be3c13e9c968dfdf03b687ec55eb8a23542531b704cc0fcff840cdfe",
+        "kind": "CALLS",
+        "omittedSupportCount": 0,
+        "ownerNode": "sha256:55817576e35c7184c641a680d0f075ba059104abc8afb5196311a0c2510c6397",
+        "presence": "BOTH_SNAPSHOTS",
+        "targetNode": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c"
+      },
+      {
+        "after": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:bb12d59e6bf10983772820703efdeb5b045f42b5504d8d906c0e0f2ddc962cdb",
+            "kind": "CALLS",
+            "owner": "fixture/consumer",
+            "payload": {
+              "digest": "sha256:8a3bfecbdf0036637cee8588e512d8524e46410e2c8ec642d86262268613f58d",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 606
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 329
+              },
+              "end": 143,
+              "endLine": 6,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 128,
+              "startLine": 6
+            },
+            "target": "callable:fixture/Pricing.price#jvm:()I"
+          }
+        ],
+        "afterOccurrences": 1,
+        "authority": "COMPILER_RESOLVED_DIRECT_RELATION",
+        "before": [
+          {
+            "compilation": ":/main",
+            "exactCallTarget": true,
+            "factKey": "kotlin:relation:52aef1f04da6eb144c8c4b85d95f5102e0933a0029ff6441ea5d974665430480",
+            "kind": "CALLS",
+            "owner": "fixture/consumer",
+            "payload": {
+              "digest": "sha256:c118aff5414dd87001ce9ff9c4d022937ed7e8556268db9b681b07e039aa0b7d",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 606
+            },
+            "source": {
+              "content": {
+                "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 341
+              },
+              "end": 142,
+              "endLine": 6,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 127,
+              "startLine": 6
+            },
+            "target": "callable:fixture/Pricing.price#jvm:()I"
+          }
+        ],
+        "beforeOccurrences": 1,
+        "claimFreshness": "DIRECT_RELATION_PRESERVED_NOT_BEHAVIORAL_EQUIVALENCE",
+        "edgeId": "sha256:a7d8626d5041c5fc54e5ccc8fdc57b9df6e8e0b8fdf4738ec95c57db9105623e",
+        "kind": "CALLS",
+        "omittedSupportCount": 0,
+        "ownerNode": "sha256:f26c966a06f064275fe742a77c1f3d023aa1fe45af312ccd552a3d4f48727211",
+        "presence": "BOTH_SNAPSHOTS",
+        "targetNode": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c"
+      }
+    ],
+    "nodes": [
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:546abf65b5ccbbe4d3e3fefbb180905bbe5db82ae3975494a2366c52240569ef",
+          "family": "fixture/Pricing.price",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:070f810699addfee7ec28f6c028f4ccf97ea65af98b41cb9cc35caa75213eed3",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 910
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.price",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.price#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 57,
+            "endLine": 3,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 37,
+            "startLine": 3
+          },
+          "symbol": "callable:fixture/Pricing.price#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:546abf65b5ccbbe4d3e3fefbb180905bbe5db82ae3975494a2366c52240569ef",
+          "family": "fixture/Pricing.price",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:070f810699addfee7ec28f6c028f4ccf97ea65af98b41cb9cc35caa75213eed3",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 910
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.price",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.price#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 57,
+            "endLine": 3,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 37,
+            "startLine": 3
+          },
+          "symbol": "callable:fixture/Pricing.price#jvm:()I"
+        },
+        "changeId": "sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+        "entrypoints": [],
+        "nodeId": "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:7690ec44aa38cf2bafb68645b28c861f395cf0f026b389cb514944b5c7a37976",
+          "family": "fixture/documented",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:c93e52f6843fc63811349162c5719c17e284a1318488095778d0047e3ef458bc",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/documented",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/documented#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 328,
+            "endLine": 11,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 276,
+            "startLine": 11
+          },
+          "symbol": "callable:fixture/documented#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:1d42b16f78d0fac63f47e5b877425a0a93526dc3f72f3642dd03fc1e476e40c2",
+          "family": "fixture/documented",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:82276d34c9f52f33b47fd4ada2ee7275e72fe8439650c3c7d414105c04569422",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/documented",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/documented#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 340,
+            "endLine": 11,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 288,
+            "startLine": 11
+          },
+          "symbol": "callable:fixture/documented#jvm:()I"
+        },
+        "changeId": "sha256:23317ba60dbff71c54f19e327d67d7a898674680fb2975dd5f3fa50d31f0a849",
+        "entrypoints": [],
+        "nodeId": "change:sha256:23317ba60dbff71c54f19e327d67d7a898674680fb2975dd5f3fa50d31f0a849",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:5e6f129735222e19ec3072974b68c09692c1f5265516b9f118cba4dcb76dc36c",
+          "family": null,
+          "kind": "CLASS",
+          "payload": {
+            "digest": "sha256:16f0869a31ba34c996c8764846c9eb08bab62d072340469c2ee1a4bdb373b5c9",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 743
+          },
+          "projectedShape": {
+            "compilerClassId": "fixture/Pricing",
+            "containment": [],
+            "declarationKind": "CLASS",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "class:fixture/Pricing",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 105,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "class:fixture/Pricing"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:70b1d1eb81af19b15bc722508502a2c6198b8a0c3d3889bc936bee8e83a4e411",
+          "family": null,
+          "kind": "CLASS",
+          "payload": {
+            "digest": "sha256:a7a567fd0c5c91f264f7264227c72e6539279d50c6d6e9bef874af107a2268c1",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 743
+          },
+          "projectedShape": {
+            "compilerClassId": "fixture/Pricing",
+            "containment": [],
+            "declarationKind": "CLASS",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "class:fixture/Pricing",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 104,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "class:fixture/Pricing"
+        },
+        "changeId": "sha256:2621fe73e10baaefdb4fc2d1617467b0147799c76a6090b17c2d960f457b80cd",
+        "entrypoints": [],
+        "nodeId": "change:sha256:2621fe73e10baaefdb4fc2d1617467b0147799c76a6090b17c2d960f457b80cd",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:ea0a8d5578ab505ebbc4cdd32b80e4e3d1bfb5f1742e915d809104252e79deb2",
+          "family": "fixture/added",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:3b7285c2a1bd34e798b1dd9b2687fe9c33156d64fb694e7e3d643beadb0db420",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 865
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/added",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/added#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:5870b4ada154415b07540c0d48598de46fb2c58187a10ac0b231adde53d3017a",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 36,
+            "endLine": 2,
+            "file": "src/main/kotlin/Added.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/added#jvm:()I"
+        },
+        "before": null,
+        "changeId": "sha256:3eb86ddebf59e6f138ebcf68e1c25bb15304aa044c4609b0ae47c6687c30576d",
+        "entrypoints": [],
+        "nodeId": "change:sha256:3eb86ddebf59e6f138ebcf68e1c25bb15304aa044c4609b0ae47c6687c30576d",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:b0d3bd0ab20a19eb63a8ccf535a63b4c0dddeb9cd31c15820a0e427e2742c380",
+          "family": "fixture/moved",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:9fb438143ef22bb0b5f34988876fef828dfc036e7e9de60cfc743b980f17fde8",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 867
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/moved",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/moved#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 36,
+            "endLine": 2,
+            "file": "src/main/kotlin/Renamed.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/moved#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:ff745b16582134de0660c7f4482ab47b7ef2831799656d04c7b08b621ee275d0",
+          "family": "fixture/moved",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:36442a804032acc050dcf3cddc28e75889124f9266e8314a5415cd90ee03d6ef",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 868
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/moved",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/moved#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 37
+            },
+            "end": 36,
+            "endLine": 2,
+            "file": "src/main/kotlin/Original.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/moved#jvm:()I"
+        },
+        "changeId": "sha256:408b922e47a5071f5db4da192d13fc96d18972e7de12c1fa5e130c6072424111",
+        "entrypoints": [],
+        "nodeId": "change:sha256:408b922e47a5071f5db4da192d13fc96d18972e7de12c1fa5e130c6072424111",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:0f01d57719fd5eb1e5be0787388acf304442f1f846ab52af81a3e83d4d953e95",
+          "family": "fixture/labelConsumer",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:5d15fd555664ecdcf8d423f64858082541479bcf1bd3a8023f0e2911e77f8ce6",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 920
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/labelConsumer",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 195,
+            "endLine": 7,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 148,
+            "startLine": 7
+          },
+          "symbol": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:eea40415596ad89e97777d7526ad97cef48a1051a8c51bc644f359d7bac2b975",
+          "family": "fixture/labelConsumer",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:7159b4916160bbce90bb2bd6ede3cc5d6d31ec06d5566b95c5fe421225a308c4",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 920
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/labelConsumer",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 193,
+            "endLine": 7,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 147,
+            "startLine": 7
+          },
+          "symbol": "callable:fixture/labelConsumer#jvm:()Ljava/lang/String;"
+        },
+        "changeId": "sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e",
+        "entrypoints": [],
+        "nodeId": "change:sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:918fc75f9b2137d82d392cb971070151766549734f2c4facf22d50ac413e68e1",
+          "family": "fixture/stopCalling",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:2b56674ab0ecad10c86a1d19f1bc6c0089120376146b58cc5def0da261ea31fe",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/stopCalling",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/stopCalling#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 222,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 196,
+            "startLine": 8
+          },
+          "symbol": "callable:fixture/stopCalling#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:e30f001a4a724d4d1a47b1fb45c5a6a65c1d507e1d6e45230e5d836825d0765b",
+          "family": "fixture/stopCalling",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:62dd2fad823e6e4a49485b80645967ba8e62f5e6e823c4bf9002df76793b7abf",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 879
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/stopCalling",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/stopCalling#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 234,
+            "endLine": 8,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 194,
+            "startLine": 8
+          },
+          "symbol": "callable:fixture/stopCalling#jvm:()I"
+        },
+        "changeId": "sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a",
+        "entrypoints": [],
+        "nodeId": "change:sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:e528b68a4d2f0057a64c97d51ee0ea3dd51ee79fd91bbc273a8ecb17acd6786a",
+          "family": "fixture/Pricing.label",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:ebefbe70f69f2d835a0283011450d7531bb81cca4d787e15b74beaab7b8fb049",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 1018
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.label",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "(J)Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [
+              {
+                "hasDefault": false,
+                "index": 0,
+                "nullable": false,
+                "type": "kotlin/Long"
+              }
+            ],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.label#jvm:(J)Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 103,
+            "endLine": 4,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 62,
+            "startLine": 4
+          },
+          "symbol": "callable:fixture/Pricing.label#jvm:(J)Ljava/lang/String;"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:a67a95fa5cb336fd048fa74edede81a9dd83b7cd14f0c0cfb9e6c2cd234560a7",
+          "family": "fixture/Pricing.label",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:c0694f62d09f80b95eaa44c6b2aba0725ab6bb17fb3be746157482f5d879c51d",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 1017
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.label",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "(I)Ljava/lang/String;",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [
+              {
+                "hasDefault": false,
+                "index": 0,
+                "nullable": false,
+                "type": "kotlin/Int"
+              }
+            ],
+            "returnNullable": false,
+            "returnType": "kotlin/String",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/Pricing.label#jvm:(I)Ljava/lang/String;",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 102,
+            "endLine": 4,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 62,
+            "startLine": 4
+          },
+          "symbol": "callable:fixture/Pricing.label#jvm:(I)Ljava/lang/String;"
+        },
+        "changeId": "sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5",
+        "entrypoints": [],
+        "nodeId": "change:sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:9af7f31229ddcb2ad81887041a5d6d71c1ab3206b7ee0943ceb7eef106c19913",
+          "family": "fixture/Pricing.Pricing",
+          "kind": "CONSTRUCTOR",
+          "payload": {
+            "digest": "sha256:47c337c862341b00b14100023a8e014ec7004d297919dc05e3b86a1478cd50fa",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 806
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.Pricing",
+            "compilerClassId": "fixture/Pricing",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "CONSTRUCTOR",
+            "effectiveVisibility": "private-in-class",
+            "exportBoundary": "PRIVATE_API",
+            "isPrimary": true,
+            "jvmDescriptor": "()V",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "symbolIdentity": "constructor:fixture/Pricing.Pricing#jvm:()V",
+            "typeParameters": [],
+            "visibility": "private"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 105,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "constructor:fixture/Pricing.Pricing#jvm:()V"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:bbe2d65dab15a0d8daae84f25bde9f278db0199dcedd7571136fe206d069a911",
+          "family": "fixture/Pricing.Pricing",
+          "kind": "CONSTRUCTOR",
+          "payload": {
+            "digest": "sha256:1015480d09742db21235ab5a21d0b83e82041a34a3aaba60512abc2780c5932c",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 806
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/Pricing.Pricing",
+            "compilerClassId": "fixture/Pricing",
+            "containment": [
+              "class:fixture/Pricing"
+            ],
+            "declarationKind": "CONSTRUCTOR",
+            "effectiveVisibility": "private-in-class",
+            "exportBoundary": "PRIVATE_API",
+            "isPrimary": true,
+            "jvmDescriptor": "()V",
+            "modality": "FINAL",
+            "ownerIdentity": "class:fixture/Pricing",
+            "parameterTypes": [],
+            "symbolIdentity": "constructor:fixture/Pricing.Pricing#jvm:()V",
+            "typeParameters": [],
+            "visibility": "private"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 104,
+            "endLine": 5,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "constructor:fixture/Pricing.Pricing#jvm:()V"
+        },
+        "changeId": "sha256:e90160878e1e53e3f3fb5c5ea998ee0f5bea2c5c253ff9651ff22ffba5d60fc4",
+        "entrypoints": [],
+        "nodeId": "change:sha256:e90160878e1e53e3f3fb5c5ea998ee0f5bea2c5c253ff9651ff22ffba5d60fc4",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": null,
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:8a86e5d3dde73eaad5bdb2f423d1884d4530a99d8a57e94ae7bc3f13e9323c11",
+          "family": "fixture/removed",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:7988f2f85e0dcfd6f86207a5989e86b79caa4aa87b0ef28d9b21677077a37f0b",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 871
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/removed",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/removed#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:71436194c2d0ccecf3d5c82fa000d32098ce3e21a7ab08e2155017fea87a6412",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 39
+            },
+            "end": 38,
+            "endLine": 2,
+            "file": "src/main/kotlin/Deleted.kt",
+            "start": 16,
+            "startLine": 2
+          },
+          "symbol": "callable:fixture/removed#jvm:()I"
+        },
+        "changeId": "sha256:f81f9186d8a8ec210d075b8cb16ce8f28e8cc525d9999c14a3a4406bcd1a8695",
+        "entrypoints": [],
+        "nodeId": "change:sha256:f81f9186d8a8ec210d075b8cb16ce8f28e8cc525d9999c14a3a4406bcd1a8695",
+        "role": "CHANGED_DECLARATION"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:644227f7528453bdea7237254e2e328e0f271c431e25e10a7e76045a5d2ceddc",
+          "family": "fixture/main",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:8a3dedebb1f3d26e572e2ea4eb8578365a2189cf4152cf04a4b55ced03c0a9dc",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 866
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/main",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()V",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Unit",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/main#jvm:()V",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 253,
+            "endLine": 9,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 223,
+            "startLine": 9
+          },
+          "symbol": "callable:fixture/main#jvm:()V"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:c255e11efef10c14da65dd3e04aa5b1c6aee0d6f8ac3b0ea94ccd9071e9c7c04",
+          "family": "fixture/main",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:b757f461d870877ffb6ab42fa9845f76d7f60ac67d70682ae6446e8a7b1ac69e",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 866
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/main",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()V",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Unit",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/main#jvm:()V",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 265,
+            "endLine": 9,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 235,
+            "startLine": 9
+          },
+          "symbol": "callable:fixture/main#jvm:()V"
+        },
+        "changeId": null,
+        "entrypoints": [
+          {
+            "authority": "COMPILER_PROJECTED_JVM_MAIN_SIGNATURE",
+            "payload": {
+              "digest": "sha256:b757f461d870877ffb6ab42fa9845f76d7f60ac67d70682ae6446e8a7b1ac69e",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 866
+            },
+            "side": "BEFORE",
+            "source": {
+              "content": {
+                "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 341
+              },
+              "end": 265,
+              "endLine": 9,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 235,
+              "startLine": 9
+            }
+          },
+          {
+            "authority": "COMPILER_PROJECTED_JVM_MAIN_SIGNATURE",
+            "payload": {
+              "digest": "sha256:8a3dedebb1f3d26e572e2ea4eb8578365a2189cf4152cf04a4b55ced03c0a9dc",
+              "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 866
+            },
+            "side": "AFTER",
+            "source": {
+              "content": {
+                "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+                "objectSchema": "codeclew-repository-input-blob/2.0",
+                "schema": "codeclew-cas-object/2.0",
+                "size": 329
+              },
+              "end": 253,
+              "endLine": 9,
+              "file": "src/main/kotlin/Price.kt",
+              "start": 223,
+              "startLine": 9
+            }
+          }
+        ],
+        "nodeId": "sha256:55817576e35c7184c641a680d0f075ba059104abc8afb5196311a0c2510c6397",
+        "role": "UNCHANGED_SOURCE_AND_PROJECTED_SHAPE"
+      },
+      {
+        "after": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:8634005bdc3722d5b27ccca84e4dedd08c91cd6dcf551277b417b0b41ba281eb",
+          "family": "fixture/consumer",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:be8c2c40dfa55244f2c427f7e08859539131d2dc146537d96825c1d8e0a047a0",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 873
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/consumer",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/consumer#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 329
+            },
+            "end": 147,
+            "endLine": 6,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 106,
+            "startLine": 6
+          },
+          "symbol": "callable:fixture/consumer#jvm:()I"
+        },
+        "before": {
+          "authority": "COMPILER_PROJECTED_DECLARATION",
+          "compilation": ":/main",
+          "completeShape": false,
+          "factKey": "kotlin:descriptor:0f4c2928e70d30a6f7876807cce067f0fe20a220bca3702d258cf8f8b98ceb2b",
+          "family": "fixture/consumer",
+          "kind": "FUNCTION",
+          "payload": {
+            "digest": "sha256:c9b2c654bb069868086b73e61ab8dd0acd3d6e9e215e020ffe4dccabb6cf3add",
+            "objectSchema": "codeclew-kotlin-semantic-fact/3.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 873
+          },
+          "projectedShape": {
+            "compilerCallableId": "fixture/consumer",
+            "containment": [],
+            "declarationKind": "FUNCTION",
+            "effectiveVisibility": "public",
+            "exportBoundary": "PUBLIC_API",
+            "isOverride": false,
+            "jvmDescriptor": "()I",
+            "modality": "FINAL",
+            "ownerIdentity": "package:fixture",
+            "parameterTypes": [],
+            "returnNullable": false,
+            "returnType": "kotlin/Int",
+            "spring": {
+              "authority": "K2_RESOLVED_ANNOTATIONS",
+              "boundaries": [],
+              "entries": [],
+              "schema": "spring-entrypoints/0.1"
+            },
+            "symbolIdentity": "callable:fixture/consumer#jvm:()I",
+            "typeParameters": [],
+            "visibility": "public"
+          },
+          "source": {
+            "content": {
+              "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+              "objectSchema": "codeclew-repository-input-blob/2.0",
+              "schema": "codeclew-cas-object/2.0",
+              "size": 341
+            },
+            "end": 146,
+            "endLine": 6,
+            "file": "src/main/kotlin/Price.kt",
+            "start": 105,
+            "startLine": 6
+          },
+          "symbol": "callable:fixture/consumer#jvm:()I"
+        },
+        "changeId": null,
+        "entrypoints": [],
+        "nodeId": "sha256:f26c966a06f064275fe742a77c1f3d023aa1fe45af312ccd552a3d4f48727211",
+        "role": "UNCHANGED_SOURCE_AND_PROJECTED_SHAPE"
+      }
+    ],
+    "obligations": [
+      "DIRECT_CONSUMERS_ARE_CANDIDATES_NOT_RUNTIME_FAILURES",
+      "DISPATCH_REFLECTION_FRAMEWORK_AND_EXTERNAL_CONSUMERS_ARE_NOT_CLOSED",
+      "RELATION_COUNTS_DO_NOT_ESTABLISH_EXECUTION_ORDER_OR_FREQUENCY",
+      "NO_TEST_SUFFICIENCY_OR_EXECUTION_IS_PROVEN",
+      "NO_GLOBAL_NO_IMPACT_VERDICT"
+    ],
+    "omittedEdgeCount": 0,
+    "omittedNodeCount": 0,
+    "schema": "codeclew-working-tree-consequences/1.0",
+    "scope": "DIRECT_RELATIONS_IN_SELECTED_COMPILATIONS_BEFORE_UNION_AFTER",
+    "status": "PARTIAL_DIRECT_CANDIDATES",
+    "testScope": "TEST_COMPILATION_NOT_ANALYZED",
+    "testsExecuted": false,
+    "unresolvedRelationCount": 13
+  },
+  "liveStatus": "NOT_CHECKED_BY_OFFLINE_RENDER",
+  "narrativeAuthority": "DETERMINISTIC_EVIDENCE_LABELS",
+  "schema": "codeclew-change-explanation/1.0",
+  "sourceBudgetBytes": 8388608,
+  "sources": {
+    "change:sha256:18c4a88cd11011086334772dd46c384199ab7ec494c5ec75e7ff93c8bbe5cc7c": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 57,
+          "endLine": 3,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 37,
+          "startLine": 3
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 57,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 37,
+        "text": "fun price(): Int = 3",
+        "totalBytes": 20
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 57,
+          "endLine": 3,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 37,
+          "startLine": 3
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 57,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 37,
+        "text": "fun price(): Int = 1",
+        "totalBytes": 20
+      }
+    },
+    "change:sha256:23317ba60dbff71c54f19e327d67d7a898674680fb2975dd5f3fa50d31f0a849": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 328,
+          "endLine": 11,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 276,
+          "startLine": 11
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 328,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 276,
+        "text": "fun documented(): Int { /* new comment */ return 7 }",
+        "totalBytes": 52
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 340,
+          "endLine": 11,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 288,
+          "startLine": 11
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 340,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 288,
+        "text": "fun documented(): Int { /* old comment */ return 7 }",
+        "totalBytes": 52
+      }
+    },
+    "change:sha256:2621fe73e10baaefdb4fc2d1617467b0147799c76a6090b17c2d960f457b80cd": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 105,
+          "endLine": 5,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 105,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "object Pricing {\n    fun price(): Int = 3\n    fun label(x: Long): String = x.toString()\n}",
+        "totalBytes": 89
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 104,
+          "endLine": 5,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 104,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "object Pricing {\n    fun price(): Int = 1\n    fun label(x: Int): String = x.toString()\n}",
+        "totalBytes": 88
+      }
+    },
+    "change:sha256:3eb86ddebf59e6f138ebcf68e1c25bb15304aa044c4609b0ae47c6687c30576d": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:5870b4ada154415b07540c0d48598de46fb2c58187a10ac0b231adde53d3017a",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 37
+          },
+          "end": 36,
+          "endLine": 2,
+          "file": "src/main/kotlin/Added.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 36,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "fun added(): Int = 5",
+        "totalBytes": 20
+      }
+    },
+    "change:sha256:408b922e47a5071f5db4da192d13fc96d18972e7de12c1fa5e130c6072424111": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 37
+          },
+          "end": 36,
+          "endLine": 2,
+          "file": "src/main/kotlin/Renamed.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 36,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "fun moved(): Int = 6",
+        "totalBytes": 20
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:246959fcebca95795c383012b090eb934517760f2a7deec3a4b8971930b83c4e",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 37
+          },
+          "end": 36,
+          "endLine": 2,
+          "file": "src/main/kotlin/Original.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 36,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "fun moved(): Int = 6",
+        "totalBytes": 20
+      }
+    },
+    "change:sha256:7511bda39d8d74f922b886089c5cf7c4cff2f2908c922c9b436222859df7a37e": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 195,
+          "endLine": 7,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 148,
+          "startLine": 7
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 195,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 148,
+        "text": "fun labelConsumer(): String = Pricing.label(1L)",
+        "totalBytes": 47
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 193,
+          "endLine": 7,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 147,
+          "startLine": 7
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 193,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 147,
+        "text": "fun labelConsumer(): String = Pricing.label(1)",
+        "totalBytes": 46
+      }
+    },
+    "change:sha256:ac5cc19459b4dc834f719459093a44f02e3ce6e08ab4330d22d8679cad0bc33a": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 222,
+          "endLine": 8,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 196,
+          "startLine": 8
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 222,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 196,
+        "text": "fun stopCalling(): Int = 0",
+        "totalBytes": 26
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 234,
+          "endLine": 8,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 194,
+          "startLine": 8
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 234,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 194,
+        "text": "fun stopCalling(): Int = Pricing.price()",
+        "totalBytes": 40
+      }
+    },
+    "change:sha256:e55bf1ab007afff10c150a4edb141eb2257b6923493909c57fdeaa444f5ac4b5": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 103,
+          "endLine": 4,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 62,
+          "startLine": 4
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 103,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 62,
+        "text": "fun label(x: Long): String = x.toString()",
+        "totalBytes": 41
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 102,
+          "endLine": 4,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 62,
+          "startLine": 4
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 102,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 62,
+        "text": "fun label(x: Int): String = x.toString()",
+        "totalBytes": 40
+      }
+    },
+    "change:sha256:e90160878e1e53e3f3fb5c5ea998ee0f5bea2c5c253ff9651ff22ffba5d60fc4": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 105,
+          "endLine": 5,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 105,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "object Pricing {\n    fun price(): Int = 3\n    fun label(x: Long): String = x.toString()\n}",
+        "totalBytes": 89
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 104,
+          "endLine": 5,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 104,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "object Pricing {\n    fun price(): Int = 1\n    fun label(x: Int): String = x.toString()\n}",
+        "totalBytes": 88
+      }
+    },
+    "change:sha256:f81f9186d8a8ec210d075b8cb16ce8f28e8cc525d9999c14a3a4406bcd1a8695": {
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:71436194c2d0ccecf3d5c82fa000d32098ce3e21a7ab08e2155017fea87a6412",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 39
+          },
+          "end": 38,
+          "endLine": 2,
+          "file": "src/main/kotlin/Deleted.kt",
+          "start": 16,
+          "startLine": 2
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 38,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 16,
+        "text": "fun removed(): Int = 4",
+        "totalBytes": 22
+      }
+    },
+    "sha256:55817576e35c7184c641a680d0f075ba059104abc8afb5196311a0c2510c6397": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 253,
+          "endLine": 9,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 223,
+          "startLine": 9
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 253,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 223,
+        "text": "fun main() { Pricing.price() }",
+        "totalBytes": 30
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 265,
+          "endLine": 9,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 235,
+          "startLine": 9
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 265,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 235,
+        "text": "fun main() { Pricing.price() }",
+        "totalBytes": 30
+      }
+    },
+    "sha256:f26c966a06f064275fe742a77c1f3d023aa1fe45af312ccd552a3d4f48727211": {
+      "after": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:04276c814b3513dd0e12dbb482addfed71920d712ba71145d010cafe80fb71ef",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 329
+          },
+          "end": 147,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 106,
+          "startLine": 6
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 147,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 106,
+        "text": "fun consumer(): Int = Pricing.price() + 1",
+        "totalBytes": 41
+      },
+      "before": {
+        "anchor": {
+          "content": {
+            "digest": "sha256:87e1d5a23bd6290ef0548d128afa41b0c12fa85894bee28e15d88616d39c1362",
+            "objectSchema": "codeclew-repository-input-blob/2.0",
+            "schema": "codeclew-cas-object/2.0",
+            "size": 341
+          },
+          "end": 146,
+          "endLine": 6,
+          "file": "src/main/kotlin/Price.kt",
+          "start": 105,
+          "startLine": 6
+        },
+        "authority": "EXACT_RETAINED_SOURCE",
+        "end": 146,
+        "nextOffset": null,
+        "offset": 0,
+        "start": 105,
+        "text": "fun consumer(): Int = Pricing.price() + 1",
+        "totalBytes": 41
+      }
+    }
+  }
+}

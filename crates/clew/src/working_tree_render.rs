@@ -166,6 +166,8 @@ fn coverage(report: &Comparison) -> Value {
         "afterDeclarationsComplete":report.after.analysis.declaration_coverage_complete,
         "beforeAnalysis":report.before.analysis.status,"afterAnalysis":report.after.analysis.status,
         "beforeFailure":report.before.analysis.failure,"afterFailure":report.after.analysis.failure,
+        "beforeBoundaries":working_tree_change_service::boundary_summary(&report.before.analysis),
+        "afterBoundaries":working_tree_change_service::boundary_summary(&report.after.analysis),
         "comparability":report.comparability,"obligations":report.obligations,"testsExecuted":false})
 }
 

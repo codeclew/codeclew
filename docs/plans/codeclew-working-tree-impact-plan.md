@@ -1,6 +1,6 @@
 # Working-tree analysis and change consequences
 
-Status: Deliveries 1–4 implemented and fixture-qualified in `feature/working-tree-impact`; daily-use qualification follows.
+Status: Deliveries 1–5 implemented in `feature/working-tree-impact`; local fixtures and real Kotlin/Rust dogfood pass. Remote final qualification is recorded in the pull request.
 Prepared: 2026-09-06.
 Source baseline: `b666129b750b0db3225a090d3570fd528897c983`.
 
@@ -300,3 +300,48 @@ anchors instead of inventing a thread pair. Source pagination is available via
 - All three repository skill copies include the retained comparison workflow;
   portable skill tests and Clippy pass. The report writes to a new local file
   and performs no live freshness check or publication implicitly.
+
+## Delivery 5 evidence (2026-09-06)
+
+`scripts/qualification/working-tree-dogfood.py` creates disposable Git worktrees
+from this repository and changes an actual Kotlin worker or Rust CLI declaration.
+It checks retained source, selected authority, direct Kotlin consumers, repeat
+HTML after a later edit, unchanged index/refs and cleanup.
+
+| Selected real scope | Inspect | Graph | Render / repeated render | Result |
+| --- | --- | --- | --- | --- |
+| Kotlin `:workers:kotlin/main`, `Worker.handle` | 425.986 s | 6.313 s | 11.356 / 11.378 s | Two changed declarations; two direct consumers from `Main.kt`; partial coverage retained. |
+| Rust `cargo:crates/clew/Cargo.toml#clew#bin#clew`, `change_inspect` | 74.904 s | 5.213 s | 9.965 / 9.904 s | Syntax-only evidence; no resolved-impact claim. Inspect includes a development runtime build. |
+
+These observations are from macOS arm64 source builds, not release SLOs. The
+qualification guardrails are 900 s for the real Kotlin inspect, 180 s for Rust,
+and 60 s for retained operations. They provide headroom above the observed
+values and are checked only after each command completes. Small-fixture and
+large-module timings must not be mixed. Unchanged capture identity has focused
+snapshot regression coverage; the repeat timing above measures retained reads,
+not a second whole-project analysis.
+
+The real Kotlin run exposed an unrelated-payload bug: comparison was reading
+whole-file and CFG facts and failing its semantic budget. It now selects the
+sealed declaration/relation categories before payload IO without increasing
+limits. A regression proves that a large CFG does not consume declaration
+budget while oversized declaration evidence is still rejected. The resulting
+real report found the expected consumers and 783 unchanged declarations, with
+54,824 unresolved before/after relations explicitly outside resolved impact.
+
+That measurement retained 64,993,305 report bytes before boundary compaction.
+The final implementation retains at most 128 analysis boundary examples per
+side plus an exact omission marker; the HTML shows a smaller sample and both
+retention/display omission counts. Rust retained 389,161 report bytes and
+47,762 HTML bytes. See the [machine-readable measurements](../../site/evidence/working-tree-dogfood.json).
+
+The normal `ci-verify.sh` gate includes the new source/comparison/render tests;
+local CI, focused worker tests and rebuilt trusted worker distributions passed.
+The Linux/macOS qualification workflow additionally runs both public fixture
+scripts and real dogfood, uploading transcripts and offline reports.
+
+The [published source-bound example](../flows/working-tree-change.md) contains a
+rendered Mermaid overview, exact source windows, stable claim IDs and the
+downloadable interactive HTML/JSON. It is a development preview available with
+the feature branch. The main Pages environment permits only `main`; deployment
+to the existing public website and a packaged release are separate actions.

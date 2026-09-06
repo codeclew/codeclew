@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 const ROOT_SCHEMA: &str = "codeclew-working-tree-change-root/1.0";
 const MAX_FACTS: u64 = 131_072;
 const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_BOUNDARY_SAMPLE: usize = 128;
 
 pub struct InspectRequest {
     pub repository: PathBuf,
@@ -229,6 +230,7 @@ fn collect_declarations(
     let mut declarations = Vec::new();
     let mut relations = Vec::new();
     let mut boundaries = Vec::new();
+    let mut omitted_boundaries = 0usize;
     let mut count = 0u64;
     let mut bytes = 0usize;
     for compilation in &ready.compilations {
@@ -256,14 +258,13 @@ fn collect_declarations(
             return Err(resource("comparison exceeds generation fact visit budget"));
         }
         generation.visit_facts(store, |fact| {
-            bytes = bytes.checked_add(fact.payload.size as usize).ok_or_else(|| resource("payload count overflow"))?;
-            if bytes > MAX_PAYLOAD_BYTES || fact.payload.size > 1024 * 1024 { return Err(resource("comparison exceeds semantic payload budget")); }
-            let payload: Value = read_canonical(store, &fact.payload, 1024 * 1024)?;
+            let Some(payload) = comparison_payload(store, session.language == SessionLanguage::Kotlin,
+                &fact.fact_key, &fact.payload, &mut bytes)? else { return Ok(()); };
             let kotlin = session.language == SessionLanguage::Kotlin;
             let schema = payload.get("schema").and_then(Value::as_str).unwrap_or("");
             if kotlin && matches!(schema, "declaration-descriptor-boundary/0.1" | "declaration-relation-boundary/0.1") {
                 crate::semantic_validation::validate_kotlin_semantic_payload(&payload)?;
-                if boundaries.len() < change::MAX_DECLARATIONS { boundaries.push(payload); }
+                retain_boundary(&mut boundaries, &mut omitted_boundaries, payload);
                 return Ok(());
             }
             if kotlin && schema == "declaration-relation/0.1" {
@@ -307,6 +308,11 @@ fn collect_declarations(
             Ok(())
         })?;
     }
+    if omitted_boundaries > 0 {
+        boundaries.push(json!({"schema":"codeclew-change-boundary-sample/1.0",
+            "code":"ADDITIONAL_ANALYSIS_BOUNDARIES_OMITTED","omittedCount":omitted_boundaries,
+            "sampleLimit":MAX_BOUNDARY_SAMPLE,"coverage":"PARTIAL"}));
+    }
     declarations.sort_by(|a, b| (&a.compilation, &a.symbol).cmp(&(&b.compilation, &b.symbol)));
     if declarations
         .windows(2)
@@ -326,6 +332,63 @@ fn collect_declarations(
         relations,
         boundaries,
     })
+}
+
+pub(crate) fn boundary_summary(analysis: &Analysis) -> Value {
+    let omitted = analysis
+        .boundaries
+        .iter()
+        .filter_map(|b| b.get("omittedCount").and_then(Value::as_u64))
+        .sum::<u64>();
+    let records = analysis
+        .boundaries
+        .iter()
+        .filter(|b| {
+            b.get("schema").and_then(Value::as_str) != Some("codeclew-change-boundary-sample/1.0")
+        })
+        .collect::<Vec<_>>();
+    json!({"retainedCount":records.len(),"retentionOmittedCount":omitted,
+        "displayOmittedCount":records.len().saturating_sub(8),"sample":records.into_iter().take(8).collect::<Vec<_>>()})
+}
+
+fn retain_boundary(boundaries: &mut Vec<Value>, omitted: &mut usize, payload: Value) {
+    if boundaries.len() < MAX_BOUNDARY_SAMPLE {
+        boundaries.push(payload);
+    } else {
+        *omitted += 1;
+    }
+}
+
+fn comparison_payload(
+    store: &CasStore,
+    kotlin: bool,
+    key: &str,
+    object: &CasObject,
+    bytes: &mut usize,
+) -> Result<Option<Value>, ClewError> {
+    // Whole-file and CFG facts are retained by the generation but do not support
+    // declaration comparison. Skip their sealed categories before any payload IO.
+    if kotlin && !comparison_kotlin_fact(key) {
+        return Ok(None);
+    }
+    *bytes = bytes
+        .checked_add(object.size as usize)
+        .ok_or_else(|| resource("payload count overflow"))?;
+    if *bytes > MAX_PAYLOAD_BYTES || object.size > 1024 * 1024 {
+        return Err(resource("comparison exceeds semantic payload budget"));
+    }
+    read_canonical(store, object, 1024 * 1024).map(Some)
+}
+
+fn comparison_kotlin_fact(key: &str) -> bool {
+    [
+        "kotlin:descriptor:",
+        "kotlin:descriptor-boundary:",
+        "kotlin:relation:",
+        "kotlin:relation-boundary:",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
 }
 
 fn projected_declaration_shape(payload: &Value) -> Value {
@@ -421,7 +484,9 @@ pub fn bounded_stdout(root: &ChangeRoot, report: &Comparison) -> Result<Value, C
         "beforeSnapshot":report.before.snapshot,"afterSnapshot":report.after.snapshot,
         "compilations":report.after.session.compilations,"profileId":report.after.profile_id,
         "modelAuthority":{"before":model_bindings(&report.before.analysis),"after":model_bindings(&report.after.analysis),"equivalence":"NOT_ASSUMED_ACROSS_DIFFERENT_INPUTS"},
-        "coverage":{"beforeDeclarationsComplete":report.before.analysis.declaration_coverage_complete,"afterDeclarationsComplete":report.after.analysis.declaration_coverage_complete,"beforeBoundaries":report.before.analysis.boundaries.len(),"afterBoundaries":report.after.analysis.boundaries.len()},
+        "coverage":{"beforeDeclarationsComplete":report.before.analysis.declaration_coverage_complete,"afterDeclarationsComplete":report.after.analysis.declaration_coverage_complete,"beforeBoundaries":report.before.analysis.boundaries.len(),"afterBoundaries":report.after.analysis.boundaries.len(),
+            "beforeBoundaryRetentionOmissions":boundary_summary(&report.before.analysis)["retentionOmittedCount"],
+            "afterBoundaryRetentionOmissions":boundary_summary(&report.after.analysis)["retentionOmittedCount"]},
         "beforeAnalysis":{"status":report.before.analysis.status,"authority":report.before.analysis.authority,"failure":report.before.analysis.failure},
         "afterAnalysis":{"status":report.after.analysis.status,"authority":report.after.analysis.authority,"failure":report.after.analysis.failure},
         "comparability":report.comparability,"obligations":report.obligations,"testsExecuted":false,
@@ -512,6 +577,75 @@ fn internal(message: impl std::fmt::Display) -> ClewError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn boundary_sampling_records_every_omission() {
+        let mut boundaries = Vec::new();
+        let mut omitted = 0;
+        for i in 0..MAX_BOUNDARY_SAMPLE + 17 {
+            retain_boundary(&mut boundaries, &mut omitted, json!({"index":i}));
+        }
+        assert_eq!(boundaries.len(), MAX_BOUNDARY_SAMPLE);
+        assert_eq!(omitted, 17);
+        assert_eq!(boundaries.last().unwrap()["index"], MAX_BOUNDARY_SAMPLE - 1);
+    }
+
+    #[test]
+    fn unrelated_large_cfg_preserves_budget_for_declaration_evidence() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(temporary.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let oversized = store
+            .put(
+                "codeclew-kotlin-semantic-fact/3.0",
+                &vec![b' '; 2 * 1024 * 1024],
+            )
+            .unwrap();
+        let mut bytes = 0;
+        assert!(
+            comparison_payload(
+                &store,
+                true,
+                "kotlin:local-cfg:fixture",
+                &oversized,
+                &mut bytes
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(bytes, 0);
+        let payload = json!({"schema":"declaration-descriptor/0.1"});
+        let declaration = store
+            .put(
+                "codeclew-kotlin-semantic-fact/3.0",
+                &canonical::bytes(&payload).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            comparison_payload(
+                &store,
+                true,
+                "kotlin:descriptor:fixture",
+                &declaration,
+                &mut bytes
+            )
+            .unwrap(),
+            Some(payload)
+        );
+        assert_eq!(bytes, declaration.size as usize);
+        assert_eq!(
+            comparison_payload(
+                &store,
+                true,
+                "kotlin:descriptor:oversized",
+                &oversized,
+                &mut bytes
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::ResourceLimit
+        );
+    }
+
     #[test]
     fn source_line_movement_does_not_change_projected_declaration_shape() {
         let before = json!({"schema":"declaration-descriptor/0.1","file":"A.kt","start":0,"end":10,
