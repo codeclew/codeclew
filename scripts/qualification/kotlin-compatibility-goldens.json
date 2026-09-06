@@ -1,11 +1,12 @@
 {
   "schema": "codeclew-kotlin-compatibility-goldens/1.0",
   "rows": {
-    "k24-exact": "sha256:28ab1a36d5e5e3675a13923a84af880fdb98f7a8c6cd42af621b25c99f8d00fe",
-    "k24-from-2121": "sha256:28ab1a36d5e5e3675a13923a84af880fdb98f7a8c6cd42af621b25c99f8d00fe",
-    "k24-from-2121-serialization": "sha256:28ab1a36d5e5e3675a13923a84af880fdb98f7a8c6cd42af621b25c99f8d00fe",
-    "k24-from-230": "sha256:28ab1a36d5e5e3675a13923a84af880fdb98f7a8c6cd42af621b25c99f8d00fe",
-    "k24-from-240": "sha256:28ab1a36d5e5e3675a13923a84af880fdb98f7a8c6cd42af621b25c99f8d00fe",
-    "k24-language-23": "sha256:28ab1a36d5e5e3675a13923a84af880fdb98f7a8c6cd42af621b25c99f8d00fe"
+    "k24-exact": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075",
+    "k24-from-2121": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075",
+    "k24-from-2121-serialization": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075",
+    "k24-from-230": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075",
+    "k24-from-230-allopen": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075",
+    "k24-from-240": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075",
+    "k24-language-23": "sha256:51e4f7601614b17e8165c3d3b0b5e580ab402815f9fbab4fbd9e0e85cde96075"
   }
 }

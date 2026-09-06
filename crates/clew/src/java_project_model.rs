@@ -228,10 +228,9 @@ fn extract_gradle(
     if object.get("projectPath").and_then(Value::as_str) != Some(&selector.project_path)
         || object.get("compileTask").and_then(Value::as_str)
             != Some(selector.gradle_compile_task().as_str())
-        || object.get("jdkLanguageVersion").and_then(Value::as_u64) != Some(21)
     {
         return Err(unsupported(
-            "Gradle Java model differs from the selected Java 21 compilation",
+            "Gradle Java model differs from the selected compilation",
         ));
     }
     let release = object
@@ -245,9 +244,14 @@ fn extract_gradle(
                 .map(u64::from)
         })
         .ok_or_else(|| unsupported("Gradle Java release authority is unavailable"))?;
-    if release != 21 {
-        return Err(unsupported("Java v1 supports only release 21"));
-    }
+    let release = u16::try_from(release)
+        .map_err(|_| unsupported("Java release authority exceeds the supported numeric range"))?;
+    let toolchain = object
+        .get("jdkLanguageVersion")
+        .and_then(Value::as_u64)
+        .and_then(|version| u16::try_from(version).ok())
+        .ok_or_else(|| unsupported("Gradle Java toolchain version is unavailable"))?;
+    validate_release(release, toolchain)?;
     let source_paths = string_paths(object.get("sourceFiles"), MAX_JAVA_SOURCES)?;
     let classpath_paths = string_paths(object.get("classpath"), MAX_CLASSPATH_ENTRIES)?;
     let jdk_home = object
@@ -264,6 +268,7 @@ fn extract_gradle(
         classpath_paths,
         jdk_home.join("bin/java"),
         jdk_home.join("bin/javac"),
+        release,
         compiler_options,
         Vec::new(),
     )
@@ -352,8 +357,8 @@ fn extract_maven(
         .filter_map(|line| parse_java_level(line.trim()))
         .next_back()
         .ok_or_else(|| unsupported("Maven Java release authority is unavailable"))?;
-    if release != 21 {
-        return Err(unsupported("Java v1 supports only release 21"));
+    if release < 17 {
+        return Err(unsupported("Java analysis requires release 17 or newer"));
     }
     let java_home = std::env::var_os("JAVA_HOME").map(PathBuf::from);
     let java = java_home
@@ -372,7 +377,8 @@ fn extract_maven(
         classpath_paths,
         java,
         javac,
-        vec!["--release=21".into()],
+        release,
+        vec![format!("--release={release}")],
         Vec::new(),
     )
 }
@@ -386,6 +392,7 @@ fn canonical_model(
     classpath_paths: Vec<PathBuf>,
     java_executable: PathBuf,
     javac_executable: PathBuf,
+    release: u16,
     mut compiler_options: Vec<String>,
     mut boundaries: Vec<String>,
 ) -> Result<JavaOperationalModel, ClewError> {
@@ -413,9 +420,9 @@ fn canonical_model(
         ));
     }
     let compiler_version = compiler_version(&javac_executable, &repository)?;
-    if !compiler_version.starts_with("javac 21") {
-        return Err(unsupported("Java v1 requires a JDK 21 compiler"));
-    }
+    let compiler_major = javac_major(&compiler_version)
+        .ok_or_else(|| unsupported("JDK compiler version authority is invalid"))?;
+    validate_release(release, compiler_major)?;
     let mut classpath = Vec::with_capacity(classpath_paths.len());
     for path in &classpath_paths {
         classpath.push(classpath_authority(path)?);
@@ -431,7 +438,7 @@ fn canonical_model(
         compilation: selector.canonical(),
         source_files,
         classpath,
-        release: 21,
+        release,
         compiler_version,
         compiler_options,
         boundaries,
@@ -448,7 +455,8 @@ fn canonical_model(
 
 pub fn verify_model(model: &JavaProjectModel) -> Result<(), ClewError> {
     if model.schema != JAVA_MODEL_SCHEMA
-        || model.release != 21
+        || javac_major(&model.compiler_version)
+            .is_none_or(|major| validate_release(model.release, major).is_err())
         || model.source_files.is_empty()
         || model.source_files.len() > MAX_JAVA_SOURCES
         || model.source_files.windows(2).any(|pair| pair[0] >= pair[1])
@@ -599,6 +607,29 @@ fn hash_file(path: &Path) -> Result<String, ClewError> {
     Ok(format!("sha256:{}", hex::encode(digest.finalize())))
 }
 
+fn javac_major(version: &str) -> Option<u16> {
+    let number = version.strip_prefix("javac ")?.split_whitespace().next()?;
+    let major = number.split(['.', '-', '+']).next()?;
+    if major.is_empty() || !major.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    major.parse().ok()
+}
+
+fn validate_release(release: u16, compiler_major: u16) -> Result<(), ClewError> {
+    if release < 17 || compiler_major < 17 {
+        return Err(unsupported(
+            "Java analysis requires release 17 and JDK 17 or newer",
+        ));
+    }
+    if release > compiler_major {
+        return Err(unsupported(
+            "Java release exceeds the selected JDK compiler version",
+        ));
+    }
+    Ok(())
+}
+
 fn compiler_version(executable: &Path, repository: &Path) -> Result<String, ClewError> {
     let output = Command::new(executable)
         .arg("-version")
@@ -629,13 +660,29 @@ fn bounded_output(command: &mut Command, message: &str) -> Result<String, ClewEr
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|_| unsupported(message))?;
-    if !output.status.success()
-        || output.stdout.len().saturating_add(output.stderr.len()) > MAX_MODEL_OUTPUT_BYTES
-    {
-        return Err(unsupported(message));
+        .map_err(|_| build_command_failure(message, "BUILD_LAUNCHER_START_FAILED", "Verify the build launcher is executable and available in the same terminal or agent PATH; check JAVA_HOME."))?;
+    if output.stdout.len().saturating_add(output.stderr.len()) > MAX_MODEL_OUTPUT_BYTES {
+        return Err(resource(
+            "BUILD_MODEL_OUTPUT_LIMIT: Java build model output exceeded the supported size. Select a narrower module/compilation and retry.",
+        ));
+    }
+    if !output.status.success() {
+        return Err(build_command_failure(
+            message,
+            "BUILD_COMMAND_FAILED",
+            "Resolve the native build's first error (including dependency access, credentials or JDK configuration), then retry Codeclew. Build output is omitted because it may contain private data.",
+        ));
     }
     String::from_utf8(output.stdout).map_err(|_| unsupported("Java model output is not UTF-8"))
+}
+
+fn build_command_failure(stage: &str, reason: &str, action: &str) -> ClewError {
+    let diagnostic = if stage.starts_with("Maven") {
+        "From the selected module directory run mvn --version and mvn -e -DskipTests dependency:build-classpath help:evaluate -Dexpression=maven.compiler.release (use the repository's executable mvnw when present)."
+    } else {
+        "From the repository root run ./gradlew --version and ./gradlew --stacktrace tasks --all."
+    };
+    unsupported(&format!("{reason}: {stage}. {action} {diagnostic}"))
 }
 
 fn string_paths(value: Option<&Value>, max: usize) -> Result<Vec<PathBuf>, ClewError> {
@@ -703,6 +750,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn missing_build_launcher_has_a_recovery_command() {
+        let missing = tempfile::tempdir().unwrap();
+        let error = super::bounded_output(
+            &mut Command::new(missing.path().join("missing-launcher")),
+            "Maven Java classpath extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_LAUNCHER_START_FAILED"));
+        assert!(error.message.contains("mvn --version"));
+        assert!(error.message.contains("same terminal or agent PATH"));
+        assert!(!error.message.contains(missing.path().to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_build_failure_preserves_action_without_private_output() {
+        let error = super::bounded_output(
+            Command::new("/bin/sh").args([
+                "-c",
+                "echo 'https://private.invalid?token=secret' >&2; exit 1",
+            ]),
+            "Gradle Java model extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
+        assert!(error.message.contains("./gradlew --stacktrace tasks --all"));
+        assert!(!error.message.contains("private.invalid"));
+        assert!(!error.message.contains("secret"));
+    }
+
+    #[test]
     fn selector_is_exact_and_bounded() {
         let root = JavaCompilationSelector::parse(":/main").unwrap();
         assert_eq!(root.gradle_compile_task(), "compileJava");
@@ -716,6 +794,22 @@ mod tests {
                 "{invalid}"
             );
         }
+    }
+
+    #[test]
+    fn java_release_is_preserved_and_bounded_by_observed_compiler() {
+        for (release, compiler) in [(17, 17), (17, 21), (21, 21), (25, 25)] {
+            assert!(validate_release(release, compiler).is_ok());
+        }
+        for (release, compiler) in [(8, 21), (16, 17), (17, 16), (22, 21)] {
+            assert!(validate_release(release, compiler).is_err());
+        }
+        assert_eq!(javac_major("javac 17.0.12"), Some(17));
+        assert_eq!(javac_major("javac 21.0.8"), Some(21));
+        assert_eq!(javac_major("javac 25-ea"), Some(25));
+        assert_eq!(javac_major("javac 210.0.1"), Some(210));
+        assert_eq!(javac_major("javac 21invalid"), None);
+        assert_eq!(javac_major("java 21.0.1"), None);
     }
 
     #[test]
@@ -734,6 +828,7 @@ mod tests {
             vec![],
             java,
             javac,
+            21,
             vec!["--release=21".into()],
             vec![],
         )

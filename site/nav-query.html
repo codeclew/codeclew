@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Follow nav query from CLI input to SUPPORTED or ABSTAIN, with a visual flow and exact Rust source retrieved by Codeclew itself.">
+  <meta name="theme-color" content="#0b0d0c">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./nav-query.css">
+  <title>How nav query works — Codeclew</title>
+</head>
+<body>
+  <header class="nav shell">
+    <a class="brand" href="./index.html"><span>Codeclew</span></a>
+    <nav aria-label="Primary navigation"><a href="./documentation.html">Documentation</a><a href="./evidence.html">Evidence</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
+  </header>
+  <main class="shell navdoc">
+    <section class="navdoc-hero">
+      <div class="kicker">Codeclew, explained with Codeclew · CLI walkthrough 01</div>
+      <h1>Find the code.<br><em>Know why it was selected.</em></h1>
+      <p class="lede"><code>nav query</code> turns a scoped question into a small set of code candidates. Follow the graph to see when it selects one declaration — and when it keeps the decision open.</p>
+      <div class="snapshot-line"><span class="status-dot"></span> Real extraction · Codeclew 0.3.1 <span>Rust syntax evidence</span><a href="https://github.com/codeclew/codeclew/tree/64819fdb1b64a66b98cbbafcd0a68322ef818006">Snapshot 64819fd ↗</a></div>
+    </section>
+    <div class="navdoc-toolbar">
+      <div><span class="control-label">Read the flow, then inspect a step</span><div class="segmented" role="group" aria-label="Detail level"><button type="button" data-level="overview" aria-pressed="true">Overview</button><button type="button" data-level="evidence" aria-pressed="false">Code evidence</button></div></div>
+      <a href="./evidence/nav-query.json">Claims + source bindings ↗</a>
+    </div>
+    <section class="navdoc-workbench" aria-label="Interactive static flow and evidence inspector">
+      <div class="flow-panel">
+        <div class="panel-heading"><span>Entry point</span><b>clew nav query</b></div>
+        <div class="flow-graph">
+<!-- NAV_QUERY_GRAPH -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0.00 0.00 720.00 596.00" aria-labelledby="flow-title flow-description">
+<title id="flow-title">How nav query moves from a request to bounded source evidence</title><desc id="flow-description">Select a step or arrow to inspect its supporting code. Task readiness precedes context creation. The decision branches into SUPPORTED or ABSTAIN. Errors leave the main path. Dashed arrows are agent-interpreted static flow, not runtime observations.</desc><g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(21.6 574.38)">
+<title>nav_query</title>
+
+<g id="node-entry" class="node">
+<title>entry</title>
+<g id="a_node-entry"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-entry" xlink:title="entry" data-claim="entry" aria-label="Start with a precise question: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M548.95,-552.78C548.95,-552.78 452.65,-552.78 452.65,-552.78 446.65,-552.78 440.65,-546.78 440.65,-540.78 440.65,-540.78 440.65,-523.74 440.65,-523.74 440.65,-517.74 446.65,-511.74 452.65,-511.74 452.65,-511.74 548.95,-511.74 548.95,-511.74 554.95,-511.74 560.95,-517.74 560.95,-523.74 560.95,-523.74 560.95,-540.78 560.95,-540.78 560.95,-546.78 554.95,-552.78 548.95,-552.78" />
+<text xml:space="preserve" text-anchor="middle" x="500.8" y="-527.01" font-family="Arial" font-size="15.00" fill="#f2f4ef">01  nav query</text>
+</a>
+</g>
+</g>
+
+<g id="node-admit" class="node">
+<title>admit</title>
+<g id="a_node-admit"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="admit" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M587.58,-462.24C587.58,-462.24 414.02,-462.24 414.02,-462.24 408.02,-462.24 402.02,-456.24 402.02,-450.24 402.02,-450.24 402.02,-433.2 402.02,-433.2 402.02,-427.2 408.02,-421.2 414.02,-421.2 414.02,-421.2 587.58,-421.2 587.58,-421.2 593.58,-421.2 599.58,-427.2 599.58,-433.2 599.58,-433.2 599.58,-450.24 599.58,-450.24 599.58,-456.24 593.58,-462.24 587.58,-462.24" />
+<text xml:space="preserve" text-anchor="middle" x="500.8" y="-436.47" font-family="Arial" font-size="15.00" fill="#f2f4ef">02  Check task readiness</text>
+</a>
+</g>
+</g>
+
+<g id="edge-0" class="edge">
+<title>entry-&gt;admit</title>
+<g id="a_edge-0"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-entry" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="entry" aria-label="Start with a precise question: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M500.8,-511.61C500.8,-499.54 500.8,-483.9 500.8,-470.57" />
+<polygon fill="#77876c" stroke="#77876c" points="503.08,-470.63 500.8,-464.13 498.53,-470.63 503.08,-470.63" />
+</a>
+</g>
+<g id="a_edge-0-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-entry" xlink:title="analysis request" data-claim="entry" aria-label="Start with a precise question: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="539.42" y="-483.29" font-family="Arial" font-size="11.00" fill="#bdc8b6">analysis request</text>
+</a>
+</g>
+</g>
+
+<g id="node-context" class="node">
+<title>context</title>
+<g id="a_node-context"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-context" xlink:title="context" data-claim="context" aria-label="Open a session and retain context: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M513.08,-371.7C513.08,-371.7 324.52,-371.7 324.52,-371.7 318.52,-371.7 312.52,-365.7 312.52,-359.7 312.52,-359.7 312.52,-342.66 312.52,-342.66 312.52,-336.66 318.52,-330.66 324.52,-330.66 324.52,-330.66 513.08,-330.66 513.08,-330.66 519.08,-330.66 525.08,-336.66 525.08,-342.66 525.08,-342.66 525.08,-359.7 525.08,-359.7 525.08,-365.7 519.08,-371.7 513.08,-371.7" />
+<text xml:space="preserve" text-anchor="middle" x="418.8" y="-345.93" font-family="Arial" font-size="15.00" fill="#f2f4ef">03  Open session + context</text>
+</a>
+</g>
+</g>
+
+<g id="edge-1" class="edge">
+<title>admit-&gt;context</title>
+<g id="a_edge-1"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M482.6,-421.07C470.79,-408.32 455.29,-391.58 442.52,-377.79" />
+<polygon fill="#77876c" stroke="#77876c" points="444.35,-376.41 438.26,-373.19 441.01,-379.51 444.35,-376.41" />
+</a>
+</g>
+<g id="a_edge-1-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="ready" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="478.21" y="-392.75" font-family="Arial" font-size="11.00" fill="#bdc8b6">ready</text>
+</a>
+</g>
+</g>
+
+<g id="node-failure" class="node">
+<title>failure</title>
+<g id="a_node-failure"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-failure" xlink:title="failure" data-claim="failure" aria-label="Return an error; attempt cleanup: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#e0ae65" d="M664.7,-260.64C664.7,-260.64 500.9,-260.64 500.9,-260.64 494.9,-260.64 488.9,-254.64 488.9,-248.64 488.9,-248.64 488.9,-231.6 488.9,-231.6 488.9,-225.6 494.9,-219.6 500.9,-219.6 500.9,-219.6 664.7,-219.6 664.7,-219.6 670.7,-219.6 676.7,-225.6 676.7,-231.6 676.7,-231.6 676.7,-248.64 676.7,-248.64 676.7,-254.64 670.7,-260.64 664.7,-260.64" />
+<text xml:space="preserve" text-anchor="middle" x="582.8" y="-234.87" font-family="Arial" font-size="15.00" fill="#f2f4ef">Error + cleanup attempt</text>
+</a>
+</g>
+</g>
+
+<g id="edge-2" class="edge">
+<title>admit-&gt;failure</title>
+<g id="a_edge-2"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M513.49,-420.73C521.7,-407.23 532.23,-388.82 539.8,-371.7 555.08,-337.13 567.91,-295.36 575.48,-268.53" />
+<polygon fill="#77876c" stroke="#77876c" points="577.6,-269.37 577.15,-262.5 573.22,-268.15 577.6,-269.37" />
+</a>
+</g>
+<g id="a_edge-2-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="readiness error" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="592.27" y="-347.48" font-family="Arial" font-size="11.00" fill="#bdc8b6">readiness error</text>
+</a>
+</g>
+</g>
+
+<g id="edge-3" class="edge">
+<title>context-&gt;failure</title>
+<g id="a_edge-3"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-failure" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="failure" aria-label="Return an error; attempt cleanup: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M448.88,-330.18C476.39,-311.88 517.15,-284.78 546.47,-265.28" />
+<polygon fill="#77876c" stroke="#77876c" points="547.5,-267.33 551.65,-261.83 544.98,-263.54 547.5,-267.33" />
+</a>
+</g>
+<g id="a_edge-3-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-failure" xlink:title="context error" data-claim="failure" aria-label="Return an error; attempt cleanup: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="521.36" y="-302.21" font-family="Arial" font-size="11.00" fill="#bdc8b6">context error</text>
+</a>
+</g>
+</g>
+
+<g id="node-decision" class="node">
+<title>decision</title>
+<g id="a_node-decision"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-decision" xlink:title="decision" data-claim="decision" aria-label="Separate ranking from a supported decision: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M217.99,-279.05C217.99,-279.05 11.81,-242.23 11.81,-242.23 5.91,-241.17 5.91,-239.07 11.81,-238.01 11.81,-238.01 217.99,-201.19 217.99,-201.19 223.89,-200.13 235.71,-200.13 241.61,-201.19 241.61,-201.19 447.79,-238.01 447.79,-238.01 453.69,-239.07 453.69,-241.17 447.79,-242.23 447.79,-242.23 241.61,-279.05 241.61,-279.05 235.71,-280.11 223.89,-280.11 217.99,-279.05" />
+<text xml:space="preserve" text-anchor="middle" x="229.8" y="-234.87" font-family="Arial" font-size="15.00" fill="#f2f4ef">04  Exact decision supported?</text>
+</a>
+</g>
+</g>
+
+<g id="edge-4" class="edge">
+<title>context-&gt;decision</title>
+<g id="a_edge-4"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-context" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="context" aria-label="Open a session and retain context: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M384.13,-330.18C357.88,-315.03 321.16,-293.84 290.12,-275.93" />
+<polygon fill="#77876c" stroke="#77876c" points="291.26,-273.96 284.49,-272.68 288.99,-277.9 291.26,-273.96" />
+</a>
+</g>
+<g id="a_edge-4-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-context" xlink:title="retained facts" data-claim="context" aria-label="Open a session and retain context: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="384.52" y="-302.21" font-family="Arial" font-size="11.00" fill="#bdc8b6">retained facts</text>
+</a>
+</g>
+</g>
+
+<g id="node-supported" class="node">
+<title>supported</title>
+<g id="a_node-supported"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-supported" xlink:title="supported" data-claim="supported" aria-label="One exact, fully covered identifier: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M198.58,-149.58C198.58,-149.58 37.03,-149.58 37.03,-149.58 31.03,-149.58 25.03,-143.58 25.03,-137.58 25.03,-137.58 25.03,-102.54 25.03,-102.54 25.03,-96.54 31.03,-90.54 37.03,-90.54 37.03,-90.54 198.58,-90.54 198.58,-90.54 204.58,-90.54 210.58,-96.54 210.58,-102.54 210.58,-102.54 210.58,-137.58 210.58,-137.58 210.58,-143.58 204.58,-149.58 198.58,-149.58" />
+<text xml:space="preserve" text-anchor="middle" x="117.8" y="-123.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">SUPPORTED</text>
+<text xml:space="preserve" text-anchor="middle" x="117.8" y="-105.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">Return selected identity</text>
+</a>
+</g>
+</g>
+
+<g id="edge-5" class="edge">
+<title>decision-&gt;supported</title>
+<g id="a_edge-5"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-supported" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="supported" aria-label="One exact, fully covered identifier: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M197.1,-204.65C182.38,-189.14 165.05,-170.86 150.34,-155.36" />
+<polygon fill="#77876c" stroke="#77876c" points="152.22,-154.04 146.1,-150.89 148.92,-157.17 152.22,-154.04" />
+</a>
+</g>
+<g id="a_edge-5-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-supported" xlink:title="all conditions hold" data-claim="supported" aria-label="One exact, fully covered identifier: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="216.18" y="-170.63" font-family="Arial" font-size="11.00" fill="#bdc8b6">all conditions hold</text>
+</a>
+</g>
+</g>
+
+<g id="node-abstain" class="node">
+<title>abstain</title>
+<g id="a_node-abstain"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="abstain" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#e0ae65" d="M434.45,-149.58C434.45,-149.58 251.15,-149.58 251.15,-149.58 245.15,-149.58 239.15,-143.58 239.15,-137.58 239.15,-137.58 239.15,-102.54 239.15,-102.54 239.15,-96.54 245.15,-90.54 251.15,-90.54 251.15,-90.54 434.45,-90.54 434.45,-90.54 440.45,-90.54 446.45,-96.54 446.45,-102.54 446.45,-102.54 446.45,-137.58 446.45,-137.58 446.45,-143.58 440.45,-149.58 434.45,-149.58" />
+<text xml:space="preserve" text-anchor="middle" x="342.8" y="-123.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">ABSTAIN</text>
+<text xml:space="preserve" text-anchor="middle" x="342.8" y="-105.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">Keep discovery candidates</text>
+</a>
+</g>
+</g>
+
+<g id="edge-6" class="edge">
+<title>decision-&gt;abstain</title>
+<g id="a_edge-6"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M262.79,-204.65C277.64,-189.14 295.13,-170.86 309.97,-155.36" />
+<polygon fill="#77876c" stroke="#77876c" points="311.4,-157.15 314.26,-150.88 308.12,-154.01 311.4,-157.15" />
+</a>
+</g>
+<g id="a_edge-6-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="otherwise" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="319.67" y="-170.63" font-family="Arial" font-size="11.00" fill="#bdc8b6">otherwise</text>
+</a>
+</g>
+</g>
+
+<g id="node-result" class="node">
+<title>result</title>
+<g id="a_node-result"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-result" xlink:title="result" data-claim="result" aria-label="Return a bounded result you can continue: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M330.45,-41.04C330.45,-41.04 129.15,-41.04 129.15,-41.04 123.15,-41.04 117.15,-35.04 117.15,-29.04 117.15,-29.04 117.15,-12 117.15,-12 117.15,-6 123.15,0 129.15,0 129.15,0 330.45,0 330.45,0 336.45,0 342.45,-6 342.45,-12 342.45,-12 342.45,-29.04 342.45,-29.04 342.45,-35.04 336.45,-41.04 330.45,-41.04" />
+<text xml:space="preserve" text-anchor="middle" x="229.8" y="-15.27" font-family="Arial" font-size="15.00" fill="#f2f4ef">05  Return bounded evidence</text>
+</a>
+</g>
+</g>
+
+<g id="edge-7" class="edge">
+<title>supported-&gt;result</title>
+<g id="a_edge-7"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-result" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="result" aria-label="Return a bounded result you can continue: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M151.1,-90.06C167.04,-76.18 185.93,-59.72 201.21,-46.42" />
+<polygon fill="#77876c" stroke="#77876c" points="202.54,-48.28 205.95,-42.29 199.55,-44.85 202.54,-48.28" />
+</a>
+</g>
+<g id="a_edge-7-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-result" xlink:title="source if requested" data-claim="result" aria-label="Return a bounded result you can continue: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="229.58" y="-62.09" font-family="Arial" font-size="11.00" fill="#bdc8b6">source if requested</text>
+</a>
+</g>
+</g>
+
+<g id="edge-8" class="edge">
+<title>abstain-&gt;result</title>
+<g id="a_edge-8"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M315.96,-90.25C305.91,-80 294.17,-68.64 282.8,-59.04 277.55,-54.61 271.79,-50.16 266.07,-45.96" />
+<polygon fill="#77876c" stroke="#77876c" points="267.73,-44.35 261.13,-42.39 265.06,-48.04 267.73,-44.35" />
+</a>
+</g>
+<g id="a_edge-8-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="reason + next action" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="345.43" y="-62.09" font-family="Arial" font-size="11.00" fill="#bdc8b6">reason + next action</text>
+</a>
+</g>
+</g>
+</g>
+</svg>
+<!-- /NAV_QUERY_GRAPH -->
+        </div>
+        <p class="flow-legend"><span aria-hidden="true">┄→</span> Agent-interpreted static flow. Each arrow links to its supporting source. Execution was not traced; Rust call targets remain unresolved.</p>
+        <div class="diagram-links"><a href="./diagrams/nav-query.svg">Open SVG ↗</a><a href="./diagrams/nav-query.mmd" download>Mermaid source ↓</a><a href="#reproduce">Reproduce this example ↓</a></div>
+      </div>
+      <aside class="claim-reader" aria-label="Step explanation and supporting source">
+        <label for="claim-select">Selected step</label>
+        <select id="claim-select" aria-controls="claim-panels">
+          <option value="entry">01 · Input and CLI dispatch</option><option value="admit">02 · Task readiness</option><option value="context">03 · Session and context</option><option value="decision">04 · Ranking and decision</option><option value="supported">SUPPORTED</option><option value="abstain">ABSTAIN</option><option value="result">05 · Returned result</option><option value="failure">Errors and cleanup</option><option value="references">Optional reference follow</option>
+        </select>
+        <div id="claim-panels">
+<!-- NAV_QUERY_CLAIMS -->
+<article class="claim-panel" id="claim-entry"><p class="claim-id">claim:entry</p><h2>Start with a precise question</h2><p>Give nav query a repository, local branch or tag, language, compilation and search terms. An exact decision identifier and source output are optional.</p><p class="mechanism">The CLI dispatch selects nav_query. The handler adds the decision identifier to the terms if it is missing, then requests an analysis context.</p><div class="claim-boundary"><b>Evidence boundary</b><p>The diagram starts at CLI dispatch. Shell startup, argument-parser internals and the implementation of every language adapter are outside this slice.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L1551-L1553">crates/clew/src/main.rs:1551–1553 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>        Command::Nav {
+            command: NavCommand::Query(args),
+        } =&gt; nav_query(args),</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:872c7b6e404525370100f5cf3cae6659d5d8c28e503e995f5d4ea02aaebe6b46<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:93674abcb006ca2817e0345aea681015ed813d22d7cf99378c668ef78040d210<br>Evidence: sha256:adfce75275522d171a3ed3811362645aea01a24617b353fcd5488d80ebf9fbb4</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2188-L2210">crates/clew/src/main.rs:2188–2210 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>fn nav_query(args: NavQueryArgs) -&gt; Result&lt;Value, ClewError&gt; {
+    let include_top_source = args.source;
+    let follow_references = args.follow_references;
+    let follow_max_roots = args.max_roots.max(4);
+    let decision_identifier = args.decision_identifier;
+    let mut terms = args.terms;
+    if let Some(identifier) = decision_identifier.as_deref()
+        &amp;&amp; !terms.iter().any(|term| term == identifier)
+    {
+        terms.push(identifier.to_owned());
+    }
+    let intent = args
+        .intent
+        .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());
+    let opened = admit_and_open_context(
+        &amp;args.session,
+        &amp;args.profile,
+        DoctorOperationArg::Analysis,
+        intent,
+        terms,
+        args.max_roots,
+        args.committed,
+    )?;</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:b9e8c92b0ff75f9b514835ae37c52c71bd9c99a3a0af57beb38e0a8c24f8ac83<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div></details></article>
+<article class="claim-panel" id="claim-admit"><p class="claim-id">claim:admit</p><h2>Check that this task can run</h2><p>Codeclew checks the selected runtime and repository scope before opening a session. A readiness failure stops the request.</p><p class="mechanism">admit_and_open_context calls doctor for the exact language, profile, operation and compilations. require_task_ready appears before the readiness digest, capabilities lookup and open_session.</p><div class="claim-boundary"><b>Evidence boundary</b><p>This is visible Rust source order. The Rust profile does not prove name resolution, macro expansion or runtime reachability.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2097-L2118">crates/clew/src/main.rs:2097–2118 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let runtime = active_runtime()?;
+    let repository = absolute(&amp;session_args.repo)?;
+    let readiness = doctor(
+        &amp;runtime,
+        DoctorScope::Task,
+        Some(&amp;repository),
+        Some(&amp;session_args.target_ref),
+        Some(DoctorTask {
+            language: session_language(session_args.language),
+            profile_id: profile,
+            operation: match operation {
+                DoctorOperationArg::Analysis =&gt; DoctorOperation::Analysis,
+                DoctorOperationArg::Mutation =&gt; DoctorOperation::Mutation,
+            },
+            compilations: &amp;session_args.compilation,
+            committed,
+        }),
+    )?;
+    require_task_ready(&amp;readiness)?;
+    let readiness_digest = canonical::hash(&amp;readiness).map_err(internal)?;
+    let product = capabilities(&amp;runtime)?;
+    let session = open_session(session_args)?;</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:ffac83ca7b65b034790314b08042ac5c1b5e7ec3d658b4f29323fae43ab58511<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442<br>Evidence: sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb</p></details></div></details></article>
+<article class="claim-panel" id="claim-context"><p class="claim-id">claim:context</p><h2>Open a session and retain context</h2><p>The session and its first bounded context become the common evidence for the rest of the request.</p><p class="mechanism">After opening the session, the helper calls create_context_object. Success returns the session, context and PASS admission together.</p><div class="claim-boundary"><b>Evidence boundary</b><p>Snapshot capture, adapter analysis, indexing and caching are delegated here; this page does not claim to trace those internals.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2119-L2133">crates/clew/src/main.rs:2119–2133 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    match create_context_object(&amp;session, intent, terms, max_roots) {
+        Ok(context) =&gt; Ok(AdmittedContext {
+            admission: json!({
+                &quot;agentContract&quot;:product[&quot;agentContract&quot;],
+                &quot;readinessDigest&quot;:readiness_digest,
+                &quot;readinessSchema&quot;:readiness[&quot;schema&quot;],
+                &quot;runtimeMode&quot;:runtime.mode,
+                &quot;runtimeKey&quot;:runtime.runtime_key,
+                &quot;runtimeManifestDigest&quot;:runtime.manifest_digest,
+                &quot;status&quot;:&quot;PASS&quot;,
+                &quot;taskAuthority&quot;:readiness[&quot;taskAuthority&quot;],
+            }),
+            session,
+            context,
+        }),</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:0411b7d060c2c11afa8dd33ad9ee4154ca737b14327bf3218f36981ac9209e2a<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442<br>Evidence: sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L38-L57">crates/clew/src/navigation.rs:38–57 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>pub fn query_with_decision_identifier(
+    context: &amp;ContextObject,
+    facets: &amp;[NavigationFacet],
+    decision_identifier: Option&lt;&amp;str&gt;,
+) -&gt; Result&lt;Value, ClewError&gt; {
+    let retained = retained_context(context)?;
+    let result = assemble_with_decision_identifier(
+        &amp;context.session_id,
+        &amp;context.context_id,
+        &amp;context.evidence_digest,
+        &amp;context.intent,
+        &amp;context.terms,
+        retained,
+        retained_query_truncated(context),
+        facets,
+        decision_identifier,
+    )?;
+    validate_stdout(&amp;result)?;
+    Ok(result)
+}</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:33235eda234c1ed87041fec032cc1be41f79a73cac7c8b668d2741d99640af1b<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442<br>Evidence: sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb</p></details></div></details></article>
+<article class="claim-panel" id="claim-failure"><p class="claim-id">claim:failure</p><h2>Return an error; attempt cleanup</h2><p>Readiness errors stop before a session is opened. If context creation fails after opening, the handler attempts to abort and garbage-collect that session.</p><p class="mechanism">The create-context error arm invokes change_open_failure with session.abort() and session.gc(false). Later navigation failures are mapped through compensate_opened_context.</p><div class="claim-boundary"><b>Evidence boundary</b><p>This page proves the visible cleanup request. It does not prove that every cleanup succeeds, or document the helper’s recovery behavior.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2134-L2140">crates/clew/src/main.rs:2134–2140 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>        Err(error) =&gt; Err(change_open_failure(error, &amp;session.session_id, || {
+            session.abort()?;
+            session.gc(false)?;
+            Ok(())
+        })),
+    }
+}</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:a77a83da0cb6e9954876ec2ccc6ad055e526580687ef0b0652c6547f77d173f1<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442<br>Evidence: sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2211-L2216">crates/clew/src/main.rs:2211–2216 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let mut navigation = clew::navigation::query_with_decision_identifier(
+        &amp;opened.context,
+        &amp;[],
+        decision_identifier.as_deref(),
+    )
+    .map_err(|error| compensate_opened_context(error, &amp;opened))?;</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:418ae35237e104e3f439b09cfe80e66f44b4eccaa0bfb21e7f4b9fc3a37c6e1b<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div></details></article>
+<article class="claim-panel" id="claim-decision"><p class="claim-id">claim:decision</p><h2>Separate ranking from a supported decision</h2><p>A useful search result is not automatically the declaration you meant. Codeclew ranks retained declarations, then checks whether one exact identifier covers the query.</p><p class="mechanism">Only declaration payloads enter the ranking. Exact identifier matches are ranked first, followed by source-window and term/name relevance. Counts are computed before the returned-card limit. The decision check receives query truncation separately from card-list truncation.</p><div class="claim-boundary"><b>Evidence boundary</b><p>Coverage here is bounded lexical coverage of retained evidence. It is not semantic correctness or proof that the entire repository was searched.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1680-L1712">crates/clew/src/navigation.rs:1680–1712 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>        if !is_declaration(payload) {
+            continue;
+        }
+        let fact_key = required_string(matched, &quot;factKey&quot;)?;
+        let compilation = required_string(matched, &quot;compilation&quot;)?;
+        let candidate_id = candidate_handle(compilation, fact_key)?;
+        if handles
+            .insert(candidate_id.clone(), (compilation, fact_key))
+            .is_some()
+        {
+            return Err(invalid(&quot;navigation candidate handle collision&quot;));
+        }
+        let covered_terms = candidate_authority_term_hits(payload, sources, &amp;normalized_terms);
+        let decision_identifier_match = decision_identifier
+            .is_some_and(|identifier| candidate_matches_declared_identifier(payload, identifier));
+        let (term_coverage, name_coverage, occurrences) =
+            candidate_relevance(payload, sources, &amp;normalized_terms);
+        let (window_coverage, window_occurrences) =
+            source_window_relevance(sources, payload, &amp;normalized_terms);
+        ranked_candidates.push((
+            usize::from(decision_identifier_match),
+            window_coverage,
+            term_coverage,
+            name_coverage,
+            occurrences,
+            window_occurrences,
+            ordinal,
+            candidate_id,
+            matched,
+            payload,
+            covered_terms,
+            decision_identifier_match,
+        ));</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:fe70364fc4b5f0f19e2aa0653b4e5c46bae02a83bda9a18d372e6e4674b545b8<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b<br>Evidence: sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1714-L1737">crates/clew/src/navigation.rs:1714–1737 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    ranked_candidates.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&amp;left.0)
+            .then_with(|| right.1.cmp(&amp;left.1))
+            .then_with(|| right.2.cmp(&amp;left.2))
+            .then_with(|| right.3.cmp(&amp;left.3))
+            .then_with(|| right.4.cmp(&amp;left.4))
+            .then_with(|| right.5.cmp(&amp;left.5))
+            .then_with(|| left.6.cmp(&amp;right.6))
+    });
+    let total_candidates = ranked_candidates.len();
+    let full_coverage_candidate_count = if normalized_terms.is_empty() {
+        0
+    } else {
+        ranked_candidates
+            .iter()
+            .filter(|candidate| candidate.10.len() == normalized_terms.len())
+            .count()
+    };
+    let exact_identifier_candidate_count = ranked_candidates
+        .iter()
+        .filter(|candidate| candidate.0 &gt; 0)
+        .count();</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:771fd40cdbcc09b02f5a68e97e8f36a4800e2da6b7ba275b03b528a45bd8d79c<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b<br>Evidence: sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1741-L1758">crates/clew/src/navigation.rs:1741–1758 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let mut candidate_identities = BTreeSet::new();
+    for (
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        candidate_id,
+        matched,
+        payload,
+        covered_terms,
+        decision_identifier_match,
+    ) in ranked_candidates.into_iter().take(MAX_NAV_CANDIDATES)
+    {
+        let fact_key = required_string(matched, &quot;factKey&quot;)?;
+        let compilation = required_string(matched, &quot;compilation&quot;)?;</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:61bdc4bf8d5c46189e22acaa4bde21be7f6be2279221e04b97db8fc0646c9b25<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b<br>Evidence: sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1815-L1828">crates/clew/src/navigation.rs:1815–1828 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let decision_authority = navigation_decision_authority(NavigationDecisionAuthorityInput {
+        session_id,
+        context_id,
+        required_terms: &amp;normalized_terms,
+        candidates: &amp;candidates,
+        returned_candidate_coverage: &amp;returned_candidate_coverage,
+        returned_candidate_exact_identifiers: &amp;returned_candidate_exact_identifiers,
+        full_coverage_candidate_count,
+        exact_identifier_candidate_count,
+        decision_identifier_declared: decision_identifier.is_some(),
+        query_truncated,
+        candidate_list_truncated: total_candidates &gt; candidates.len(),
+        completeness: retained.get(&quot;completeness&quot;),
+    })?;</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:0e71e0a79baa0e09b8e0a5cc2bf5338a1c6a1296767ee23c99b9a0246a2e0c7f<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b<br>Evidence: sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0</p></details></div></details></article>
+<article class="claim-panel" id="claim-supported"><p class="claim-id">claim:supported</p><h2>One exact, fully covered identifier</h2><p>The decision is SUPPORTED when there are nonempty required terms, no unmatched terms, no query truncation, and exactly one exact-identifier candidate with complete coverage.</p><p class="mechanism">The successful branch returns UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE and the selected candidate ID. With --source, nav_query requests its retained source envelope.</p><div class="claim-boundary"><b>Evidence boundary</b><p>SUPPORTED identifies the declaration. It does not upgrade Rust syntax evidence to compiler proof or prove the caller’s whole task.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1963-L1989">crates/clew/src/navigation.rs:1963–1989 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    if !required_terms.is_empty()
+        &amp;&amp; unmatched_terms.is_empty()
+        &amp;&amp; !query_truncated
+        &amp;&amp; exact_identifier_candidate_count == 1
+        &amp;&amp; exact_identifier_candidate
+            .and_then(|candidate| candidate.get(&quot;complete&quot;))
+            .and_then(Value::as_bool)
+            == Some(true)
+    {
+        let candidate = exact_identifier_candidate.ok_or_else(|| {
+            internal(&quot;unique exact-identifier navigation candidate was not returned&quot;)
+        })?;
+        return Ok(json!({
+            &quot;schema&quot;:NAV_DECISION_AUTHORITY_SCHEMA,
+            &quot;status&quot;:&quot;SUPPORTED&quot;,
+            &quot;classification&quot;:&quot;UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE&quot;,
+            &quot;basis&quot;:&quot;EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE&quot;,
+            &quot;candidateId&quot;:required_value_string(candidate, &quot;candidateId&quot;)?,
+            &quot;requiredTermCount&quot;:required_terms.len(),
+            &quot;coveredTermCount&quot;:required_terms.len(),
+            &quot;returnedCandidateCoverage&quot;:returned_coverage,
+            &quot;observedFullCoverageCandidateCount&quot;:full_coverage_candidate_count,
+            &quot;observedExactIdentifierCandidateCount&quot;:exact_identifier_candidate_count,
+            &quot;queryCoverageTruncated&quot;:query_truncated,
+            &quot;candidateListTruncated&quot;:candidate_list_truncated,
+        }));
+    }</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:613bdc196d0505dd90116b10e1f366297c410f821e8aa767e1a1e71a01f0e820<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:7e51fe3ab0b09a7d44e9bd88b190a5d312e5a0f90ee943d8a5fe9aebc6db9229<br>Evidence: sha256:fd52200db4eaa30829e8b59a29d02ee9cba063906f41d020697c335cbd409791</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2217-L2232">crates/clew/src/main.rs:2217–2232 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    if include_top_source {
+        let decision_candidate_id =
+            navigation_decision_candidate_id(&amp;navigation).map(str::to_owned);
+        let no_decision_reason = navigation_no_decision_reason(&amp;navigation);
+        let decision_source = decision_candidate_id
+            .as_deref()
+            .map(|candidate_id| {
+                clew::navigation::source_envelope_by_candidate(&amp;opened.context, candidate_id)
+            })
+            .transpose()
+            .map_err(|error| compensate_opened_context(error, &amp;opened))?
+            .unwrap_or_else(|| json!({&quot;status&quot;:&quot;UNAVAILABLE&quot;,&quot;reason&quot;:no_decision_reason}));
+        navigation
+            .as_object_mut()
+            .ok_or_else(|| ClewError::new(ErrorCode::Internal, &quot;navigation result is invalid&quot;))?
+            .insert(&quot;decisionSource&quot;.into(), decision_source);</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:2cd788dd49ebbfe86701a35f165e304958d749eb55d8187cdc808dcd8a7bae81<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div></details></article>
+<article class="claim-panel" id="claim-abstain"><p class="claim-id">claim:abstain</p><h2>Keep candidates; explain what is missing</h2><p>If the decision conditions are not met, Codeclew returns ABSTAIN with the reason. The first candidate remains a search result.</p><p class="mechanism">Reasons include missing terms, unmatched terms, truncated query coverage, no declared identifier, ambiguous or absent identifiers, an unreturned exact candidate, or partial exact coverage. Without a supported decision, requested source is UNAVAILABLE.</p><div class="claim-boundary"><b>Evidence boundary</b><p>A stopped request must not be repeated unchanged or resolved by copying a ranked card name into a decision identifier. The returned refinement specifies the next allowed action.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L2003-L2028">crates/clew/src/navigation.rs:2003–2028 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let (classification, next_missing_term) = if required_terms.is_empty() {
+        (&quot;NO_EXPLICIT_TERMS&quot;, None)
+    } else if !unmatched_terms.is_empty() {
+        (
+            &quot;UNMATCHED_EXPLICIT_TERMS&quot;,
+            unmatched_terms.iter().next().cloned(),
+        )
+    } else if query_truncated {
+        (
+            &quot;TRUNCATED_QUERY_COVERAGE&quot;,
+            best_missing_terms.iter().next().cloned(),
+        )
+    } else if !decision_identifier_declared {
+        (&quot;NO_DECLARED_DECISION_IDENTIFIER&quot;, None)
+    } else if exact_identifier_candidate_count &gt; 1 {
+        (&quot;AMBIGUOUS_EXACT_IDENTIFIER&quot;, None)
+    } else if exact_identifier_candidate_count == 0 {
+        (&quot;NO_EXACT_IDENTIFIER&quot;, None)
+    } else if exact_identifier_candidate.is_none() {
+        (&quot;EXACT_IDENTIFIER_NOT_RETURNED&quot;, None)
+    } else {
+        (
+            &quot;PARTIAL_EXACT_IDENTIFIER_COVERAGE&quot;,
+            best_missing_terms.iter().next().cloned(),
+        )
+    };</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:2911c6a61c7dc29392c2236096a7a835b2f571973c3f337189c518fc6bf96f14<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:7e51fe3ab0b09a7d44e9bd88b190a5d312e5a0f90ee943d8a5fe9aebc6db9229<br>Evidence: sha256:fd52200db4eaa30829e8b59a29d02ee9cba063906f41d020697c335cbd409791</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L2029-L2066">crates/clew/src/navigation.rs:2029–2066 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let refinement = if decision_identifier_declared {
+        json!({
+            &quot;kind&quot;:&quot;STOP_UNRESOLVED&quot;,
+            &quot;reason&quot;:&quot;DECLARED_IDENTIFIER_DID_NOT_ESTABLISH_UNIQUE_FULL_COVERAGE&quot;,
+            &quot;repeatSameRequest&quot;:false,
+            &quot;instruction&quot;:&quot;The declared identifier did not establish one complete decision. Do not repeat it or select an analogue. Continue only after the task or an exact retained source supplies a different identifier or a known file; otherwise keep the task unresolved.&quot;,
+        })
+    } else {
+        json!({
+            &quot;kind&quot;:&quot;ADD_TASK_DISCRIMINANT&quot;,
+            &quot;command&quot;:format!(
+                &quot;nav expand --session {session_id} --from {context_id} --term &lt;new-task-derived-exact-identifier&gt; --decision-identifier &lt;same-new-task-derived-exact-identifier&gt;&quot;
+            ),
+            &quot;precondition&quot;:&quot;NEW_TASK_SUPPLIED_EXACT_IDENTIFIER_NOT_ALREADY_IN_CONTEXT&quot;,
+            &quot;repeatSameRequest&quot;:false,
+            &quot;onUnsatisfied&quot;:&quot;STOP_UNRESOLVED&quot;,
+            &quot;requiredCoverage&quot;:next_missing_term.iter().collect::&lt;Vec&lt;_&gt;&gt;(),
+            &quot;instruction&quot;:&quot;Use this refinement once only when the task supplies a new exact identifier that is absent from the current query. Never copy a returned card name into this field. If no such identifier is available, keep the task unresolved.&quot;,
+        })
+    };
+    let authority = json!({
+        &quot;schema&quot;:NAV_DECISION_AUTHORITY_SCHEMA,
+        &quot;status&quot;:&quot;ABSTAIN&quot;,
+        &quot;classification&quot;:classification,
+        &quot;basis&quot;:&quot;EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE&quot;,
+        &quot;requiredTermCount&quot;:required_terms.len(),
+        &quot;unmatchedTermCount&quot;:unmatched_terms.len(),
+        &quot;bestCandidateCoveredTermCount&quot;:best_covered_terms.len(),
+        &quot;bestCandidateMissingTermCount&quot;:best_missing_terms.len(),
+        &quot;returnedCandidateCoverage&quot;:returned_coverage,
+        &quot;observedFullCoverageCandidateCount&quot;:full_coverage_candidate_count,
+        &quot;observedExactIdentifierCandidateCount&quot;:exact_identifier_candidate_count,
+        &quot;queryCoverageTruncated&quot;:query_truncated,
+        &quot;candidateListTruncated&quot;:candidate_list_truncated,
+        &quot;refinement&quot;:refinement,
+    });
+    Ok(authority)
+}</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:630610e2ce15d3cf132fb26951eda99929768fd7567734842e78811c4672da74<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:7e51fe3ab0b09a7d44e9bd88b190a5d312e5a0f90ee943d8a5fe9aebc6db9229<br>Evidence: sha256:fd52200db4eaa30829e8b59a29d02ee9cba063906f41d020697c335cbd409791</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2217-L2228">crates/clew/src/main.rs:2217–2228 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    if include_top_source {
+        let decision_candidate_id =
+            navigation_decision_candidate_id(&amp;navigation).map(str::to_owned);
+        let no_decision_reason = navigation_no_decision_reason(&amp;navigation);
+        let decision_source = decision_candidate_id
+            .as_deref()
+            .map(|candidate_id| {
+                clew::navigation::source_envelope_by_candidate(&amp;opened.context, candidate_id)
+            })
+            .transpose()
+            .map_err(|error| compensate_opened_context(error, &amp;opened))?
+            .unwrap_or_else(|| json!({&quot;status&quot;:&quot;UNAVAILABLE&quot;,&quot;reason&quot;:no_decision_reason}));</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:db42ab40f69e729beb3988205c831342074a875525ffc78fa03c51742b4727de<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div></details></article>
+<article class="claim-panel" id="claim-result"><p class="claim-id">claim:result</p><h2>Return a bounded result you can continue</h2><p>The response keeps the session, context and evidence binding. Reuse the returned handles to expand only the evidence you still need.</p><p class="mechanism">With --source, agent_card validates the decision contract and compacts candidates and source. The outer response includes admission and session metadata, then validates its stdout before returning. Without --source, that agent-card conversion is skipped.</p><div class="claim-boundary"><b>Evidence boundary</b><p>An OPEN session is not a published code change. This example performs read-only analysis; it does not run the analyzed command’s downstream behavior.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L59-L84">crates/clew/src/navigation.rs:59–84 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>pub fn agent_card(result: &amp;Value) -&gt; Result&lt;Value, ClewError&gt; {
+    if result.get(&quot;schema&quot;).and_then(Value::as_str) != Some(NAV_RESULT_SCHEMA) {
+        return Err(invalid(&quot;agent card input is not a navigation result&quot;));
+    }
+    let candidates = result
+        .get(&quot;candidates&quot;)
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid(&quot;navigation result has no candidate array&quot;))?
+        .iter()
+        .map(compact_agent_candidate)
+        .collect::&lt;Result&lt;Vec&lt;_&gt;, _&gt;&gt;()?;
+    let decision_source = result
+        .get(&quot;decisionSource&quot;)
+        .ok_or_else(|| invalid(&quot;navigation result has no decision source&quot;))?;
+    let decision_authority = result
+        .get(&quot;decisionAuthority&quot;)
+        .ok_or_else(|| invalid(&quot;navigation result has no decision authority&quot;))?;
+    validate_agent_card_decision_contract(result, decision_authority, decision_source)?;
+    let compact_source = compact_decision_source(decision_source)?;
+    let supporting_anchors = result
+        .get(&quot;termAnchors&quot;)
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid(&quot;navigation result has no term anchors&quot;))?
+        .iter()
+        .filter(|anchor| !anchor_is_in_decision_source(anchor, decision_source))
+        .cloned()</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:2367e6fcb4861cca23988ee0535b2ae8c2f4a6c55dc53bc5683bd37cf7c9823b<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442<br>Evidence: sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L113-L128">crates/clew/src/navigation.rs:113–128 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>        .ok_or_else(|| invalid(&quot;navigation result has no next action&quot;))?;
+    let mut card = json!({
+        &quot;schema&quot;:NAV_AGENT_CARD_SCHEMA,
+        &quot;sessionId&quot;:required_value_string(result, &quot;sessionId&quot;)?,
+        &quot;contextId&quot;:required_value_string(result, &quot;contextId&quot;)?,
+        &quot;evidenceDigest&quot;:required_value_string(result, &quot;evidenceDigest&quot;)?,
+        &quot;terms&quot;:terms,
+        &quot;candidates&quot;:candidates,
+        &quot;candidateCount&quot;:candidate_count,
+        &quot;decisionAuthority&quot;:decision_authority,
+        &quot;decisionSource&quot;:compact_source,
+        &quot;supportingAnchors&quot;:supporting_anchors,
+        &quot;completeness&quot;:completeness,
+        &quot;queryCoverageTruncated&quot;:query_coverage_truncated,
+        &quot;candidateListTruncated&quot;:candidate_list_truncated,
+        &quot;truncated&quot;:truncated,</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:1161a895287056bd27a38ae42f4911e5247cd3d0ba7946f809a66ab950f94836<br>File: sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95<br>Context: context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442<br>Evidence: sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2297-L2318">crates/clew/src/main.rs:2297–2318 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>    let admission = navigation_admission(&amp;opened.admission, include_top_source);
+    if include_top_source {
+        navigation = clew::navigation::agent_card(&amp;navigation)
+            .map_err(|error| compensate_opened_context(error, &amp;opened))?;
+    }
+    let mut result = json!({
+        &quot;schema&quot;:clew::navigation::NAV_QUERY_SCHEMA,
+        &quot;status&quot;:&quot;OPEN&quot;,
+        &quot;admission&quot;:admission,
+        &quot;session&quot;:{
+            &quot;sessionId&quot;:opened.session.session_id,
+            &quot;baseRevision&quot;:opened.session.base_revision,
+            &quot;targetRef&quot;:opened.session.target_ref,
+            &quot;language&quot;:opened.session.language,
+            &quot;compilations&quot;:opened.session.compilations,
+        },
+        &quot;navigation&quot;:navigation,
+    });
+    validate_nav_query_stdout(&amp;mut result, follow_references)
+        .map_err(|error| compensate_opened_context(error, &amp;opened))?;
+    Ok(result)
+}</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:6edc11f5b2c0e871fd4c5b4bfd9651495c94f715691e4ed56148453574af319c<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div></details></article>
+<article class="claim-panel" id="claim-references"><p class="claim-id">claim:references</p><h2>Optional: follow retained names</h2><p>--follow-references adds bounded exploration only with --source. It is not part of the default route shown in the graph.</p><p class="mechanism">Without a decision, referenceFollow is UNAVAILABLE. With a decision but no eligible references, it is also UNAVAILABLE. Otherwise the handler expands context using the selected terminal names and returns direct_reference_detail with its parent binding.</p><div class="claim-boundary"><b>Evidence boundary</b><p>The returned authority explicitly remains lexical, targetResolution=UNRESOLVED and semanticRelation=UNKNOWN. These are not compiler-resolved call edges.</p></div><details class="claim-evidence"><summary>Inspect supporting code</summary><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2233-L2254">crates/clew/src/main.rs:2233–2254 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>        if follow_references {
+            let reference_follow = match decision_candidate_id.as_deref() {
+                None =&gt; json!({
+                    &quot;status&quot;:&quot;UNAVAILABLE&quot;,
+                    &quot;reason&quot;:no_decision_reason,
+                    &quot;selectionAuthority&quot;:&quot;LEXICAL_QUERY_TERM_OVERLAP&quot;,
+                    &quot;targetResolution&quot;:&quot;UNRESOLVED&quot;,
+                    &quot;semanticRelation&quot;:&quot;UNKNOWN&quot;,
+                }),
+                Some(candidate_id) =&gt; {
+                    let (selections, source_references_truncated, eligible_count) =
+                        clew::navigation::select_direct_references(&amp;opened.context, candidate_id)
+                            .map_err(|error| compensate_opened_context(error, &amp;opened))?;
+                    if selections.is_empty() {
+                        json!({
+                            &quot;status&quot;:&quot;UNAVAILABLE&quot;,
+                            &quot;reason&quot;:&quot;NO_LEXICALLY_RELATED_RETAINED_DIRECT_REFERENCE&quot;,
+                            &quot;selectionAuthority&quot;:&quot;LEXICAL_QUERY_TERM_OVERLAP&quot;,
+                            &quot;targetResolution&quot;:&quot;UNRESOLVED&quot;,
+                            &quot;semanticRelation&quot;:&quot;UNKNOWN&quot;,
+                            &quot;sourceReferencesTruncated&quot;:source_references_truncated,
+                            &quot;truncated&quot;:source_references_truncated,</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:de327f5f21d420ad2a8e485276c295f45a202e56f49df6d5510bbcef638a0da5<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div><div class="source-record"><a href="https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2255-L2288">crates/clew/src/main.rs:2255–2288 ↗</a><p class="source-authority">EXACT SNAPSHOT TEXT · RETRIEVED BY CODECLEW</p><pre><code>                        })
+                    } else {
+                        let terms = selections
+                            .iter()
+                            .map(|selection| selection.terminal_name().to_owned())
+                            .collect::&lt;Vec&lt;_&gt;&gt;();
+                        let child = expand_context_object(
+                            &amp;opened.session,
+                            opened.context.context_id.clone(),
+                            None,
+                            terms,
+                            follow_max_roots,
+                        )
+                        .map_err(|error| compensate_opened_context(error, &amp;opened))?;
+                        let mut detail = clew::navigation::direct_reference_detail(
+                            &amp;child,
+                            &amp;selections,
+                            eligible_count,
+                        )
+                        .map_err(|error| compensate_opened_context(error, &amp;opened))?;
+                        detail
+                            .as_object_mut()
+                            .ok_or_else(|| {
+                                ClewError::new(
+                                    ErrorCode::Internal,
+                                    &quot;direct reference detail is invalid&quot;,
+                                )
+                            })?
+                            .insert(
+                                &quot;parentContextId&quot;.into(),
+                                Value::String(opened.context.context_id.clone()),
+                            );
+                        detail
+                    }</code></pre><details><summary>Digests and evidence binding</summary><p>Fragment: sha256:119a41798a2c4be85b728969a6a8008ce7ae345b0451eb33ba84bcd54b4f033d<br>File: sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498<br>Context: context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77<br>Evidence: sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08</p></details></div></details></article>
+<!-- /NAV_QUERY_CLAIMS -->
+        </div>
+      </aside>
+    </section>
+    <section class="navdoc-example" id="reproduce">
+      <div><div class="kicker">Try the same question</div><h2>A real result, with its limits intact.</h2><p>The installed CLI found <code>nav_query</code> as one fully covered, exact identifier. The surrounding analysis remained <code>UNSURE</code>: selecting a declaration does not prove its runtime behavior.</p><a href="./evidence/nav-query.json">Inspect the recorded result ↗</a></div>
+      <div class="example-command"><p>Use a fresh clone, pinned to the documented revision:</p><pre><code>git clone https://github.com/codeclew/codeclew.git codeclew-doc-demo
+cd codeclew-doc-demo
+git switch -c docs-example 64819fdb1b64a66b98cbbafcd0a68322ef818006
+
+clew nav query --repo "$PWD" \
+  --target-ref docs-example \
+  --language rust --profile rust-syntax \
+  --compilation 'cargo:crates/clew/Cargo.toml#clew#bin#clew' \
+  --term nav_query --decision-identifier nav_query --source</code></pre><p>Requires installed Codeclew 0.3.1, Git and Cargo. Keep the returned session/context handles for expansion; close the session when finished. A newer Codeclew release may produce different evidence IDs.</p><div class="result-pills"><span>Decision: SUPPORTED</span><span>Returned: 1 candidate</span><span class="conditional">Analysis: UNSURE</span></div></div>
+    </section>
+    <section class="navdoc-method">
+      <div><div class="kicker">How this page was made</div><h2>From retained code to a readable explanation.</h2><p>An agent used installed Codeclew to open the Rust CLI and library targets, select <code>nav_query</code>, follow retained references, and retrieve exact source for the dispatcher and decision logic. The agent wrote the narrative and static flow from those fragments.</p><p>Every step has a claim ID, pinned source lines, a full-file digest, a fragment digest and an evidence binding. The public JSON contains the selected material; private runtime state is not published.</p></div>
+      <div><h3>What this example does not establish</h3><ul><li>A compiler-resolved Rust call graph or observed runtime sequence.</li><li>The internals of every language adapter, cache, readiness check or recovery path.</li><li>Automatic documentation updates: this page describes one immutable snapshot.</li></ul><p>The repository validator checks the cited bytes and graph bindings. Changes to behavior still require fresh extraction and claim review.</p><a href="https://github.com/codeclew/codeclew/blob/main/docs/flows/nav-query.md">Read the extraction recipe ↗</a></div>
+    </section>
+  </main>
+  <footer class="shell"><span>Codeclew · Apache-2.0</span><div><a href="./documentation.html">Documentation</a><a href="./index.html">Home</a></div></footer>
+  <script src="./nav-query.js" defer></script>
+</body>
+</html>

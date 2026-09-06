@@ -52,11 +52,18 @@ ROWS = {
         "serialization": True,
         "authority": "KOTLIN_COMPILER_VERSION_CLASSLOADER_FALLBACK",
     },
-    "allopen-negative": {
+    "k24-from-230-allopen": {
+        "version": "2.3.0",
+        "language": "2.3",
+        "outcome": "QUALIFIED",
+        "plugin": "allopen",
+        "plugin_boundary": "KOTLIN_ANALYSIS_ALLOPEN_PLUGIN_REBOUND_TO_ANALYZER_PATCH",
+    },
+    "sam-with-receiver-negative": {
         "version": "2.3.0",
         "language": "2.3",
         "outcome": "UNSUPPORTED_COMPILER_PLUGIN_ABI",
-        "plugin": "allopen",
+        "plugin": "sam.with.receiver",
     },
     "k19-negative": {
         "version": "1.9.24",
@@ -76,8 +83,8 @@ def build_script(row: dict[str, object]) -> str:
     plugins = [f'kotlin("jvm") version "{version}"']
     if row.get("serialization"):
         plugins.append(f'kotlin("plugin.serialization") version "{version}"')
-    if row.get("plugin") == "allopen":
-        plugins.append(f'kotlin("plugin.allopen") version "{version}"')
+    if row.get("plugin"):
+        plugins.append(f'kotlin("plugin.{row["plugin"]}") version "{version}"')
     language = kotlin_version_constant(str(row["language"]))
     return (
         "plugins {\n    "
@@ -181,6 +188,8 @@ def main() -> int:
             environment["CODECLEW_KOTLIN_QUALIFICATION_K23_ORACLE"] = "1"
         if row.get("serialization"):
             environment["CODECLEW_KOTLIN_QUALIFICATION_SERIALIZATION"] = "1"
+        if row.get("plugin_boundary"):
+            environment["CODECLEW_KOTLIN_QUALIFICATION_PLUGIN_BOUNDARY"] = str(row["plugin_boundary"])
         if row.get("authority"):
             environment["CODECLEW_KOTLIN_QUALIFICATION_AUTHORITY"] = str(row["authority"])
         if expected_golden is not None and not args.discover_golden:

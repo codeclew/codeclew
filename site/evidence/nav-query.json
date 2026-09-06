@@ -1,0 +1,566 @@
+{
+  "schema": "codeclew-cli-documentation/1.0",
+  "title": "How nav query finds the code you mean",
+  "entrypoint": "clew nav query",
+  "repository": "https://github.com/codeclew/codeclew",
+  "repositoryRevision": "64819fdb1b64a66b98cbbafcd0a68322ef818006",
+  "generatedWith": {
+    "version": "0.3.1",
+    "profile": "rust-syntax",
+    "runtimeMode": "RELEASE",
+    "runtimeKey": "sha256:8f41a4c135fee214ff98882fbff6ae6f376c929ce7255f80807c05920cae09d7",
+    "sessionId": "session:d22700a3-921a-480c-8101-a18da7fe503a",
+    "sourceSelection": {
+      "dirtyWorktreeAllowed": false,
+      "kind": "COMMITTED_HEAD",
+      "uncommittedChangesIncluded": false
+    },
+    "compilations": [
+      "cargo:crates/clew/Cargo.toml#clew#bin#clew",
+      "cargo:crates/clew/Cargo.toml#clew#lib#clew"
+    ]
+  },
+  "authorship": "Agent-authored explanation from exact source returned by the installed Codeclew CLI. Diagram links between declarations are static interpretation, not resolved Rust call edges.",
+  "freshness": {
+    "status": "PINNED_SNAPSHOT",
+    "automaticUpdates": false,
+    "instruction": "Re-run extraction for a selected new snapshot and review the changed claims. The source-binding validator checks only the pinned bytes, not semantic freshness."
+  },
+  "claims": [
+    {
+      "id": "entry",
+      "title": "Start with a precise question",
+      "summary": "Give nav query a repository, local branch or tag, language, compilation and search terms. An exact decision identifier and source output are optional.",
+      "mechanism": "The CLI dispatch selects nav_query. The handler adds the decision identifier to the terms if it is missing, then requests an analysis context.",
+      "boundary": "The diagram starts at CLI dispatch. Shell startup, argument-parser internals and the implementation of every language adapter are outside this slice.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "run",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 1551,
+          "endLine": 1553,
+          "text": "        Command::Nav {\n            command: NavCommand::Query(args),\n        } => nav_query(args),",
+          "textDigest": "sha256:872c7b6e404525370100f5cf3cae6659d5d8c28e503e995f5d4ea02aaebe6b46",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:764d943b8dde301c1618ba50d23645c34a24a64f2f7c454e6277e76a1e52b8ca",
+          "contextId": "context:sha256:93674abcb006ca2817e0345aea681015ed813d22d7cf99378c668ef78040d210",
+          "evidenceDigest": "sha256:adfce75275522d171a3ed3811362645aea01a24617b353fcd5488d80ebf9fbb4",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L1551-L1553"
+        },
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2188,
+          "endLine": 2210,
+          "text": "fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {\n    let include_top_source = args.source;\n    let follow_references = args.follow_references;\n    let follow_max_roots = args.max_roots.max(4);\n    let decision_identifier = args.decision_identifier;\n    let mut terms = args.terms;\n    if let Some(identifier) = decision_identifier.as_deref()\n        && !terms.iter().any(|term| term == identifier)\n    {\n        terms.push(identifier.to_owned());\n    }\n    let intent = args\n        .intent\n        .unwrap_or_else(|| clew::navigation::NAV_QUERY_INTENT.to_string());\n    let opened = admit_and_open_context(\n        &args.session,\n        &args.profile,\n        DoctorOperationArg::Analysis,\n        intent,\n        terms,\n        args.max_roots,\n        args.committed,\n    )?;",
+          "textDigest": "sha256:b9e8c92b0ff75f9b514835ae37c52c71bd9c99a3a0af57beb38e0a8c24f8ac83",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2188-L2210"
+        }
+      ]
+    },
+    {
+      "id": "admit",
+      "title": "Check that this task can run",
+      "summary": "Codeclew checks the selected runtime and repository scope before opening a session. A readiness failure stops the request.",
+      "mechanism": "admit_and_open_context calls doctor for the exact language, profile, operation and compilations. require_task_ready appears before the readiness digest, capabilities lookup and open_session.",
+      "boundary": "This is visible Rust source order. The Rust profile does not prove name resolution, macro expansion or runtime reachability.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "admit_and_open_context",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2097,
+          "endLine": 2118,
+          "text": "    let runtime = active_runtime()?;\n    let repository = absolute(&session_args.repo)?;\n    let readiness = doctor(\n        &runtime,\n        DoctorScope::Task,\n        Some(&repository),\n        Some(&session_args.target_ref),\n        Some(DoctorTask {\n            language: session_language(session_args.language),\n            profile_id: profile,\n            operation: match operation {\n                DoctorOperationArg::Analysis => DoctorOperation::Analysis,\n                DoctorOperationArg::Mutation => DoctorOperation::Mutation,\n            },\n            compilations: &session_args.compilation,\n            committed,\n        }),\n    )?;\n    require_task_ready(&readiness)?;\n    let readiness_digest = canonical::hash(&readiness).map_err(internal)?;\n    let product = capabilities(&runtime)?;\n    let session = open_session(session_args)?;",
+          "textDigest": "sha256:ffac83ca7b65b034790314b08042ac5c1b5e7ec3d658b4f29323fae43ab58511",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:f470752e31f47d3cb8224fd2a8853d2aabd3a99528c6b6e66db9e8c395b3528b",
+          "contextId": "context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442",
+          "evidenceDigest": "sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2097-L2118"
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Open a session and retain context",
+      "summary": "The session and its first bounded context become the common evidence for the rest of the request.",
+      "mechanism": "After opening the session, the helper calls create_context_object. Success returns the session, context and PASS admission together.",
+      "boundary": "Snapshot capture, adapter analysis, indexing and caching are delegated here; this page does not claim to trace those internals.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "admit_and_open_context",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2119,
+          "endLine": 2133,
+          "text": "    match create_context_object(&session, intent, terms, max_roots) {\n        Ok(context) => Ok(AdmittedContext {\n            admission: json!({\n                \"agentContract\":product[\"agentContract\"],\n                \"readinessDigest\":readiness_digest,\n                \"readinessSchema\":readiness[\"schema\"],\n                \"runtimeMode\":runtime.mode,\n                \"runtimeKey\":runtime.runtime_key,\n                \"runtimeManifestDigest\":runtime.manifest_digest,\n                \"status\":\"PASS\",\n                \"taskAuthority\":readiness[\"taskAuthority\"],\n            }),\n            session,\n            context,\n        }),",
+          "textDigest": "sha256:0411b7d060c2c11afa8dd33ad9ee4154ca737b14327bf3218f36981ac9209e2a",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:f470752e31f47d3cb8224fd2a8853d2aabd3a99528c6b6e66db9e8c395b3528b",
+          "contextId": "context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442",
+          "evidenceDigest": "sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2119-L2133"
+        },
+        {
+          "symbol": "query_with_decision_identifier",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 38,
+          "endLine": 57,
+          "text": "pub fn query_with_decision_identifier(\n    context: &ContextObject,\n    facets: &[NavigationFacet],\n    decision_identifier: Option<&str>,\n) -> Result<Value, ClewError> {\n    let retained = retained_context(context)?;\n    let result = assemble_with_decision_identifier(\n        &context.session_id,\n        &context.context_id,\n        &context.evidence_digest,\n        &context.intent,\n        &context.terms,\n        retained,\n        retained_query_truncated(context),\n        facets,\n        decision_identifier,\n    )?;\n    validate_stdout(&result)?;\n    Ok(result)\n}",
+          "textDigest": "sha256:33235eda234c1ed87041fec032cc1be41f79a73cac7c8b668d2741d99640af1b",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:b0ff8ec92405ef51342432ac3a4abf3af72a7631ef64d4e9d73b877a89c4b817",
+          "contextId": "context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442",
+          "evidenceDigest": "sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L38-L57"
+        }
+      ]
+    },
+    {
+      "id": "failure",
+      "title": "Return an error; attempt cleanup",
+      "summary": "Readiness errors stop before a session is opened. If context creation fails after opening, the handler attempts to abort and garbage-collect that session.",
+      "mechanism": "The create-context error arm invokes change_open_failure with session.abort() and session.gc(false). Later navigation failures are mapped through compensate_opened_context.",
+      "boundary": "This page proves the visible cleanup request. It does not prove that every cleanup succeeds, or document the helper’s recovery behavior.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "admit_and_open_context",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2134,
+          "endLine": 2140,
+          "text": "        Err(error) => Err(change_open_failure(error, &session.session_id, || {\n            session.abort()?;\n            session.gc(false)?;\n            Ok(())\n        })),\n    }\n}",
+          "textDigest": "sha256:a77a83da0cb6e9954876ec2ccc6ad055e526580687ef0b0652c6547f77d173f1",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:f470752e31f47d3cb8224fd2a8853d2aabd3a99528c6b6e66db9e8c395b3528b",
+          "contextId": "context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442",
+          "evidenceDigest": "sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2134-L2140"
+        },
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2211,
+          "endLine": 2216,
+          "text": "    let mut navigation = clew::navigation::query_with_decision_identifier(\n        &opened.context,\n        &[],\n        decision_identifier.as_deref(),\n    )\n    .map_err(|error| compensate_opened_context(error, &opened))?;",
+          "textDigest": "sha256:418ae35237e104e3f439b09cfe80e66f44b4eccaa0bfb21e7f4b9fc3a37c6e1b",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2211-L2216"
+        }
+      ]
+    },
+    {
+      "id": "decision",
+      "title": "Separate ranking from a supported decision",
+      "summary": "A useful search result is not automatically the declaration you meant. Codeclew ranks retained declarations, then checks whether one exact identifier covers the query.",
+      "mechanism": "Only declaration payloads enter the ranking. Exact identifier matches are ranked first, followed by source-window and term/name relevance. Counts are computed before the returned-card limit. The decision check receives query truncation separately from card-list truncation.",
+      "boundary": "Coverage here is bounded lexical coverage of retained evidence. It is not semantic correctness or proof that the entire repository was searched.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "assemble_with_decision_identifier",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 1680,
+          "endLine": 1712,
+          "text": "        if !is_declaration(payload) {\n            continue;\n        }\n        let fact_key = required_string(matched, \"factKey\")?;\n        let compilation = required_string(matched, \"compilation\")?;\n        let candidate_id = candidate_handle(compilation, fact_key)?;\n        if handles\n            .insert(candidate_id.clone(), (compilation, fact_key))\n            .is_some()\n        {\n            return Err(invalid(\"navigation candidate handle collision\"));\n        }\n        let covered_terms = candidate_authority_term_hits(payload, sources, &normalized_terms);\n        let decision_identifier_match = decision_identifier\n            .is_some_and(|identifier| candidate_matches_declared_identifier(payload, identifier));\n        let (term_coverage, name_coverage, occurrences) =\n            candidate_relevance(payload, sources, &normalized_terms);\n        let (window_coverage, window_occurrences) =\n            source_window_relevance(sources, payload, &normalized_terms);\n        ranked_candidates.push((\n            usize::from(decision_identifier_match),\n            window_coverage,\n            term_coverage,\n            name_coverage,\n            occurrences,\n            window_occurrences,\n            ordinal,\n            candidate_id,\n            matched,\n            payload,\n            covered_terms,\n            decision_identifier_match,\n        ));",
+          "textDigest": "sha256:fe70364fc4b5f0f19e2aa0653b4e5c46bae02a83bda9a18d372e6e4674b545b8",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c4321b856db4f7a3bf6662f10649bf483dfc9f5c3691a4035e52b4cb7eee051e",
+          "contextId": "context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b",
+          "evidenceDigest": "sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1680-L1712"
+        },
+        {
+          "symbol": "assemble_with_decision_identifier",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 1714,
+          "endLine": 1737,
+          "text": "    ranked_candidates.sort_by(|left, right| {\n        right\n            .0\n            .cmp(&left.0)\n            .then_with(|| right.1.cmp(&left.1))\n            .then_with(|| right.2.cmp(&left.2))\n            .then_with(|| right.3.cmp(&left.3))\n            .then_with(|| right.4.cmp(&left.4))\n            .then_with(|| right.5.cmp(&left.5))\n            .then_with(|| left.6.cmp(&right.6))\n    });\n    let total_candidates = ranked_candidates.len();\n    let full_coverage_candidate_count = if normalized_terms.is_empty() {\n        0\n    } else {\n        ranked_candidates\n            .iter()\n            .filter(|candidate| candidate.10.len() == normalized_terms.len())\n            .count()\n    };\n    let exact_identifier_candidate_count = ranked_candidates\n        .iter()\n        .filter(|candidate| candidate.0 > 0)\n        .count();",
+          "textDigest": "sha256:771fd40cdbcc09b02f5a68e97e8f36a4800e2da6b7ba275b03b528a45bd8d79c",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c4321b856db4f7a3bf6662f10649bf483dfc9f5c3691a4035e52b4cb7eee051e",
+          "contextId": "context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b",
+          "evidenceDigest": "sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1714-L1737"
+        },
+        {
+          "symbol": "assemble_with_decision_identifier",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 1741,
+          "endLine": 1758,
+          "text": "    let mut candidate_identities = BTreeSet::new();\n    for (\n        _,\n        _,\n        _,\n        _,\n        _,\n        _,\n        _,\n        candidate_id,\n        matched,\n        payload,\n        covered_terms,\n        decision_identifier_match,\n    ) in ranked_candidates.into_iter().take(MAX_NAV_CANDIDATES)\n    {\n        let fact_key = required_string(matched, \"factKey\")?;\n        let compilation = required_string(matched, \"compilation\")?;",
+          "textDigest": "sha256:61bdc4bf8d5c46189e22acaa4bde21be7f6be2279221e04b97db8fc0646c9b25",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c4321b856db4f7a3bf6662f10649bf483dfc9f5c3691a4035e52b4cb7eee051e",
+          "contextId": "context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b",
+          "evidenceDigest": "sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1741-L1758"
+        },
+        {
+          "symbol": "assemble_with_decision_identifier",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 1815,
+          "endLine": 1828,
+          "text": "    let decision_authority = navigation_decision_authority(NavigationDecisionAuthorityInput {\n        session_id,\n        context_id,\n        required_terms: &normalized_terms,\n        candidates: &candidates,\n        returned_candidate_coverage: &returned_candidate_coverage,\n        returned_candidate_exact_identifiers: &returned_candidate_exact_identifiers,\n        full_coverage_candidate_count,\n        exact_identifier_candidate_count,\n        decision_identifier_declared: decision_identifier.is_some(),\n        query_truncated,\n        candidate_list_truncated: total_candidates > candidates.len(),\n        completeness: retained.get(\"completeness\"),\n    })?;",
+          "textDigest": "sha256:0e71e0a79baa0e09b8e0a5cc2bf5338a1c6a1296767ee23c99b9a0246a2e0c7f",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c4321b856db4f7a3bf6662f10649bf483dfc9f5c3691a4035e52b4cb7eee051e",
+          "contextId": "context:sha256:b548496cf632e97b73b43f7ee5a222646b3bbf4489654adf0cf95ca1b684133b",
+          "evidenceDigest": "sha256:f71ad78a78eef2cc016ec3a374bf135af15fd3553c994554f34645a65bbb4fd0",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1815-L1828"
+        }
+      ]
+    },
+    {
+      "id": "supported",
+      "title": "One exact, fully covered identifier",
+      "summary": "The decision is SUPPORTED when there are nonempty required terms, no unmatched terms, no query truncation, and exactly one exact-identifier candidate with complete coverage.",
+      "mechanism": "The successful branch returns UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE and the selected candidate ID. With --source, nav_query requests its retained source envelope.",
+      "boundary": "SUPPORTED identifies the declaration. It does not upgrade Rust syntax evidence to compiler proof or prove the caller’s whole task.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "navigation_decision_authority",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 1963,
+          "endLine": 1989,
+          "text": "    if !required_terms.is_empty()\n        && unmatched_terms.is_empty()\n        && !query_truncated\n        && exact_identifier_candidate_count == 1\n        && exact_identifier_candidate\n            .and_then(|candidate| candidate.get(\"complete\"))\n            .and_then(Value::as_bool)\n            == Some(true)\n    {\n        let candidate = exact_identifier_candidate.ok_or_else(|| {\n            internal(\"unique exact-identifier navigation candidate was not returned\")\n        })?;\n        return Ok(json!({\n            \"schema\":NAV_DECISION_AUTHORITY_SCHEMA,\n            \"status\":\"SUPPORTED\",\n            \"classification\":\"UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE\",\n            \"basis\":\"EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE\",\n            \"candidateId\":required_value_string(candidate, \"candidateId\")?,\n            \"requiredTermCount\":required_terms.len(),\n            \"coveredTermCount\":required_terms.len(),\n            \"returnedCandidateCoverage\":returned_coverage,\n            \"observedFullCoverageCandidateCount\":full_coverage_candidate_count,\n            \"observedExactIdentifierCandidateCount\":exact_identifier_candidate_count,\n            \"queryCoverageTruncated\":query_truncated,\n            \"candidateListTruncated\":candidate_list_truncated,\n        }));\n    }",
+          "textDigest": "sha256:613bdc196d0505dd90116b10e1f366297c410f821e8aa767e1a1e71a01f0e820",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c2da448fc6f1224948956d4a39dc4e078f539b1927ed23cb8174aa207677f8c4",
+          "contextId": "context:sha256:7e51fe3ab0b09a7d44e9bd88b190a5d312e5a0f90ee943d8a5fe9aebc6db9229",
+          "evidenceDigest": "sha256:fd52200db4eaa30829e8b59a29d02ee9cba063906f41d020697c335cbd409791",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L1963-L1989"
+        },
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2217,
+          "endLine": 2232,
+          "text": "    if include_top_source {\n        let decision_candidate_id =\n            navigation_decision_candidate_id(&navigation).map(str::to_owned);\n        let no_decision_reason = navigation_no_decision_reason(&navigation);\n        let decision_source = decision_candidate_id\n            .as_deref()\n            .map(|candidate_id| {\n                clew::navigation::source_envelope_by_candidate(&opened.context, candidate_id)\n            })\n            .transpose()\n            .map_err(|error| compensate_opened_context(error, &opened))?\n            .unwrap_or_else(|| json!({\"status\":\"UNAVAILABLE\",\"reason\":no_decision_reason}));\n        navigation\n            .as_object_mut()\n            .ok_or_else(|| ClewError::new(ErrorCode::Internal, \"navigation result is invalid\"))?\n            .insert(\"decisionSource\".into(), decision_source);",
+          "textDigest": "sha256:2cd788dd49ebbfe86701a35f165e304958d749eb55d8187cdc808dcd8a7bae81",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2217-L2232"
+        }
+      ]
+    },
+    {
+      "id": "abstain",
+      "title": "Keep candidates; explain what is missing",
+      "summary": "If the decision conditions are not met, Codeclew returns ABSTAIN with the reason. The first candidate remains a search result.",
+      "mechanism": "Reasons include missing terms, unmatched terms, truncated query coverage, no declared identifier, ambiguous or absent identifiers, an unreturned exact candidate, or partial exact coverage. Without a supported decision, requested source is UNAVAILABLE.",
+      "boundary": "A stopped request must not be repeated unchanged or resolved by copying a ranked card name into a decision identifier. The returned refinement specifies the next allowed action.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "navigation_decision_authority",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 2003,
+          "endLine": 2028,
+          "text": "    let (classification, next_missing_term) = if required_terms.is_empty() {\n        (\"NO_EXPLICIT_TERMS\", None)\n    } else if !unmatched_terms.is_empty() {\n        (\n            \"UNMATCHED_EXPLICIT_TERMS\",\n            unmatched_terms.iter().next().cloned(),\n        )\n    } else if query_truncated {\n        (\n            \"TRUNCATED_QUERY_COVERAGE\",\n            best_missing_terms.iter().next().cloned(),\n        )\n    } else if !decision_identifier_declared {\n        (\"NO_DECLARED_DECISION_IDENTIFIER\", None)\n    } else if exact_identifier_candidate_count > 1 {\n        (\"AMBIGUOUS_EXACT_IDENTIFIER\", None)\n    } else if exact_identifier_candidate_count == 0 {\n        (\"NO_EXACT_IDENTIFIER\", None)\n    } else if exact_identifier_candidate.is_none() {\n        (\"EXACT_IDENTIFIER_NOT_RETURNED\", None)\n    } else {\n        (\n            \"PARTIAL_EXACT_IDENTIFIER_COVERAGE\",\n            best_missing_terms.iter().next().cloned(),\n        )\n    };",
+          "textDigest": "sha256:2911c6a61c7dc29392c2236096a7a835b2f571973c3f337189c518fc6bf96f14",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c2da448fc6f1224948956d4a39dc4e078f539b1927ed23cb8174aa207677f8c4",
+          "contextId": "context:sha256:7e51fe3ab0b09a7d44e9bd88b190a5d312e5a0f90ee943d8a5fe9aebc6db9229",
+          "evidenceDigest": "sha256:fd52200db4eaa30829e8b59a29d02ee9cba063906f41d020697c335cbd409791",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L2003-L2028"
+        },
+        {
+          "symbol": "navigation_decision_authority",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 2029,
+          "endLine": 2066,
+          "text": "    let refinement = if decision_identifier_declared {\n        json!({\n            \"kind\":\"STOP_UNRESOLVED\",\n            \"reason\":\"DECLARED_IDENTIFIER_DID_NOT_ESTABLISH_UNIQUE_FULL_COVERAGE\",\n            \"repeatSameRequest\":false,\n            \"instruction\":\"The declared identifier did not establish one complete decision. Do not repeat it or select an analogue. Continue only after the task or an exact retained source supplies a different identifier or a known file; otherwise keep the task unresolved.\",\n        })\n    } else {\n        json!({\n            \"kind\":\"ADD_TASK_DISCRIMINANT\",\n            \"command\":format!(\n                \"nav expand --session {session_id} --from {context_id} --term <new-task-derived-exact-identifier> --decision-identifier <same-new-task-derived-exact-identifier>\"\n            ),\n            \"precondition\":\"NEW_TASK_SUPPLIED_EXACT_IDENTIFIER_NOT_ALREADY_IN_CONTEXT\",\n            \"repeatSameRequest\":false,\n            \"onUnsatisfied\":\"STOP_UNRESOLVED\",\n            \"requiredCoverage\":next_missing_term.iter().collect::<Vec<_>>(),\n            \"instruction\":\"Use this refinement once only when the task supplies a new exact identifier that is absent from the current query. Never copy a returned card name into this field. If no such identifier is available, keep the task unresolved.\",\n        })\n    };\n    let authority = json!({\n        \"schema\":NAV_DECISION_AUTHORITY_SCHEMA,\n        \"status\":\"ABSTAIN\",\n        \"classification\":classification,\n        \"basis\":\"EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE\",\n        \"requiredTermCount\":required_terms.len(),\n        \"unmatchedTermCount\":unmatched_terms.len(),\n        \"bestCandidateCoveredTermCount\":best_covered_terms.len(),\n        \"bestCandidateMissingTermCount\":best_missing_terms.len(),\n        \"returnedCandidateCoverage\":returned_coverage,\n        \"observedFullCoverageCandidateCount\":full_coverage_candidate_count,\n        \"observedExactIdentifierCandidateCount\":exact_identifier_candidate_count,\n        \"queryCoverageTruncated\":query_truncated,\n        \"candidateListTruncated\":candidate_list_truncated,\n        \"refinement\":refinement,\n    });\n    Ok(authority)\n}",
+          "textDigest": "sha256:630610e2ce15d3cf132fb26951eda99929768fd7567734842e78811c4672da74",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c2da448fc6f1224948956d4a39dc4e078f539b1927ed23cb8174aa207677f8c4",
+          "contextId": "context:sha256:7e51fe3ab0b09a7d44e9bd88b190a5d312e5a0f90ee943d8a5fe9aebc6db9229",
+          "evidenceDigest": "sha256:fd52200db4eaa30829e8b59a29d02ee9cba063906f41d020697c335cbd409791",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L2029-L2066"
+        },
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2217,
+          "endLine": 2228,
+          "text": "    if include_top_source {\n        let decision_candidate_id =\n            navigation_decision_candidate_id(&navigation).map(str::to_owned);\n        let no_decision_reason = navigation_no_decision_reason(&navigation);\n        let decision_source = decision_candidate_id\n            .as_deref()\n            .map(|candidate_id| {\n                clew::navigation::source_envelope_by_candidate(&opened.context, candidate_id)\n            })\n            .transpose()\n            .map_err(|error| compensate_opened_context(error, &opened))?\n            .unwrap_or_else(|| json!({\"status\":\"UNAVAILABLE\",\"reason\":no_decision_reason}));",
+          "textDigest": "sha256:db42ab40f69e729beb3988205c831342074a875525ffc78fa03c51742b4727de",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2217-L2228"
+        }
+      ]
+    },
+    {
+      "id": "result",
+      "title": "Return a bounded result you can continue",
+      "summary": "The response keeps the session, context and evidence binding. Reuse the returned handles to expand only the evidence you still need.",
+      "mechanism": "With --source, agent_card validates the decision contract and compacts candidates and source. The outer response includes admission and session metadata, then validates its stdout before returning. Without --source, that agent-card conversion is skipped.",
+      "boundary": "An OPEN session is not a published code change. This example performs read-only analysis; it does not run the analyzed command’s downstream behavior.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "agent_card",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 59,
+          "endLine": 84,
+          "text": "pub fn agent_card(result: &Value) -> Result<Value, ClewError> {\n    if result.get(\"schema\").and_then(Value::as_str) != Some(NAV_RESULT_SCHEMA) {\n        return Err(invalid(\"agent card input is not a navigation result\"));\n    }\n    let candidates = result\n        .get(\"candidates\")\n        .and_then(Value::as_array)\n        .ok_or_else(|| invalid(\"navigation result has no candidate array\"))?\n        .iter()\n        .map(compact_agent_candidate)\n        .collect::<Result<Vec<_>, _>>()?;\n    let decision_source = result\n        .get(\"decisionSource\")\n        .ok_or_else(|| invalid(\"navigation result has no decision source\"))?;\n    let decision_authority = result\n        .get(\"decisionAuthority\")\n        .ok_or_else(|| invalid(\"navigation result has no decision authority\"))?;\n    validate_agent_card_decision_contract(result, decision_authority, decision_source)?;\n    let compact_source = compact_decision_source(decision_source)?;\n    let supporting_anchors = result\n        .get(\"termAnchors\")\n        .and_then(Value::as_array)\n        .ok_or_else(|| invalid(\"navigation result has no term anchors\"))?\n        .iter()\n        .filter(|anchor| !anchor_is_in_decision_source(anchor, decision_source))\n        .cloned()",
+          "textDigest": "sha256:2367e6fcb4861cca23988ee0535b2ae8c2f4a6c55dc53bc5683bd37cf7c9823b",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c16464497674009c06d0c8e731b2b4e85623a11cbb07ae2d71efe9e036ee7a70",
+          "contextId": "context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442",
+          "evidenceDigest": "sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L59-L84"
+        },
+        {
+          "symbol": "agent_card",
+          "file": "crates/clew/src/navigation.rs",
+          "startLine": 113,
+          "endLine": 128,
+          "text": "        .ok_or_else(|| invalid(\"navigation result has no next action\"))?;\n    let mut card = json!({\n        \"schema\":NAV_AGENT_CARD_SCHEMA,\n        \"sessionId\":required_value_string(result, \"sessionId\")?,\n        \"contextId\":required_value_string(result, \"contextId\")?,\n        \"evidenceDigest\":required_value_string(result, \"evidenceDigest\")?,\n        \"terms\":terms,\n        \"candidates\":candidates,\n        \"candidateCount\":candidate_count,\n        \"decisionAuthority\":decision_authority,\n        \"decisionSource\":compact_source,\n        \"supportingAnchors\":supporting_anchors,\n        \"completeness\":completeness,\n        \"queryCoverageTruncated\":query_coverage_truncated,\n        \"candidateListTruncated\":candidate_list_truncated,\n        \"truncated\":truncated,",
+          "textDigest": "sha256:1161a895287056bd27a38ae42f4911e5247cd3d0ba7946f809a66ab950f94836",
+          "fileDigest": "sha256:1921f672c70e14d9aa1d8ded4eb910dcf05d7cc7bb50aa6e000662f2a650eb95",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:c16464497674009c06d0c8e731b2b4e85623a11cbb07ae2d71efe9e036ee7a70",
+          "contextId": "context:sha256:1578f752944dd292699875a65f185f5b96f3bb38672a55901c76f13b952d3442",
+          "evidenceDigest": "sha256:9a48b4378c852e6fcadf6923b4bdc54f4c846cc358eb87d8e270f7146b69c4bb",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/navigation.rs#L113-L128"
+        },
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2297,
+          "endLine": 2318,
+          "text": "    let admission = navigation_admission(&opened.admission, include_top_source);\n    if include_top_source {\n        navigation = clew::navigation::agent_card(&navigation)\n            .map_err(|error| compensate_opened_context(error, &opened))?;\n    }\n    let mut result = json!({\n        \"schema\":clew::navigation::NAV_QUERY_SCHEMA,\n        \"status\":\"OPEN\",\n        \"admission\":admission,\n        \"session\":{\n            \"sessionId\":opened.session.session_id,\n            \"baseRevision\":opened.session.base_revision,\n            \"targetRef\":opened.session.target_ref,\n            \"language\":opened.session.language,\n            \"compilations\":opened.session.compilations,\n        },\n        \"navigation\":navigation,\n    });\n    validate_nav_query_stdout(&mut result, follow_references)\n        .map_err(|error| compensate_opened_context(error, &opened))?;\n    Ok(result)\n}",
+          "textDigest": "sha256:6edc11f5b2c0e871fd4c5b4bfd9651495c94f715691e4ed56148453574af319c",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2297-L2318"
+        }
+      ]
+    },
+    {
+      "id": "references",
+      "title": "Optional: follow retained names",
+      "summary": "--follow-references adds bounded exploration only with --source. It is not part of the default route shown in the graph.",
+      "mechanism": "Without a decision, referenceFollow is UNAVAILABLE. With a decision but no eligible references, it is also UNAVAILABLE. Otherwise the handler expands context using the selected terminal names and returns direct_reference_detail with its parent binding.",
+      "boundary": "The returned authority explicitly remains lexical, targetResolution=UNRESOLVED and semanticRelation=UNKNOWN. These are not compiler-resolved call edges.",
+      "narrativeAuthority": "AGENT_INFERRED",
+      "evidence": [
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2233,
+          "endLine": 2254,
+          "text": "        if follow_references {\n            let reference_follow = match decision_candidate_id.as_deref() {\n                None => json!({\n                    \"status\":\"UNAVAILABLE\",\n                    \"reason\":no_decision_reason,\n                    \"selectionAuthority\":\"LEXICAL_QUERY_TERM_OVERLAP\",\n                    \"targetResolution\":\"UNRESOLVED\",\n                    \"semanticRelation\":\"UNKNOWN\",\n                }),\n                Some(candidate_id) => {\n                    let (selections, source_references_truncated, eligible_count) =\n                        clew::navigation::select_direct_references(&opened.context, candidate_id)\n                            .map_err(|error| compensate_opened_context(error, &opened))?;\n                    if selections.is_empty() {\n                        json!({\n                            \"status\":\"UNAVAILABLE\",\n                            \"reason\":\"NO_LEXICALLY_RELATED_RETAINED_DIRECT_REFERENCE\",\n                            \"selectionAuthority\":\"LEXICAL_QUERY_TERM_OVERLAP\",\n                            \"targetResolution\":\"UNRESOLVED\",\n                            \"semanticRelation\":\"UNKNOWN\",\n                            \"sourceReferencesTruncated\":source_references_truncated,\n                            \"truncated\":source_references_truncated,",
+          "textDigest": "sha256:de327f5f21d420ad2a8e485276c295f45a202e56f49df6d5510bbcef638a0da5",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2233-L2254"
+        },
+        {
+          "symbol": "nav_query",
+          "file": "crates/clew/src/main.rs",
+          "startLine": 2255,
+          "endLine": 2288,
+          "text": "                        })\n                    } else {\n                        let terms = selections\n                            .iter()\n                            .map(|selection| selection.terminal_name().to_owned())\n                            .collect::<Vec<_>>();\n                        let child = expand_context_object(\n                            &opened.session,\n                            opened.context.context_id.clone(),\n                            None,\n                            terms,\n                            follow_max_roots,\n                        )\n                        .map_err(|error| compensate_opened_context(error, &opened))?;\n                        let mut detail = clew::navigation::direct_reference_detail(\n                            &child,\n                            &selections,\n                            eligible_count,\n                        )\n                        .map_err(|error| compensate_opened_context(error, &opened))?;\n                        detail\n                            .as_object_mut()\n                            .ok_or_else(|| {\n                                ClewError::new(\n                                    ErrorCode::Internal,\n                                    \"direct reference detail is invalid\",\n                                )\n                            })?\n                            .insert(\n                                \"parentContextId\".into(),\n                                Value::String(opened.context.context_id.clone()),\n                            );\n                        detail\n                    }",
+          "textDigest": "sha256:119a41798a2c4be85b728969a6a8008ce7ae345b0451eb33ba84bcd54b4f033d",
+          "fileDigest": "sha256:a3634c5ac8882782088273f131637e68d4e81a64ae9b7cb37aed411f515af498",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "factKey": "rust-syntax:sha256:7414166b2ca0140f823f034dd48895c53adc543627adcb5fa0615f6919cdcc2f",
+          "contextId": "context:sha256:8b278333b8e84f2e9e7e5fc154255af7951e6d68db0191b0b2eb876624f2ea77",
+          "evidenceDigest": "sha256:a0321ea7055f579f894d6b86a7542b81fde3f3b294c52d63117a2e2c0e151a08",
+          "url": "https://github.com/codeclew/codeclew/blob/64819fdb1b64a66b98cbbafcd0a68322ef818006/crates/clew/src/main.rs#L2255-L2288"
+        }
+      ]
+    }
+  ],
+  "diagram": {
+    "kind": "STATIC_FLOW",
+    "nodes": [
+      {
+        "id": "entry",
+        "label": "01  nav query"
+      },
+      {
+        "id": "admit",
+        "label": "02  Check task readiness"
+      },
+      {
+        "id": "context",
+        "label": "03  Open session + context"
+      },
+      {
+        "id": "failure",
+        "label": "Error + cleanup attempt"
+      },
+      {
+        "id": "decision",
+        "label": "04  Exact decision supported?"
+      },
+      {
+        "id": "supported",
+        "label": "SUPPORTED\nReturn selected identity"
+      },
+      {
+        "id": "abstain",
+        "label": "ABSTAIN\nKeep discovery candidates"
+      },
+      {
+        "id": "result",
+        "label": "05  Return bounded evidence"
+      }
+    ],
+    "edges": [
+      {
+        "from": "entry",
+        "to": "admit",
+        "label": "analysis request",
+        "claimId": "entry",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "admit",
+        "to": "context",
+        "label": "ready",
+        "claimId": "admit",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "admit",
+        "to": "failure",
+        "label": "readiness error",
+        "claimId": "admit",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "context",
+        "to": "failure",
+        "label": "context error",
+        "claimId": "failure",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "context",
+        "to": "decision",
+        "label": "retained facts",
+        "claimId": "context",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "decision",
+        "to": "supported",
+        "label": "all conditions hold",
+        "claimId": "supported",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "decision",
+        "to": "abstain",
+        "label": "otherwise",
+        "claimId": "abstain",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "supported",
+        "to": "result",
+        "label": "source if requested",
+        "claimId": "result",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      },
+      {
+        "from": "abstain",
+        "to": "result",
+        "label": "reason + next action",
+        "claimId": "abstain",
+        "authority": "AGENT_INFERRED_STATIC_FLOW"
+      }
+    ]
+  },
+  "observedExample": {
+    "reproduceCommand": "clew nav query --repo \"$PWD\" --target-ref docs-example --language rust --profile rust-syntax --compilation 'cargo:crates/clew/Cargo.toml#clew#bin#clew' --term nav_query --decision-identifier nav_query --source",
+    "preparation": "In a fresh clone, create local branch docs-example at 64819fdb1b64a66b98cbbafcd0a68322ef818006. This is the analyzed revision, not an automatically updating view of main.",
+    "result": {
+      "schema": "codeclew-navigation-agent-card/1.1",
+      "decisionAuthority": {
+        "basis": "EXACT_DECLARATION_NAME_AND_BOUNDARY_SAFE_LEXICAL_COVERAGE",
+        "candidateId": "c:2c615a118a585280",
+        "candidateListTruncated": false,
+        "classification": "UNIQUE_EXACT_IDENTIFIER_FULL_COVERAGE",
+        "coveredTermCount": 1,
+        "observedExactIdentifierCandidateCount": 1,
+        "observedFullCoverageCandidateCount": 1,
+        "queryCoverageTruncated": false,
+        "requiredTermCount": 1,
+        "returnedCandidateCoverage": [
+          {
+            "candidateId": "c:2c615a118a585280",
+            "complete": true,
+            "coveredTermCount": 1,
+            "decisionIdentifierMatch": true,
+            "missingTermCount": 0
+          }
+        ],
+        "schema": "codeclew-navigation-decision-authority/1.0",
+        "status": "SUPPORTED"
+      },
+      "candidateCount": {
+        "omitted": 0,
+        "returned": 1,
+        "total": 1
+      },
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "QUERY_COMPLETE",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "queryCoverageTruncated": false,
+      "candidateListTruncated": false
+    }
+  },
+  "scopeLimitations": [
+    "Rust name resolution and cfg/macro expansion remain unverified.",
+    "The graph is a static reading, not a runtime sequence or a complete call graph.",
+    "Readiness internals, generation/cache internals, every adapter and cleanup recovery are outside this slice.",
+    "A selected source window proves visible text; narrative and cross-function links remain agent interpretation."
+  ]
+}

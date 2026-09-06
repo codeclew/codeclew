@@ -736,6 +736,7 @@ pub(crate) fn translate_facts(
         "analyzerCompilerVersion":index.get("analyzerCompilerVersion").or_else(|| index.get("compilerVersion")),
         "kotlinProjectSemantics":index.get("kotlinProjectSemantics"),
         "kotlinSemanticEngine":index.get("kotlinSemanticEngine"),
+        "buildModelBoundaries":index.get("buildModelBoundaries"),
         "projectModelHash":index.get("projectModelHash"),
         "classpathHash":index.get("classpathHash"),
         "compilerOptionsHash":index.get("compilerOptionsHash"),
@@ -1046,7 +1047,18 @@ pub(crate) fn completeness_receipt(
         .pointer("/declarationRelations/coverage")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("Kotlin relation coverage is unavailable"))?;
-    let unsure = index.get("analysisCertainty").and_then(Value::as_str) == Some("UNSURE");
+    let compatible_analysis = index
+        .get("buildModelBoundaries")
+        .and_then(Value::as_array)
+        .is_some_and(|boundaries| {
+            boundaries.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("KOTLIN_ANALYSIS_"))
+            })
+        });
+    let unsure = compatible_analysis
+        || index.get("analysisCertainty").and_then(Value::as_str) == Some("UNSURE");
     let complete = !unsure
         && descriptor_coverage == "COMPLETE_SUPPORTED_SUBSET"
         && relation_coverage == "COMPLETE_SUPPORTED_SUBSET";
@@ -1063,6 +1075,8 @@ pub(crate) fn completeness_receipt(
         ],
         "obligations":if complete {
             Vec::<String>::new()
+        } else if compatible_analysis {
+            vec!["verify-compatible-kotlin-analysis".to_owned()]
         } else if unsure {
             vec!["restore-k2-semantic-analysis".to_owned()]
         } else {
@@ -1498,6 +1512,26 @@ mod tests {
         assert_eq!(value["obligations"][0], "restore-k2-semantic-analysis");
     }
 
+    #[test]
+    fn compatible_compiler_analysis_never_claims_verified_completeness() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let index = json!({
+            "analysisCertainty":"VERIFIED",
+            "declarationDescriptors":{"coverage":"COMPLETE_SUPPORTED_SUBSET"},
+            "declarationRelations":{"coverage":"COMPLETE_SUPPORTED_SUBSET"},
+            "buildModelBoundaries":["KOTLIN_ANALYSIS_USES_DIFFERENT_COMPILER"]
+        });
+        let receipt =
+            completeness_receipt(&store, &index, &format!("sha256:{}", "1".repeat(64))).unwrap();
+        let lease = store.read(&receipt, 4096).unwrap();
+        let value: Value = serde_json::from_slice(lease.bytes()).unwrap();
+        assert_eq!(value["domains"][0]["coverage"], "PARTIAL");
+        assert_eq!(value["domains"][0]["certainty"], "UNSURE");
+        assert_eq!(value["obligations"][0], "verify-compatible-kotlin-analysis");
+    }
+
     #[cfg(unix)]
     #[test]
     fn sealed_multi_project_attempt_mounts_every_build_output() {
@@ -1746,7 +1780,7 @@ mod tests {
         }
     }
 
-    fn normalized_semantic_facts_digest(index: &Value) -> String {
+    fn normalized_semantic_facts(index: &Value) -> Value {
         let files = index
             .get("files")
             .and_then(Value::as_array)
@@ -1754,16 +1788,75 @@ mod tests {
             .iter()
             .map(|file| normalize_file_fact(file).unwrap())
             .collect::<Vec<_>>();
-        canonical::hash(&json!({
+        let mut descriptors = index
+            .pointer("/declarationDescriptors/descriptors")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if let Some(rows) = descriptors.as_array_mut() {
+            for row in rows {
+                // K24 adds an empty optional Spring projection to ordinary
+                // declarations. Older engines omit it. Normalize only this
+                // exact empty envelope; entries, boundaries and changed
+                // authority must still fail cross-engine comparison.
+                if row.get("spring")
+                    == Some(&json!({
+                        "schema":"spring-entrypoints/0.1",
+                        "authority":"K2_RESOLVED_ANNOTATIONS",
+                        "entries":[],
+                        "boundaries":[],
+                    }))
+                {
+                    row.as_object_mut().unwrap().remove("spring");
+                }
+            }
+        }
+        json!({
             "schema":"codeclew-kotlin-normalized-cross-engine-facts/1.0",
             "files":files,
-            "descriptors":index.pointer("/declarationDescriptors/descriptors"),
+            "descriptors":descriptors,
             "descriptorBoundaries":index.pointer("/declarationDescriptors/boundaries"),
             "relations":index.pointer("/declarationRelations/relations"),
             "relationBoundaries":index.pointer("/declarationRelations/boundaries"),
             "localCfgs":index.get("localCfgs"),
-        }))
-        .unwrap()
+        })
+    }
+
+    fn normalized_semantic_facts_digest(index: &Value) -> String {
+        canonical::hash(&normalized_semantic_facts(index)).unwrap()
+    }
+
+    #[test]
+    fn cross_engine_normalization_preserves_nonempty_spring_evidence() {
+        let plain = json!({"files":[], "declarationDescriptors":{"descriptors":[{
+            "identity":"example.read", "returnType":"kotlin/String"
+        }]}});
+        let mut annotated = plain.clone();
+        annotated["declarationDescriptors"]["descriptors"][0]["spring"] = json!({
+            "schema":"spring-entrypoints/0.1",
+            "authority":"K2_RESOLVED_ANNOTATIONS",
+            "entries":[], "boundaries":[],
+        });
+        assert_eq!(
+            normalized_semantic_facts(&plain),
+            normalized_semantic_facts(&annotated)
+        );
+        for (field, value) in [
+            ("entries", json!([{"kind":"HTTP_ENDPOINT"}])),
+            ("boundaries", json!(["CONTROLLER_REGISTRATION_UNPROVEN"])),
+            ("authority", json!("UNKNOWN")),
+        ] {
+            let mut changed = annotated.clone();
+            changed["declarationDescriptors"]["descriptors"][0]["spring"][field] = value;
+            assert_ne!(
+                normalized_semantic_facts(&plain),
+                normalized_semantic_facts(&changed)
+            );
+        }
+        annotated["declarationDescriptors"]["descriptors"][0]["returnType"] = json!("kotlin/Int");
+        assert_ne!(
+            normalized_semantic_facts(&plain),
+            normalized_semantic_facts(&annotated)
+        );
     }
 
     fn mutable_authority(state: &StateAuthority, component: &str) -> std::path::PathBuf {
@@ -2162,6 +2255,19 @@ mod tests {
                 .and_then(Value::as_str),
             Some("QUALIFIED"),
         );
+        if let Ok(expected_boundary) =
+            std::env::var("CODECLEW_KOTLIN_QUALIFICATION_PLUGIN_BOUNDARY")
+        {
+            assert!(
+                project
+                    .get("buildModelBoundaries")
+                    .and_then(Value::as_array)
+                    .is_some_and(|boundaries| boundaries
+                        .iter()
+                        .any(|boundary| { boundary.as_str() == Some(expected_boundary.as_str()) })),
+                "compiler plugin was not rebound to the analyzer ABI: {project}",
+            );
+        }
         if std::env::var_os("CODECLEW_KOTLIN_QUALIFICATION_SERIALIZATION").is_some() {
             assert!(
                 project
@@ -2187,9 +2293,9 @@ mod tests {
             let oracle_index =
                 real_default_engine_index(&oracle_state, &oracle_store, &fixture, &"c".repeat(64));
             assert_complete_qualification_index(&oracle_index);
-            assert_eq!(
-                normalized_semantic_facts_digest(&cold_index),
-                normalized_semantic_facts_digest(&oracle_index),
+            pretty_assertions::assert_eq!(
+                normalized_semantic_facts(&cold_index),
+                normalized_semantic_facts(&oracle_index),
                 "K23 and K24 engines produced different normalized semantic facts",
             );
         }

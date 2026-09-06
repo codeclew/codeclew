@@ -111,29 +111,46 @@ internal fun currentKotlinSemanticEngine(): KotlinSemanticEngineCapabilities {
     )
 }
 
+internal fun baselineKotlinAnalysisSupported(project: KotlinProjectSemantics): Boolean {
+    if (!Regex("[0-9]+\\.[0-9]+\\.[0-9]+").matches(project.projectCompilerVersion)) return false
+    fun line(value: String): Pair<Int, Int>? {
+        val parts = value.split('.')
+        if (parts.size != 2) return null
+        return (parts[0].toIntOrNull() ?: return null) to (parts[1].toIntOrNull() ?: return null)
+    }
+    val version = line(project.projectCompilerVersion.substringBeforeLast('.')) ?: return false
+    fun rank(value: Pair<Int, Int>) = value.first * 100 + value.second
+    if (!(version == (1 to 9) || version.first == 2 && version.second in 0..4)) return false
+    return listOf(project.languageVersion, project.apiVersion).all {
+        val mode = line(it) ?: return@all false
+        rank(mode) in 109..rank(version)
+    }
+}
+
+internal fun kotlinAnalysisLanguageVersion(projectLanguageVersion: String?): String? =
+    if (projectLanguageVersion == "1.9") "2.0" else projectLanguageVersion
+
 internal fun kotlinEngineCompatibilityDecision(
     project: KotlinProjectSemantics,
     engine: KotlinSemanticEngineCapabilities = currentKotlinSemanticEngine(),
 ): KotlinEngineCompatibilityDecision {
+    val qualificationMode = System.getenv("CODECLEW_KOTLIN_QUALIFICATION_ENGINE") == engine.engineId
     val row = QUALIFIED_KOTLIN_ENGINE_ROWS.singleOrNull {
         it.projectCompilerVersion == project.projectCompilerVersion &&
-            it.engineCompilerVersion == engine.analyzerCompilerVersion
-    } ?: return KotlinEngineCompatibilityDecision(
+            it.engineCompilerVersion == engine.analyzerCompilerVersion &&
+            (it.defaultRoute || qualificationMode)
+    } ?: if (engine.analyzerCompilerVersion == "2.4.10" && baselineKotlinAnalysisSupported(project)) {
+        QualifiedKotlinEngineRow(project.projectCompilerVersion, "2.4.10", "COMPATIBLE_ANALYSIS", true, false, true)
+    } else return KotlinEngineCompatibilityDecision(
         status = "REJECTED",
         kind = "UNQUALIFIED",
         reason = "PROJECT_ENGINE_ROW_NOT_QUALIFIED",
         btaEligible = false,
     )
-    val qualificationMode = System.getenv("CODECLEW_KOTLIN_QUALIFICATION_ENGINE") == engine.engineId
-    if (!row.defaultRoute && !qualificationMode) {
-        return KotlinEngineCompatibilityDecision(
-            status = "REJECTED",
-            kind = "UNQUALIFIED",
-            reason = "QUALIFICATION_ONLY_ROW",
-            btaEligible = false,
-        )
-    }
-    if (row.kind != "EXACT_COMPILER_ABI" && project.unstableCompilerOptions.isNotEmpty()) {
+    if (row.kind != "EXACT_COMPILER_ABI" && project.unstableCompilerOptions.any {
+            it != "-Xannotation-default-target=param-property"
+        }
+    ) {
         return KotlinEngineCompatibilityDecision(
             status = "REJECTED",
             kind = row.kind,
@@ -143,7 +160,9 @@ internal fun kotlinEngineCompatibilityDecision(
     }
     if (row.kind != "EXACT_COMPILER_ABI") {
         val unsupportedPlugins = project.compilerPlugins.filterNot {
-            it.startsWith("kotlin-serialization-compiler-plugin-embeddable-")
+            it.startsWith("kotlin-serialization-compiler-plugin-embeddable-") ||
+                it == "kotlin-allopen-compiler-plugin-embeddable-${engine.analyzerCompilerVersion}.jar" ||
+                it == "kotlin-noarg-compiler-plugin-embeddable-${engine.analyzerCompilerVersion}.jar"
         }
         if (unsupportedPlugins.isNotEmpty()) {
             return KotlinEngineCompatibilityDecision(
@@ -184,10 +203,16 @@ private fun isCompilerPluginJar(path: Path): Boolean =
  * Run project compiler plugins only when their ABI is compatible with this
  * exact analyzer. Gradle exposes a whole plugin classpath (including support
  * libraries), while K2's -Xplugin expects registrar jars. Kotlin-owned
- * serialization is replaced by the analyzer-patch artifact bundled with the
- * worker; scripting is omitted for ordinary .kt compilations, which this
+ * serialization, all-open, and no-arg are replaced by the analyzer-patch artifacts
+ * bundled with the worker; project plugin options remain authoritative. Scripting is omitted for ordinary .kt compilations, which this
  * worker supports. Unknown registrars fail closed across patch versions.
  */
+private fun officialAnalysisPluginKind(name: String, version: String): String? =
+    listOf("allopen", "noarg").singleOrNull { kind ->
+        name in setOf("kotlin-maven-$kind-$version.jar", "kotlin-$kind-compiler-plugin-$version.jar",
+            "kotlin-$kind-compiler-plugin-embeddable-$version.jar")
+    }
+
 internal fun effectiveCompilerPluginPlan(
     requested: List<Path>,
     declaredCompilerVersion: String,
@@ -221,15 +246,28 @@ internal fun effectiveCompilerPluginPlan(
                         .singleOrNull { it.fileName.toString() == expectedName }
                         ?: throw WorkerFailure(
                             "UNSUPPORTED_COMPILER_PLUGIN_ABI",
-                            "analyzer-compatible Kotlin serialization compiler plugin is unavailable",
+                            "analyzer-compatible Kotlin serialization compiler plugin is unavailable. Repair or reinstall the Codeclew runtime, then retry; the project serialization plugin must remain enabled.",
                         )
                     effective.add(compatible)
                     boundaries += "KOTLIN_SERIALIZATION_PLUGIN_REBOUND_TO_ANALYZER_PATCH"
                 }
             }
+            officialAnalysisPluginKind(name, declaredCompilerVersion) != null && WORKER_COMPILER_VERSION == "2.4.10" -> {
+                val kind = checkNotNull(officialAnalysisPluginKind(name, declaredCompilerVersion))
+                val expectedName = "kotlin-$kind-compiler-plugin-embeddable-$WORKER_COMPILER_VERSION.jar"
+                val compatible = analyzerClasspath.map(Path::toAbsolutePath).map(Path::normalize)
+                    .filter(Path::isRegularFile).distinct()
+                    .singleOrNull { it.fileName.toString() == expectedName && isCompilerPluginJar(it) }
+                    ?: throw WorkerFailure(
+                        "UNSUPPORTED_COMPILER_PLUGIN_ABI",
+                        "analyzer-compatible Kotlin $kind compiler plugin is unavailable. Repair or reinstall the Codeclew runtime, then retry; keep the project compiler plugin and its options enabled.",
+                    )
+                effective.add(compatible)
+                if (plugin != compatible) boundaries += "KOTLIN_ANALYSIS_${kind.uppercase()}_PLUGIN_REBOUND_TO_ANALYZER_PATCH"
+            }
             declaredCompilerVersion != WORKER_COMPILER_VERSION -> throw WorkerFailure(
                 "UNSUPPORTED_COMPILER_PLUGIN_ABI",
-                "compiler plugin ${plugin.fileName} targets Kotlin $declaredCompilerVersion but analyzer is $WORKER_COMPILER_VERSION",
+                "compiler plugin ${plugin.fileName} targets Kotlin $declaredCompilerVersion but analyzer is $WORKER_COMPILER_VERSION. This plugin/compiler combination is not qualified for analysis; select a supported compilation or report the plugin coordinates and both Kotlin versions to Codeclew maintainers. Do not disable a required project plugin to bypass this check.",
             )
             else -> effective.add(plugin)
         }
@@ -1525,7 +1563,12 @@ internal class Worker(
             put("fieldBoundaries", buildModel["fieldBoundaries"] ?: buildJsonObject {
                 listOf("libraries", "friendPaths", "compilerPlugins", "freeCompilerArguments", "optIns", "languageVersion", "apiVersion", "jvmTarget", "compilerVersion").forEach { field -> put(field, "UNAVAILABLE_PROVIDER") }
             })
-            put("buildModelBoundaries", buildModel["buildModelBoundaries"] ?: JsonArray(emptyList()))
+            putJsonArray("buildModelBoundaries") {
+                buildModel["buildModelBoundaries"]?.jsonArray?.forEach(::add)
+                if (engineCompatibility.kind == "COMPATIBLE_ANALYSIS") add("KOTLIN_ANALYSIS_USES_DIFFERENT_COMPILER")
+                if (languageVersion == "1.9") add("KOTLIN_ANALYSIS_LANGUAGE_UPGRADED_FROM_1_9_TO_2_0")
+                if (apiVersion == "1.9") add("KOTLIN_ANALYSIS_API_UPGRADED_FROM_1_9_TO_2_0")
+            }
             put("dependencyCoordinates", buildModel["dependencyCoordinates"] ?: JsonArray(emptyList()))
             put("repositories", buildModel["repositories"] ?: JsonArray(emptyList()))
             put("reactorPoms", buildModel["reactorPoms"] ?: JsonArray(emptyList()))
@@ -1631,11 +1674,20 @@ internal class Worker(
                 repo,
                 state.gradleUserHome.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
                 ProjectModelBuildTool.GRADLE.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
-            ).start()
+            ).let { builder ->
+                try {
+                    builder.start()
+                } catch (_: java.io.IOException) {
+                    throw WorkerFailure(
+                        "UNSUPPORTED_PROJECT_CONFIGURATION",
+                        "BUILD_LAUNCHER_START_FAILED: Gradle model extraction could not start. From the repository root verify ./gradlew --version, wrapper executable permissions and JAVA_HOME in the same terminal or agent environment, then retry.",
+                    )
+                }
+            }
             val output = process.inputStream.bufferedReader().readText(); val status = process.waitFor()
-            if (status != 0) throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle model extraction failed: ${output.takeLast(2000)}")
+            if (status != 0) throw buildModelFailure(ProjectModelBuildTool.GRADLE, output)
             val line = output.lineSequence().lastOrNull { it.startsWith("__SEMANTIC_THREAD_MODEL__") }
-                ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "Gradle model marker missing")
+                ?: throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "BUILD_MODEL_MARKER_MISSING: Gradle completed without publishing the selected compilation model. Run ./gradlew tasks --all from the repository root and verify the selected Kotlin JVM compilation; if it exists, report this code and the compilation to Codeclew maintainers.")
             return json.parseToJsonElement(line.removePrefix("__SEMANTIC_THREAD_MODEL__")).jsonObject
         } finally { Files.deleteIfExists(script) }
     }
@@ -2072,8 +2124,8 @@ internal class Worker(
             val factsFile = temp.resolve("facts.jsonl"); val outputDir = temp.resolve("classes").also(Path::createDirectories)
             val classpath = model["classpath"]?.jsonArray?.joinToString(File.pathSeparator) { it.jsonPrimitive.content }.orEmpty()
             val command = mutableListOf("-d", outputDir.toString(), "-classpath", classpath, "-no-stdlib", "-no-reflect", "-jdk-home", model["jdkHome"]!!.jsonPrimitive.content, "-jvm-target", model["jvmTarget"]?.jsonPrimitive?.content?.removePrefix("JVM_") ?: "21")
-            model["languageVersion"]?.jsonPrimitive?.contentOrNull?.let { command += listOf("-language-version", it) }
-            model["apiVersion"]?.jsonPrimitive?.contentOrNull?.let { command += listOf("-api-version", it) }
+            kotlinAnalysisLanguageVersion(model["languageVersion"]?.jsonPrimitive?.contentOrNull)?.let { command += listOf("-language-version", it) }
+            kotlinAnalysisLanguageVersion(model["apiVersion"]?.jsonPrimitive?.contentOrNull)?.let { command += listOf("-api-version", it) }
             val friendPaths = model["friendPaths"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
             if (friendPaths.isNotEmpty()) command += "-Xfriend-paths=${friendPaths.joinToString(File.pathSeparator)}"
             model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }?.let(command::addAll)

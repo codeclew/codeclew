@@ -656,6 +656,7 @@ mod tests {
                     jvm_descriptor: Some("()V".into()),
                     modifiers: modifiers.into_iter().map(str::to_owned).collect(),
                     annotations: Vec::new(),
+                    spring: None,
                     interfaces: Vec::new(),
                     superclass: None,
                     file: "src/main/java/api/Service.java".into(),

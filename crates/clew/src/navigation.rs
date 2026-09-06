@@ -2177,16 +2177,12 @@ fn display_name(payload: &Map<String, Value>) -> Option<&str> {
 }
 
 fn exact_candidate_name_matches(payload: &Map<String, Value>, term: &str) -> bool {
-    ["name", "qualifiedName", "symbolIdentity", "ownerIdentity"]
-        .into_iter()
-        .filter_map(|key| payload.get(key).and_then(Value::as_str))
-        .any(|identity| identity == term)
+    crate::query_v2::declaration_identifiers(payload).contains(term)
 }
 
 fn exact_query_name_match(payload: &Map<String, Value>, terms: &BTreeSet<String>) -> bool {
-    ["name", "qualifiedName"]
+    crate::query_v2::declaration_identifiers(payload)
         .into_iter()
-        .filter_map(|key| payload.get(key).and_then(Value::as_str))
         .map(str::to_lowercase)
         .any(|name| terms.contains(&name))
 }
@@ -2769,6 +2765,30 @@ mod tests {
             "completeness":{"support":"SUPPORTED","certainty":"UNSURE"},
             "truncated":false
         })
+    }
+
+    #[test]
+    fn kotlin_navigation_matches_exact_callable_and_terminal_name() {
+        let symbol = "callable:sample/Receiver.accept#jvm:(I)V";
+        let value = json!({
+            "declarationKind":"FUNCTION", "symbolIdentity":symbol,
+            "compilerCallableId":"sample/Receiver.accept", "ownerIdentity":"class:sample/Receiver"
+        });
+        let payload = value.as_object().unwrap();
+        assert!(exact_candidate_name_matches(payload, symbol));
+        assert!(exact_candidate_name_matches(payload, "accept"));
+        assert!(!exact_candidate_name_matches(
+            payload,
+            "class:sample/Receiver"
+        ));
+        assert!(!exact_candidate_name_matches(
+            payload,
+            "callable:sample/Receiver.accept#jvm:()V"
+        ));
+        assert!(exact_query_name_match(
+            payload,
+            &BTreeSet::from(["accept".into()])
+        ));
     }
 
     #[test]

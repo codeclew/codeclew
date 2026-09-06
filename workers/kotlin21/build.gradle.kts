@@ -33,6 +33,7 @@ tasks.test { useJUnitPlatform() }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     exclude { element ->
+        element.file.name == "SpringAnnotationFacts24.kt" ||
         element.file.absolutePath == file("../kotlin/src/main/kotlin/dev/semanticthread/worker/FirFactsPlugin.kt").absolutePath
     }
 }

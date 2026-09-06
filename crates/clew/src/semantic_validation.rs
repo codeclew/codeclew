@@ -27,6 +27,35 @@ pub(crate) struct DeclarationDescriptorSnapshot {
     pub(crate) provenance: Value,
 }
 
+// K2 renders function types as `(A) -> B?`: the trailing marker belongs to
+// the return type. Only a wrapped function `((A) -> B?)?` is nullable itself.
+fn rendered_root_nullable(rendered: &str) -> bool {
+    let bytes = rendered.trim_end().as_bytes();
+    if bytes.last() != Some(&b'?') {
+        return false;
+    }
+    let mut parentheses = 0usize;
+    let mut generics = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' => parentheses += 1,
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'<' => generics += 1,
+            b'>' => generics = generics.saturating_sub(1),
+            b'-' if bytes.get(index + 1) == Some(&b'>') => {
+                if parentheses == 0 && generics == 0 {
+                    return false;
+                }
+                index += 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    true
+}
+
 fn declaration_source_binding(facts: &Value) -> Result<Value, ClewError> {
     let invalid = |message: &str| ClewError::new(ErrorCode::InvalidInput, message);
     let compilation = facts
@@ -479,6 +508,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
             if !partial {
                 allowed.extend([
                     "isOverride",
+                    "spring",
                     "returnType",
                     "returnNullable",
                     "parameterTypes",
@@ -498,7 +528,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
                 allowed.extend(["isOverride", "declaredType", "declaredNullable"]);
             }
         }
-        "CLASS" => allowed.push("compilerClassId"),
+        "CLASS" => allowed.extend(["compilerClassId", "spring"]),
         _ => return Err(payload_invalid("unknown declaration descriptor kind")),
     }
     Ok(allowed)
@@ -542,6 +572,9 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
     }
     validate_payload_location(value, "declaration descriptor")?;
     validate_optional_descriptor_lines(value)?;
+    if let Some(spring) = value.get("spring") {
+        crate::spring_entrypoints::validate_metadata(spring, "K2_RESOLVED_ANNOTATIONS")?;
+    }
     for field in ["symbolIdentity", "ownerIdentity", "module", "sourceSet"] {
         payload_string(value, field)?;
     }
@@ -1446,7 +1479,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
         if start < 0
             || end <= start
             || nullable != expected_nullable
-            || nullable != rendered.trim_end().ends_with('?')
+            || nullable != rendered_root_nullable(rendered)
             || rendered.contains("..")
             || rendered.contains('!')
             || rendered.contains("<ERROR")
@@ -1468,7 +1501,7 @@ pub(crate) fn validate_declaration_relation_snapshot(
                 "return-value relation contains an unresolved compiler type",
             ));
         }
-        Ok(rendered.trim_end().ends_with('?'))
+        Ok(rendered_root_nullable(rendered))
     }
     fn occurrence_range_and_node(
         occurrence: &Value,
@@ -2507,7 +2540,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "flexible, platform, or unresolved compiler type cannot be PROVEN",
             ));
         }
-        if nullable != rendered.trim_end().ends_with('?') {
+        if nullable != rendered_root_nullable(rendered) {
             return Err(invalid(format!(
                 "declaration descriptor {null_field} disagrees with compiler type rendering"
             )));
@@ -2564,6 +2597,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "compilerCallableId",
                 "jvmDescriptor",
                 "isOverride",
+                "spring",
                 "returnType",
                 "returnNullable",
                 "parameterTypes",
@@ -2582,7 +2616,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "declaredType",
                 "declaredNullable",
             ]),
-            "CLASS" => allowed.extend(["compilerClassId"]),
+            "CLASS" => allowed.extend(["compilerClassId", "spring"]),
             _ => return Err(invalid("unknown declaration descriptor kind")),
         }
         let object = value
@@ -2852,6 +2886,9 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         }
         validate_type_parameters(descriptor)?;
         validate_field_closure(descriptor, declaration_kind)?;
+        if let Some(spring) = descriptor.get("spring") {
+            crate::spring_entrypoints::validate_metadata(spring, "K2_RESOLVED_ANNOTATIONS")?;
+        }
         match declaration_kind {
             "FUNCTION" => {
                 let callable = required_string(descriptor, "compilerCallableId")?;
@@ -3166,7 +3203,7 @@ pub(crate) fn descriptor_validation_diagnostic(facts: &Value) -> Value {
         !rendered.contains("..")
             && !rendered.contains('!')
             && !rendered.contains("<ERROR")
-            && nullable == rendered.trim_end().ends_with('?')
+            && nullable == rendered_root_nullable(rendered)
     }
     fn report(stage: &str, ordinal: usize, row: &Value) -> Value {
         let fields = [
@@ -3748,6 +3785,111 @@ mod tests {
             "declarationDescriptorHash",
         );
         assert!(validate_declaration_descriptor_snapshot(&facts).is_err());
+    }
+
+    #[test]
+    fn partial_enum_entry_constructor_snapshot_requires_actual_compiler_class_owner() {
+        let mut facts = verified_facts();
+        let identity = "constructor:p/Choice.FIRST.FIRST#jvm:()V";
+        let mut descriptor = constructor_fact();
+        descriptor["symbolIdentity"] = json!(identity);
+        descriptor["compilerCallableId"] = json!("p/Choice.FIRST.FIRST");
+        descriptor["compilerClassId"] = json!("p/Choice.FIRST");
+        descriptor["ownerIdentity"] = json!("class:p/Choice.FIRST");
+        descriptor["containment"] = json!([
+            "class:p/Choice",
+            "callable:p/Choice.FIRST",
+            "class:p/Choice.FIRST"
+        ]);
+        descriptor["jvmDescriptor"] = json!("()V");
+        let object = descriptor.as_object_mut().unwrap();
+        for field in [
+            "visibility",
+            "effectiveVisibility",
+            "exportBoundary",
+            "modality",
+            "isPrimary",
+            "parameterTypes",
+            "typeParameters",
+        ] {
+            object.remove(field);
+        }
+        object.insert("attributeCoverage".into(), json!("PARTIAL"));
+        object.insert(
+            "sourceRowHash".into(),
+            json!(format!("sha256:{}", "c".repeat(64))),
+        );
+        facts["declarationDescriptors"]["descriptors"] = json!([descriptor]);
+        facts["declarationDescriptors"]["boundaries"] = json!([{
+            "schema":"declaration-descriptor-boundary/0.1", "file":"A.kt", "start":0, "end":12,
+            "symbolIdentity":identity, "stage":"NORMALIZE", "code":"UNKNOWN_EFFECTIVE_VISIBILITY",
+            "resolution":"UNKNOWN", "provider":"COMPILER_DESCRIPTOR_NORMALIZER", "module":":", "sourceSet":"main",
+            "sourceProvenance":"COMPILER_UTF16_RANGE_TO_UTF8_BYTES", "compilerAuthority":"fir-facts-extractor/0.6",
+            "rawRowHash":format!("sha256:{}", "c".repeat(64)),
+            "retainedDescriptorHash":canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap()
+        }]);
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        validate_declaration_descriptor_snapshot(&facts).unwrap();
+        // The pre-fix extractor mixed the enum class with the enum-entry callable owner.
+        facts["declarationDescriptors"]["descriptors"][0]["compilerClassId"] = json!("p/Choice");
+        facts["declarationDescriptors"]["descriptors"][0]["ownerIdentity"] =
+            json!("callable:p/Choice.FIRST");
+        facts["declarationDescriptors"]["descriptors"][0]["containment"] =
+            json!(["class:p/Choice", "callable:p/Choice.FIRST"]);
+        facts["declarationDescriptors"]["boundaries"][0]["retainedDescriptorHash"] =
+            json!(canonical::hash(&facts["declarationDescriptors"]["descriptors"][0]).unwrap());
+        refresh(
+            &mut facts,
+            "declarationDescriptors",
+            "declarationDescriptorHash",
+        );
+        let error = validate_declaration_descriptor_snapshot(&facts).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("constructor compiler/JVM identity is inconsistent")
+        );
+    }
+
+    #[test]
+    fn function_parameter_nullability_is_distinct_from_its_return_type() {
+        for (rendered, nullable) in [
+            ("(T?) -> T?", false),
+            ("((T?) -> T?)?", true),
+            ("suspend (kotlin/String) -> kotlin/String?", false),
+            ("kotlin/String.() -> kotlin/String?", false),
+            ("(kotlin/Int) -> (() -> kotlin/String?)?", false),
+            ("kotlin/collections/List<() -> kotlin/String?>?", true),
+            ("kotlin/collections/List<kotlin/String?>", false),
+            ("kotlin/String?", true),
+        ] {
+            assert_eq!(rendered_root_nullable(rendered), nullable, "{rendered}");
+            let mut facts = verified_facts();
+            facts["declarationDescriptors"]["descriptors"][0]["parameterTypes"] = json!([
+                {"index":0,"type":rendered,"nullable":nullable,"hasDefault":false}
+            ]);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            validate_declaration_descriptor_snapshot(&facts).unwrap();
+            facts["declarationDescriptors"]["descriptors"][0]["parameterTypes"][0]["nullable"] =
+                json!(!nullable);
+            refresh(
+                &mut facts,
+                "declarationDescriptors",
+                "declarationDescriptorHash",
+            );
+            assert!(
+                validate_declaration_descriptor_snapshot(&facts).is_err(),
+                "inverted nullability accepted: {rendered}"
+            );
+        }
     }
 
     #[test]

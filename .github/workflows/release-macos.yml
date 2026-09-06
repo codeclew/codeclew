@@ -124,6 +124,9 @@ jobs:
             'The default profile contains Kotlin 2.4.10 plus operationally pilot-ready conditional Rust and Python mutation. Rust/Python evidence remains PARTIAL/UNSURE and requires native validation plus explicit obligation acknowledgement.' \
             'Install the optional Kotlin 2.3.0 preview later with `clew pack install kotlin23`.' \
             >"$notes"
+          if [ -f "docs/releases/$RELEASE_VERSION.md" ]; then
+            cp "docs/releases/$RELEASE_VERSION.md" "$notes"
+          fi
           if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
             gh release upload "$RELEASE_VERSION" "$RUNNER_TEMP"/release-assets/* --clobber
           else

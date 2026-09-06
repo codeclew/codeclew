@@ -1,10 +1,10 @@
 ---
 name: codeclew
-description: Use Codeclew for bounded compiler- or syntax-backed code context, safe changes, multi-repository analysis, freshness checks, recovery, and privacy-safe diagnostics. Trigger when a task asks to inspect, explain, trace, or change supported source code through the clew CLI, or to diagnose a Codeclew run.
+description: Use Codeclew for bounded compiler- or syntax-backed code context, safe changes, multi-repository analysis, freshness checks, recovery, and privacy-safe diagnostics. Trigger when a task asks to inspect, explain, trace, or change supported source code through the clew CLI, or to diagnose a Codeclew run. Development of Codeclew itself follows its repository-native contributor workflow.
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.2.19"
+  version: "0.3.1"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -14,6 +14,15 @@ Use Codeclew to obtain bounded evidence before reading or changing supported
 code. The skill supports Codex, Claude Code, and Agent Skills-compatible agents;
 it requires the `clew` CLI, Git, and the host dependencies reported by doctor.
 Preserve the user's scope and Codeclew's authority boundaries.
+
+## Choose the workflow
+
+This is the installed-product workflow for analyzing or changing a target
+repository. When the task is to develop Codeclew itself, follow that checkout's
+README and native build/test workflow, including its source launcher. Consumer
+admission is not a prerequisite for maintainer edits; a dirty target-admission
+result must not block unrelated authorized work on Codeclew's implementation.
+Do not use this distinction to bypass consumer-session or publication guards.
 
 ## Resolve and admit
 
@@ -29,8 +38,13 @@ Preserve the user's scope and Codeclew's authority boundaries.
    discovery, not task admission: use only contours whose status is
    `READY_FOR_TASK_DOCTOR`, then pass their exact `targetRef`, `profileId`, and
    `compilations` to the public atomic admission path below. Preserve reported
-   blockers, unsupported languages, and `nextAction`; ask when more than one
-   ready contour could match the task. The discovery report contains repository
+   blockers, unsupported languages, and `nextAction`. For read-only Kotlin/Java
+   work, select the ready project-native analysis contour matching the detected
+   build system; an exact supported compiler contour takes preference over the
+   broad baseline. Multiple engine profiles alone do not require the user to
+   choose a version. Ask only when repository or compilation scope is ambiguous;
+   include all relevant compilations when the user explicitly requests the whole
+   repository. The discovery report contains repository
    identity even though it omits absolute paths and source, so keep its raw JSON
    local.
 3. Admit the task through one of the two public atomic paths below. Their
@@ -49,7 +63,14 @@ Preserve the user's scope and Codeclew's authority boundaries.
    `--compilation` and `--term` only for explicit additional authorities and
    roots. Require `admission.status=PASS` and retain the returned session and
    context identifiers.
-5. On a typed readiness failure, run only the named diagnostic (`clew doctor
+5. When discovery reports `SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE`, use
+   `--committed` on discovery and the analysis admission command if the task
+   concerns the committed repository. Explain that the evidence excludes local
+   edits and retain `sourceSelection` plus the base revision. This is an explicit
+   read-only snapshot choice, not permission to clean or stash developer work.
+   If the user specifically requests uncommitted changes, do not substitute a
+   committed snapshot; report that this source mode is not supported.
+6. On another typed readiness failure, run only the named diagnostic (`clew doctor
    attach` or the same exact `clew doctor task ...`) once, report its
    `nextAction`, and stop. `doctor provision` is a maintainer/bootstrap
    diagnostic and is not an admission step for an installed product task. A
@@ -58,6 +79,18 @@ Preserve the user's scope and Codeclew's authority boundaries.
 
 Never describe syntax-only, partial, declared, conditional, or unsure evidence
 as compiler-verified behavior.
+
+For Kotlin baseline analysis, discovery can return `kotlin-jvm-gradle-analysis`
+or `kotlin-jvm-maven-analysis`; Java baseline uses
+`java-17plus-gradle-read-only` or `java-17plus-maven-read-only`. Pass the returned
+profile to admission, rather than asking the user to select a compiler pack.
+The packaged Kotlin engine remains 2.4.10. Baseline supports stable project
+versions from 1.9 through the 2.4 line with explicit analyzer differences:
+Kotlin 1.9 is analyzed in language/API mode 2.0, so retain the upgrade boundaries.
+Unknown plugins, unstable options and unresolved compilation inputs remain
+unsupported. Java uses the project-selected JDK 17+; 17 and 21 have fixture
+coverage. These baseline profiles are read-only. Kotlin 2.4.x analysis does not
+imply that every patch is mutation-qualified.
 
 Codeclew sessions require write access to private `CODECLEW_HOME` managed state
 and to Codeclew-owned Git worktree administration under the repository's Git
@@ -332,6 +365,63 @@ Use `clew <command> --help` only when the relevant syntax is not already given
 by this skill or the installed command rejects it. Treat session and context
 output as evidence tied to their recorded base commit.
 
+## Catalogue Spring computation roots
+
+For all HTTP endpoints, Kafka listeners or scheduled jobs, enumerate the sealed
+catalogue instead of treating a search result as exhaustive:
+
+```bash
+clew entrypoints --session <session-id> --limit 100
+clew entrypoints --thread <thread-id> --limit 100
+```
+
+Use one mode: repeat `--session` for explicitly selected sessions, or supply a
+bound thread. Follow every returned `nextCursor` with the same selection and
+`--cursor <next-cursor>` until it is null. Preserve the catalogue digest,
+per-scope coverage and boundaries; an unavailable extractor is not an empty
+inventory. Each entry retains its exact symbol, source and evidence reference.
+Use those returned identities to seed subsequent context or thread analysis.
+Keep dynamic configuration and runtime activation unproven, and never infer a
+cross-repository call from matching routes or topic names. Document the selected
+repository/compilation scope and unresolved edges with the resulting thread.
+
+## Explain with source-bound diagrams
+
+For documentation or a request to explain a computation, make a rendered visual
+flow the primary explanation, with concise prose for the outcome and boundaries.
+Start from the user-selected entrypoint (for example a CLI command, function, or
+HTTP handler), follow only the evidence needed for that scenario, and retain
+branches, failures, and state changes that affect the result.
+
+Use a Mermaid sequence diagram when participants and ordering are supported.
+Use a flowchart when the evidence supports decisions or static relationships
+without execution order. Source position alone does not prove ordering. Mark
+agent-inferred and unresolved transitions explicitly in labels and the legend;
+a dashed line alone is insufficient. Never turn syntax references into resolved
+calls, or draw a linear happy path through unproven branches.
+
+Bind each meaningful node and arrow to a stable claim ID with its retained source
+window or relation, repository-relative file, exact revision, evidence digest,
+and authority. Keep the claim-to-evidence mapping beside the diagram or in its
+linked machine-readable artifact. On a website, let readers select a step to
+inspect its explanation and exact source. Default to the readable overview;
+make technical evidence progressively available. Provide an accessible text
+alternative and preserve diagram source (such as `.mmd`) for reproduction.
+Render the graph in the target output: a fenced source block alone is not a
+finished visualization when the target cannot render it.
+
+Generate narrative from the retained Codeclew evidence and identify it as agent
+authored. Keep syntax observations, compiler relations, declared topology, and
+executed test results distinct. Record the analysis command, source selection,
+base revision, and unresolved scope. If publication is already authorized,
+export only the intended public source fragments and provenance; do not upload
+raw private session state. A digest binds bytes, not the truth of the narrative.
+
+For updates, compare the explicitly selected new snapshot with the old evidence.
+Use supported explanation freshness operations when applicable; otherwise check
+the cited source bindings and report the limitation. Do not advertise automatic
+freshness or universal language support merely because the diagram renders.
+
 ## Prepare a change
 
 Mutation is allowed only when the active support matrix marks the exact profile
@@ -362,6 +452,9 @@ Freshness results are binding: continue on `FRESH`; stop and preserve developer
 work on `DIRTY`; rebuild the session, context, and plan on `STALE`; repair access
 on `UNAVAILABLE`; open a new session for more work after `TERMINAL`. Never clean,
 reset, rebase, or replay user work to make a result fresh.
+An explicitly admitted `--committed` analysis may continue using its immutable
+base-revision snapshot when the target checkout is dirty; it must not describe
+that snapshot as the current edited source. Mutation freshness rules are unchanged.
 
 ## Work across repositories
 

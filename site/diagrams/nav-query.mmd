@@ -1,0 +1,19 @@
+flowchart TD
+  %% Agent-interpreted static flow; no resolved Rust call graph.
+  entry["01  nav query"]
+  admit["02  Check task readiness"]
+  context["03  Open session + context"]
+  failure["Error + cleanup attempt"]
+  decision["04  Exact decision supported?"]
+  supported["SUPPORTED<br/>Return selected identity"]
+  abstain["ABSTAIN<br/>Keep discovery candidates"]
+  result["05  Return bounded evidence"]
+  entry -. "analysis request · claim:entry" .-> admit
+  admit -. "ready · claim:admit" .-> context
+  admit -. "readiness error · claim:admit" .-> failure
+  context -. "context error · claim:failure" .-> failure
+  context -. "retained facts · claim:context" .-> decision
+  decision -. "all conditions hold · claim:supported" .-> supported
+  decision -. "otherwise · claim:abstain" .-> abstain
+  supported -. "source if requested · claim:result" .-> result
+  abstain -. "reason + next action · claim:abstain" .-> result
