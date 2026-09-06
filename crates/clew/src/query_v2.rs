@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/5.0";
+pub const QUERY_INDEX_SCHEMA: &str = "codeclew-query-index/6.0";
 pub const QUERY_SHARD_SCHEMA: &str = "codeclew-query-shard/2.0";
 pub const QUERY_CONTEXT_SCHEMA: &str = "codeclew-query-context/2.0";
 pub const MAX_QUERY_SHARD_BYTES: usize = 8 * 1024 * 1024;

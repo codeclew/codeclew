@@ -2348,50 +2348,6 @@ mod tests {
         assert_eq!(serial.message, parallel.message);
     }
 
-    /// Read a copied catalog snapshot without opening or changing managed state.
-    #[test]
-    #[ignore = "local catalog loading measurement; requires CODECLEW_CATALOG_BENCHMARK_INPUT"]
-    fn catalog_loading_measurement() {
-        let path = std::env::var_os("CODECLEW_CATALOG_BENCHMARK_INPUT")
-            .expect("set CODECLEW_CATALOG_BENCHMARK_INPUT to a copied catalog snapshot");
-        let bytes = fs::read(path).unwrap();
-        let started = std::time::Instant::now();
-        let digest = canonical::hash_bytes(&bytes);
-        let snapshot: CatalogSnapshot = serde_json::from_slice(&bytes).unwrap();
-        let parsed = started.elapsed();
-        assert_eq!(catalog_bytes(&snapshot).unwrap(), bytes);
-        let checked = started.elapsed();
-        let state = catalog_state_from_snapshot(&snapshot, &digest).unwrap();
-        println!(
-            "catalog bytes={} packs={} objects={} parse={parsed:?} canonical={:?} rebuild={:?} total={:?}",
-            bytes.len(),
-            snapshot.packs.len(),
-            state.locations.len(),
-            checked - parsed,
-            started.elapsed() - checked,
-            started.elapsed(),
-        );
-        drop(state);
-        for jobs in [1, 2, 4] {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(jobs)
-                .build()
-                .unwrap();
-            let started = std::time::Instant::now();
-            pool.install(|| {
-                snapshot
-                    .packs
-                    .par_iter()
-                    .try_for_each(|pack| validate_pack_manifest(&pack.data_name, &pack.manifest))
-            })
-            .unwrap();
-            println!(
-                "catalog manifest validation jobs={jobs} elapsed={:?}",
-                started.elapsed()
-            );
-        }
-    }
-
     #[test]
     fn identical_content_has_one_stable_object_identity() {
         let (_root, store) = store();

@@ -27,3 +27,6 @@ preview.json
 /work/
 
 **/.kotlin/
+
+# Personal agent model preferences are not release inputs.
+/.codex/config.toml

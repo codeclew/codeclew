@@ -1099,14 +1099,20 @@ mod tests {
         let dirty =
             diagnose_repository(&runtime(), &support_matrix().unwrap(), repository.path()).unwrap();
         assert_eq!(dirty["repository"]["clean"], false);
-        assert_eq!(dirty["nextAction"], "CLEAN_TARGET_WORKTREE");
+        assert_eq!(
+            dirty["nextAction"],
+            "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE"
+        );
 
         fs::write(repository.path().join("app.py"), "value = 1\n").unwrap();
         git(repository.path(), &["add", "docs/plans/local.md"]);
         let staged =
             diagnose_repository(&runtime(), &support_matrix().unwrap(), repository.path()).unwrap();
         assert_eq!(staged["repository"]["clean"], false);
-        assert_eq!(staged["nextAction"], "CLEAN_TARGET_WORKTREE");
+        assert_eq!(
+            staged["nextAction"],
+            "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE"
+        );
     }
 
     #[test]
