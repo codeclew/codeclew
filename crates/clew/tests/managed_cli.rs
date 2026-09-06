@@ -3021,3 +3021,126 @@ fn managed_support_summary_requires_private_input_and_drops_private_material() {
     assert_eq!(rejected_value["error"]["code"], "INVALID_INPUT");
     assert_bytes_hide_paths(&rejected.stdout, &[&diagnostic]);
 }
+
+#[cfg(unix)]
+#[test]
+fn working_tree_context_retains_saved_rust_files_and_cleans_its_own_snapshot() {
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repo = temporary.path().join("repo");
+    fs::create_dir_all(repo.join("src")).unwrap();
+    fs::write(
+        repo.join("Cargo.toml"),
+        b"[package]\nname=\"snapshot_fixture\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .unwrap();
+    fs::write(
+        repo.join("Cargo.lock"),
+        b"version = 4\n\n[[package]]\nname = \"snapshot_fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(repo.join("src/lib.rs"), b"pub fn before() -> i32 { 1 }\n").unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=test@codeclew.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    );
+    fs::write(repo.join("src/lib.rs"), b"pub fn staged() -> i32 { 2 }\n").unwrap();
+    run_git(&repo, &["add", "."]);
+    let saved = b"mod new;\npub fn saved() -> i32 { 3 }\n";
+    fs::write(repo.join("src/lib.rs"), saved).unwrap();
+    fs::write(
+        repo.join("src/new.rs"),
+        b"pub fn untracked() -> i32 { 4 }\n",
+    )
+    .unwrap();
+    let index = fs::read(repo.join(".git/index")).unwrap();
+    let state_root = temporary.path().join("state/v2");
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&digest);
+    let binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{digest}.lease"));
+    let run = |args: &[&str]| {
+        let output = run_managed(&binary, &state_root, &runtime, &lease, args, None);
+        let value: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)));
+        assert!(output.status.success(), "{value}");
+        value
+    };
+    let opened = run(&[
+        "context",
+        "open",
+        "--repo",
+        repo.to_str().unwrap(),
+        "--target-ref",
+        "main",
+        "--language",
+        "rust",
+        "--profile",
+        "rust-syntax",
+        "--compilation",
+        "cargo:Cargo.toml#snapshot_fixture#lib#snapshot_fixture",
+        "--operation",
+        "analysis",
+        "--working-tree",
+        "--intent",
+        "Inspect saved edits",
+        "--term",
+        "saved",
+        "--term",
+        "untracked",
+    ]);
+    assert_eq!(
+        opened["admission"]["taskAuthority"]["sourceSelection"]["kind"],
+        "WORKING_TREE"
+    );
+    assert_eq!(opened["session"]["schema"], "codeclew-session/6.0");
+    assert!(opened["context"].to_string().contains("saved"));
+    assert!(opened["context"].to_string().contains("untracked"));
+    let session = opened["session"]["sessionId"].as_str().unwrap();
+    let source = state_root
+        .join("sessions")
+        .join(session.strip_prefix("session:").unwrap())
+        .join("source");
+    assert_eq!(fs::read(source.join("src/lib.rs")).unwrap(), saved);
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    let fresh = run(&["change", "check-freshness", "--session", session]);
+    assert!(fresh.to_string().contains("FRESH"), "{fresh}");
+    fs::write(repo.join("src/lib.rs"), b"pub fn later() -> i32 { 5 }\n").unwrap();
+    let fresh = run(&["change", "check-freshness", "--session", session]);
+    assert!(fresh.to_string().contains("LIVE_CHANGED"), "{fresh}");
+    let expanded = run(&[
+        "context",
+        "expand",
+        "--session",
+        session,
+        "--from",
+        opened["context"]["contextId"].as_str().unwrap(),
+        "--term",
+        "saved",
+    ]);
+    assert!(expanded.to_string().contains("saved"));
+    assert_eq!(fs::read(source.join("src/lib.rs")).unwrap(), saved);
+    run(&["session", "close", "--session", session]);
+    run(&["session", "gc", "--session", session]);
+    assert!(!source.exists());
+    assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+    assert_eq!(
+        fs::read(repo.join("src/lib.rs")).unwrap(),
+        b"pub fn later() -> i32 { 5 }\n"
+    );
+}

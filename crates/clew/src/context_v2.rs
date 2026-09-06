@@ -437,8 +437,10 @@ fn validate_exact_expansion_selection(
     required: &CompilationFactHit,
     requested_terms: &[String],
 ) -> Result<(), ClewError> {
+    let normalized = crate::query_v2::normalize_terms(std::iter::once(selection.term.as_str()));
     if selection.schema != EXACT_EXPANSION_SELECTION_SCHEMA
-        || !requested_terms.contains(&selection.term)
+        || normalized.is_empty()
+        || !normalized.iter().all(|term| requested_terms.contains(term))
         || required.compilation != selection.compilation
         || required.fact.fact_key != selection.fact_key
     {
@@ -938,7 +940,7 @@ fn create_with_selector(
     let certainty = if verified { "VERIFIED" } else { "UNSURE" };
     let project_compiler_versions =
         retained_project_compiler_versions(&store, session.language, &ready.compilations)?;
-    let context = json!({
+    let mut context = json!({
         "schema":BOUNDED_CONTEXT_SCHEMA,
         "language":session.language.uri(),
         "snapshot":{
@@ -984,6 +986,11 @@ fn create_with_selector(
             "automaticPublication":verified,
         },
     });
+    if let Some(binding) = &session.working_tree {
+        context["snapshot"]["sourceSelection"] = serde_json::to_value(binding).map_err(internal)?;
+        context["publicationPolicy"] =
+            json!({"mode":"ANALYSIS_ONLY", "status":"FORBIDDEN", "automaticPublication":false});
+    }
     let projection = bounded_projection(&context)?;
     let mut evidence = json!({
         "schema":BOUNDED_CONTEXT_EVIDENCE_SCHEMA,
@@ -2450,6 +2457,56 @@ mod tests {
             ]
         });
         assert!(exact_expansion_selection_authorities(&duplicated).is_err());
+    }
+
+    #[test]
+    fn exact_expansion_normalizes_query_membership_but_keeps_exact_declaration_spelling() {
+        let root = tempfile::tempdir().unwrap();
+        let state = StateAuthority::open(root.path().join("v2")).unwrap();
+        let store = CasStore::open(&state).unwrap();
+        let payload = store.put("test/payload/1", b"{}").unwrap();
+        let hit = CompilationFactHit {
+            compilation: ":/main".into(),
+            fact: FactHit {
+                fact_key: "declaration:price".into(),
+                domain_uri: CapabilityUri::parse("analysis:test").unwrap(),
+                payload,
+            },
+        };
+        let mut selection = super::ExactExpansionSelectionAuthority {
+            schema: EXACT_EXPANSION_SELECTION_SCHEMA.into(),
+            term: "savedPrice".into(),
+            compilation: ":/main".into(),
+            fact_key: hit.fact.fact_key.clone(),
+        };
+        let retained = json!({"matches":[{"compilation":":/main", "factKey":hit.fact.fact_key,
+            "payload":{"kind":"declaration", "name":"savedPrice", "file":"Price.kt"}}]});
+        super::validate_exact_expansion_selection(
+            &selection,
+            &retained,
+            &hit,
+            &["savedprice".into()],
+        )
+        .unwrap();
+        assert!(
+            super::validate_exact_expansion_selection(
+                &selection,
+                &retained,
+                &hit,
+                &["unrelated".into()]
+            )
+            .is_err()
+        );
+        selection.term = "savedprice".into();
+        assert!(
+            super::validate_exact_expansion_selection(
+                &selection,
+                &retained,
+                &hit,
+                &["savedprice".into()]
+            )
+            .is_err()
+        );
     }
 
     #[test]

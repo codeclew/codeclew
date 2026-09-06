@@ -940,6 +940,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         session.authority_digest = embedded_session_digest(&session).unwrap();

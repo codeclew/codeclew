@@ -68,8 +68,17 @@ Do not use this distinction to bypass consumer-session or publication guards.
    concerns the committed repository. Explain that the evidence excludes local
    edits and retain `sourceSelection` plus the base revision. This is an explicit
    read-only snapshot choice, not permission to clean or stash developer work.
-   If the user specifically requests uncommitted changes, do not substitute a
-   committed snapshot; report that this source mode is not supported.
+   For saved Kotlin/Gradle or Rust edits, pass `--working-tree` to discovery and the
+   analysis admission command instead. Retain the source binding, pinned base
+   and selected compilations. Current saved bytes include staged, unstaged and
+   non-ignored untracked inputs; ignored outputs and unsaved buffers are outside
+   capture. Capture budget or stability failures are explicit and must not fall
+   back to HEAD. A working-tree session is analysis-only. Continued editing does
+   not change retained evidence; `change check-freshness --session <id>` reports
+   `LIVE_CHANGED` separately from `retainedEvidenceValid`. Open a new session to
+   refresh, and close/collect the old one when finished. Do not use this mode for
+   unqualified languages or treat captured repository inputs as whole-repository
+   semantic coverage.
 6. On another typed readiness failure, run only the named diagnostic (`clew doctor
    attach` or the same exact `clew doctor task ...`) once, report its
    `nextAction`, and stop. `doctor provision` is a maintainer/bootstrap

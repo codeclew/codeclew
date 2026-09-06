@@ -114,12 +114,39 @@ invoke the project wrapper under the model-cache policy described below.
 
 ### Analysis with local edits
 
-For read-only analysis in a checkout with local edits, add `--committed` to
-`doctor repository`, `doctor task`, `context open` or `nav query`. Codeclew
-analyzes an immutable snapshot of committed HEAD and reports that local edits
-are excluded. The target checkout is preserved. This option is analysis-only;
-mutation still requires a clean target. If local edits must be included in the
-evidence, commit them before opening the session.
+Use `--working-tree` on `doctor repository`, `doctor task`, `context open` or
+`nav query` to analyze saved Kotlin or Rust edits. Codeclew captures tracked
+and non-ignored untracked files into immutable managed storage. A staged
+version and a later unstaged version remain separate provenance; analysis
+reads the saved working-tree bytes. The session reports its source selection,
+base commit, captured snapshot, profile and selected compilations.
+
+```bash
+./clew nav query --repo /absolute/repository --target-ref main \
+  --language kotlin --profile kotlin-jvm-gradle-analysis --compilation :/main \
+  --working-tree --term calculatePrice --source
+```
+
+Capture includes repository inputs outside the selected compilation so the
+project model can resolve its inputs; semantic conclusions cover only the
+selected compilations. Ignored untracked outputs, legacy managed state and
+unsaved editor buffers are excluded. Conflicted indexes and links are rejected.
+Limits are 32,768 paths, 16 MiB per file, 256 MiB across indexed and saved bytes,
+16 MiB / 15 seconds per Git inventory pass, and 4,096 bytes / 128 components
+per path. Two complete content passes and
+HEAD/index/inventory checks establish observed stability, not an atomic
+filesystem transaction. Detected drift fails with `INPUT_MUTATED`; overflow
+fails with `RESOURCE_LIMIT`. Neither outcome substitutes committed HEAD.
+
+After opening, keep editing normally. `change check-freshness --session <id>`
+reports `LIVE_CHANGED` separately from retained evidence validity. The retained
+context still reads its original snapshot. Refresh by opening a new session;
+close and collect finished sessions with `session close` and `session gc`.
+Working-tree sessions reject mutation preparation and publication.
+
+To analyze committed HEAD while excluding local edits, use `--committed`.
+The two source flags conflict. Existing defaults and clean-target mutation
+requirements remain in effect. The user checkout, index and refs are preserved.
 
 ### Developing Codeclew itself
 

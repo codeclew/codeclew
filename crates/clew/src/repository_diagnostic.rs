@@ -57,6 +57,25 @@ pub fn diagnose_repository_with_source(
     repository: &Path,
     committed: bool,
 ) -> Result<Value, ClewError> {
+    diagnose_repository_with_selection(runtime, matrix, repository, committed, false)
+}
+
+pub fn diagnose_repository_with_working_tree(
+    runtime: &RuntimeAuthority,
+    matrix: &Value,
+    repository: &Path,
+) -> Result<Value, ClewError> {
+    diagnose_repository_with_selection(runtime, matrix, repository, false, true)
+}
+
+fn diagnose_repository_with_selection(
+    runtime: &RuntimeAuthority,
+    matrix: &Value,
+    repository: &Path,
+    committed: bool,
+    working_tree: bool,
+) -> Result<Value, ClewError> {
+    let allow_dirty = committed || working_tree;
     let matrix_profiles = matrix
         .get("profiles")
         .and_then(Value::as_array)
@@ -76,7 +95,7 @@ pub fn diagnose_repository_with_source(
             check(
                 "repository.clean",
                 state.clean,
-                !committed,
+                !allow_dirty,
                 "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE",
             ),
             check(
@@ -117,7 +136,7 @@ pub fn diagnose_repository_with_source(
         }
     }
 
-    let common_blockers = common_blockers(&state, &inventory, committed);
+    let common_blockers = common_blockers(&state, &inventory, allow_dirty);
     let mut contours = Vec::new();
     if inventory.rust {
         let compilations = inventory
@@ -261,10 +280,26 @@ pub fn diagnose_repository_with_source(
             .cmp(&right["language"].as_str())
             .then_with(|| left["profileId"].as_str().cmp(&right["profileId"].as_str()))
     });
-    if committed {
+    if allow_dirty {
         for contour in &mut contours {
             contour["supportedOperations"] = json!(["ANALYSIS"]);
-            contour["sourceArguments"] = json!(["--committed"]);
+            contour["sourceArguments"] = json!([if working_tree {
+                "--working-tree"
+            } else {
+                "--committed"
+            }]);
+        }
+    }
+    if working_tree {
+        for contour in &mut contours {
+            if !matches!(contour["language"].as_str(), Some("KOTLIN" | "RUST"))
+                || contour["profileId"]
+                    .as_str()
+                    .is_some_and(|profile| profile.contains("maven"))
+            {
+                contour["status"] = json!("UNSUPPORTED");
+                contour["blockers"] = json!([{"remediationId":"SELECT_SUPPORTED_WORKING_TREE_LANGUAGE", "message":"Working-tree source currently supports Kotlin/Gradle and Rust only"}]);
+            }
         }
     }
     let ready_count = contours
@@ -303,14 +338,14 @@ pub fn diagnose_repository_with_source(
         "status":status,
         "nextAction":next_action,
         "sourceSelection":{
-            "kind":"COMMITTED_HEAD",
-            "uncommittedChangesIncluded":false,
-            "dirtyWorktreeAllowed":committed,
+            "kind":if working_tree { "WORKING_TREE" } else { "COMMITTED_HEAD" },
+            "uncommittedChangesIncluded":working_tree,
+            "dirtyWorktreeAllowed":allow_dirty,
         },
-        "nextActions":if state.git && !state.clean && !committed {
+        "nextActions":if state.git && !state.clean && !allow_dirty {
             json!({
                 "reason":"LOCAL_EDITS_PRESENT",
-                "message":"For read-only analysis of committed HEAD, repeat doctor repository with --committed and pass --committed to context open or nav query. Local edits are excluded from the snapshot. To analyze those edits, commit them first; do not discard or stash work just to run Codeclew.",
+                "message":"For read-only analysis of committed HEAD, repeat doctor repository with --committed and pass --committed to context open or nav query. Local edits are excluded from the snapshot. For saved Kotlin/Rust edits, select --working-tree on discovery and analysis admission.",
                 "argumentsToAdd":["--committed"],
                 "operation":"ANALYSIS",
                 "uncommittedChangesIncluded":false,

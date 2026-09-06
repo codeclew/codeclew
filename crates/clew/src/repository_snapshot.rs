@@ -110,6 +110,234 @@ pub fn capture(
     capture_with_hook(repo, store, &[], |_| Ok(()))
 }
 
+/// Public saved-file analysis captures all tracked and non-ignored untracked
+/// inputs (except legacy managed state). Compilation scope is selected later.
+/// Limits bound inventory output, traversal time and bytes before allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkingTreeLimits {
+    pub max_files: usize,
+    pub max_file_bytes: u64,
+    pub max_total_bytes: u64,
+    pub max_inventory_bytes: usize,
+    pub max_inventory_seconds: u64,
+    pub max_path_bytes: usize,
+    pub max_path_depth: usize,
+}
+
+impl Default for WorkingTreeLimits {
+    fn default() -> Self {
+        Self {
+            max_files: 32_768,
+            max_file_bytes: 16 * 1024 * 1024,
+            max_total_bytes: 256 * 1024 * 1024,
+            max_inventory_bytes: 16 * 1024 * 1024,
+            max_inventory_seconds: 15,
+            max_path_bytes: 4096,
+            max_path_depth: 128,
+        }
+    }
+}
+
+pub fn capture_working_tree(
+    repo: &Path,
+    store: &CasStore,
+) -> Result<(String, RepositoryInputSnapshot, CasObject), ClewError> {
+    capture_working_tree_with_hook(repo, store, WorkingTreeLimits::default(), |_| Ok(()))
+}
+
+fn capture_working_tree_with_hook(
+    repo: &Path,
+    store: &CasStore,
+    limits: WorkingTreeLimits,
+    mut after_read: impl FnMut(&str) -> Result<(), ClewError>,
+) -> Result<(String, RepositoryInputSnapshot, CasObject), ClewError> {
+    let repo = repo.canonicalize().map_err(io_error)?;
+    let head = git_command(&repo, &["rev-parse", "--verify", "HEAD^{commit}"], None)?;
+    let before = bounded_git_views(&repo, limits)?;
+    let raw_index = parse_index(&before.staged)?;
+    let paths = parse_paths(&before.cached)?
+        .into_iter()
+        .chain(parse_paths(&before.untracked)?)
+        .collect::<BTreeSet<_>>();
+    if paths.iter().any(|path| {
+        path.len() > limits.max_path_bytes || path.split('/').count() > limits.max_path_depth
+    }) {
+        return Err(resource(
+            "working-tree capture exceeds path traversal budget",
+        ));
+    }
+    if paths.len() > limits.max_files || raw_index.len() > limits.max_files {
+        return Err(resource("working-tree capture exceeds file count budget"));
+    }
+    if raw_index
+        .iter()
+        .any(|entry| entry.stage != 0 || !matches!(entry.mode, 0o100644 | 0o100755))
+    {
+        return Err(invalid(
+            "working-tree analysis requires a merged index with regular files; links are unsupported",
+        ));
+    }
+    let metadata = read_git_blob_metadata(&repo, raw_index.iter().map(|entry| entry.oid.as_str()))?;
+    let mut total = 0u64;
+    for entry in &raw_index {
+        let (kind, size) = metadata
+            .get(&entry.oid)
+            .ok_or_else(|| corrupt_input("staged blob metadata is unavailable"))?;
+        if kind != "blob" {
+            return Err(invalid("staged input is not a blob"));
+        }
+        charge_working_bytes(&mut total, *size, limits)?;
+    }
+    let blobs = read_git_blobs(&repo, raw_index.iter().map(|entry| entry.oid.as_str()))?;
+    let index = raw_index
+        .into_iter()
+        .map(|entry| {
+            Ok(IndexEntry {
+                content: store.put(BLOB_SCHEMA, &blobs[&entry.oid])?,
+                path: entry.path,
+                mode: entry.mode,
+                stage: entry.stage,
+                git_oid: entry.oid,
+            })
+        })
+        .collect::<Result<Vec<_>, ClewError>>()?;
+    drop(blobs);
+    let root = FdRoot::open(&repo)?;
+    let mut worktree = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let raw = root.read_with_limit(path, limits.max_file_bytes)?;
+        let (kind, mode, content) = match raw {
+            RawWorktreeEntry::Missing => (WorktreeKind::Missing, 0, None),
+            RawWorktreeEntry::Regular { mode, bytes } => {
+                charge_working_bytes(&mut total, bytes.len() as u64, limits)?;
+                (
+                    WorktreeKind::Regular,
+                    mode,
+                    Some(store.put(BLOB_SCHEMA, &bytes)?),
+                )
+            }
+            RawWorktreeEntry::Symlink { .. } => {
+                return Err(invalid(
+                    "working-tree analysis does not follow or capture links",
+                ));
+            }
+        };
+        worktree.push(WorktreeEntry {
+            path: path.clone(),
+            kind,
+            mode,
+            content,
+        });
+        after_read(path)?;
+    }
+    // A complete second pass detects changes to earlier files while later
+    // files were read. This is observed stability, not a filesystem transaction.
+    for entry in &worktree {
+        let raw = root.read_with_limit(&entry.path, limits.max_file_bytes)?;
+        let matches = match (raw, entry.kind, entry.content.as_ref()) {
+            (RawWorktreeEntry::Missing, WorktreeKind::Missing, None) => true,
+            (RawWorktreeEntry::Regular { mode, bytes }, WorktreeKind::Regular, Some(content)) => {
+                mode == entry.mode && store.put(BLOB_SCHEMA, &bytes)? == *content
+            }
+            _ => false,
+        };
+        if !matches {
+            return Err(mutated(
+                "working-tree input changed between capture passes; retry capture",
+            ));
+        }
+    }
+    if before != bounded_git_views(&repo, limits)?
+        || head != git_command(&repo, &["rev-parse", "--verify", "HEAD^{commit}"], None)?
+    {
+        return Err(mutated(
+            "HEAD or Git input inventory changed during capture; retry capture",
+        ));
+    }
+    let mut snapshot = RepositoryInputSnapshot {
+        schema: SNAPSHOT_SCHEMA.into(),
+        snapshot_id: String::new(),
+        staged_view_digest: canonical::hash_bytes(&before.staged),
+        cached_view_digest: canonical::hash_bytes(&before.cached),
+        untracked_view_digest: canonical::hash_bytes(&before.untracked),
+        index,
+        worktree,
+    };
+    snapshot.snapshot_id = canonical::hash(&snapshot).map_err(internal)?;
+    let (snapshot, object) = publish_snapshot(store, snapshot)?;
+    let head = String::from_utf8(head)
+        .map_err(|_| invalid("HEAD is not UTF-8"))?
+        .trim()
+        .to_owned();
+    Ok((head, snapshot, object))
+}
+
+fn charge_working_bytes(
+    total: &mut u64,
+    size: u64,
+    limits: WorkingTreeLimits,
+) -> Result<(), ClewError> {
+    *total = total
+        .checked_add(size)
+        .ok_or_else(|| resource("capture byte count overflow"))?;
+    if size > limits.max_file_bytes || *total > limits.max_total_bytes {
+        return Err(resource("working-tree capture exceeds input byte budget"));
+    }
+    Ok(())
+}
+
+fn bounded_git_views(repo: &Path, limits: WorkingTreeLimits) -> Result<GitViews, ClewError> {
+    let read = |options: &[&str]| -> Result<Vec<u8>, ClewError> {
+        let mut command = isolated_git_command(repo);
+        command
+            .arg("ls-files")
+            .args(options)
+            .args(["-z", "--"])
+            .args(LEGACY_EXCLUDES)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().map_err(io_error)?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| internal("Git inventory stdout unavailable"))?;
+        let (send, receive) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stdout
+                .take(limits.max_inventory_bytes as u64 + 1)
+                .read_to_end(&mut bytes);
+            let _ = send.send(result.map(|_| bytes));
+        });
+        let result =
+            receive.recv_timeout(std::time::Duration::from_secs(limits.max_inventory_seconds));
+        let bytes = match result {
+            Ok(Ok(bytes)) if bytes.len() <= limits.max_inventory_bytes => bytes,
+            other => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(match other {
+                    Ok(Err(error)) => io_error(error),
+                    _ => resource("working-tree inventory exceeds traversal time or byte budget"),
+                });
+            }
+        };
+        let _ = reader.join();
+        if !child.wait().map_err(io_error)?.success() {
+            return Err(invalid("Git inventory unavailable"));
+        }
+        Ok(bytes)
+    };
+    Ok(GitViews {
+        staged: read(&["--stage"])?,
+        cached: read(&["--cached"])?,
+        untracked: read(&["--others", "--exclude-standard"])?,
+    })
+}
+
 /// Captures selected blobs directly from one exact commit without creating a
 /// checkout or consulting worktree/index state. Git plumbing runs with hooks,
 /// fsmonitor, replacement refs and ambient Git authority disabled.
@@ -467,6 +695,42 @@ fn capture_with_hook(
     Ok((snapshot, object))
 }
 
+/// Check retained bytes and inventory without trusting the synthetic HEAD as
+/// the user's base commit. Sealing removes write bits, preserving executability.
+pub fn verify_materialized_working_tree(
+    snapshot: &RepositoryInputSnapshot,
+    store: &CasStore,
+    path: &Path,
+) -> Result<(), ClewError> {
+    snapshot.verify()?;
+    let views = bounded_git_views(path, WorkingTreeLimits::default())?;
+    if canonical::hash_bytes(&views.staged) != snapshot.staged_view_digest
+        || canonical::hash_bytes(&views.cached) != snapshot.cached_view_digest
+        || canonical::hash_bytes(&views.untracked) != snapshot.untracked_view_digest
+    {
+        return Err(corrupt_input("materialized working-tree inventory changed"));
+    }
+    let root = FdRoot::open(path)?;
+    for entry in &snapshot.worktree {
+        let matches = match (
+            root.read_with_limit(&entry.path, WorkingTreeLimits::default().max_file_bytes)?,
+            entry.kind,
+            &entry.content,
+        ) {
+            (RawWorktreeEntry::Missing, WorktreeKind::Missing, None) => true,
+            (RawWorktreeEntry::Regular { mode, bytes }, WorktreeKind::Regular, Some(content)) => {
+                (mode & 0o111 != 0) == (entry.mode & 0o111 != 0)
+                    && store.read(content, bytes.len())?.bytes() == bytes
+            }
+            _ => false,
+        };
+        if !matches {
+            return Err(corrupt_input("materialized working-tree bytes changed"));
+        }
+    }
+    Ok(())
+}
+
 pub fn materialize(
     snapshot: &RepositoryInputSnapshot,
     store: &CasStore,
@@ -600,7 +864,7 @@ fn git_command(
     arguments: &[&str],
     input: Option<&[u8]>,
 ) -> Result<Vec<u8>, ClewError> {
-    let mut command = Command::new("git");
+    let mut command = isolated_git_command(repo);
     command
         .args(arguments)
         .current_dir(repo)
@@ -631,7 +895,7 @@ fn git_command(
 }
 
 fn git_command_with_identity(repo: &Path, arguments: &[&str]) -> Result<Vec<u8>, ClewError> {
-    let output = Command::new("git")
+    let output = isolated_git_command(repo)
         .args(arguments)
         .current_dir(repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1078,12 +1342,19 @@ pub(crate) fn read_git_blob_metadata<'a>(
         .stdin
         .take()
         .ok_or_else(|| internal("cat-file metadata stdin is unavailable"))?;
-    for oid in &unique {
-        stdin.write_all(oid.as_bytes()).map_err(io_error)?;
-        stdin.write_all(b"\n").map_err(io_error)?;
-    }
-    drop(stdin);
+    let requests = unique.iter().cloned().collect::<Vec<_>>();
+    let writer = std::thread::spawn(move || -> std::io::Result<()> {
+        for oid in requests {
+            stdin.write_all(oid.as_bytes())?;
+            stdin.write_all(b"\n")?;
+        }
+        Ok(())
+    });
     let output = child.wait_with_output().map_err(io_error)?;
+    writer
+        .join()
+        .map_err(|_| internal("metadata writer panicked"))?
+        .map_err(io_error)?;
     if !output.status.success() {
         return Err(corrupt_input("cat-file metadata batch failed"));
     }
@@ -1137,6 +1408,10 @@ impl FdRoot {
     }
 
     fn read(&self, relative: &str) -> Result<RawWorktreeEntry, ClewError> {
+        self.read_with_limit(relative, MAX_FILE_BYTES)
+    }
+
+    fn read_with_limit(&self, relative: &str, limit: u64) -> Result<RawWorktreeEntry, ClewError> {
         validate_path(relative)?;
         let components = relative.split('/').collect::<Vec<_>>();
         let mut parents = Vec::<OwnedFd>::new();
@@ -1188,7 +1463,7 @@ impl FdRoot {
         let mode = metadata.st_mode;
         match mode & libc::S_IFMT {
             libc::S_IFREG => {
-                if metadata.st_size < 0 || metadata.st_size as u64 > MAX_FILE_BYTES {
+                if metadata.st_size < 0 || metadata.st_size as u64 > limit {
                     return Err(ClewError::new(
                         ErrorCode::ResourceLimit,
                         "repository file exceeds snapshot limit",
@@ -1198,7 +1473,7 @@ impl FdRoot {
                     libc::openat(
                         parent_fd,
                         name.as_ptr(),
-                        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
                     )
                 };
                 if descriptor < 0 {
@@ -1206,7 +1481,7 @@ impl FdRoot {
                 }
                 let file = unsafe { File::from_raw_fd(descriptor) };
                 let mut bytes = Vec::with_capacity(metadata.st_size as usize);
-                file.take(MAX_FILE_BYTES + 1)
+                file.take(limit + 1)
                     .read_to_end(&mut bytes)
                     .map_err(io_error)?;
                 if bytes.len() as u64 != metadata.st_size as u64 {
@@ -1222,7 +1497,7 @@ impl FdRoot {
                     .unwrap_or(0)
                     .saturating_add(1)
                     .max(256);
-                if capacity as u64 > MAX_FILE_BYTES {
+                if capacity as u64 > limit {
                     return Err(ClewError::new(
                         ErrorCode::ResourceLimit,
                         "symlink target exceeds snapshot limit",
@@ -1420,6 +1695,141 @@ mod tests {
         let authority = StateAuthority::open(state.path().join("v2")).unwrap();
         let store = CasStore::open(&authority).unwrap();
         (repo, state, store)
+    }
+
+    #[test]
+    fn working_capture_keeps_index_and_saved_bytes_and_detects_earlier_file_drift() {
+        let (repo, _state, store) = fixture();
+        fs::write(repo.path().join("src/main.zeta"), b"staged\n").unwrap();
+        git_command(repo.path(), &["add", "."], None).unwrap();
+        fs::write(repo.path().join("src/main.zeta"), b"saved\n").unwrap();
+        fs::write(repo.path().join("src/new.zeta"), b"new\n").unwrap();
+        let index_before = fs::read(repo.path().join(".git/index")).unwrap();
+        let (head, snapshot, object) = capture_working_tree(repo.path(), &store).unwrap();
+        assert_eq!(snapshot.worktree.len(), 2);
+        assert_eq!(
+            store
+                .read(&snapshot.index[0].content, 1024)
+                .unwrap()
+                .bytes(),
+            b"staged\n"
+        );
+        assert_eq!(
+            store
+                .read(snapshot.worktree[0].content.as_ref().unwrap(), 1024)
+                .unwrap()
+                .bytes(),
+            b"saved\n"
+        );
+        assert_eq!(capture_working_tree(repo.path(), &store).unwrap().2, object);
+        let materialized = _state.path().join("materialized");
+        materialize(&snapshot, &store, &materialized).unwrap();
+        verify_materialized_working_tree(&snapshot, &store, &materialized).unwrap();
+        fs::write(repo.path().join("src/main.zeta"), b"later\n").unwrap();
+        assert_eq!(
+            store
+                .read(snapshot.worktree[0].content.as_ref().unwrap(), 1024)
+                .unwrap()
+                .bytes(),
+            b"saved\n"
+        );
+        assert_eq!(
+            fs::read(repo.path().join(".git/index")).unwrap(),
+            index_before
+        );
+        assert_eq!(
+            String::from_utf8(git_command(repo.path(), &["rev-parse", "HEAD"], None).unwrap())
+                .unwrap()
+                .trim(),
+            head
+        );
+        let error = capture_working_tree_with_hook(
+            repo.path(),
+            &store,
+            WorkingTreeLimits::default(),
+            |path| {
+                if path == "src/new.zeta" {
+                    fs::write(repo.path().join("src/main.zeta"), b"raced\n").unwrap();
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InputMutated);
+    }
+
+    #[test]
+    fn working_capture_records_deletions_and_unmatched_renames_and_excludes_ignored_outputs() {
+        let (repo, _state, store) = fixture();
+        fs::write(repo.path().join(".gitignore"), b"/build/\n").unwrap();
+        fs::create_dir(repo.path().join("build")).unwrap();
+        fs::write(repo.path().join("build/generated.zeta"), b"ignored").unwrap();
+        fs::rename(
+            repo.path().join("src/main.zeta"),
+            repo.path().join("src/renamed.zeta"),
+        )
+        .unwrap();
+        let (_, snapshot, _) = capture_working_tree(repo.path(), &store).unwrap();
+        assert_eq!(
+            snapshot
+                .worktree
+                .iter()
+                .find(|e| e.path == "src/main.zeta")
+                .unwrap()
+                .kind,
+            WorktreeKind::Missing
+        );
+        assert!(
+            snapshot
+                .worktree
+                .iter()
+                .any(|e| e.path == "src/renamed.zeta" && e.kind == WorktreeKind::Regular)
+        );
+        assert!(
+            !snapshot
+                .worktree
+                .iter()
+                .any(|e| e.path.starts_with("build/"))
+        );
+        symlink("main.zeta", repo.path().join("src/link.zeta")).unwrap();
+        assert_eq!(
+            capture_working_tree(repo.path(), &store).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn working_capture_rejects_input_budgets_before_reading_large_blobs() {
+        let (repo, _state, store) = fixture();
+        for limits in [
+            WorkingTreeLimits {
+                max_files: 0,
+                ..WorkingTreeLimits::default()
+            },
+            WorkingTreeLimits {
+                max_file_bytes: 1,
+                ..WorkingTreeLimits::default()
+            },
+            WorkingTreeLimits {
+                max_total_bytes: 1,
+                ..WorkingTreeLimits::default()
+            },
+            WorkingTreeLimits {
+                max_inventory_bytes: 1,
+                ..WorkingTreeLimits::default()
+            },
+            WorkingTreeLimits {
+                max_path_depth: 1,
+                ..WorkingTreeLimits::default()
+            },
+        ] {
+            assert_eq!(
+                capture_working_tree_with_hook(repo.path(), &store, limits, |_| Ok(()))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ResourceLimit
+            );
+        }
     }
 
     #[test]

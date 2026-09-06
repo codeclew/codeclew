@@ -276,7 +276,14 @@ pub fn ensure_session_generation(
         );
     }
     let repo = session.repository_path()?;
-    let (snapshot, snapshot_object) = capture(&repo, &store)?;
+    let (snapshot, snapshot_object) = if let Some(binding) = &session.working_tree {
+        (
+            session.working_tree_snapshot(&store)?,
+            binding.snapshot.clone(),
+        )
+    } else {
+        capture(&repo, &store)?
+    };
     let compilation_root = session_root.join("compilations");
     state.directory_at(&compilation_root)?;
     match session.language {
@@ -305,7 +312,7 @@ pub fn ensure_session_generation(
                 snapshot_object,
                 &compilation_root,
                 &binding_path,
-                true,
+                session.working_tree.is_none(),
                 "",
             );
         }
@@ -322,7 +329,7 @@ pub fn ensure_session_generation(
     let lane = GenerationLaneContext {
         session,
         repo: &repo,
-        publish_head: true,
+        publish_head: session.working_tree.is_none(),
         snapshot: &snapshot,
         snapshot_object: &snapshot_object,
         workspace: &workspace,
@@ -394,8 +401,13 @@ fn ensure_rust_generation_set(
         return Ok(ready);
     }
     let model = extract_cargo_model(repo, &session.compilations)?;
-    let (_, observed_snapshot) = capture(repo, store)?;
-    if observed_snapshot != snapshot_object {
+    let snapshot_matches = if session.working_tree.is_some() {
+        crate::repository_snapshot::verify_materialized_working_tree(snapshot, store, repo)?;
+        true
+    } else {
+        capture(repo, store)?.1 == snapshot_object
+    };
+    if !snapshot_matches {
         return Err(ClewError::new(
             ErrorCode::InputMutated,
             "Cargo model extraction changed the sealed repository input",
@@ -450,7 +462,11 @@ fn bind_exact_rust_incremental_heads(
     binding_path: &Path,
     binding_prefix: &str,
 ) -> Result<Option<ReadyGenerationSet>, ClewError> {
-    let repository = state.repository(repo)?;
+    let repository = if session.working_tree.is_some() {
+        state.repository_by_key(&session.repository_key)?
+    } else {
+        state.repository(repo)?
+    };
     if repository.key != session.repository_key {
         return Err(corrupt(
             "Rust generation repository differs from session Git authority",
@@ -2109,7 +2125,11 @@ fn ensure_generation(
             "generation service must run through ./clew",
         )
     })?;
-    let repository = state.repository(repo)?;
+    let repository = if session.working_tree.is_some() {
+        state.repository_by_key(&session.repository_key)?
+    } else {
+        state.repository(repo)?
+    };
     if repository.key != session.repository_key {
         return Err(corrupt(
             "generation repository differs from session Git authority",
