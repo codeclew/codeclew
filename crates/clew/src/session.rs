@@ -63,7 +63,25 @@ pub struct SessionAuthority {
     pub generation_jobs: Option<usize>,
     pub model_cache_policy: ModelCachePolicy,
     pub model_cache_authority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_tree: Option<WorkingTreeSourceBinding>,
     pub created_unix_ms: u128,
+}
+
+pub const WORKING_TREE_SESSION_SCHEMA: &str = "codeclew-session/6.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkingTreeSourceBinding {
+    pub schema: String,
+    pub source_selection: String,
+    pub operation: String,
+    pub profile_id: String,
+    pub snapshot: CasObject,
+    pub capture_scope: String,
+    pub excluded_categories: Vec<String>,
+    pub consistency: String,
+    pub limits: crate::repository_snapshot::WorkingTreeLimits,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +220,10 @@ pub struct SessionFreshness {
     pub target_ref_matches_expected: Option<bool>,
     pub target_worktree_clean: Option<bool>,
     pub remediation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_evidence_valid: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_snapshot_matches: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +304,38 @@ impl SessionAuthority {
         model_cache_policy: ModelCachePolicy,
         external_build_state: Option<&Path>,
     ) -> Result<Self, ClewError> {
+        Self::open_with_source(
+            repo,
+            target_ref,
+            language,
+            compilations,
+            generation_jobs,
+            model_cache_policy,
+            external_build_state,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_source(
+        repo: &Path,
+        target_ref: &str,
+        language: SessionLanguage,
+        compilations: &[String],
+        generation_jobs: Option<usize>,
+        model_cache_policy: ModelCachePolicy,
+        external_build_state: Option<&Path>,
+        working_tree_profile: Option<&str>,
+    ) -> Result<Self, ClewError> {
+        if working_tree_profile.is_some()
+            && (!matches!(language, SessionLanguage::Kotlin | SessionLanguage::Rust)
+                || model_cache_policy != ModelCachePolicy::NonCacheable
+                || external_build_state.is_some())
+        {
+            return Err(invalid(
+                "working-tree analysis supports Kotlin/Rust with non-cacheable model authority",
+            ));
+        }
         let runtime = RuntimeAuthority::from_environment()?.ok_or_else(|| {
             ClewError::new(
                 ErrorCode::WorkerPreparationRequired,
@@ -318,8 +372,54 @@ impl SessionAuthority {
             runtime.mode,
             external_build_state,
         )?;
+        let captured = if let Some(profile) = working_tree_profile {
+            if profile.is_empty()
+                || profile.contains("maven")
+                || compilations.iter().any(|c| c.starts_with("maven:"))
+            {
+                return Err(invalid(
+                    "working-tree profile must select Kotlin/Gradle or Rust",
+                ));
+            }
+            let store = CasStore::open(&state)?;
+            let (captured_head, snapshot, object) =
+                crate::repository_snapshot::capture_working_tree(&repo, &store)?;
+            if captured_head != base_revision {
+                return Err(ClewError::new(
+                    ErrorCode::InputMutated,
+                    "HEAD changed before working-tree capture",
+                ));
+            }
+            Some((
+                snapshot,
+                WorkingTreeSourceBinding {
+                    schema: "codeclew-working-tree-source/1.0".into(),
+                    source_selection: "WORKING_TREE".into(),
+                    operation: "ANALYSIS".into(),
+                    profile_id: profile.into(),
+                    snapshot: object,
+                    capture_scope: "ALL_TRACKED_AND_NON_IGNORED_UNTRACKED_INPUTS".into(),
+                    excluded_categories: vec![
+                        "IGNORED_UNTRACKED".into(),
+                        "LEGACY_MANAGED_STATE".into(),
+                        "UNSAVED_EDITOR_BUFFERS".into(),
+                    ],
+                    consistency:
+                        "TWO_COMPLETE_CONTENT_PASSES_AND_STABLE_HEAD_INDEX_INVENTORY;NOT_ATOMIC"
+                            .into(),
+                    limits: crate::repository_snapshot::WorkingTreeLimits::default(),
+                },
+            ))
+        } else {
+            None
+        };
         let mut authority = Self {
-            schema: SESSION_SCHEMA.into(),
+            schema: if captured.is_some() {
+                WORKING_TREE_SESSION_SCHEMA
+            } else {
+                SESSION_SCHEMA
+            }
+            .into(),
             authority_digest: String::new(),
             session_id: format!("session:{}", Uuid::new_v4()),
             repository_key: repository.key,
@@ -333,6 +433,7 @@ impl SessionAuthority {
             generation_jobs,
             model_cache_policy,
             model_cache_authority,
+            working_tree: captured.as_ref().map(|(_, binding)| binding.clone()),
             created_unix_ms: unix_ms(),
         };
         authority.authority_digest = session_authority_digest(&authority)?;
@@ -342,7 +443,20 @@ impl SessionAuthority {
         for child in ["objects/sha256", "contexts", "plans", "candidates", "runs"] {
             session_directory.child(Path::new(child))?;
         }
-        let source_repository_path = if language == SessionLanguage::Python {
+        let source_repository_path = if let Some((snapshot, _)) = captured {
+            let source = root.join("source");
+            if let Err(error) = crate::repository_snapshot::materialize(
+                &snapshot,
+                &CasStore::open(&state)?,
+                &source,
+            ) {
+                if source.exists() {
+                    session_directory.remove_tree(std::ffi::OsStr::new("source"))?;
+                }
+                return Err(error);
+            }
+            source
+        } else if language == SessionLanguage::Python {
             let selectors = authority
                 .compilations
                 .iter()
@@ -612,6 +726,63 @@ impl SessionAuthority {
                 None,
             ));
         }
+        if let Some(binding) = &self.working_tree {
+            let store = CasStore::open(state)?;
+            let snapshot = self.working_tree_snapshot(&store)?;
+            let valid = snapshot
+                .index
+                .iter()
+                .map(|e| &e.content)
+                .chain(snapshot.worktree.iter().filter_map(|e| e.content.as_ref()))
+                .all(|object| {
+                    store
+                        .read(
+                            object,
+                            crate::repository_snapshot::WorkingTreeLimits::default().max_file_bytes
+                                as usize,
+                        )
+                        .is_ok()
+                });
+            let live = self
+                .target_repository_path()
+                .and_then(|repository| {
+                    crate::repository_snapshot::capture_working_tree(&repository, &store)
+                })
+                .ok();
+            let matches = live.as_ref().map(|(head, _, object)| {
+                head == &self.base_revision && object == &binding.snapshot
+            });
+            return Ok(SessionFreshness {
+                schema: "codeclew-session-freshness/2.0".into(),
+                session_id: self.session_id.clone(),
+                lifecycle_status: lifecycle.status,
+                status: if !valid {
+                    "INVALID_EVIDENCE"
+                } else if matches == Some(true) {
+                    "FRESH"
+                } else if matches == Some(false) {
+                    "LIVE_CHANGED"
+                } else {
+                    "LIVE_UNAVAILABLE"
+                }
+                .into(),
+                head_matches_expected: live
+                    .as_ref()
+                    .map(|(head, _, _)| head == &self.base_revision),
+                target_ref_matches_expected: None,
+                target_worktree_clean: None,
+                remediation_id: if !valid {
+                    "CHECK_RETAINED_EVIDENCE"
+                } else if matches == Some(true) {
+                    "NONE"
+                } else {
+                    "CAPTURE_NEW_SNAPSHOT_IF_CURRENT_EDITS_ARE_NEEDED"
+                }
+                .into(),
+                retained_evidence_valid: Some(valid),
+                live_snapshot_matches: matches,
+            });
+        }
         let runs = load_session_runs(state, root, self)?;
         let expected = session_terminal_target_oid(self, &runs)?;
         let repository = self.target_repository_path()?;
@@ -654,6 +825,15 @@ impl SessionAuthority {
             .source_repository_path
             .canonicalize()
             .map_err(io_error)?;
+        if self.working_tree.is_some() {
+            if path != root.join("source") {
+                return Err(invalid("working-tree source escapes session"));
+            }
+            let store = CasStore::open(&state)?;
+            let snapshot = self.working_tree_snapshot(&store)?;
+            crate::repository_snapshot::verify_materialized_working_tree(&snapshot, &store, &path)?;
+            return Ok(path);
+        }
         if !path.starts_with(&root)
             || git_output(&path, &["rev-parse", "HEAD"])? != self.base_revision
             || !filtered_worktree_clean(&path)?
@@ -666,6 +846,34 @@ impl SessionAuthority {
             ));
         }
         Ok(path)
+    }
+
+    pub fn working_tree_snapshot(
+        &self,
+        store: &CasStore,
+    ) -> Result<RepositoryInputSnapshot, ClewError> {
+        let binding = self
+            .working_tree
+            .as_ref()
+            .ok_or_else(|| invalid("session has no working-tree source"))?;
+        let lease = store.read(&binding.snapshot, 64 * 1024 * 1024)?;
+        let snapshot: RepositoryInputSnapshot =
+            serde_json::from_slice(lease.bytes()).map_err(internal)?;
+        snapshot.verify()?;
+        if canonical::bytes(&snapshot).map_err(internal)? != lease.bytes() {
+            return Err(invalid("snapshot is not canonical"));
+        }
+        Ok(snapshot)
+    }
+
+    pub fn require_mutation_source(&self) -> Result<(), ClewError> {
+        if self.working_tree.is_some() {
+            return Err(ClewError::new(
+                ErrorCode::PreconditionFailed,
+                "working-tree sessions are analysis-only; mutation prepare/publish is forbidden",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn python_source_snapshot(
@@ -1035,7 +1243,23 @@ fn validate_session_authority_shape(
     authority: &SessionAuthority,
     expected_session_id: &str,
 ) -> Result<(), ClewError> {
-    if authority.schema != SESSION_SCHEMA
+    let source_valid = match &authority.working_tree {
+        None => authority.schema == SESSION_SCHEMA,
+        Some(binding) => {
+            authority.schema == WORKING_TREE_SESSION_SCHEMA
+                && binding.schema == "codeclew-working-tree-source/1.0"
+                && binding.source_selection == "WORKING_TREE"
+                && binding.operation == "ANALYSIS"
+                && !binding.profile_id.is_empty()
+                && binding.snapshot.object_schema == SNAPSHOT_SCHEMA
+                && matches!(
+                    authority.language,
+                    SessionLanguage::Kotlin | SessionLanguage::Rust
+                )
+                && authority.model_cache_policy == ModelCachePolicy::NonCacheable
+        }
+    };
+    if !source_valid
         || authority.session_id != expected_session_id
         || !compilations_are_canonical(authority.language, &authority.compilations)
         || !generation_jobs_are_valid(authority.generation_jobs)
@@ -1550,7 +1774,7 @@ fn garbage_collect_session_with_state(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(io_error(error)),
     };
-    if let Some(target) = target.as_ref() {
+    if let Some(target) = target.as_ref().filter(|_| authority.working_tree.is_none()) {
         let expected_target_oid = session_terminal_target_oid(authority, &runs)?;
         let current_target_oid = git_output(
             target,
@@ -1592,7 +1816,23 @@ fn garbage_collect_session_with_state(
     // GC fail closed rather than partially consuming an uncommitted candidate.
     let mut removals = Vec::new();
     let source = root.join("source");
-    if source.exists() {
+    let remove_snapshot = source.exists() && authority.working_tree.is_some();
+    if remove_snapshot {
+        if !runs.is_empty() {
+            return Err(invalid("analysis snapshot unexpectedly has mutation runs"));
+        }
+        let store = CasStore::open(state)?;
+        let snapshot = authority.working_tree_snapshot(&store)?;
+        if fs::symlink_metadata(&source)
+            .map_err(io_error)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(invalid("snapshot source is a symlink"));
+        }
+        crate::repository_snapshot::verify_materialized_working_tree(&snapshot, &store, &source)?;
+    }
+    if source.exists() && !remove_snapshot {
         if target.is_none() {
             return Err(ClewError::new(
                 ErrorCode::PreconditionFailed,
@@ -1721,6 +1961,9 @@ fn garbage_collect_session_with_state(
         });
     }
 
+    if remove_snapshot {
+        session_directory.remove_tree(std::ffi::OsStr::new("source"))?;
+    }
     for (worktree, expected) in &derived_output_cleanups {
         crate::task_run_v2::remove_exact_derived_outputs(worktree, expected)?;
     }
@@ -1772,6 +2015,7 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
         generation_jobs: None,
         model_cache_policy: ModelCachePolicy::NonCacheable,
         model_cache_authority: None,
+        working_tree: None,
         created_unix_ms: 1,
     };
     authority.authority_digest = session_authority_digest(&authority).unwrap();
@@ -2769,6 +3013,8 @@ fn classify_freshness(
         target_ref_matches_expected,
         target_worktree_clean,
         remediation_id: remediation_id.into(),
+        retained_evidence_valid: None,
+        live_snapshot_matches: None,
     }
 }
 
@@ -3094,10 +3340,49 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         authority.authority_digest = session_authority_digest(&authority).unwrap();
         authority
+    }
+
+    #[test]
+    fn working_source_versions_authority_without_changing_legacy_digests() {
+        let mut session = test_session();
+        let legacy = serde_json::to_value(&session).unwrap();
+        assert!(legacy.get("workingTree").is_none());
+        let decoded: SessionAuthority = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            session_authority_digest(&decoded).unwrap(),
+            session.authority_digest
+        );
+        session.working_tree = Some(WorkingTreeSourceBinding {
+            schema: "codeclew-working-tree-source/1.0".into(),
+            source_selection: "WORKING_TREE".into(),
+            operation: "ANALYSIS".into(),
+            profile_id: "kotlin-jvm-gradle-analysis".into(),
+            snapshot: CasObject::for_bytes(SNAPSHOT_SCHEMA, b"fixture").unwrap(),
+            capture_scope: "ALL_TRACKED_AND_NON_IGNORED_UNTRACKED_INPUTS".into(),
+            excluded_categories: vec![
+                "IGNORED_UNTRACKED".into(),
+                "LEGACY_MANAGED_STATE".into(),
+                "UNSAVED_EDITOR_BUFFERS".into(),
+            ],
+            consistency: "TWO_COMPLETE_CONTENT_PASSES_AND_STABLE_HEAD_INDEX_INVENTORY;NOT_ATOMIC"
+                .into(),
+            limits: crate::repository_snapshot::WorkingTreeLimits::default(),
+        });
+        assert!(validate_session_authority_shape(&session, &session.session_id).is_err());
+        session.schema = WORKING_TREE_SESSION_SCHEMA.into();
+        session.authority_digest = session_authority_digest(&session).unwrap();
+        validate_session_authority(&session, &session.session_id).unwrap();
+        assert_eq!(
+            session.require_mutation_source().unwrap_err().code,
+            ErrorCode::PreconditionFailed
+        );
+        session.working_tree.as_mut().unwrap().operation = "MUTATION".into();
+        assert!(validate_session_authority_shape(&session, &session.session_id).is_err());
     }
 
     fn initialized_session() -> (tempfile::TempDir, StateAuthority, PathBuf, SessionAuthority) {

@@ -2023,7 +2023,7 @@ fn source_anchor(input: &QualifiedCallablePayload) -> Result<Option<SourceAnchor
     }))
 }
 
-fn projected_payload(payload: &Value) -> Value {
+pub(crate) fn projected_payload(payload: &Value) -> Value {
     let omitted = BTreeSet::from([
         "schema",
         "file",

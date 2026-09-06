@@ -1,0 +1,144 @@
+{
+  "schema": "codeclew-working-tree-dogfood-measurements/1.0",
+  "environment": "macOS arm64 development source launcher",
+  "rows": [
+    {
+      "language": "kotlin",
+      "status": "PASS",
+      "baseRevision": "0c020f2240ab268d78761e1dd20fff7e0a9d36e2",
+      "compilation": ":workers:kotlin/main",
+      "source": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt",
+      "changedSymbol": "Worker.handle",
+      "counts": {
+        "changedDeclarations": 2,
+        "changedFiles": 1,
+        "omittedDeclarations": 0,
+        "omittedFiles": 0,
+        "unchangedDeclarations": 783
+      },
+      "authority": "KOTLIN_COMPILER_SUPPORTED_SUBSET",
+      "coverage": {
+        "afterBoundaries": 16384,
+        "afterDeclarationsComplete": false,
+        "beforeBoundaries": 16384,
+        "beforeDeclarationsComplete": false
+      },
+      "graphStatus": "PARTIAL_DIRECT_CANDIDATES",
+      "returnedEdges": 2,
+      "returnedCandidates": 2,
+      "unresolvedRelations": 54824,
+      "retainedReportBytes": 64993305,
+      "htmlBytes": 218634,
+      "htmlSha256": "a7504bc93909a4a59eadfdd5624a8fbfefcb3e9d86f57d2f007ec9a53957a10a",
+      "testsExecuted": false,
+      "indexAndRefsPreserved": true,
+      "temporarySessionsCollected": true
+    },
+    {
+      "language": "rust",
+      "status": "PASS",
+      "baseRevision": "0c020f2240ab268d78761e1dd20fff7e0a9d36e2",
+      "compilation": "cargo:crates/clew/Cargo.toml#clew#bin#clew",
+      "source": "crates/clew/src/main.rs",
+      "changedSymbol": "change_inspect",
+      "counts": {
+        "changedDeclarations": 5,
+        "changedFiles": 1,
+        "omittedDeclarations": 0,
+        "omittedFiles": 0,
+        "unchangedDeclarations": 180
+      },
+      "authority": "RUST_SYNTAX_ONLY",
+      "coverage": {
+        "afterBoundaries": 0,
+        "afterBoundaryRetentionOmissions": 0,
+        "afterDeclarationsComplete": true,
+        "beforeBoundaries": 0,
+        "beforeBoundaryRetentionOmissions": 0,
+        "beforeDeclarationsComplete": true
+      },
+      "graphStatus": "SYNTAX_ONLY_NO_RESOLVED_CONSEQUENCES",
+      "returnedEdges": 0,
+      "returnedCandidates": 0,
+      "unresolvedRelations": 0,
+      "retainedReportBytes": 389161,
+      "htmlBytes": 47762,
+      "htmlSha256": "56b451d72d141d2f0f0f7d56655c872c6af3ce9e8d89e2a460fdd8c7b2a12ce4",
+      "testsExecuted": false,
+      "indexAndRefsPreserved": true,
+      "temporarySessionsCollected": true
+    }
+  ],
+  "measurements": [
+    {
+      "language": "kotlin",
+      "commands": [
+        {
+          "command": "change inspect",
+          "seconds": 425.986
+        },
+        {
+          "command": "change graph",
+          "seconds": 6.313
+        },
+        {
+          "command": "change render",
+          "seconds": 11.356
+        },
+        {
+          "command": "change check-freshness",
+          "seconds": 13.099
+        },
+        {
+          "command": "change render",
+          "seconds": 11.378
+        },
+        {
+          "command": "change forget",
+          "seconds": 6.213
+        }
+      ],
+      "measurementStage": "before compact boundary samples"
+    },
+    {
+      "language": "rust",
+      "commands": [
+        {
+          "command": "change inspect",
+          "seconds": 74.904
+        },
+        {
+          "command": "change graph",
+          "seconds": 5.213
+        },
+        {
+          "command": "change render",
+          "seconds": 9.965
+        },
+        {
+          "command": "change check-freshness",
+          "seconds": 10.763
+        },
+        {
+          "command": "change render",
+          "seconds": 9.904
+        },
+        {
+          "command": "change forget",
+          "seconds": 5.21
+        }
+      ],
+      "measurementStage": "after compact boundary samples"
+    }
+  ],
+  "qualificationBudgetsSeconds": {
+    "kotlinInspect": 900,
+    "rustInspect": 180,
+    "retainedRead": 60
+  },
+  "limitations": [
+    "Kotlin measurement preceded compact boundary sampling; the earlier report retained 64993305 bytes. Final CI exercises the compact version.",
+    "Inspect is static analysis; testsExecuted remains false.",
+    "Rust measurement includes a development runtime build."
+  ]
+}

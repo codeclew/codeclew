@@ -1314,6 +1314,7 @@ pub fn require_mutation_request(
 }
 
 fn require_mutation_branch(session: &SessionAuthority) -> Result<(), ClewError> {
+    session.require_mutation_source()?;
     if !session.target_ref.starts_with("refs/heads/") {
         return Err(unsupported_profile(
             "mutation requires a target ref that identifies a local branch",
@@ -2951,6 +2952,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         require_mutation_branch(&session).unwrap();
@@ -3019,6 +3021,25 @@ mod tests {
         ] {
             assert_eq!(guarded.code, ErrorCode::UnsupportedProjectConfiguration);
             assert!(guarded.message.contains("local branch"));
+        }
+        session.target_ref = "refs/heads/main".into();
+        session.working_tree = Some(crate::session::WorkingTreeSourceBinding {
+            schema: "codeclew-working-tree-source/1.0".into(),
+            source_selection: "WORKING_TREE".into(),
+            operation: "ANALYSIS".into(),
+            profile_id: "kotlin-jvm-gradle-analysis".into(),
+            snapshot: reference(),
+            capture_scope: "test".into(),
+            excluded_categories: vec![],
+            consistency: "test".into(),
+            limits: crate::repository_snapshot::WorkingTreeLimits::default(),
+        });
+        for guarded in [
+            prepare(&session, &context, &plan, candidate.path()).unwrap_err(),
+            publish(&session, &prepared, candidate.path(), None).unwrap_err(),
+        ] {
+            assert_eq!(guarded.code, ErrorCode::PreconditionFailed);
+            assert!(guarded.message.contains("analysis-only"));
         }
     }
 
@@ -3173,6 +3194,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         require_live_mutation_branch(&session, repo.path()).unwrap();
@@ -3585,6 +3607,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         let mut prepared = PreparedCandidateV2 {
@@ -3652,6 +3675,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         let obligation = qualify_obligation(
@@ -3849,6 +3873,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: crate::session::ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            working_tree: None,
             created_unix_ms: 1,
         };
         fs::write(worktree.join("A.kt"), b"two\n").unwrap();

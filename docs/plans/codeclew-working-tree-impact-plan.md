@@ -1,6 +1,6 @@
 # Working-tree analysis and change consequences
 
-Status: proposed implementation plan; implementation has not started.
+Status: Deliveries 1–5 implemented in `feature/working-tree-impact`; local fixtures and real Kotlin/Rust dogfood pass. Remote final qualification is recorded in the pull request.
 Prepared: 2026-09-06.
 Source baseline: `b666129b750b0db3225a090d3570fd528897c983`.
 
@@ -56,19 +56,19 @@ This diagram is the proposed product architecture, not an observed execution
 trace. The graph returned by the product will distinguish compiler relations,
 syntax observations and agent interpretations on individual edges.
 
-Proposed CLI shape, not currently implemented:
+CLI shape (working-tree read admission implemented; change inspect follows in Delivery 2):
 
 ```sh
 clew nav query --repo <repo> --target-ref <branch> \
   --language kotlin --profile <admitted-profile> --compilation <main> \
-  --source working-tree --term <identifier>
+  --working-tree --term <identifier>
 
 clew change inspect --repo <repo> --target-ref <branch> \
   --language kotlin --profile <admitted-profile> --compilation <main> \
-  --source working-tree --base HEAD
+  --working-tree --base HEAD
 ```
 
-`--source working-tree` also belongs on `context open`. Keep `--committed` as
+`--working-tree` also belongs on `context open`. Keep `--committed` as
 the existing committed-source spelling and reject conflicting selections.
 `change inspect` is a thin read-only facade over retained snapshot/comparison
 services. The agent writes the narrative from its result; Codeclew does not
@@ -207,3 +207,141 @@ skill. The acceptance artifact is one CLI transcript proving that navigation
 returns the captured edited bytes while the user's checkout and index retain
 their original state. No impact facade or new graph engine is needed for this
 first result.
+
+## Delivery 1 evidence (2026-09-06)
+
+- `python3 scripts/qualification/working-tree.py --output <local-directory>`
+  passes through the public source launcher with the Kotlin/Gradle baseline
+  profile and `:/main`: navigation reads `fun savedPrice(): Int = 300` while
+  the index retains `stagedPrice = 200`; context expansion finds untracked
+  `extraPrice` and still reads `savedPrice` after the live checkout is changed
+  to `laterPrice`. Index bytes and refs are unchanged through session GC.
+- The first successful qualified run measured 27.958 seconds for navigation,
+  19.309 seconds for expansion, 5.048/5.298 seconds for freshness checks and
+  5.552 seconds for GC. These are small-fixture measurements, not release
+  performance guarantees. Its development capsule build plus discovery took
+  59.299 seconds and is separate from analysis latency.
+- The Rust managed CLI test covers capture, later edits, retained reads,
+  freshness and GC. Unit cases cover stable identity, earlier-file drift,
+  byte/count/path limits, explicit deletion/addition, ignored outputs,
+  unsupported links, old session digests and the actual prepare/publish guards.
+- Kotlin expansion exposed a pre-existing camel-case validation mismatch:
+  query membership now uses the same normalization as the query index while
+  exact source declaration spelling remains required.
+- Working-tree source is currently admitted only for Kotlin/Gradle and Rust
+  with non-cacheable model authority. It never publishes shared incremental
+  heads. The synthetic Git repository remains private; the source binding
+  retains the original base commit and input snapshot.
+
+## Delivery 2 evidence (2026-09-06)
+
+`change inspect --working-tree --base HEAD` retains one bounded comparison
+against the pinned commit. `change show --comparison <id>` reads that evidence;
+`change forget --comparison <id>` releases its retention root. The result binds
+both model manifests and separates exact source changes from projected shapes.
+
+- `scripts/qualification/working-tree-change.py` passes for Kotlin bodies,
+  signature changes, comments, added/deleted/renamed files, broken after-source
+  and changed Gradle inputs. Index bytes and refs remain unchanged; temporary
+  sessions are collected. Broken after-source returns `INCOMPLETE` with exact
+  text and available before evidence.
+- The initial inspect including development capsule startup took 68.286 s;
+  retained reads took 5.104/5.328 s. Broken-source and changed-build inspections
+  took 13.190/15.489 s on this small fixture. These are observations, not a
+  general repository latency promise.
+- A managed Rust CLI regression proves retained comparison reads survive both
+  session GC and storage GC, plus later user edits. Direct consequences are
+  outside Delivery 2; syntax evidence does not claim compiler-resolved callers.
+- Diff allocation and retained row/preview budgets are explicit. Large line
+  diffs fall back to exact coarse replacement ranges, with full CAS anchors.
+
+## Delivery 3 evidence (2026-09-06)
+
+`change graph --comparison <id>` returns a bounded one-hop union of before and
+after Kotlin compiler relations. Exact callable identity and source containment
+are required; unresolved family targets remain boundaries. Candidate impact is
+a static inference, separate from the relation and any runtime/test outcome.
+
+- Public Kotlin qualification passes direct consumers, a removed before-call,
+  JVM main evidence and an actual `PriceTest.kt` consumer when `:/test` is
+  explicitly selected. Main-only reports unanalysed test scope.
+- Main comparison took 36.982 s; main plus tests took 22.292 s; retained graphs
+  took 5.095/5.063 s. Broken after-source remained incomplete with before
+  evidence. No test execution or universal no-impact claim is made.
+- Source-composed Kotlin test analysis now excludes only missing local declared
+  main friend outputs and the selected project's conventional main resource
+  output from its classpath, recording a coverage boundary. Missing external
+  dependencies remain errors. Focused worker tests pass; all three trusted
+  Kotlin distributions were rebuilt from the shared worker change.
+- Graph budgets, overload abstention, stale removed-edge claims and failed-after
+  unresolved claims have focused regression coverage. The public qualification
+  verifies unchanged index/refs and comparison cleanup.
+
+## Delivery 4 evidence (2026-09-06)
+
+`change render --comparison <id> --output <new-report.html>` produces an offline
+HTML graph with selectable nodes/edges, exact before/after source, file hunks,
+verification suggestions and downloadable machine-readable claims. It reuses
+the existing claim-authority and freshness enums, with single-repository source
+anchors instead of inventing a thread pair. Source pagination is available via
+`change source --comparison <id> --file <path> --side after --offset <byte>`.
+
+- Public Kotlin qualification passes retained rendering, `FRESH` immediately
+  after capture, `LIVE_CHANGED` plus valid retained evidence after a later edit,
+  identical repeated HTML and exact saved-source reads. Render/repeat took
+  9.728/9.682 s, freshness 9.879/9.901 s and exact source 9.660 s.
+- The managed Rust regression proves identical rendering after session/storage
+  GC and with an empty executable search path: no Git, Cargo or Gradle command
+  is required. A focused regression rejects source escaping into executable
+  HTML. Output and embedded-source budgets remain explicit.
+- Browser inspection verified selection of a removed before-call and an
+  unchanged direct consumer. The inspector showed original and saved code;
+  partial relation coverage kept the removed-edge claim unresolved.
+- All three repository skill copies include the retained comparison workflow;
+  portable skill tests and Clippy pass. The report writes to a new local file
+  and performs no live freshness check or publication implicitly.
+
+## Delivery 5 evidence (2026-09-06)
+
+`scripts/qualification/working-tree-dogfood.py` creates disposable Git worktrees
+from this repository and changes an actual Kotlin worker or Rust CLI declaration.
+It checks retained source, selected authority, direct Kotlin consumers, repeat
+HTML after a later edit, unchanged index/refs and cleanup.
+
+| Selected real scope | Inspect | Graph | Render / repeated render | Result |
+| --- | --- | --- | --- | --- |
+| Kotlin `:workers:kotlin/main`, `Worker.handle` | 425.986 s | 6.313 s | 11.356 / 11.378 s | Two changed declarations; two direct consumers from `Main.kt`; partial coverage retained. |
+| Rust `cargo:crates/clew/Cargo.toml#clew#bin#clew`, `change_inspect` | 74.904 s | 5.213 s | 9.965 / 9.904 s | Syntax-only evidence; no resolved-impact claim. Inspect includes a development runtime build. |
+
+These observations are from macOS arm64 source builds, not release SLOs. The
+qualification guardrails are 900 s for the real Kotlin inspect, 180 s for Rust,
+and 60 s for retained operations. They provide headroom above the observed
+values and are checked only after each command completes. Small-fixture and
+large-module timings must not be mixed. Unchanged capture identity has focused
+snapshot regression coverage; the repeat timing above measures retained reads,
+not a second whole-project analysis.
+
+The real Kotlin run exposed an unrelated-payload bug: comparison was reading
+whole-file and CFG facts and failing its semantic budget. It now selects the
+sealed declaration/relation categories before payload IO without increasing
+limits. A regression proves that a large CFG does not consume declaration
+budget while oversized declaration evidence is still rejected. The resulting
+real report found the expected consumers and 783 unchanged declarations, with
+54,824 unresolved before/after relations explicitly outside resolved impact.
+
+That measurement retained 64,993,305 report bytes before boundary compaction.
+The final implementation retains at most 128 analysis boundary examples per
+side plus an exact omission marker; the HTML shows a smaller sample and both
+retention/display omission counts. Rust retained 389,161 report bytes and
+47,762 HTML bytes. See the [machine-readable measurements](../../site/evidence/working-tree-dogfood.json).
+
+The normal `ci-verify.sh` gate includes the new source/comparison/render tests;
+local CI, focused worker tests and rebuilt trusted worker distributions passed.
+The Linux/macOS qualification workflow additionally runs both public fixture
+scripts and real dogfood, uploading transcripts and offline reports.
+
+The [published source-bound example](../flows/working-tree-change.md) contains a
+rendered Mermaid overview, exact source windows, stable claim IDs and the
+downloadable interactive HTML/JSON. It is a development preview available with
+the feature branch. The main Pages environment permits only `main`; deployment
+to the existing public website and a packaged release are separate actions.

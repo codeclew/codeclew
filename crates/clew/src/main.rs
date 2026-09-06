@@ -126,8 +126,20 @@ struct CapabilitiesArgs {
 
 #[derive(Subcommand)]
 enum ChangeCommand {
+    /// Compare pinned HEAD with immutable saved Kotlin/Gradle or Rust inputs.
+    Inspect(ChangeInspectArgs),
+    /// Read a retained comparison without rebuilding either project snapshot.
+    Show(ComparisonIdArgs),
+    /// Read bounded direct relation evidence from the retained comparison.
+    Graph(ComparisonIdArgs),
+    /// Render an offline HTML explanation from retained evidence.
+    Render(ChangeRenderArgs),
+    /// Read exact retained source bytes for a node or file.
+    Source(ChangeSourceArgs),
+    /// Release one retained comparison; normal storage GC reclaims unshared bytes.
+    Forget(ComparisonIdArgs),
     Open(ChangeOpenArgs),
-    CheckFreshness(SessionIdArgs),
+    CheckFreshness(ChangeFreshnessArgs),
     Prepare(ChangePrepareArgs),
     Status(RunIdArgs),
     Publish(SessionPublishArgs),
@@ -373,8 +385,12 @@ struct DoctorArgs {
     #[arg(long)]
     human: bool,
     /// Analyze committed HEAD even when local edits exist. Analysis only.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "working_tree")]
     committed: bool,
+    /// Capture current saved tracked and non-ignored untracked files for read-only
+    /// Kotlin/Rust analysis. Later edits do not change this immutable input.
+    #[arg(long, conflicts_with = "committed")]
+    working_tree: bool,
 }
 
 #[derive(Args)]
@@ -382,6 +398,60 @@ struct SupportSummarizeArgs {
     /// Absolute caller-owned mode-0600 file containing one Codeclew JSON result.
     #[arg(long)]
     input: PathBuf,
+}
+
+#[derive(Args)]
+struct ChangeInspectArgs {
+    #[command(flatten)]
+    session: SessionOpenArgs,
+    #[arg(long)]
+    profile: String,
+    /// Explicitly select saved files, including staged and unstaged changes.
+    #[arg(long, required = true)]
+    working_tree: bool,
+    /// The first comparison profile supports HEAD, pinned once during capture.
+    #[arg(long, default_value = "HEAD")]
+    base: String,
+}
+
+#[derive(Args)]
+struct ComparisonIdArgs {
+    #[arg(long)]
+    comparison: String,
+}
+
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("selection").required(true).args(["session", "comparison"])))]
+struct ChangeFreshnessArgs {
+    #[arg(long)]
+    session: Option<String>,
+    #[arg(long)]
+    comparison: Option<String>,
+}
+
+#[derive(Args)]
+struct ChangeRenderArgs {
+    #[arg(long)]
+    comparison: String,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("selection").required(true).args(["node", "file"])))]
+struct ChangeSourceArgs {
+    #[arg(long)]
+    comparison: String,
+    #[arg(long)]
+    node: Option<String>,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long, value_parser=["before", "after"])]
+    side: String,
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
+    #[arg(long, default_value_t = 16384)]
+    limit: usize,
 }
 
 #[derive(Args)]
@@ -592,8 +662,12 @@ struct ContextOpenArgs {
     max_roots: usize,
     /// Analyze committed HEAD in an isolated snapshot, excluding local edits.
     /// Analysis only; never permits mutation of a dirty worktree.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "working_tree")]
     committed: bool,
+    /// Capture current saved tracked and non-ignored untracked files for read-only
+    /// Kotlin/Rust analysis. Later edits do not change this immutable input.
+    #[arg(long, conflicts_with = "committed")]
+    working_tree: bool,
 }
 
 #[derive(Args)]
@@ -635,8 +709,12 @@ struct NavQueryArgs {
     #[arg(long, default_value_t = 4)]
     max_roots: usize,
     /// Analyze committed HEAD in an isolated snapshot, excluding local edits.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "working_tree")]
     committed: bool,
+    /// Capture current saved tracked and non-ignored untracked files for read-only
+    /// Kotlin/Rust analysis. Later edits do not change this immutable input.
+    #[arg(long, conflicts_with = "committed")]
+    working_tree: bool,
 }
 
 #[derive(Args)]
@@ -1090,7 +1168,12 @@ fn human_doctor(value: &Value) -> String {
     );
     let _ = writeln!(report, "Scope: {scope}");
     let _ = writeln!(report, "Runtime: {runtime_mode}");
-    if value["taskAuthority"]["sourceSelection"]["dirtyWorktreeAllowed"] == true {
+    if value["taskAuthority"]["sourceSelection"]["kind"] == "WORKING_TREE" {
+        let _ = writeln!(
+            report,
+            "Source: saved working-tree snapshot; analysis only (--working-tree)"
+        );
+    } else if value["taskAuthority"]["sourceSelection"]["dirtyWorktreeAllowed"] == true {
         let _ = writeln!(
             report,
             "Source: committed HEAD snapshot; local edits excluded (--committed)"
@@ -1143,7 +1226,12 @@ fn human_repository_diagnostic(value: &Value) -> String {
     let _ = writeln!(report, "Codeclew repository diagnostic");
     let _ = writeln!(report, "Status: {}", status.replace('_', " "));
     let _ = writeln!(report, "Runtime: {runtime_mode}");
-    if value["sourceSelection"]["dirtyWorktreeAllowed"] == true {
+    if value["sourceSelection"]["kind"] == "WORKING_TREE" {
+        let _ = writeln!(
+            report,
+            "Source: saved working-tree snapshot; analysis only (--working-tree)"
+        );
+    } else if value["sourceSelection"]["dirtyWorktreeAllowed"] == true {
         let _ = writeln!(
             report,
             "Source: committed HEAD snapshot; local edits excluded (--committed)"
@@ -1294,7 +1382,7 @@ fn remediation_label(id: &str) -> &str {
             "commit or stash staged/tracked changes, or use another worktree"
         }
         "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE" => {
-            "repeat this analysis command with --committed to analyze committed HEAD, excluding local edits; commit edits first if they must be included"
+            "repeat this analysis command with --committed to analyze committed HEAD, excluding local edits; use --working-tree for saved Kotlin/Rust edits"
         }
         "SELECT_LOCAL_TARGET_REF" => "select one unambiguous local branch or tag",
         "SELECT_LOCAL_BRANCH_REF" => "select a local branch for mutation",
@@ -1345,13 +1433,42 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
             "this is a source checkout; update it through the approved Git commit or tag",
         )),
         Command::Change {
+            command: ChangeCommand::Inspect(args),
+        } => change_inspect(args),
+        Command::Change {
+            command: ChangeCommand::Show(args),
+        } => clew::working_tree_change_service::show(&args.comparison),
+        Command::Change {
+            command: ChangeCommand::Graph(args),
+        } => clew::working_tree_change_service::graph(&args.comparison),
+        Command::Change {
+            command: ChangeCommand::Render(args),
+        } => clew::working_tree_render::render(&args.comparison, &args.output),
+        Command::Change {
+            command: ChangeCommand::Source(args),
+        } => clew::working_tree_render::source(
+            &args.comparison,
+            args.node.as_deref(),
+            args.file.as_deref(),
+            &args.side,
+            args.offset,
+            args.limit,
+        ),
+        Command::Change {
+            command: ChangeCommand::Forget(args),
+        } => clew::working_tree_change_service::forget(&args.comparison),
+        Command::Change {
             command: ChangeCommand::Open(args),
         } => change_open(args),
         Command::Change {
             command: ChangeCommand::CheckFreshness(args),
         } => {
-            let (session, _) = SessionAuthority::load(&args.session)?;
-            serde_json::to_value(session.freshness()?).map_err(internal)
+            if let Some(comparison) = args.comparison {
+                clew::working_tree_render::freshness(&comparison)
+            } else {
+                let (session, _) = SessionAuthority::load(args.session.as_deref().unwrap())?;
+                serde_json::to_value(session.freshness()?).map_err(internal)
+            }
         }
         Command::Change {
             command: ChangeCommand::Prepare(args),
@@ -1874,7 +1991,11 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
         || args.operation.is_some();
     match args.scope {
         DoctorScopeArg::Attach => {
-            if args.repo.is_some() || has_exact_task_arguments || args.committed {
+            if args.repo.is_some()
+                || has_exact_task_arguments
+                || args.committed
+                || args.working_tree
+            {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "attach doctor does not accept task or provision arguments",
@@ -1883,7 +2004,11 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
             doctor(&runtime, DoctorScope::Attach, None, None, None)
         }
         DoctorScopeArg::Provision => {
-            if args.repo.is_some() || has_exact_task_arguments || args.committed {
+            if args.repo.is_some()
+                || has_exact_task_arguments
+                || args.committed
+                || args.working_tree
+            {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
                     "provision doctor does not accept task arguments",
@@ -1895,12 +2020,19 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
             if has_exact_task_arguments {
                 return Err(ClewError::new(
                     ErrorCode::InvalidInput,
-                    "repository doctor accepts --repo, optional --human and --committed",
+                    "repository doctor accepts --repo, optional --human and one of --committed/--working-tree",
                 ));
             }
             let repository = args.repo.as_deref().ok_or_else(|| {
                 ClewError::new(ErrorCode::InvalidInput, "repository doctor requires --repo")
             })?;
+            if args.working_tree {
+                return clew::repository_diagnostic::diagnose_repository_with_working_tree(
+                    &runtime,
+                    &support_matrix()?,
+                    repository,
+                );
+            }
             diagnose_repository_with_source(
                 &runtime,
                 &support_matrix()?,
@@ -1948,6 +2080,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
                     },
                     compilations: &args.compilation,
                     committed: args.committed,
+                    working_tree: args.working_tree,
                 }),
             )
         }
@@ -2087,6 +2220,7 @@ struct AdmittedContext {
     context: ContextObject,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn admit_and_open_context(
     session_args: &SessionOpenArgs,
     profile: &str,
@@ -2095,6 +2229,7 @@ fn admit_and_open_context(
     terms: Vec<String>,
     max_roots: usize,
     committed: bool,
+    working_tree: bool,
 ) -> Result<AdmittedContext, ClewError> {
     let runtime = active_runtime()?;
     let repository = absolute(&session_args.repo)?;
@@ -2112,12 +2247,34 @@ fn admit_and_open_context(
             },
             compilations: &session_args.compilation,
             committed,
+            working_tree,
         }),
     )?;
     require_task_ready(&readiness)?;
     let readiness_digest = canonical::hash(&readiness).map_err(internal)?;
     let product = capabilities(&runtime)?;
-    let session = open_session(session_args)?;
+    let session = if working_tree {
+        if !matches!(session_args.model_cache, ModelCachePolicyArg::NonCacheable)
+            || session_args.external_build_state.is_some()
+        {
+            return Err(ClewError::new(
+                ErrorCode::InvalidInput,
+                "working-tree analysis requires non-cacheable model authority",
+            ));
+        }
+        SessionAuthority::open_with_source(
+            &repository,
+            &session_args.target_ref,
+            session_language(session_args.language),
+            &session_args.compilation,
+            session_args.generation_jobs,
+            ModelCachePolicy::NonCacheable,
+            None,
+            Some(profile),
+        )?
+    } else {
+        open_session(session_args)?
+    };
     match create_context_object(&session, intent, terms, max_roots) {
         Ok(context) => Ok(AdmittedContext {
             admission: json!({
@@ -2141,6 +2298,49 @@ fn admit_and_open_context(
     }
 }
 
+fn change_inspect(args: ChangeInspectArgs) -> Result<Value, ClewError> {
+    if !args.working_tree
+        || args.base != "HEAD"
+        || !matches!(args.session.model_cache, ModelCachePolicyArg::NonCacheable)
+        || args.session.external_build_state.is_some()
+    {
+        return Err(invalid(
+            "change inspect requires --working-tree, --base HEAD and non-cacheable model authority",
+        ));
+    }
+    let runtime = active_runtime()?;
+    let repository = absolute(&args.session.repo)?;
+    let language = session_language(args.session.language);
+    let readiness = doctor(
+        &runtime,
+        DoctorScope::Task,
+        Some(&repository),
+        Some(&args.session.target_ref),
+        Some(DoctorTask {
+            language,
+            profile_id: &args.profile,
+            operation: DoctorOperation::Analysis,
+            compilations: &args.session.compilation,
+            committed: false,
+            working_tree: true,
+        }),
+    )?;
+    require_task_ready(&readiness)?;
+    let mut result = clew::working_tree_change_service::inspect(
+        clew::working_tree_change_service::InspectRequest {
+            repository,
+            target_ref: args.session.target_ref,
+            language,
+            compilations: args.session.compilation,
+            profile_id: args.profile,
+            generation_jobs: args.session.generation_jobs,
+        },
+    )?;
+    result["admission"] = json!({"status":"PASS", "taskAuthority":readiness["taskAuthority"],
+        "readinessDigest":canonical::hash(&readiness).map_err(internal)?, "runtimeKey":runtime.runtime_key, "runtimeMode":runtime.mode});
+    Ok(result)
+}
+
 fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
     let opened = admit_and_open_context(
         &args.session,
@@ -2150,6 +2350,7 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
         args.terms,
         args.max_roots,
         args.committed,
+        args.working_tree,
     )?;
     let context = bounded_context_stdout(&opened.context)
         .map_err(|error| compensate_opened_context(error, &opened))?;
@@ -2209,6 +2410,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         terms,
         args.max_roots,
         args.committed,
+        args.working_tree,
     )?;
     let mut navigation = clew::navigation::query_with_decision_identifier(
         &opened.context,
@@ -2314,6 +2516,9 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         },
         "navigation":navigation,
     });
+    if let Some(binding) = &opened.session.working_tree {
+        result["session"]["sourceSelection"] = serde_json::to_value(binding).map_err(internal)?;
+    }
     validate_nav_query_stdout(&mut result, follow_references)
         .map_err(|error| compensate_opened_context(error, &opened))?;
     Ok(result)

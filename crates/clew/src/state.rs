@@ -208,6 +208,19 @@ impl StateAuthority {
     pub fn repository(&self, repo: &Path) -> Result<RepositoryState, ClewError> {
         let canonical = repo.canonicalize().map_err(io_error)?;
         let key = repository_key(&canonical)?;
+        self.repository_by_key(&key)
+    }
+
+    /// Access managed cache state for a key already bound by session authority.
+    pub(crate) fn repository_by_key(&self, key: &str) -> Result<RepositoryState, ClewError> {
+        if key.len() != 64
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(invalid("repository state key is invalid"));
+        }
+        let key = key.to_owned();
         let relative_root = Path::new("repos").join(&key);
         let root = self.root.join(&relative_root);
         let repository_index = root.join("repository-index");
@@ -564,6 +577,11 @@ impl ManagedDirectory {
             destination.handle.sync_all().map_err(io_error)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn remove_tree(&self, name: &std::ffi::OsStr) -> Result<(), ClewError> {
+        self.require_path_identity()?;
+        remove_directory_tree_at(&self.handle, name)
     }
 
     pub(crate) fn remove_file(&self, name: &std::ffi::OsStr) -> Result<(), ClewError> {

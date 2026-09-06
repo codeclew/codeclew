@@ -134,6 +134,7 @@ pub struct DoctorTask<'a> {
     pub operation: DoctorOperation,
     pub compilations: &'a [String],
     pub committed: bool,
+    pub working_tree: bool,
 }
 
 impl DoctorCheck {
@@ -161,9 +162,23 @@ pub fn doctor(
         DoctorScope::Task => {
             let repository = repository.ok_or_else(|| invalid("task doctor requires --repo"))?;
             let task = task.ok_or_else(|| invalid("task doctor requires exact task authority"))?;
-            if task.committed && task.operation != DoctorOperation::Analysis {
+            if task.working_tree && task.committed {
+                return Err(invalid("--working-tree conflicts with --committed"));
+            }
+            if task.working_tree
+                && !matches!(
+                    task.language,
+                    SessionLanguage::Kotlin | SessionLanguage::Rust
+                )
+            {
                 return Err(invalid(
-                    "--committed is analysis-only; mutation requires a clean target worktree",
+                    "working-tree analysis currently supports Kotlin/Gradle and Rust",
+                ));
+            }
+            if (task.committed || task.working_tree) && task.operation != DoctorOperation::Analysis
+            {
+                return Err(invalid(
+                    "--committed and --working-tree are analysis-only; mutation requires a clean target worktree",
                 ));
             }
             checks.extend(task_checks(runtime, &matrix, repository, target_ref, &task));
@@ -173,9 +188,9 @@ pub fn doctor(
                 "operation":task.operation,
                 "profileId":task.profile_id,
                 "sourceSelection":{
-                    "kind":"COMMITTED_HEAD",
-                    "uncommittedChangesIncluded":false,
-                    "dirtyWorktreeAllowed":task.committed,
+                    "kind":if task.working_tree { "WORKING_TREE" } else { "COMMITTED_HEAD" },
+                    "uncommittedChangesIncluded":task.working_tree,
+                    "dirtyWorktreeAllowed":task.committed || task.working_tree,
                 },
             }))
         }
@@ -386,7 +401,7 @@ fn task_checks(
         repository,
         target_ref,
         task.operation,
-        task.committed,
+        task.committed || task.working_tree,
     ));
     checks
 }
@@ -834,7 +849,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:ddd4d5586681453c8ae9c70a1c6f02b5c920bf4070995e4f5b52cfdc831267e3"
+            "sha256:9bbec7bf19fb2cb6a59281873466a108c48559898c603b441b1cdbc22e5df7d9"
         );
     }
 

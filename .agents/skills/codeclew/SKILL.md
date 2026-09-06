@@ -68,8 +68,17 @@ Do not use this distinction to bypass consumer-session or publication guards.
    concerns the committed repository. Explain that the evidence excludes local
    edits and retain `sourceSelection` plus the base revision. This is an explicit
    read-only snapshot choice, not permission to clean or stash developer work.
-   If the user specifically requests uncommitted changes, do not substitute a
-   committed snapshot; report that this source mode is not supported.
+   For saved Kotlin/Gradle or Rust edits, pass `--working-tree` to discovery and the
+   analysis admission command instead. Retain the source binding, pinned base
+   and selected compilations. Current saved bytes include staged, unstaged and
+   non-ignored untracked inputs; ignored outputs and unsaved buffers are outside
+   capture. Capture budget or stability failures are explicit and must not fall
+   back to HEAD. A working-tree session is analysis-only. Continued editing does
+   not change retained evidence; `change check-freshness --session <id>` reports
+   `LIVE_CHANGED` separately from `retainedEvidenceValid`. Open a new session to
+   refresh, and close/collect the old one when finished. Do not use this mode for
+   unqualified languages or treat captured repository inputs as whole-repository
+   semantic coverage.
 6. On another typed readiness failure, run only the named diagnostic (`clew doctor
    attach` or the same exact `clew doctor task ...`) once, report its
    `nextAction`, and stop. `doctor provision` is a maintainer/bootstrap
@@ -421,6 +430,38 @@ For updates, compare the explicitly selected new snapshot with the old evidence.
 Use supported explanation freshness operations when applicable; otherwise check
 the cited source bindings and report the limitation. Do not advertise automatic
 freshness or universal language support merely because the diagram renders.
+
+
+## Explain current saved edits
+
+For a single Kotlin/Gradle or Rust repository, use `change inspect --repo
+<repo> --target-ref <branch> --language <language> --profile <profile>
+--compilation <compilation> --working-tree --base HEAD`. Repeat compilation
+only for explicitly selected scopes. Retain its comparison ID; the command
+collects temporary sessions while preserving comparison evidence.
+
+Read `change graph --comparison <id>` for bounded direct consequences and
+`change source --comparison <id> --node <returned-node-id> --side before|after`
+for exact retained source. `--file <returned-file>` is an alternative to node;
+follow `nextOffset` using `--offset` when a source window is truncated. Do not
+invent compiler-resolved edges for Rust syntax observations or Kotlin family
+candidates. A direct consumer is a verification candidate, not a proven failure.
+Test compilation selection, a test relationship and a successful test run are
+three separate facts. Preserve every failed analysis and omitted scope.
+
+Create the local visual explanation with `change render --comparison <id>
+--output <new-report.html>`. This deterministic offline artifact contains a
+selectable graph, before/after code, machine-readable claims and verification
+obligations. Write any additional narrative from those retained claims and label
+it agent-authored; do not promote static observations into behavioral equivalence.
+An unchanged neighboring declaration may still be affected by a changed callee.
+The report does not refresh itself. `change check-freshness --comparison <id>`
+separates retained claim evidence validity, live snapshot match and coverage.
+`LIVE_CHANGED` requires a new comparison for current edits; it does not invalidate
+the earlier evidence. Rendering again performs no compilation. Keep the HTML
+local unless publication is authorized, and never fabricate committed-source
+links for saved uncommitted bytes. `change forget --comparison <id>` releases the
+retention root after the evidence is no longer needed.
 
 ## Prepare a change
 
