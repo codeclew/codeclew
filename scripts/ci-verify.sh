@@ -17,7 +17,9 @@ python3 -I -S scripts/test_pilot_release_gate.py
 python3 -I -S scripts/test_language_mutation_pilot.py
 python3 -I -S scripts/test_check_repository_privacy.py
 python3 -I -S scripts/check_english_content.py
+python3 -I -S scripts/build_cli_documentation.py --check
 python3 -I -S scripts/test_agent_skill.py
+python3 -I -S scripts/test_pilot.py
 python3 -I -S scripts/test_macos_distribution.py
 python3 -I -S scripts/test_build_macos_release.py
 python3 -I -S scripts/test_build_local_release_candidate.py
@@ -29,6 +31,7 @@ cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'kotlin_engine::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1
 cargo test --locked -p clew --bin clew 'tests::' -- --test-threads=1
 cargo test --locked -p clew --test managed_cli \
   managed_operational_commands_are_path_free_and_support_recovery -- --test-threads=1

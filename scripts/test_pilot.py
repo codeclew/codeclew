@@ -7,6 +7,7 @@ import subprocess
 import shutil
 import sys
 import unittest
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().with_name("pilot.py")
@@ -105,6 +106,20 @@ class PilotTest(unittest.TestCase):
         with self.assertRaises(pilot.PilotFailure) as caught:
             pilot.interrupt_as_failure(15, None)
         self.assertEqual(caught.exception.code, "PILOT_SIGNALLED")
+
+    def test_workspace_state_admits_with_public_system_temp(self) -> None:
+        # Reproduce Linux's public /tmp without running a cold runtime build.
+        bootstrap_path = MODULE_PATH.parent.parent / "bootstrap" / "clew_bootstrap.py"
+        spec = importlib.util.spec_from_file_location("pilot_bootstrap_check", bootstrap_path)
+        assert spec is not None and spec.loader is not None
+        bootstrap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bootstrap)
+        with patch.object(pilot.tempfile, "tempdir", "/tmp"):
+            with pilot.PilotWorkspace() as workspace:
+                assert workspace.path is not None
+                descriptor = bootstrap._open_private_tree(workspace.path / "state")
+                pilot.os.close(descriptor)
+                self.assertEqual(workspace.path.stat().st_mode & 0o777, 0o700)
 
     def test_recovery_preserves_repository_workspace(self) -> None:
         with pilot.PilotWorkspace() as disposable:

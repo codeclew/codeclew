@@ -1,0 +1,23 @@
+digraph nav_query {
+graph [bgcolor="transparent", rankdir=TB, pad="0.3", nodesep="0.4", ranksep="0.48"];
+node [shape=box, style="rounded,filled", fillcolor="#151b16", color="#52654b", fontcolor="#f2f4ef", fontname="Arial", fontsize=15, margin="0.2,0.16"];
+edge [color="#77876c", fontcolor="#bdc8b6", fontname="Arial", fontsize=11, arrowsize=0.65, style=dashed];
+entry [label="01  nav query", shape=box, color="#91b774", id="node-entry", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-entry", tooltip="entry"];
+admit [label="02  Check task readiness", shape=box, color="#91b774", id="node-admit", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-admit", tooltip="admit"];
+context [label="03  Open session + context", shape=box, color="#91b774", id="node-context", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-context", tooltip="context"];
+failure [label="Error + cleanup attempt", shape=box, color="#e0ae65", id="node-failure", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-failure", tooltip="failure"];
+decision [label="04  Exact decision supported?", shape=diamond, color="#91b774", id="node-decision", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-decision", tooltip="decision"];
+supported [label="SUPPORTED\nReturn selected identity", shape=box, color="#91b774", id="node-supported", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-supported", tooltip="supported"];
+abstain [label="ABSTAIN\nKeep discovery candidates", shape=box, color="#e0ae65", id="node-abstain", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain", tooltip="abstain"];
+result [label="05  Return bounded evidence", shape=box, color="#91b774", id="node-result", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-result", tooltip="result"];
+{rank=same; supported; abstain;}
+entry -> admit [label="analysis request", id="edge-0", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-entry", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+admit -> context [label="ready", id="edge-1", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-admit", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+admit -> failure [label="readiness error", id="edge-2", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-admit", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+context -> failure [label="context error", id="edge-3", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-failure", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+context -> decision [label="retained facts", id="edge-4", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-context", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+decision -> supported [label="all conditions hold", id="edge-5", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-supported", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+decision -> abstain [label="otherwise", id="edge-6", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+supported -> result [label="source if requested", id="edge-7", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-result", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+abstain -> result [label="reason + next action", id="edge-8", URL="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain", tooltip="AGENT_INFERRED_STATIC_FLOW"];
+}

@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import signal
 import shutil
@@ -47,7 +48,10 @@ class PilotWorkspace:
         self.preserve = False
 
     def __enter__(self) -> "PilotWorkspace":
-        self.path = Path(tempfile.mkdtemp(prefix="codeclew-pilot-")).resolve()
+        # Managed state rejects writable ancestors such as Linux /tmp. Resolve
+        # the account home independently of TMPDIR and injected HOME values.
+        account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve()
+        self.path = Path(tempfile.mkdtemp(prefix=".codeclew-pilot-", dir=account_home))
         return self
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:

@@ -385,6 +385,43 @@ Keep dynamic configuration and runtime activation unproven, and never infer a
 cross-repository call from matching routes or topic names. Document the selected
 repository/compilation scope and unresolved edges with the resulting thread.
 
+## Explain with source-bound diagrams
+
+For documentation or a request to explain a computation, make a rendered visual
+flow the primary explanation, with concise prose for the outcome and boundaries.
+Start from the user-selected entrypoint (for example a CLI command, function, or
+HTTP handler), follow only the evidence needed for that scenario, and retain
+branches, failures, and state changes that affect the result.
+
+Use a Mermaid sequence diagram when participants and ordering are supported.
+Use a flowchart when the evidence supports decisions or static relationships
+without execution order. Source position alone does not prove ordering. Mark
+agent-inferred and unresolved transitions explicitly in labels and the legend;
+a dashed line alone is insufficient. Never turn syntax references into resolved
+calls, or draw a linear happy path through unproven branches.
+
+Bind each meaningful node and arrow to a stable claim ID with its retained source
+window or relation, repository-relative file, exact revision, evidence digest,
+and authority. Keep the claim-to-evidence mapping beside the diagram or in its
+linked machine-readable artifact. On a website, let readers select a step to
+inspect its explanation and exact source. Default to the readable overview;
+make technical evidence progressively available. Provide an accessible text
+alternative and preserve diagram source (such as `.mmd`) for reproduction.
+Render the graph in the target output: a fenced source block alone is not a
+finished visualization when the target cannot render it.
+
+Generate narrative from the retained Codeclew evidence and identify it as agent
+authored. Keep syntax observations, compiler relations, declared topology, and
+executed test results distinct. Record the analysis command, source selection,
+base revision, and unresolved scope. If publication is already authorized,
+export only the intended public source fragments and provenance; do not upload
+raw private session state. A digest binds bytes, not the truth of the narrative.
+
+For updates, compare the explicitly selected new snapshot with the old evidence.
+Use supported explanation freshness operations when applicable; otherwise check
+the cited source bindings and report the limitation. Do not advertise automatic
+freshness or universal language support merely because the diagram renders.
+
 ## Prepare a change
 
 Mutation is allowed only when the active support matrix marks the exact profile

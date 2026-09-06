@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0.00 0.00 720.00 596.00" aria-labelledby="flow-title flow-description">
+<title id="flow-title">How nav query moves from a request to bounded source evidence</title><desc id="flow-description">Select a step or arrow to inspect its supporting code. Task readiness precedes context creation. The decision branches into SUPPORTED or ABSTAIN. Errors leave the main path. Dashed arrows are agent-interpreted static flow, not runtime observations.</desc><g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(21.6 574.38)">
+<title>nav_query</title>
+
+<g id="node-entry" class="node">
+<title>entry</title>
+<g id="a_node-entry"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-entry" xlink:title="entry" data-claim="entry" aria-label="Start with a precise question: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M548.95,-552.78C548.95,-552.78 452.65,-552.78 452.65,-552.78 446.65,-552.78 440.65,-546.78 440.65,-540.78 440.65,-540.78 440.65,-523.74 440.65,-523.74 440.65,-517.74 446.65,-511.74 452.65,-511.74 452.65,-511.74 548.95,-511.74 548.95,-511.74 554.95,-511.74 560.95,-517.74 560.95,-523.74 560.95,-523.74 560.95,-540.78 560.95,-540.78 560.95,-546.78 554.95,-552.78 548.95,-552.78" />
+<text xml:space="preserve" text-anchor="middle" x="500.8" y="-527.01" font-family="Arial" font-size="15.00" fill="#f2f4ef">01  nav query</text>
+</a>
+</g>
+</g>
+
+<g id="node-admit" class="node">
+<title>admit</title>
+<g id="a_node-admit"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="admit" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M587.58,-462.24C587.58,-462.24 414.02,-462.24 414.02,-462.24 408.02,-462.24 402.02,-456.24 402.02,-450.24 402.02,-450.24 402.02,-433.2 402.02,-433.2 402.02,-427.2 408.02,-421.2 414.02,-421.2 414.02,-421.2 587.58,-421.2 587.58,-421.2 593.58,-421.2 599.58,-427.2 599.58,-433.2 599.58,-433.2 599.58,-450.24 599.58,-450.24 599.58,-456.24 593.58,-462.24 587.58,-462.24" />
+<text xml:space="preserve" text-anchor="middle" x="500.8" y="-436.47" font-family="Arial" font-size="15.00" fill="#f2f4ef">02  Check task readiness</text>
+</a>
+</g>
+</g>
+
+<g id="edge-0" class="edge">
+<title>entry-&gt;admit</title>
+<g id="a_edge-0"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-entry" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="entry" aria-label="Start with a precise question: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M500.8,-511.61C500.8,-499.54 500.8,-483.9 500.8,-470.57" />
+<polygon fill="#77876c" stroke="#77876c" points="503.08,-470.63 500.8,-464.13 498.53,-470.63 503.08,-470.63" />
+</a>
+</g>
+<g id="a_edge-0-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-entry" xlink:title="analysis request" data-claim="entry" aria-label="Start with a precise question: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="539.42" y="-483.29" font-family="Arial" font-size="11.00" fill="#bdc8b6">analysis request</text>
+</a>
+</g>
+</g>
+
+<g id="node-context" class="node">
+<title>context</title>
+<g id="a_node-context"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-context" xlink:title="context" data-claim="context" aria-label="Open a session and retain context: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M513.08,-371.7C513.08,-371.7 324.52,-371.7 324.52,-371.7 318.52,-371.7 312.52,-365.7 312.52,-359.7 312.52,-359.7 312.52,-342.66 312.52,-342.66 312.52,-336.66 318.52,-330.66 324.52,-330.66 324.52,-330.66 513.08,-330.66 513.08,-330.66 519.08,-330.66 525.08,-336.66 525.08,-342.66 525.08,-342.66 525.08,-359.7 525.08,-359.7 525.08,-365.7 519.08,-371.7 513.08,-371.7" />
+<text xml:space="preserve" text-anchor="middle" x="418.8" y="-345.93" font-family="Arial" font-size="15.00" fill="#f2f4ef">03  Open session + context</text>
+</a>
+</g>
+</g>
+
+<g id="edge-1" class="edge">
+<title>admit-&gt;context</title>
+<g id="a_edge-1"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M482.6,-421.07C470.79,-408.32 455.29,-391.58 442.52,-377.79" />
+<polygon fill="#77876c" stroke="#77876c" points="444.35,-376.41 438.26,-373.19 441.01,-379.51 444.35,-376.41" />
+</a>
+</g>
+<g id="a_edge-1-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="ready" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="478.21" y="-392.75" font-family="Arial" font-size="11.00" fill="#bdc8b6">ready</text>
+</a>
+</g>
+</g>
+
+<g id="node-failure" class="node">
+<title>failure</title>
+<g id="a_node-failure"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-failure" xlink:title="failure" data-claim="failure" aria-label="Return an error; attempt cleanup: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#e0ae65" d="M664.7,-260.64C664.7,-260.64 500.9,-260.64 500.9,-260.64 494.9,-260.64 488.9,-254.64 488.9,-248.64 488.9,-248.64 488.9,-231.6 488.9,-231.6 488.9,-225.6 494.9,-219.6 500.9,-219.6 500.9,-219.6 664.7,-219.6 664.7,-219.6 670.7,-219.6 676.7,-225.6 676.7,-231.6 676.7,-231.6 676.7,-248.64 676.7,-248.64 676.7,-254.64 670.7,-260.64 664.7,-260.64" />
+<text xml:space="preserve" text-anchor="middle" x="582.8" y="-234.87" font-family="Arial" font-size="15.00" fill="#f2f4ef">Error + cleanup attempt</text>
+</a>
+</g>
+</g>
+
+<g id="edge-2" class="edge">
+<title>admit-&gt;failure</title>
+<g id="a_edge-2"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M513.49,-420.73C521.7,-407.23 532.23,-388.82 539.8,-371.7 555.08,-337.13 567.91,-295.36 575.48,-268.53" />
+<polygon fill="#77876c" stroke="#77876c" points="577.6,-269.37 577.15,-262.5 573.22,-268.15 577.6,-269.37" />
+</a>
+</g>
+<g id="a_edge-2-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-admit" xlink:title="readiness error" data-claim="admit" aria-label="Check that this task can run: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="592.27" y="-347.48" font-family="Arial" font-size="11.00" fill="#bdc8b6">readiness error</text>
+</a>
+</g>
+</g>
+
+<g id="edge-3" class="edge">
+<title>context-&gt;failure</title>
+<g id="a_edge-3"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-failure" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="failure" aria-label="Return an error; attempt cleanup: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M448.88,-330.18C476.39,-311.88 517.15,-284.78 546.47,-265.28" />
+<polygon fill="#77876c" stroke="#77876c" points="547.5,-267.33 551.65,-261.83 544.98,-263.54 547.5,-267.33" />
+</a>
+</g>
+<g id="a_edge-3-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-failure" xlink:title="context error" data-claim="failure" aria-label="Return an error; attempt cleanup: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="521.36" y="-302.21" font-family="Arial" font-size="11.00" fill="#bdc8b6">context error</text>
+</a>
+</g>
+</g>
+
+<g id="node-decision" class="node">
+<title>decision</title>
+<g id="a_node-decision"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-decision" xlink:title="decision" data-claim="decision" aria-label="Separate ranking from a supported decision: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M217.99,-279.05C217.99,-279.05 11.81,-242.23 11.81,-242.23 5.91,-241.17 5.91,-239.07 11.81,-238.01 11.81,-238.01 217.99,-201.19 217.99,-201.19 223.89,-200.13 235.71,-200.13 241.61,-201.19 241.61,-201.19 447.79,-238.01 447.79,-238.01 453.69,-239.07 453.69,-241.17 447.79,-242.23 447.79,-242.23 241.61,-279.05 241.61,-279.05 235.71,-280.11 223.89,-280.11 217.99,-279.05" />
+<text xml:space="preserve" text-anchor="middle" x="229.8" y="-234.87" font-family="Arial" font-size="15.00" fill="#f2f4ef">04  Exact decision supported?</text>
+</a>
+</g>
+</g>
+
+<g id="edge-4" class="edge">
+<title>context-&gt;decision</title>
+<g id="a_edge-4"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-context" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="context" aria-label="Open a session and retain context: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M384.13,-330.18C357.88,-315.03 321.16,-293.84 290.12,-275.93" />
+<polygon fill="#77876c" stroke="#77876c" points="291.26,-273.96 284.49,-272.68 288.99,-277.9 291.26,-273.96" />
+</a>
+</g>
+<g id="a_edge-4-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-context" xlink:title="retained facts" data-claim="context" aria-label="Open a session and retain context: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="384.52" y="-302.21" font-family="Arial" font-size="11.00" fill="#bdc8b6">retained facts</text>
+</a>
+</g>
+</g>
+
+<g id="node-supported" class="node">
+<title>supported</title>
+<g id="a_node-supported"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-supported" xlink:title="supported" data-claim="supported" aria-label="One exact, fully covered identifier: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M198.58,-149.58C198.58,-149.58 37.03,-149.58 37.03,-149.58 31.03,-149.58 25.03,-143.58 25.03,-137.58 25.03,-137.58 25.03,-102.54 25.03,-102.54 25.03,-96.54 31.03,-90.54 37.03,-90.54 37.03,-90.54 198.58,-90.54 198.58,-90.54 204.58,-90.54 210.58,-96.54 210.58,-102.54 210.58,-102.54 210.58,-137.58 210.58,-137.58 210.58,-143.58 204.58,-149.58 198.58,-149.58" />
+<text xml:space="preserve" text-anchor="middle" x="117.8" y="-123.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">SUPPORTED</text>
+<text xml:space="preserve" text-anchor="middle" x="117.8" y="-105.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">Return selected identity</text>
+</a>
+</g>
+</g>
+
+<g id="edge-5" class="edge">
+<title>decision-&gt;supported</title>
+<g id="a_edge-5"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-supported" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="supported" aria-label="One exact, fully covered identifier: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M197.1,-204.65C182.38,-189.14 165.05,-170.86 150.34,-155.36" />
+<polygon fill="#77876c" stroke="#77876c" points="152.22,-154.04 146.1,-150.89 148.92,-157.17 152.22,-154.04" />
+</a>
+</g>
+<g id="a_edge-5-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-supported" xlink:title="all conditions hold" data-claim="supported" aria-label="One exact, fully covered identifier: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="216.18" y="-170.63" font-family="Arial" font-size="11.00" fill="#bdc8b6">all conditions hold</text>
+</a>
+</g>
+</g>
+
+<g id="node-abstain" class="node">
+<title>abstain</title>
+<g id="a_node-abstain"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="abstain" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#e0ae65" d="M434.45,-149.58C434.45,-149.58 251.15,-149.58 251.15,-149.58 245.15,-149.58 239.15,-143.58 239.15,-137.58 239.15,-137.58 239.15,-102.54 239.15,-102.54 239.15,-96.54 245.15,-90.54 251.15,-90.54 251.15,-90.54 434.45,-90.54 434.45,-90.54 440.45,-90.54 446.45,-96.54 446.45,-102.54 446.45,-102.54 446.45,-137.58 446.45,-137.58 446.45,-143.58 440.45,-149.58 434.45,-149.58" />
+<text xml:space="preserve" text-anchor="middle" x="342.8" y="-123.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">ABSTAIN</text>
+<text xml:space="preserve" text-anchor="middle" x="342.8" y="-105.81" font-family="Arial" font-size="15.00" fill="#f2f4ef">Keep discovery candidates</text>
+</a>
+</g>
+</g>
+
+<g id="edge-6" class="edge">
+<title>decision-&gt;abstain</title>
+<g id="a_edge-6"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M262.79,-204.65C277.64,-189.14 295.13,-170.86 309.97,-155.36" />
+<polygon fill="#77876c" stroke="#77876c" points="311.4,-157.15 314.26,-150.88 308.12,-154.01 311.4,-157.15" />
+</a>
+</g>
+<g id="a_edge-6-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="otherwise" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="319.67" y="-170.63" font-family="Arial" font-size="11.00" fill="#bdc8b6">otherwise</text>
+</a>
+</g>
+</g>
+
+<g id="node-result" class="node">
+<title>result</title>
+<g id="a_node-result"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-result" xlink:title="result" data-claim="result" aria-label="Return a bounded result you can continue: inspect source evidence" tabindex="0">
+<path fill="#151b16" stroke="#91b774" d="M330.45,-41.04C330.45,-41.04 129.15,-41.04 129.15,-41.04 123.15,-41.04 117.15,-35.04 117.15,-29.04 117.15,-29.04 117.15,-12 117.15,-12 117.15,-6 123.15,0 129.15,0 129.15,0 330.45,0 330.45,0 336.45,0 342.45,-6 342.45,-12 342.45,-12 342.45,-29.04 342.45,-29.04 342.45,-35.04 336.45,-41.04 330.45,-41.04" />
+<text xml:space="preserve" text-anchor="middle" x="229.8" y="-15.27" font-family="Arial" font-size="15.00" fill="#f2f4ef">05  Return bounded evidence</text>
+</a>
+</g>
+</g>
+
+<g id="edge-7" class="edge">
+<title>supported-&gt;result</title>
+<g id="a_edge-7"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-result" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="result" aria-label="Return a bounded result you can continue: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M151.1,-90.06C167.04,-76.18 185.93,-59.72 201.21,-46.42" />
+<polygon fill="#77876c" stroke="#77876c" points="202.54,-48.28 205.95,-42.29 199.55,-44.85 202.54,-48.28" />
+</a>
+</g>
+<g id="a_edge-7-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-result" xlink:title="source if requested" data-claim="result" aria-label="Return a bounded result you can continue: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="229.58" y="-62.09" font-family="Arial" font-size="11.00" fill="#bdc8b6">source if requested</text>
+</a>
+</g>
+</g>
+
+<g id="edge-8" class="edge">
+<title>abstain-&gt;result</title>
+<g id="a_edge-8"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="AGENT_INFERRED_STATIC_FLOW" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<path fill="none" stroke="#77876c" stroke-dasharray="5,2" d="M315.96,-90.25C305.91,-80 294.17,-68.64 282.8,-59.04 277.55,-54.61 271.79,-50.16 266.07,-45.96" />
+<polygon fill="#77876c" stroke="#77876c" points="267.73,-44.35 261.13,-42.39 265.06,-48.04 267.73,-44.35" />
+</a>
+</g>
+<g id="a_edge-8-label"><a xlink:href="https://codeclew.github.io/codeclew/nav-query.html#claim-abstain" xlink:title="reason + next action" data-claim="abstain" aria-label="Keep candidates; explain what is missing: inspect source evidence" tabindex="0">
+<text xml:space="preserve" text-anchor="middle" x="345.43" y="-62.09" font-family="Arial" font-size="11.00" fill="#bdc8b6">reason + next action</text>
+</a>
+</g>
+</g>
+</g>
+</svg>

@@ -52,7 +52,8 @@ def main() -> None:
         "k24-from-230",
         "k24-from-2121",
         "k24-from-2121-serialization",
-        "allopen-negative",
+        "k24-from-230-allopen",
+        "sam-with-receiver-negative",
         "k19-negative",
     ):
         assert row in qualification
