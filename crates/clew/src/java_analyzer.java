@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -170,6 +171,7 @@ final class CodeclewJavaAnalyzer {
         private final List<Map<String, Object>> facts;
         private final Deque<String> owners = new ArrayDeque<>();
         private final Deque<String> executableOwners = new ArrayDeque<>();
+        private final Map<CompilationUnitTree, int[]> utf8Offsets = new IdentityHashMap<>();
 
         private Analyzer(
                 Path root,
@@ -211,6 +213,11 @@ final class CodeclewJavaAnalyzer {
 
         @Override
         public Void visitMethod(MethodTree tree, Void unused) {
+            // javac inserts default constructors and other synthetic methods.
+            // They have no exact source range and must not become source cards.
+            if (!hasSourceRange(tree)) {
+                return null;
+            }
             Element element = trees.getElement(getCurrentPath());
             if (!(element instanceof ExecutableElement executable)) {
                 boundary("JAVA_METHOD_SYMBOL_UNRESOLVED", tree);
@@ -236,6 +243,9 @@ final class CodeclewJavaAnalyzer {
 
         @Override
         public Void visitVariable(VariableTree tree, Void unused) {
+            if (!hasSourceRange(tree)) {
+                return null;
+            }
             Element element = trees.getElement(getCurrentPath());
             if (element instanceof VariableElement variable
                     && Set.of(ElementKind.FIELD, ElementKind.ENUM_CONSTANT, ElementKind.RECORD_COMPONENT)
@@ -292,6 +302,10 @@ final class CodeclewJavaAnalyzer {
                 Tree tree) {
             Map<String, Object> row = base("DECLARATION");
             row.put("declarationKind", kind);
+            row.put("name", element.getSimpleName().toString());
+            if (element instanceof TypeElement type) {
+                row.put("qualifiedName", type.getQualifiedName().toString());
+            }
             row.put("symbolIdentity", identity);
             row.put("ownerIdentity", owner);
             if (descriptor != null) {
@@ -309,7 +323,7 @@ final class CodeclewJavaAnalyzer {
         }
 
         private void relation(String kind, Element target, Tree tree) {
-            if (executableOwners.isEmpty()) {
+            if (executableOwners.isEmpty() || !hasSourceRange(tree)) {
                 return;
             }
             if (!(target instanceof ExecutableElement executable)) {
@@ -359,6 +373,36 @@ final class CodeclewJavaAnalyzer {
             facts.add(row);
         }
 
+        private boolean hasSourceRange(Tree tree) {
+            CompilationUnitTree unit = getCurrentPath().getCompilationUnit();
+            long start = positions.getStartPosition(unit, tree);
+            long end = positions.getEndPosition(unit, tree);
+            return start >= 0 && end >= start;
+        }
+
+        private int[] byteOffsets(CompilationUnitTree unit) {
+            return utf8Offsets.computeIfAbsent(unit, key -> {
+                try {
+                    String text = key.getSourceFile().getCharContent(true).toString();
+                    int[] offsets = new int[text.length() + 1];
+                    int bytes = 0;
+                    for (int i = 0; i < text.length();) {
+                        int codePoint = text.codePointAt(i);
+                        offsets[i] = bytes;
+                        if (Character.charCount(codePoint) == 2) {
+                            offsets[i + 1] = -1;
+                        }
+                        bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+                        i += Character.charCount(codePoint);
+                    }
+                    offsets[text.length()] = bytes;
+                    return offsets;
+                } catch (IOException failure) {
+                    throw new IllegalStateException("source coordinates unavailable", failure);
+                }
+            });
+        }
+
         private void anchor(Map<String, Object> row, Tree tree) {
             CompilationUnitTree unit = getCurrentPath().getCompilationUnit();
             try {
@@ -377,6 +421,13 @@ final class CodeclewJavaAnalyzer {
             }
             if (end >= start && end >= 0) {
                 row.put("end", end);
+            }
+            if (start >= 0 && end >= start) {
+                row.put("startLine", unit.getLineMap().getLineNumber(start));
+                row.put("endLine", unit.getLineMap().getLineNumber(Math.max(start, end - 1)));
+                int[] offsets = byteOffsets(unit);
+                row.put("byteStart", offsets[Math.toIntExact(start)]);
+                row.put("byteEnd", offsets[Math.toIntExact(end)]);
             }
         }
 

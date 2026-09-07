@@ -64,6 +64,8 @@ pub struct SessionAuthority {
     pub model_cache_policy: ModelCachePolicy,
     pub model_cache_authority: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maven_settings_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_tree: Option<WorkingTreeSourceBinding>,
     pub created_unix_ms: u128,
 }
@@ -270,6 +272,8 @@ struct RepositoryLocator {
     target_repository_path: PathBuf,
     source_repository_path: PathBuf,
     external_build_state_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maven_settings: Option<crate::maven::MavenSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +292,10 @@ fn validate_locator(locator: &RepositoryLocator) -> Result<(), ClewError> {
     if locator.schema != "codeclew-repository-locator/3.0"
         || !locator.target_repository_path.is_absolute()
         || !locator.source_repository_path.is_absolute()
+        || locator
+            .maven_settings
+            .as_ref()
+            .is_some_and(|settings| !settings.path.is_absolute())
     {
         return Err(invalid("repository locator schema or paths are invalid"));
     }
@@ -327,6 +335,44 @@ impl SessionAuthority {
         external_build_state: Option<&Path>,
         working_tree_profile: Option<&str>,
     ) -> Result<Self, ClewError> {
+        Self::open_with_maven_settings(
+            repo,
+            target_ref,
+            language,
+            compilations,
+            generation_jobs,
+            model_cache_policy,
+            external_build_state,
+            working_tree_profile,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_maven_settings(
+        repo: &Path,
+        target_ref: &str,
+        language: SessionLanguage,
+        compilations: &[String],
+        generation_jobs: Option<usize>,
+        model_cache_policy: ModelCachePolicy,
+        external_build_state: Option<&Path>,
+        working_tree_profile: Option<&str>,
+        maven_settings: Option<&Path>,
+    ) -> Result<Self, ClewError> {
+        if maven_settings.is_some()
+            && (language != SessionLanguage::Java || !repo.join("pom.xml").is_file())
+        {
+            return Err(invalid(
+                "--maven-settings currently requires a Java Maven project",
+            ));
+        }
+        let maven_settings = if language == SessionLanguage::Java && repo.join("pom.xml").is_file()
+        {
+            crate::project_config::maven_settings(repo, maven_settings)?
+        } else {
+            None
+        };
         if working_tree_profile.is_some()
             && (!matches!(language, SessionLanguage::Kotlin | SessionLanguage::Rust)
                 || model_cache_policy != ModelCachePolicy::NonCacheable
@@ -433,6 +479,9 @@ impl SessionAuthority {
             generation_jobs,
             model_cache_policy,
             model_cache_authority,
+            maven_settings_digest: maven_settings
+                .as_ref()
+                .map(|settings| settings.digest.clone()),
             working_tree: captured.as_ref().map(|(_, binding)| binding.clone()),
             created_unix_ms: unix_ms(),
         };
@@ -511,6 +560,7 @@ impl SessionAuthority {
                 target_repository_path: repo,
                 source_repository_path,
                 external_build_state_path,
+                maven_settings,
             },
         )?;
         initialize_session_lifecycle(&state, &root, &authority)?;
@@ -656,6 +706,7 @@ impl SessionAuthority {
                     target_repository_path: repository.clone(),
                     source_repository_path: repository,
                     external_build_state_path: locator.external_build_state_path,
+                    maven_settings: locator.maven_settings,
                 })
                 .map_err(internal)?,
             )?;
@@ -681,6 +732,7 @@ impl SessionAuthority {
                 target_repository_path: repository,
                 source_repository_path: locator.source_repository_path,
                 external_build_state_path: locator.external_build_state_path,
+                maven_settings: locator.maven_settings,
             })
             .map_err(internal)?,
         )?;
@@ -795,11 +847,11 @@ impl SessionAuthority {
                 &format!("{}^{{commit}}", self.target_ref),
             ],
         );
-        let clean = isolated_git_bytes(
-            &repository,
-            &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
-        )
-        .map(|value| value.is_empty());
+        let mut status_args = vec!["status", "--porcelain=v1", "-z", "--untracked-files=no"];
+        if self.language == SessionLanguage::Java {
+            status_args.extend(["--", ".", ":(top,exclude)codeclew.yaml"]);
+        }
+        let clean = isolated_git_bytes(&repository, &status_args).map(|value| value.is_empty());
         Ok(classify_freshness(
             &self.session_id,
             lifecycle.status,
@@ -948,6 +1000,25 @@ impl SessionAuthority {
             (_, None) => Ok(None),
             (_, Some(_)) => Err(invalid("unexpected external build-state locator")),
         }
+    }
+
+    pub fn maven_settings(&self) -> Result<Option<crate::maven::MavenSettings>, ClewError> {
+        let state = StateAuthority::process_default()?;
+        let root = state.session_root(&self.session_id)?;
+        let locator: RepositoryLocator =
+            read_managed_json(&state, &root.join("locator.json"), MAX_PLAN_BYTES)?;
+        validate_locator(&locator)?;
+        if locator
+            .maven_settings
+            .as_ref()
+            .map(|settings| &settings.digest)
+            != self.maven_settings_digest.as_ref()
+        {
+            return Err(invalid(
+                "Maven settings locator differs from session authority",
+            ));
+        }
+        Ok(locator.maven_settings)
     }
 
     pub fn store_context(
@@ -1260,6 +1331,15 @@ fn validate_session_authority_shape(
         }
     };
     if !source_valid
+        || authority
+            .maven_settings_digest
+            .as_ref()
+            .is_some_and(|digest| {
+                authority.language != SessionLanguage::Java
+                    || digest.strip_prefix("sha256:").is_none_or(|value| {
+                        value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+            })
         || authority.session_id != expected_session_id
         || !compilations_are_canonical(authority.language, &authority.compilations)
         || !generation_jobs_are_valid(authority.generation_jobs)
@@ -2015,6 +2095,7 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
         generation_jobs: None,
         model_cache_policy: ModelCachePolicy::NonCacheable,
         model_cache_authority: None,
+        maven_settings_digest: None,
         working_tree: None,
         created_unix_ms: 1,
     };
@@ -2032,6 +2113,7 @@ fn gc_releases_terminal_state_after_target_and_managed_worktrees_are_gone() {
             target_repository_path: root.join("missing-target"),
             source_repository_path: root.join("source"),
             external_build_state_path: None,
+            maven_settings: None,
         },
     )
     .unwrap();
@@ -3340,6 +3422,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            maven_settings_digest: None,
             working_tree: None,
             created_unix_ms: 1,
         };
@@ -4045,6 +4128,7 @@ mod tests {
                 target_repository_path: repository.clone(),
                 source_repository_path: source.clone(),
                 external_build_state_path: None,
+                maven_settings: None,
             },
         )
         .unwrap();

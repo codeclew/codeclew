@@ -86,8 +86,9 @@ Do not use this distinction to bypass consumer-session or publication guards.
    successful process exit never overrides `ACTION_REQUIRED` or a read-only
    profile.
 
-Never describe syntax-only, partial, declared, conditional, or unsure evidence
-as compiler-verified behavior.
+Never describe syntax-only, declared, conditional, or unsure evidence as
+compiler-verified behavior. Partial coverage can contain compiler-verified
+objects; retain the omitted scopes and never claim a complete inventory.
 
 For Kotlin baseline analysis, discovery can return `kotlin-jvm-gradle-analysis`
 or `kotlin-jvm-maven-analysis`; Java baseline uses
@@ -100,6 +101,20 @@ Unknown plugins, unstable options and unresolved compilation inputs remain
 unsupported. Java uses the project-selected JDK 17+; 17 and 21 have fixture
 coverage. These baseline profiles are read-only. Kotlin 2.4.x analysis does not
 imply that every patch is mutation-qualified.
+
+For Java/Maven, read caller-local launch preferences from `codeclew.yaml` through
+normal admission. The supported shape is `version: 1` and
+`maven: {settings: ../private/settings.xml}`; the path is relative to the
+repository root. `--maven-settings <path>` on admission or `doctor task` overrides
+it; relative CLI paths use the current directory. Neither untracked nor locally
+modified/staged `codeclew.yaml` needs a preparation commit. Keep credentials in
+the private settings file. Do not replace or delete global Maven settings.
+Reopen after changing selected settings bytes. Existing sh/bash Maven wrappers
+can run without an executable bit; do not require chmod or a commit to use them.
+Readiness checks launcher/settings availability, not dependency resolution:
+only successful generation establishes a compiler index. If native Maven build
+fails, retain the typed stage and recovery action; do not label it a javac
+classpath failure without compiler evidence.
 
 Codeclew sessions require write access to private `CODECLEW_HOME` managed state
 and to Codeclew-owned Git worktree administration under the repository's Git
@@ -393,6 +408,18 @@ Use those returned identities to seed subsequent context or thread analysis.
 Keep dynamic configuration and runtime activation unproven, and never infer a
 cross-repository call from matching routes or topic names. Document the selected
 repository/compilation scope and unresolved edges with the resulting thread.
+
+For Java 17+ documentation, use exact declarations and source returned by
+`nav query --source` or `nav expand --source` from the sealed index. Follow
+compiler relations only within their returned scope. Maven runs native source
+generation and compilation, so generated classes may resolve original source
+objects without becoming indexed source declarations themselves.
+`JAVA_GENERATED_DECLARATIONS_NOT_INDEXED` permits documenting the retained
+compiler-verified objects with that explicit limit; it does not establish a
+complete generated API inventory. Zero entries with partial/unsure generation
+does not prove absence. An unavailable index or source slice remains an
+unresolved documentation scope; do not silently replace it with a raw repository
+scan and present that output as index-backed documentation.
 
 ## Explain with source-bound diagrams
 

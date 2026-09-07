@@ -2347,12 +2347,14 @@ fn boundary_safe_declaration_text(
         && source.window.get("startLine").and_then(Value::as_u64) == Some(1)
     {
         let start = payload
-            .get("start")
+            .get("byteStart")
+            .or_else(|| payload.get("start"))
             .or_else(|| payload.get("rangeStart"))
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok());
         let end = payload
-            .get("end")
+            .get("byteEnd")
+            .or_else(|| payload.get("end"))
             .or_else(|| payload.get("rangeEnd"))
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok());

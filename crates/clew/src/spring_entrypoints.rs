@@ -318,7 +318,7 @@ pub fn catalogue(
                 let lease = store.read(&fact.payload, MAX_PAYLOAD)?;
                 let payload: Value = serde_json::from_slice(lease.bytes()).map_err(|_| invalid("entrypoint fact is invalid"))?;
                 if java && payload.get("kind").and_then(Value::as_str) == Some("BOUNDARY") {
-                    scope_boundaries.insert("JAVA_ANALYSIS_BOUNDARY".to_owned());
+                    scope_boundaries.insert(payload.get("code").and_then(Value::as_str).unwrap_or("JAVA_ANALYSIS_BOUNDARY").to_owned());
                 }
                 if !matches!(payload.get("declarationKind").and_then(Value::as_str), Some("FUNCTION" | "METHOD" | "CLASS")) { return Ok(()); }
                 descriptors += 1;
