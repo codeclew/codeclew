@@ -27,6 +27,13 @@ python3 -I -S scripts/test_runtime_attach_canary.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'maven::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'java_project_model::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib 'java_adapter_v2::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib \
+  java_adapter_v2::tests::spring_entrypoints_use_resolved_annotations_on_java_17_and_21 \
+  -- --exact --ignored --test-threads=1
 cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
@@ -34,6 +41,9 @@ cargo test --locked -p clew --lib 'kotlin_engine::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'working_tree' -- --test-threads=1
 cargo test --locked -p clew --test managed_cli 'working_tree_' -- --test-threads=1
+cargo test --locked -p clew --test managed_cli \
+  managed_java17_maven_local_config_returns_indexed_source_without_commits \
+  -- --exact --test-threads=1
 cargo test --locked -p clew --bin clew 'tests::' -- --test-threads=1
 cargo test --locked -p clew --test managed_cli \
   managed_operational_commands_are_path_free_and_support_recovery -- --test-threads=1
