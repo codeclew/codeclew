@@ -96,6 +96,14 @@ pub fn extract_java_model(
     repository: &Path,
     compilation: &str,
 ) -> Result<JavaOperationalModel, ClewError> {
+    extract_java_model_with_settings(repository, compilation, None)
+}
+
+pub fn extract_java_model_with_settings(
+    repository: &Path,
+    compilation: &str,
+    settings: Option<&crate::maven::MavenSettings>,
+) -> Result<JavaOperationalModel, ClewError> {
     let repository = repository.canonicalize().map_err(io_error)?;
     let selector = JavaCompilationSelector::parse(compilation)?;
     let gradle = repository.join("gradlew").is_file()
@@ -103,8 +111,9 @@ pub fn extract_java_model(
             || repository.join("settings.gradle.kts").is_file());
     let maven = repository.join("pom.xml").is_file();
     match (gradle, maven) {
-        (true, false) => extract_gradle(&repository, &selector),
-        (false, true) => extract_maven(&repository, &selector),
+        (true, false) if settings.is_none() => extract_gradle(&repository, &selector),
+        (true, false) => Err(invalid("--maven-settings requires a Java Maven project")),
+        (false, true) => extract_maven(&repository, &selector, settings),
         (true, true) => Err(unsupported(
             "Java build authority is ambiguous between Gradle and Maven",
         )),
@@ -277,16 +286,28 @@ fn extract_gradle(
 fn extract_maven(
     repository: &Path,
     selector: &JavaCompilationSelector,
+    settings: Option<&crate::maven::MavenSettings>,
 ) -> Result<JavaOperationalModel, ClewError> {
+    let settings = settings
+        .map(crate::maven::MavenSettings::materialize)
+        .transpose()?;
+    let maven = || -> Result<Command, ClewError> {
+        let mut command = crate::maven::command(repository)?;
+        if let Some(settings) = &settings {
+            command.arg("--settings").arg(settings.path());
+        }
+        Ok(command)
+    };
     let project = selector.maven_project_directory(repository)?;
     let pom = fs::read_to_string(project.join("pom.xml")).map_err(io_error)?;
     if pom.contains("<sourceDirectory>")
         || pom.contains("<testSourceDirectory>")
-        || pom.contains("generated-sources")
+        || pom.contains("<outputDirectory>")
+        || pom.contains("<testOutputDirectory>")
         || pom.contains("maven-toolchains-plugin")
     {
         return Err(unsupported(
-            "Maven Java v1 does not admit custom/generated sources or toolchains",
+            "Maven Java analysis requires standard source/output directories and the selected process JDK",
         ));
     }
     let source_root = project.join(if selector.source_set == "main" {
@@ -295,35 +316,42 @@ fn extract_maven(
         "src/test/java"
     });
     let source_paths = java_sources(&source_root)?;
-    let temporary = tempfile::tempdir().map_err(io_error)?;
-    let classpath_file = temporary.path().join("classpath.txt");
-    let launcher = if repository.join("mvnw").is_file() {
-        repository.join("mvnw")
-    } else {
-        PathBuf::from("mvn")
-    };
+    let classpath_file = project.join("target/codeclew-classpath.txt");
     let scope = if selector.source_set == "main" {
         "compile"
     } else {
         "test"
     };
+    let mut build = maven()?;
+    build.arg("-f").arg(repository.join("pom.xml"));
+    if project != repository {
+        build
+            .arg("-pl")
+            .arg(project.strip_prefix(repository).map_err(internal)?)
+            .arg("-am");
+    }
+    // Compile in the managed workspace before collecting the classpath. Maven
+    // then resolves sibling modules from this reactor's outputs, without install
+    // into the user's local repository. Native generators run in the same build.
     bounded_output(
-        Command::new(&launcher)
+        build
             .args([
-                "-f",
-                project
-                    .join("pom.xml")
-                    .to_str()
-                    .ok_or_else(|| unsupported("Maven pom path is not UTF-8"))?,
+                "-B",
                 "-q",
                 "-DskipTests",
                 "-Dstyle.color=never",
-                &format!("-Dmdep.outputFile={}", classpath_file.display()),
+                "-Dmdep.outputFile=target/codeclew-classpath.txt",
+                "-Dmdep.regenerateFile=true",
                 &format!("-Dmdep.includeScope={scope}"),
+                if selector.source_set == "main" {
+                    "compile"
+                } else {
+                    "test-compile"
+                },
                 "dependency:build-classpath",
             ])
             .current_dir(repository),
-        "Maven Java classpath extraction failed",
+        "Maven Java compilation and classpath extraction failed",
     )?;
     let classpath = fs::read_to_string(&classpath_file)
         .map_err(|_| unsupported("Maven Java classpath output is unavailable"))?;
@@ -332,11 +360,16 @@ fn extract_maven(
     } else {
         std::env::split_paths(classpath.trim()).collect::<Vec<_>>()
     };
-    if selector.source_set == "test" {
+    // Generated types and compiled main classes are dependencies of the sealed
+    // source declarations. We do not invent source anchors for generated bytes.
+    if project.join("target/classes").is_dir() {
         classpath_paths.push(project.join("target/classes"));
     }
+    if selector.source_set == "test" && project.join("target/test-classes").is_dir() {
+        classpath_paths.push(project.join("target/test-classes"));
+    }
     let release_output = bounded_output(
-        Command::new(&launcher)
+        maven()?
             .args([
                 "-f",
                 project
@@ -369,6 +402,13 @@ fn extract_maven(
         .as_ref()
         .map(|home| home.join("bin/javac"))
         .unwrap_or_else(|| PathBuf::from("javac"));
+    let mut boundaries = Vec::new();
+    for directory in ["target/generated-sources", "target/generated-test-sources"] {
+        let root = project.join(directory);
+        if root.is_dir() && !java_sources(&root)?.is_empty() {
+            boundaries.push("JAVA_GENERATED_DECLARATIONS_NOT_INDEXED".into());
+        }
+    }
     canonical_model(
         repository,
         selector,
@@ -379,7 +419,7 @@ fn extract_maven(
         javac,
         release,
         vec![format!("--release={release}")],
-        Vec::new(),
+        boundaries,
     )
 }
 

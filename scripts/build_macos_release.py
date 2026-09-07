@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one self-contained, no-local-compilation macOS Codeclew release bundle."""
+"""Build precompiled macOS or Linux/WSL2 releases (legacy script name retained)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,14 @@ import tempfile
 
 class ReleaseError(RuntimeError):
     pass
+
+
+def release_platform(system: str, architecture: str) -> str:
+    if system == "Darwin" and architecture in {"arm64", "x86_64"}:
+        return "macos"
+    if system == "Linux" and architecture == "x86_64":
+        return "linux"
+    raise ReleaseError("release build requires macOS arm64/x86_64 or Linux x86_64")
 
 
 def canonical(value: object) -> bytes:
@@ -136,7 +144,7 @@ def build_runtime_state(
         or {row.get("compilerVersion") for row in workers if isinstance(row, dict)}
         != {"2.3.0", "2.4.10"}
     ):
-        raise ReleaseError("release runtime does not match the supported macOS profile")
+        raise ReleaseError("release runtime does not match the supported worker profile")
     verify_cli_version(root / "clew", release_version, runtime_home, root)
 
     runtime_parent = runtime_home / "v2" / "runtimes"
@@ -364,12 +372,13 @@ def write_seed(
 
 
 def write_archive(
-    package: Path, output: Path, architecture: str, profile: str
+    package: Path, output: Path, architecture: str, profile: str,
+    operating_system: str = "macos",
 ) -> tuple[Path, Path]:
     name = (
-        f"codeclew-macos-{architecture}.tar.gz"
+        f"codeclew-{operating_system}-{architecture}.tar.gz"
         if profile == "core"
-        else f"codeclew-{profile}-macos-{architecture}.tar.gz"
+        else f"codeclew-{profile}-{operating_system}-{architecture}.tar.gz"
     )
     asset = output / name
     with tarfile.open(asset, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
@@ -378,6 +387,23 @@ def write_archive(
     checksum = output / f"{asset.name}.sha256"
     checksum.write_text(f"{digest}  {asset.name}\n", encoding="ascii")
     return asset, checksum
+
+
+def verify_installer(
+    root: Path, output: Path, work: Path, version: str, profile: str
+) -> None:
+    """Install the published bytes through the same offline path users invoke."""
+    environment = dict(os.environ)
+    environment.update({
+        "CODECLEW_ASSET_DIR": str(output),
+        "CODECLEW_VERSION": version,
+        "CODECLEW_PACKS": "" if profile == "core" else profile,
+        "CODECLEW_INSTALL_ROOT": str(work / "install"),
+        "CODECLEW_BIN_DIR": str(work / "bin"),
+        "CODECLEW_HOME": str(work / "state"),
+    })
+    run(["/bin/sh", str(root / "site" / "install.sh")], root, environment=environment)
+    verify_cli_version(work / "bin" / "clew", version, work / "state", root)
 
 
 def extract_release_archive(asset: Path, destination: Path) -> Path:
@@ -588,8 +614,7 @@ def main() -> int:
     arguments = parser.parse_args()
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", arguments.version):
         raise ReleaseError("release version must be vMAJOR.MINOR.PATCH")
-    if platform.system() != "Darwin" or platform.machine() not in {"arm64", "x86_64"}:
-        raise ReleaseError("macOS release build requires arm64 or x86_64 macOS")
+    operating_system = release_platform(platform.system(), platform.machine())
 
     root = Path(__file__).resolve().parent.parent
     output = arguments.output.resolve()
@@ -634,7 +659,7 @@ def main() -> int:
             (package / "PROFILE").write_text(profile + "\n", encoding="ascii")
             metadata = {
                 "architecture": platform.machine(),
-                "operatingSystem": "macos",
+                "operatingSystem": operating_system,
                 "profile": profile,
                 "schema": "codeclew-release/2.0",
                 "sourceRevision": revision,
@@ -661,7 +686,11 @@ def main() -> int:
             if observed_workers != expected_workers:
                 raise ReleaseError("packaged profile worker set is invalid")
             asset, checksum = write_archive(
-                package, output, platform.machine(), profile
+                package, output, platform.machine(), profile, operating_system
+            )
+            verify_installer(
+                root, output, temporary / "installer-smoke" / profile,
+                arguments.version, profile,
             )
             if profile == "core":
                 extracted = extract_release_archive(

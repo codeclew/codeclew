@@ -46,9 +46,10 @@ cases per language; passing does not upgrade syntax evidence beyond `UNSURE`.
 
 ## 2. Installing on another machine
 
-### Public macOS pilot
+### Public macOS and Linux pilot
 
-Install on Apple Silicon or Intel Mac with one command:
+Install on an Apple Silicon or Intel Mac, or Linux x86_64 (including Windows
+x64 through WSL2), with one command:
 
 ```bash
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
@@ -92,10 +93,14 @@ clew pack remove kotlin23
 Omit `--human` to receive canonical JSON for automation and retained baselines.
 
 The public pilot verifies checksums but is not yet Apple-notarized. Releases are
-built only on GitHub macOS runners for the matching architecture and contain a
+built on matching GitHub macOS runners or Ubuntu 22.04 x86_64 and contain a
 sealed runtime seed, so Rust, Cargo, and Gradle are not required to install or
 start Codeclew. Git, Python 3.11+, and JDK 21 remain external dependencies when
 analyzing Kotlin projects.
+
+Linux requires glibc 2.35+. On Windows, run the installer and `clew` inside WSL2,
+with installation, state, and repositories in the Linux filesystem. See the
+[release runbook](releasing-macos.md) for supported platforms and verification.
 
 ### Source-build dependencies
 
@@ -530,7 +535,7 @@ freshness check. The agent must not make this decision autonomously.
 
 ## 10. Updating Codeclew
 
-### Installed macOS release
+### Installed macOS or Linux release
 
 Run the updater between tasks:
 

@@ -1,4 +1,4 @@
-name: macOS release
+name: macOS and Linux release
 
 on:
   push:
@@ -38,16 +38,24 @@ jobs:
         run: python3 -I -S scripts/language_mutation_pilot.py
 
   build:
-    name: Build macOS ${{ matrix.arch }}
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
     needs: qualify
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
+            os: macos
+            kernel: Darwin
             runner: macos-15
           - arch: x86_64
+            os: macos
+            kernel: Darwin
             runner: macos-15-intel
+          - arch: x86_64
+            os: linux
+            kernel: Linux
+            runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
@@ -60,10 +68,15 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: gradle
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@1.92.0
       - uses: Swatinem/rust-cache@v2
-      - name: Verify runner architecture
-        run: test "$(uname -m)" = '${{ matrix.arch }}'
+      - name: Verify runner platform
+        run: |
+          test "$(uname -s)" = '${{ matrix.kernel }}'
+          test "$(uname -m)" = '${{ matrix.arch }}'
       - name: Build sealed release bundle
         env:
           CODECLEW_VERSION: ${{ env.RELEASE_VERSION }}
@@ -73,7 +86,7 @@ jobs:
           --output "$RUNNER_TEMP/codeclew-assets"
       - uses: actions/upload-artifact@v4
         with:
-          name: codeclew-macos-${{ matrix.arch }}
+          name: codeclew-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/codeclew-assets/*
           if-no-files-found: error
           retention-days: 7
@@ -105,6 +118,8 @@ jobs:
           sha256sum --check codeclew-macos-x86_64.tar.gz.sha256
           sha256sum --check codeclew-kotlin23-macos-arm64.tar.gz.sha256
           sha256sum --check codeclew-kotlin23-macos-x86_64.tar.gz.sha256
+          sha256sum --check codeclew-linux-x86_64.tar.gz.sha256
+          sha256sum --check codeclew-kotlin23-linux-x86_64.tar.gz.sha256
       - name: Publish immutable version assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,13 +127,14 @@ jobs:
         run: |
           notes="$RUNNER_TEMP/release-notes.md"
           printf '%s\n' \
-            'Public macOS pilot for Apple Silicon and Intel.' \
+            'Public pilot for macOS Apple Silicon/Intel and Linux x86_64, including Windows through WSL2.' \
             '' \
             'Install:' \
             '```sh' \
             'curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh' \
             '```' \
             '' \
+            'On Windows, run this command inside WSL2. Linux requires glibc 2.35+ and Python 3.11+. Keep installation, state, and repositories in the Linux filesystem.' \
             'The installer verifies the published SHA-256 checksum and never compiles Codeclew locally.' \
             'For an offline install, download install.sh, install.sh.sha256, the archive for your architecture, and its matching .sha256 file from this release. Set CODECLEW_VERSION to this tag and CODECLEW_ASSET_DIR to their local directory.' \
             'The default profile contains Kotlin 2.4.10 plus operationally pilot-ready conditional Rust and Python mutation. Rust/Python evidence remains PARTIAL/UNSURE and requires native validation plus explicit obligation acknowledgement.' \
@@ -132,6 +148,6 @@ jobs:
           else
             gh release create "$RELEASE_VERSION" "$RUNNER_TEMP"/release-assets/* \
               --verify-tag \
-              --title "Codeclew $RELEASE_VERSION — macOS pilot" \
+              --title "Codeclew $RELEASE_VERSION — macOS and Linux pilot" \
               --notes-file "$notes"
           fi

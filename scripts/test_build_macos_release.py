@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Platform-independent contract tests for macOS release version binding."""
+"""Platform-independent contract tests for release packaging and version binding."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -18,6 +19,49 @@ import build_macos_release as release  # noqa: E402
 
 
 class ReleaseVersionTest(unittest.TestCase):
+    def test_release_platform_accepts_linux_x64_and_rejects_native_windows(self) -> None:
+        for system, architecture, expected in [
+            ("Darwin", "arm64", "macos"),
+            ("Darwin", "x86_64", "macos"),
+            ("Linux", "x86_64", "linux"),
+        ]:
+            self.assertEqual(release.release_platform(system, architecture), expected)
+        for system, architecture in [("Linux", "aarch64"), ("Windows", "AMD64"), ("Linux", "i686")]:
+            with self.subTest(system=system, architecture=architecture):
+                with self.assertRaises(release.ReleaseError):
+                    release.release_platform(system, architecture)
+
+    def test_installer_smoke_selects_each_profile_and_isolates_state(self) -> None:
+        for profile in ["core", "kotlin23"]:
+            with self.subTest(profile=profile), mock.patch.object(release, "run") as run, mock.patch.object(release, "verify_cli_version") as version:
+                release.verify_installer(Path("/source"), Path("/assets"), Path("/smoke"), "v1.2.3", profile)
+                arguments = run.call_args.args[0]
+                environment = run.call_args.kwargs["environment"]
+                self.assertEqual(arguments, ["/bin/sh", "/source/site/install.sh"])
+                self.assertEqual(environment["CODECLEW_ASSET_DIR"], "/assets")
+                self.assertEqual(environment["CODECLEW_PACKS"], "" if profile == "core" else profile)
+                self.assertEqual(environment["CODECLEW_VERSION"], "v1.2.3")
+                self.assertEqual(environment["CODECLEW_HOME"], "/smoke/state")
+                self.assertEqual(environment["CODECLEW_BIN_DIR"], "/smoke/bin")
+                self.assertEqual(environment["CODECLEW_INSTALL_ROOT"], "/smoke/install")
+                version.assert_called_once_with(Path("/smoke/bin/clew"), "v1.2.3", Path("/smoke/state"), Path("/source"))
+
+    def test_linux_archives_have_distinct_names_and_matching_checksums(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            output = Path(value)
+            package = output / "package"
+            package.mkdir()
+            (package / "VERSION").write_text("v1.2.3\n", encoding="ascii")
+            for profile, expected in [
+                ("core", "codeclew-linux-x86_64.tar.gz"),
+                ("kotlin23", "codeclew-kotlin23-linux-x86_64.tar.gz"),
+            ]:
+                asset, checksum = release.write_archive(package, output, "x86_64", profile, "linux")
+                self.assertEqual(asset.name, expected)
+                self.assertEqual(checksum.read_text(), f"{release.file_sha256(asset)}  {expected}\n")
+                extracted = release.extract_release_archive(asset, output / f"extracted-{profile}")
+                self.assertEqual((extracted / "VERSION").read_text(), "v1.2.3\n")
+
     def test_navigation_smoke_declares_the_exact_decision_identifier(self) -> None:
         arguments = release.navigation_smoke_query(
             Path("/release/bin/clew"),

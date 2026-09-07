@@ -25,7 +25,9 @@ use crate::java_adapter_v2::{
     JAVA_COMPILER_FACTS_CAPABILITY, JAVA_LANGUAGE, JavaAdapterV2, JavaCompilerFact,
     JavaCompilerIndex, build_java_compiler_index, java_adapter_digest, java_scope_digest,
 };
-use crate::java_project_model::{JAVA_MODEL_SCHEMA, JavaOperationalModel, extract_java_model};
+use crate::java_project_model::{
+    JAVA_MODEL_SCHEMA, JavaOperationalModel, extract_java_model_with_settings,
+};
 use crate::kotlin_adapter_v2::{
     KOTLIN_FACTS_CAPABILITY, KOTLIN_LANGUAGE, KotlinAdapterV2, KotlinGenerationDriver,
     ProjectNativeKotlinAttempt, ProjectNativeKotlinWorkspace, ProjectNativeKotlinWorkspaceProfile,
@@ -547,7 +549,12 @@ fn ensure_java_generation_set(
             .map_err(internal)?,
         )?
         .to_owned();
-        let model = extract_java_model(workspace.repository(), compilation)?;
+        let settings = session.maven_settings()?;
+        let model = extract_java_model_with_settings(
+            workspace.repository(),
+            compilation,
+            settings.as_ref(),
+        )?;
         let source_content_digests = java_source_content_digests(store, &sources, &model)?;
         results.push(ensure_java_generation(
             session,
@@ -598,7 +605,7 @@ fn ensure_java_generation(
             "schema":"codeclew-java-toolchain-authority/1.0",
             "compilerVersion":model.authority.compiler_version,
             "release":model.authority.release,
-            "analyzer":"jdk.compiler/21",
+            "analyzer":"jdk.compiler/17+",
         }))
         .map_err(internal)?,
     )?;
@@ -711,7 +718,7 @@ fn ensure_java_generation(
         )?;
         let (_, query_index) = build_query_index(store, &generation, generation_object.clone())?;
         let scope_digest = java_scope_digest(&index)?;
-        let completeness = java_completeness(&index, &scope_digest)?;
+        let completeness = crate::java_adapter_v2::java_completeness(&index, &scope_digest)?;
         let incremental_receipt = java_incremental_receipt(
             store,
             &index,
@@ -820,38 +827,6 @@ fn java_source_content_digests(
             Ok((path.clone(), source_content_digest(store, source)?))
         })
         .collect()
-}
-
-fn java_completeness(
-    index: &JavaCompilerIndex,
-    scope_digest: &str,
-) -> Result<CompletenessVector, ClewError> {
-    let boundaries = index
-        .facts
-        .iter()
-        .filter(|fact| matches!(fact, JavaCompilerFact::Boundary { .. }))
-        .count();
-    if boundaries == 0 {
-        return CompletenessVector::verified_complete(scope_digest.into());
-    }
-    let value = CompletenessVector {
-        schema: COMPLETENESS_VECTOR_SCHEMA.into(),
-        support: Support::Supported,
-        coverage: Coverage::Partial {
-            observed_scopes: vec![scope_digest.into()],
-            boundaries: vec!["JAVA_COMPILER_BOUNDARY".into()],
-        },
-        certainty: Certainty::Unsure {
-            check_set: vec!["java-classpath-and-diagnostics".into()],
-        },
-        obligations: vec![VerificationObligation {
-            code: "FIX_JAVA_CLASSPATH_OR_DIAGNOSTIC".into(),
-            subject: vec![scope_digest.into()],
-            publication_blocking: true,
-        }],
-    };
-    value.validate()?;
-    Ok(value)
 }
 
 fn java_incremental_receipt(

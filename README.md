@@ -5,13 +5,23 @@ isolated candidate worktree, and publishes the resulting commit explicitly.
 Use the installed `clew` launcher for public releases or `./clew` from a pinned
 checkout for source development; direct capsule binaries are unsupported.
 
-## Install on macOS
+## Install on macOS, Linux, or Windows through WSL2
 
-The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs:
+The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs, and
+Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
 ```
+
+On Windows, run this command in your WSL2 Linux shell. Native Windows shells
+(PowerShell, Git Bash, and MSYS2) are not supported. Linux requires glibc 2.35+
+and Python 3.11+; Ubuntu 24.04 is a suitable WSL2 distribution. Git and curl must
+also be installed inside WSL, with JDK 21 for Kotlin project analysis. Keep the
+installation, `CODECLEW_HOME`, and repositories in the Linux filesystem (for
+example, below `~`), rather than `/mnt/c`. See Microsoft's
+[WSL filesystem guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems).
+Linux ARM64 and musl distributions are not included in this release matrix.
 
 The installer resolves `latest` to one immutable version, downloads that exact
 GitHub Release asset and checksum, verifies SHA-256, installs it below
@@ -24,13 +34,17 @@ installations older than v0.1.3 need the one-line installer once more to acquire
 the updater; their later updates use `clew upgrade`.
 
 If GitHub downloads return 403, manually download `install.sh`,
-`install.sh.sha256`, the archive for your Mac architecture, and its matching
+`install.sh.sha256`, the archive for your operating system and architecture, and its matching
 `.sha256` file from one Codeclew Release into one directory. Install those local
 bytes without network access by pinning their release tag:
 
 ```bash
 CODECLEW_VERSION=v0.3.1 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
+
+For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
+release that includes Linux assets, then pin that release's version. The optional
+Kotlin 2.3.0 archive is `codeclew-kotlin23-linux-x86_64.tar.gz`.
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
 verification as the online installer. It refuses `latest`, relative asset
@@ -319,16 +333,43 @@ compilations, Android/KMP and `EXTERNAL` remain unqualified until they have
 their own acceptance tests. Rust and Python are operationally `PILOT_READY` for
 conditional mutation, with the weaker evidence boundaries described below.
 
-Java 21 has a compiler-backed read-only preview for project-native Gradle and
+Java 17+ has a compiler-backed read-only preview for project-native Gradle and
 Maven builds. Open a session with `--language java` and an exact `:/main`,
 `:/test`, `:module/main`, or `:module/test` compilation. Codeclew uses the JDK
 Compiler API to return resolved declarations, JVM descriptors, annotations,
 calls and type-use relations with source anchors. A clean Gradle fixture has
 passed the public `session open -> context create` path with `COMPLETE/VERIFIED`
 evidence; the same fact contour is qualified on both Gradle and Maven fixtures.
-J1 deliberately does not infer Spring meaning, analyze generated sources, or
-admit Java mutation. Unsupported toolchains and unresolved compiler diagnostics
+The Spring catalogue derives annotation-declared entrypoints from resolved
+compiler facts. Generated source declarations and Java mutation remain outside
+this profile. Unsupported toolchains and unresolved compiler diagnostics
 remain typed boundaries instead of exact claims.
+
+For Java/Maven, choose a private settings file in caller-local `codeclew.yaml`:
+
+```yaml
+version: 1
+maven:
+  settings: ../private/settings.xml
+```
+
+This file never needs a preparation commit for Java analysis: untracked, staged,
+and locally modified tracked configurations are accepted. Its path is resolved
+relative to the repository root. `--maven-settings /path/to/settings.xml` on
+`nav query`, `context open`, `session open`, or `doctor task` overrides this
+selection; a relative CLI path uses the caller's current directory. Without
+either setting, Maven keeps its native settings selection. Codeclew validates
+the YAML, binds explicit settings bytes to the session, and keeps their path and
+contents private. Reopen the session after changing the selected settings.
+
+An existing `mvnw` with a supported sh/bash shebang runs through its interpreter
+when its executable bit is absent, without chmod or a commit. Maven compilation,
+source generation, and classpath extraction run in the managed workspace; module
+selection uses the native reactor without requiring `mvn install`. Compiled
+generated types can resolve references from original source objects, while
+`JAVA_GENERATED_DECLARATIONS_NOT_INDEXED` marks the generated declarations omitted
+from the source index. Use exact source returned by `nav query --source` or
+`nav expand --source` to document retained objects, and preserve this boundary.
 
 TypeScript 5 and JavaScript use the project-local TypeScript compiler through an
 exact `tsconfig:<repo-relative-json>` authority. Open them with `--language
@@ -443,7 +484,8 @@ Repository/task admission, direct source locate, and target freshness ignore
 untracked files, including local plans and notes. Analysis remains bound to the
 selected Git commit: untracked files are not included in its source snapshot.
 Staged additions and changes to tracked files still block these cleanliness
-checks. Publication preserves unrelated untracked files and rejects candidate
+checks, except caller-local `codeclew.yaml` during Java analysis as described
+above. Publication preserves unrelated untracked files and rejects candidate
 paths that would overwrite them; managed candidate/source integrity and cleanup
 checks still account for untracked outputs.
 

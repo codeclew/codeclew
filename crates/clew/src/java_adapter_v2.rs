@@ -6,6 +6,10 @@ use crate::adapter_v2::{
 use crate::canonical;
 use crate::cas::CasStore;
 use crate::error::{ClewError, ErrorCode};
+use crate::incremental_v2::{
+    COMPLETENESS_VECTOR_SCHEMA, Certainty, CompletenessVector, Coverage, Support,
+    VerificationObligation,
+};
 use crate::java_project_model::{JavaOperationalModel, JavaProjectModel, verify_model};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -44,6 +48,10 @@ pub enum JavaCompilerFact {
     Declaration {
         schema: String,
         declaration_kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        qualified_name: Option<String>,
         symbol_identity: String,
         owner_identity: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,6 +69,14 @@ pub enum JavaCompilerFact {
         start: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         end: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_line: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_line: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        byte_start: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        byte_end: Option<u64>,
         resolution: String,
     },
     Relation {
@@ -73,6 +89,14 @@ pub enum JavaCompilerFact {
         start: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         end: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_line: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_line: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        byte_start: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        byte_end: Option<u64>,
         resolution: String,
     },
     Boundary {
@@ -88,6 +112,14 @@ pub enum JavaCompilerFact {
         start: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         end: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_line: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        end_line: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        byte_start: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        byte_end: Option<u64>,
         required_checks: Vec<String>,
         resolution: String,
     },
@@ -231,6 +263,23 @@ pub fn build_java_compiler_index(
             resolution: "SOURCE_MEMBERSHIP_EXACT".into(),
         });
     }
+    for code in &operational.authority.boundaries {
+        facts.push(JavaCompilerFact::Boundary {
+            schema: JAVA_FACT_SCHEMA.into(),
+            code: code.clone(),
+            diagnostic_code: None,
+            line: None,
+            file: None,
+            start: None,
+            end: None,
+            start_line: None,
+            end_line: None,
+            byte_start: None,
+            byte_end: None,
+            required_checks: vec!["LIMIT_DOCUMENTATION_TO_INDEXED_SOURCE_OBJECTS".into()],
+            resolution: "SOURCE_SCOPE_LIMIT".into(),
+        });
+    }
     facts.sort_by_cached_key(|fact| canonical::bytes(fact).expect("serializable Java fact"));
     facts.dedup();
     let index = JavaCompilerIndex {
@@ -256,6 +305,56 @@ pub fn java_scope_digest(index: &JavaCompilerIndex) -> Result<String, ClewError>
         "factCount":index.facts.len(),
     }))
     .map_err(internal)
+}
+
+pub fn java_completeness(
+    index: &JavaCompilerIndex,
+    scope_digest: &str,
+) -> Result<CompletenessVector, ClewError> {
+    let mut boundaries = BTreeSet::new();
+    let mut checks = BTreeSet::new();
+    let mut unsure = false;
+    for fact in &index.facts {
+        if let JavaCompilerFact::Boundary {
+            code,
+            required_checks,
+            resolution,
+            ..
+        } = fact
+        {
+            boundaries.insert(code.clone());
+            checks.extend(required_checks.iter().cloned());
+            unsure |= resolution != "SOURCE_SCOPE_LIMIT";
+        }
+    }
+    if boundaries.is_empty() {
+        return CompletenessVector::verified_complete(scope_digest.into());
+    }
+    let value = CompletenessVector {
+        schema: COMPLETENESS_VECTOR_SCHEMA.into(),
+        support: Support::Supported,
+        coverage: Coverage::Partial {
+            observed_scopes: vec![scope_digest.into()],
+            boundaries: boundaries.into_iter().collect(),
+        },
+        certainty: if unsure {
+            Certainty::Unsure {
+                check_set: vec!["java-classpath-and-diagnostics".into()],
+            }
+        } else {
+            Certainty::Verified
+        },
+        obligations: checks
+            .into_iter()
+            .map(|code| VerificationObligation {
+                code,
+                subject: vec![scope_digest.into()],
+                publication_blocking: true,
+            })
+            .collect(),
+    };
+    value.validate()?;
+    Ok(value)
 }
 
 pub struct JavaAdapterV2 {
@@ -306,8 +405,8 @@ impl LanguageAdapter for JavaAdapterV2 {
             capabilities: vec![CapabilityUri::parse(JAVA_COMPILER_FACTS_CAPABILITY)?],
             toolchains: vec![ToolchainConstraint {
                 authority_digest: self.toolchain_digest.clone(),
-                minimum_version: Some("21".into()),
-                maximum_version_exclusive: Some("22".into()),
+                minimum_version: Some("17".into()),
+                maximum_version_exclusive: None,
             }],
         })
     }
@@ -364,6 +463,7 @@ impl LanguageAdapter for JavaAdapterV2 {
             }))?;
         }
         let scope_digest = java_scope_digest(&self.index)?;
+        let completeness = java_completeness(&self.index, &scope_digest)?;
         let boundaries = self
             .index
             .facts
@@ -376,9 +476,9 @@ impl LanguageAdapter for JavaAdapterV2 {
                 "schema":JAVA_RECEIPT_SCHEMA,
                 "scopeDigest":scope_digest,
                 "coverage":if boundaries == 0 { "COMPLETE_SUPPORTED_SUBSET" } else { "PARTIAL" },
-                "certainty":if boundaries == 0 { "VERIFIED" } else { "UNSURE" },
+                "certainty":if completeness.certainty == Certainty::Verified { "VERIFIED" } else { "UNSURE" },
                 "boundaryCount":boundaries,
-                "obligations":if boundaries == 0 { Vec::<String>::new() } else { vec!["FIX_JAVA_CLASSPATH_OR_DIAGNOSTIC".to_owned()] },
+                "obligations":completeness.obligations.iter().map(|obligation| &obligation.code).collect::<Vec<_>>(),
             }))
             .map_err(internal)?,
         )?;

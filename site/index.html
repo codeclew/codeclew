@@ -32,7 +32,7 @@
         <p class="lede">Codeclew helps agents discover a repository, catalogue its Spring HTTP handlers, Kafka listeners and scheduled jobs, then inspect exact source and document the work behind each trigger. Compiler identities and explicit coverage limits stay attached to the evidence.</p>
 
         <div class="install" aria-label="Install Codeclew">
-          <div class="install-label"><span>Install on macOS</span><span>Apple Silicon + Intel</span></div>
+          <div class="install-label"><span>macOS · Linux · WSL2</span><span>Mac arm64 / x64 · Linux x64</span></div>
           <div class="command-row">
             <code id="install-command">curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh</code>
             <button id="copy-command" type="button" aria-label="Copy installation command"><span>Copy</span></button>
@@ -44,7 +44,7 @@
           <a class="primary" href="https://github.com/codeclew/codeclew/releases/latest">Download release <span>↗</span></a>
           <a class="secondary" href="./pilot.html">See the real service pilot</a>
         </div>
-        <p class="requirements">Requires macOS, Git, Python 3.11+, and JDK 21 for Kotlin project analysis. Codeclew itself is prebuilt.</p>
+        <p class="requirements">Requires Git, Python 3.11+, and JDK 21 for Kotlin project analysis. Linux x64 requires glibc 2.35+. On Windows, run inside WSL2 and keep your installation and projects in the Linux filesystem. Codeclew itself is prebuilt.</p>
       </section>
 
       <section class="proof-strip" aria-label="Codeclew guarantees">

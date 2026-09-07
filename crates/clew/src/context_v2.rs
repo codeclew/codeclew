@@ -1500,20 +1500,24 @@ fn collect_source_offset_hints(
                     .and_then(|origin| origin.get("file"))
                     .and_then(Value::as_str)
                     .or_else(|| values.get("file").and_then(Value::as_str));
-                let offset = values
-                    .get("sourceOrigin")
-                    .and_then(Value::as_object)
-                    .and_then(|origin| origin.get("rangeStart"))
-                    .and_then(Value::as_u64)
-                    .or_else(|| values.get("rangeStart").and_then(Value::as_u64))
-                    .or_else(|| values.get("start").and_then(Value::as_u64));
-                let end = values
-                    .get("sourceOrigin")
-                    .and_then(Value::as_object)
-                    .and_then(|origin| origin.get("rangeEnd"))
-                    .and_then(Value::as_u64)
-                    .or_else(|| values.get("rangeEnd").and_then(Value::as_u64))
-                    .or_else(|| values.get("end").and_then(Value::as_u64));
+                let offset = values.get("byteStart").and_then(Value::as_u64).or_else(|| {
+                    values
+                        .get("sourceOrigin")
+                        .and_then(Value::as_object)
+                        .and_then(|origin| origin.get("rangeStart"))
+                        .and_then(Value::as_u64)
+                        .or_else(|| values.get("rangeStart").and_then(Value::as_u64))
+                        .or_else(|| values.get("start").and_then(Value::as_u64))
+                });
+                let end = values.get("byteEnd").and_then(Value::as_u64).or_else(|| {
+                    values
+                        .get("sourceOrigin")
+                        .and_then(Value::as_object)
+                        .and_then(|origin| origin.get("rangeEnd"))
+                        .and_then(Value::as_u64)
+                        .or_else(|| values.get("rangeEnd").and_then(Value::as_u64))
+                        .or_else(|| values.get("end").and_then(Value::as_u64))
+                });
                 if let (Some(file), Some(offset)) = (file, offset)
                     && safe_path(file)
                     && let Ok(offset) = usize::try_from(offset)
