@@ -60,6 +60,8 @@ pub enum JavaCompilerFact {
         annotations: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spring: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        documentation: Option<Box<serde_json::Value>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         interfaces: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]

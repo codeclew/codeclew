@@ -1,4 +1,19 @@
 import com.sun.source.tree.AnnotationTree;
+import com.sun.source.tree.BinaryTree;
+import com.sun.source.tree.ConditionalExpressionTree;
+import com.sun.source.tree.ThrowTree;
+import com.sun.source.tree.SynchronizedTree;
+import com.sun.source.tree.IfTree;
+import com.sun.source.tree.LiteralTree;
+import com.sun.source.tree.ReturnTree;
+import com.sun.source.tree.WhileLoopTree;
+import com.sun.source.tree.ForLoopTree;
+import com.sun.source.tree.EnhancedForLoopTree;
+import com.sun.source.tree.DoWhileLoopTree;
+import com.sun.source.tree.LambdaExpressionTree;
+import com.sun.source.tree.ExpressionStatementTree;
+import com.sun.source.tree.SwitchTree;
+import com.sun.source.tree.TryTree;
 import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.IdentifierTree;
@@ -232,9 +247,13 @@ final class CodeclewJavaAnalyzer {
             String name = executable.getKind() == ElementKind.CONSTRUCTOR
                     ? "<init>" : executable.getSimpleName().toString();
             String identity = "method:" + owner + "#" + name + descriptor;
-            facts.add(declaration(
+            Map<String, Object> declaration = declaration(
                     executable.getKind() == ElementKind.CONSTRUCTOR ? "CONSTRUCTOR" : "METHOD",
-                    identity, owner, descriptor, executable, tree));
+                    identity, owner, descriptor, executable, tree);
+            if (tree.getBody() != null) {
+                declaration.put("documentation", new DocumentationFlow().read(tree, executable));
+            }
+            facts.add(declaration);
             executableOwners.push(identity);
             super.visitMethod(tree, unused);
             executableOwners.pop();
@@ -292,6 +311,169 @@ final class CodeclewJavaAnalyzer {
             typeUse(trees.getElement(getCurrentPath()), tree);
             return super.visitMemberSelect(tree, unused);
         }
+
+        /** Bounded source structure, not a runtime trace or a general control-flow proof. */
+        private final class DocumentationFlow extends TreePathScanner<Void, Void> {
+            private final List<Map<String, Object>> events = new ArrayList<>();
+            private final Set<String> boundaries = new TreeSet<>();
+            private int groups = 0;
+
+            private Map<String, Object> read(MethodTree tree, ExecutableElement method) {
+                scan(new TreePath(getCurrentPathOfAnalyzer(), tree.getBody()), null);
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("schema", "codeclew-java-documentation-flow/1.0");
+                result.put("authority", "JAVAC_SOURCE_STRUCTURE");
+                result.put("parameterTypes", method.getParameters().stream()
+                        .map(p -> types.erasure(p.asType()).toString()).toList());
+                result.put("events", events);
+                result.put("boundaries", new ArrayList<>(boundaries));
+                return result;
+            }
+
+            private Map<String, Object> event(String kind, Tree tree) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("kind", kind);
+                if (hasSourceRange(tree)) anchor(row, tree);
+                if (events.size() < 512) events.add(row);
+                else boundaries.add("DOCUMENTATION_FLOW_EVENT_BUDGET");
+                return row;
+            }
+
+            @Override public Void visitClass(ClassTree tree, Void unused) {
+                boundaries.add("LOCAL_CLASS_BODY_NOT_EXPANDED"); return null;
+            }
+            @Override public Void visitLambdaExpression(LambdaExpressionTree tree, Void unused) {
+                boundaries.add("LAMBDA_EXECUTION_NOT_EXPANDED"); event("BOUNDARY", tree); return null;
+            }
+            @Override public Void visitIf(IfTree tree, Void unused) {
+                scan(tree.getCondition(), null);
+                Map<String, Object> branch = event("IF", tree.getCondition());
+                branch.put("condition", tree.getCondition().toString());
+                branch.put("group", ++groups);
+                scan(tree.getThenStatement(), null);
+                if (tree.getElseStatement() != null) {
+                    event("ELSE", tree.getElseStatement()); scan(tree.getElseStatement(), null);
+                }
+                event("END", tree); return null;
+            }
+            @Override public Void visitWhileLoop(WhileLoopTree tree, Void unused) {
+                event("LOOP", tree.getCondition()).put("condition", tree.getCondition().toString());
+                scan(tree.getCondition(), null); scan(tree.getStatement(), null); event("END", tree); return null;
+            }
+            @Override public Void visitForLoop(ForLoopTree tree, Void unused) {
+                scan(tree.getInitializer(), null); event("LOOP", tree).put("condition", "for-loop");
+                scan(tree.getCondition(), null); scan(tree.getStatement(), null); scan(tree.getUpdate(), null);
+                event("END", tree); return null;
+            }
+            @Override public Void visitEnhancedForLoop(EnhancedForLoopTree tree, Void unused) {
+                scan(tree.getExpression(), null); event("LOOP", tree).put("condition", "for-each");
+                scan(tree.getStatement(), null); event("END", tree); return null;
+            }
+            @Override public Void visitDoWhileLoop(DoWhileLoopTree tree, Void unused) {
+                event("LOOP", tree).put("condition", "do-while"); scan(tree.getStatement(), null);
+                scan(tree.getCondition(), null); event("END", tree); return null;
+            }
+            @Override public Void visitSwitch(SwitchTree tree, Void unused) {
+                boundaries.add("SWITCH_FLOW_REQUIRES_SOURCE_REVIEW"); event("BOUNDARY", tree); return null;
+            }
+            @Override public Void visitTry(TryTree tree, Void unused) {
+                boundaries.add("EXCEPTION_FLOW_REQUIRES_SOURCE_REVIEW"); event("BOUNDARY", tree); return null;
+            }
+            @Override public Void visitReturn(ReturnTree tree, Void unused) {
+                scan(tree.getExpression(), null); event("RETURN", tree); return null;
+            }
+            @Override public Void visitVariable(VariableTree tree, Void unused) {
+                scan(tree.getInitializer(), null); event("LOCAL", tree); return null;
+            }
+            @Override public Void visitExpressionStatement(ExpressionStatementTree tree, Void unused) {
+                scan(tree.getExpression(), null);
+                if (!(tree.getExpression() instanceof MethodInvocationTree)) event("STATEMENT", tree);
+                return null;
+            }
+            @Override public Void visitBinary(BinaryTree tree, Void unused) {
+                if (tree.getKind() == Tree.Kind.CONDITIONAL_AND || tree.getKind() == Tree.Kind.CONDITIONAL_OR) {
+                    boundaries.add("SHORT_CIRCUIT_FLOW_REQUIRES_SOURCE_REVIEW"); event("BOUNDARY", tree); return null;
+                }
+                return super.visitBinary(tree, unused);
+            }
+            @Override public Void visitConditionalExpression(ConditionalExpressionTree tree, Void unused) {
+                boundaries.add("TERNARY_FLOW_REQUIRES_SOURCE_REVIEW"); event("BOUNDARY", tree); return null;
+            }
+            @Override public Void visitSynchronized(SynchronizedTree tree, Void unused) {
+                boundaries.add("SYNCHRONIZED_FLOW_REQUIRES_SOURCE_REVIEW"); event("BOUNDARY", tree); return null;
+            }
+            @Override public Void visitThrow(ThrowTree tree, Void unused) {
+                scan(tree.getExpression(), null); event("THROW", tree); return null;
+            }
+            @Override public Void visitNewClass(NewClassTree tree, Void unused) {
+                super.visitNewClass(tree, unused);
+                Map<String, Object> row = event("CONSTRUCT", tree);
+                Element target = trees.getElement(getCurrentPath());
+                if (target instanceof ExecutableElement constructor) {
+                    String descriptor = executableDescriptor(constructor);
+                    if (descriptor != null) {
+                        row.put("target", "method:" + ownerOf(constructor) + "#<init>" + descriptor);
+                        row.put("resolution", "COMPILER_EXACT");
+                    } else boundaries.add("DOCUMENTATION_CONSTRUCTOR_DESCRIPTOR_UNRESOLVED");
+                } else boundaries.add("DOCUMENTATION_CONSTRUCTOR_UNRESOLVED");
+                return null;
+            }
+            @Override public Void visitMethodInvocation(MethodInvocationTree tree, Void unused) {
+                // Argument/receiver calls are evaluated before this invocation.
+                super.visitMethodInvocation(tree, unused);
+                Map<String, Object> row = event("CALL", tree);
+                Element target = trees.getElement(getCurrentPath());
+                if (target instanceof ExecutableElement method) {
+                    String descriptor = executableDescriptor(method);
+                    if (descriptor != null) {
+                        row.put("target", "method:" + ownerOf(method) + "#" + method.getSimpleName() + descriptor);
+                        row.put("resolution", "COMPILER_EXACT");
+                        row.put("http", http(tree, method));
+                    } else boundaries.add("DOCUMENTATION_CALL_DESCRIPTOR_UNRESOLVED");
+                } else boundaries.add("DOCUMENTATION_CALL_TARGET_UNRESOLVED");
+                return null;
+            }
+
+            private Map<String, Object> http(MethodInvocationTree call, ExecutableElement method) {
+                Map<String, Object> result = new LinkedHashMap<>();
+                String owner = ownerOf(method);
+                String name = method.getSimpleName().toString();
+                if (!owner.equals("class:org.springframework.web.client.RestTemplate")) return result;
+                String verb = switch (name) {
+                    case "postForObject", "postForEntity" -> "POST";
+                    case "getForObject", "getForEntity" -> "GET";
+                    case "put" -> "PUT";
+                    case "delete" -> "DELETE";
+                    default -> null;
+                };
+                if (verb == null || call.getArguments().isEmpty()) return result;
+                result.put("adapter", "SPRING_REST_TEMPLATE_LITERAL_SUFFIX/1.0");
+                result.put("method", verb);
+                Tree uri = call.getArguments().get(0);
+                if (uri instanceof BinaryTree binary && binary.getKind() == Tree.Kind.PLUS
+                        && binary.getRightOperand() instanceof LiteralTree suffix
+                        && suffix.getValue() instanceof String path && path.startsWith("/")) {
+                    result.put("path", path);
+                    Element base = trees.getElement(new TreePath(getCurrentPath(), binary.getLeftOperand()));
+                    if (base instanceof VariableElement variable) {
+                        for (AnnotationMirror annotation : variable.getAnnotationMirrors()) {
+                            if (!annotation.getAnnotationType().toString().equals("org.springframework.beans.factory.annotation.Value")) continue;
+                            for (AnnotationValue value : annotation.getElementValues().values()) {
+                                if (value.getValue() instanceof String expression && expression.startsWith("${")
+                                        && expression.endsWith("}")) {
+                                    String key = expression.substring(2, expression.length() - 1).split(":", 2)[0];
+                                    result.put("destinationConfigKey", key);
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!result.containsKey("path")) result.put("boundary", "DYNAMIC_OR_UNSUPPORTED_CLIENT_URL");
+                return result;
+            }
+        }
+
+        private TreePath getCurrentPathOfAnalyzer() { return getCurrentPath(); }
 
         private Map<String, Object> declaration(
                 String kind,

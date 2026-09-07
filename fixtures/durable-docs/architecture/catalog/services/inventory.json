@@ -1,0 +1,14 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "inventory",
+  "title": "Inventory",
+  "repositoryId": "inventory",
+  "repository": "https://example.invalid/inventory",
+  "language": "java",
+  "profile": "java-17plus-maven-read-only",
+  "compilation": ":/main",
+  "targetRef": "main",
+  "contractFiles": [
+    "src/main/resources/openapi.yaml"
+  ]
+}

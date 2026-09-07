@@ -35,15 +35,27 @@ class AgentSkillTest(unittest.TestCase):
             ROOT / ".agents" / "skills" / "codeclew",
             ROOT / ".claude" / "skills" / "codeclew",
         ]:
-            for relative in [Path("SKILL.md"), Path("agents/openai.yaml")]:
+            for relative in [p.relative_to(CANONICAL_SKILL) for p in CANONICAL_SKILL.rglob("*") if p.is_file() and p.name != ".DS_Store"]:
                 self.assertEqual(
                     (root / relative).read_bytes(),
                     (CANONICAL_SKILL / relative).read_bytes(),
                 )
 
+    def test_finder_metadata_does_not_change_package_identity(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("installer", ROOT / "scripts/install_agent_skill.py")
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            (root / "SKILL.md").write_text("# Fixture")
+            before = installer.digest(installer.package_files(root))
+            (root / ".DS_Store").write_bytes(b"Finder metadata")
+            self.assertEqual(before, installer.digest(installer.package_files(root)))
+
     def test_agent_contract_is_installed_release_only(self) -> None:
         skill = (CANONICAL_SKILL / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("version: \"0.3.1\"", skill)
+        self.assertIn("version: \"0.5.0\"", skill)
         self.assertIn("codeclew-agent-contract/1.0", skill)
         self.assertIn("clew context open", skill)
         self.assertIn("clew nav query", skill)

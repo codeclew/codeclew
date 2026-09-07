@@ -108,6 +108,24 @@ enable mutation. See the support contract below for qualified capabilities and
 [the architecture guide](https://codeclew.github.io/codeclew/architecture.html)
 for the data flow and extension boundaries.
 
+## Durable service documentation
+
+Codeclew 0.5.0 adds `clew docs` for a separate architecture repository: a root
+service overview, one page per Java microservice, and named interaction scenarios.
+The agent writes explanations from bounded compiler/source context; Codeclew
+validates source bindings and coverage, renders offline pages and reports which
+fragments are stale after source or declaration changes. Each diagram step opens
+its retained source. Engineer-declared HTTP relationships retain their authority.
+
+Start with `clew docs init --root /work/architecture`, adapt the generated examples,
+and follow the [packaged workflow](skills/codeclew/references/service-documentation.md).
+The [two-service fixture](fixtures/durable-docs/README.md) provides a reproducible
+example with guards, OpenAPI constraints and recovery from a fresh local home.
+The first scope supports Java 17+ Maven/Gradle read-only profiles, one compilation
+per service and two services per scenario; the overview can contain more services.
+No model API or online renderer is required. Project build dependencies remain
+subject to the target environment's configured caches and mirrors.
+
 ## Source-build requirements
 
 For agent-assisted source development, start with [AGENTS.md](AGENTS.md).

@@ -1,0 +1,42 @@
+{
+  "schema": "codeclew-documentation-interaction/1.0",
+  "id": "reserve-inventory",
+  "title": "Reserve inventory during checkout",
+  "from": {
+    "service": "orders",
+    "selector": {
+      "language": "java",
+      "owner": "example.orders.InventoryClient",
+      "name": "reserve",
+      "parameterTypes": [
+        "example.orders.ReservationRequest"
+      ]
+    }
+  },
+  "to": {
+    "service": "inventory",
+    "selector": {
+      "language": "java",
+      "owner": "example.inventory.ReservationController",
+      "name": "create",
+      "parameterTypes": [
+        "example.inventory.ReservationRequest"
+      ]
+    }
+  },
+  "transport": {
+    "kind": "http",
+    "method": "POST",
+    "path": "/reservations",
+    "destinationConfigKey": "inventory.base-url"
+  },
+  "declaration": {
+    "origin": "human",
+    "rationale": "Fixture engineer declaration: checkout reserves inventory through this HTTP API."
+  },
+  "applicability": {
+    "environments": [
+      "fixture"
+    ]
+  }
+}

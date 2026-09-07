@@ -1,0 +1,14 @@
+schema: codeclew-documentation-scenario/1.0
+id: checkout
+title: Checkout and inventory reservation
+summary: Validate the order and request an inventory reservation.
+root:
+  service: orders
+  selector:
+    language: java
+    owner: example.orders.CheckoutController
+    name: checkout
+    parameterTypes: [example.orders.ReservationRequest]
+interactions: [reserve-inventory]
+maxDepth: 4
+maxNodes: 64

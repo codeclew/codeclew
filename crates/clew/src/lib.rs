@@ -4,6 +4,7 @@ pub mod cas;
 pub mod cold_start;
 pub mod context_v2;
 pub mod derived_manifest;
+pub mod documentation;
 pub mod error;
 pub mod explanation;
 pub mod explanation_freshness;

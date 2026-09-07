@@ -33,6 +33,8 @@ def package_files(root: Path) -> list[tuple[str, bytes, int]]:
     rows: list[tuple[str, bytes, int]] = []
     total = 0
     for path in sorted(root.rglob("*"), key=lambda value: value.as_posix()):
+        if path.name == ".DS_Store":
+            continue
         metadata = path.lstat()
         if stat.S_ISLNK(metadata.st_mode):
             raise InstallError("bundled Codeclew skill contains a symlink")

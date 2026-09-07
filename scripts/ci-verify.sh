@@ -26,6 +26,9 @@ python3 -I -S scripts/test_build_local_release_candidate.py
 python3 -I -S scripts/test_runtime_attach_canary.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
+cargo test --locked -p clew --lib documentation::check::tests::two_java_services_resolve_and_compose_declared_http_with_branches -- --exact --ignored --test-threads=1
+cargo test --locked -p clew --test managed_cli durable_documentation_cli_recovers_and_reports_route_fragments -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'maven::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1

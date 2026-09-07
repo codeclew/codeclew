@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.3.1"
+  version: "0.5.0"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -23,6 +23,12 @@ README and native build/test workflow, including its source launcher. Consumer
 admission is not a prerequisite for maintainer edits; a dirty target-admission
 result must not block unrelated authorized work on Codeclew's implementation.
 Do not use this distinction to bypass consumer-session or publication guards.
+
+For durable service documentation, a service catalogue, freshness maintenance,
+or a separate architecture repository, read
+[service documentation](references/service-documentation.md) and use its
+`clew docs` workflow. It performs admission internally; the generic navigation
+and mutation loop below is not an additional step for that workflow.
 
 ## Resolve and admit
 

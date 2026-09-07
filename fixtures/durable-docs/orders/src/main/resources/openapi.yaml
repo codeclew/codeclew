@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Orders
+  version: '1.0'
+paths:
+  /checkout:
+    post:
+      operationId: checkout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservationRequest'
+      responses:
+        '200':
+          description: Outcome of the reservation request.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  schemas:
+    ReservationRequest:
+      type: object
+      required: [sku, quantity]
+      properties:
+        sku:
+          type: string
+          minLength: 1
+        quantity:
+          type: integer
+          minimum: 1

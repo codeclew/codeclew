@@ -42,6 +42,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Maintain portable microservice documentation and declared interaction slices.
+    Docs {
+        #[command(subcommand)]
+        command: clew::documentation::cli::Command,
+    },
     /// Enumerate Spring HTTP, Kafka and scheduled roots in retained JVM generations.
     Entrypoints(EntrypointsArgs),
     /// Print the exact product support matrix bound to the active runtime.
@@ -1050,6 +1055,15 @@ fn main() -> ExitCode {
                 OutputMode::HumanUpgrade => unreachable!("upgrade cannot succeed in source mode"),
             };
             println!("{rendered}");
+            if value["schema"] == "codeclew-documentation-check/1.0"
+                || value["reportSchema"] == "codeclew-documentation-check/1.0"
+            {
+                return ExitCode::from(match value["freshness"]["status"].as_str() {
+                    Some("CURRENT") => 0,
+                    Some("PARTIALLY_STALE" | "STALE") => 4,
+                    _ => 3,
+                });
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -1412,6 +1426,7 @@ fn remediation_label(id: &str) -> &str {
 
 fn run(cli: Cli) -> Result<Value, ClewError> {
     match cli.command {
+        Command::Docs { command } => clew::documentation::cli::run(command),
         Command::Entrypoints(args) => {
             let sessions = if let Some(thread) = args.thread {
                 let (thread, _) = clew::thread::ThreadAuthority::load(&thread)?;

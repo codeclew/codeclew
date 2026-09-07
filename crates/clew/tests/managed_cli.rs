@@ -3574,3 +3574,646 @@ fn working_tree_comparison_retains_exact_diff_after_session_and_storage_gc() {
     );
     assert!(!missing.status.success());
 }
+
+#[cfg(unix)]
+#[test]
+fn durable_documentation_cli_recovers_and_reports_route_fragments() {
+    use clew::documentation::{check::Check, model::*};
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/durable-docs");
+    let docs = temporary.path().join("architecture");
+    copy_tree(&fixture.join("architecture"), &docs);
+    fs::create_dir_all(docs.join("docs")).unwrap();
+    fs::write(
+        docs.join("docs/manual.md"),
+        "Engineer-maintained explanation.\n",
+    )
+    .unwrap();
+    let mut repositories = BTreeMap::new();
+    for id in ["orders", "inventory"] {
+        let repo = temporary.path().join(id);
+        copy_tree(&fixture.join(id), &repo);
+        run_git(&repo, &["init", "-q", "-b", "main"]);
+        run_git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("https://example.invalid/{id}"),
+            ],
+        );
+        run_git(&repo, &["add", "."]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Codeclew Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        );
+        repositories.insert(id, repo);
+    }
+    let create_runtime = |name: &str| {
+        let state = temporary.path().join(name).join("v2");
+        let runtime = state.join("runtimes").join("1".repeat(64));
+        fs::create_dir_all(state.join("locks")).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+        let binary = fd_runtime(&runtime);
+        let lease = state
+            .join("locks")
+            .join(format!("runtime-{}.lease", "1".repeat(64)));
+        (state, runtime, binary, lease)
+    };
+    let (state, runtime, binary, lease) = create_runtime("first-home");
+    let run = |args: &[&str]| {
+        let output = run_managed(&binary, &state, &runtime, &lease, args, None);
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (output.status.code().unwrap(), value)
+    };
+    let root = docs.to_str().unwrap();
+    let (code, value) = run(&[
+        "docs",
+        "init",
+        "--root",
+        root,
+        "--title",
+        "Checkout architecture",
+    ]);
+    assert_eq!(code, 0, "{value}");
+    for (id, repo) in &repositories {
+        let (code, value) = run(&[
+            "docs",
+            "bind",
+            "--root",
+            root,
+            "--service",
+            id,
+            "--repo",
+            repo.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{value}");
+    }
+    let (code, value) = run(&["docs", "check", "--root", root]);
+    assert_eq!(code, 3, "{value}");
+    assert_eq!(value["freshness"]["status"], "UNRESOLVED");
+    assert_eq!(
+        value["interactions"]["reserve-inventory"]["path"]["receiver"]["status"], "MATCH",
+        "{value}"
+    );
+    let checked: Check =
+        serde_json::from_slice(&fs::read(docs.join(".codeclew/cache/latest-check.json")).unwrap())
+            .unwrap();
+    let (code, context) = run(&[
+        "docs",
+        "context",
+        "--root",
+        root,
+        "--service",
+        "orders",
+        "--entrypoint",
+        &checked.services["orders"].entrypoints[0].id,
+        "--limit",
+        "100",
+    ]);
+    assert_eq!(code, 0, "{context}");
+    assert!(
+        context["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["kind"] == "SOURCE")
+    );
+    let mut narratives = Vec::new();
+    for id in ["orders", "inventory"] {
+        let evidence = &checked.services[id];
+        let entry = &evidence.entrypoints[0];
+        let symbol = evidence
+            .observations
+            .values()
+            .find(|o| o.kind == "SYMBOL" && o.symbol == entry.symbol)
+            .unwrap();
+        let participant = |id: &str, label: &str, service: Option<&str>| Participant {
+            id: id.into(),
+            label: label.into(),
+            service: service.map(str::to_owned),
+        };
+        let summary = Fragment {
+            id: "summary".into(),
+            text: if id == "orders" {
+                "Validate an order and request a reservation."
+            } else {
+                "Accept an available quantity and record its reservation."
+            }
+            .into(),
+            dependency_ids: vec![symbol.id.clone()],
+            source_ids: symbol.source_ids.clone(),
+        };
+        let guard = evidence
+            .observations
+            .values()
+            .find(|o| o.kind == "FLOW" && o.symbol == entry.symbol && o.normalized["kind"] == "IF")
+            .unwrap();
+        let mut returns: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|o| {
+                o.kind == "FLOW" && o.symbol == entry.symbol && o.normalized["kind"] == "RETURN"
+            })
+            .collect();
+        returns.sort_by_key(|o| evidence.sources[&o.source_ids[0]].start_line);
+        let call = evidence
+            .observations
+            .values()
+            .find(|o| {
+                o.kind == "FLOW"
+                    && o.symbol == entry.symbol
+                    && o.normalized["target"].as_str().is_some_and(|t| {
+                        t.contains("InventoryClient#reserve") || t.contains("ReservationStore#save")
+                    })
+            })
+            .unwrap();
+        let local_event = |id: &str,
+                           kind: &str,
+                           text: &str,
+                           from: Option<&str>,
+                           to: Option<&str>,
+                           source: &Observation| Event {
+            id: id.into(),
+            kind: kind.into(),
+            text: text.into(),
+            from: from.map(str::to_owned),
+            to: to.map(str::to_owned),
+            dependency_ids: vec![source.id.clone()],
+            source_ids: source.source_ids.clone(),
+            interaction: None,
+        };
+        let events = vec![
+            local_event(
+                "request",
+                "message",
+                "Submit the request",
+                Some("client"),
+                Some("handler"),
+                symbol,
+            ),
+            local_event(
+                "guard",
+                "alt",
+                if id == "orders" {
+                    "Quantity is invalid"
+                } else {
+                    "Quantity exceeds available stock"
+                },
+                None,
+                None,
+                guard,
+            ),
+            local_event(
+                "rejected",
+                "return",
+                "Reject the request",
+                Some("handler"),
+                Some("client"),
+                returns[0],
+            ),
+            local_event(
+                "accepted",
+                "else",
+                "Quantity is acceptable",
+                None,
+                None,
+                guard,
+            ),
+            local_event(
+                "apply",
+                "message",
+                if id == "orders" {
+                    "Request a reservation"
+                } else {
+                    "Save the reservation"
+                },
+                Some("handler"),
+                Some("handler"),
+                call,
+            ),
+            local_event(
+                "result",
+                "return",
+                "Return the reservation outcome",
+                Some("handler"),
+                Some("client"),
+                returns[1],
+            ),
+            local_event("end", "end", "", None, None, guard),
+        ];
+        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
+    }
+    let scenario = &checked.scenarios["checkout"];
+    let first = scenario
+        .steps
+        .iter()
+        .find(|s| s.kind == "IF" && s.service == "orders")
+        .unwrap();
+    let receiver = scenario
+        .steps
+        .iter()
+        .find(|s| s.kind == "IF" && s.service == "inventory")
+        .unwrap();
+    let transition = scenario
+        .steps
+        .iter()
+        .find(|s| s.kind == "DECLARED_HTTP_TRANSITION")
+        .unwrap();
+    let event = |id: &str,
+                 kind: &str,
+                 text: &str,
+                 from: Option<&str>,
+                 to: Option<&str>,
+                 step: &clew::documentation::check::FlowStep| Event {
+        id: id.into(),
+        kind: kind.into(),
+        text: text.into(),
+        from: from.map(str::to_owned),
+        to: to.map(str::to_owned),
+        dependency_ids: step.dependency_ids.clone(),
+        source_ids: step.source_ids.clone(),
+        interaction: if kind == "declared" {
+            Some("reserve-inventory".into())
+        } else {
+            None
+        },
+    };
+    let mut scenario_events = vec![
+        event(
+            "valid-order",
+            "alt",
+            "Order quantity is valid",
+            None,
+            None,
+            first,
+        ),
+        event(
+            "reserve",
+            "declared",
+            "Request an inventory reservation",
+            Some("orders"),
+            Some("inventory"),
+            transition,
+        ),
+        event(
+            "stock-check",
+            "alt",
+            "Requested stock is available",
+            None,
+            None,
+            receiver,
+        ),
+        event(
+            "save",
+            "note",
+            "Record the reservation",
+            Some("inventory"),
+            None,
+            receiver,
+        ),
+        event(
+            "no-stock",
+            "else",
+            "Requested stock is unavailable",
+            None,
+            None,
+            receiver,
+        ),
+        event(
+            "reject-stock",
+            "note",
+            "Reject the reservation",
+            Some("inventory"),
+            None,
+            receiver,
+        ),
+        event("end-stock", "end", "", None, None, receiver),
+        event(
+            "invalid-order",
+            "else",
+            "Order quantity is invalid",
+            None,
+            None,
+            first,
+        ),
+        event(
+            "reject-order",
+            "note",
+            "Reject the order",
+            Some("orders"),
+            None,
+            first,
+        ),
+        event("end-order", "end", "", None, None, first),
+    ];
+    // Notes are agent-authored interpretations of the selected source, not compiler events.
+    scenario_events[3].source_ids = checked.dependencies[&transition.dependency_ids[2]]
+        .source_ids
+        .clone();
+    scenario_events[3].dependency_ids = vec![transition.dependency_ids[2].clone()];
+    let returns: Vec<_> = scenario
+        .steps
+        .iter()
+        .filter(|s| s.kind == "RETURN")
+        .collect();
+    let source_text = |step: &clew::documentation::check::FlowStep| {
+        checked.services[&step.service].sources[&step.source_ids[0]]
+            .text
+            .as_str()
+    };
+    let rejected_stock = returns
+        .iter()
+        .find(|s| source_text(s).contains("insufficient stock"))
+        .unwrap();
+    let rejected_order = returns
+        .iter()
+        .find(|s| source_text(s).contains("invalid quantity"))
+        .unwrap();
+    scenario_events[5].dependency_ids = rejected_stock.dependency_ids.clone();
+    scenario_events[5].source_ids = rejected_stock.source_ids.clone();
+    scenario_events[8].dependency_ids = rejected_order.dependency_ids.clone();
+    scenario_events[8].source_ids = rejected_order.source_ids.clone();
+    let successful: Vec<_> = returns
+        .iter()
+        .filter(|s| {
+            !source_text(s).contains("insufficient stock")
+                && !source_text(s).contains("invalid quantity")
+        })
+        .collect();
+    let mut response_dependencies: Vec<_> = successful
+        .iter()
+        .flat_map(|s| s.dependency_ids.clone())
+        .collect();
+    response_dependencies.push("interaction:reserve-inventory".into());
+    scenario_events.insert(
+        4,
+        Event {
+            id: "reservation-response".into(),
+            kind: "return".into(),
+            text: "Return the reservation outcome".into(),
+            from: Some("inventory".into()),
+            to: Some("orders".into()),
+            dependency_ids: response_dependencies,
+            source_ids: successful
+                .iter()
+                .flat_map(|s| s.source_ids.clone())
+                .collect(),
+            interaction: Some("reserve-inventory".into()),
+        },
+    );
+    narratives.push(Narrative {
+        schema: "codeclew-documentation-narrative/1.0".into(),
+        subject: "scenario:checkout".into(),
+        context_digest: checked.context_digest.clone(),
+        operations: vec![Operation {
+            id: "checkout".into(),
+            title: "Checkout and reserve inventory".into(),
+            summary: Fragment {
+                id: "summary".into(),
+                text: "Validate the order and request available inventory.".into(),
+                dependency_ids: first.dependency_ids.clone(),
+                source_ids: first.source_ids.clone(),
+            },
+            participants: vec![
+                Participant {
+                    id: "orders".into(),
+                    label: "Orders".into(),
+                    service: Some("orders".into()),
+                },
+                Participant {
+                    id: "inventory".into(),
+                    label: "Inventory".into(),
+                    service: Some("inventory".into()),
+                },
+            ],
+            events: scenario_events,
+            findings: vec![],
+            boundaries: scenario.boundaries.clone(),
+        }],
+        gaps: BTreeMap::new(),
+    });
+    for narrative in &narratives {
+        clew::documentation::render::validate(narrative, &checked).unwrap();
+    }
+    let mut missing_guard = narratives[0].clone();
+    missing_guard.operations[0]
+        .events
+        .retain(|e| !matches!(e.kind.as_str(), "alt" | "else" | "end"));
+    assert!(
+        clew::documentation::render::validate(&missing_guard, &checked)
+            .unwrap_err()
+            .message
+            .contains("omits a source-backed condition")
+    );
+    let mut inputs = Vec::new();
+    for (index, n) in narratives.iter().enumerate() {
+        let path = temporary.path().join(format!("narrative-{index}.json"));
+        fs::write(&path, serde_json::to_vec(n).unwrap()).unwrap();
+        inputs.push(path);
+    }
+    let mut args = vec!["docs", "render", "--root", root, "--require-complete"];
+    for path in &inputs {
+        args.extend(["--input", path.to_str().unwrap()]);
+    }
+    let (code, rendered) = run(&args);
+    assert_eq!(code, 0, "{rendered}");
+    assert_eq!(rendered["explicitGaps"], 0);
+    let before = fs::read(docs.join("docs/index.html")).unwrap();
+    let (code, current) = run(&["docs", "check", "--root", root]);
+    assert_eq!(code, 0, "{current}");
+    assert_eq!(current["freshness"]["status"], "CURRENT");
+    let (code, again) = run(&["docs", "render", "--root", root]);
+    assert_eq!(code, 0, "{again}");
+    assert_eq!(again["bundle"], rendered["bundle"]);
+    assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(docs.join("docs/manual.md")).unwrap(),
+        "Engineer-maintained explanation.\n"
+    );
+    for repo in repositories.values() {
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            status.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&status.stdout)
+        );
+    }
+    // Optional reproducible fixture export for visual review; never export private runtime state.
+    if let Some(destination) = std::env::var_os("CODECLEW_DOCS_EXAMPLE_OUTPUT") {
+        let destination = Path::new(&destination);
+        fs::create_dir(destination).expect("example output must be a new directory");
+        copy_tree(&docs.join("docs"), &destination.join("docs"));
+        for (index, narrative) in narratives.iter().enumerate() {
+            fs::write(
+                destination.join(format!("narrative-{index}.json")),
+                serde_json::to_vec_pretty(narrative).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    // Only inventory changes. The declared card, transport edge and contract row are affected.
+    let inventory = &repositories["inventory"];
+    let controller = inventory.join("src/main/java/example/inventory/ReservationController.java");
+    fs::write(
+        &controller,
+        fs::read_to_string(&controller)
+            .unwrap()
+            .replace("/reservations", "/stock-reservations"),
+    )
+    .unwrap();
+    run_git(inventory, &["add", "."]);
+    run_git(
+        inventory,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "change inventory route",
+        ],
+    );
+    let (code, stale) = run(&["docs", "check", "--root", root]);
+    assert_eq!(code, 4, "{stale}");
+    let affected = stale["freshness"]["affected"].as_array().unwrap();
+    assert!(
+        affected
+            .iter()
+            .any(|v| v["fragment"] == "interaction:reserve-inventory/card")
+    );
+    assert!(
+        affected
+            .iter()
+            .any(|v| v["fragment"] == "scenario:checkout/checkout/reserve")
+    );
+    assert!(
+        affected
+            .iter()
+            .any(|v| v["fragment"].as_str().unwrap().contains("contract"))
+    );
+    assert_eq!(
+        stale["interactions"]["reserve-inventory"]["path"]["receiver"]["status"],
+        "MISMATCH"
+    );
+    let (code, refused) = run(&["docs", "render", "--root", root]);
+    assert_eq!(code, 4, "{refused}");
+    assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
+    // Restore the old available revision without rewriting the first source checkout.
+    let clone_root = temporary.path().join("relocated");
+    fs::create_dir_all(&clone_root).unwrap();
+    let cloned_docs = clone_root.join("architecture");
+    copy_tree(&docs, &cloned_docs);
+    fs::remove_dir_all(cloned_docs.join(".codeclew")).unwrap();
+    let (state2, runtime2, binary2, lease2) = create_runtime("fresh-home");
+    for (id, source) in &repositories {
+        let relocated = clone_root.join(id);
+        run_git(
+            &clone_root,
+            &[
+                "clone",
+                "-q",
+                source.to_str().unwrap(),
+                relocated.to_str().unwrap(),
+            ],
+        );
+        run_git(
+            &relocated,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &format!("https://example.invalid/{id}"),
+            ],
+        );
+        if *id == "inventory" {
+            run_git(&relocated, &["checkout", "-q", "-B", "main", "HEAD~1"]);
+        }
+        let out = run_managed(
+            &binary2,
+            &state2,
+            &runtime2,
+            &lease2,
+            &[
+                "docs",
+                "bind",
+                "--root",
+                cloned_docs.to_str().unwrap(),
+                "--service",
+                id,
+                "--repo",
+                relocated.to_str().unwrap(),
+            ],
+            None,
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    let recovered = run_managed(
+        &binary2,
+        &state2,
+        &runtime2,
+        &lease2,
+        &["docs", "check", "--root", cloned_docs.to_str().unwrap()],
+        None,
+    );
+    let recovered_value: Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    assert!(recovered.status.success(), "{recovered_value}");
+    assert_eq!(recovered_value["freshness"]["status"], "CURRENT");
+    let declaration = run_managed(
+        &binary2,
+        &state2,
+        &runtime2,
+        &lease2,
+        &[
+            "docs",
+            "interaction",
+            "show",
+            "--root",
+            cloned_docs.to_str().unwrap(),
+            "--id",
+            "reserve-inventory",
+        ],
+        None,
+    );
+    assert!(declaration.status.success());
+    assert!(String::from_utf8_lossy(&declaration.stdout).contains("Fixture engineer declaration"));
+    fs::remove_file(cloned_docs.join(".codeclew/bindings/inventory.json")).unwrap();
+    let missing = run_managed(
+        &binary2,
+        &state2,
+        &runtime2,
+        &lease2,
+        &["docs", "check", "--root", cloned_docs.to_str().unwrap()],
+        None,
+    );
+    assert_eq!(missing.status.code(), Some(3));
+    let missing: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(missing["freshness"]["status"], "UNRESOLVED");
+}

@@ -31,6 +31,15 @@ fn agent_skill_digest() -> String {
     for (relative, content) in [
         ("SKILL.md", AGENT_SKILL_BYTES),
         ("agents/openai.yaml", AGENT_SKILL_OPENAI_BYTES),
+        (
+            "references/authoring-example.md",
+            include_bytes!("../../../skills/codeclew/references/authoring-example.md").as_slice(),
+        ),
+        (
+            "references/service-documentation.md",
+            include_bytes!("../../../skills/codeclew/references/service-documentation.md")
+                .as_slice(),
+        ),
     ] {
         payload.extend_from_slice(relative.as_bytes());
         payload.push(0);
@@ -896,7 +905,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:e67230da075f837dab21cf9dcc4b5c53d8503a562c681e0cb2c67240d397af52"
+            "sha256:6aa2918e7c087aeb83ccb675e9d187a1412ede36028153d5d2102b7c4a94779d"
         );
     }
 
