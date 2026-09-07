@@ -135,6 +135,7 @@ pub struct DoctorTask<'a> {
     pub compilations: &'a [String],
     pub committed: bool,
     pub working_tree: bool,
+    pub maven_settings: Option<&'a Path>,
 }
 
 impl DoctorCheck {
@@ -179,6 +180,13 @@ pub fn doctor(
             {
                 return Err(invalid(
                     "--committed and --working-tree are analysis-only; mutation requires a clean target worktree",
+                ));
+            }
+            if task.maven_settings.is_some()
+                && (task.language != SessionLanguage::Java || !task.profile_id.contains("maven"))
+            {
+                return Err(invalid(
+                    "--maven-settings currently requires a Java Maven profile",
                 ));
             }
             checks.extend(task_checks(runtime, &matrix, repository, target_ref, &task));
@@ -390,12 +398,24 @@ fn task_checks(
             )),
             "MAVEN" => checks.push(check(
                 "project.maven-launcher",
-                executable_file(&repository.join("mvnw")) || executable_available("mvn"),
+                if task.language == SessionLanguage::Java {
+                    crate::maven::command(repository).is_ok()
+                } else {
+                    executable_file(&repository.join("mvnw")) || executable_available("mvn")
+                },
                 true,
                 "INSTALL_PROJECT_LAUNCHER",
             )),
             _ => {}
         }
+    }
+    if task.language == SessionLanguage::Java && task.profile_id.contains("maven") {
+        checks.push(check(
+            "project.maven-settings",
+            crate::project_config::maven_settings(repository, task.maven_settings).is_ok(),
+            true,
+            "SELECT_READABLE_MAVEN_SETTINGS",
+        ));
     }
     checks.extend(repository_checks(
         repository,
@@ -431,11 +451,11 @@ fn repository_checks(
     if !git_repository {
         return checks;
     }
-    let clean = isolated_git(
-        &repository,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
-    )
-    .is_some_and(|value| value.is_empty());
+    let mut status_args = vec!["status", "--porcelain=v1", "-z", "--untracked-files=no"];
+    if operation == DoctorOperation::Analysis {
+        status_args.extend(["--", ".", ":(top,exclude)codeclew.yaml"]);
+    }
+    let clean = isolated_git(&repository, &status_args).is_some_and(|value| value.is_empty());
     checks.push(check(
         "repository.clean",
         clean,
@@ -757,6 +777,33 @@ mod tests {
     }
 
     #[test]
+    fn local_configuration_never_requires_a_commit_for_analysis() {
+        let repo = doctor_git_fixture();
+        let config = repo.path().join("codeclew.yaml");
+        let ready = || {
+            let checks =
+                repository_checks(repo.path(), Some("main"), DoctorOperation::Analysis, false);
+            assert!(doctor_check(&checks, "repository.clean").passed);
+        };
+        fs::write(&config, "maven:\n  settings: local.xml\n").unwrap();
+        ready(); // Untracked local config.
+        isolated_git(repo.path(), &["add", "codeclew.yaml"]).unwrap();
+        ready(); // Staged new config.
+        isolated_git(repo.path(), &["commit", "-qm", "config fixture"]).unwrap();
+        fs::write(&config, "maven:\n  settings: changed.xml\n").unwrap();
+        ready(); // Modified tracked config.
+        let mutation =
+            repository_checks(repo.path(), Some("main"), DoctorOperation::Mutation, false);
+        assert!(!doctor_check(&mutation, "repository.clean").passed);
+        isolated_git(repo.path(), &["add", "codeclew.yaml"]).unwrap();
+        ready(); // Staged tracked config change.
+        fs::write(repo.path().join("README.md"), "changed source input").unwrap();
+        let analysis =
+            repository_checks(repo.path(), Some("main"), DoctorOperation::Analysis, false);
+        assert!(!doctor_check(&analysis, "repository.clean").passed);
+    }
+
+    #[test]
     fn admission_ignores_untracked_files_but_rejects_tracked_and_staged_changes() {
         let repo = doctor_git_fixture();
         fs::create_dir_all(repo.path().join("docs/plans")).unwrap();
@@ -849,7 +896,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:9bbec7bf19fb2cb6a59281873466a108c48559898c603b441b1cdbc22e5df7d9"
+            "sha256:e67230da075f837dab21cf9dcc4b5c53d8503a562c681e0cb2c67240d397af52"
         );
     }
 

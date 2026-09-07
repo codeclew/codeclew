@@ -2606,6 +2606,211 @@ fn managed_thread_validate_compares_two_revisions_without_project_processes() {
 
 #[cfg(unix)]
 #[test]
+fn managed_java17_maven_local_config_returns_indexed_source_without_commits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let repository = temporary.path().join("repository");
+    let files = [
+        (
+            "pom.xml",
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        ),
+        (
+            "codeclew.yaml",
+            "maven:\n  settings: missing-settings.xml\n",
+        ),
+        (
+            "src/main/java/org/springframework/stereotype/Controller.java",
+            "package org.springframework.stereotype; @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) public @interface Controller {}",
+        ),
+        (
+            "src/main/java/org/springframework/web/bind/annotation/RestController.java",
+            "package org.springframework.web.bind.annotation; @org.springframework.stereotype.Controller @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) public @interface RestController {}",
+        ),
+        (
+            "src/main/java/org/springframework/web/bind/annotation/RequestMapping.java",
+            "package org.springframework.web.bind.annotation; @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) public @interface RequestMapping { String[] path() default {}; String[] value() default {}; }",
+        ),
+        (
+            "src/main/java/example/OwnerController.java",
+            "package example;\n// Unicode before the declaration: 🩺 Café\nimport org.springframework.web.bind.annotation.*;\n@RestController\npublic class OwnerController {\n    @RequestMapping(path = \"/owners\")\n    public OwnerDto listOwners() {\n        return new OwnerDto(\"Ada\");\n    }\n}\n",
+        ),
+        (
+            "mvnw",
+            r##"#!/bin/sh
+set -eu
+test "$1" = --settings
+grep -q '<validationRelease>17</validationRelease>' "$2"
+case "$*" in
+  *dependency:build-classpath*)
+    mkdir -p target/classes target/generated-sources/example
+    printf '%s\n' 'package example; public record OwnerDto(String name) {}' > target/generated-sources/example/OwnerDto.java
+    if test -n "${JAVA_HOME:-}"; then compiler="$JAVA_HOME/bin/javac"; else compiler=javac; fi
+    find src/main/java target/generated-sources -name '*.java' > target/sources.txt
+    "$compiler" --release 17 -encoding UTF-8 -d target/classes @target/sources.txt
+    printf '\n' > target/codeclew-classpath.txt
+    ;;
+  *help:evaluate*) printf '17\n' ;;
+  *) exit 25 ;;
+esac
+"##,
+        ),
+    ];
+    for (name, content) in files {
+        let path = repository.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    fs::set_permissions(repository.join("mvnw"), fs::Permissions::from_mode(0o644)).unwrap();
+    run_git(&repository, &["init", "-q", "-b", "main"]);
+    run_git(&repository, &["add", "."]);
+    run_git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Codeclew Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+    );
+    let settings = temporary.path().join("private-settings.xml");
+    fs::write(&settings, "<settings><profiles><profile><properties><validationRelease>17</validationRelease></properties></profile></profiles></settings>").unwrap();
+    // This config differs from HEAD. Neither it nor the mode-0644 wrapper needs
+    // a preparation commit, --committed, chmod, or a change to user settings.
+    fs::write(
+        repository.join("codeclew.yaml"),
+        "version: 1\nmaven:\n  settings: ../private-settings.xml\n",
+    )
+    .unwrap();
+    let status = || {
+        Command::new("git")
+            .args(["status", "--porcelain=v1", "-z"])
+            .current_dir(&repository)
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let before = status();
+    let state_root = temporary.path().join("state/v2");
+    let runtime_digest = "1".repeat(64);
+    let runtime = state_root.join("runtimes").join(&runtime_digest);
+    fs::create_dir_all(state_root.join("locks")).unwrap();
+    fs::set_permissions(&state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = fd_runtime(&runtime);
+    let lease = state_root
+        .join("locks")
+        .join(format!("runtime-{runtime_digest}.lease"));
+    let run = |args: &[&str]| run_managed(&binary, &state_root, &runtime, &lease, args, None);
+    let discovery = run(&[
+        "doctor",
+        "repository",
+        "--repo",
+        repository.to_str().unwrap(),
+    ]);
+    assert!(
+        discovery.status.success(),
+        "{}",
+        String::from_utf8_lossy(&discovery.stdout)
+    );
+    let discovery: Value = serde_json::from_slice(&discovery.stdout).unwrap();
+    assert_eq!(discovery["repository"]["clean"], false);
+    assert_eq!(discovery["repository"]["analysisInputsClean"], true);
+    let opened = run(&[
+        "nav",
+        "query",
+        "--repo",
+        repository.to_str().unwrap(),
+        "--target-ref",
+        "main",
+        "--language",
+        "java",
+        "--profile",
+        "java-17plus-maven-read-only",
+        "--compilation",
+        ":/main",
+        "--term",
+        "OwnerController",
+        "--decision-identifier",
+        "OwnerController",
+        "--source",
+    ]);
+    assert!(
+        opened.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&opened.stdout),
+        String::from_utf8_lossy(&opened.stderr)
+    );
+    let opened: Value = serde_json::from_slice(&opened.stdout).unwrap();
+    assert_eq!(opened["admission"]["status"], "PASS");
+    assert_eq!(
+        opened["navigation"]["decisionAuthority"]["status"], "SUPPORTED",
+        "{opened}"
+    );
+    assert_eq!(
+        opened["navigation"]["decisionSource"]["sourceDelivery"]["status"],
+        "RETURNED"
+    );
+    let source = &opened["navigation"]["decisionSource"]["source"];
+    assert_eq!(
+        source["fileId"],
+        "src/main/java/example/OwnerController.java"
+    );
+    assert!(source["windows"].to_string().contains("new OwnerDto"));
+    let session = opened["session"]["sessionId"].as_str().unwrap();
+    let catalog = run(&["entrypoints", "--session", session]);
+    assert!(
+        catalog.status.success(),
+        "{}",
+        String::from_utf8_lossy(&catalog.stdout)
+    );
+    let catalog: Value = serde_json::from_slice(&catalog.stdout).unwrap();
+    assert_eq!(catalog["total"], 1);
+    assert_eq!(catalog["entries"][0]["startLine"], 6);
+    assert_eq!(catalog["scopes"][0]["generationCoverage"], "PARTIAL");
+    assert_eq!(
+        catalog["scopes"][0]["generationCertainty"], "UNSURE",
+        "{catalog}"
+    );
+    assert!(
+        catalog["scopes"][0]["generationObligations"]
+            .to_string()
+            .contains("LIMIT_DOCUMENTATION_TO_INDEXED_SOURCE_OBJECTS")
+    );
+    assert!(
+        !catalog
+            .to_string()
+            .contains("FIX_JAVA_CLASSPATH_OR_DIAGNOSTIC")
+    );
+    assert_eq!(status(), before);
+    assert!(!repository.join("target").exists());
+    assert_eq!(
+        fs::metadata(repository.join("mvnw"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+    assert!(!opened.to_string().contains(settings.to_str().unwrap()));
+    assert!(
+        run(&["session", "close", "--session", session])
+            .status
+            .success()
+    );
+    assert!(
+        run(&["session", "gc", "--session", session])
+            .status
+            .success()
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn managed_operational_commands_are_path_free_and_support_recovery() {
     use std::os::unix::fs::PermissionsExt;
 

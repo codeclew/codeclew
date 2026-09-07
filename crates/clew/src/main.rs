@@ -355,6 +355,9 @@ struct SessionOpenArgs {
     model_cache: ModelCachePolicyArg,
     #[arg(long, requires = "model_cache")]
     external_build_state: Option<PathBuf>,
+    /// Settings for this Java/Maven session; does not change ~/.m2/settings.xml.
+    #[arg(long)]
+    maven_settings: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -378,6 +381,9 @@ struct DoctorArgs {
     /// Exact compilation authority. Repeat for multi-compilation tasks.
     #[arg(long)]
     compilation: Vec<String>,
+    /// Validate explicit settings for a Java/Maven task without resolving dependencies.
+    #[arg(long, requires = "repo")]
+    maven_settings: Option<PathBuf>,
     /// Analysis or mutation readiness.
     #[arg(long, value_enum)]
     operation: Option<DoctorOperationArg>,
@@ -1374,7 +1380,10 @@ fn remediation_label(id: &str) -> &str {
         "SELECT_EXACT_COMPILATION" => "provide the exact project compilation selector",
         "INSTALL_PROJECT_WRAPPER" => "restore the executable project Gradle wrapper",
         "INSTALL_PROJECT_LAUNCHER" => {
-            "run command -v mvn and mvn --version in this terminal; restore executable ./mvnw or make Maven available on PATH"
+            "restore the project mvnw or make Maven available on PATH when no wrapper is present; Java sh/bash wrappers require neither chmod nor a commit"
+        }
+        "SELECT_READABLE_MAVEN_SETTINGS" => {
+            "check maven.settings in local codeclew.yaml or pass --maven-settings with a readable settings.xml; no configuration commit or change to ~/.m2/settings.xml is required"
         }
         "SELECT_EXISTING_REPOSITORY" => "select an existing repository",
         "SELECT_GIT_REPOSITORY" => "select a valid Git repository",
@@ -1988,6 +1997,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
         || args.language.is_some()
         || args.profile.is_some()
         || !args.compilation.is_empty()
+        || args.maven_settings.is_some()
         || args.operation.is_some();
     match args.scope {
         DoctorScopeArg::Attach => {
@@ -2081,6 +2091,7 @@ fn run_doctor(args: &DoctorArgs) -> Result<Value, ClewError> {
                     compilations: &args.compilation,
                     committed: args.committed,
                     working_tree: args.working_tree,
+                    maven_settings: args.maven_settings.as_deref(),
                 }),
             )
         }
@@ -2104,7 +2115,7 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
         ModelCachePolicyArg::TrackedManifest => ModelCachePolicy::TrackedManifest,
         ModelCachePolicyArg::SealedExternal => ModelCachePolicy::SealedExternal,
     };
-    SessionAuthority::open(
+    SessionAuthority::open_with_maven_settings(
         &absolute(&args.repo)?,
         &args.target_ref,
         session_language(args.language),
@@ -2112,6 +2123,8 @@ fn open_session(args: &SessionOpenArgs) -> Result<SessionAuthority, ClewError> {
         args.generation_jobs,
         policy,
         args.external_build_state.as_deref(),
+        None,
+        args.maven_settings.as_deref(),
     )
 }
 
@@ -2248,6 +2261,7 @@ fn admit_and_open_context(
             compilations: &session_args.compilation,
             committed,
             working_tree,
+            maven_settings: session_args.maven_settings.as_deref(),
         }),
     )?;
     require_task_ready(&readiness)?;
@@ -2262,7 +2276,7 @@ fn admit_and_open_context(
                 "working-tree analysis requires non-cacheable model authority",
             ));
         }
-        SessionAuthority::open_with_source(
+        SessionAuthority::open_with_maven_settings(
             &repository,
             &session_args.target_ref,
             session_language(session_args.language),
@@ -2271,6 +2285,7 @@ fn admit_and_open_context(
             ModelCachePolicy::NonCacheable,
             None,
             Some(profile),
+            session_args.maven_settings.as_deref(),
         )?
     } else {
         open_session(session_args)?
@@ -2323,6 +2338,7 @@ fn change_inspect(args: ChangeInspectArgs) -> Result<Value, ClewError> {
             compilations: &args.session.compilation,
             committed: false,
             working_tree: true,
+            maven_settings: args.session.maven_settings.as_deref(),
         }),
     )?;
     require_task_ready(&readiness)?;

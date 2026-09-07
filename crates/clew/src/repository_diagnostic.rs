@@ -39,6 +39,7 @@ struct RepositoryState {
     available: bool,
     git: bool,
     clean: bool,
+    analysis_clean: bool,
     target_ref: Option<String>,
     mutation_ref: bool,
 }
@@ -94,7 +95,7 @@ fn diagnose_repository_with_selection(
             check("repository.git", state.git, true, "SELECT_GIT_REPOSITORY"),
             check(
                 "repository.clean",
-                state.clean,
+                state.analysis_clean,
                 !allow_dirty,
                 "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE",
             ),
@@ -206,7 +207,12 @@ fn diagnose_repository_with_selection(
                         "no JVM source-set selector was discovered from repository paths",
                     ));
                 }
-                add_build_tool_blockers(&mut blockers, build_system, normalized.as_deref());
+                add_build_tool_blockers(
+                    &mut blockers,
+                    build_system,
+                    language,
+                    normalized.as_deref(),
+                );
                 contours.extend(profile_contours(
                     matrix_profiles,
                     language,
@@ -342,7 +348,7 @@ fn diagnose_repository_with_selection(
             "uncommittedChangesIncluded":working_tree,
             "dirtyWorktreeAllowed":allow_dirty,
         },
-        "nextActions":if state.git && !state.clean && !allow_dirty {
+        "nextActions":if state.git && !state.analysis_clean && !allow_dirty {
             json!({
                 "reason":"LOCAL_EDITS_PRESENT",
                 "message":"For read-only analysis of committed HEAD, repeat doctor repository with --committed and pass --committed to context open or nav query. Local edits are excluded from the snapshot. For saved Kotlin/Rust edits, select --working-tree on discovery and analysis admission.",
@@ -357,6 +363,7 @@ fn diagnose_repository_with_selection(
         "supportMatrixDigest":support_matrix_digest,
         "repository":{
             "clean":state.clean,
+            "analysisInputsClean":state.analysis_clean,
             "git":state.git,
             "mutationRef":state.mutation_ref,
             "targetRef":state.target_ref,
@@ -385,6 +392,7 @@ fn repository_state(repository: Option<&Path>) -> RepositoryState {
             available: false,
             git: false,
             clean: false,
+            analysis_clean: false,
             target_ref: None,
             mutation_ref: false,
         };
@@ -406,6 +414,20 @@ fn repository_state(repository: Option<&Path>) -> RepositoryState {
         available: true,
         git,
         clean,
+        analysis_clean: git
+            && isolated_git(
+                repository,
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=no",
+                    "--",
+                    ".",
+                    ":(top,exclude)codeclew.yaml",
+                ],
+            )
+            .is_some_and(|value| value.is_empty()),
         mutation_ref: target_ref
             .as_deref()
             .is_some_and(|value| value.starts_with("refs/heads/")),
@@ -442,7 +464,7 @@ fn common_blockers(
             "the selected directory is not a Git worktree",
         ));
     }
-    if state.git && !state.clean && !committed {
+    if state.git && !state.analysis_clean && !committed {
         blockers.push(blocker(
             "SELECT_COMMITTED_ANALYSIS_OR_CLEAN_WORKTREE",
             "Local edits are present. Use --committed for read-only analysis of committed HEAD, excluding those edits; mutation requires a clean worktree.",
@@ -510,12 +532,19 @@ fn profile_contours(
             let mut operations = vec!["ANALYSIS"];
             let mut mutation_blockers = Vec::new();
             if profile["mutation"].as_bool() == Some(true) {
-                if state.mutation_ref {
+                if state.mutation_ref && state.clean {
                     operations.push("MUTATION");
-                } else {
+                }
+                if !state.mutation_ref {
                     mutation_blockers.push(blocker(
                         "SELECT_LOCAL_BRANCH_REF",
                         "mutation requires a checked-out local branch",
+                    ));
+                }
+                if !state.clean {
+                    mutation_blockers.push(blocker(
+                        "CLEAN_TARGET_WORKTREE",
+                        "mutation requires a clean target worktree",
                     ));
                 }
             }
@@ -542,6 +571,7 @@ fn profile_contours(
 fn add_build_tool_blockers(
     blockers: &mut Vec<Value>,
     build_system: &str,
+    language: &str,
     repository: Option<&Path>,
 ) {
     let Some(repository) = repository else {
@@ -554,10 +584,14 @@ fn add_build_tool_blockers(
                 "the Gradle wrapper is missing or not executable; restore the project wrapper, then run chmod +x ./gradlew and ./gradlew --version from the repository root",
             ))
         }
-        "MAVEN" if !executable_file(&repository.join("mvnw")) && !executable_available("mvn") => {
+        "MAVEN" if if language == "java" {
+            crate::maven::command(repository).is_err()
+        } else {
+            !executable_file(&repository.join("mvnw")) && !executable_available("mvn")
+        } => {
             blockers.push(blocker(
                 "INSTALL_PROJECT_LAUNCHER",
-                "no executable Maven launcher was found in this process environment; from the same terminal or agent environment run command -v mvn and mvn --version, then expose Maven on PATH or restore an executable ./mvnw and rerun doctor repository",
+                "the selected Maven launcher is unavailable; Java sh/bash wrappers do not require an executable bit or a commit. Restore an unreadable or unsupported wrapper, or expose Maven on PATH when no wrapper is present, then rerun doctor repository",
             ));
         }
         _ => {}

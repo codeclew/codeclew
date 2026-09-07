@@ -1582,6 +1582,7 @@ mod tests {
             generation_jobs: None,
             model_cache_policy: ModelCachePolicy::NonCacheable,
             model_cache_authority: None,
+            maven_settings_digest: None,
             working_tree: None,
             created_unix_ms: 1,
         };
