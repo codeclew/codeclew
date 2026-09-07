@@ -1,16 +1,18 @@
-# Publishing the macOS pilot
+# Publishing the macOS and Linux pilot
 
 The public distribution is built only from a clean semantic version tag on the
 default branch. End-user machines never compile Codeclew.
 
 ## Release contents
 
-The `macOS release` GitHub Actions workflow builds four fixed asset names:
+The `macOS and Linux release` GitHub Actions workflow builds six fixed asset names:
 
 - `codeclew-macos-arm64.tar.gz`;
 - `codeclew-macos-x86_64.tar.gz`;
 - `codeclew-kotlin23-macos-arm64.tar.gz`;
 - `codeclew-kotlin23-macos-x86_64.tar.gz`;
+- `codeclew-linux-x86_64.tar.gz`;
+- `codeclew-kotlin23-linux-x86_64.tar.gz`;
 - one `.sha256` file for each archive;
 - `install.sh` and `install.sh.sha256` for offline installation.
 
@@ -22,9 +24,24 @@ component-cache copies and the full Git checkout are excluded. The bootstrap
 payload manifest remains bound to the exact Git commit and tree, and the
 installed warm path never compiles Codeclew.
 
-Apple Silicon is built on `macos-15`; Intel is built on `macos-15-intel`. The
-workflow verifies `uname -m` before construction and refuses a runtime in
+Apple Silicon is built on `macos-15`; Intel is built on `macos-15-intel`.
+Linux x86_64 is built on `ubuntu-22.04` for a glibc 2.35 baseline and also serves
+Windows x64 through WSL2. The build installs Python 3.12 explicitly. End users
+need Python 3.11+; Ubuntu 24.04 inside WSL2 is a suitable target. Native Windows,
+Linux ARM64, and musl distributions are outside this matrix.
+
+The workflow verifies `uname -s` and `uname -m` before construction and refuses a runtime in
 `DEVELOPMENT` mode or a worker set outside the published support profile.
+Each profile is installed from its produced archive using `install.sh` in offline
+mode with isolated install, bin, and state roots. Installation verifies the CLI
+version and runtime capabilities. The core archive also undergoes extracted
+branch and annotated-tag navigation checks. Publication waits for all three
+platform builds and verifies all six archive checksums.
+
+The workflow filename `release-macos.yml`, builder `build_macos_release.py`, and
+shared POSIX launcher directory `packaging/macos` retain their historical names.
+The builder selects the package's `operatingSystem` and asset name from its
+native host; the same launcher and updater work on both macOS and Linux.
 
 ## Publishing
 
@@ -39,7 +56,7 @@ workflow verifies `uname -m` before construction and refuses a runtime in
    git push origin v0.1.0
    ```
 
-5. Wait for qualification, both architecture jobs and the release publication
+5. Wait for qualification, all three platform jobs and the release publication
    job.
    If GitHub loses the tag event or reports `startup_failure` before creating a
    job, dispatch the same immutable tag manually:
@@ -50,8 +67,8 @@ workflow verifies `uname -m` before construction and refuses a runtime in
 
    The workflow checks out that exact tag, and the release builder still
    verifies that the tag points at the packaged commit.
-6. Verify the public installer on a clean Apple Silicon Mac and a clean Intel
-   Mac:
+6. Verify the public installer on a clean Apple Silicon Mac, a clean Intel
+   Mac, and a Linux x86_64 distribution inside WSL2:
 
    ```bash
    curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
@@ -65,6 +82,10 @@ workflow verifies `uname -m` before construction and refuses a runtime in
 
    The final command must report that the newly installed version is already up
    to date without downloading another release bundle.
+   Run the WSL2 checks from the Linux shell, with installation, state, and fixture
+   repositories below the Linux home directory, not a Windows-mounted drive.
+   The hosted Linux build checks do not establish WSL2-specific filesystem
+   behavior; record a WSL2 smoke result separately when qualifying a release.
 
 The workflow creates a normal GitHub Release. The installer resolves the latest
 release API response to an immutable tag before fetching both the archive and
@@ -75,7 +96,7 @@ leading `v`; a mismatch fails before the release is published or activated.
 
 ## Failure and rollback
 
-If either architecture fails, no GitHub Release is created. Fix the problem in
+If any platform build fails, no GitHub Release is created. Fix the problem in
 a new commit and publish a new patch version; do not move an already published
 tag. If publication partially succeeds, remove the incomplete release before
 publishing the new version, but retain the failed workflow logs.
@@ -103,6 +124,12 @@ into one local directory:
 - `install.sh` and `install.sh.sha256`;
 - `codeclew-macos-arm64.tar.gz` (or `codeclew-macos-x86_64.tar.gz`);
 - the matching `.tar.gz.sha256` file.
+
+On Linux or WSL2, choose `codeclew-linux-x86_64.tar.gz` and its checksum instead.
+Use the version of a release containing those Linux assets. The installer selects
+Linux from `uname -s` and checks glibc 2.35+ before downloading anything. It computes
+SHA-256 using the required Python interpreter, so installation does not need Perl
+or `shasum` on Linux.
 
 Optionally verify the installer before running it:
 

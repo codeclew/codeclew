@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline contract tests for the public macOS installer and release surface."""
+"""Offline contract tests for the public macOS and Linux/WSL2 distribution."""
 
 from __future__ import annotations
 
@@ -39,6 +39,14 @@ class MacosDistributionTest(unittest.TestCase):
         self.assertIn("sha256sum --check install.sh.sha256", workflow)
 
     def test_installer_is_idempotent_and_never_builds_locally(self) -> None:
+        for system, architecture in [("Darwin", "arm64"), ("Darwin", "x86_64"), ("Linux", "x86_64")]:
+            with self.subTest(system=system, architecture=architecture):
+                self.exercise_distribution(system, architecture)
+
+    def exercise_distribution(self, system: str, architecture: str) -> None:
+        operating_system = "macos" if system == "Darwin" else "linux"
+        label = "macOS" if system == "Darwin" else "Linux"
+        suffix = f"{operating_system}-{architecture}"
         with tempfile.TemporaryDirectory() as value:
             temporary = Path(value)
             document_root = temporary / "www"
@@ -80,9 +88,9 @@ class MacosDistributionTest(unittest.TestCase):
                 (package / "PROFILE").write_text(f"{profile}\n", encoding="ascii")
                 downloads.mkdir(parents=True, exist_ok=True)
                 asset_name = (
-                    "codeclew-macos-arm64.tar.gz"
+                    f"codeclew-{suffix}.tar.gz"
                     if profile == "core"
-                    else f"codeclew-{profile}-macos-arm64.tar.gz"
+                    else f"codeclew-{profile}-{suffix}.tar.gz"
                 )
                 asset = downloads / asset_name
                 with tarfile.open(asset, "w:gz") as archive:
@@ -115,13 +123,19 @@ class MacosDistributionTest(unittest.TestCase):
             uname.write_text(
                 "#!/bin/sh\n"
                 "case \"${1:-}\" in\n"
-                "  -s) printf '%s\\n' Darwin ;;\n"
-                "  -m) printf '%s\\n' arm64 ;;\n"
+                f"  -s) printf '%s\\n' {system} ;;\n"
+                f"  -m) printf '%s\\n' {architecture} ;;\n"
                 "  *) exit 2 ;;\n"
                 "esac\n",
                 encoding="utf-8",
             )
             uname.chmod(0o500)
+            getconf = fake_bin / "getconf"
+            getconf.write_text("#!/bin/sh\nprintf '%s\\n' 'glibc 2.35'\n", encoding="ascii")
+            getconf.chmod(0o500)
+            shasum = fake_bin / "shasum"
+            shasum.write_text("#!/bin/sh\nexit 99\n", encoding="ascii")
+            shasum.chmod(0o500)
 
             previous = Path.cwd()
             os.chdir(document_root)
@@ -159,8 +173,8 @@ class MacosDistributionTest(unittest.TestCase):
                     self.assertIn("Codeclew v0.1.0 installed", completed.stdout)
                     self.assertIn("clew doctor attach --human", completed.stdout)
                     for message in [
-                        "[1/7] Checking macOS and required tools",
-                        "[3/7] Downloading the macOS arm64 core profile",
+                        "[1/7] Checking platform and required tools",
+                        f"[3/7] Downloading the {label} {architecture} core profile",
                         "[4/7] Checksum verified",
                         "[5/7] Extracting the sealed runtime",
                         "[6/7] Activating Codeclew v0.1.0 (core)",
@@ -201,7 +215,7 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertEqual(local.returncode, 0, local.stderr)
                 self.assertIn("Codeclew v0.1.0 installed", local.stdout)
                 self.assertIn(
-                    "[3/7] Loading the local macOS arm64 core profile",
+                    f"[3/7] Loading the local {label} {architecture} core profile",
                     local.stderr,
                 )
                 self.assertNotIn("Downloading", local.stderr)
@@ -284,7 +298,7 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertEqual(upgraded.returncode, 0, upgraded.stderr)
                 self.assertIn("Codeclew v0.1.1 installed", upgraded.stdout)
                 self.assertIn("Updating Codeclew from v0.1.0 to v0.1.1", upgraded.stderr)
-                self.assertIn("v0.1.1-macos-arm64-core", str(installed.resolve()))
+                self.assertIn(f"v0.1.1-{suffix}-core", str(installed.resolve()))
 
                 current_again = subprocess.run(
                     [str(installed), "upgrade"],
@@ -308,7 +322,7 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertEqual(packed.returncode, 0, packed.stderr)
                 self.assertIn("kotlin23 profile", packed.stdout)
                 self.assertIn(
-                    "v0.1.1-macos-arm64-kotlin23", str(installed.resolve())
+                    f"v0.1.1-{suffix}-kotlin23", str(installed.resolve())
                 )
                 listed = subprocess.run(
                     [str(installed), "pack", "list"],
@@ -329,7 +343,7 @@ class MacosDistributionTest(unittest.TestCase):
                 )
                 self.assertEqual(unpacked.returncode, 0, unpacked.stderr)
                 self.assertIn("core profile", unpacked.stdout)
-                self.assertIn("v0.1.1-macos-arm64-core", str(installed.resolve()))
+                self.assertIn(f"v0.1.1-{suffix}-core", str(installed.resolve()))
 
                 binary.chmod(0o700)
                 binary.write_text(
@@ -359,7 +373,7 @@ class MacosDistributionTest(unittest.TestCase):
                 self.assertIn(
                     "CLI version does not match release metadata", mismatched.stderr
                 )
-                self.assertIn("v0.1.1-macos-arm64-core", str(installed.resolve()))
+                self.assertIn(f"v0.1.1-{suffix}-core", str(installed.resolve()))
 
                 release_api.write_text('{"tag_name":"v0.1.0"}\n', encoding="ascii")
                 initial_checksum.write_text(
@@ -398,6 +412,45 @@ class MacosDistributionTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+
+    def test_unsupported_platforms_and_libc_fail_before_download(self) -> None:
+        for system, architecture, libc, expected in [
+            ("Linux", "aarch64", "glibc 2.35", "supported platforms"),
+            ("Linux", "i686", "glibc 2.35", "supported platforms"),
+            ("MINGW64_NT-10.0", "x86_64", "", "inside an x86_64 WSL2"),
+            ("Linux", "x86_64", "glibc 2.34", "glibc 2.35 or newer"),
+            ("Linux", "x86_64", "musl", "glibc 2.35 or newer"),
+        ]:
+            with self.subTest(system=system, architecture=architecture, libc=libc), tempfile.TemporaryDirectory() as value:
+                temporary = Path(value)
+                fake_bin = temporary / "tools"
+                fake_bin.mkdir()
+                for name, body in {
+                    "uname": f'case "$1" in -s) echo {system};; -m) echo {architecture};; esac',
+                    "getconf": f"echo '{libc}'",
+                    "curl": 'echo unexpected-download >&2; exit 99',
+                }.items():
+                    tool = fake_bin / name
+                    tool.write_text(f"#!/bin/sh\n{body}\n", encoding="ascii")
+                    tool.chmod(0o700)
+                environment = dict(os.environ)
+                environment.update({
+                    "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+                    "CODECLEW_VERSION": "v1.2.3",
+                    "CODECLEW_ASSET_DIR": "",
+                    "CODECLEW_PACKS": "",
+                    "CODECLEW_RELEASE_BASE": "https://example.invalid/releases",
+                    "CODECLEW_BIN_DIR": str(temporary / "bin"),
+                    "CODECLEW_INSTALL_ROOT": str(temporary / "install"),
+                })
+                result = subprocess.run(
+                    ["/bin/sh", str(INSTALLER)], env=environment,
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertNotIn("unexpected-download", result.stderr)
+                self.assertFalse((temporary / "install").exists())
 
     def test_source_checkout_upgrade_points_to_git_without_bootstrapping(self) -> None:
         completed = subprocess.run(

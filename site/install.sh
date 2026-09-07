@@ -20,7 +20,7 @@ progress() {
   printf '[codeclew] %s\n' "$1" >&2
 }
 
-progress '[1/7] Checking macOS and required tools...'
+progress '[1/7] Checking platform and required tools...'
 
 if [ -n "$LOCAL_ASSET_DIR" ]; then
   case "$LOCAL_ASSET_DIR" in
@@ -61,11 +61,12 @@ case "$REQUESTED_VERSION" in
   *) fail "CODECLEW_VERSION must be latest or vMAJOR.MINOR.PATCH" ;;
 esac
 
-[ "$(uname -s)" = Darwin ] || fail "the public pilot currently supports macOS only"
-case "$(uname -m)" in
-  arm64) ARCH=arm64 ;;
-  x86_64) ARCH=x86_64 ;;
-  *) fail "unsupported macOS architecture" ;;
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) OS=macos; OS_LABEL=macOS; ARCH=arm64 ;;
+  Darwin:x86_64) OS=macos; OS_LABEL=macOS; ARCH=x86_64 ;;
+  Linux:x86_64) OS=linux; OS_LABEL=Linux; ARCH=x86_64 ;;
+  MINGW*|MSYS*|CYGWIN*) fail "on Windows, run install.sh inside an x86_64 WSL2 Linux distribution" ;;
+  *) fail "supported platforms are macOS arm64/x86_64 and Linux x86_64 (including WSL2)" ;;
 esac
 
 [ -n "$LOCAL_ASSET_DIR" ] || command -v curl >/dev/null 2>&1 || fail "curl is required"
@@ -74,10 +75,20 @@ command -v python3 >/dev/null 2>&1 || fail "Python 3.11 or newer is required"
 python3 -I -S -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
   || fail "Python 3.11 or newer is required"
 
+if [ "$OS" = linux ]; then
+  LIBC_VERSION=$(getconf GNU_LIBC_VERSION 2>/dev/null) \
+    || fail "Linux releases require glibc 2.35 or newer"
+  python3 -I -S -c '
+import re, sys
+match = re.fullmatch(r"glibc ([0-9]+)\.([0-9]+)", sys.argv[1])
+raise SystemExit(0 if match and tuple(map(int, match.groups())) >= (2, 35) else 1)
+' "$LIBC_VERSION" || fail "Linux releases require glibc 2.35 or newer"
+fi
+
 if [ "$PROFILE" = core ]; then
-  ASSET=codeclew-macos-$ARCH.tar.gz
+  ASSET=codeclew-$OS-$ARCH.tar.gz
 else
-  ASSET=codeclew-$PROFILE-macos-$ARCH.tar.gz
+  ASSET=codeclew-$PROFILE-$OS-$ARCH.tar.gz
 fi
 CHECKSUM=$ASSET.sha256
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/codeclew-install.XXXXXX")
@@ -138,13 +149,13 @@ if [ -n "$LOCAL_ASSET_DIR" ]; then
     || fail "local release archive is missing or is a symlink"
   [ -f "$LOCAL_CHECKSUM" ] && [ ! -L "$LOCAL_CHECKSUM" ] \
     || fail "local release checksum is missing or is a symlink"
-  progress "[3/7] Loading the local macOS $ARCH $PROFILE profile..."
+  progress "[3/7] Loading the local $OS_LABEL $ARCH $PROFILE profile..."
   cp "$LOCAL_ASSET" "$TMP_ROOT/$ASSET"
   progress '[4/7] Loading and verifying the local SHA-256 checksum...'
   cp "$LOCAL_CHECKSUM" "$TMP_ROOT/$CHECKSUM"
 else
   DOWNLOAD_ROOT=$RELEASE_BASE/download/$RESOLVED_VERSION
-  progress "[3/7] Downloading the macOS $ARCH $PROFILE profile..."
+  progress "[3/7] Downloading the $OS_LABEL $ARCH $PROFILE profile..."
   download "$DOWNLOAD_ROOT/$ASSET" "$TMP_ROOT/$ASSET"
   progress '[4/7] Downloading and verifying the SHA-256 checksum...'
   download "$DOWNLOAD_ROOT/$CHECKSUM" "$TMP_ROOT/$CHECKSUM"
@@ -155,7 +166,14 @@ case "$EXPECTED" in
   *[!0-9a-f]*|'') fail "release checksum is invalid" ;;
 esac
 [ "${#EXPECTED}" -eq 64 ] || fail "release checksum is invalid"
-ACTUAL=$(shasum -a 256 "$TMP_ROOT/$ASSET" | awk '{ print $1 }')
+ACTUAL=$(python3 -I -S - "$TMP_ROOT/$ASSET" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "rb") as stream:
+    print(hashlib.file_digest(stream, "sha256").hexdigest())
+PY
+)
 [ "$ACTUAL" = "$EXPECTED" ] || fail "release checksum mismatch"
 progress '[4/7] Checksum verified.'
 
@@ -242,7 +260,7 @@ CLI_VERSION=$("$PACKAGE/bin/clew" --version) || fail "release CLI version check 
 progress "[6/7] Activating Codeclew $VERSION ($PROFILE)..."
 mkdir -p "$INSTALL_ROOT/releases" "$BIN_DIR"
 chmod 700 "$INSTALL_ROOT" "$INSTALL_ROOT/releases" "$BIN_DIR"
-DESTINATION=$INSTALL_ROOT/releases/$VERSION-macos-$ARCH-$PROFILE
+DESTINATION=$INSTALL_ROOT/releases/$VERSION-$OS-$ARCH-$PROFILE
 if [ -e "$DESTINATION" ]; then
   [ -x "$DESTINATION/bin/clew" ] || fail "existing release directory is incomplete"
 else
@@ -260,7 +278,7 @@ mv -f "$LINK" "$BIN_DIR/clew"
 progress '[7/7] Verifying the installed runtime...'
 "$BIN_DIR/clew" capabilities >/dev/null
 progress '[7/7] Runtime verification passed.'
-printf 'Codeclew %s installed for macOS %s (%s profile).\n' "$VERSION" "$ARCH" "$PROFILE"
+printf 'Codeclew %s installed for %s %s (%s profile).\n' "$VERSION" "$OS_LABEL" "$ARCH" "$PROFILE"
 printf 'Launcher: %s\n' "$BIN_DIR/clew"
 printf 'Update later: clew upgrade\n'
 case ":$PATH:" in

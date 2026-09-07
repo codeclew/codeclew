@@ -5,13 +5,23 @@ isolated candidate worktree, and publishes the resulting commit explicitly.
 Use the installed `clew` launcher for public releases or `./clew` from a pinned
 checkout for source development; direct capsule binaries are unsupported.
 
-## Install on macOS
+## Install on macOS, Linux, or Windows through WSL2
 
-The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs:
+The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs, and
+Linux x86_64 (including Windows x64 through WSL2):
 
 ```bash
 curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh
 ```
+
+On Windows, run this command in your WSL2 Linux shell. Native Windows shells
+(PowerShell, Git Bash, and MSYS2) are not supported. Linux requires glibc 2.35+
+and Python 3.11+; Ubuntu 24.04 is a suitable WSL2 distribution. Git and curl must
+also be installed inside WSL, with JDK 21 for Kotlin project analysis. Keep the
+installation, `CODECLEW_HOME`, and repositories in the Linux filesystem (for
+example, below `~`), rather than `/mnt/c`. See Microsoft's
+[WSL filesystem guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems).
+Linux ARM64 and musl distributions are not included in this release matrix.
 
 The installer resolves `latest` to one immutable version, downloads that exact
 GitHub Release asset and checksum, verifies SHA-256, installs it below
@@ -24,13 +34,17 @@ installations older than v0.1.3 need the one-line installer once more to acquire
 the updater; their later updates use `clew upgrade`.
 
 If GitHub downloads return 403, manually download `install.sh`,
-`install.sh.sha256`, the archive for your Mac architecture, and its matching
+`install.sh.sha256`, the archive for your operating system and architecture, and its matching
 `.sha256` file from one Codeclew Release into one directory. Install those local
 bytes without network access by pinning their release tag:
 
 ```bash
 CODECLEW_VERSION=v0.3.1 CODECLEW_ASSET_DIR="$PWD" /bin/sh ./install.sh
 ```
+
+For WSL2, select `codeclew-linux-x86_64.tar.gz` and its `.sha256` file from a
+release that includes Linux assets, then pin that release's version. The optional
+Kotlin 2.3.0 archive is `codeclew-kotlin23-linux-x86_64.tar.gz`.
 
 Local mode performs the same checksum, embedded-version, profile, and runtime
 verification as the online installer. It refuses `latest`, relative asset
