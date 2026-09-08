@@ -1,6 +1,6 @@
 # Modular analysis and reader comprehension — 0.7.0
 
-Status: implementation and reader acceptance complete; public release pending. Base: v0.6.2 (`e6093f3`).
+Status: complete; v0.7.0 published and verified. Base: v0.6.2 (`e6093f3`).
 
 ## Authorized outcome
 
@@ -75,7 +75,7 @@ and supported operations. Private service evidence stays outside this repository
 - [x] Actionable Kotlin option handling and 1.9 normalization.
 - [x] Revised generated documents accepted by an independent reader.
 - [x] Full local verification and publication privacy check.
-- [ ] Public release and hosted CI.
+- [x] Public release and hosted CI.
 
 ## Confirmed implementation evidence
 
@@ -118,3 +118,15 @@ selected example, not independent source correctness or deployed behavior.
 Browser access was unavailable: emitted links and handlers were inspected
 statically, and visual layout and real browser clicks remain unverified.
 Markdown still repeats some schema caveats; this was judged non-blocking.
+
+## Publication result
+
+Release commit `b64f1aa` passed [hosted CI](https://github.com/codeclew/codeclew/actions/runs/34279393170).
+The [release workflow](https://github.com/codeclew/codeclew/actions/runs/34279395404)
+passed qualification, all three platform builds and publication.
+[Codeclew v0.7.0](https://github.com/codeclew/codeclew/releases/tag/v0.7.0)
+contains 14 assets: the core and optional Kotlin 2.3 archives for macOS arm64,
+macOS x86_64 and Linux x86_64, the installer, and their seven checksum files.
+The downloaded checksum contents match the published asset SHA-256 digests.
+The private portable documentation bundle passed archive-integrity and local
+link checks; source repositories and local compiler caches are excluded.
