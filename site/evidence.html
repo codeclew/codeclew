@@ -3,45 +3,97 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Measured Kotlin evidence: exact source fragments, compiler identity, focused checks and a bounded navigation receipt.">
-    <meta name="theme-color" content="#0b0d0c">
+    <meta name="description" content="Release references, source-linked studies and historical measurements with explicit scope and limitations.">
+    <meta name="theme-color" content="#fdfaf2">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <title>Codeclew — Kotlin evidence</title>
-  </head>
+    <title>Evidence and historical studies — Codeclew</title>
+  <link rel="stylesheet" href="./theme.css">
+</head>
   <body>
-    <header class="nav shell">
-      <a class="brand" href="./index.html" aria-label="Codeclew home">
-        <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg>
-        <span>Codeclew</span>
-      </a>
-      <nav aria-label="Primary navigation"><a href="./architecture.html">Architecture</a><a href="./index.html#evidence">Overview</a><a href="./documentation.html">Documentation</a><a href="#kotlin-checks">Kotlin study</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
-    </header>
+    <!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html" aria-current="page">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></div></details>
+    <a href="./documentation.html">Documentation</a>
+    <a href="./evidence.html" aria-current="page">Evidence</a>
+    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER -->
 
-    <main class="evidence-page shell">
-      <section class="evidence-hero">
-        <div class="kicker">Kotlin engineering evidence</div>
-        <h1>From a search result<br><em>to a decision-ready fragment.</em></h1>
-        <p class="lede">Codeclew can return exact Kotlin source with compiler identity, source and evidence digests, explicit completeness and a bounded candidate set. Five representative engineering concerns are tied to executable checks below.</p>
-      </section>
+    <main class="evidence-page shell" id="main-content">
+      <section class="evidence-hero"><div class="hero-copy">
+<div class="kicker">Evidence &amp; studies</div><h1>Inspect the result.<br><em>Know its limits.</em></h1><p class="lede">Start with the release references, then explore earlier studies. Each result belongs to its recorded version, scope and method; historical measurements are not current-release performance guarantees.</p>
+</div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
+<!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Research</span><span aria-hidden="true">/</span><span aria-current="page">Evidence & studies</span></nav>
+<!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
+<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html" aria-current="page">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></nav></details>
+<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
+<!-- /SITE_SIDEBAR --><div class="page-content">
 
+
+<section class="evidence-record" id="release-evidence"><div><div class="kicker">Release reference · v0.5.0</div><h2>Service documentation you can inspect.</h2></div><div><p>The released two-service fixture covers Java documentation, native Maven/javac checks, selective freshness and recovery. It checks the documented workflow, not the quality of every model's explanation.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.5.0/docs/releases/v0.5.0.md">Release scope ↗</a> · <a href="https://github.com/codeclew/codeclew/tree/v0.5.0/fixtures/durable-docs">Executable fixture ↗</a></p></div></section>
+<section class="evidence-record" id="saved-edits"><div><div class="kicker">Historical saved-edit qualification</div><h2>Retained reports and measurements.</h2></div><div><p>Earlier source-build runs checked Kotlin consequences, Rust syntax, repeat rendering and freshness after saved edits. Their timings include development conditions and should not be used to predict release latency.</p><p><a href="./evidence/working-tree-qualification.json">Fixture measurements →</a> · <a href="./evidence/working-tree-dogfood.json">Repository measurements →</a> · <a href="./working-tree-example.html">Interactive report →</a></p></div></section>
+<section class="evidence-record" id="spring-study"><div><div class="kicker">Historical v0.3.1 service pilot</div><h2>31 Spring entry points across two services.</h2></div><div><p>Independent inventories matched the selected annotation-declared roots, including one scheduled job missing from existing documentation. The inputs are private; published aggregates do not form a reproducible public dataset.</p><a href="./pilot.html">Method, result and limits →</a></div></section>
       <section class="evidence-record" id="kotlin-checks">
-        <div><div class="kicker">Representative Kotlin slice</div><h2>16/16 focused checks passed</h2></div>
+        <div><div class="kicker">Historical Kotlin study · revision 6281138</div><h2>16/16 focused checks passed</h2></div>
         <div><p>Compatibility policy, Unicode coordinate normalization, Maven reactor authority, bounded local CFGs and semantic-input hashing were each traced to exact source. All sixteen selected checks passed with zero failures and zero skips.</p><a href="./evidence/kotlin-engineering-sample.json">Inspect source fragments and digests <span>→</span></a></div>
       </section>
 
       <section class="evidence-record" id="kotlin-navigation">
-        <div><div class="kicker">Preserved RELEASE receipt</div><h2>3 of 9 candidates, 115 exact source lines</h2></div>
+        <div><div class="kicker">Historical navigation receipt</div><h2>3 of 9 candidates, 115 exact source lines</h2></div>
         <div><p>A bounded Kotlin navigation request returned three candidates, an exact source window, K2 FIR declaration identity, a source digest and an evidence digest. The receipt explicitly remained <code>PARTIAL/UNSURE</code> because one requested term was unmatched—useful evidence without silent overclaim.</p><a href="./documentation.html">Explore evidence-bound documentation <span>→</span></a></div>
       </section>
 
       <section class="evidence-record" id="q1-effective-tokens">
-        <div><div class="kicker">Prepared warm Q1 · tokens</div><h2>3.795× fewer effective tokens</h2></div>
+        <div><div class="kicker">Historical prepared warm Q1 · tokens</div><h2>3.795× fewer effective tokens</h2></div>
         <div><p>In one prepared warm <code>Q1-SINGLE-ANALYSIS</code> C→D run, both arms were source-correct. Codeclew consumed 10,560 effective tokens; the counterbalanced default arm consumed 40,075.</p><a href="./evidence/q1-prepared-warm.json">Machine-readable evidence <span>→</span></a></div>
       </section>
 
       <section class="evidence-record" id="q1-tool-output">
-        <div><div class="kicker">Prepared warm Q1 · tool output</div><h2>40.28× less tool output</h2></div>
+        <div><div class="kicker">Historical prepared warm Q1 · tool output</div><h2>40.28× less tool output</h2></div>
         <div><p>Within the same run, Codeclew returned 15,307 bytes of tool output and the default arm returned 616,573 bytes. This measures the evidence envelope, not universal task performance.</p><a href="./evidence/q1-prepared-warm.json">Machine-readable evidence <span>→</span></a></div>
       </section>
 
@@ -51,8 +103,27 @@
         <p>The paper records the five-slice selection, exact test gate, deterministic text-search baseline, preserved receipt authority, resource-limit exclusion, claim boundary and the smallest useful next comparison.</p>
         <p><a href="https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf">Download the Kotlin evidence study <span>→</span></a></p>
       </section>
-    </main>
+    </div></div></main>
 
-    <footer class="shell"><span>Codeclew · Apache-2.0</span><div><a href="./architecture.html">Architecture</a><a href="./index.html">Home</a><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div></footer>
-  </body>
+    <!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html" aria-current="page">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER -->
+  <script src="./app.js" defer></script></body>
 </html>
