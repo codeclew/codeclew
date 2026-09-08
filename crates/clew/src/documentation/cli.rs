@@ -128,6 +128,9 @@ pub struct ContextArgs {
     pub scenario: Option<String>,
     #[arg(long, requires = "service")]
     pub entrypoint: Option<String>,
+    /// Exact compiler identity or qualified declaration name for an interface DTO.
+    #[arg(long = "symbol", requires = "service", conflicts_with = "entrypoint")]
+    pub symbols: Vec<String>,
     #[arg(long)]
     pub refresh: bool,
     #[arg(long)]
@@ -358,10 +361,46 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
         let entries: Vec<_> = e
             .entrypoints
             .iter()
+            .filter(|_| args.symbols.is_empty())
             .filter(|entry| args.entrypoint.as_ref().is_none_or(|id| &entry.id == id))
             .collect();
         if args.entrypoint.is_some() && entries.is_empty() {
             return Err(invalid("unknown entrypoint"));
+        }
+        for symbol in &args.symbols {
+            let matches: Vec<_> = e
+                .observations
+                .values()
+                .filter(|o| {
+                    o.kind == "SYMBOL"
+                        && (o.symbol == *symbol
+                            || o.symbol
+                                .split_once(':')
+                                .map(|(_, name)| {
+                                    name.split('#').next().unwrap_or(name).replace('/', ".")
+                                })
+                                .is_some_and(|name| name == *symbol))
+                })
+                .collect();
+            if matches.len() != 1 {
+                return Err(invalid(
+                    "symbol must select one exact compiler identity or qualified declaration name",
+                ));
+            }
+            selected.insert(matches[0].id.clone());
+            selected.extend(
+                e.observations
+                    .values()
+                    .filter(|o| {
+                        o.kind == "SYMBOL" && o.normalized["ownerIdentity"] == matches[0].symbol
+                    })
+                    .map(|o| o.id.clone()),
+            );
+        }
+        if args.symbols.len() > 8 || selected.len() > 4096 {
+            return Err(invalid(
+                "select at most eight interface declarations per context request",
+            ));
         }
         for entry in &entries {
             items.push(json!({"kind":"ENTRYPOINT","id":entry.id,"record":entry}));
@@ -416,6 +455,9 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
         && let Some(narrative) = baseline.narratives.get(&subject)
     {
         for operation in &narrative.operations {
+            if !args.symbols.is_empty() {
+                continue;
+            }
             if args
                 .entrypoint
                 .as_ref()
@@ -444,6 +486,7 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
             checked.context_digest.clone(),
             subject.clone(),
             args.entrypoint.clone(),
+            args.symbols.clone(),
         ))?,
         items,
         args.cursor.as_deref(),

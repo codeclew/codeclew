@@ -1306,6 +1306,29 @@ private class FirFactsExpressionChecker(
                     callable is FirPropertySymbol -> "READS"
                     else -> null
                 }
+                // Documentation may retain compiler-selected external and implicit calls.
+                // This separate projection does not widen the mutation relation contract.
+                if (relationKind == "CALLS" || relationKind == "CONSTRUCTS") {
+                    val function = callable.fir as? FirFunction
+                    val descriptor = function?.let(::compilerJvmMethodDescriptor)
+                    val compilerId = callable.callableId
+                    appendFact(output, buildJsonObject {
+                        put("recordType", "DOCUMENTATION_CALL")
+                        put("schema", "kotlin-documentation-call/1.0")
+                        put("file", context.containingFilePath.orEmpty())
+                        put("start", source.startOffset)
+                        put("end", source.endOffset)
+                        put("owner", owner)
+                        put("kind", relationKind)
+                        if (descriptor != null && compilerId != null && !compilerId.isLocal) {
+                            val prefix = if (relationKind == "CONSTRUCTS") "constructor:" else "callable:"
+                            put("target", "$prefix$compilerId#jvm:$descriptor")
+                            put("resolution", "COMPILER_EXACT")
+                        } else {
+                            put("resolution", "UNKNOWN")
+                        }
+                    })
+                }
                 if (relationKind != null) {
                     val argumentMapping = if (relationKind == "CALLS" || relationKind == "CONSTRUCTS") {
                         resolvedArgumentMapping24(callable, arguments)

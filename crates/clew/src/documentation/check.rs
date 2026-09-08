@@ -1,4 +1,4 @@
-//! Explicit certainty axes and bounded composition across declared HTTP boundaries.
+//! Explicit certainty axes and bounded composition across declared HTTP and Kafka boundaries.
 use super::{analysis, bytes, digest, invalid, io_error, model::*, store::Repository};
 use crate::error::ClewError;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,8 @@ pub struct InteractionCheck {
     pub method: Value,
     pub path: Value,
     pub destination: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub topic: Value,
     pub contract_status: String,
     pub runtime: String,
     pub applicability: Option<Applicability>,
@@ -208,6 +210,17 @@ fn compare(declared: Option<&str>, observed: Vec<String>) -> Value {
     };
     json!({"status":status,"declared":declared,"observed":unique})
 }
+fn compare_topic(declared: Option<&str>, observed: Vec<String>) -> Value {
+    let dynamic = |value: &str| value.contains("${") || value.contains("#{");
+    let unresolved = declared.is_some_and(dynamic) || observed.iter().any(|s| dynamic(s));
+    let mut result = compare(declared, observed);
+    if unresolved {
+        result["status"] = json!("UNRESOLVED");
+        result["reason"] = json!("TOPIC_CONFIGURATION_EXPRESSION_NOT_RESOLVED");
+    }
+    result
+}
+
 fn strings(v: &Value) -> Vec<String> {
     v.as_array()
         .map(|a| {
@@ -223,6 +236,7 @@ pub fn check_interaction(
     i: &Interaction,
     services: &BTreeMap<String, ServiceEvidence>,
 ) -> Result<InteractionCheck, ClewError> {
+    let transport = i.transport.kind.as_str();
     let from = resolution(&i.from, services);
     let to = resolution(&i.to, services);
     let mut calls = Vec::new();
@@ -238,7 +252,7 @@ pub fn check_interaction(
                 if let Some(call) = &i.from.call_site {
                     o.normalized["target"] == call.target
                 } else {
-                    o.normalized["http"]
+                    o.normalized[transport]
                         .as_object()
                         .is_some_and(|h| !h.is_empty())
                 }
@@ -259,10 +273,10 @@ pub fn check_interaction(
         .into(),
         candidates: calls.iter().map(|o| o.id.clone()).collect(),
         source_ids: calls.iter().flat_map(|o| o.source_ids.clone()).collect(),
-        details: calls.iter().enumerate().map(|(ordinal, o)| json!({"id":o.id,"target":o.normalized["target"],"selectedOrdinal":ordinal,"http":o.normalized["http"],"sourceIds":o.source_ids})).collect(),
+        details: calls.iter().enumerate().map(|(ordinal, o)| json!({"id":o.id,"target":o.normalized["target"],"selectedOrdinal":ordinal,"transport":o.normalized[transport],"sourceIds":o.source_ids})).collect(),
     };
     let caller = if calls.len() == 1 {
-        calls[0].normalized["http"].clone()
+        calls[0].normalized[transport].clone()
     } else {
         Value::Null
     };
@@ -271,7 +285,15 @@ pub fn check_interaction(
         let symbol = &e.observations[&to.candidates[0]].symbol;
         e.entrypoints
             .iter()
-            .filter(|r| r.symbol == *symbol && r.kind == "HTTP_ENDPOINT")
+            .filter(|r| {
+                r.symbol == *symbol
+                    && r.kind
+                        == if transport == "kafka" {
+                            "KAFKA_LISTENER"
+                        } else {
+                            "HTTP_ENDPOINT"
+                        }
+            })
             .collect()
     } else {
         vec![]
@@ -294,10 +316,19 @@ pub fn check_interaction(
             .into_iter()
             .collect(),
     );
+    let topic = if transport == "kafka" {
+        json!({"caller":compare_topic(i.transport.topic.as_deref(), caller["topic"].as_str().map(str::to_owned).into_iter().collect()),
+            "receiver":compare_topic(i.transport.topic.as_deref(), receiver.iter().flat_map(|r| strings(&r.trigger["configuration"]["topics"])).collect())})
+    } else {
+        Value::Null
+    };
     let mut boundaries = vec![
         "RUNTIME_DESTINATION_AND_ACTIVATION_UNKNOWN".into(),
         "WIRE_SERIALIZATION_NOT_ASSESSED".into(),
     ];
+    if transport == "kafka" {
+        boundaries.push("MESSAGE_DELIVERY_ORDER_RETRY_AND_CONSUMER_ACTIVATION_UNKNOWN".into());
+    }
     if i.applicability
         .as_ref()
         .is_none_or(|a| a.environments.is_empty())
@@ -320,6 +351,7 @@ pub fn check_interaction(
         method,
         path,
         destination,
+        topic,
         contract_status: "NOT_ASSESSED".into(),
         runtime: "UNKNOWN".into(),
         applicability: i.applicability.clone(),
@@ -464,7 +496,7 @@ impl Walker<'_> {
                         deps.extend(entry.dependency_ids.clone());
                     }
                 }
-                self.push(FlowStep{id:format!("step-{}",self.steps.len()),service:service.into(),symbol:symbol.into(),kind:"DECLARED_HTTP_TRANSITION".into(),dependency_ids:deps,source_ids:checked.call_site.source_ids.iter().chain(checked.to.source_ids.iter()).cloned().collect(),detail:json!({"interaction":interaction_id,"origin":interaction.declaration.origin,"toService":interaction.to.service,"runtime":"UNKNOWN","checks":checked}),depth});
+                self.push(FlowStep{id:format!("step-{}",self.steps.len()),service:service.into(),symbol:symbol.into(),kind:if interaction.transport.kind == "kafka" {"DECLARED_KAFKA_TRANSITION"} else {"DECLARED_HTTP_TRANSITION"}.into(),dependency_ids:deps,source_ids:checked.call_site.source_ids.iter().chain(checked.to.source_ids.iter()).cloned().collect(),detail:json!({"interaction":interaction_id,"origin":interaction.declaration.origin,"toService":interaction.to.service,"runtime":"UNKNOWN","transport":interaction.transport.kind,"checks":checked}),depth});
                 self.transitions.insert(interaction_id.clone());
                 bridged = true;
                 self.walk(&interaction.to.service, &receiver.symbol, depth + 1)?;
@@ -518,10 +550,10 @@ pub fn compose(
         })
         .chain([s.root.service.as_str()])
         .collect();
-    if involved.len() > 2 {
+    if involved.len() > 8 {
         walker
             .boundaries
-            .insert("MORE_THAN_TWO_SERVICES_NOT_SUPPORTED_IN_ONE_SCENARIO".into());
+            .insert("MORE_THAN_EIGHT_SERVICES_NOT_SUPPORTED_IN_ONE_SCENARIO".into());
     } else {
         let root = resolution(&s.root, services);
         if root.status == "RESOLVED" {
@@ -577,6 +609,26 @@ mod tests {
     use crate::java_adapter_v2::{JavaCompilerFact, build_java_compiler_index};
     use crate::java_project_model::extract_java_model;
     use std::fs;
+
+    #[test]
+    fn kafka_configuration_expressions_are_not_literal_topic_mismatches() {
+        assert_eq!(
+            compare_topic(Some("stock-dev"), vec!["${topics.stock}".into()])["status"],
+            "UNRESOLVED"
+        );
+        assert_eq!(
+            compare_topic(Some("stock-${STAND_NAME}"), vec!["stock-dev".into()])["status"],
+            "UNRESOLVED"
+        );
+        assert_eq!(
+            compare_topic(Some("stock"), vec!["stock".into()])["status"],
+            "MATCH"
+        );
+        assert_eq!(
+            compare_topic(Some("stock"), vec!["other".into()])["status"],
+            "MISMATCH"
+        );
+    }
 
     #[test]
     #[ignore = "launches Maven and javac for the two-service acceptance fixture"]
@@ -684,6 +736,7 @@ mod tests {
             ),
             transport: Transport {
                 kind: "http".into(),
+                topic: None,
                 method: Some("POST".into()),
                 path: Some("/reservations".into()),
                 destination_config_key: Some("inventory.base-url".into()),

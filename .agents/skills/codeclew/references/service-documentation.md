@@ -1,9 +1,14 @@
 # Durable service documentation
 
 Use this workflow for a separate documentation repository with per-service pages,
-a root overview and named interaction slices. It is available in Codeclew 0.5.0
-for Java 17+ Maven/Gradle read-only profiles, one compilation per service. Each
-scenario connects at most two services. The overview can list more services.
+a root overview and named interaction slices. Codeclew 0.6.0 supports Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
+interactions and step-linked domain explanations. Java 17+ remains supported.
+Use one Maven/Gradle compilation per service. The overview can list more services.
+For Kotlin choose `kotlin-jvm-maven-analysis` or `kotlin-jvm-gradle-analysis`.
+Project/compiler differences remain explicit: Kotlin 1.9 language/API inputs are
+analyzed with language/API 2.0 by the current engine; this is conditional analysis,
+not execution by the project's original compiler. Older installed releases need
+the corresponding product update before using these extensions.
 
 ## Start or recover
 
@@ -50,6 +55,16 @@ exceeds the stdout budget, not that it is absent. Narrow the operation or report
 an actionable gap. Context normally reuses the latest check; `--refresh` rebuilds
 source evidence. Retained context is not a claim about current checkout bytes.
 
+To inspect a DTO or message type named by a handler, request its exact compiler
+identity or fully qualified declaration name in the same documentation workflow:
+
+```sh
+clew docs context --root /work/architecture --service orders --symbol example.OrderRequest --limit 100
+```
+
+Repeat `--symbol` for up to eight known declarations. This selects retained
+declaration source; it does not infer runtime serialization or wire compatibility.
+
 ## Declare and explain
 
 Interactions record engineer assertions. `origin` is `human`, `imported`, or
@@ -68,15 +83,84 @@ HTTP adapter recognizes resolved Spring RestTemplate literal method/path calls
 and `@Value` destination keys. Unknown clients, dynamic routes, external calls,
 unsupported control flow and runtime configuration remain explicit boundaries.
 
+For a Kafka link use `transport: {"kind":"kafka","topic":"stock-import"}` and
+an explicit compiler-returned publisher `callSite.target` when the topic is
+indirect. Caller/receiver topic checks stay separate from the declaration. Literal
+Spring Kafka topics can be checked; properties and custom publishers can remain
+unresolved. A Kafka reply is a separate event interaction, never an HTTP-style
+return. Outbox enqueue and a later scheduled publisher are separate entrypoints:
+do not invent a call between them. The eight-service limit counts distinct
+services, not individual clients or database actors; a diagram allows up to 24
+participants so eight services can still show external actors.
+
 Write the explanation from returned source, then submit a closed JSON Narrative
 using [the authoring example](authoring-example.md). Every discovered entrypoint
-needs a detailed operation or an explicit actionable gap. For full-service
+needs an operation with its contract or an explicit actionable gap. For full-service
 requests, do not silently stop after one representative endpoint. Include the
 supported guards, alternate outcomes, loops, failures and state changes. Branch
 markers must balance; every selected source condition and return needs a bound
 corresponding event. A count check cannot establish semantic fidelity: read the
 predicate and outcome, and keep their actual nesting/order in the narrative.
 Do not convert unsupported branches into a linear happy path.
+
+Use narrative schema `codeclew-documentation-narrative/1.2`. Write for a developer
+or analyst who needs to use the service: what starts the operation, what data it
+accepts, what changes, what comes back, and which failures need handling. Keep
+`summary` to one or two sentences. The default `explanation` should usually fit
+in three to six short paragraphs, organized by business decisions rather than
+one paragraph per method. A small operation may need only one paragraph. Do not
+inflate prose to match compiler traversal depth or repeat identical explanations
+for each callback. Keep material rejection conditions, partial success, retries,
+asynchrony and idempotency visible in this short overview.
+
+Keep the complete bound branch structure in `events`. Mark implementation-only
+explanation paragraphs with `detail: true`; the renderer folds them together with
+the detailed diagram. Source references are also disclosed on demand. The service
+link overview is a map of declared connections, not a synchronous happy path.
+Do not remove failure evidence to shorten the page. Large source-step counts are
+an evidence concern, not a target for the reader-facing explanation.
+
+Each paragraph has `id`, `text`, `eventIds`, `dependencyIds` and `sourceIds`.
+Every non-`end` diagram event must be covered by an overview or detail paragraph,
+and paragraphs retain the evidence of every referenced event. One paragraph can
+cover many steps. The validator checks references and coverage, not the truth or
+usefulness of the prose. Narrative 1.0/1.1 remain readable for existing bundles.
+
+## Interface contracts
+
+Do not equate an empty OpenAPI tab with the absence of a contract. For each
+in-scope boundary, document the actual input and output from a published schema
+or from retained handler, DTO, serializer and publisher source. Use
+`interfaceContracts` for source-derived descriptions, with kind `http`, `kafka`
+or `payload`; every row keeps exact dependency/source bindings. They are agent
+interpretations and remain distinct from declared OpenAPI evidence.
+
+- HTTP: method/path, path/query/header parameters, body fields and nested types,
+  observed validation, successful status/body and material error/status cases.
+  Keep authentication declarations separate from proven runtime enforcement.
+- Kafka: topic or topic template, producer/consumer, payload and nested fields,
+  message key/headers, time and correlation semantics, acknowledgement, retry,
+  duplicate/stale handling and outgoing events. An application ACK event is
+  separate from the consumer's offset acknowledgement.
+- Payloads: type, nullability, source defaults, enums and explicit constraints.
+  Kotlin non-null types alone do not prove that a JSON field is required; record
+  constructor and Jackson behavior separately, or leave wire requiredness
+  unresolved. Distinguish an incoming total quantity from an outgoing available
+  quantity and preserve units when the source establishes them.
+
+Before rendering, compare the selected ingress/egress list against the contract
+cards. Include each necessary boundary or name the exact missing contract fact;
+do not claim complete contracts from counts alone. Preserve external boundaries
+without expanding the task to unrelated services. Avoid repeating a whole
+payload schema in the overview; put it in an expandable contract card. A useful
+page lets the reader find inputs, outcomes and failure handling without opening
+the implementation diagram.
+
+Kotlin `DEFERRED` callback blocks must stay inside an `opt` group. Their source
+can be explained, but invocation, count and scheduling are not established by
+merely passing a lambda. `TRY` becomes `alt`; catches become `else`; preserve
+`FINALLY`, `BREAK` and `CONTINUE` as explicit notes. Keep callbacks and outbox
+boundaries visible instead of presenting a synchronous happy path.
 
 Source/dependency IDs must come from the current context. Every arrow/node keeps
 its own source binding; cross-service arrows also name the declared interaction.

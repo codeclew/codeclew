@@ -159,7 +159,23 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             ));
         }
     }
-    let root_hash = canonical::hash_bytes(index_text.as_bytes());
+    // The portable overview resolves service/scenario links within its bundle;
+    // the root index prefixes those same links with the immutable bundle path.
+    let comparison_text = if matches!(
+        binding.renderer.as_str(),
+        "codeclew-documentation-html/1.2" | "codeclew-documentation-html/1.3"
+    ) {
+        if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
+            return Err(ClewError::new(
+                ErrorCode::WwConflict,
+                "generated root overview links were edited",
+            ));
+        }
+        index_text.replace(&format!("href=\"generated/{id}/"), "href=\"")
+    } else {
+        index_text.clone()
+    };
+    let root_hash = canonical::hash_bytes(comparison_text.as_bytes());
     if binding.output_hashes.get("overview.html") != Some(&root_hash) {
         return Err(ClewError::new(
             ErrorCode::WwConflict,

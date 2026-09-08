@@ -71,8 +71,12 @@ fn supported_refs(
 }
 
 pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
-    if n.schema != "codeclew-documentation-narrative/1.0"
-        || n.context_digest != checked.context_digest
+    if !matches!(
+        n.schema.as_str(),
+        "codeclew-documentation-narrative/1.0"
+            | "codeclew-documentation-narrative/1.1"
+            | "codeclew-documentation-narrative/1.2"
+    ) || n.context_digest != checked.context_digest
     {
         return Err(ClewError::new(
             ErrorCode::StaleRequiresReslice,
@@ -129,12 +133,12 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             &allowed,
         )?;
         if o.participants.len() < 2
-            || o.participants.len() > 8
+            || o.participants.len() > 24
             || o.events.is_empty()
             || o.events.len() > 512
         {
             return Err(invalid(
-                "sequence requires 2..8 participants and 1..512 events",
+                "sequence requires 2..24 participants and 1..512 events",
             ));
         }
         let mut participants = BTreeMap::new();
@@ -164,12 +168,20 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             supported_refs(&e.dependency_ids, &e.source_ids, checked, &allowed)?;
             if !matches!(
                 e.kind.as_str(),
-                "message" | "return" | "note" | "alt" | "else" | "loop" | "end" | "declared"
+                "message"
+                    | "return"
+                    | "note"
+                    | "alt"
+                    | "else"
+                    | "loop"
+                    | "opt"
+                    | "end"
+                    | "declared"
             ) {
                 return Err(invalid("unsupported sequence event kind"));
             }
             match e.kind.as_str() {
-                "alt" | "loop" => groups.push(e.kind.as_str()),
+                "alt" | "loop" | "opt" => groups.push(e.kind.as_str()),
                 "else" => {
                     if groups.last() != Some(&"alt") {
                         return Err(invalid("else requires an open alternative group"));
@@ -221,6 +233,11 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                         .dependencies
                         .get(&format!("interaction:{id}"))
                         .ok_or_else(|| invalid("interaction declaration missing"))?;
+                    if e.kind == "return" && dependency.normalized["transport"]["kind"] == "kafka" {
+                        return Err(invalid(
+                            "Kafka delivery has no synchronous return; declare a separate reply-event interaction",
+                        ));
+                    }
                     if check.origin == "agent-proposal"
                         || check.from.status != "RESOLVED"
                         || check.to.status != "RESOLVED"
@@ -254,8 +271,10 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                             .steps
                             .iter()
                             .any(|s| {
-                                s.kind == "DECLARED_HTTP_TRANSITION"
-                                    && s.detail["interaction"] == *id
+                                matches!(
+                                    s.kind.as_str(),
+                                    "DECLARED_HTTP_TRANSITION" | "DECLARED_KAFKA_TRANSITION"
+                                ) && s.detail["interaction"] == *id
                             })
                     {
                         return Err(invalid(
@@ -300,7 +319,16 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                         && d.symbol == entry.symbol
                         && matches!(
                             d.normalized["kind"].as_str(),
-                            Some("IF" | "LOOP" | "RETURN" | "THROW")
+                            Some(
+                                "IF" | "LOOP"
+                                    | "RETURN"
+                                    | "THROW"
+                                    | "DEFERRED"
+                                    | "TRY"
+                                    | "FINALLY"
+                                    | "BREAK"
+                                    | "CONTINUE"
+                            )
                         )
                 })
                 .collect()
@@ -308,7 +336,19 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             checked.scenarios[id]
                 .steps
                 .iter()
-                .filter(|s| matches!(s.kind.as_str(), "IF" | "LOOP" | "RETURN" | "THROW"))
+                .filter(|s| {
+                    matches!(
+                        s.kind.as_str(),
+                        "IF" | "LOOP"
+                            | "RETURN"
+                            | "THROW"
+                            | "DEFERRED"
+                            | "TRY"
+                            | "FINALLY"
+                            | "BREAK"
+                            | "CONTINUE"
+                    )
+                })
                 .filter_map(|s| s.dependency_ids.first())
                 .filter_map(|id| checked.dependencies.get(id))
                 .collect()
@@ -318,7 +358,9 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             if !o.events.iter().any(|event| {
                 event.dependency_ids.contains(&dependency.id)
                     && match expected_kind {
-                        "IF" => event.kind == "alt",
+                        "IF" | "TRY" => event.kind == "alt",
+                        "DEFERRED" => event.kind == "opt",
+                        "FINALLY" | "BREAK" | "CONTINUE" => event.kind == "note",
                         "LOOP" => event.kind == "loop",
                         "RETURN" | "THROW" => matches!(event.kind.as_str(), "return" | "note"),
                         _ => false,
@@ -328,6 +370,92 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                     "sequence omits a source-backed condition or return: {}",
                     dependency.id
                 )));
+            }
+        }
+        if o.explanation.len() > 128 {
+            return Err(invalid("operation explanation exceeds 128 paragraphs"));
+        }
+        for paragraph in &o.explanation {
+            if !store::valid_id(&paragraph.id)
+                || !ids.insert(paragraph.id.clone())
+                || paragraph.text.trim().is_empty()
+                || paragraph.text.len() > 8192
+                || paragraph.text.contains(['`', '<'])
+                || paragraph.event_ids.is_empty()
+                || paragraph
+                    .event_ids
+                    .iter()
+                    .any(|id| !o.events.iter().any(|e| &e.id == id && e.kind != "end"))
+            {
+                return Err(invalid(
+                    "explanation requires unique IDs, plain domain prose and existing diagram steps",
+                ));
+            }
+            supported_refs(
+                &paragraph.dependency_ids,
+                &paragraph.source_ids,
+                checked,
+                &allowed,
+            )?;
+            for event in o
+                .events
+                .iter()
+                .filter(|e| paragraph.event_ids.contains(&e.id))
+            {
+                if !event
+                    .dependency_ids
+                    .iter()
+                    .all(|id| paragraph.dependency_ids.contains(id))
+                    || !event
+                        .source_ids
+                        .iter()
+                        .all(|id| paragraph.source_ids.contains(id))
+                {
+                    return Err(invalid(
+                        "explanation must retain the evidence of every referenced diagram step",
+                    ));
+                }
+            }
+        }
+        if !n.schema.ends_with("/1.0")
+            && o.events
+                .iter()
+                .filter(|e| e.kind != "end")
+                .any(|e| !o.explanation.iter().any(|p| p.event_ids.contains(&e.id)))
+        {
+            return Err(invalid(
+                "narrative 1.1+ requires a domain explanation covering every diagram step",
+            ));
+        }
+        if o.interface_contracts.len() > 64 {
+            return Err(invalid("operation exceeds 64 interface contracts"));
+        }
+        for contract in &o.interface_contracts {
+            if !store::valid_id(&contract.id)
+                || !ids.insert(contract.id.clone())
+                || contract.title.trim().is_empty()
+                || contract.title.len() > 512
+                || !matches!(contract.kind.as_str(), "http" | "kafka" | "payload")
+                || contract.rows.is_empty()
+                || contract.rows.len() > 128
+            {
+                return Err(invalid(
+                    "interface contract requires a unique ID, kind and bounded rows",
+                ));
+            }
+            for row in &contract.rows {
+                if !store::valid_id(&row.id)
+                    || !ids.insert(row.id.clone())
+                    || row.label.trim().is_empty()
+                    || row.label.len() > 512
+                    || row.value.trim().is_empty()
+                    || row.value.len() > 8192
+                {
+                    return Err(invalid(
+                        "contract row requires a unique ID, label and value",
+                    ));
+                }
+                supported_refs(&row.dependency_ids, &row.source_ids, checked, &allowed)?;
             }
         }
         for finding in &o.findings {
@@ -439,6 +567,36 @@ pub fn make_bindings(
                     &e.source_ids,
                     checked,
                 )?;
+            }
+            for paragraph in &o.explanation {
+                add_binding(
+                    &mut fragments,
+                    format!("{prefix}/{}", paragraph.id),
+                    subject,
+                    paragraph,
+                    &paragraph.dependency_ids,
+                    &paragraph.source_ids,
+                    checked,
+                )?;
+            }
+            for contract in &o.interface_contracts {
+                for row in &contract.rows {
+                    add_binding(
+                        &mut fragments,
+                        format!("{prefix}/{}", row.id),
+                        subject,
+                        &(
+                            contract.id.as_str(),
+                            contract.title.as_str(),
+                            contract.kind.as_str(),
+                            &contract.boundaries,
+                            row,
+                        ),
+                        &row.dependency_ids,
+                        &row.source_ids,
+                        checked,
+                    )?;
+                }
             }
             for f in &o.findings {
                 add_binding(
@@ -644,6 +802,14 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     let mut sources = BTreeSet::new();
     for o in &n.operations {
         sources.extend(o.summary.source_ids.clone());
+        for paragraph in &o.explanation {
+            sources.extend(paragraph.source_ids.clone());
+        }
+        for contract in &o.interface_contracts {
+            for row in &contract.rows {
+                sources.extend(row.source_ids.clone());
+            }
+        }
         for e in &o.events {
             sources.extend(e.source_ids.clone());
         }
@@ -719,7 +885,7 @@ pub fn mermaid(o: &Operation) -> String {
                 e.from.as_deref().unwrap_or(&o.participants[0].id),
                 label(&e.text)
             )),
-            "alt" | "else" | "loop" => {
+            "alt" | "else" | "loop" | "opt" => {
                 out.push_str(&format!("    {} {}\n", e.kind, label(&e.text)))
             }
             "end" => out.push_str("    end\n"),
@@ -736,11 +902,37 @@ fn markdown(title: &str, n: &Narrative) -> String {
     );
     for o in &n.operations {
         out.push_str(&format!(
-            "## {}\n\n{}\n\n```mermaid\n{}```\n\n",
+            "## {}\n\n{}\n\n",
             escape(&o.title),
             escape(&o.summary.text),
+        ));
+        for paragraph in o.explanation.iter().filter(|p| !p.detail) {
+            out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
+        }
+        for contract in &o.interface_contracts {
+            out.push_str(&format!("### {}\n\nSource-derived {} interface description.\n\n| Element | Value / behavior |\n|---|---|\n", escape(&contract.title), escape(&contract.kind)));
+            for row in &contract.rows {
+                out.push_str(&format!(
+                    "| {} | {} |\n",
+                    escape(&row.label).replace('|', "&#124;"),
+                    escape(&row.value)
+                        .replace('|', "&#124;")
+                        .replace('\n', "<br>")
+                ));
+            }
+            for boundary in &contract.boundaries {
+                out.push_str(&format!("\n{}\n", escape(boundary)));
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "<details>\n<summary>Implementation details</summary>\n\n```mermaid\n{}```\n\n",
             mermaid(o)
         ));
+        for paragraph in o.explanation.iter().filter(|p| p.detail) {
+            out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
+        }
+        out.push_str("</details>\n\n");
         for f in &o.findings {
             out.push_str(&format!("- {}\n", escape(&f.text)));
         }
@@ -849,7 +1041,7 @@ pub fn publish(
             "documentation contains explicit gaps; author every in-scope operation before --require-complete",
         ));
     }
-    let bundle=digest(&json!({"context":checked.context_digest,"revisions":checked.services.iter().map(|(id,e)|(id,&e.revision)).collect::<BTreeMap<_,_>>(),"sources":checked.sources(),"narratives":narratives,"renderer":RENDERER}))?[7..].to_owned();
+    let bundle=digest(&json!({"context":checked.context_digest,"revisions":checked.services.iter().map(|(id,e)|(id,&e.revision)).collect::<BTreeMap<_,_>>(),"sources":checked.sources(),"narratives":narratives,"renderer":RENDERER,"rendererAssets":digest(&[TEMPLATE, STYLE, SCRIPT])?}))?[7..].to_owned();
     let mut binding = make_bindings(&checked, narratives.clone())?;
     let mut files = BTreeMap::new();
     for (subject, n) in &narratives {
@@ -888,7 +1080,7 @@ pub fn publish(
         cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">MICROSERVICE</div><h3><a href=\"generated/{bundle}/services/{}.html\">{}</a></h3><p>{} documented / {} entrypoints · {} gaps</p><p><code>{}</code> · {}</p></article>",escape(id),escape(&s.title),n.operations.len(),checked.services[id].entrypoints.len(),n.gaps.len(),&checked.services[id].revision[..12],escape(&checked.services[id].coverage)));
     }
     let scenario_cards=scenarios.iter().map(|(id,s)|format!("<article class=\"gap-card\"><div class=\"eyebrow\">INTERACTION SCENARIO</div><h3><a href=\"generated/{bundle}/scenarios/{}.html\">{}</a></h3><p>{}</p><p>{} declared interactions · {} documented operations</p></article>",escape(id),escape(&s.title),escape(&s.summary),s.interactions.len(),narratives[&format!("scenario:{id}")].operations.len())).collect::<String>();
-    let interaction_cards=interactions.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {} {} · {}</p><p>{}</p><details class=\"technical-evidence\"><summary>Declaration and supported checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(i.transport.method.as_deref().unwrap_or("HTTP")),escape(i.transport.path.as_deref().unwrap_or("unresolved route")),escape(&i.declaration.origin),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions[&i.id]).unwrap_or_default()))).collect::<String>();
+    let interaction_cards=interactions.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {} {} · {}</p><p>{}</p><details class=\"technical-evidence\"><summary>Declaration and supported checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(i.transport.method.as_deref().unwrap_or(&i.transport.kind)),escape(i.transport.topic.as_deref().or(i.transport.path.as_deref()).unwrap_or("unresolved route")),escape(&i.declaration.origin),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions[&i.id]).unwrap_or_default()))).collect::<String>();
     let overview = format!(
         "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><header class=\"topbar\"><span class=\"brand\"><span class=\"logo\">c</span><b>Codeclew</b><span>Service docs</span></span><span class=\"experiment\">{} services · {} scenarios</span></header><main style=\"margin:auto;max-width:1180px\"><div class=\"coverage-heading\"><div class=\"eyebrow\">ARCHITECTURE DOCUMENTATION</div><h2>{}</h2><p>Each microservice has its own documentation. Named scenarios connect bounded local flows through explicitly declared interactions.</p></div><h2>Microservices</h2><div class=\"coverage-grid\">{cards}</div><h2>Interaction scenarios</h2>{scenario_cards}<h2>Declared service relationships</h2>{interaction_cards}<p class=\"flow-note\">{gap_count} explicit documentation gaps. Source interpretation does not establish runtime activation or wire compatibility.</p></main></body></html>\n",
         escape(&repo.manifest.title),
@@ -896,7 +1088,8 @@ pub fn publish(
         scenarios.len(),
         escape(&repo.manifest.title)
     );
-    files.insert("overview.html".into(), overview.as_bytes().to_vec());
+    let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
+    files.insert("overview.html".into(), bundle_overview.into_bytes());
     binding.output_hashes = files
         .iter()
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))

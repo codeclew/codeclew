@@ -4,8 +4,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const VERSION: &str = "1.0";
-pub const EXTRACTOR: &str = "codeclew-documentation-java/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.0";
+pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.1";
+pub const RENDERER: &str = "codeclew-documentation-html/1.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -66,6 +66,8 @@ pub struct CallSite {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Transport {
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,7 +206,7 @@ pub struct Participant {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Event {
     pub id: String,
-    /// message, return, note, alt, else, loop, end, or declared.
+    /// message, return, note, alt, else, loop, opt, end, or declared.
     pub kind: String,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,10 +230,51 @@ pub struct Fragment {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Explanation {
+    pub id: String,
+    pub text: String,
+    pub event_ids: Vec<String>,
+    pub dependency_ids: Vec<String>,
+    pub source_ids: Vec<String>,
+    /// Implementation commentary, hidden behind the detailed evidence view.
+    #[serde(default)]
+    pub detail: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InterfaceContractRow {
+    pub id: String,
+    pub label: String,
+    pub value: String,
+    pub dependency_ids: Vec<String>,
+    pub source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InterfaceContract {
+    pub id: String,
+    pub title: String,
+    /// http, kafka, or payload. This is authored source interpretation, not OpenAPI.
+    pub kind: String,
+    pub rows: Vec<InterfaceContractRow>,
+    #[serde(default)]
+    pub boundaries: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation {
     pub id: String,
     pub title: String,
     pub summary: Fragment,
+    /// Domain explanation tied to diagram steps and their evidence.
+    #[serde(default)]
+    pub explanation: Vec<Explanation>,
+    /// Source-bound interface facts for projects without a published API schema.
+    #[serde(default)]
+    pub interface_contracts: Vec<InterfaceContract>,
     pub participants: Vec<Participant>,
     pub events: Vec<Event>,
     #[serde(default)]
