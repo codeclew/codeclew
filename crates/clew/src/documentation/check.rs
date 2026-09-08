@@ -79,10 +79,13 @@ pub fn run(repository: &Repository) -> Result<Check, ClewError> {
                 evidence.insert(id.clone(), value);
             }
             Err(error) => {
-                unresolved.insert(
-                    id.clone(),
-                    json!({"status":"UNRESOLVED","reason":error.code,"nextAction":error.message}),
-                );
+                let mut failure =
+                    json!({"status":"UNRESOLVED","reason":error.code,"nextAction":error.message});
+                if let Some(diagnostic) = crate::worker_diagnostics::from_evidence(&error.evidence)
+                {
+                    failure["workerFailure"] = diagnostic;
+                }
+                unresolved.insert(id.clone(), failure);
             }
         }
     }

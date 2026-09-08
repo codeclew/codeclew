@@ -27,6 +27,7 @@ tree-sitter-python = "0.25.0"
 uuid.workspace = true
 unicode-normalization.workspace = true
 walkdir.workspace = true
+roxmltree = "0.21.1"
 
 [build-dependencies]
 hex.workspace = true

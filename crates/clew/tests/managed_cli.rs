@@ -2644,6 +2644,23 @@ set -eu
 test "$1" = --settings
 grep -q '<validationRelease>17</validationRelease>' "$2"
 case "$*" in
+  *help:effective-pom*)
+    effective_output=
+    for argument in "$@"; do
+      case "$argument" in -Doutput=*) effective_output=${argument#-Doutput=} ;; esac
+    done
+    test -n "$effective_output"
+    module=$(pwd -P)
+    cat > "$effective_output" <<EOF
+<project><build>
+  <directory>$module/target</directory>
+  <sourceDirectory>$module/src/main/java</sourceDirectory>
+  <testSourceDirectory>$module/src/test/java</testSourceDirectory>
+  <outputDirectory>$module/target/classes</outputDirectory>
+  <testOutputDirectory>$module/target/test-classes</testOutputDirectory>
+</build></project>
+EOF
+    ;;
   *dependency:build-classpath*)
     mkdir -p target/classes target/generated-sources/example
     printf '%s\n' 'package example; public record OwnerDto(String name) {}' > target/generated-sources/example/OwnerDto.java
@@ -3227,6 +3244,37 @@ fn managed_support_summary_requires_private_input_and_drops_private_material() {
     for forbidden in ["/private", "Secret.kt", "run:private"] {
         assert!(!stdout.contains(forbidden));
     }
+
+    fs::write(&diagnostic, serde_json::to_vec(&json!({
+        "schema":"codeclew-documentation-check/1.0","services":{},
+        "unresolved":{"private-service":{"reason":"WORKER_CRASHED","nextAction":"/private/service failed"}},
+        "freshness":{"status":"UNRESOLVED"}
+    })).unwrap()).unwrap();
+    let summarized_docs = run_managed(
+        &runtime_binary,
+        &state_root,
+        &runtime,
+        &lease,
+        &[
+            "support",
+            "summarize",
+            "--input",
+            diagnostic.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(summarized_docs.status.success());
+    let docs_value: Value = serde_json::from_slice(&summarized_docs.stdout).unwrap();
+    assert_eq!(docs_value["sourceStage"], "DOCUMENTATION");
+    assert_eq!(
+        docs_value["documentation"]["failures"][0]["errorCode"],
+        "WORKER_CRASHED"
+    );
+    assert!(
+        !String::from_utf8(summarized_docs.stdout)
+            .unwrap()
+            .contains("private")
+    );
 
     fs::set_permissions(&diagnostic, fs::Permissions::from_mode(0o644)).unwrap();
     let rejected = run_managed(

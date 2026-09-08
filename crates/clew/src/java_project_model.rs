@@ -291,25 +291,55 @@ fn extract_maven(
     let settings = settings
         .map(crate::maven::MavenSettings::materialize)
         .transpose()?;
+    let scope = if selector.source_set == "main" {
+        "compile"
+    } else {
+        "test"
+    };
+    let scope_property = format!("-Dmdep.includeScope={scope}");
     let maven = || -> Result<Command, ClewError> {
         let mut command = crate::maven::command(repository)?;
         if let Some(settings) = &settings {
             command.arg("--settings").arg(settings.path());
         }
+        // Property-activated profiles must be identical for model extraction,
+        // native compilation, and release evaluation.
+        command.args([
+            "-DskipTests",
+            "-Dstyle.color=never",
+            "-Dmdep.outputFile=target/codeclew-classpath.txt",
+            "-Dmdep.regenerateFile=true",
+            &scope_property,
+        ]);
         Ok(command)
     };
     let project = selector.maven_project_directory(repository)?;
-    let pom = fs::read_to_string(project.join("pom.xml")).map_err(io_error)?;
-    if pom.contains("<sourceDirectory>")
-        || pom.contains("<testSourceDirectory>")
-        || pom.contains("<outputDirectory>")
-        || pom.contains("<testOutputDirectory>")
-        || pom.contains("maven-toolchains-plugin")
-    {
-        return Err(unsupported(
-            "Maven Java analysis requires standard source/output directories and the selected process JDK",
+    // Resolve inheritance and active profiles before checking the build layout.
+    // Plugin configuration can also contain <outputDirectory> (for example,
+    // spring-boot:repackage); it is not the compiler's classes directory.
+    let effective_pom = tempfile::NamedTempFile::new().map_err(io_error)?;
+    bounded_output(
+        maven()?
+            .arg("-f")
+            .arg(project.join("pom.xml"))
+            .args(["-B", "-q", "-N", "help:effective-pom"])
+            .arg(format!("-Doutput={}", effective_pom.path().display()))
+            .current_dir(repository),
+        "Maven Java effective model extraction failed",
+    )?;
+    let mut effective_xml = String::new();
+    effective_pom
+        .reopen()
+        .map_err(io_error)?
+        .take(MAX_MODEL_OUTPUT_BYTES as u64 + 1)
+        .read_to_string(&mut effective_xml)
+        .map_err(io_error)?;
+    if effective_xml.len() > MAX_MODEL_OUTPUT_BYTES {
+        return Err(resource(
+            "Maven Java effective model exceeds the byte limit",
         ));
     }
+    validate_maven_build_layout(&project, &effective_xml)?;
     let source_root = project.join(if selector.source_set == "main" {
         "src/main/java"
     } else {
@@ -317,11 +347,6 @@ fn extract_maven(
     });
     let source_paths = java_sources(&source_root)?;
     let classpath_file = project.join("target/codeclew-classpath.txt");
-    let scope = if selector.source_set == "main" {
-        "compile"
-    } else {
-        "test"
-    };
     let mut build = maven()?;
     build.arg("-f").arg(repository.join("pom.xml"));
     if project != repository {
@@ -338,11 +363,6 @@ fn extract_maven(
             .args([
                 "-B",
                 "-q",
-                "-DskipTests",
-                "-Dstyle.color=never",
-                "-Dmdep.outputFile=target/codeclew-classpath.txt",
-                "-Dmdep.regenerateFile=true",
-                &format!("-Dmdep.includeScope={scope}"),
                 if selector.source_set == "main" {
                     "compile"
                 } else {
@@ -378,7 +398,6 @@ fn extract_maven(
                     .ok_or_else(|| unsupported("Maven pom path is not UTF-8"))?,
                 "-q",
                 "-DforceStdout",
-                "-Dstyle.color=never",
                 "help:evaluate",
                 "-Dexpression=maven.compiler.release",
             ])
@@ -421,6 +440,56 @@ fn extract_maven(
         vec![format!("--release={release}")],
         boundaries,
     )
+}
+
+fn validate_maven_build_layout(project: &Path, effective_xml: &str) -> Result<(), ClewError> {
+    let document = roxmltree::Document::parse(effective_xml)
+        .map_err(|_| unsupported("Maven Java effective model is invalid XML"))?;
+    let root = document.root_element();
+    if !root.has_tag_name("project") {
+        return Err(unsupported(
+            "Maven Java effective model must select one project",
+        ));
+    }
+    let build = root
+        .children()
+        .find(|node| node.has_tag_name("build"))
+        .ok_or_else(|| unsupported("Maven Java effective build model is unavailable"))?;
+    for (name, expected) in [
+        ("directory", "target"),
+        ("sourceDirectory", "src/main/java"),
+        ("testSourceDirectory", "src/test/java"),
+        ("outputDirectory", "target/classes"),
+        ("testOutputDirectory", "target/test-classes"),
+    ] {
+        let actual = build
+            .children()
+            .find(|node| node.has_tag_name(name))
+            .and_then(|node| node.text())
+            .map(str::trim);
+        if actual.map(Path::new) != Some(project.join(expected).as_path()) {
+            return Err(unsupported(&format!(
+                "Maven Java effective build.{name} must resolve to the selected module's {expected}; plugin output directories do not control this check"
+            )));
+        }
+    }
+    let plugins = build.children().find(|node| node.has_tag_name("plugins"));
+    if plugins
+        .into_iter()
+        .flat_map(|node| node.children())
+        .any(|plugin| {
+            plugin.has_tag_name("plugin")
+                && plugin.children().any(|node| {
+                    node.has_tag_name("artifactId")
+                        && node.text().map(str::trim) == Some("maven-toolchains-plugin")
+                })
+        })
+    {
+        return Err(unsupported(
+            "Maven Java analysis requires the selected process JDK; the effective build includes maven-toolchains-plugin",
+        ));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -789,6 +858,58 @@ fn io_error(error: std::io::Error) -> ClewError {
 mod tests {
     use super::*;
 
+    fn effective_maven_fixture(project: &Path) -> String {
+        format!(
+            r#"<project xmlns="http://maven.apache.org/POM/4.0.0"><build>
+                <directory>{0}/target</directory>
+                <sourceDirectory>{0}/src/main/java</sourceDirectory>
+                <testSourceDirectory>{0}/src/test/java</testSourceDirectory>
+                <outputDirectory>{0}/target/classes</outputDirectory>
+                <testOutputDirectory>{0}/target/test-classes</testOutputDirectory>
+                <plugins><plugin><artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration><outputDirectory>web-build</outputDirectory></configuration>
+                </plugin></plugins>
+                <!-- <outputDirectory>ignored</outputDirectory> maven-toolchains-plugin -->
+            </build></project>"#,
+            project.display()
+        )
+    }
+
+    #[test]
+    fn maven_layout_uses_effective_build_paths_not_plugin_configuration() {
+        let project = Path::new("/selected/module");
+        let xml = effective_maven_fixture(project);
+        validate_maven_build_layout(project, &xml).unwrap();
+        for (field, expected) in [
+            ("directory", "target"),
+            ("sourceDirectory", "src/main/java"),
+            ("testSourceDirectory", "src/test/java"),
+            ("outputDirectory", "target/classes"),
+            ("testOutputDirectory", "target/test-classes"),
+        ] {
+            let changed = xml.replace(
+                &format!("<{field}>/selected/module/{expected}</{field}>"),
+                &format!("<{field}>/private/custom-layout</{field}>"),
+            );
+            let error = validate_maven_build_layout(project, &changed).unwrap_err();
+            assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+            assert!(error.message.contains(&format!("build.{field}")));
+            assert!(!error.message.contains("/private/custom-layout"));
+        }
+    }
+
+    #[test]
+    fn maven_layout_rejects_missing_authority_and_active_toolchains() {
+        let project = Path::new("/selected/module");
+        for xml in ["<project/>", "<projects/>", "not xml"] {
+            assert!(validate_maven_build_layout(project, xml).is_err());
+        }
+        let xml = effective_maven_fixture(project)
+            .replace("spring-boot-maven-plugin", "maven-toolchains-plugin");
+        let error = validate_maven_build_layout(project, &xml).unwrap_err();
+        assert!(error.message.contains("selected process JDK"));
+    }
+
     #[test]
     fn missing_build_launcher_has_a_recovery_command() {
         let missing = tempfile::tempdir().unwrap();
@@ -910,5 +1031,29 @@ mod tests {
             let encoded = serde_json::to_string(&model.authority).unwrap();
             assert!(!encoded.contains(workspace.to_str().unwrap()));
         }
+    }
+
+    #[test]
+    #[ignore = "qualification resolves a property-activated native Maven profile"]
+    fn maven_effective_profile_matches_native_compile_properties() {
+        let repository = tempfile::tempdir().unwrap();
+        fs::write(repository.path().join("pom.xml"), r#"
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>dev.codeclew.fixture</groupId><artifactId>profile-layout</artifactId><version>1</version>
+              <properties>
+                <maven.compiler.release>21</maven.compiler.release>
+                <fixture.output>${project.basedir}/target/classes</fixture.output>
+              </properties>
+              <build><outputDirectory>${fixture.output}</outputDirectory></build>
+              <profiles><profile><id>native-compile-layout</id>
+                <activation><property><name>skipTests</name></property></activation>
+                <properties><fixture.output>${project.basedir}/alternate-classes</fixture.output></properties>
+              </profile></profiles>
+            </project>"#).unwrap();
+        let error = extract_java_model(repository.path(), ":/main").unwrap_err();
+        assert_eq!(error.code, ErrorCode::UnsupportedProjectConfiguration);
+        assert!(error.message.contains("build.outputDirectory"), "{error}");
+        assert!(!repository.path().join("alternate-classes").exists());
     }
 }

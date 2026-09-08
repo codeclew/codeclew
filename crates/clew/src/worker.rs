@@ -7,6 +7,7 @@ use crate::proto::{
 };
 use crate::runtime::RuntimeAuthority;
 use crate::state::ManagedDirectory;
+use crate::worker_diagnostics::{self, WorkerStderr};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -146,6 +147,7 @@ pub struct WorkerClient {
     process: OwnedWorkerProcess,
     stdin: ChildStdin,
     stdout: ChildStdout,
+    stderr: WorkerStderr,
     next_id: u64,
     snapshot: Option<SnapshotId>,
     pub capabilities: crate::proto::WorkerCapabilities,
@@ -607,11 +609,9 @@ fn configure_sealed_worker_process(command: &mut Command, transport_root: &Path)
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // The Kotlin worker wraps native build tools whose diagnostics are
-        // neither bounded nor an evidence authority. Never forward them to
-        // the controller terminal. The typed protocol result is the only
-        // supported error boundary.
-        .stderr(Stdio::null())
+        // Drain a bounded tail privately. Native diagnostics are never an
+        // evidence authority and must not be forwarded to the terminal.
+        .stderr(Stdio::piped())
         // Generated Gradle application launchers apply KOTLIN_OPTS only to
         // this JVM. Preserve the project's ambient JAVA_* variables for
         // PROJECT_NATIVE children while bounding worker/model memory.
@@ -1993,24 +1993,67 @@ impl WorkerClient {
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
-        let process = OwnedWorkerProcess::new(child, task_run_spawn_permit.is_some())?;
+        let stderr_pipe = child.stderr.take().expect("piped stderr");
+        let mut stderr = match WorkerStderr::start(stderr_pipe) {
+            Ok(stderr) => stderr,
+            Err(_) => {
+                // Acquire and drop the fresh process authority even when the
+                // diagnostic collector cannot start, so no child is leaked.
+                let _ = OwnedWorkerProcess::new(child, task_run_spawn_permit.is_some());
+                return Err(ClewError::new(
+                    ErrorCode::WorkerCrashed,
+                    "cannot start private worker stderr capture",
+                ));
+            }
+        };
+        let identity = worker_diagnostic_identity(engine, &trusted_distribution);
+        let mut process =
+            OwnedWorkerProcess::new(child, task_run_spawn_permit.is_some()).map_err(|error| {
+                worker_diagnostics::annotate_failure(
+                    error,
+                    None,
+                    &mut stderr,
+                    "STARTUP",
+                    identity.clone(),
+                )
+            })?;
         drop(task_run_spawn_permit);
-        let hello = read_message(&mut stdout)?;
+        let hello = read_message(&mut stdout).map_err(|error| {
+            worker_diagnostics::annotate_failure(
+                error,
+                Some(&mut process.child),
+                &mut stderr,
+                "STARTUP",
+                identity.clone(),
+            )
+        })?;
         let capabilities = match hello.payload {
             Some(worker_response::Payload::Capabilities(value)) => value,
             _ => {
-                return Err(ClewError::new(
-                    ErrorCode::WorkerProtocolMismatch,
-                    "worker did not send startup capabilities",
+                return Err(worker_diagnostics::annotate_failure(
+                    ClewError::new(
+                        ErrorCode::WorkerProtocolMismatch,
+                        "worker did not send startup capabilities",
+                    ),
+                    Some(&mut process.child),
+                    &mut stderr,
+                    "STARTUP",
+                    identity,
                 ));
             }
         };
         if capabilities.compiler_version != engine.analyzer_compiler_version()
             || !capabilities.protocol_versions.iter().any(|v| v.major == 1)
         {
-            return Err(ClewError::new(
-                ErrorCode::WorkerProtocolMismatch,
-                "worker compiler/protocol version mismatch",
+            return Err(worker_diagnostics::annotate_failure(
+                ClewError::new(
+                    ErrorCode::WorkerProtocolMismatch,
+                    "worker compiler/protocol version mismatch",
+                ),
+                Some(&mut process.child),
+                &mut stderr,
+                "STARTUP",
+                identity,
             ));
         }
         Ok(Self {
@@ -2020,6 +2063,7 @@ impl WorkerClient {
             process,
             stdin,
             stdout,
+            stderr,
             next_id: 1,
             snapshot: None,
             capabilities,
@@ -2073,6 +2117,24 @@ impl WorkerClient {
             _ => {}
         }
         self.request_with_discovery_variants(kind, payload, 0)
+            .map_err(|error| {
+                if worker_diagnostics::from_evidence(&error.evidence).is_some() {
+                    return error;
+                }
+                let stage = match kind {
+                    RequestKind::OpenProject => "OPEN_PROJECT",
+                    RequestKind::IndexFiles => "INDEX_FILES",
+                    RequestKind::Shutdown => "SHUTDOWN",
+                    _ => return error,
+                };
+                worker_diagnostics::annotate_failure(
+                    error,
+                    Some(&mut self.process.child),
+                    &mut self.stderr,
+                    stage,
+                    worker_diagnostic_identity(self.engine, &self.trusted_distribution),
+                )
+            })
     }
 
     fn request_with_discovery_variants(
@@ -2817,12 +2879,31 @@ impl WorkerClient {
         if status.success() {
             Ok(())
         } else {
-            Err(ClewError::new(
-                ErrorCode::WorkerCrashed,
-                format!("worker exited with {status}"),
+            Err(worker_diagnostics::annotate_failure(
+                ClewError::new(
+                    ErrorCode::WorkerCrashed,
+                    format!("worker exited with {status}"),
+                ),
+                Some(&mut self.process.child),
+                &mut self.stderr,
+                "SHUTDOWN",
+                worker_diagnostic_identity(self.engine, &self.trusted_distribution),
             ))
         }
     }
+}
+
+fn worker_diagnostic_identity(
+    engine: KotlinSemanticEngine,
+    distribution: &TrustedWorkerDistribution,
+) -> Value {
+    serde_json::json!({
+        "engine":engine.engine_id(),
+        "compilerVersion":engine.analyzer_compiler_version(),
+        "runtimeKey":distribution.build_input_digest,
+        "distributionTreeHash":distribution.tree_hash,
+        "jvmOptions":SEALED_WORKER_JVM_OPTIONS,
+    })
 }
 
 fn json_string(payload: &Value, key: &str) -> String {
@@ -5135,6 +5216,37 @@ mod tests {
         );
         assert!(!environment.contains_key("JAVA_OPTS"));
         assert!(SEALED_WORKER_JVM_OPTIONS.contains("-XX:+ExitOnOutOfMemoryError"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_frame_eof_keeps_exit_status_without_inline_stderr() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf 'private-token-value' >&2; exit 23"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = WorkerStderr::start(child.stderr.take().unwrap()).unwrap();
+        let error = read_message(&mut child.stdout.take().unwrap()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::WorkerCrashed);
+        let annotated = worker_diagnostics::annotate_failure(
+            error,
+            Some(&mut child),
+            &mut stderr,
+            "STARTUP",
+            serde_json::json!({"engine":"test"}),
+        );
+        assert!(annotated.message.contains("exitCode=23"));
+        let diagnostic = worker_diagnostics::from_evidence(&annotated.evidence).unwrap();
+        assert_eq!(diagnostic["stage"], "STARTUP");
+        assert_eq!(diagnostic["process"]["exitCode"], 23);
+        assert!(
+            !serde_json::to_string(&annotated)
+                .unwrap()
+                .contains("private-token-value")
+        );
+        child.wait().unwrap();
     }
 
     #[test]

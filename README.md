@@ -528,6 +528,13 @@ file and export only the allowlist summary:
 ./clew support summarize --input /absolute/private/path/result.json
 ```
 
+The converter also accepts `docs check` results and their pages, keeping only
+failure counts, typed codes, and safe worker process details. Worker transport
+failures retain a private stderr tail of at most 64 KiB, with the file location
+and observed exit status in the diagnostic evidence. See the
+[worker crash runbook](docs/operations/p0-runbook.md#worker-crash) for capture
+limits and the fixed JVM memory settings.
+
 Installation, Codex/Claude skills, frequent-update recovery, privacy rules,
 language extension, and multi-repository operations are documented in the
 [P0 operations runbook](docs/operations/p0-runbook.md).

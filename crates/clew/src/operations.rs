@@ -610,6 +610,13 @@ pub fn support_summary(input: &Value) -> Result<Value, ClewError> {
         .get("schema")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("diagnostic input has no schema"))?;
+    let documentation = match schema {
+        "codeclew-documentation-check/1.0" => Some(documentation_support_details(input, false)?),
+        "codeclew-docs-page/1.0" if input["reportSchema"] == "codeclew-documentation-check/1.0" => {
+            Some(documentation_support_details(input, true)?)
+        }
+        _ => None,
+    };
     let (error, terminal_status, source_stage) = match schema {
         "codeclew-error/2.0" => (
             Some(parse_error_code(input.pointer("/error/code").ok_or_else(
@@ -633,6 +640,7 @@ pub fn support_summary(input: &Value) -> Result<Value, ClewError> {
         "codeclew-bootstrap-error/1.0" | "codeclew-bootstrap-error/2.0" => {
             (None, Some("BOOTSTRAP_FAILED"), "BOOTSTRAP")
         }
+        _ if documentation.is_some() => (None, None, "DOCUMENTATION"),
         _ => return Err(invalid("diagnostic input schema is not shareable")),
     };
     let code = error
@@ -640,10 +648,14 @@ pub fn support_summary(input: &Value) -> Result<Value, ClewError> {
         .map(|value| serde_json::to_value(value).map_err(internal))
         .transpose()?;
     let retryable = error.as_ref().is_some_and(error_code_retryable);
-    let remediation_id = error
-        .as_ref()
-        .map(remediation_for_error)
-        .unwrap_or_else(|| remediation_for_status(terminal_status));
+    let remediation_id = if documentation.is_some() {
+        "INSPECT_DOCUMENTATION_CHECK"
+    } else {
+        error
+            .as_ref()
+            .map(remediation_for_error)
+            .unwrap_or_else(|| remediation_for_status(terminal_status))
+    };
     let mut summary = json!({
         "schema":SUPPORT_SUMMARY_SCHEMA,
         "status":"SAFE_TO_SHARE",
@@ -663,9 +675,95 @@ pub fn support_summary(input: &Value) -> Result<Value, ClewError> {
             "containsSymbols":false,
         },
     });
+    if let Some(documentation) = documentation {
+        summary["documentation"] = documentation;
+    } else if let Some(evidence) = input
+        .pointer("/error/evidence")
+        .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+        && let Some(diagnostic) = crate::worker_diagnostics::from_evidence(&evidence)
+        && let Some(safe) = crate::worker_diagnostics::safe_summary(&diagnostic)
+    {
+        summary["workerFailure"] = safe;
+    }
     let digest = canonical::hash(&summary).map_err(internal)?;
     summary["summaryDigest"] = Value::String(digest);
     Ok(summary)
+}
+
+fn documentation_support_details(input: &Value, paged: bool) -> Result<Value, ClewError> {
+    let (service_count, unresolved) = if paged {
+        let items = input["items"]
+            .as_array()
+            .ok_or_else(|| invalid("documentation page has no items"))?;
+        (
+            items
+                .iter()
+                .filter(|item| item["section"] == "services")
+                .count(),
+            items
+                .iter()
+                .filter(|item| item["section"] == "unresolved")
+                .map(|item| &item["record"])
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        let services = input["services"]
+            .as_object()
+            .ok_or_else(|| invalid("documentation check has no services"))?;
+        let unresolved = input["unresolved"]
+            .as_object()
+            .ok_or_else(|| invalid("documentation check has no unresolved records"))?;
+        (services.len(), unresolved.values().collect::<Vec<_>>())
+    };
+    let mut codes = std::collections::BTreeMap::<String, (ErrorCode, usize)>::new();
+    let mut workers = std::collections::BTreeMap::<String, (Value, usize)>::new();
+    for failure in &unresolved {
+        let code = parse_error_code(&failure["reason"])?;
+        let label = serde_json::to_value(&code)
+            .map_err(internal)?
+            .as_str()
+            .ok_or_else(|| invalid("diagnostic error code is not a string"))?
+            .to_owned();
+        codes.entry(label).or_insert((code, 0)).1 += 1;
+        if let Some(safe) = crate::worker_diagnostics::safe_summary(&failure["workerFailure"]) {
+            workers
+                .entry(canonical::compact(&safe).map_err(internal)?)
+                .or_insert((safe, 0))
+                .1 += 1;
+        }
+    }
+    let failures = codes
+        .into_iter()
+        .map(|(label, (code, count))| {
+            json!({
+                "errorCode":label,"count":count,"retryable":error_code_retryable(&code),
+                "remediationId":remediation_for_error(&code),
+            })
+        })
+        .collect::<Vec<_>>();
+    let worker_failures = workers
+        .into_values()
+        .map(|(mut value, count)| {
+            value["count"] = json!(count);
+            value
+        })
+        .collect::<Vec<_>>();
+    let freshness = input
+        .pointer("/freshness/status")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            matches!(
+                *value,
+                "CURRENT" | "STALE" | "PARTIALLY_STALE" | "UNRESOLVED" | "NOT_RENDERED"
+            )
+        });
+    Ok(json!({
+        "countsScope":if paged {"PAGE"} else {"WHOLE_REPORT"},
+        "resolvedServiceCount":service_count,"unresolvedServiceCount":unresolved.len(),
+        "freshnessStatus":freshness,"failures":failures,"workerFailures":worker_failures,
+        "hasMorePages":paged && input.get("nextCursor").is_some_and(|value| !value.is_null()),
+        "omittedRecordCount":if paged {input["omitted"].as_array().map_or(0, Vec::len)} else {0},
+    }))
 }
 
 fn parse_error_code(value: &Value) -> Result<ErrorCode, ClewError> {
@@ -905,7 +1003,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:a5e1b458529467ea4277b6ad483c73c5ef0af5b8c08b3a53e59b1f58a58d365d"
+            "sha256:bbe2f431fae81854487f76f8b0abcc0af1662ca8a167037acc42d30c05a1358e"
         );
     }
 
@@ -986,6 +1084,74 @@ mod tests {
         ] {
             assert!(!encoded.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn documentation_support_summary_aggregates_failures_without_service_identity() {
+        let input = json!({
+            "schema":"codeclew-documentation-check/1.0",
+            "services":{"private-service":{"revision":"private-revision","sources":"private-source"}},
+            "unresolved":{
+                "private-kotlin":{
+                    "reason":"WORKER_CRASHED","nextAction":"/private/project failed with secret",
+                    "workerFailure":{
+                        "schema":"codeclew-worker-process-diagnostic/1.0","stage":"INDEX_FILES",
+                        "process":{"status":"EXITED","exitCode":3,"signal":null},
+                        "identity":{"runtimeKey":"private-key"},"stderr":{"path":"/private/failure.stderr"}
+                    }
+                },
+                "private-java":{"reason":"UNSUPPORTED_PROJECT_CONFIGURATION","nextAction":"secret-source"}
+            },
+            "freshness":{"status":"UNRESOLVED","unresolved":{"secret":"source"}},
+            "inputDigest":"private-input","contextDigest":"private-context"
+        });
+        let summary = support_summary(&input).unwrap();
+        assert_eq!(summary["sourceStage"], "DOCUMENTATION");
+        assert_eq!(summary["documentation"]["countsScope"], "WHOLE_REPORT");
+        assert_eq!(summary["documentation"]["resolvedServiceCount"], 1);
+        assert_eq!(summary["documentation"]["unresolvedServiceCount"], 2);
+        assert_eq!(
+            summary["documentation"]["failures"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(summary["documentation"]["workerFailures"][0]["exitCode"], 3);
+        let encoded = summary.to_string();
+        for private in [
+            "private-",
+            "/private",
+            "secret",
+            "runtimeKey",
+            "nextAction",
+            ".stderr",
+        ] {
+            assert!(!encoded.contains(private), "{private}");
+        }
+        let renamed: Value =
+            serde_json::from_str(&input.to_string().replace("private-", "renamed-")).unwrap();
+        assert_eq!(summary, support_summary(&renamed).unwrap());
+    }
+
+    #[test]
+    fn documentation_support_pages_preserve_partial_scope_and_reject_unknown_reasons() {
+        let mut input = json!({
+            "schema":"codeclew-docs-page/1.0","reportSchema":"codeclew-documentation-check/1.0",
+            "items":[{"section":"unresolved","id":"private-service","record":{"reason":"WORKER_CRASHED","nextAction":"secret"}}],
+            "nextCursor":"private-digest:50","omitted":[{"id":"private-other"}],
+            "freshness":{"status":"UNRESOLVED"}
+        });
+        let summary = support_summary(&input).unwrap();
+        assert_eq!(summary["documentation"]["countsScope"], "PAGE");
+        assert_eq!(summary["documentation"]["hasMorePages"], true);
+        assert_eq!(summary["documentation"]["omittedRecordCount"], 1);
+        assert_eq!(summary["documentation"]["unresolvedServiceCount"], 1);
+        assert!(!summary.to_string().contains("private"));
+        input["items"][0]["record"]["reason"] = json!("PRIVATE_UNKNOWN_FAILURE");
+        assert!(support_summary(&input).is_err());
+        input["reportSchema"] = json!("codeclew-docs-context/1.0");
+        assert!(support_summary(&input).is_err());
     }
 
     #[test]

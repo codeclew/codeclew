@@ -4,7 +4,7 @@ description: Use Codeclew for bounded compiler- or syntax-backed code context, s
 license: Apache-2.0
 metadata:
   author: codeclew
-  version: "0.6.1"
+  version: "0.6.2"
   repository: https://github.com/codeclew/codeclew-skill
 ---
 
@@ -548,6 +548,15 @@ Retry a worker crash once only when the typed error says it is retryable. For
 `WORKTREE_RECOVERY_REQUIRED`, use `change recover` with the bound session and
 run. For stale targets or compare-and-swap failures, open a new session rather
 than replaying an old plan.
+
+On a worker transport failure, inspect the protocol stage and observed process
+exit status in the `worker-process-diagnostic:` entry of `error.evidence`, or
+`unresolved.<service>.workerFailure` in `docs check`. Its `stderr.path` points to
+a private, bounded stderr tail. Do not infer OOM from SIGKILL or assume an old
+worker merely because older releases remain installed; use the reported
+runtime identity and captured diagnostics. Never paste that raw stderr into a
+shareable report. `support summarize` accepts documentation checks and their
+pages; counts for a page are explicitly partial.
 
 Do not paste raw Codeclew output, source, diffs, symbols, repository paths,
 arguments, or `CODECLEW_HOME` contents into external issues or chats. Save the

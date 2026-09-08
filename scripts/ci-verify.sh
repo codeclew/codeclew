@@ -37,6 +37,10 @@ cargo test --locked -p clew --lib 'operations::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'maven::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'java_project_model::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib java_project_model::tests::java_fixtures_extract_project_native_models -- --exact --ignored --test-threads=1
+cargo test --locked -p clew --lib java_project_model::tests::maven_effective_profile_matches_native_compile_properties -- --exact --ignored --test-threads=1
+cargo test --locked -p clew --lib 'worker_diagnostics::tests::' -- --test-threads=1
+cargo test --locked -p clew --lib worker::tests::worker_frame_eof_keeps_exit_status_without_inline_stderr -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'java_adapter_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib \
   java_adapter_v2::tests::spring_entrypoints_use_resolved_annotations_on_java_17_and_21 \

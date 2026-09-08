@@ -56,6 +56,7 @@ pub mod thread_impact_service;
 pub mod typescript_adapter_v2;
 pub mod typescript_project_model;
 pub mod worker;
+pub(crate) mod worker_diagnostics;
 pub mod workspace;
 pub mod workspace_prepare;
 pub mod workspace_publish;

@@ -435,8 +435,10 @@ mkdir -m 700 "$INCIDENT_DIR"
 chmod 600 "$INCIDENT_DIR/result.json" "$INCIDENT_DIR/completion.json"
 ```
 
-For a core error or status, pass the local `result.json` to the allowlist-based
-converter. For a bootstrap failure, provide a file containing exactly one
+For a core error, status, or `docs check` result, pass the local `result.json` to
+the allowlist-based converter. A paginated documentation result reports counts
+for that page only and indicates omitted records or remaining pages. For a
+bootstrap failure, provide a file containing exactly one
 bootstrap error JSON object. If the broken installation cannot start the
 summarizer, use a working installation of the same approved version on a
 trusted machine:
@@ -455,6 +457,8 @@ racing modification fails closed.
 The output is built only from an allowlist and has `status: SAFE_TO_SHARE`. It
 contains the schema and stage, typed error code or terminal status,
 retryability, remediation ID, and a digest of the sanitized summary itself. It
+can also contain documentation failure counts and observed worker exit codes,
+signals, and protocol stages. It
 does not carry messages, source, diffs, symbols, arguments, repository content
 digests, repository/session/run identity, or paths.
 
@@ -480,6 +484,38 @@ are deleted after the investigation closes.
 3. If it repeats, stop, generate a safe summary, and retain raw artifacts
    locally.
 4. Do not retry indefinitely or delete state before the investigator decides.
+
+Starting with 0.6.2, a worker transport failure retains up to the last 64 KiB of
+stderr in a caller-owned mode-0600 file under the managed
+`attempts/worker-failures` directory. Successful requests do not persist this
+stream. The raw stderr is never printed or included in a shareable summary.
+
+For `docs check`, inspect `unresolved.<service>.workerFailure`. For a standalone
+error, inspect the `worker-process-diagnostic:` JSON entry in `error.evidence`.
+The diagnostic includes the `STARTUP`, `OPEN_PROJECT`, `INDEX_FILES`, or
+`SHUTDOWN` stage, the verified runtime and worker identities, and `stderr.path`.
+Capture errors leave the original failure intact and report stderr as
+`UNAVAILABLE`. `retainedBytes`, `observedBytes`, `truncated`, and `readFailed`
+describe the limits of the captured stream.
+
+The process status is observed before controller cleanup: `EXITED` includes
+the available exit code or signal; `RUNNING` means it had not exited during the
+bounded observation window; `UNAVAILABLE` means no status could be established.
+A reported SIGKILL is not by itself evidence of OOM. Check the private stderr
+and host process diagnostics before attributing a cause.
+
+The sealed worker still uses `-Xms64m -Xmx1024m`,
+`-XX:MaxMetaspaceSize=384m`, `-XX:MaxDirectMemorySize=256m`, and
+`-XX:+ExitOnOutOfMemoryError`. These are fixed worker settings, not a promise
+about all Gradle/Maven child-process memory. The launcher sets `KOTLIN_OPTS`;
+there is no separate supported worker-heap override in this release.
+
+Maven Java analysis checks resolved build directories from the effective POM,
+including inheritance and active profiles. A plugin's own output directory,
+such as Spring Boot `repackage` writing archives to `web-build`, does not change
+the compiler output directory. Nonstandard effective source/classes/build
+directories and an active Maven toolchains plugin remain unsupported; the
+failure names the rejected build field without exposing its private value.
 
 ### `WORKTREE_RECOVERY_REQUIRED`
 
