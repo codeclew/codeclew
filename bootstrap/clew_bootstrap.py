@@ -3481,6 +3481,10 @@ def main() -> int:
     os.set_inheritable(runtime_fd, True)
     os.set_inheritable(lease.fileno(), True)
     environment = {name: value for name, value in os.environ.items() if not name.startswith("CODECLEW_")}
+    # Public runtime selection, not a controller capability. The Rust supervisor
+    # validates it and supplies it only to the trusted worker launcher.
+    if "CODECLEW_WORKER_JAVA_HOME" in os.environ:
+        environment["CODECLEW_WORKER_JAVA_HOME"] = os.environ["CODECLEW_WORKER_JAVA_HOME"]
     environment[STATE_ROOT_FD_ENV] = str(state_fd)
     environment[RUNTIME_ROOT_FD_ENV] = str(runtime_fd)
     environment[RUNTIME_LEASE_FD_ENV] = str(lease.fileno())

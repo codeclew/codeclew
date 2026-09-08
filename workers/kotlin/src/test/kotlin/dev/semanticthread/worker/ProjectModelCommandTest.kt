@@ -1297,6 +1297,16 @@ class ProjectModelCommandTest {
     }
 
     @Test
+    fun mavenRuntimeComesFromTheProjectLauncherOutput() {
+        val runtime = parseMavenRuntime("Apache Maven 3.9.9\nJava version: 17.0.12, vendor: Example, runtime: /project/jdk17\n")!!
+        assertEquals("3.9.9", runtime.version)
+        assertEquals(Path.of("/project/jdk17"), runtime.javaHome)
+        assertEquals(Path.of("/project/other"), parseMavenRuntime("Apache Maven 3.6.3\nJava home: /project/other\n")!!.javaHome)
+        assertNull(parseMavenRuntime("Apache Maven 3.9.9\n"))
+        assertNull(parseMavenRuntime("Apache Maven 3.9.9\nJava home: relative/path\n"))
+    }
+
+    @Test
     fun futureCompilerDescriptorValuesBecomeTypedBoundaries() {
         val source = "fun answer() = 42"
         fun descriptor(change: JsonObject.() -> JsonObject = { this }): JsonObject {
@@ -1325,6 +1335,16 @@ class ProjectModelCommandTest {
         }
 
         assertNull(descriptorUnsupportedReason(descriptor(), "A.kt", source))
+        val annotated = descriptor {
+            JsonObject(this + ("jvmAnnotations" to buildJsonObject {
+                putJsonObject("definitions") {
+                    putJsonObject("example.Annotation") { put("returnType", "kotlin/String!") }
+                }
+            }))
+        }
+        assertNull(descriptorUnsupportedReason(annotated, "A.kt", source))
+        assertEquals("UNRESOLVED_DESCRIPTOR_TYPE", descriptorUnsupportedReason(
+            JsonObject(annotated + ("returnType" to JsonPrimitive("<ERROR TYPE>"))), "A.kt", source))
         assertEquals("UNKNOWN_DECLARATION_KIND", descriptorUnsupportedReason(changed("declarationKind", "FUTURE_KIND"), "A.kt", source))
         assertEquals("UNKNOWN_VISIBILITY", descriptorUnsupportedReason(changed("visibility", "package"), "A.kt", source))
         assertEquals("UNKNOWN_EFFECTIVE_VISIBILITY", descriptorUnsupportedReason(changed("effectiveVisibility", "local"), "A.kt", source))

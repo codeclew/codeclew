@@ -726,7 +726,9 @@ fn javac_major(version: &str) -> Option<u16> {
 }
 
 fn validate_release(release: u16, compiler_major: u16) -> Result<(), ClewError> {
-    if release < 17 || compiler_major < 17 {
+    if release < crate::analysis_modules::JAVA_MIN_MAJOR
+        || compiler_major < crate::analysis_modules::JAVA_MIN_MAJOR
+    {
         return Err(unsupported(
             "Java analysis requires release 17 and JDK 17 or newer",
         ));

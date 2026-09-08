@@ -154,6 +154,7 @@ pub struct WorkerClient {
     pub last_profile: RequestProfile,
     authority_session: Uuid,
     trusted_distribution: TrustedWorkerDistribution,
+    worker_jvm: crate::jvm_runtime::WorkerJvm,
     build_state_root: Option<PathBuf>,
     compiler_index_root: Option<ManagedDirectory>,
     build_namespace_digest: String,
@@ -1930,6 +1931,7 @@ impl WorkerClient {
             .unwrap_or_else(|| {
                 crate::canonical::hash_bytes(b"codeclew-non-product-worker-namespace/2.0")
             });
+        let worker_jvm = crate::jvm_runtime::WorkerJvm::select(engine)?;
         let trusted_distribution = prepare_trusted_worker_distribution(workspace, engine)?;
         let launcher = trusted_distribution.launcher.clone();
         let canonical_build_state = build_state_root
@@ -1964,6 +1966,7 @@ impl WorkerClient {
         let mut command = Command::new(&launcher);
         isolate_controller_authority(&mut command)?;
         configure_sealed_worker_process(&mut command, &canonical_transport_root);
+        worker_jvm.configure(&mut command);
         configure_worker_state_environment(
             &mut command,
             canonical_build_state.as_deref(),
@@ -2006,7 +2009,7 @@ impl WorkerClient {
                 ));
             }
         };
-        let identity = worker_diagnostic_identity(engine, &trusted_distribution);
+        let identity = worker_diagnostic_identity(engine, &trusted_distribution, &worker_jvm);
         let mut process =
             OwnedWorkerProcess::new(child, task_run_spawn_permit.is_some()).map_err(|error| {
                 worker_diagnostics::annotate_failure(
@@ -2070,6 +2073,7 @@ impl WorkerClient {
             last_profile: RequestProfile::default(),
             authority_session: Uuid::new_v4(),
             trusted_distribution,
+            worker_jvm,
             build_state_root: canonical_build_state,
             compiler_index_root: compiler_index_root.cloned(),
             build_namespace_digest,
@@ -2132,7 +2136,11 @@ impl WorkerClient {
                     Some(&mut self.process.child),
                     &mut self.stderr,
                     stage,
-                    worker_diagnostic_identity(self.engine, &self.trusted_distribution),
+                    worker_diagnostic_identity(
+                        self.engine,
+                        &self.trusted_distribution,
+                        &self.worker_jvm,
+                    ),
                 )
             })
     }
@@ -2887,7 +2895,11 @@ impl WorkerClient {
                 Some(&mut self.process.child),
                 &mut self.stderr,
                 "SHUTDOWN",
-                worker_diagnostic_identity(self.engine, &self.trusted_distribution),
+                worker_diagnostic_identity(
+                    self.engine,
+                    &self.trusted_distribution,
+                    &self.worker_jvm,
+                ),
             ))
         }
     }
@@ -2896,6 +2908,7 @@ impl WorkerClient {
 fn worker_diagnostic_identity(
     engine: KotlinSemanticEngine,
     distribution: &TrustedWorkerDistribution,
+    worker_jvm: &crate::jvm_runtime::WorkerJvm,
 ) -> Value {
     serde_json::json!({
         "engine":engine.engine_id(),
@@ -2903,6 +2916,7 @@ fn worker_diagnostic_identity(
         "runtimeKey":distribution.build_input_digest,
         "distributionTreeHash":distribution.tree_hash,
         "jvmOptions":SEALED_WORKER_JVM_OPTIONS,
+        "workerJvm":worker_jvm,
     })
 }
 

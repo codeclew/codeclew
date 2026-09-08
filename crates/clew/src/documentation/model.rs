@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const VERSION: &str = "1.0";
-pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.1";
+pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
 pub const RENDERER: &str = "codeclew-documentation-html/1.4";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

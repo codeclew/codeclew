@@ -662,3 +662,35 @@ A deployment is pilot-ready when:
 A signed installer, centralized fleet management, automatic diagnostic upload,
 cross-host shared state, semantic Rust/Python resolution, and multi-repository
 publication remain intentionally outside P0.
+
+
+## Worker JVM and analysis modules (0.7.0)
+
+Inspect `clew capabilities` → `analysisModules` for the installed language packs
+and framework module. Registration reports requirements and schemas; project
+and operation admission still determine which operations are supported.
+
+Set `CODECLEW_WORKER_JAVA_HOME` to an installed JDK 21 home to select the Kotlin
+analyzer runtime. An explicitly unsuitable runtime fails with
+`WORKER_JDK_UNSUPPORTED`; automatic selection checks JAVA_HOME, PATH and system
+JDK installations. JAVA_HOME is preserved for native project build subprocesses.
+The Maven model uses the runtime reported by `mvn --version` (or the wrapper),
+not the analyzer process. Gradle retains its compiler toolchain model.
+`MAVEN_BUILD_JVM_UNRESOLVED` means that the launcher did not report a usable JDK.
+Worker and project JVM identities participate separately in analysis inputs.
+
+`UNQUALIFIED_COMPILER_OPTIONS` names options whose semantics are not qualified
+across the selected compiler versions. Keep required project options enabled;
+use an available matching qualified pack or report the option names/versions.
+Private option values are omitted from this diagnostic. The exact option
+`-Xannotation-default-target=param-property` is removed from analysis arguments
+only for Kotlin 1.9 projects; the model records both original and ignored
+arguments and `KOTLIN_1_9_ANNOTATION_DEFAULT_TARGET_IGNORED_FOR_ANALYSIS`.
+
+New language facts use `jvm-annotation-facts/1.0`. Derived Spring metadata uses
+`spring-entrypoints/0.2`, authority `FRAMEWORK_DERIVED`, and a derivation record
+with module/policy/implementation and input digests, input compiler authority,
+and coverage. Legacy `spring-entrypoints/0.1` remains a compatibility input for
+retained generations. Missing annotation evidence remains an extraction boundary.
+Some Kotlin compiler metadata represents annotation defaults as unavailable
+stubs; these remain explicit partial coverage, not invented values.

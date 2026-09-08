@@ -9,7 +9,7 @@ executable two-service example, including rejected orders and stock shortages.
 Suppose retained source says `if (quantity <= 0) return "invalid";` followed by
 `return reserve(request);`. The diagram must preserve that early return. The
 summary describes the outcome in plain language. Ordered explanation paragraphs
-explain the business meaning of the diagram and link directly to its steps; exact
+explain the business meaning and retain the evidence of the diagram steps; exact
 implementation details remain available in the source inspector. A service operation ID is its exact catalogue entrypoint
 ID; a scenario operation ID is its registered scenario ID.
 

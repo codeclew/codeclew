@@ -110,7 +110,12 @@ class SpringAnnotationFactsTest {
             assertEquals("-", entries("roots/Worker.disabled").single()["attributes"]!!.jsonObject["cron"]!!.jsonPrimitive.content)
             assertEquals("KAFKA_LISTENER", entries("roots/Multi.handle").single()["kind"]!!.jsonPrimitive.content)
             assertEquals(true, entries("roots/Multi.fallback").single()["handlerAttributes"]!!.jsonObject["isDefault"]!!.jsonPrimitive.boolean)
-            assertTrue(items.all { strings(it["spring"]!!.jsonObject["boundaries"]).isEmpty() })
+            items.forEach { row ->
+                val input = row["jvmAnnotations"]!!.jsonObject
+                val metadata = row["spring"]!!.jsonObject
+                assertEquals(strings(input["boundaries"]).toSet(), strings(metadata["boundaries"]).toSet())
+                assertEquals(input["coverage"]!!.jsonObject["status"], metadata["derivation"]!!.jsonObject["coverage"])
+            }
         }
     }
 
@@ -208,8 +213,19 @@ class SpringAnnotationFactsTest {
                 }
             }
             assertEquals(0, status.code, output.toString())
-            return Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
+            val descriptors = Files.readAllLines(facts).map { Json.parseToJsonElement(it).jsonObject }
                 .filter { it["recordType"]?.jsonPrimitive?.content == "DECLARATION_DESCRIPTOR" }
+            val annotated = descriptors.filter { it["jvmAnnotations"] != null }
+            val process = ProcessBuilder(requireNotNull(System.getProperty("codeclew.test.springInterpreter"))).start()
+            process.outputStream.bufferedWriter().use { it.write(JsonArray(annotated.map { it["jvmAnnotations"]!! }).toString()) }
+            val derived = process.inputStream.bufferedReader().readText()
+            val errors = process.errorStream.bufferedReader().readText()
+            assertEquals(0, process.waitFor(), errors)
+            val interpreted = Json.parseToJsonElement(derived).jsonArray
+            val replacements = annotated.zip(interpreted).associate { (row, metadata) ->
+                row["symbolIdentity"]!! to metadata
+            }
+            return descriptors.map { row -> replacements[row["symbolIdentity"]]?.let { JsonObject(row + ("spring" to it)) } ?: row }
         } finally { root.toFile().deleteRecursively() }
     }
 }

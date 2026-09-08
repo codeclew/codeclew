@@ -45,6 +45,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.TreeMap;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
@@ -219,7 +220,7 @@ final class CodeclewJavaAnalyzer {
                 row.put("superclass", typeIdentity(superclass));
             }
             facts.add(row);
-            row.put("spring", new SpringReader().readInherited(type));
+            row.put("jvmAnnotations", new JvmAnnotationReader().readInherited(type));
             owners.push(identity);
             super.visitClass(tree, unused);
             owners.pop();
@@ -497,7 +498,7 @@ final class CodeclewJavaAnalyzer {
                     .map(Modifier::name).sorted().toList());
             row.put("annotations", annotations(element));
             if (element instanceof ExecutableElement method && element.getKind() == ElementKind.METHOD) {
-                row.put("spring", new SpringReader().read(method));
+                row.put("jvmAnnotations", new JvmAnnotationReader().read(method));
             }
             anchor(row, tree);
             row.put("resolution", "COMPILER_EXACT");
@@ -621,110 +622,65 @@ final class CodeclewJavaAnalyzer {
                     .toList();
         }
 
-        private record SpringBinding(String annotation, List<String> chain, Map<String, Object> attributes) {}
-
-        /** Interpret resolved annotation identities without claiming live Spring registration. */
-        private final class SpringReader {
-            private static final String WEB = "org.springframework.web.bind.annotation.";
-            private static final String KAFKA = "org.springframework.kafka.annotation.";
-            private static final String SCHEDULE = "org.springframework.scheduling.annotation.";
-            private static final String CONTROLLER = "org.springframework.stereotype.Controller";
-            private static final String FEIGN_CLIENT = "org.springframework.cloud.openfeign.FeignClient";
-            private static final String ALIAS = "org.springframework.core.annotation.AliasFor";
+        /** Exports only compiler observations; framework rules run over the sealed result. */
+        private final class JvmAnnotationReader {
+            private final Map<String, Object> definitions = new TreeMap<>();
+            private final Set<String> collecting = new TreeSet<>();
             private final Set<String> boundaries = new TreeSet<>();
+            private int depth;
             private int visits;
 
             Map<String, Object> read(ExecutableElement method) {
-                return metadata(readEntries(method, (TypeElement) method.getEnclosingElement()));
-            }
-
-            private List<Map<String, Object>> readEntries(ExecutableElement method, TypeElement owner) {
-                List<TypeElement> hierarchy = hierarchy(owner);
-                List<List<SpringBinding>> classBindings = hierarchy.stream().map(this::expandAll).toList();
-                List<SpringBinding> bindings = new ArrayList<>(expandAll(method));
-                Set<String> directFamilies = new TreeSet<>();
-                bindings.forEach(binding -> directFamilies.add(binding.annotation()));
-                Set<String> inheritedFamilies = new TreeSet<>();
-                for (TypeElement type : hierarchy) {
-                    if (type.equals(owner)) continue;
-                    for (Element element : type.getEnclosedElements()) {
-                        if (element instanceof ExecutableElement base && base.getKind() == ElementKind.METHOD
-                                && elements.overrides(method, base, owner)) {
-                            List<SpringBinding> inherited = expandAll(base);
-                            for (SpringBinding binding : inherited) {
-                                if (!directFamilies.contains(binding.annotation()) && !inheritedFamilies.contains(binding.annotation())) {
-                                    bindings.add(binding);
-                                }
-                            }
-                            inherited.forEach(binding -> inheritedFamilies.add(binding.annotation()));
-                        }
-                    }
-                }
-                List<SpringBinding> mappings = family(bindings, WEB + "RequestMapping");
-                List<SpringBinding> typeMappings = firstFamily(classBindings, WEB + "RequestMapping");
-                boolean controller = classBindings.stream().flatMap(List::stream)
-                        .anyMatch(binding -> binding.annotation().equals(CONTROLLER));
-                boolean outboundFeign = classBindings.get(0).stream().anyMatch(binding -> binding.annotation().equals(FEIGN_CLIENT)) && !controller;
-                List<Map<String, Object>> entries = new ArrayList<>();
-                if (mappings.size() > 1 || typeMappings.size() > 1) boundaries.add("MULTIPLE_REQUEST_MAPPINGS_ON_ELEMENT");
-                for (SpringBinding binding : mappings) {
-                    if (outboundFeign) {
-                        boundaries.add("OUTBOUND_FEIGN_CLIENT_NOT_SERVER_ENTRYPOINT");
-                        continue;
-                    }
-                    Map<String, Object> entry = entry(binding, "HTTP_ENDPOINT");
-                    entry.put("controller", controller);
-                    entry.put("classAttributes", typeMappings.stream().map(SpringBinding::attributes).toList());
-                    if (!controller) boundaries.add("CONTROLLER_REGISTRATION_UNPROVEN");
-                    entries.add(entry);
-                }
-                family(bindings, KAFKA + "KafkaListener").forEach(binding -> entries.add(entry(binding, "KAFKA_LISTENER")));
-                List<SpringBinding> handlers = family(bindings, KAFKA + "KafkaHandler");
-                if (!handlers.isEmpty()) {
-                    List<SpringBinding> listeners = firstFamily(classBindings, KAFKA + "KafkaListener");
-                    if (listeners.isEmpty()) boundaries.add("KAFKA_HANDLER_WITHOUT_CLASS_LISTENER");
-                    for (SpringBinding binding : listeners) {
-                        Map<String, Object> entry = entry(binding, "KAFKA_LISTENER");
-                        entry.put("handlerAttributes", handlers.get(0).attributes());
-                        entries.add(entry);
-                    }
-                }
-                family(bindings, SCHEDULE + "Scheduled").forEach(binding -> entries.add(entry(binding, "SCHEDULED_JOB")));
-                if (!entries.isEmpty() && method.getModifiers().contains(Modifier.ABSTRACT)) {
-                    boundaries.add("ABSTRACT_HANDLER_REQUIRES_IMPLEMENTATION");
-                }
-                return entries;
-            }
-
-            private Map<String, Object> metadata(List<Map<String, Object>> entries) {
-                return Map.of("schema", "spring-entrypoints/0.1", "authority", "JAVAC_RESOLVED_ANNOTATIONS",
-                        "entries", entries, "boundaries", new ArrayList<>(boundaries));
+                TypeElement owner = (TypeElement) method.getEnclosingElement();
+                return finish(methodIdentity(method), List.of(callable(method, owner, false)), owner);
             }
 
             Map<String, Object> readInherited(TypeElement owner) {
-                List<Map<String, Object>> entries = new ArrayList<>();
-                if (owner.getModifiers().contains(Modifier.ABSTRACT) || owner.getKind().isInterface()) return metadata(entries);
-                int members = 0;
-                Set<String> targets = new TreeSet<>();
-                for (Element member : elements.getAllMembers(owner)) {
-                    if (++members > 4096) { boundaries.add("INHERITED_MEMBER_LIMIT"); break; }
-                    if (!(member instanceof ExecutableElement method) || member.getKind() != ElementKind.METHOD
-                            || member.getEnclosingElement().equals(owner) || method.getModifiers().contains(Modifier.ABSTRACT)
-                            || method.getEnclosingElement().toString().equals("java.lang.Object")) continue;
-                    List<Map<String, Object>> inherited = readEntries(method, owner);
-                    if (inherited.isEmpty()) continue;
-                    String descriptor = executableDescriptor(method);
-                    if (descriptor == null) { boundaries.add("INHERITED_HANDLER_DESCRIPTOR_UNRESOLVED"); continue; }
-                    String target = "method:" + ownerOf(method) + "#" + method.getSimpleName() + descriptor;
-                    if (!targets.add(target)) continue;
-                    if (trees.getPath(method) == null) boundaries.add("INHERITED_HANDLER_SOURCE_UNAVAILABLE");
-                    for (Map<String, Object> entry : inherited) {
-                        entry.put("targetSymbol", target);
-                        entry.put("beanClass", classIdentity(owner));
-                        entries.add(entry);
+                List<Map<String, Object>> callables = new ArrayList<>();
+                if (!owner.getModifiers().contains(Modifier.ABSTRACT) && !owner.getKind().isInterface()) {
+                    Set<String> seen = new TreeSet<>();
+                    int members = 0;
+                    for (Element member : elements.getAllMembers(owner)) {
+                        if (++members > 4096) { boundaries.add("INHERITED_MEMBER_LIMIT"); break; }
+                        if (!(member instanceof ExecutableElement method) || member.getKind() != ElementKind.METHOD
+                                || member.getEnclosingElement().equals(owner) || method.getModifiers().contains(Modifier.ABSTRACT)
+                                || member.getEnclosingElement().toString().equals("java.lang.Object")) continue;
+                        if (executableDescriptor(method) == null) { boundaries.add("INHERITED_CALLABLE_IDENTITY_UNRESOLVED"); continue; }
+                        if (seen.add(methodIdentity(method))) callables.add(callable(method, owner, true));
                     }
                 }
-                return metadata(entries);
+                return finish(classIdentity(owner), callables, owner);
+            }
+
+            private Map<String, Object> finish(String identity, List<Map<String, Object>> callables, TypeElement owner) {
+                List<Map<String, Object>> types = types(owner);
+                return Map.of("schema", "jvm-annotation-facts/1.0", "authority", "JAVAC_RESOLVED_ANNOTATIONS",
+                        "declaration", identity, "definitions", definitions, "types", types, "callables", callables,
+                        "boundaries", new ArrayList<>(boundaries),
+                        "coverage", Map.of("status", boundaries.isEmpty() ? "COMPLETE" : "PARTIAL", "scope", "REACHABLE_ANNOTATIONS_AND_HIERARCHY"));
+            }
+
+            private String methodIdentity(ExecutableElement method) {
+                String descriptor = executableDescriptor(method);
+                return "method:" + ownerOf(method) + "#" + method.getSimpleName() + (descriptor == null ? "" : descriptor);
+            }
+
+            private Map<String, Object> callable(ExecutableElement method, TypeElement owner, boolean inherited) {
+                List<Map<String, Object>> bases = new ArrayList<>();
+                for (TypeElement type : hierarchy(owner)) {
+                    if (type.equals(owner)) continue;
+                    for (Element element : type.getEnclosedElements()) {
+                        if (element instanceof ExecutableElement base && base.getKind() == ElementKind.METHOD
+                                && elements.overrides(method, base, owner)) bases.add(method(base, List.of()));
+                    }
+                }
+                return Map.of("method", method(method, bases), "classes", types(owner), "beanClass", classIdentity(owner),
+                        "abstractMethod", method.getModifiers().contains(Modifier.ABSTRACT), "inherited", inherited,
+                        "implementationSource", trees.getPath(method) != null);
+            }
+
+            private Map<String, Object> method(ExecutableElement method, List<Map<String, Object>> bases) {
+                return Map.of("identity", methodIdentity(method), "annotations", annotationUses(method), "overrides", bases);
             }
 
             private List<TypeElement> hierarchy(TypeElement owner) {
@@ -744,176 +700,94 @@ final class CodeclewJavaAnalyzer {
                 return result;
             }
 
-            private List<SpringBinding> family(List<SpringBinding> bindings, String name) {
-                return bindings.stream().filter(binding -> binding.annotation().equals(name)).toList();
+            private List<Map<String, Object>> types(TypeElement owner) {
+                return hierarchy(owner).stream().map(type -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("identity", classIdentity(type));
+                    row.put("annotations", annotationUses(type));
+                    row.put("directSupertypes", types.directSupertypes(type.asType()).stream().map(Object::toString).toList());
+                    return row;
+                }).toList();
             }
 
-            private List<SpringBinding> firstFamily(List<List<SpringBinding>> classes, String name) {
-                return classes.stream().map(bindings -> family(bindings, name))
-                        .filter(bindings -> !bindings.isEmpty()).findFirst().orElse(List.of());
-            }
-
-            private Map<String, Object> entry(SpringBinding binding, String kind) {
-                Map<String, Object> result = new LinkedHashMap<>();
-                result.put("kind", kind);
-                result.put("annotation", binding.annotation());
-                result.put("annotationChain", binding.chain());
-                result.put("attributes", binding.attributes());
-                result.put("registration", "RUNTIME_CONDITIONAL");
-                return result;
-            }
-
-            private List<SpringBinding> expandAll(Element element) {
-                List<SpringBinding> result = new ArrayList<>();
-                for (AnnotationMirror annotation : element.getAnnotationMirrors()) result.addAll(expand(annotation, List.of()));
-                return result;
-            }
-
-            private String annotationName(AnnotationMirror annotation) {
-                return ((TypeElement) annotation.getAnnotationType().asElement()).getQualifiedName().toString();
-            }
-
-            private List<SpringBinding> expand(AnnotationMirror annotation, List<String> path) {
-                String name = annotationName(annotation);
-                if (path.contains(name) || name.startsWith("java.lang.annotation.")) return List.of();
-                if (++visits > 2048 || path.size() >= 32) { boundaries.add("ANNOTATION_GRAPH_LIMIT"); return List.of(); }
-                List<String> chain = new ArrayList<>(path);
-                chain.add(name);
-                if (name.equals(KAFKA + "KafkaListeners") || name.equals(SCHEDULE + "Schedules")) {
-                    String expected = name.equals(KAFKA + "KafkaListeners") ? KAFKA + "KafkaListener" : SCHEDULE + "Scheduled";
-                    List<SpringBinding> nested = new ArrayList<>();
-                    for (Map.Entry<? extends ExecutableElement, ? extends AnnotationValue> member : annotation.getElementValues().entrySet()) {
-                        if (!member.getKey().getSimpleName().contentEquals("value")) continue;
-                        Object value = member.getValue().getValue();
-                        if (value instanceof List<?> values) for (Object child : values) {
-                            if (child instanceof AnnotationValue av && av.getValue() instanceof AnnotationMirror mirror
-                                    && annotationName(mirror).equals(expected)) nested.addAll(expand(mirror, chain));
-                            else boundaries.add("INVALID_REPEATABLE_CONTAINER");
-                        }
+            private Map<String, Object> origin(Element element, AnnotationMirror annotation) {
+                Map<String, Object> value = new LinkedHashMap<>();
+                value.put("kind", "BINARY");
+                value.put("identity", element.toString());
+                TreePath path = trees.getPath(element);
+                Tree tree = annotation == null ? trees.getTree(element) : trees.getTree(element, annotation);
+                if (path != null && tree != null) {
+                    long start = positions.getStartPosition(path.getCompilationUnit(), tree);
+                    long end = positions.getEndPosition(path.getCompilationUnit(), tree);
+                    if (start >= 0 && end >= start) {
+                        value.put("kind", "SOURCE"); value.put("start", start); value.put("end", end);
                     }
-                    if (nested.isEmpty()) boundaries.add("UNRESOLVED_REPEATABLE_CONTAINER");
-                    return nested;
                 }
-                Map<String, Object> attributes = arguments(annotation, false);
-                String method = switch (name) {
-                    case WEB + "GetMapping" -> "GET";
-                    case WEB + "PostMapping" -> "POST";
-                    case WEB + "PutMapping" -> "PUT";
-                    case WEB + "DeleteMapping" -> "DELETE";
-                    case WEB + "PatchMapping" -> "PATCH";
-                    default -> null;
-                };
-                if (method != null) {
-                    attributes = aliases(attributes);
-                    attributes.put("method", List.of(method));
-                    return List.of(new SpringBinding(WEB + "RequestMapping", chain, attributes));
+                return value;
+            }
+
+            private List<Map<String, Object>> annotationUses(Element element) {
+                List<Map<String, Object>> result = new ArrayList<>();
+                for (AnnotationMirror annotation : element.getAnnotationMirrors()) {
+                    Map<String, Object> use = annotation(annotation, element);
+                    if (use != null) result.add(use);
                 }
-                if (Set.of(WEB + "RequestMapping", KAFKA + "KafkaListener", KAFKA + "KafkaHandler", SCHEDULE + "Scheduled", CONTROLLER, FEIGN_CLIENT).contains(name)) {
-                    return List.of(new SpringBinding(name, chain, name.equals(WEB + "RequestMapping") ? aliases(attributes) : attributes));
-                }
+                return result;
+            }
+
+            private Map<String, Object> annotation(AnnotationMirror annotation, Element owner) {
+                if (++visits > 32768 || depth >= 32) { boundaries.add("ANNOTATION_GRAPH_LIMIT"); return null; }
                 TypeElement declaration = (TypeElement) annotation.getAnnotationType().asElement();
-                List<SpringBinding> metas = new ArrayList<>();
-                for (AnnotationMirror meta : declaration.getAnnotationMirrors()) metas.addAll(expand(meta, chain));
-                if (metas.isEmpty()) return List.of();
-                Map<String, Object> effective = arguments(annotation, true);
-                List<SpringBinding> result = new ArrayList<>();
-                for (SpringBinding meta : metas) {
-                    Map<String, Object> merged = new LinkedHashMap<>(meta.attributes());
-                    for (Element member : declaration.getEnclosedElements()) {
-                        if (!(member instanceof ExecutableElement)) continue;
-                        String memberName = member.getSimpleName().toString();
-                        for (AnnotationMirror alias : member.getAnnotationMirrors()) {
-                            if (!annotationName(alias).equals(ALIAS)) continue;
-                            Map<String, Object> aliasArgs = arguments(alias, false);
-                            String target = String.valueOf(aliasArgs.getOrDefault("annotation", "java.lang.annotation.Annotation"));
-                            String targetName = String.valueOf(aliasArgs.getOrDefault("attribute", ""));
-                            if (targetName.isEmpty()) targetName = String.valueOf(aliasArgs.getOrDefault("value", ""));
-                            if (targetName.isEmpty()) targetName = memberName;
-                            Object selected = effective.get(memberName);
-                            if (target.equals("java.lang.annotation.Annotation") || target.equals(name)) {
-                                if (attributes.containsKey(memberName)) selected = attributes.get(memberName);
-                                else if (attributes.containsKey(targetName)) selected = attributes.get(targetName);
-                                if (attributes.containsKey(memberName) && attributes.containsKey(targetName)
-                                        && !attributes.get(memberName).equals(attributes.get(targetName))) boundaries.add("CONFLICTING_ANNOTATION_ALIASES");
-                                if (selected != null && merged.containsKey(targetName)) merged.put(targetName, selected);
-                            } else if (target.equals(meta.annotation()) || meta.chain().contains(target)) {
-                                String rootName = aliasRootAttribute(target, targetName, meta.annotation(), new TreeSet<>());
-                                if (selected != null && rootName != null) merged.put(rootName, selected);
-                            }
-                        }
+                depth++;
+                try {
+                    definition(declaration);
+                    Map<String, Object> arguments = new TreeMap<>();
+                    annotation.getElementValues().forEach((key, argument) -> arguments.put(key.getSimpleName().toString(), value(argument, owner, 0)));
+                    return Map.of("typeName", declaration.getQualifiedName().toString(), "arguments", arguments, "origin", origin(owner, annotation));
+                } finally { depth--; }
+            }
+
+            private void definition(TypeElement declaration) {
+                String id = declaration.getQualifiedName().toString();
+                if (definitions.containsKey(id) || !collecting.add(id)) return;
+                if (definitions.size() + collecting.size() > 2048) { boundaries.add("ANNOTATION_DEFINITION_LIMIT"); collecting.remove(id); return; }
+                try {
+                    Map<String, Object> members = new TreeMap<>();
+                    for (Element element : declaration.getEnclosedElements()) {
+                        if (!(element instanceof ExecutableElement member) || element.getKind() != ElementKind.METHOD) continue;
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("annotations", annotationUses(member));
+                        row.put("returnType", member.getReturnType().toString());
+                        if (member.getDefaultValue() != null) row.put("defaultValue", value(member.getDefaultValue(), member, 0));
+                        members.put(member.getSimpleName().toString(), row);
                     }
-                    effective.forEach((key, value) -> { if (!key.equals("value") && merged.containsKey(key)) merged.put(key, value); });
-                    result.add(new SpringBinding(meta.annotation(), meta.chain(), meta.annotation().equals(WEB + "RequestMapping") ? aliases(merged) : merged));
-                }
-                return result;
+                    definitions.put(id, Map.of("origin", origin(declaration, null), "annotations", annotationUses(declaration), "members", members));
+                } finally { collecting.remove(id); }
             }
 
-            private String aliasRootAttribute(String annotation, String attribute, String root, Set<String> seen) {
-                if (annotation.equals(root)) return root.equals(WEB + "RequestMapping") && attribute.equals("value") ? "path" : attribute;
-                if (root.equals(WEB + "RequestMapping") && Set.of(WEB + "GetMapping", WEB + "PostMapping",
-                        WEB + "PutMapping", WEB + "DeleteMapping", WEB + "PatchMapping").contains(annotation)) return attribute.equals("value") ? "path" : attribute;
-                if (!seen.add(annotation + "#" + attribute) || seen.size() > 32) {
-                    boundaries.add("UNRESOLVED_TRANSITIVE_ANNOTATION_ALIAS"); return null;
-                }
-                TypeElement declaration = elements.getTypeElement(annotation);
-                if (declaration != null) for (Element member : declaration.getEnclosedElements()) {
-                    if (!member.getSimpleName().contentEquals(attribute)) continue;
-                    for (AnnotationMirror alias : member.getAnnotationMirrors()) {
-                        if (!annotationName(alias).equals(ALIAS)) continue;
-                        Map<String, Object> args = arguments(alias, false);
-                        String target = String.valueOf(args.getOrDefault("annotation", annotation));
-                        if (target.equals("java.lang.annotation.Annotation")) target = annotation;
-                        String name = String.valueOf(args.getOrDefault("attribute", ""));
-                        if (name.isEmpty()) name = String.valueOf(args.getOrDefault("value", ""));
-                        if (name.isEmpty()) name = attribute;
-                        return aliasRootAttribute(target, name, root, seen);
-                    }
-                    // Spring's same-name convention also applies through intermediate compositions.
-                    TypeElement rootType = elements.getTypeElement(root);
-                    if (rootType != null && rootType.getEnclosedElements().stream()
-                            .anyMatch(candidate -> candidate.getSimpleName().contentEquals(attribute))) return attribute;
-                }
-                boundaries.add("UNRESOLVED_TRANSITIVE_ANNOTATION_ALIAS");
-                return null;
+            private Map<String, Object> unknown(String reason) {
+                boundaries.add(reason); return Map.of("kind", "UNRESOLVED", "reason", reason);
             }
-
-            private Map<String, Object> aliases(Map<String, Object> attributes) {
-                Map<String, Object> result = new LinkedHashMap<>(attributes);
-                Object value = attributes.get("value"), path = attributes.get("path");
-                if (value instanceof List<?> list && list.isEmpty()) value = null;
-                if (path instanceof List<?> list && list.isEmpty()) path = null;
-                if (value != null && path != null && !value.equals(path)) boundaries.add("CONFLICTING_PATH_ALIASES");
-                if (path != null || value != null) result.put("path", path != null ? path : value);
-                result.remove("value");
-                return result;
-            }
-
-            private Map<String, Object> arguments(AnnotationMirror annotation, boolean defaults) {
-                Map<String, Object> result = new LinkedHashMap<>();
-                var arguments = defaults ? elements.getElementValuesWithDefaults(annotation) : annotation.getElementValues();
-                arguments.forEach((key, value) -> result.put(key.getSimpleName().toString(), value(value, 0)));
-                return result;
-            }
-
-            private Object value(AnnotationValue annotation, int depth) {
-                if (depth > 32) { boundaries.add("ANNOTATION_VALUE_LIMIT"); return null; }
+            private Map<String, Object> value(AnnotationValue annotation, Element owner, int level) {
+                if (level > 32) return unknown("ANNOTATION_VALUE_LIMIT");
                 Object value = annotation.getValue();
-                if (value instanceof String string) {
-                    if (string.contains("${") || string.contains("#{")) boundaries.add("RUNTIME_EXPRESSION");
-                    return string;
+                if (value instanceof String || value instanceof Number || value instanceof Boolean) return Map.of("kind", "CONSTANT", "value", value);
+                if (value instanceof Character character) return Map.of("kind", "CONSTANT", "value", character.toString());
+                if (value instanceof VariableElement constant) return Map.of("kind", "ENUM", "type", constant.asType().toString(), "value", constant.getSimpleName().toString());
+                if (value instanceof TypeMirror type) {
+                    if (types.asElement(type) instanceof TypeElement declaration && declaration.getKind() == ElementKind.ANNOTATION_TYPE) definition(declaration);
+                    return Map.of("kind", "CLASS", "value", type.toString());
                 }
-                if (value instanceof Number || value instanceof Boolean) return value;
-                if (value instanceof Character character) return character.toString();
-                if (value instanceof VariableElement constant) return constant.getSimpleName().toString();
-                if (value instanceof TypeMirror type) return type.toString();
-                if (value instanceof AnnotationMirror nested) return Map.of("annotation", annotationName(nested), "attributes", arguments(nested, false));
+                if (value instanceof AnnotationMirror nested) {
+                    Map<String, Object> use = annotation(nested, owner);
+                    return use == null ? unknown("UNRESOLVED_ANNOTATION_CLASS") : Map.of("kind", "ANNOTATION", "value", use);
+                }
                 if (value instanceof List<?> list) {
-                    List<Object> result = new ArrayList<>();
-                    for (Object child : list) if (child instanceof AnnotationValue av) result.add(value(av, depth + 1));
-                    return result;
+                    List<Map<String, Object>> values = new ArrayList<>();
+                    for (Object child : list) if (child instanceof AnnotationValue argument) values.add(value(argument, owner, level + 1));
+                    return Map.of("kind", "ARRAY", "values", values);
                 }
-                boundaries.add("UNRESOLVED_ANNOTATION_VALUE");
-                return null;
+                return unknown("UNRESOLVED_ANNOTATION_VALUE");
             }
         }
 

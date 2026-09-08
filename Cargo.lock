@@ -158,10 +158,12 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "clew"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "clap",
+ "clew-facts",
+ "clew-framework-spring",
  "crossbeam-channel",
  "ed25519-dalek",
  "hex",
@@ -185,6 +187,27 @@ dependencies = [
  "unicode-normalization",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "clew-facts"
+version = "0.7.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "clew-framework-spring"
+version = "0.7.0"
+dependencies = [
+ "clew-facts",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

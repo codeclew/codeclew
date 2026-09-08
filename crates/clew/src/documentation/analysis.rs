@@ -533,23 +533,28 @@ pub fn project(
                 );
             }
         }
-        if let Some(spring) = fact.get("spring") {
-            let metadata = spring_entrypoints::validate_metadata(
-                spring,
-                if service.language == "kotlin" {
-                    "K2_RESOLVED_ANNOTATIONS"
-                } else {
-                    "JAVAC_RESOLVED_ANNOTATIONS"
-                },
-            )?;
+        if let Some(metadata) = spring_entrypoints::metadata_for_fact(
+            fact,
+            if service.language == "kotlin" {
+                "K2_RESOLVED_ANNOTATIONS"
+            } else {
+                "JAVAC_RESOLVED_ANNOTATIONS"
+            },
+        )? {
             for (ordinal, entry) in metadata.entries.iter().enumerate() {
                 let target = entry.target_symbol.as_deref().unwrap_or(symbol);
-                let eid = source_id(&service.id, &format!("entrypoint/{target}/{ordinal}"))?;
+                let identity = if entry.target_symbol.is_some() {
+                    format!(
+                        "{target}/bean:{}/{ordinal}",
+                        entry.bean_class.as_deref().unwrap_or(symbol)
+                    )
+                } else {
+                    format!("{target}/{ordinal}")
+                };
+                let eid = source_id(&service.id, &format!("entrypoint/{identity}"))?;
                 let trigger = spring_entrypoints::describe_trigger(entry);
-                let route_id =
-                    dependency_id(&service.id, "entrypoint", &format!("{target}/{ordinal}"))?;
-                let normalized =
-                    json!({"trigger":trigger,"binding":entry,"boundaries":metadata.boundaries});
+                let route_id = dependency_id(&service.id, "entrypoint", &identity)?;
+                let normalized = json!({"trigger":trigger,"binding":entry,"boundaries":metadata.boundaries,"frameworkDerivation":metadata.derivation});
                 evidence.observations.insert(
                     route_id.clone(),
                     Observation {

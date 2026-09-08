@@ -21,6 +21,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     )
     exclude { element ->
         element.file.name == "SpringAnnotationFacts21.kt" ||
+        element.file.name == "JvmAnnotationFacts21.kt" ||
         element.file.absolutePath == file("../kotlin21/src/main/kotlin/dev/semanticthread/worker/FirFactsPlugin21.kt").absolutePath
     }
 }

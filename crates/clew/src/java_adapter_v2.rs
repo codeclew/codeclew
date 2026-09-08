@@ -61,6 +61,8 @@ pub enum JavaCompilerFact {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spring: Option<serde_json::Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        jvm_annotations: Option<Box<serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         documentation: Option<Box<serde_json::Value>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         interfaces: Vec<String>,
@@ -531,6 +533,18 @@ fn validate_index(index: &JavaCompilerIndex) -> Result<(), ClewError> {
         {
             crate::spring_entrypoints::validate_metadata(spring, "JAVAC_RESOLVED_ANNOTATIONS")?;
         }
+        if let JavaCompilerFact::Declaration {
+            jvm_annotations: Some(annotations),
+            symbol_identity,
+            ..
+        } = fact
+        {
+            crate::spring_entrypoints::validate_annotation_facts(
+                annotations,
+                Some(symbol_identity),
+                "JAVAC_RESOLVED_ANNOTATIONS",
+            )?;
+        }
         let bytes = canonical::bytes(fact).map_err(internal)?;
         if bytes.len() > MAX_FACT_BYTES
             || previous.as_ref().is_some_and(|previous| previous >= &bytes)
@@ -905,15 +919,23 @@ interface DefaultClient { @GetMapping("/default") default String defaultRead() {
                     .find_map(|fact| match fact {
                         JavaCompilerFact::Declaration {
                             symbol_identity,
-                            spring: Some(spring),
+                            jvm_annotations: Some(annotations),
                             file,
                             start: Some(_),
                             end: Some(_),
                             ..
                         } if symbol_identity.ends_with(suffix) => {
                             assert_eq!(file, "example/Handlers.java");
-                            assert_eq!(spring["authority"], "JAVAC_RESOLVED_ANNOTATIONS");
-                            Some(spring)
+                            assert_eq!(annotations["authority"], "JAVAC_RESOLVED_ANNOTATIONS");
+                            let payload = serde_json::to_value(fact).unwrap();
+                            let derived = crate::spring_entrypoints::metadata_for_fact(
+                                &payload,
+                                "JAVAC_RESOLVED_ANNOTATIONS",
+                            )
+                            .unwrap()
+                            .unwrap();
+                            let derived = serde_json::to_value(derived).unwrap();
+                            Some(derived)
                         }
                         _ => None,
                     })

@@ -13,7 +13,7 @@
     <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
     <plugins><plugin>
       <groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>${kotlin.version}</version>
-      <configuration><jvmTarget>17</jvmTarget><languageVersion>1.9</languageVersion><apiVersion>1.9</apiVersion></configuration>
+      <configuration><jvmTarget>17</jvmTarget><languageVersion>1.9</languageVersion><apiVersion>1.9</apiVersion><args><arg>-Xannotation-default-target=param-property</arg></args></configuration>
       <executions><execution><id>compile</id><goals><goal>compile</goal></goals></execution></executions>
     </plugin></plugins>
   </build>

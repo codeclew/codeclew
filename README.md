@@ -5,6 +5,20 @@ isolated candidate worktree, and publishes the resulting commit explicitly.
 Use the installed `clew` launcher for public releases or `./clew` from a pinned
 checkout for source development; direct capsule binaries are unsupported.
 
+Version 0.7 separates language extraction from framework interpretation.
+`clew capabilities` lists installed analysis modules and their compiler/JVM
+requirements. Java 17+ and the installed Kotlin engines emit portable annotation
+facts; one Rust Spring module derives entrypoints with separate input and policy
+provenance. No Kotlin 1.9 engine is added.
+
+Kotlin workers run on JDK 21 while project Maven/Gradle builds retain their own
+JDK. Set `CODECLEW_WORKER_JAVA_HOME` to select the analyzer JDK explicitly;
+`JAVA_HOME` continues to select the project build environment. Maven's reported
+build JVM and Gradle's selected toolchain determine the analysis JDK classes.
+Unknown cross-engine semantic flags are rejected with their option names and
+compiler context. For Kotlin 1.9 projects, analysis explicitly ignores
+`-Xannotation-default-target=param-property`; native project arguments are kept.
+
 ## Install on macOS, Linux, or Windows through WSL2
 
 The public pilot ships prebuilt bundles for Apple Silicon and Intel Macs, and

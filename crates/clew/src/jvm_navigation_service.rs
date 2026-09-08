@@ -659,6 +659,7 @@ mod tests {
                     modifiers: modifiers.into_iter().map(str::to_owned).collect(),
                     annotations: Vec::new(),
                     spring: None,
+                    jvm_annotations: None,
                     documentation: None,
                     interfaces: Vec::new(),
                     superclass: None,

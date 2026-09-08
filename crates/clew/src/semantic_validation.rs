@@ -509,6 +509,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
                 allowed.extend([
                     "isOverride",
                     "spring",
+                    "jvmAnnotations",
                     "returnType",
                     "returnNullable",
                     "parameterTypes",
@@ -528,7 +529,7 @@ fn descriptor_allowed_fields(kind: &str, partial: bool) -> Result<Vec<&'static s
                 allowed.extend(["isOverride", "declaredType", "declaredNullable"]);
             }
         }
-        "CLASS" => allowed.extend(["compilerClassId", "spring"]),
+        "CLASS" => allowed.extend(["compilerClassId", "spring", "jvmAnnotations"]),
         _ => return Err(payload_invalid("unknown declaration descriptor kind")),
     }
     Ok(allowed)
@@ -572,6 +573,13 @@ pub(crate) fn validate_declaration_descriptor_fact(value: &Value) -> Result<(), 
     }
     validate_payload_location(value, "declaration descriptor")?;
     validate_optional_descriptor_lines(value)?;
+    if let Some(annotations) = value.get("jvmAnnotations") {
+        crate::spring_entrypoints::validate_annotation_facts(
+            annotations,
+            value.get("symbolIdentity").and_then(Value::as_str),
+            "K2_RESOLVED_ANNOTATIONS",
+        )?;
+    }
     if let Some(spring) = value.get("spring") {
         crate::spring_entrypoints::validate_metadata(spring, "K2_RESOLVED_ANNOTATIONS")?;
     }
@@ -2598,6 +2606,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "jvmDescriptor",
                 "isOverride",
                 "spring",
+                "jvmAnnotations",
                 "returnType",
                 "returnNullable",
                 "parameterTypes",
@@ -2616,7 +2625,7 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
                 "declaredType",
                 "declaredNullable",
             ]),
-            "CLASS" => allowed.extend(["compilerClassId", "spring"]),
+            "CLASS" => allowed.extend(["compilerClassId", "spring", "jvmAnnotations"]),
             _ => return Err(invalid("unknown declaration descriptor kind")),
         }
         let object = value
@@ -2886,6 +2895,13 @@ pub(crate) fn validate_declaration_descriptor_snapshot(
         }
         validate_type_parameters(descriptor)?;
         validate_field_closure(descriptor, declaration_kind)?;
+        if let Some(annotations) = descriptor.get("jvmAnnotations") {
+            crate::spring_entrypoints::validate_annotation_facts(
+                annotations,
+                descriptor.get("symbolIdentity").and_then(Value::as_str),
+                "K2_RESOLVED_ANNOTATIONS",
+            )?;
+        }
         if let Some(spring) = descriptor.get("spring") {
             crate::spring_entrypoints::validate_metadata(spring, "K2_RESOLVED_ANNOTATIONS")?;
         }

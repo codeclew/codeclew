@@ -7,6 +7,14 @@ import kotlin.test.assertTrue
 
 class KotlinEngineCompatibilityTest {
     @Test
+    fun kotlin19AnnotationTargetNormalizationPreservesNativeAndUnknownArguments() {
+        val original = listOf("-Xannotation-default-target=param-property", "-Xunknown=keep", "-java-parameters")
+        assertEquals(listOf("-Xunknown=keep", "-java-parameters"), kotlinAnalysisCompilerArguments("1.9.25", original))
+        assertEquals(original, kotlinAnalysisCompilerArguments("2.3.0", original))
+        assertEquals(3, original.size)
+    }
+
+    @Test
     fun projectSemanticsAndSemanticEngineRemainSeparateAuthorities() {
         val project = KotlinProjectSemantics(
             projectCompilerVersion = "2.4.10",

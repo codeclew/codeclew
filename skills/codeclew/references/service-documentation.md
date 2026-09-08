@@ -2,7 +2,7 @@
 
 Use this workflow for a separate documentation repository with per-service pages,
 a root overview and named interaction slices. Codeclew 0.6.1 supports Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
-interactions and step-linked domain explanations. Java 17+ remains supported.
+interactions and source-bound domain explanations. Java 17+ remains supported.
 Use one Maven/Gradle compilation per service. The overview can list more services.
 For Kotlin choose `kotlin-jvm-maven-analysis` or `kotlin-jvm-gradle-analysis`.
 Project/compiler differences remain explicit: Kotlin 1.9 language/API inputs are
@@ -142,6 +142,37 @@ Every non-`end` diagram event must be covered by an overview or detail paragraph
 and paragraphs retain the evidence of every referenced event. One paragraph can
 cover many steps. The validator checks references and coverage, not the truth or
 usefulness of the prose. Narrative 1.0/1.1/1.2 remain readable for existing bundles.
+
+## Reader comprehension and source checks
+
+Each overview must answer concrete decisions without requiring a source-code
+inspection: what identifies a duplicate, what wins an equal-time conflict,
+which state changes on each outcome, when an acknowledgement is absent, and
+what asynchronous completion actually means. Use a compact result or state table
+in the relevant interface contract when those outcomes are easier to compare.
+Keep contracts complete, including nested payloads, but disclose payload details
+only when the reader selects them. Do not repeat prose for multiple callbacks;
+merge its evidence IDs while respecting each record's bounds.
+
+Trace calculated outputs through the actual constructor, mapper and query used
+by the selected path. A formula's existence does not prove that its inputs were
+loaded. Distinguish constructor defaults from persisted values, current-row
+comparison from historical deduplication, an accepted update from a changed
+numeric value, and initiating a send from awaiting its successful completion.
+Put a limitation that changes an output's meaning next to that output.
+
+For an independently reviewed documentation request, give a fresh reader only
+the generated pages and reader guide. Ask it to explain selected services and
+answer concrete normal, duplicate, stale, rejection, retry and partial-success
+cases. Require page references, missing information and excess-detail findings.
+Correct unsupported claims against retained source, then repeat with a fresh
+reader after material edits until no blocking comprehension finding remains.
+Report the reviewed service/question scope; a pass does not prove runtime
+behavior or coverage of functions explicitly outside that scope.
+
+The reader's primary source action opens all snippets bound to the paragraph;
+it does not require following a long list of opaque step numbers. `eventIds`
+remain necessary for machine-checked coverage and source inspection.
 
 ## Interface contracts
 

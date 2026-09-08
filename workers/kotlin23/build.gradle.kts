@@ -41,6 +41,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
         (!element.isDirectory && element.file.absolutePath.startsWith(file("../kotlin/src/test/kotlin").absolutePath) &&
             element.file.name !in setOf("SpringAnnotationFactsTest.kt", "KotlinDocumentationFlowTest.kt")) ||
         element.file.name == "SpringAnnotationFacts24.kt" ||
+        element.file.name == "JvmAnnotationFacts24.kt" ||
         element.file.absolutePath == file("../kotlin/src/main/kotlin/dev/semanticthread/worker/FirFactsPlugin.kt").absolutePath
     }
 }

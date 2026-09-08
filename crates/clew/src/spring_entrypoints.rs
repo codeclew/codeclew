@@ -7,7 +7,6 @@ use crate::generation_service::load_session_generation;
 use crate::generation_v2::GenerationManifest;
 use crate::session::{SessionAuthority, SessionLanguage};
 use crate::state::StateAuthority;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -15,37 +14,49 @@ const MAX_PAYLOAD: usize = 2 * 1024 * 1024;
 const MAX_CATALOGUE: usize = 64 * 1024 * 1024;
 const MAX_STDOUT: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SpringMetadata {
-    pub schema: String,
-    pub authority: String,
-    pub entries: Vec<SpringEntry>,
-    pub boundaries: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SpringEntry {
-    pub kind: String,
-    pub annotation: String,
-    pub annotation_chain: Vec<String>,
-    pub attributes: serde_json::Map<String, Value>,
-    pub registration: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub controller: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub class_attributes: Option<Vec<serde_json::Map<String, Value>>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handler_attributes: Option<serde_json::Map<String, Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_symbol: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bean_class: Option<String>,
-}
+pub use clew_framework_spring::{SpringEntry, SpringMetadata, describe_trigger};
 
 fn invalid(message: impl Into<String>) -> ClewError {
     ClewError::new(ErrorCode::InvalidInput, message)
+}
+
+/// Derive from the retained portable compiler facts. Legacy metadata remains a
+/// compatibility input for already sealed generations; new workers emit facts.
+pub fn metadata_for_fact(
+    fact: &Value,
+    authority: &str,
+) -> Result<Option<SpringMetadata>, ClewError> {
+    if let Some(input) = fact.get("jvmAnnotations") {
+        validate_annotation_facts(
+            input,
+            fact.get("symbolIdentity").and_then(Value::as_str),
+            authority,
+        )?;
+        let input: clew_facts::JvmAnnotationFacts = serde_json::from_value(input.clone())
+            .map_err(|_| invalid("JVM annotation facts violate their closed contract"))?;
+        return clew_framework_spring::analyze(&input)
+            .map(Some)
+            .map_err(invalid);
+    }
+    fact.get("spring")
+        .map(|value| validate_metadata(value, authority))
+        .transpose()
+}
+
+pub fn validate_annotation_facts(
+    value: &Value,
+    declaration: Option<&str>,
+    authority: &str,
+) -> Result<(), ClewError> {
+    let input: clew_facts::JvmAnnotationFacts = serde_json::from_value(value.clone())
+        .map_err(|_| invalid("JVM annotation facts violate their closed contract"))?;
+    input.validate().map_err(invalid)?;
+    if input.authority != authority || Some(input.declaration.as_str()) != declaration {
+        return Err(invalid(
+            "JVM annotation facts differ from their compiler declaration authority",
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_metadata(value: &Value, authority: &str) -> Result<SpringMetadata, ClewError> {
@@ -53,6 +64,7 @@ pub fn validate_metadata(value: &Value, authority: &str) -> Result<SpringMetadat
         .map_err(|_| invalid("Spring metadata violates its closed contract"))?;
     if metadata.schema != "spring-entrypoints/0.1"
         || metadata.authority != authority
+        || metadata.derivation.is_some()
         || metadata.entries.len() > 2048
         || metadata.boundaries.len() > 256
         || metadata
@@ -87,154 +99,6 @@ pub fn validate_metadata(value: &Value, authority: &str) -> Result<SpringMetadat
         }
     }
     Ok(metadata)
-}
-
-fn strings(value: Option<&Value>) -> Option<Vec<String>> {
-    match value {
-        None => Some(Vec::new()),
-        Some(Value::String(value)) => Some(vec![value.clone()]),
-        Some(Value::Array(values)) => values
-            .iter()
-            .map(|value| value.as_str().map(str::to_owned))
-            .collect(),
-        _ => None,
-    }
-}
-
-fn combine_path(parent: &str, child: &str) -> Option<String> {
-    if [parent, child]
-        .iter()
-        .any(|value| value.contains("${") || value.contains("#{"))
-    {
-        return None;
-    }
-    // Spring removes a terminal single-segment wildcard when combining paths.
-    // Other wildcard combinations need PathPattern/AntPathMatcher configuration.
-    let parent = if !child.is_empty() {
-        parent.strip_suffix("/*").unwrap_or(parent)
-    } else {
-        parent
-    };
-    if parent.contains('*') || parent.contains('?') {
-        return None;
-    }
-    Some(match (parent.is_empty(), child.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => {
-            if child.starts_with('/') {
-                child.to_owned()
-            } else {
-                format!("/{child}")
-            }
-        }
-        (false, true) => {
-            if parent.starts_with('/') {
-                parent.to_owned()
-            } else {
-                format!("/{parent}")
-            }
-        }
-        (false, false) => format!(
-            "{}/{}",
-            if parent.starts_with('/') {
-                parent.to_owned()
-            } else {
-                format!("/{parent}")
-            }
-            .trim_end_matches('/'),
-            child.trim_start_matches('/')
-        ),
-    })
-}
-
-fn contains_runtime_value(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::String(value) => value.contains("${") || value.contains("#{"),
-        Value::Array(values) => values.iter().any(contains_runtime_value),
-        Value::Object(values) => values.values().any(contains_runtime_value),
-        _ => false,
-    }
-}
-
-/// Preserve raw attributes as evidence; this projection is only a convenient
-/// Spring-rule-derived description, never evidence that a live bean was registered.
-pub fn describe_trigger(entry: &SpringEntry) -> Value {
-    let attributes = &entry.attributes;
-    match entry.kind.as_str() {
-        "HTTP_ENDPOINT" => {
-            let empty = serde_json::Map::new();
-            let class = entry
-                .class_attributes
-                .as_ref()
-                .and_then(|list| list.first())
-                .unwrap_or(&empty);
-            let methods = strings(attributes.get("method")).and_then(|method| {
-                let class = strings(class.get("method"))?;
-                let result: BTreeSet<_> = class.into_iter().chain(method).collect();
-                Some(if result.is_empty() {
-                    vec!["ANY".to_owned()]
-                } else {
-                    result.into_iter().collect()
-                })
-            });
-            let paths =
-                strings(class.get("path").or(class.get("value"))).and_then(|mut parents| {
-                    let mut children = strings(attributes.get("path").or(attributes.get("value")))?;
-                    if parents.is_empty() {
-                        parents.push(String::new());
-                    }
-                    if children.is_empty() {
-                        children.push(String::new());
-                    }
-                    if parents.len().checked_mul(children.len())? > 4096 {
-                        return None;
-                    }
-                    let combined = parents
-                        .iter()
-                        .flat_map(|parent| {
-                            children
-                                .iter()
-                                .map(move |child| combine_path(parent, child))
-                        })
-                        .collect::<Option<BTreeSet<_>>>()?;
-                    Some(combined.into_iter().collect::<Vec<_>>())
-                });
-            let mut conditions = serde_json::Map::new();
-            for key in ["params", "headers"] {
-                conditions.insert(
-                    key.into(),
-                    json!(strings(class.get(key)).and_then(|class| {
-                        Some(
-                            class
-                                .into_iter()
-                                .chain(strings(attributes.get(key))?)
-                                .collect::<Vec<_>>(),
-                        )
-                    })),
-                );
-            }
-            for key in ["consumes", "produces"] {
-                let method = strings(attributes.get(key));
-                conditions.insert(
-                    key.into(),
-                    json!(match method {
-                        Some(ref value) if value.is_empty() => strings(class.get(key)),
-                        value => value,
-                    }),
-                );
-            }
-            json!({"pathResolution":if paths.is_some(){"DERIVED"}else{"REQUIRES_RUNTIME_OR_PATH_PATTERN_RESOLUTION"},
-                "paths":paths,"methods":methods,"conditions":conditions,"authority":"SPRING_ANNOTATION_RULES"})
-        }
-        "SCHEDULED_JOB" => json!({
-            "disabled":if attributes.values().any(contains_runtime_value) {None} else {Some(attributes.get("cron").and_then(Value::as_str) == Some("-"))},
-            "timeUnit":attributes.get("timeUnit").cloned().unwrap_or(json!("MILLISECONDS")),
-            "configuration":attributes,
-            "authority":"SPRING_ANNOTATION_RULES"
-        }),
-        _ => json!({"configuration":attributes,"authority":"SPRING_ANNOTATION_RULES"}),
-    }
 }
 
 /// Read every descriptor in the explicitly bound generations, not a lexical
@@ -322,9 +186,8 @@ pub fn catalogue(
                 }
                 if !matches!(payload.get("declarationKind").and_then(Value::as_str), Some("FUNCTION" | "METHOD" | "CLASS")) { return Ok(()); }
                 descriptors += 1;
-                let Some(spring) = payload.get("spring") else { return Ok(()); };
                 if kotlin { crate::semantic_validation::validate_declaration_descriptor_fact(&payload)?; }
-                let metadata = validate_metadata(spring, if kotlin { "K2_RESOLVED_ANNOTATIONS" } else { "JAVAC_RESOLVED_ANNOTATIONS" })?;
+                let Some(metadata) = metadata_for_fact(&payload, if kotlin { "K2_RESOLVED_ANNOTATIONS" } else { "JAVAC_RESOLVED_ANNOTATIONS" })? else { return Ok(()); };
                 inspected += 1;
                 scope_boundaries.extend(metadata.boundaries.iter().cloned());
                 for (ordinal, entry) in metadata.entries.iter().enumerate() {
@@ -341,7 +204,8 @@ pub fn catalogue(
                         "startLine":payload.get("startLine"),"endLine":payload.get("endLine"),
                         "trigger":describe_trigger(entry),"binding":entry,"boundaries":metadata.boundaries,
                         "factKey":fact.fact_key,"evidence":fact.payload,"generation":compilation.generation,
-                        "annotationAuthority":metadata.authority,"runtimeActivation":"UNPROVEN"
+                        "annotationAuthority":metadata.derivation.as_ref().map(|derivation| derivation.input_authority.as_str()).unwrap_or(&metadata.authority),
+                        "frameworkDerivation":metadata.derivation,"runtimeActivation":"UNPROVEN"
                     });
                     bytes = bytes.checked_add(canonical::bytes(&root).map_err(|error| invalid(error.to_string()))?.len())
                         .ok_or_else(|| invalid("entrypoint catalogue size overflow"))?;
@@ -528,5 +392,44 @@ mod tests {
         value["entries"][0]["registration"] = json!("RUNTIME_CONDITIONAL");
         value["entries"][0]["annotation"] = json!("impostor.GetMapping");
         assert!(validate_metadata(&value, "K2_RESOLVED_ANNOTATIONS").is_err());
+    }
+
+    #[test]
+    fn portable_annotation_authority_is_bound_and_derivation_tracks_partial_inputs() {
+        let mut fact = json!({"symbolIdentity":"class:example/Service", "jvmAnnotations":{
+            "schema":"jvm-annotation-facts/1.0", "authority":"K2_RESOLVED_ANNOTATIONS",
+            "declaration":"class:example/Service", "definitions":{}, "types":[], "callables":[],
+            "boundaries":[], "coverage":{"status":"COMPLETE","scope":"REACHABLE_ANNOTATIONS_AND_HIERARCHY"}
+        }});
+        let complete = metadata_for_fact(&fact, "K2_RESOLVED_ANNOTATIONS")
+            .unwrap()
+            .unwrap();
+        assert_eq!(complete.authority, "FRAMEWORK_DERIVED");
+        assert_eq!(complete.derivation.as_ref().unwrap().coverage, "COMPLETE");
+        assert!(metadata_for_fact(&fact, "JAVAC_RESOLVED_ANNOTATIONS").is_err());
+        fact["jvmAnnotations"]["declaration"] = json!("class:example/Other");
+        assert!(metadata_for_fact(&fact, "K2_RESOLVED_ANNOTATIONS").is_err());
+        fact["jvmAnnotations"]["declaration"] = fact["symbolIdentity"].clone();
+        fact["jvmAnnotations"]["boundaries"] = json!(["ANNOTATION_DECLARATION_UNAVAILABLE"]);
+        assert!(metadata_for_fact(&fact, "K2_RESOLVED_ANNOTATIONS").is_err());
+        fact["jvmAnnotations"]["coverage"]["status"] = json!("PARTIAL");
+        let partial = metadata_for_fact(&fact, "K2_RESOLVED_ANNOTATIONS")
+            .unwrap()
+            .unwrap();
+        assert_eq!(partial.derivation.as_ref().unwrap().coverage, "PARTIAL");
+        assert_ne!(
+            complete.derivation.unwrap().input_digest,
+            partial.derivation.unwrap().input_digest
+        );
+        assert_eq!(
+            partial.boundaries,
+            vec!["ANNOTATION_DECLARATION_UNAVAILABLE"]
+        );
+        fact.as_object_mut().unwrap().remove("jvmAnnotations");
+        assert!(
+            metadata_for_fact(&fact, "K2_RESOLVED_ANNOTATIONS")
+                .unwrap()
+                .is_none()
+        );
     }
 }

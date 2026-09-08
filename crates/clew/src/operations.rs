@@ -106,6 +106,7 @@ pub fn capabilities(runtime: &RuntimeAuthority) -> Result<Value, ClewError> {
             "sourceFallbackAllowed":false,
         },
         "packagedWorkers":packaged_workers,
+        "analysisModules":crate::analysis_modules::registered(runtime),
         "privacyAssertions":{
             "containsAbsolutePaths":false,
             "containsRepositoryIdentity":false,
@@ -1003,7 +1004,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:bbe2f431fae81854487f76f8b0abcc0af1662ca8a167037acc42d30c05a1358e"
+            "sha256:bd7feea2f57831bc0e52716176e832bd51839109164f32c8d96edb7e2b93d580"
         );
     }
 

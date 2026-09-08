@@ -6,6 +6,8 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+clew-facts = { path = "../clew-facts" }
+clew-framework-spring = { path = "../clew-framework-spring" }
 anyhow.workspace = true
 clap.workspace = true
 ed25519-dalek.workspace = true

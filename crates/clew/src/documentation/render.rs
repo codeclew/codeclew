@@ -1057,7 +1057,11 @@ fn markdown(title: &str, n: &Narrative) -> String {
             escape(&o.title),
             escape(&o.summary.text),
         ));
+        let mut shown = BTreeSet::new();
         for paragraph in o.explanation.iter().filter(|p| !p.detail) {
+            if !shown.insert(&paragraph.text) {
+                continue;
+            }
             out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
         }
         for contract in &o.interface_contracts {
@@ -1080,7 +1084,11 @@ fn markdown(title: &str, n: &Narrative) -> String {
             "<details>\n<summary>Implementation details</summary>\n\n```mermaid\n{}```\n\n",
             mermaid(o)
         ));
+        let mut shown = BTreeSet::new();
         for paragraph in o.explanation.iter().filter(|p| p.detail) {
+            if !shown.insert(&paragraph.text) {
+                continue;
+            }
             out.push_str(&format!("{}\n\n", escape(&paragraph.text)));
         }
         out.push_str("</details>\n\n");

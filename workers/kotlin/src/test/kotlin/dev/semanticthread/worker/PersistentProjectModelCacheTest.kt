@@ -64,6 +64,33 @@ fun verifiedRoundTripInvalidatesChangedModelAndArtifactInputs() {
     }
 
     @Test
+    fun projectJdkCanDifferFromWorkerAndChangedJdkInvalidatesModel() {
+        val root = privateDirectory("project-model-cache-root")
+        val repo = privateDirectory("project-model-cache-repo")
+        try {
+            val source = repo.resolve("A.kt").also { it.writeText("class A") }
+            val build = repo.resolve("build.gradle.kts").also { it.writeText("plugins {}") }
+            val artifact = repo.resolve("library.jar").also { it.writeText("artifact") }
+            val jdk = repo.resolve("jdk17").also { it.resolve("bin").createDirectories() }
+            jdk.resolve("release").writeText("JAVA_VERSION=\"17.0.12\"\n")
+            jdk.resolve("bin/java").writeText("project-java-fixture")
+            val original = model(repo, source, build, artifact)
+            val fingerprint = jdkFingerprint(jdk)
+            val changed = withSemanticInputManifestHash(buildJsonObject {
+                original.forEach(::put)
+                put("jdkHome", jdk.toString())
+                put("jdkHomeFingerprint", fingerprint)
+                put("semanticInputManifest", JsonObject((original["semanticInputManifest"] as JsonObject) +
+                    ("jdkHomeFingerprint" to JsonPrimitive(fingerprint))))
+            })
+            assertTrue(PersistentProjectModelCache.publish(root.toString(), repo, "separate-jdk", changed))
+            assertEquals(changed, PersistentProjectModelCache.load(root.toString(), repo, "separate-jdk"))
+            jdk.resolve("release").writeText("JAVA_VERSION=\"17.0.13\"\n")
+            assertNull(PersistentProjectModelCache.load(root.toString(), repo, "separate-jdk"))
+        } finally { root.toFile().deleteRecursively(); repo.toFile().deleteRecursively() }
+    }
+
+    @Test
     fun absentNonPrivateAndSymlinkedRootsNeverAuthorizeCacheIO() {
         val repo = privateDirectory("project-model-cache-repo")
         val source = repo.resolve("src/main/kotlin/p/A.kt").also { it.parent.createDirectories(); it.writeText("class A") }

@@ -130,6 +130,11 @@ internal fun baselineKotlinAnalysisSupported(project: KotlinProjectSemantics): B
 internal fun kotlinAnalysisLanguageVersion(projectLanguageVersion: String?): String? =
     if (projectLanguageVersion == "1.9") "2.0" else projectLanguageVersion
 
+internal fun kotlinAnalysisCompilerArguments(projectCompilerVersion: String?, arguments: List<String>): List<String> =
+    if (projectCompilerVersion?.startsWith("1.9.") == true) {
+        arguments.filterNot { it == "-Xannotation-default-target=param-property" }
+    } else arguments
+
 internal fun kotlinEngineCompatibilityDecision(
     project: KotlinProjectSemantics,
     engine: KotlinSemanticEngineCapabilities = currentKotlinSemanticEngine(),
@@ -730,7 +735,9 @@ private fun rawContainsUnresolvedCompilerType(raw: JsonObject): Boolean {
         })
         else -> false
     }
-    return unresolved(raw)
+    // Annotation declaration types have their own coverage contract (including
+    // platform types); they cannot erase this callable's language type facts.
+    return unresolved(JsonObject(raw.filterKeys { it != "jvmAnnotations" }))
 }
 
 internal fun parseCompilerFactLines(lines: List<String>): List<JsonObject> = lines
@@ -767,6 +774,20 @@ internal fun parseCompilerFactLines(lines: List<String>): List<JsonObject> = lin
             },
         )
     }
+
+internal fun jdkFingerprint(home: Path): String {
+    val canonical = home.toRealPath()
+    val release = canonical.resolve("release")
+    val java = canonical.resolve("bin/java")
+    if (!release.isRegularFile() || !java.isRegularFile()) {
+        throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "JDK identity files are missing")
+    }
+    return sha(buildString {
+        append("release:").append(sha(release.readBytes())).append('\u0000')
+        append("java:").append(sha(java.readBytes())).append('\u0000')
+    }.toByteArray())
+}
+
 
 internal const val K1_BUILD_STATE_ROOT_ENV = "CODECLEW_K1_BUILD_STATE_ROOT"
 internal const val K1_BUILD_STATE_SEED_FILE = "CODECLEW_K1_BUILD_STATE_SEED"
@@ -1281,7 +1302,7 @@ internal fun sanitizedProjectModelProcess(
         require((isolatedHome == null) == (buildTool == null)) {
             "isolated project-model home and build tool must be supplied together"
         }
-        for (key in listOf("CODECLEW_K1_BUILD_STATE_ROOT", "CODECLEW_K2_INDEX_ROOT")) {
+        for (key in listOf("CODECLEW_K1_BUILD_STATE_ROOT", "CODECLEW_K2_INDEX_ROOT", "CODECLEW_WORKER_JAVA_HOME")) {
             builder.environment().remove(key)
         }
         if (isolatedHome != null) {
@@ -1555,6 +1576,10 @@ internal class Worker(
                 put("btaEligible", engineCompatibility.btaEligible)
             }
             putJsonArray("freeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.forEach(::add) }
+            val originalArguments = buildModel["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+            val analysisArguments = kotlinAnalysisCompilerArguments(declaredCompilerVersion, originalArguments)
+            putJsonArray("analysisFreeCompilerArguments") { analysisArguments.forEach(::add) }
+            putJsonArray("ignoredAnalysisCompilerArguments") { (originalArguments - analysisArguments.toSet()).forEach(::add) }
             putJsonArray("optIns") { buildModel["optIns"]?.jsonArray?.forEach(::add) }
             putJsonArray("requestedCompilerPlugins") { requestedPlugins.forEach(::add) }
             putJsonArray("compilerPlugins") { plugins.forEach(::add) }
@@ -1566,6 +1591,7 @@ internal class Worker(
             putJsonArray("buildModelBoundaries") {
                 buildModel["buildModelBoundaries"]?.jsonArray?.forEach(::add)
                 if (engineCompatibility.kind == "COMPATIBLE_ANALYSIS") add("KOTLIN_ANALYSIS_USES_DIFFERENT_COMPILER")
+                if (originalArguments != analysisArguments) add("KOTLIN_1_9_ANNOTATION_DEFAULT_TARGET_IGNORED_FOR_ANALYSIS")
                 if (languageVersion == "1.9") add("KOTLIN_ANALYSIS_LANGUAGE_UPGRADED_FROM_1_9_TO_2_0")
                 if (apiVersion == "1.9") add("KOTLIN_ANALYSIS_API_UPGRADED_FROM_1_9_TO_2_0")
             }
@@ -1584,6 +1610,7 @@ internal class Worker(
             })
             buildModel["mavenTestLifecycle"]?.let { put("mavenTestLifecycle", it) }
             put("gradleVersion", buildModel["gradleVersion"] ?: JsonPrimitive("unknown")); put("mavenVersion", buildModel["mavenVersion"] ?: JsonPrimitive("unknown"))
+            put("analysisJvmFingerprint", jdkFingerprint(Path.of(System.getProperty("java.home"))))
             put("jdkHomeFingerprint", jdkFingerprint(Path.of(buildModel["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home"))))
             putJsonArray("modelInputs") { modelInputs.map { buildJsonObject { put("path", it.path); put("hash", it.hash) } }.sortedBy { it.toString() }.forEach(::add) }
         }
@@ -1606,11 +1633,13 @@ internal class Worker(
             putJsonArray("requestedCompilerPlugins") { requestedPlugins.forEach(::add) }
             putJsonArray("orderedCompilerPlugins") { plugins.forEach(::add) }
             putJsonArray("orderedFreeCompilerArguments") { buildModel["freeCompilerArguments"]?.jsonArray?.forEach(::add) }
+            put("orderedAnalysisFreeCompilerArguments", normalized["analysisFreeCompilerArguments"] ?: JsonArray(emptyList()))
             putJsonArray("orderedOptIns") { buildModel["optIns"]?.jsonArray?.forEach(::add) }
             putJsonArray("orderedCompilerPluginOptions") { buildModel["compilerPluginOptions"]?.jsonArray?.forEach(::add) }
             put("target", normalized["jvmTarget"] ?: JsonNull)
             put("languageVersion", normalized["languageVersion"] ?: JsonNull)
             put("apiVersion", normalized["apiVersion"] ?: JsonNull)
+            put("analysisJvmFingerprint", normalized["analysisJvmFingerprint"] ?: JsonNull)
             put("jdkHomeFingerprint", normalized["jdkHomeFingerprint"] ?: JsonNull)
             put("fieldBoundaries", normalized["fieldBoundaries"] ?: JsonNull)
             put("buildRoot", normalized["buildRoot"] ?: JsonNull)
@@ -1965,19 +1994,6 @@ internal class Worker(
         }
     }
 
-    private fun jdkFingerprint(home: Path): String {
-        val canonical = home.toRealPath()
-        val release = canonical.resolve("release")
-        val java = canonical.resolve("bin/java")
-        if (!release.isRegularFile() || !java.isRegularFile()) {
-            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION", "JDK identity files are missing")
-        }
-        return sha(buildString {
-            append("release:").append(sha(release.readBytes())).append('\u0000')
-            append("java:").append(sha(java.readBytes())).append('\u0000')
-        }.toByteArray())
-    }
-
     private fun extractorAuthority(): JsonObject {
         val pluginArtifact = Path.of(Worker::class.java.protectionDomain.codeSource.location.toURI())
             .toAbsolutePath()
@@ -2102,7 +2118,7 @@ internal class Worker(
                     friendPaths = model["friendPaths"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.toList().orEmpty().sortedBy { it.toString() },
                     compilerPlugins = model["compilerPlugins"]?.jsonArray?.map { Path.of(it.jsonPrimitive.content) }?.toList().orEmpty().sortedBy { it.toString() },
                     compilerPluginOptions = model["compilerPluginOptions"]?.jsonArray?.map { it.jsonPrimitive.content }?.toList().orEmpty().sorted(),
-                    freeCompilerArguments = model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }?.toList().orEmpty().sorted(),
+                    freeCompilerArguments = kotlinAnalysisCompilerArguments(model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull, model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()),
                     optIns = model["optIns"]?.jsonArray?.map { it.jsonPrimitive.content }?.toList().orEmpty().sorted(),
                     jdkHome = Path.of(model["jdkHome"]?.jsonPrimitive?.content ?: System.getProperty("java.home")),
                     jvmTarget = model["jvmTarget"]?.jsonPrimitive?.content ?: "21",
@@ -2153,7 +2169,7 @@ internal class Worker(
             kotlinAnalysisLanguageVersion(model["apiVersion"]?.jsonPrimitive?.contentOrNull)?.let { command += listOf("-api-version", it) }
             val friendPaths = model["friendPaths"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
             if (friendPaths.isNotEmpty()) command += "-Xfriend-paths=${friendPaths.joinToString(File.pathSeparator)}"
-            model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }?.let(command::addAll)
+            command.addAll(kotlinAnalysisCompilerArguments(model["declaredCompilerVersion"]?.jsonPrimitive?.contentOrNull, model["freeCompilerArguments"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()))
             model["optIns"]?.jsonArray?.map { "-opt-in=${it.jsonPrimitive.content}" }?.let(command::addAll)
             model["compilerPlugins"]?.jsonArray?.map { "-Xplugin=${it.jsonPrimitive.content}" }?.let(command::addAll)
             model["compilerPluginOptions"]?.jsonArray?.map { option ->

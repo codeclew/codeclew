@@ -383,14 +383,37 @@ fn select_from_rows(
         ));
     };
     if row.kind.is_cross_engine() {
-        if project
+        let unqualified = project
             .unstable_compiler_options
             .iter()
-            .any(|option| option != "-Xannotation-default-target=param-property")
-        {
-            return Err(unsupported(
-                "cross-engine Kotlin analysis has unqualified unstable compiler options. The qualified analysis option is -Xannotation-default-target=param-property; keep required project flags enabled and report unsupported options for Codeclew qualification.",
-            ));
+            .filter(|option| option.as_str() != "-Xannotation-default-target=param-property")
+            .collect::<Vec<_>>();
+        if !unqualified.is_empty() {
+            // Option values may contain paths or private identifiers. Identify
+            // the option name while leaving its value in the local build model.
+            let names = unqualified
+                .iter()
+                .take(16)
+                .map(|option| {
+                    let name = option.split('=').next().unwrap_or_default();
+                    if name.len() <= 96
+                        && name
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+                    {
+                        name.to_owned()
+                    } else {
+                        "<noncanonical -X argument; inspect freeCompilerArguments>".into()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(unsupported(&format!(
+                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. The qualified analysis option is -Xannotation-default-target=param-property; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and use a qualified matching compiler pack when available, or report these option names and compiler versions for Codeclew qualification.",
+                project.project_compiler_version,
+                row.engine.analyzer_compiler_version(),
+                unqualified.len(),
+            )));
         }
         let has_unknown_plugin = project
             .compiler_plugins
@@ -558,6 +581,18 @@ mod tests {
                 .message
                 .contains("keep required project flags enabled")
         );
+        assert!(error.message.contains("-Xunqualified-option"));
+        assert!(error.message.contains("project Kotlin 2.3.20"));
+        assert!(error.message.contains("analyzed by Kotlin 2.4.10"));
+    }
+
+    #[test]
+    fn unqualified_option_error_omits_private_values() {
+        let mut configured = project("1.9.25", "1.9", &[]);
+        configured.unstable_compiler_options = vec!["-Xunknown=/private/customer-token".into()];
+        let error = KotlinEngineRegistry.select(&configured).unwrap_err();
+        assert!(error.message.contains("-Xunknown"));
+        assert!(!error.message.contains("customer-token"));
     }
 
     #[test]

@@ -93,7 +93,7 @@ enum class PublishOutcome {
                 if (modelJdk != null) {
                     val configured = attempt { Path.of(modelJdk).toRealPath() }
                         ?: return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_HOME_INVALID)
-                    if (configured != Path.of(System.getProperty("java.home")).toRealPath()) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_HOME_MISMATCH)
+                    if (attempt { jdkFingerprint(configured) } != model.string("jdkHomeFingerprint")) return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_HOME_MISMATCH)
                 }
                 val jdkFingerprint = model.string("jdkHomeFingerprint")
                     ?: return ProjectModelPublishResult(PublishOutcome.INVALID_MODEL, ProjectModelInvalidReason.JDK_FINGERPRINT_MISSING)
@@ -139,7 +139,7 @@ enum class PublishOutcome {
         val modelJdk = model.string("jdkHome")
         if (modelJdk != null) {
             val configured = attempt { Path.of(modelJdk).toRealPath() } ?: return false
-            if (configured != Path.of(System.getProperty("java.home")).toRealPath()) return false
+            if (attempt { jdkFingerprint(configured) } != model.string("jdkHomeFingerprint")) return false
         }
         val jdkFingerprint = model.string("jdkHomeFingerprint") ?: return false
         return digestText.matches(jdkFingerprint)
@@ -278,6 +278,13 @@ enum class PublishOutcome {
         if (files.take(2).any { !Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(it) }) error("JDK authority files are unavailable")
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(home.toString().toByteArray())
+        // A different project launcher environment cannot reuse the previous
+        // build model merely because the analyzer JVM is unchanged.
+        for (name in listOf("JAVA_HOME", "PATH")) {
+            digest.update(name.toByteArray())
+            digest.update(System.getenv(name).orEmpty().toByteArray())
+            digest.update(0.toByte())
+        }
         for (file in files.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(it) }) {
             digest.update(home.relativize(file).toString().toByteArray())
             Files.newInputStream(file).use { stream ->

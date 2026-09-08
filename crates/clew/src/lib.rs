@@ -1,4 +1,5 @@
 pub mod adapter_v2;
+pub mod analysis_modules;
 pub mod canonical;
 pub mod cas;
 pub mod cold_start;
@@ -18,6 +19,7 @@ pub mod java_adapter_v2;
 pub mod java_project_model;
 pub mod jvm_navigation;
 pub mod jvm_navigation_service;
+pub mod jvm_runtime;
 pub mod kotlin_adapter_v2;
 pub mod kotlin_engine;
 pub mod maven;

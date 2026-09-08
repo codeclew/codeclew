@@ -71,6 +71,19 @@ internal fun parseMavenDebugLocalRepository(output: String): Path? = output.line
     .lastOrNull(Path::isAbsolute)
     ?.normalize()
 
+internal data class MavenRuntime(val version: String, val javaHome: Path)
+
+internal fun parseMavenRuntime(output: String): MavenRuntime? {
+    val lines = output.lineSequence().map { it.replace(Regex("\\u001B\\[[;\\d]*m"), "").trim() }.toList()
+    val version = lines.firstOrNull { it.startsWith("Apache Maven ") }?.removePrefix("Apache Maven ") ?: return null
+    val home = lines.firstNotNullOfOrNull { line -> when {
+        line.startsWith("Java home:") -> line.substringAfter("Java home:").trim()
+        line.startsWith("Java version:") && ", runtime:" in line -> line.substringAfter(", runtime:").trim()
+        else -> null
+    } } ?: return null
+    return runCatching { Path.of(home).takeIf { it.isAbsolute }?.let { MavenRuntime(version, it) } }.getOrNull()
+}
+
 internal class MavenProjectModelExtractor(
     private val preparedState: BuildStateLayout? = null,
 ) {
@@ -281,8 +294,9 @@ internal class MavenProjectModelExtractor(
                     put("optIns", "UNAVAILABLE_PROVIDER")
                     put("jdkHome", "BOUNDARY_BUILD_JVM")
                 }
-                put("mavenVersion", mavenVersion(mavenModelCommand(launcher, repo, emptyList(), state(repo)), repo))
-                put("jdkHome", System.getProperty("java.home"))
+                val runtime = mavenRuntime(mavenModelCommand(launcher, repo, emptyList(), state(repo)), repo)
+                put("mavenVersion", runtime.version)
+                put("jdkHome", runtime.javaHome.toString())
             }
         } finally {
             temporary.toFile().deleteRecursively()
@@ -461,20 +475,15 @@ internal class MavenProjectModelExtractor(
         return (presets + configured).distinct()
     }
 
-    private fun mavenVersion(launcher: List<String>, repo: Path): String {
-        return try {
-            val state = state(repo)
-            val process = sanitizedProjectModelProcess(
-                launcher + "-version",
-                repo,
-                state.mavenLocalRepository.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
-                ProjectModelBuildTool.MAVEN.takeIf { state.mode == EXTERNAL_BUILD_STATE_MODE },
-            ).start()
-            val firstLine = process.inputStream.bufferedReader().readLine().orEmpty()
-            if (process.waitFor() == 0) firstLine.removePrefix("Apache Maven ").trim().ifBlank { "unknown" } else "unknown"
-        } catch (_: Exception) {
-            "unknown"
+    private fun mavenRuntime(launcher: List<String>, repo: Path): MavenRuntime {
+        val process = start(launcher + "-version", repo, "Maven runtime discovery")
+        val output = process.inputStream.bufferedReader().readText()
+        val runtime = if (process.waitFor() == 0) parseMavenRuntime(output) else null
+        if (runtime == null || !runtime.javaHome.resolve("bin/java").isRegularFile()) {
+            throw WorkerFailure("UNSUPPORTED_PROJECT_CONFIGURATION",
+                "MAVEN_BUILD_JVM_UNRESOLVED: Maven --version did not identify an installed Java runtime. Verify ./mvnw --version or mvn --version and JAVA_HOME in the project environment. The analyzer worker JVM is configured separately with CODECLEW_WORKER_JAVA_HOME.")
         }
+        return runtime
     }
 
     private fun start(command: List<String>, repo: Path, operation: String) = try {

@@ -33,9 +33,13 @@ function diagram(o){
  }return svg+'</svg>';
 }
 function explanation(o,detail=false){
- const steps=new Map(o.events.filter(e=>e.kind!=='end').map((e,i)=>[e.id,i+1]));
- const paragraphs=(o.explanation||[]).filter(p=>!!p.detail===detail);
- return paragraphs.length?`<section class="operation-explanation" aria-label="${detail?'Implementation commentary':'What happens'}">${detail?'':'<h3>What happens</h3>'}${paragraphs.map(p=>`<div class="explanation-paragraph"><p>${esc(p.text)}</p><details class="explanation-evidence"><summary>Supporting source · ${p.eventIds.length} steps</summary>${p.eventIds.map(id=>`<button class="source-link" data-event="${esc(id)}">Step ${steps.get(id)}</button>`).join(' ')} ${button(p.sourceIds)}</details></div>`).join('')}</section>`:'';
+ const paragraphs=new Map();
+ for(const p of (o.explanation||[]).filter(p=>!!p.detail===detail)){
+  const previous=paragraphs.get(p.text);
+  if(previous)previous.sourceIds=[...new Set([...previous.sourceIds,...p.sourceIds])];
+  else paragraphs.set(p.text,{...p,sourceIds:[...p.sourceIds]});
+ }
+ return paragraphs.size?`<section class="operation-explanation" aria-label="${detail?'Implementation commentary':'What happens'}">${detail?'':'<h3>What happens</h3>'}${[...paragraphs.values()].map(p=>`<div class="explanation-paragraph"><p>${esc(p.text)}</p><div class="explanation-evidence">${button(p.sourceIds,'Supporting code')}</div></div>`).join('')}</section>`:'';
 }
 function interactionOverview(o){
  const seen=new Set(),links=o.events.filter(e=>e.kind==='declared'&&!seen.has(e.interaction)&&seen.add(e.interaction));
