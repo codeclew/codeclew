@@ -121,6 +121,10 @@ Start with `clew docs init --root /work/architecture`, adapt the generated examp
 and follow the [packaged workflow](skills/codeclew/references/service-documentation.md).
 The [two-service fixture](fixtures/durable-docs/README.md) provides a reproducible
 example with guards, OpenAPI constraints and recovery from a fresh local home.
+Codeclew 0.6.1 keeps reader diagrams bounded to at most 12 source-bound nodes,
+with the full branch evidence retained separately. HTML, Markdown and Mermaid
+use the same compact overview.
+
 Codeclew 0.6.0 adds Kotlin/JVM 1.9+ Maven/Gradle analysis alongside
 Java 17+, up to eight services per scenario, declared Kafka transitions, and
 domain explanation paragraphs linked to diagram steps. There is one compilation

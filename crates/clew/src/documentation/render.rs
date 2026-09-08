@@ -76,6 +76,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
         "codeclew-documentation-narrative/1.0"
             | "codeclew-documentation-narrative/1.1"
             | "codeclew-documentation-narrative/1.2"
+            | "codeclew-documentation-narrative/1.3"
     ) || n.context_digest != checked.context_digest
     {
         return Err(ClewError::new(
@@ -287,6 +288,10 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
         if !groups.is_empty() {
             return Err(invalid("sequence contains an unclosed group"));
         }
+        validate_overview(o)?;
+        if n.schema.ends_with("/1.3") && o.overview_diagram.is_none() {
+            return Err(invalid("narrative 1.3 requires a bounded overview diagram"));
+        }
         // Source-bound diagrams must preserve known conditions and return branches.
         if kind == "service"
             && checked.services[id]
@@ -491,6 +496,99 @@ fn id_from_subject(subject: &str) -> &str {
     subject.split_once(':').map(|(_, id)| id).unwrap_or("")
 }
 
+fn validate_overview(o: &Operation) -> Result<(), ClewError> {
+    let Some(d) = &o.overview_diagram else {
+        return Ok(());
+    };
+    if d.nodes.is_empty() || d.nodes.len() > 12 || d.edges.len() > 20 {
+        return Err(invalid(
+            "overview diagram allows 1..12 nodes and at most 20 edges",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut positions = BTreeSet::new();
+    let bound = |refs: &[String]| {
+        !refs.is_empty()
+            && refs.len() <= 8
+            && refs
+                .iter()
+                .all(|id| o.events.iter().any(|e| e.id == *id && e.kind != "end"))
+    };
+    for node in &d.nodes {
+        if !store::valid_id(&node.id)
+            || !ids.insert(&node.id)
+            || node.text.trim().is_empty()
+            || node.text.chars().count() > 84
+            || node.column > 3
+            || node.row > 2
+            || !positions.insert((node.column, node.row))
+            || !o.participants.iter().any(|p| p.id == node.participant)
+            || !bound(&node.event_ids)
+        {
+            return Err(invalid(
+                "overview node needs a unique grid position, brief label, participant and retained events",
+            ));
+        }
+    }
+    for edge in &d.edges {
+        let from = d.nodes.iter().find(|n| n.id == edge.from);
+        let to = d.nodes.iter().find(|n| n.id == edge.to);
+        if !store::valid_id(&edge.id)
+            || !ids.insert(&edge.id)
+            || edge.from == edge.to
+            || edge.text.chars().count() > 48
+            || from.is_none()
+            || to.is_none()
+            || !bound(&edge.event_ids)
+        {
+            return Err(invalid(
+                "overview edge needs distinct known nodes and retained events",
+            ));
+        }
+        let from = from.unwrap();
+        let to = to.unwrap();
+        let service = |id: &str| {
+            o.participants
+                .iter()
+                .find(|p| p.id == id)
+                .and_then(|p| p.service.as_ref())
+        };
+        if service(&from.participant).is_some()
+            && service(&to.participant).is_some()
+            && service(&from.participant) != service(&to.participant)
+            && !o.events.iter().any(|e| {
+                edge.event_ids.contains(&e.id)
+                    && e.kind == "declared"
+                    && e.from.as_ref() == Some(&from.participant)
+                    && e.to.as_ref() == Some(&to.participant)
+            })
+        {
+            return Err(invalid(
+                "cross-service overview edges must retain the matching declared transition",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn overview_refs(o: &Operation, ids: &[String]) -> (Vec<String>, Vec<String>) {
+    let events: Vec<_> = o.events.iter().filter(|e| ids.contains(&e.id)).collect();
+    (
+        events
+            .iter()
+            .flat_map(|e| e.dependency_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        events
+            .iter()
+            .flat_map(|e| e.source_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    )
+}
+
 fn default_narrative(
     subject: String,
     ids: impl Iterator<Item = String>,
@@ -567,6 +665,32 @@ pub fn make_bindings(
                     &e.source_ids,
                     checked,
                 )?;
+            }
+            if let Some(diagram) = &o.overview_diagram {
+                for node in &diagram.nodes {
+                    let (deps, sources) = overview_refs(o, &node.event_ids);
+                    add_binding(
+                        &mut fragments,
+                        format!("{prefix}/overview/{}", node.id),
+                        subject,
+                        node,
+                        &deps,
+                        &sources,
+                        checked,
+                    )?;
+                }
+                for edge in &diagram.edges {
+                    let (deps, sources) = overview_refs(o, &edge.event_ids);
+                    add_binding(
+                        &mut fragments,
+                        format!("{prefix}/overview/{}", edge.id),
+                        subject,
+                        edge,
+                        &deps,
+                        &sources,
+                        checked,
+                    )?;
+                }
             }
             for paragraph in &o.explanation {
                 add_binding(
@@ -851,7 +975,34 @@ pub fn mermaid(o: &Operation) -> String {
             .replace(';', "&#59;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
+            .replace('"', "&quot;")
             .replace(['\n', '\r'], " ")
+    }
+    if let Some(d) = &o.overview_diagram {
+        let mut out = "flowchart LR\n    %% Source-bound overview; conditional and declared links are not a runtime trace.\n".to_owned();
+        for node in &d.nodes {
+            out.push_str(&format!(
+                "    %% {}: retained events {}\n    {}[\"{}\"]\n",
+                node.id,
+                node.event_ids.join(", "),
+                node.id,
+                label(&node.text)
+            ));
+        }
+        for edge in &d.edges {
+            out.push_str(&format!(
+                "    %% {}: retained events {}\n    {} -->|\"{}\"| {}\n",
+                edge.id,
+                edge.event_ids.join(", "),
+                edge.from,
+                label(&edge.text),
+                edge.to
+            ));
+        }
+        return out;
+    }
+    if o.events.len() > 12 {
+        return "flowchart LR\n    pending[\"A bounded overview has not been authored. Full source evidence is retained separately.\"]\n".into();
     }
     let mut out="sequenceDiagram\n    autonumber\n    %% Agent-interpreted static source; declared edges are not compiler calls.\n".to_owned();
     for p in &o.participants {

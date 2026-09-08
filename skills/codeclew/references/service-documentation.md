@@ -1,7 +1,7 @@
 # Durable service documentation
 
 Use this workflow for a separate documentation repository with per-service pages,
-a root overview and named interaction slices. Codeclew 0.6.0 supports Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
+a root overview and named interaction slices. Codeclew 0.6.1 supports Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
 interactions and step-linked domain explanations. Java 17+ remains supported.
 Use one Maven/Gradle compilation per service. The overview can list more services.
 For Kotlin choose `kotlin-jvm-maven-analysis` or `kotlin-jvm-gradle-analysis`.
@@ -103,7 +103,7 @@ corresponding event. A count check cannot establish semantic fidelity: read the
 predicate and outcome, and keep their actual nesting/order in the narrative.
 Do not convert unsupported branches into a linear happy path.
 
-Use narrative schema `codeclew-documentation-narrative/1.2`. Write for a developer
+Use narrative schema `codeclew-documentation-narrative/1.3`. Write for a developer
 or analyst who needs to use the service: what starts the operation, what data it
 accepts, what changes, what comes back, and which failures need handling. Keep
 `summary` to one or two sentences. The default `explanation` should usually fit
@@ -113,18 +113,35 @@ inflate prose to match compiler traversal depth or repeat identical explanations
 for each callback. Keep material rejection conditions, partial success, retries,
 asynchrony and idempotency visible in this short overview.
 
-Keep the complete bound branch structure in `events`. Mark implementation-only
-explanation paragraphs with `detail: true`; the renderer folds them together with
-the detailed diagram. Source references are also disclosed on demand. The service
-link overview is a map of declared connections, not a synchronous happy path.
-Do not remove failure evidence to shorten the page. Large source-step counts are
-an evidence concern, not a target for the reader-facing explanation.
+Keep the complete bound branch structure in `events` as evidence. Author a
+separate `overviewDiagram` for the reader: usually 4–9 nodes, never more than 12
+nodes or 20 connections. Show the trigger, meaningful actions, material decisions
+and outcomes. Do not draw every call, callback, loop iteration or return, and do
+not use a collapsed giant diagram as a substitute for a readable diagram. If the
+scenario needs more nodes, split it into named subscenarios before rendering.
+
+Each node has `id`, brief `text` (up to 84 characters), `participant` (an existing
+participant ID), `column` (0..3), `row` (0..2), and 1..8 retained non-end `eventIds`.
+Use unique grid positions. Each edge has `id`, `from`, `to`, brief `text`, and
+1..8 retained `eventIds`. Label the conditions on alternate paths. Cross-service
+edges must retain the existing declared transition with matching participants.
+Node and edge evidence participates in freshness checks. The diagram describes
+source-interpreted business flow, not a runtime trace. Do not infer chronological
+ordering across an asynchronous boundary without evidence.
+
+Mark implementation-only explanation paragraphs with `detail: true`. Detailed
+prose and exact source remain available on demand; the full event traversal is
+retained as structured evidence rather than rendered as an unbounded diagram.
+HTML, Markdown and Mermaid exports all use the same bounded overview. Review the
+actual rendered diagram at a normal desktop size; inspect labels, crossings and
+conditional paths, not only the node count. Preserve rejection, retries, partial
+success and asynchronous boundaries while shortening the visual explanation.
 
 Each paragraph has `id`, `text`, `eventIds`, `dependencyIds` and `sourceIds`.
 Every non-`end` diagram event must be covered by an overview or detail paragraph,
 and paragraphs retain the evidence of every referenced event. One paragraph can
 cover many steps. The validator checks references and coverage, not the truth or
-usefulness of the prose. Narrative 1.0/1.1 remain readable for existing bundles.
+usefulness of the prose. Narrative 1.0/1.1/1.2 remain readable for existing bundles.
 
 ## Interface contracts
 

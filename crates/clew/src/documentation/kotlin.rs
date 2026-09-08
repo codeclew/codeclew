@@ -313,6 +313,57 @@ mod tests {
                 .fragments
                 .contains_key("scenario:import/import/stock-topic")
         );
+        let mut overview = narrative.clone();
+        overview.schema = "codeclew-documentation-narrative/1.3".into();
+        assert!(render::validate(&overview, &checked).is_err());
+        overview.operations[0].overview_diagram = Some(serde_json::from_value(json!({
+            "nodes":[{"id":"accept","text":"Accept stock","participant":"p0","column":0,"row":0,"eventIds":["send"]},
+                {"id":"received","text":"Batch received","participant":"p0","column":1,"row":0,"eventIds":["send"]}],
+            "edges":[{"id":"accepted","from":"accept","to":"received","text":"accepted","eventIds":["send"]}]
+        })).unwrap());
+        render::validate(&overview, &checked).unwrap();
+        assert!(render::mermaid(&overview.operations[0]).starts_with("flowchart LR"));
+        let overview_bindings = render::make_bindings(
+            &checked,
+            BTreeMap::from([(overview.subject.clone(), overview.clone())]),
+        )
+        .unwrap();
+        assert!(
+            overview_bindings
+                .fragments
+                .contains_key("scenario:import/import/overview/accept")
+        );
+        let valid = overview.operations[0].overview_diagram.clone();
+        overview.operations[0]
+            .overview_diagram
+            .as_mut()
+            .unwrap()
+            .nodes[0]
+            .event_ids = vec!["missing".into()];
+        assert!(render::validate(&overview, &checked).is_err());
+        overview.operations[0].overview_diagram = valid.clone();
+        overview.operations[0]
+            .overview_diagram
+            .as_mut()
+            .unwrap()
+            .nodes[1]
+            .column = 0;
+        assert!(render::validate(&overview, &checked).is_err());
+        overview.operations[0].overview_diagram = valid.clone();
+        overview.operations[0]
+            .overview_diagram
+            .as_mut()
+            .unwrap()
+            .nodes[1]
+            .participant = "p1".into();
+        assert!(render::validate(&overview, &checked).is_err());
+        overview.operations[0].overview_diagram = valid.clone();
+        overview.operations[0]
+            .overview_diagram
+            .as_mut()
+            .unwrap()
+            .nodes = vec![valid.as_ref().unwrap().nodes[0].clone(); 13];
+        assert!(render::validate(&overview, &checked).is_err());
         let mut changed = checked.clone();
         changed
             .dependencies
@@ -327,6 +378,15 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|row| row["fragment"] == "scenario:import/import/stock-topic")
+        );
+        let freshness =
+            crate::documentation::bindings::freshness(Some(&overview_bindings), &changed);
+        assert!(
+            freshness["affected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["fragment"] == "scenario:import/import/overview/accept")
         );
         narrative.operations[0].interface_contracts[0].rows[0].source_ids = vec!["unbound".into()];
         assert!(render::validate(&narrative, &checked).is_err());

@@ -163,7 +163,9 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
     // the root index prefixes those same links with the immutable bundle path.
     let comparison_text = if matches!(
         binding.renderer.as_str(),
-        "codeclew-documentation-html/1.2" | "codeclew-documentation-html/1.3"
+        "codeclew-documentation-html/1.2"
+            | "codeclew-documentation-html/1.3"
+            | "codeclew-documentation-html/1.4"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(

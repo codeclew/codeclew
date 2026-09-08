@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.1";
-pub const RENDERER: &str = "codeclew-documentation-html/1.3";
+pub const RENDERER: &str = "codeclew-documentation-html/1.4";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -265,6 +265,34 @@ pub struct InterfaceContract {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiagramNode {
+    pub id: String,
+    pub text: String,
+    pub participant: String,
+    pub column: u8,
+    pub row: u8,
+    pub event_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiagramEdge {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub text: String,
+    pub event_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OverviewDiagram {
+    pub nodes: Vec<DiagramNode>,
+    pub edges: Vec<DiagramEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation {
     pub id: String,
     pub title: String,
@@ -275,6 +303,9 @@ pub struct Operation {
     /// Source-bound interface facts for projects without a published API schema.
     #[serde(default)]
     pub interface_contracts: Vec<InterfaceContract>,
+    /// A bounded reader diagram; the full branch evidence stays in events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overview_diagram: Option<OverviewDiagram>,
     pub participants: Vec<Participant>,
     pub events: Vec<Event>,
     #[serde(default)]

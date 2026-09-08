@@ -80,8 +80,10 @@ The overview should describe business decisions, not repeat every source step.
 For a longer operation, mark implementation-only explanation paragraphs with
 `detail: true`. Their step coverage and evidence remain validated, but the UI
 keeps them inside the detailed view. Keep important failures and asynchronous
-boundaries in the short default overview. The renderer folds reference lists and
-large diagrams, and shows declared service links as a separate connection map.
+boundaries in the short default overview. The renderer folds reference lists and source commentary. For schema 1.3, add
+a source-bound `overviewDiagram` with at most 12 nodes; its grid, node and edge
+fields are defined in the service-documentation reference. A large retained
+event list must never become the reader-facing diagram.
 
 Use `interfaceContracts` for source-derived HTTP, Kafka and payload facts when
 OpenAPI is absent or incomplete. Each row has a unique `id`, readable `label`
