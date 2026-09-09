@@ -345,6 +345,37 @@ impl KotlinEngineRegistry {
     }
 }
 
+// Keep aligned with the worker gate and Kotlin19OptionQualificationTest.
+// Options describe the selected analyzer's behavior. Project compatibility is
+// checked separately; a project patch whitelist would reject supported modes.
+fn qualified_analysis_option(
+    project: &KotlinProjectSemantics,
+    engine: KotlinSemanticEngine,
+    option: &str,
+) -> bool {
+    if option == "-Xannotation-default-target=param-property" {
+        return true;
+    }
+    if engine != KotlinSemanticEngine::Kotlin24 {
+        return false;
+    }
+    let supported = matches!(
+        option,
+        "-Xjsr305=strict"
+            | "-Xjsr305=warn"
+            | "-Xjsr305=ignore"
+            | "-Xjvm-default=disable"
+            | "-Xjvm-default=all"
+            | "-Xjvm-default=all-compatibility"
+    );
+    let name = option.split('=').next().unwrap_or_default();
+    supported
+        && !project
+            .unstable_compiler_options
+            .iter()
+            .any(|other| other != option && other.split('=').next() == Some(name))
+}
+
 fn select_from_rows(
     project: &KotlinProjectSemantics,
     rows: &[QualifiedCompatibility],
@@ -386,7 +417,7 @@ fn select_from_rows(
         let unqualified = project
             .unstable_compiler_options
             .iter()
-            .filter(|option| option.as_str() != "-Xannotation-default-target=param-property")
+            .filter(|option| !qualified_analysis_option(project, row.engine, option))
             .collect::<Vec<_>>();
         if !unqualified.is_empty() {
             // Option values may contain paths or private identifiers. Identify
@@ -409,7 +440,7 @@ fn select_from_rows(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(unsupported(&format!(
-                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. The qualified analysis option is -Xannotation-default-target=param-property; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and use a qualified matching compiler pack when available, or report these option names and compiler versions for Codeclew qualification.",
+                "UNQUALIFIED_COMPILER_OPTIONS: project Kotlin {} is being analyzed by Kotlin {}; {} option(s) lack cross-engine qualification: {names}. This is an analysis compatibility restriction, not a claim that the project's compiler rejects these options. Qualified analysis options: -Xannotation-default-target=param-property; with the Kotlin 2.4.10 analyzer, -Xjsr305=strict|warn|ignore and -Xjvm-default=disable|all|all-compatibility (one value per option, independent of project patch version). Project language/API and JVM target support are checked separately; keep required project flags enabled. Inspect the listed options in freeCompilerArguments and use a qualified matching compiler pack when available, or report these option names and compiler versions for Codeclew qualification.",
                 project.project_compiler_version,
                 row.engine.analyzer_compiler_version(),
                 unqualified.len(),
@@ -584,6 +615,54 @@ mod tests {
         assert!(error.message.contains("-Xunqualified-option"));
         assert!(error.message.contains("project Kotlin 2.3.20"));
         assert!(error.message.contains("analyzed by Kotlin 2.4.10"));
+    }
+
+    #[test]
+    fn analysis_options_do_not_whitelist_project_patches_or_jvm_targets() {
+        for (version, language) in [
+            ("1.9.0", "1.9"),
+            ("1.9.23", "1.9"),
+            ("1.9.99", "1.9"),
+            ("2.0.21", "2.0"),
+            ("2.1.99", "2.1"),
+            ("2.3.20", "2.3"),
+            ("2.4.0", "2.4"),
+        ] {
+            let mut configured = project(version, language, &[]);
+            for target in ["1.8", "17", "21"] {
+                configured.jvm_target = Some(target.into());
+                for jsr in ["strict", "warn", "ignore"] {
+                    for defaults in ["disable", "all", "all-compatibility"] {
+                        configured.unstable_compiler_options = vec![
+                            format!("-Xjsr305={jsr}"),
+                            format!("-Xjvm-default={defaults}"),
+                        ];
+                        assert_eq!(
+                            KotlinEngineRegistry.select(&configured).unwrap(),
+                            KotlinSemanticEngine::Kotlin24
+                        );
+                    }
+                }
+            }
+            for unsupported in [
+                "-Xjsr305",
+                "-Xjsr305=under-migration:strict",
+                "-Xjsr305=@private.Annotation:warn",
+                "-Xjsr305=STRICT",
+                "-Xjvm-default=enable",
+                "-Xjvm-default=all,disable",
+                "-Xunknown",
+            ] {
+                configured.unstable_compiler_options = vec![unsupported.into()];
+                assert!(KotlinEngineRegistry.select(&configured).is_err());
+            }
+            configured.unstable_compiler_options =
+                vec!["-Xjsr305=strict".into(), "-Xjsr305=ignore".into()];
+            assert!(KotlinEngineRegistry.select(&configured).is_err());
+            configured.unstable_compiler_options = vec!["-Xjsr305=strict".into()];
+            configured.project_compiler_version = "3.0.0".into();
+            assert!(KotlinEngineRegistry.select(&configured).is_err());
+        }
     }
 
     #[test]

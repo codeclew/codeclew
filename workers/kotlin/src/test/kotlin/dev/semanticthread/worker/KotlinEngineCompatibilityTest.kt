@@ -7,6 +7,30 @@ import kotlin.test.assertTrue
 
 class KotlinEngineCompatibilityTest {
     @Test
+    fun analysisOptionsDoNotWhitelistProjectPatchesOrJvmTargets() {
+        for ((version, language) in listOf("1.9.0" to "1.9", "1.9.23" to "1.9", "1.9.99" to "1.9", "2.0.21" to "2.0", "2.1.99" to "2.1", "2.3.20" to "2.3")) {
+            val project = KotlinProjectSemantics(version, "TEST", language, language, "17", emptyList(), emptyList())
+            for (target in listOf("1.8", "17", "21")) {
+                for (jsr in listOf("strict", "warn", "ignore")) for (defaults in listOf("disable", "all", "all-compatibility")) {
+                    val options = listOf("-Xjsr305=$jsr", "-Xjvm-default=$defaults")
+                    val decision = kotlinEngineCompatibilityDecision(project.copy(jvmTarget = target, unstableCompilerOptions = options))
+                    assertEquals("QUALIFIED", decision.status)
+                    assertEquals("COMPATIBLE_ANALYSIS", decision.kind)
+                    assertFalse(decision.btaEligible)
+                    assertEquals(options, kotlinAnalysisCompilerArguments(version, options))
+                }
+            }
+            for (options in listOf(listOf("-Xjsr305"), listOf("-Xjsr305=under-migration:strict"), listOf("-Xjsr305=@private.Annotation:warn"), listOf("-Xjvm-default=enable"), listOf("-Xjsr305=strict", "-Xjsr305=ignore"))) {
+                assertEquals("REJECTED", kotlinEngineCompatibilityDecision(project.copy(unstableCompilerOptions = options)).status)
+            }
+            val configured = project.copy(unstableCompilerOptions = listOf("-Xjsr305=strict"))
+            for (outside in listOf(configured.copy(projectCompilerVersion = "3.0.0"), configured.copy(languageVersion = "3.0"), configured.copy(apiVersion = "1.8"))) {
+                assertEquals("REJECTED", kotlinEngineCompatibilityDecision(outside).status)
+            }
+        }
+    }
+
+    @Test
     fun kotlin19AnnotationTargetNormalizationPreservesNativeAndUnknownArguments() {
         val original = listOf("-Xannotation-default-target=param-property", "-Xunknown=keep", "-java-parameters")
         assertEquals(listOf("-Xunknown=keep", "-java-parameters"), kotlinAnalysisCompilerArguments("1.9.25", original))
