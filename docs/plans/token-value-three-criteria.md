@@ -72,6 +72,10 @@ Assemble a bounded source packet before starting the agent: use explicit task
 identifiers, existing compiler identities, bounded source/call relationships,
 test evidence and complete relevant declarations. Preserve source bindings and
 unknown relationships. Continue with new evidence only while checking freshness.
+The client or launcher must attach that packet to the initial model request.
+If another model prepares it or an existing agent launches a nested agent,
+count all those model tokens; an extra orchestration layer can consume the
+observed saving.
 
 First demonstrate automatic packet selection without manual paths or an oracle.
 Then compare fresh tasks against equally disciplined Default, counting packet
