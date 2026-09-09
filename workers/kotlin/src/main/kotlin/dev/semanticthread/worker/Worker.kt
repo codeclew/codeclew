@@ -136,10 +136,10 @@ internal fun kotlinAnalysisCompilerArguments(projectCompilerVersion: String?, ar
     } else arguments
 
 // Keep aligned with the Rust admission gate and real K1/K2 oracle tests.
+// Project compatibility is checked separately from analyzer option support.
 internal fun qualifiedKotlinAnalysisOption(project: KotlinProjectSemantics, engine: KotlinSemanticEngineCapabilities, option: String): Boolean {
     if (option == "-Xannotation-default-target=param-property") return true
-    if (engine.analyzerCompilerVersion != "2.4.10" || project.projectCompilerVersion !in setOf("1.9.24", "1.9.25") ||
-        project.languageVersion != "1.9" || project.apiVersion != "1.9" || project.jvmTarget != "17") return false
+    if (engine.analyzerCompilerVersion != "2.4.10") return false
     val supported = option in setOf("-Xjsr305=strict", "-Xjsr305=warn", "-Xjsr305=ignore",
         "-Xjvm-default=disable", "-Xjvm-default=all", "-Xjvm-default=all-compatibility")
     return supported && project.unstableCompilerOptions.none { it != option && it.substringBefore('=') == option.substringBefore('=') }

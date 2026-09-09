@@ -7,9 +7,13 @@ import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
 
-/** Real K1 oracles, separate JVMs: compiler classes must never cross classloaders. */
+/** Sampled compiler oracles; admission does not whitelist these project versions. */
 class Kotlin19OptionQualificationTest {
-    private val versions = listOf("1.9.24", "1.9.25", "2.4.10")
+    private data class CompilerCase(val version: String, val target: String = "17") {
+        val outputName get() = "classes-$version-$target"
+    }
+    private val cases = listOf("1.9.0", "1.9.24", "1.9.25", "2.0.21", "2.4.10").map { CompilerCase(it) } +
+        listOf(CompilerCase("2.4.10", "1.8"), CompilerCase("2.4.10", "21"))
     private val javaHome = Path.of(System.getProperty("java.home"))
     private val testClasspath = System.getProperty("java.class.path")
 
@@ -23,15 +27,16 @@ class Kotlin19OptionQualificationTest {
         return process.exitValue() to log.readText()
     }
 
-    private fun compile(root: Path, version: String, source: Path, options: List<String>, dependencies: Path? = null): Pair<Int, String> {
+    private fun compile(root: Path, case: CompilerCase, source: Path, options: List<String>, dependencies: Path? = null): Pair<Int, String> {
+        val version = case.version
         val compilerClasspath = if (version == "2.4.10") testClasspath else
             checkNotNull(System.getProperty("codeclew.test.optionOracle.$version"))
         return run(root, listOf(javaHome.resolve("bin/java").toString(), "-cp", compilerClasspath,
             "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler", "-no-stdlib", "-no-reflect",
-            "-language-version", if (version == "2.4.10") "2.0" else "1.9",
-            "-api-version", if (version == "2.4.10") "2.0" else "1.9", "-jvm-target", "17",
+            "-language-version", if (version.startsWith("1.9.")) "1.9" else "2.0",
+            "-api-version", if (version.startsWith("1.9.")) "1.9" else "2.0", "-jvm-target", case.target,
             "-classpath", listOfNotNull(compilerClasspath, dependencies?.toString(), Path.of(javax.annotation.Nonnull::class.java.protectionDomain.codeSource.location.toURI()).toString()).joinToString(File.pathSeparator),
-            "-d", root.resolve("classes-$version").toString()) + options + source.toString())
+            "-d", root.resolve(case.outputName).toString()) + options + source.toString())
     }
 
     @Test
@@ -47,11 +52,11 @@ class Kotlin19OptionQualificationTest {
             val javac = run(root, listOf(javaHome.resolve("bin/javac").toString(), "--release", "17", "-cp", annotations.toString(), "-d", deps.toString(), javaSource.toString()))
             assertEquals(0, javac.first, javac.second)
             val source = Files.writeString(root.resolve("Use.kt"), "fun use(): String = Api.accept(null)")
-            for (version in versions) for (mode in listOf("strict", "warn", "ignore")) {
-                val result = compile(root, version, source, listOf("-Xjsr305=$mode"), deps)
-                assertEquals(if (mode == "strict") 1 else 0, result.first, "$version/$mode: ${result.second}")
+            for (case in cases) for (mode in listOf("strict", "warn", "ignore")) {
+                val result = compile(root, case, source, listOf("-Xjsr305=$mode", "-Xjvm-default=all-compatibility"), deps)
+                assertEquals(if (mode == "strict") 1 else 0, result.first, "$case/$mode: ${result.second}")
                 if (mode == "strict") assertTrue(result.second.contains("Use.kt:") && result.second.contains("error:"), result.second)
-                assertEquals(mode == "warn", result.second.lines().any { it.contains("Use.kt:") && it.contains("warning:") }, "$version/$mode: ${result.second}")
+                assertEquals(mode == "warn", result.second.lines().any { it.contains("Use.kt:") && it.contains("warning:") }, "$case/$mode: ${result.second}")
             }
         } finally { root.toFile().deleteRecursively() }
     }
@@ -65,17 +70,18 @@ class Kotlin19OptionQualificationTest {
                 interface Child : Parent { override fun answer(): String = super.answer() + "-child" }
                 class Implementation : Child
             """.trimIndent())
-            for (version in versions) for (mode in listOf("disable", "all", "all-compatibility")) {
-                root.resolve("classes-$version").toFile().deleteRecursively()
-                val result = compile(root, version, source, listOf("-Xjvm-default=$mode"))
-                assertEquals(0, result.first, "$version/$mode: ${result.second}")
+            for (case in cases) for (mode in listOf("disable", "all", "all-compatibility")) {
+                val classes = root.resolve(case.outputName)
+                classes.toFile().deleteRecursively()
+                val result = compile(root, case, source, listOf("-Xjvm-default=$mode", "-Xjsr305=strict"))
+                assertEquals(0, result.first, "$case/$mode: ${result.second}")
                 assertFalse(result.second.contains("not supported"), result.second)
-                URLClassLoader(arrayOf(root.resolve("classes-$version").toUri().toURL()), javaClass.classLoader).use { loader ->
+                URLClassLoader(arrayOf(classes.toUri().toURL()), javaClass.classLoader).use { loader ->
                     val child = loader.loadClass("Child")
-                    assertEquals(mode != "disable", child.getDeclaredMethod("answer").isDefault, "$version/$mode")
+                    assertEquals(mode != "disable", child.getDeclaredMethod("answer").isDefault, "$case/$mode")
                     val implementation = loader.loadClass("Implementation")
                     assertEquals("parent-child", implementation.getMethod("answer").invoke(implementation.getConstructor().newInstance()))
-                    assertEquals(mode != "all", Files.exists(root.resolve("classes-$version/Child\$DefaultImpls.class")), "$version/$mode")
+                    assertEquals(mode != "all", Files.exists(classes.resolve("Child\$DefaultImpls.class")), "$case/$mode")
                     if (mode != "all") {
                         assertEquals("parent-child", loader.loadClass("Child\$DefaultImpls").getMethod("answer", child).invoke(null, implementation.getConstructor().newInstance()))
                     }

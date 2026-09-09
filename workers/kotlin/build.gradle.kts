@@ -27,7 +27,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 
 val pluginQualification = configurations.create("pluginQualification")
-val optionOracles = listOf("1.9.24", "1.9.25").associateWith { version ->
+val optionOracles = listOf("1.9.0", "1.9.24", "1.9.25", "2.0.21").associateWith { version ->
     configurations.create("optionOracle${version.replace(".", "")}")
 }
 
