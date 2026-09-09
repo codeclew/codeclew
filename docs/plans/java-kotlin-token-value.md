@@ -173,4 +173,23 @@ exceeded navigation's separate 16 KiB envelope cap. The decision envelope now
 uses the existing context source limit of 32 KiB, while the full response stays
 bounded at 64 KiB. This avoids rejecting an already retained bounded declaration.
 The change does not implement an automatic behavioral slice or assert complete
-call/reference coverage. Agent token comparison is the next acceptance check.
+call/reference coverage.
+
+Candidate `6f5e51b` passed the complete `scripts/ci-verify.sh` gate, including
+installed RELEASE usability. The fresh K-A2 treatment selected and returned the
+class without truncation, but used 405,941 total tokens and eleven commands,
+versus the existing same-policy Default's 220,879 and eight. Cached input was
+367,872; uncached input plus output was 38,069. No transport errors or failed
+commands were recorded. Parent source review accepted the answer, including
+conditional `jdkHome` validation, the producer omission and memory-cache bypass;
+this was not independent review. Tests were inspected, not executed.
+
+The fix removes a product failure but does not establish token savings. The
+agent still discovered tests/callers, selected an external helper separately and
+read the producer in several ranges. This is another consumed diagnostic case,
+not a statistical estimate. Full CI overlapped compilation, so wall time is not
+a clean performance comparison. The next bounded hypothesis is compiler-bound
+related-declaration delivery within one operation; existing Kotlin
+`DOCUMENTATION_CALL` facts may supply exact targets, but the generic lexical
+reference-follow path does not implement that capability. The threefold target
+remains unmet and Java mutation remains deferred.
