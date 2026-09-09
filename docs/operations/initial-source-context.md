@@ -73,3 +73,8 @@ This candidate does not establish a threefold token reduction. The previous
 [manual source calibration](../plans/token-value-three-criteria.md) excluded
 automatic discovery and cannot substitute for an equal-quality comparison of
 this implementation with a disciplined native agent.
+
+The [first automatic comparison](../plans/automatic-source-context-results.md)
+accepted all four answers but used 24.4% more total model tokens across two new
+questions. The current broad call-selection policy remains optional and is not
+recommended as a token-saving default.
