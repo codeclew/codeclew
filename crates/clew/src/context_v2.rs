@@ -623,6 +623,17 @@ pub fn create(
     create_with_selector(session, intent, terms, max_roots, parent, None, false)
 }
 
+/// Retain complete small files for a source-oriented initial navigation query.
+/// The shared source budget and large-file windows still apply.
+pub fn create_navigation(
+    session: &SessionAuthority,
+    intent: &str,
+    terms: &[String],
+    max_roots: usize,
+) -> Result<(Value, Value), ClewError> {
+    create_with_selector(session, intent, terms, max_roots, None, None, true)
+}
+
 pub fn create_reference_follow(
     session: &SessionAuthority,
     intent: &str,
@@ -3472,15 +3483,24 @@ mod tests {
     }
 
     #[test]
-    fn reference_follow_returns_a_complete_small_source_file() {
-        let source = "fn bytes() { value(); }\nfn value() { sort_value(); }\nfn sort_value() {}\n";
-        let ranges = BTreeMap::from([(0usize, Some(23usize))]);
-        let windows = source_windows_with_policy(source, &["bytes".into()], Some(&ranges), true);
-        assert_eq!(windows, vec![(1, 3, source.into())]);
+    fn source_navigation_keeps_small_file_helpers_but_bounds_large_files() {
+        let source = format!(
+            "fun entry() = helper()\n{}fun helper() = 42\n",
+            "// gap\n".repeat(60)
+        );
+        let ranges = BTreeMap::from([(0usize, Some(22usize))]);
+        let windows = source_windows_with_policy(&source, &["entry".into()], Some(&ranges), true);
+        assert_eq!(windows, vec![(1, 62, source.clone())]);
+        let bounded = source_windows(&source, &["entry".into()], Some(&ranges));
+        assert!(!bounded[0].2.contains("fun helper()"));
 
-        let bounded = source_windows(source, &["bytes".into()], Some(&ranges));
-        assert_eq!(bounded.len(), 1);
-        assert!(bounded[0].2.len() <= source.len());
+        let large = format!("{}{}", source, "// padding\n".repeat(1_000));
+        let windows = source_windows_with_policy(&large, &["entry".into()], Some(&ranges), true);
+        assert_eq!(
+            windows,
+            source_windows(&large, &["entry".into()], Some(&ranges))
+        );
+        assert!(windows.iter().map(|window| window.2.len()).sum::<usize>() <= MAX_SOURCE_BYTES);
     }
 
     #[test]

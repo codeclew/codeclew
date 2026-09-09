@@ -113,6 +113,7 @@ MINIMAL_SOURCE_FILES = (
     "skills/codeclew/agents/openai.yaml",
     "skills/codeclew/references/authoring-example.md",
     "skills/codeclew/references/service-documentation.md",
+    "skills/codeclew/references/workflow-details.md",
 )
 
 

@@ -2263,10 +2263,9 @@ fn candidate_matches_declared_identifier(
     payload: &Map<String, Value>,
     decision_identifier: &str,
 ) -> bool {
-    ["name", "qualifiedName", "symbolIdentity"]
-        .into_iter()
-        .filter_map(|key| payload.get(key).and_then(Value::as_str))
-        .any(|candidate| candidate == decision_identifier)
+    // FIR declarations carry compilerCallableId/compilerClassId rather than
+    // a display name. Use the same exact identities as indexed name lookup.
+    exact_candidate_name_matches(payload, decision_identifier)
 }
 
 fn source_window_relevance(
@@ -2791,6 +2790,66 @@ mod tests {
             payload,
             &BTreeSet::from(["accept".into()])
         ));
+        assert!(candidate_matches_declared_identifier(payload, "accept"));
+        assert!(candidate_matches_declared_identifier(
+            payload,
+            "sample/Receiver.accept"
+        ));
+        assert!(!candidate_matches_declared_identifier(payload, "Accept"));
+        assert!(!candidate_matches_declared_identifier(payload, "Receiver"));
+    }
+
+    #[test]
+    fn kotlin_decision_uses_compiler_names_and_preserves_overload_ambiguity() {
+        let declaration = |descriptor: &str| {
+            json!({
+                "compilation":":worker/main",
+                "factKey":format!("fact:{descriptor}"),
+                "payload":{
+                    "declarationKind":"FUNCTION",
+                    "symbolIdentity":format!("callable:sample/transform#jvm:{descriptor}"),
+                    "compilerCallableId":"sample/transform",
+                    "ownerIdentity":"package:sample",
+                    "file":"Transform.kt", "startLine":1, "endLine":1,
+                }
+            })
+        };
+        let mut retained = json!({
+            "matches":[declaration("(I)I")], "sources":[],
+            "completeness":{"status":"COMPLETE_TASK", "coverage":"QUERY_COMPLETE",
+                "certainty":"VERIFIED", "unmatchedTerms":[]},
+            "truncated":false
+        });
+        let decide = |retained: &Value| {
+            assemble_with_decision_identifier(
+                "session:test",
+                "context:test",
+                "sha256:evidence",
+                NAV_QUERY_INTENT,
+                &["transform".into()],
+                retained,
+                false,
+                &[],
+                Some("transform"),
+            )
+            .unwrap()
+        };
+        let unique = decide(&retained);
+        assert_eq!(unique["decisionAuthority"]["status"], "SUPPORTED");
+        assert_eq!(
+            unique["decisionAuthority"]["observedExactIdentifierCandidateCount"],
+            1
+        );
+        retained["matches"]
+            .as_array_mut()
+            .unwrap()
+            .push(declaration("(J)J"));
+        let overloaded = decide(&retained);
+        assert_eq!(overloaded["decisionAuthority"]["status"], "ABSTAIN");
+        assert_eq!(
+            overloaded["decisionAuthority"]["observedExactIdentifierCandidateCount"],
+            2
+        );
     }
 
     #[test]

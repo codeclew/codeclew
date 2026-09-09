@@ -2149,7 +2149,9 @@ fn create_context(
     terms: Vec<String>,
     max_roots: usize,
 ) -> Result<Value, ClewError> {
-    bounded_context_stdout(&create_context_object(session, intent, terms, max_roots)?)
+    bounded_context_stdout(&create_context_object(
+        session, intent, terms, max_roots, false,
+    )?)
 }
 
 fn create_context_object(
@@ -2157,11 +2159,15 @@ fn create_context_object(
     intent: String,
     terms: Vec<String>,
     max_roots: usize,
+    source_navigation: bool,
 ) -> Result<ContextObject, ClewError> {
     validate_context_request(&intent, &terms)?;
     session.require_open()?;
-    let (projection, evidence) =
-        clew::context_v2::create(session, &intent, &terms, max_roots, None)?;
+    let (projection, evidence) = if source_navigation {
+        clew::context_v2::create_navigation(session, &intent, &terms, max_roots)?
+    } else {
+        clew::context_v2::create(session, &intent, &terms, max_roots, None)?
+    };
     session.store_context(None, intent, terms, projection, evidence)
 }
 
@@ -2258,6 +2264,7 @@ fn admit_and_open_context(
     max_roots: usize,
     committed: bool,
     working_tree: bool,
+    source_navigation: bool,
 ) -> Result<AdmittedContext, ClewError> {
     let runtime = active_runtime()?;
     let repository = absolute(&session_args.repo)?;
@@ -2305,7 +2312,7 @@ fn admit_and_open_context(
     } else {
         open_session(session_args)?
     };
-    match create_context_object(&session, intent, terms, max_roots) {
+    match create_context_object(&session, intent, terms, max_roots, source_navigation) {
         Ok(context) => Ok(AdmittedContext {
             admission: json!({
                 "agentContract":product["agentContract"],
@@ -2382,6 +2389,7 @@ fn context_open(args: ContextOpenArgs) -> Result<Value, ClewError> {
         args.max_roots,
         args.committed,
         args.working_tree,
+        false,
     )?;
     let context = bounded_context_stdout(&opened.context)
         .map_err(|error| compensate_opened_context(error, &opened))?;
@@ -2442,6 +2450,7 @@ fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
         args.max_roots,
         args.committed,
         args.working_tree,
+        include_top_source,
     )?;
     let mut navigation = clew::navigation::query_with_decision_identifier(
         &opened.context,

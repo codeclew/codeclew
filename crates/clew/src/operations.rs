@@ -40,6 +40,10 @@ fn agent_skill_digest() -> String {
             include_bytes!("../../../skills/codeclew/references/service-documentation.md")
                 .as_slice(),
         ),
+        (
+            "references/workflow-details.md",
+            include_bytes!("../../../skills/codeclew/references/workflow-details.md").as_slice(),
+        ),
     ] {
         payload.extend_from_slice(relative.as_bytes());
         payload.push(0);
@@ -1004,7 +1008,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:bd7feea2f57831bc0e52716176e832bd51839109164f32c8d96edb7e2b93d580"
+            "sha256:efdc0f295fff827f09b6c5da09e4e85ef098047e1fd85be18b61a21952364df9"
         );
     }
 
