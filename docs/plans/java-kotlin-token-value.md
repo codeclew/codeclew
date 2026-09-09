@@ -101,3 +101,21 @@ files retain bounded declaration windows and the shared source budget. A
 regression verifies that a helper beyond the declaration window is delivered
 for a small file without widening the large-file policy. This candidate is
 a local engineering probe; it does not yet fix broad-query truncation.
+
+## First source candidate result
+
+Local candidate `4fb7857` passed the full `scripts/ci-verify.sh` gate, including
+installed RELEASE usability. The corrected K-A1 comparison used 224,771 total
+tokens and seven commands for Default, versus 402,433 and thirteen commands for
+Default plus Codeclew. Uncached input plus output was 26,755 versus 35,073.
+Both answers retained the requested behavior and test references; both executed
+the same four-test class successfully. The treatment received the complete
+102-line implementation through a SUPPORTED decision.
+
+The source fix therefore removes a real failure but does not establish token
+savings. It replaces one implementation read while test discovery and reading
+remain. Skill loading, repository discovery and three session-help/closure
+commands add interactions. The next useful comparison must establish how a
+bounded computation-chain slice replaces several substantive reads. Repeating
+this small example until a favorable number appears would not validate that
+hypothesis. The threefold target remains unmet; Java work remains deferred.
