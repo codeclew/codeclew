@@ -22,7 +22,9 @@ const MAX_REFERENCE_FOLLOW_SOURCE_BYTES: usize = 16 * 1024;
 const MAX_REFERENCE_OBSERVATIONS_PER_TERM: usize = 4;
 const MAX_REFERENCE_PATH_BYTES: usize = 512;
 const MAX_DECISION_SOURCE_DECLARATIONS: usize = 3;
-const MAX_DECISION_SOURCE_BYTES: usize = 16 * 1024;
+// A retained declaration can use the shared context's 32 KiB source budget.
+// The complete navigation response is still bounded independently at 64 KiB.
+const MAX_DECISION_SOURCE_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NavigationFacet {
@@ -3530,6 +3532,32 @@ mod tests {
             "SOURCE_ENVELOPE_BUDGET_EXCEEDED"
         );
         validate_stdout(&bounded).unwrap();
+    }
+
+    #[test]
+    fn kotlin_class_source_uses_the_retained_context_budget() {
+        let body = format!(
+            "object Cache {{\n{}\n}}",
+            "    // state and validation\n".repeat(750)
+        );
+        assert!(body.len() > 16 * 1024 && body.len() < MAX_DECISION_SOURCE_BYTES);
+        let end_line = body.lines().count();
+        let retained = json!({
+            "matches":[{"compilation":":worker/main", "factKey":"class:cache", "payload":{
+                "declarationKind":"CLASS", "compilerClassId":"sample/Cache",
+                "symbolIdentity":"class:sample/Cache", "file":"Cache.kt",
+                "start":0,"end":body.len(),"startLine":1,"endLine":end_line
+            }}],
+            "sources":[{"fileId":"Cache.kt","contentRef":{"digest":"sha256:cache"},
+                "completeFile":true,"windows":[{"startLine":1,"endLine":end_line,"text":body}]}],
+            "completeness":{}, "truncated":false
+        });
+        let authority = context("context:class-budget", None, "sha256:evidence", retained);
+        let candidate = candidate_handle(":worker/main", "class:cache").unwrap();
+        let selected = source_envelope_by_candidate(&authority, &candidate).unwrap();
+        assert_eq!(selected["source"]["status"], "SUPPORTED");
+        assert_eq!(selected["source"]["windows"][0]["text"], body);
+        validate_stdout(&selected).unwrap();
     }
 
     #[test]

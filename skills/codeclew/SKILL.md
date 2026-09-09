@@ -92,6 +92,9 @@ needed relation. Unsupported facets are not empty relations. Returned lexical
 references are not resolved calls; source can prove a declaration's behavior
 without proving that an unresolved reference targets it.
 
+A single explicit identifier with `--source` uses declaration-name lookup.
+`completeness.queryScope` states that scope; complete name lookup does not mean
+complete callers, references or tests. Overloads still require an exact identity.
 A SUPPORTED decision selects the exact requested identity, not a correct answer.
 On ABSTAIN, do not follow the first ranked candidate: use the returned structured
 `codeclew-navigation-actions/1.0` action only if its precondition is satisfied.

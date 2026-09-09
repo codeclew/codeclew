@@ -155,3 +155,22 @@ explicit. Further product work should return a sufficient computation-chain
 slice in one operation and reuse existing context deltas; it must replace
 multiple substantive reads rather than just shorten one response. No arbitrary
 Kotlin behavioral-slice capability or threefold Codeclew advantage is claimed.
+
+## Exact-name source candidate
+
+Initial `nav query --source` with one explicit decision identifier now uses the
+existing case-sensitive declaration-name index. Its retained query authority
+and visible completeness explicitly identify that narrower scope. Broad
+reference/owner matches no longer consume the declaration-selection budget;
+truncated name postings and overloads still prevent a unique decision. Adding
+new terms through general expansion restores lexical query scope. Kotlin
+constructors keep full callable/symbol identities without reusing their owner's
+simple class name as an additional class declaration.
+
+The real PersistentProjectModelCache probe selected the class uniquely after
+this fix, then exposed a second delivery failure: the retained 19 KiB class
+exceeded navigation's separate 16 KiB envelope cap. The decision envelope now
+uses the existing context source limit of 32 KiB, while the full response stays
+bounded at 64 KiB. This avoids rejecting an already retained bounded declaration.
+The change does not implement an automatic behavioral slice or assert complete
+call/reference coverage. Agent token comparison is the next acceptance check.

@@ -4,7 +4,9 @@ use crate::error::{ClewError, ErrorCode};
 use crate::generation_service::{
     ensure_session_generation, load_query_index, load_session_generation, load_snapshot,
 };
-use crate::query_v2::{FactHit, QueryContext, exact_name_query, expand, query};
+use crate::query_v2::{
+    FactHit, QueryContext, exact_name_query, expand, query, query_declaration_name,
+};
 use crate::repository_snapshot::{RepositoryInputSnapshot, WorktreeKind};
 use crate::session::{ContextObject, SessionAuthority};
 use crate::state::StateAuthority;
@@ -71,6 +73,8 @@ struct AggregateQueryContext {
     schema: String,
     index_id: String,
     requested_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exact_declaration_name: Option<String>,
     unmatched_terms: Vec<String>,
     facts: Vec<CompilationFactHit>,
     query_shards_read: u32,
@@ -133,6 +137,7 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
         || queries.values().any(|query| {
             query.schema != crate::query_v2::QUERY_CONTEXT_SCHEMA
                 || query.requested_terms != aggregate.requested_terms
+                || query.exact_declaration_name != aggregate.exact_declaration_name
         })
         || aggregate
             .facts
@@ -162,6 +167,17 @@ pub fn validate_context_payload(projection: &Value, evidence: &Value) -> Result<
                 "context projection authority differs from evidence",
             ));
         }
+    }
+    let expected_scope = aggregate.exact_declaration_name.as_ref().map(|name| {
+        json!({
+            "kind":"EXACT_DECLARATION_NAME", "identifier":name,
+            "includesReferenceOccurrences":false,
+        })
+    });
+    if retained.pointer("/completeness/queryScope") != expected_scope.as_ref() {
+        return Err(invalid(
+            "context declaration query scope differs from query authority",
+        ));
     }
     let omitted_matches = validate_projected_subset(projection, retained, "matches")?;
     let omitted_sources = validate_projected_subset(projection, retained, "sources")?;
@@ -620,7 +636,7 @@ pub fn create(
     max_roots: usize,
     parent: Option<&ContextObject>,
 ) -> Result<(Value, Value), ClewError> {
-    create_with_selector(session, intent, terms, max_roots, parent, None, false)
+    create_with_selector(session, intent, terms, max_roots, parent, None, false, None)
 }
 
 /// Retain complete small files for a source-oriented initial navigation query.
@@ -630,8 +646,12 @@ pub fn create_navigation(
     intent: &str,
     terms: &[String],
     max_roots: usize,
+    decision_identifier: Option<&str>,
 ) -> Result<(Value, Value), ClewError> {
-    create_with_selector(session, intent, terms, max_roots, None, None, true)
+    let exact_name = decision_identifier.filter(|name| terms.len() == 1 && terms[0] == *name);
+    create_with_selector(
+        session, intent, terms, max_roots, None, None, true, exact_name,
+    )
 }
 
 pub fn create_reference_follow(
@@ -641,7 +661,16 @@ pub fn create_reference_follow(
     max_roots: usize,
     parent: &ContextObject,
 ) -> Result<(Value, Value), ClewError> {
-    create_with_selector(session, intent, terms, max_roots, Some(parent), None, true)
+    create_with_selector(
+        session,
+        intent,
+        terms,
+        max_roots,
+        Some(parent),
+        None,
+        true,
+        None,
+    )
 }
 
 pub fn create_exact_file_terms(
@@ -669,9 +698,11 @@ pub fn create_exact_file_terms(
         Some(parent),
         Some(ExactFileTermsSelector { file, terms }),
         false,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_with_selector(
     session: &SessionAuthority,
     intent: &str,
@@ -680,6 +711,7 @@ fn create_with_selector(
     parent: Option<&ContextObject>,
     exact_selector: Option<ExactFileTermsSelector<'_>>,
     complete_small_sources: bool,
+    exact_declaration_name: Option<&str>,
 ) -> Result<(Value, Value), ClewError> {
     crate::session::validate_context_request(intent, terms)?;
     if terms.is_empty() || max_roots == 0 || max_roots > 256 {
@@ -736,6 +768,8 @@ fn create_with_selector(
                 .get(&compilation.compilation)
                 .ok_or_else(|| invalid("parent context misses a selected compilation"))?;
             expand(&store, &index, parent_query, terms, query_limit)?
+        } else if let Some(name) = exact_declaration_name {
+            query_declaration_name(&store, &index, name, query_limit)?
         } else {
             query(&store, &index, terms, query_limit)?
         };
@@ -999,6 +1033,12 @@ fn create_with_selector(
             "automaticPublication":verified,
         },
     });
+    if let Some(name) = &query_context.exact_declaration_name {
+        context["completeness"]["queryScope"] = json!({
+            "kind":"EXACT_DECLARATION_NAME", "identifier":name,
+            "includesReferenceOccurrences":false,
+        });
+    }
     if let Some(binding) = &session.working_tree {
         context["snapshot"]["sourceSelection"] = serde_json::to_value(binding).map_err(internal)?;
         context["publicationPolicy"] =
@@ -1116,10 +1156,10 @@ fn merge_query_contexts_with_required(
         .values()
         .next()
         .ok_or_else(|| invalid("compilation query set is empty"))?;
-    if contexts
-        .values()
-        .any(|context| context.requested_terms != first.requested_terms)
-    {
+    if contexts.values().any(|context| {
+        context.requested_terms != first.requested_terms
+            || context.exact_declaration_name != first.exact_declaration_name
+    }) {
         return Err(invalid("compilation queries have different term authority"));
     }
     let all_facts = contexts
@@ -1194,6 +1234,7 @@ fn merge_query_contexts_with_required(
         )
         .map_err(internal)?,
         requested_terms: first.requested_terms.clone(),
+        exact_declaration_name: first.exact_declaration_name.clone(),
         unmatched_terms,
         facts,
         query_shards_read,
@@ -2387,6 +2428,7 @@ mod tests {
         let mut query = QueryContext {
             schema: QUERY_CONTEXT_SCHEMA.into(),
             index_id: "sha256:index".into(),
+            exact_declaration_name: None,
             requested_terms: vec!["value".into()],
             unmatched_terms: vec![],
             facts: vec![fact("a:first"), fact("b:second")],
@@ -2444,6 +2486,7 @@ mod tests {
         let query = QueryContext {
             schema: QUERY_CONTEXT_SCHEMA.into(),
             index_id: "sha256:index".into(),
+            exact_declaration_name: None,
             requested_terms: vec!["bytes".into(), "hash".into()],
             unmatched_terms: vec![],
             facts: vec![fact("a:other"), fact("z:bytes"), fact("y:hash")],
@@ -3095,6 +3138,7 @@ mod tests {
         let query = super::AggregateQueryContext {
             schema: AGGREGATE_QUERY_CONTEXT_SCHEMA.into(),
             index_id: "sha256:index".into(),
+            exact_declaration_name: None,
             requested_terms: vec!["work".into()],
             unmatched_terms: Vec::new(),
             facts: Vec::new(),
@@ -3189,6 +3233,7 @@ mod tests {
         let query = |index_id: &str| QueryContext {
             schema: QUERY_CONTEXT_SCHEMA.into(),
             index_id: index_id.into(),
+            exact_declaration_name: None,
             requested_terms: vec!["Shared".into()],
             unmatched_terms: Vec::new(),
             facts: vec![fact.clone()],
@@ -3199,6 +3244,23 @@ mod tests {
             (":b/main".into(), query("index:b")),
             (":a/main".into(), query("index:a")),
         ]);
+        let mut mixed_scopes = contexts.clone();
+        mixed_scopes
+            .get_mut(":a/main")
+            .unwrap()
+            .exact_declaration_name = Some("Shared".into());
+        assert!(merge_query_contexts(&mixed_scopes, 16).is_err());
+        mixed_scopes
+            .get_mut(":b/main")
+            .unwrap()
+            .exact_declaration_name = Some("Shared".into());
+        assert_eq!(
+            merge_query_contexts(&mixed_scopes, 16)
+                .unwrap()
+                .exact_declaration_name
+                .as_deref(),
+            Some("Shared")
+        );
         let aggregate = merge_query_contexts(&contexts, 16).unwrap();
         assert_eq!(aggregate.schema, AGGREGATE_QUERY_CONTEXT_SCHEMA);
         assert_eq!(aggregate.facts.len(), 2);
@@ -3240,6 +3302,16 @@ mod tests {
         });
         super::validate_context_payload(&projection, &envelope).unwrap();
         let original = projection.clone();
+        let mut false_scope_projection = original.clone();
+        let mut false_scope_evidence = envelope.clone();
+        let false_scope = json!({"kind":"EXACT_DECLARATION_NAME", "identifier":"Shared",
+            "includesReferenceOccurrences":false});
+        false_scope_projection["completeness"]["queryScope"] = false_scope.clone();
+        false_scope_evidence["context"]["completeness"]["queryScope"] = false_scope;
+        assert!(
+            super::validate_context_payload(&false_scope_projection, &false_scope_evidence)
+                .is_err()
+        );
 
         let mut proper_subset = original.clone();
         proper_subset["matches"].as_array_mut().unwrap().pop();
@@ -3289,6 +3361,7 @@ mod tests {
         let query = |index_id: &str, facts: Vec<FactHit>, truncated: bool| QueryContext {
             schema: QUERY_CONTEXT_SCHEMA.into(),
             index_id: index_id.into(),
+            exact_declaration_name: None,
             requested_terms: vec!["shared".into()],
             unmatched_terms: if facts.is_empty() {
                 vec!["shared".into()]

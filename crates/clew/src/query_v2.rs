@@ -104,6 +104,9 @@ pub struct QueryContext {
     pub schema: String,
     pub index_id: String,
     pub requested_terms: Vec<String>,
+    /// Restricts completeness to a case-sensitive declaration-name lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_declaration_name: Option<String>,
     pub unmatched_terms: Vec<String>,
     pub facts: Vec<FactHit>,
     pub query_shards_read: u32,
@@ -284,9 +287,59 @@ pub fn query(
         schema: QUERY_CONTEXT_SCHEMA.into(),
         index_id: index.index_id.clone(),
         requested_terms,
+        exact_declaration_name: None,
         unmatched_terms: unmatched,
         facts,
         query_shards_read: shards_read.len() as u32,
+        truncated,
+    })
+}
+
+/// Query only the explicit declaration identity, independently of lexical
+/// occurrences in bodies, references and owner names. Completeness is scoped
+/// to this name; it never establishes complete call/reference coverage.
+pub fn query_declaration_name(
+    store: &CasStore,
+    index: &QueryIndexManifest,
+    name: &str,
+    max_facts: usize,
+) -> Result<QueryContext, ClewError> {
+    if max_facts == 0 {
+        return Err(invalid("declaration query result limit is invalid"));
+    }
+    let requested_terms = normalize_terms(std::iter::once(name));
+    if requested_terms.is_empty() {
+        return Err(invalid("declaration query has no normalized terms"));
+    }
+    let exact = exact_name_query(store, index, name)?;
+    let mut facts = Vec::new();
+    for fact in exact.facts {
+        let lease = store.read(&fact.payload, MAX_QUERY_METADATA_PAYLOAD_BYTES as usize)?;
+        let payload: Value = serde_json::from_slice(lease.bytes())
+            .map_err(|_| corrupt("declaration query payload is invalid"))?;
+        if payload
+            .as_object()
+            .is_some_and(|payload| declaration_identifiers(payload).contains(name))
+        {
+            facts.push(fact);
+        }
+    }
+    let limit = max_facts.min(MAX_CONTEXT_FACTS);
+    let truncated = exact.truncated || facts.len() > limit;
+    facts.truncate(limit);
+    let unmatched_terms = if facts.is_empty() {
+        requested_terms.clone()
+    } else {
+        Vec::new()
+    };
+    Ok(QueryContext {
+        schema: QUERY_CONTEXT_SCHEMA.into(),
+        index_id: index.index_id.clone(),
+        requested_terms,
+        exact_declaration_name: Some(name.into()),
+        unmatched_terms,
+        facts,
+        query_shards_read: exact.query_shards_read,
         truncated,
     })
 }
@@ -883,6 +936,11 @@ fn kotlin_compiler_identity(payload: &serde_json::Map<String, Value>) -> Option<
 }
 
 fn kotlin_declaration_name(payload: &serde_json::Map<String, Value>) -> Option<&str> {
+    // A constructor is selected by its callable or full symbol identity. Its
+    // owner class name is not a second declaration of that class.
+    if payload.get("declarationKind").and_then(Value::as_str) == Some("CONSTRUCTOR") {
+        return None;
+    }
     kotlin_compiler_identity(payload)?
         .rsplit(['/', '.'])
         .next()
@@ -1325,6 +1383,20 @@ mod tests {
                 .is_empty()
         );
         assert!(exact_name_query(&store, &index, "bad\nidentity").is_err());
+        let all_overloads = query_declaration_name(&store, &index, "accept", 8).unwrap();
+        assert_eq!(all_overloads.facts.len(), 2);
+        assert!(!all_overloads.truncated);
+        let omitted_overload = query_declaration_name(&store, &index, "accept", 1).unwrap();
+        assert_eq!(omitted_overload.facts.len(), 1);
+        assert!(omitted_overload.truncated);
+        let full_identity = query_declaration_name(&store, &index, first, 1).unwrap();
+        assert_eq!(full_identity.facts.len(), 1);
+        assert!(!full_identity.truncated);
+        let wrong_case = query_declaration_name(&store, &index, "Accept", 8).unwrap();
+        assert!(wrong_case.facts.is_empty());
+        assert_eq!(wrong_case.unmatched_terms, vec!["accept"]);
+        assert!(query_declaration_name(&store, &index, "accept", 0).is_err());
+
         assert_eq!(
             query(&store, &index, &["accept".into()], 2)
                 .unwrap()
@@ -1332,6 +1404,22 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn kotlin_constructor_keeps_exact_callable_identity_without_class_alias() {
+        let class = serde_json::json!({"declarationKind":"CLASS",
+            "compilerClassId":"sample/Cache", "symbolIdentity":"class:sample/Cache"});
+        let constructor = serde_json::json!({"declarationKind":"CONSTRUCTOR",
+            "compilerCallableId":"sample/Cache.Cache",
+            "symbolIdentity":"constructor:sample/Cache.Cache#jvm:()V"});
+        let class_names = declaration_identifiers(class.as_object().unwrap());
+        let constructor_names = declaration_identifiers(constructor.as_object().unwrap());
+        assert!(class_names.contains("Cache"));
+        assert!(class_names.contains("sample/Cache"));
+        assert!(!constructor_names.contains("Cache"));
+        assert!(constructor_names.contains("sample/Cache.Cache"));
+        assert!(constructor_names.contains("constructor:sample/Cache.Cache#jvm:()V"));
     }
 
     #[test]
@@ -1548,6 +1636,18 @@ mod tests {
         assert_eq!(exact.facts[0].fact_key, "z:declaration");
         assert!(!exact.truncated);
         assert!(exact.query_shards_read <= 1);
+
+        let named = query_declaration_name(&store, &index, "TargetSymbol", 1).unwrap();
+        assert_eq!(
+            named.exact_declaration_name.as_deref(),
+            Some("TargetSymbol")
+        );
+        assert_eq!(named.facts, exact.facts);
+        assert!(!named.truncated);
+        assert!(named.unmatched_terms.is_empty());
+        let continued = expand(&store, &index, &named, &["other".into()], 1).unwrap();
+        assert_eq!(continued.exact_declaration_name, None);
+        assert!(continued.truncated);
     }
 
     #[test]
@@ -1607,6 +1707,7 @@ mod tests {
         let parent = QueryContext {
             schema: QUERY_CONTEXT_SCHEMA.into(),
             index_id: "sha256:old".into(),
+            exact_declaration_name: None,
             requested_terms: vec!["alpha".into()],
             unmatched_terms: vec![],
             facts: vec![],
@@ -2014,7 +2115,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let state = StateAuthority::open(root.path().join("v2")).unwrap();
         let store = CasStore::open(&state).unwrap();
-        let payload = store.put("test/payload/1", b"x").unwrap();
+        let payload = store
+            .put("test/payload/1", br#"{"name":"popular"}"#)
+            .unwrap();
         let facts = (0..50_000)
             .map(|index| FactHit {
                 fact_key: format!("symbol:{index:08}"),
@@ -2072,6 +2175,10 @@ mod tests {
                 let exact = exact_name_query(&store, &index, "popular").unwrap();
                 assert_eq!(exact.facts.len(), MAX_QUERY_FACTS_PER_TERM);
                 assert!(exact.truncated);
+                let named =
+                    query_declaration_name(&store, &index, "popular", MAX_CONTEXT_FACTS).unwrap();
+                assert_eq!(named.facts.len(), MAX_QUERY_FACTS_PER_TERM);
+                assert!(named.truncated);
             }
         }
     }
