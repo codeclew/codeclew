@@ -193,3 +193,9 @@ related-declaration delivery within one operation; existing Kotlin
 `DOCUMENTATION_CALL` facts may supply exact targets, but the generic lexical
 reference-follow path does not implement that capability. The threefold target
 remains unmet and Java mutation remains deferred.
+
+The subsequent [three-criteria calibration](token-value-three-criteria.md)
+examines source sufficiency, retained conversation evidence and source delivery
+before the first model request. Manually preloaded source yielded promising
+accepted answers, but automatic Codeclew packet selection and independent task
+validation remain unimplemented.
