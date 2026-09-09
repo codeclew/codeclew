@@ -119,3 +119,39 @@ commands add interactions. The next useful comparison must establish how a
 bounded computation-chain slice replaces several substantive reads. Repeating
 this small example until a favorable number appears would not validate that
 hypothesis. The threefold target remains unmet; Java work remains deferred.
+
+## Model interaction ablation
+
+A mechanical calibration read the same 2,415 bytes from three Kotlin sources
+with the same model and final answer. One tool invocation used 37,352 total
+tokens; three sequential invocations used 75,075. Tool output matched byte for
+byte and all commands succeeded. This isolates a large interaction cost; it is
+not a Codeclew/native benchmark or a universal token price per tool call.
+
+A shared batched execution policy was then applied to both analysis groups:
+use the supplied exact profile, batch independent reads, execute tests only for
+unresolved behavior or explicit requests, and retain analysis sessions for
+follow-up. Change tasks still require applicable validation. No implementation
+paths or answers were supplied. All four answers met the frozen source-review
+criteria; tests were inspected and not reported as executed.
+
+| Diagnostic case | Default total / commands | Codeclew total / commands |
+|---|---:|---:|
+| K-A1 descriptor behavior | 61,863 / 3 | 141,259 / 5 |
+| K-A2 project JDK cache identity | 220,879 / 8 | 350,877 / 11 |
+
+K-A1 Default decreased from 224,771 to 61,863 tokens (3.63x); the corresponding
+Codeclew observation decreased from 402,433 to 141,259 (2.85x). The earlier
+Codeclew run contained two TLS reconnect events, so its reduction is not a pure
+causal estimate. K-A2 Default decreased from 274,621 by only 19.6%. The cases
+are consumed diagnostics, not unseen or statistically qualified validation.
+
+These results establish a useful general workflow improvement, not a
+Codeclew-specific advantage. Codeclew remained 2.28x and 1.59x more expensive
+than the equally disciplined native agent. K-A2 still needed native continuation
+after truncated/ambiguous managed selection. The portable entrypoint now makes
+batched evidence collection, analysis-only test policy and session retention
+explicit. Further product work should return a sufficient computation-chain
+slice in one operation and reuse existing context deltas; it must replace
+multiple substantive reads rather than just shorten one response. No arbitrary
+Kotlin behavioral-slice capability or threefold Codeclew advantage is claimed.

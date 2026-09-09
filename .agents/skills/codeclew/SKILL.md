@@ -25,6 +25,14 @@ A helper is relevant only when it answers an open item. No separate ledger file,
 plan file, diagram or test run is needed for a source explanation unless the
 request or an unresolved behavioral question needs that artifact.
 
+Batch independent searches in one tool invocation. Once paths are known, read
+needed implementation and test ranges together. Do not split already-known
+reads across model turns or collect evidence that does not answer an open item.
+For source analysis, identifying tests does not require executing them. A supplied
+test command is guidance, not an execution request; run it only when requested
+or when source leaves a behavioral question unresolved. Changes still require
+the applicable validation and regression tests.
+
 Use the exact installed launcher supplied by the caller. Otherwise resolve
 `clew` from PATH once. Do not use source/capsule binaries, `CODECLEW_RUNTIME_SEED`,
 or direct changes inside `CODECLEW_HOME`. An absent or rejected installed
@@ -146,5 +154,7 @@ and [Prepare a change](references/workflow-details.md#prepare-a-change).
 Keep raw outputs, source, paths, arguments and managed state private. Use
 `clew support summarize --input <private-result.json>` for external diagnostics;
 share only a returned SAFE_TO_SHARE summary and separately generated capabilities
-and doctor JSON. A rejected summary remains private. Close completed sessions
-when no retained evidence is needed; use supported lifecycle commands only.
+and doctor JSON. A rejected summary remains private. Retain analysis sessions
+for follow-up evidence; finishing an answer does not require help, status or
+cleanup calls. When the evidence is no longer needed, use
+`clew session close --session <id>` and supported lifecycle commands only.
