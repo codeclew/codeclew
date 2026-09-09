@@ -40,6 +40,7 @@ pub mod semantic_envelope;
 pub(crate) mod semantic_validation;
 pub mod session;
 pub mod source_locate;
+pub mod source_packet;
 pub mod spring_entrypoints;
 pub mod state;
 pub mod task_run_v2;

@@ -214,6 +214,8 @@ enum SessionCommand {
 
 #[derive(Subcommand)]
 enum ContextCommand {
+    /// Assemble bounded Kotlin source evidence for a client before its first model request.
+    Packet(ContextPacketArgs),
     /// Admit one exact task, open its session, and create the first bounded context.
     Open(ContextOpenArgs),
     Create(ContextCreateArgs),
@@ -677,6 +679,22 @@ struct ContextOpenArgs {
     committed: bool,
     /// Capture current saved tracked and non-ignored untracked files for read-only
     /// Kotlin/Rust analysis. Later edits do not change this immutable input.
+    #[arg(long, conflicts_with = "committed")]
+    working_tree: bool,
+}
+
+#[derive(Args)]
+struct ContextPacketArgs {
+    #[command(flatten)]
+    session: SessionOpenArgs,
+    /// Exact analysis support profile; the first packet implementation is Kotlin-only.
+    #[arg(long)]
+    profile: String,
+    /// One to three exact declaration identifiers supplied by the task, without source paths.
+    #[arg(long = "identifier", required = true)]
+    identifiers: Vec<String>,
+    #[arg(long, conflicts_with = "working_tree")]
+    committed: bool,
     #[arg(long, conflicts_with = "committed")]
     working_tree: bool,
 }
@@ -1691,6 +1709,9 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
                 args.max_roots,
             )?)
         }
+        Command::Context {
+            command: ContextCommand::Packet(args),
+        } => context_packet(args),
         Command::Nav {
             command: NavCommand::Query(args),
         } => nav_query(args),
@@ -2441,6 +2462,38 @@ fn navigation_no_decision_reason(navigation: &Value) -> &'static str {
     } else {
         "NO_CANDIDATE"
     }
+}
+
+fn context_packet(args: ContextPacketArgs) -> Result<Value, ClewError> {
+    clew::source_packet::validate_identifiers(&args.identifiers)?;
+    if session_language(args.session.language) != SessionLanguage::Kotlin {
+        return Err(ClewError::new(
+            ErrorCode::UnsupportedLanguage,
+            "source packet currently requires Kotlin compiler-backed analysis",
+        ));
+    }
+    let started = std::time::Instant::now();
+    let opened = admit_and_open_context(
+        &args.session,
+        &args.profile,
+        DoctorOperationArg::Analysis,
+        "PREPARE_INITIAL_MODEL_CONTEXT".into(),
+        args.identifiers.clone(),
+        1,
+        args.committed,
+        args.working_tree,
+        true,
+        args.identifiers.first().map(String::as_str),
+    )?;
+    let mut packet = clew::source_packet::create(&opened.session, &args.identifiers)
+        .map_err(|error| compensate_opened_context(error, &opened))?;
+    packet["contextId"] = json!(opened.context.context_id);
+    packet["admission"] = navigation_admission(&opened.admission, true);
+    packet["preparation"]["durationMs"] = json!(started.elapsed().as_millis());
+    packet["evidenceDigest"] = json!(clew::source_packet::evidence_digest(&packet)?);
+    clew::source_packet::validate_stdout(&packet)
+        .map_err(|error| compensate_opened_context(error, &opened))?;
+    Ok(packet)
 }
 
 fn nav_query(args: NavQueryArgs) -> Result<Value, ClewError> {
@@ -4949,6 +5002,73 @@ mod tests {
             assert!(read_bounded_regular_file(&fifo, 4, "unsafe input").is_err());
             assert!(started.elapsed() < std::time::Duration::from_secs(1));
         }
+    }
+
+    #[test]
+    fn packet_requires_task_identifiers_and_rejects_unsupported_language_before_admission() {
+        let base = [
+            "clew",
+            "context",
+            "packet",
+            "--repo",
+            "/tmp/repo",
+            "--target-ref",
+            "main",
+            "--language",
+            "kotlin",
+            "--profile",
+            "kotlin-jvm-gradle-analysis",
+            "--compilation",
+            ":/main",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--identifier", "Root"])).is_ok());
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--identifier",
+                "Root",
+                "--file",
+                "Root.kt"
+            ]))
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain([
+                "--identifier",
+                "Root",
+                "--committed",
+                "--working-tree"
+            ]))
+            .is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "clew",
+            "context",
+            "packet",
+            "--repo",
+            "/tmp/repo",
+            "--target-ref",
+            "main",
+            "--language",
+            "java",
+            "--profile",
+            "java-17plus-maven-read-only",
+            "--compilation",
+            ":/main",
+            "--identifier",
+            "Root",
+        ])
+        .unwrap();
+        let Command::Context {
+            command: ContextCommand::Packet(args),
+        } = cli.command
+        else {
+            panic!("packet arguments expected")
+        };
+        assert_eq!(
+            context_packet(args).unwrap_err().code,
+            ErrorCode::UnsupportedLanguage
+        );
     }
 
     #[test]

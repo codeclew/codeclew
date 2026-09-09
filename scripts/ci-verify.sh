@@ -19,6 +19,7 @@ python3 -I -S scripts/test_check_repository_privacy.py
 python3 -I -S scripts/check_english_content.py
 python3 -I -S scripts/build_cli_documentation.py --check
 python3 -I -S scripts/test_agent_skill.py
+python3 -I -S scripts/test_prepare_agent_context.py
 python3 -I -S scripts/test_pilot.py
 python3 -I -S scripts/test_macos_distribution.py
 python3 -I -S scripts/test_build_macos_release.py
@@ -26,6 +27,7 @@ python3 -I -S scripts/test_build_local_release_candidate.py
 python3 -I -S scripts/test_runtime_attach_canary.py
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --locked -p clew --lib 'source_packet::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'documentation::' -- --test-threads=1
 cargo test --locked -p clew --lib documentation::kotlin::tests::native_kotlin_19_maven_documentation -- --exact --ignored --test-threads=1
 ./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinDocumentationFlowTest --tests dev.semanticthread.worker.SpringAnnotationFactsTest \

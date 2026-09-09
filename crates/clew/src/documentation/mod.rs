@@ -4,7 +4,7 @@ pub mod bindings;
 pub mod check;
 pub mod cli;
 pub mod contracts;
-mod kotlin;
+pub(crate) mod kotlin;
 pub mod model;
 pub mod render;
 pub mod store;

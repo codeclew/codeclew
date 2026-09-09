@@ -4,7 +4,7 @@ use crate::error::ClewError;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub(super) fn project_facts(
+pub(crate) fn project_facts(
     facts: Vec<(Value, String)>,
 ) -> Result<Vec<(Value, String)>, ClewError> {
     let compiler = facts.iter().find(|(fact, _)| fact["schema"].as_str().is_some_and(|s| s.starts_with("codeclew-kotlin-index-metadata/")))
