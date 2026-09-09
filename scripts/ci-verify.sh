@@ -39,6 +39,7 @@ cargo test --locked -p clew --lib 'project_config::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'java_project_model::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib java_project_model::tests::java_fixtures_extract_project_native_models -- --exact --ignored --test-threads=1
 cargo test --locked -p clew --lib java_project_model::tests::maven_effective_profile_matches_native_compile_properties -- --exact --ignored --test-threads=1
+cargo test --locked -p clew --lib java_project_model::tests::maven_large_logs_and_native_compile_failure_are_distinguished -- --exact --ignored --test-threads=1
 cargo test --locked -p clew --lib 'worker_diagnostics::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib worker::tests::worker_frame_eof_keeps_exit_status_without_inline_stderr -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'java_adapter_v2::tests::' -- --test-threads=1
@@ -49,6 +50,7 @@ cargo test --locked -p clew --lib 'context_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'task_run_v2::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'session::tests::' -- --test-threads=1
 cargo test --locked -p clew --lib 'kotlin_engine::tests::' -- --test-threads=1
+./gradlew --no-daemon :workers:kotlin:test --tests dev.semanticthread.worker.KotlinEngineCompatibilityTest --tests dev.semanticthread.worker.Kotlin19OptionQualificationTest
 cargo test --locked -p clew --lib kotlin_adapter_v2::tests::cross_engine_normalization_preserves_nonempty_spring_evidence -- --exact --test-threads=1
 cargo test --locked -p clew --lib 'working_tree' -- --test-threads=1
 cargo test --locked -p clew --test managed_cli 'working_tree_' -- --test-threads=1

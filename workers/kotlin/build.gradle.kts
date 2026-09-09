@@ -27,8 +27,15 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 
 val pluginQualification = configurations.create("pluginQualification")
+val optionOracles = listOf("1.9.24", "1.9.25").associateWith { version ->
+    configurations.create("optionOracle${version.replace(".", "")}")
+}
 
 dependencies {
+    optionOracles.forEach { (version, configuration) ->
+        add(configuration.name, "org.jetbrains.kotlin:kotlin-compiler-embeddable:$version")
+    }
+    testImplementation("com.google.code.findbugs:jsr305:3.0.2")
     implementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.4.10")
     implementation("org.jetbrains.kotlin:kotlin-serialization-compiler-plugin-embeddable:2.4.10")
     implementation("org.jetbrains.kotlin:kotlin-allopen-compiler-plugin-embeddable:2.4.10")
@@ -52,6 +59,12 @@ dependencies {
 application { mainClass.set("dev.semanticthread.worker.MainKt") }
 tasks.test {
     inputs.files(pluginQualification)
+    inputs.files(optionOracles.values)
+    doFirst {
+        optionOracles.forEach { (version, configuration) ->
+            systemProperty("codeclew.test.optionOracle.$version", configuration.asPath)
+        }
+    }
     doFirst { systemProperty("codeclew.test.projectCompilerPlugins", pluginQualification.asPath) }
     useJUnitPlatform()
     dependsOn(tasks.jar)

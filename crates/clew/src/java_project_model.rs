@@ -318,7 +318,7 @@ fn extract_maven(
     // Plugin configuration can also contain <outputDirectory> (for example,
     // spring-boot:repackage); it is not the compiler's classes directory.
     let effective_pom = tempfile::NamedTempFile::new().map_err(io_error)?;
-    bounded_output(
+    discard_build_output(
         maven()?
             .arg("-f")
             .arg(project.join("pom.xml"))
@@ -358,7 +358,7 @@ fn extract_maven(
     // Compile in the managed workspace before collecting the classpath. Maven
     // then resolves sibling modules from this reactor's outputs, without install
     // into the user's local repository. Native generators run in the same build.
-    bounded_output(
+    discard_build_output(
         build
             .args([
                 "-B",
@@ -765,33 +765,123 @@ fn compiler_version(executable: &Path, repository: &Path) -> Result<String, Clew
     Ok(version.into())
 }
 
+// Logs are not model payloads. Drain both pipes to EOF concurrently, retaining
+// only the bounded stdout needed by stdout-based model protocols. Never infer
+// process failure from output size, encoding, or a broken protocol frame.
+#[derive(Debug)]
+struct BuildStream {
+    retained: Vec<u8>,
+    bytes: u64,
+}
+
+fn drain_build_stream(mut reader: impl Read, retain: bool) -> std::io::Result<BuildStream> {
+    let mut stream = BuildStream {
+        retained: Vec::new(),
+        bytes: 0,
+    };
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(stream);
+        }
+        stream.bytes = stream.bytes.saturating_add(count as u64);
+        if retain {
+            let remaining = MAX_MODEL_OUTPUT_BYTES.saturating_sub(stream.retained.len());
+            stream
+                .retained
+                .extend_from_slice(&buffer[..count.min(remaining)]);
+        }
+    }
+}
+
+fn discard_build_output(command: &mut Command, message: &str) -> Result<(), ClewError> {
+    run_build_command(command, message, false).map(|_| ())
+}
+
 fn bounded_output(command: &mut Command, message: &str) -> Result<String, ClewError> {
-    let output = command
+    run_build_command(command, message, true)
+}
+
+fn run_build_command(
+    command: &mut Command,
+    message: &str,
+    retain: bool,
+) -> Result<String, ClewError> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
         .map_err(|_| build_command_failure(message, "BUILD_LAUNCHER_START_FAILED", "Verify the build launcher is executable and available in the same terminal or agent PATH; check JAVA_HOME."))?;
-    if output.stdout.len().saturating_add(output.stderr.len()) > MAX_MODEL_OUTPUT_BYTES {
-        return Err(resource(
-            "BUILD_MODEL_OUTPUT_LIMIT: Java build model output exceeded the supported size. Select a narrower module/compilation and retry.",
-        ));
-    }
-    if !output.status.success() {
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (status, stdout, stderr) = std::thread::scope(|scope| {
+        let stdout = scope.spawn(move || drain_build_stream(stdout, retain));
+        let stderr = scope.spawn(move || drain_build_stream(stderr, false));
+        let status = child.wait();
+        (status, stdout.join(), stderr.join())
+    });
+    let status = status.map_err(|_| {
+        build_command_failure(
+            message,
+            "BUILD_PROCESS_WAIT_FAILED",
+            "The native exit status is unavailable.",
+        )
+    })?;
+    let read_error = || {
+        build_command_failure(
+            message,
+            "BUILD_OUTPUT_READ_FAILED",
+            &format!(
+                "Native status: {status}. Could not drain build output; no model was accepted."
+            ),
+        )
+    };
+    let stdout = stdout
+        .map_err(|_| read_error())?
+        .map_err(|_| read_error())?;
+    let stderr = stderr
+        .map_err(|_| read_error())?
+        .map_err(|_| read_error())?;
+    let measurements = format!(
+        "Native status: {status}; stdoutBytes={}; stderrBytes={}; stdoutRetainedBytes={}; stdoutLimitBytes={MAX_MODEL_OUTPUT_BYTES}.",
+        stdout.bytes,
+        stderr.bytes,
+        stdout.retained.len()
+    );
+    if !status.success() {
         return Err(build_command_failure(
             message,
             "BUILD_COMMAND_FAILED",
-            "Resolve the native build's first error (including dependency access, credentials or JDK configuration), then retry Codeclew. Build output is omitted because it may contain private data.",
+            &format!(
+                "{measurements} Resolve the native build's first error (including dependency access, credentials or JDK configuration), then retry Codeclew. Build output is omitted because it may contain private data."
+            ),
         ));
     }
-    String::from_utf8(output.stdout).map_err(|_| unsupported("Java model output is not UTF-8"))
+    if retain && stdout.bytes > MAX_MODEL_OUTPUT_BYTES as u64 {
+        return Err(resource(&format!(
+            "BUILD_MODEL_OUTPUT_LIMIT: {message}. {measurements} The build succeeded but its stdout model exceeds the supported size. Select a narrower module/compilation and retry.",
+        )));
+    }
+    String::from_utf8(stdout.retained).map_err(|_| unsupported(&format!("BUILD_MODEL_OUTPUT_ENCODING: {message}. {measurements} The build succeeded but its stdout model is not UTF-8.")))
 }
 
 fn build_command_failure(stage: &str, reason: &str, action: &str) -> ClewError {
     let diagnostic = if stage.starts_with("Maven") {
-        "From the selected module directory run mvn --version and mvn -e -DskipTests dependency:build-classpath help:evaluate -Dexpression=maven.compiler.release (use the repository's executable mvnw when present)."
+        let goals = if stage.contains("effective model") {
+            "-B -q -N help:effective-pom -Doutput=<temporary-file>"
+        } else if stage.contains("compilation and classpath") {
+            "-B -q compile dependency:build-classpath (test-compile for a test compilation)"
+        } else {
+            "-q -DforceStdout help:evaluate -Dexpression=maven.compiler.release"
+        };
+        format!(
+            "Reproduce this stage from the repository root with the same JAVA_HOME, PATH, Maven settings and repository mvnw (or Maven on PATH). Check mvn --version. Run {goals} with -DskipTests -Dstyle.color=never -Dmdep.outputFile=target/codeclew-classpath.txt -Dmdep.regenerateFile=true -Dmdep.includeScope=compile (test for a test compilation). For compilation use -f <repository-pom> and, for a selected submodule, -pl <module> -am; for effective model/release use -f <selected-module-pom>. A successful dependency:build-classpath/help:evaluate alone does not verify compilation or effective model extraction."
+        )
     } else {
         "From the repository root run ./gradlew --version and ./gradlew --stacktrace tasks --all."
+            .into()
     };
     unsupported(&format!("{reason}: {stage}. {action} {diagnostic}"))
 }
@@ -941,6 +1031,155 @@ mod tests {
         assert!(error.message.contains("./gradlew --stacktrace tasks --all"));
         assert!(!error.message.contains("private.invalid"));
         assert!(!error.message.contains("secret"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_logs_are_drained_but_never_treated_as_model_or_failure() {
+        let noise = "head -c 5000000 /dev/zero; head -c 6000000 /dev/zero >&2";
+        discard_build_output(
+            Command::new("/bin/sh").args(["-c", noise]),
+            "Maven Java compilation and classpath extraction failed",
+        )
+        .unwrap();
+        // stderr is a log even when stdout carries the release/model protocol.
+        assert_eq!(
+            bounded_output(
+                Command::new("/bin/sh").args(["-c", "head -c 6000000 /dev/zero >&2; printf 17"]),
+                "Maven Java release extraction failed"
+            )
+            .unwrap(),
+            "17"
+        );
+        let error = bounded_output(
+            Command::new("/bin/sh").args(["-c", noise]),
+            "Maven Java release extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_MODEL_OUTPUT_LIMIT"));
+        assert!(
+            error
+                .message
+                .contains("stdoutBytes=5000000; stderrBytes=6000000; stdoutRetainedBytes=4194304")
+        );
+        assert!(error.message.contains("exit status: 0"));
+        let error = bounded_output(
+            Command::new("/bin/sh").args(["-c", &format!("{noise}; exit 7")]),
+            "Maven Java compilation and classpath extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
+        assert!(error.message.contains("exit status: 7"));
+        assert!(
+            error
+                .message
+                .contains("stdoutBytes=5000000; stderrBytes=6000000")
+        );
+        assert!(error.message.contains("-pl <module> -am"));
+        assert!(error.message.contains("compile dependency:build-classpath"));
+        assert!(error.message.contains("repository root"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_signal_and_model_encoding_remain_distinct_from_output_limits() {
+        let error = bounded_output(
+            Command::new("/bin/sh").args(["-c", "kill -TERM $$"]),
+            "Maven Java release extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_COMMAND_FAILED"));
+        assert!(error.message.contains("signal"));
+        let error = bounded_output(
+            Command::new("/bin/sh").args(["-c", "printf '\\377'"]),
+            "Maven Java release extraction failed",
+        )
+        .unwrap_err();
+        assert!(error.message.starts_with("BUILD_MODEL_OUTPUT_ENCODING"));
+        assert!(error.message.contains("exit status: 0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "launches real Maven and JDK 21 with a public fixture and large wrapper logs"]
+    fn maven_large_logs_and_native_compile_failure_are_distinguished() {
+        let repository = tempfile::tempdir().unwrap();
+        let root = repository.path();
+        let native = crate::maven::command(root).unwrap();
+        let settings = root.join("settings.xml");
+        fs::write(&settings, "<settings/>").unwrap();
+        let settings = crate::maven::MavenSettings::capture(&settings).unwrap();
+        fs::write(root.join("pom.xml"), r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+          <modelVersion>4.0.0</modelVersion><groupId>dev.codeclew.fixture</groupId><artifactId>large-logs</artifactId><version>1</version>
+          <properties><maven.compiler.release>17</maven.compiler.release></properties>
+          <dependencies><dependency><groupId>com.google.code.findbugs</groupId><artifactId>jsr305</artifactId><version>3.0.2</version></dependency></dependencies>
+          <build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin></plugins></build>
+        </project>"#).unwrap();
+        let source = root.join("src/main/java/App.java");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "public class App {}").unwrap();
+        // Non-executable wrapper exercises interpreter launch and repository cwd.
+        // Emit binary logs only for compilation, leaving the release protocol intact.
+        let launcher = native
+            .get_program()
+            .to_str()
+            .unwrap()
+            .replace('\'', "'\"'\"'");
+        fs::write(root.join("mvnw"), format!("#!/bin/sh\n[ -f pom.xml ] || exit 91\ncase \"$*\" in *dependency:build-classpath*) head -c 5000000 /dev/zero; head -c 6000000 /dev/zero >&2;; esac\nexec '{launcher}' \"$@\"\n")).unwrap();
+        let model = extract_java_model_with_settings(root, ":/main", Some(&settings)).unwrap();
+        assert_eq!(model.authority.release, 17);
+        assert!(model.authority.compiler_version.starts_with("javac 21"));
+        let classpath_bytes = fs::metadata(root.join("target/codeclew-classpath.txt"))
+            .unwrap()
+            .len();
+        let jar_bytes: u64 = model
+            .authority
+            .classpath
+            .iter()
+            .filter(|entry| entry.kind == "FILE")
+            .map(|entry| entry.size)
+            .sum();
+        println!(
+            "public Maven fixture: wrapper stdoutBytes=5000000 stderrBytes=6000000 classpathTextBytes={classpath_bytes} jarBytes={jar_bytes}"
+        );
+        assert!(classpath_bytes > 0 && classpath_bytes < 4096);
+        // The old recovery command succeeds even with a source compilation error.
+        fs::write(&source, "public class App { MissingType field; }").unwrap();
+        let output = native_command_for_test(root, &settings)
+            .args([
+                "-q",
+                "-DskipTests",
+                "dependency:build-classpath",
+                "help:evaluate",
+                "-Dexpression=maven.compiler.release",
+            ])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let error = extract_java_model_with_settings(root, ":/main", Some(&settings)).unwrap_err();
+        assert!(
+            error.message.starts_with(
+                "BUILD_COMMAND_FAILED: Maven Java compilation and classpath extraction failed"
+            ),
+            "{error}"
+        );
+        assert!(error.message.contains("exit status: 1"));
+        assert!(!error.message.contains("MissingType"));
+        assert!(!error.message.contains(root.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    fn native_command_for_test(root: &Path, settings: &crate::maven::MavenSettings) -> Command {
+        // Resolve PATH Maven in a directory without the noisy wrapper.
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = crate::maven::command(directory.path()).unwrap();
+        command
+            .arg("--settings")
+            .arg(&settings.path)
+            .arg("-f")
+            .arg(root.join("pom.xml"));
+        command
     }
 
     #[test]

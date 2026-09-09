@@ -7,6 +7,28 @@ import kotlin.test.assertTrue
 
 class KotlinEngineCompatibilityTest {
     @Test
+    fun kotlin19OptionsAreQualifiedOnlyWithinTheMeasuredScope() {
+        for (version in listOf("1.9.24", "1.9.25")) {
+            val project = KotlinProjectSemantics(version, "TEST", "1.9", "1.9", "17", emptyList(), emptyList())
+            for (jsr in listOf("strict", "warn", "ignore")) for (defaults in listOf("disable", "all", "all-compatibility")) {
+                val options = listOf("-Xjsr305=$jsr", "-Xjvm-default=$defaults")
+                val decision = kotlinEngineCompatibilityDecision(project.copy(unstableCompilerOptions = options))
+                assertEquals("QUALIFIED", decision.status)
+                assertEquals("COMPATIBLE_ANALYSIS", decision.kind)
+                assertFalse(decision.btaEligible)
+                assertEquals(options, kotlinAnalysisCompilerArguments(version, options))
+            }
+            for (options in listOf(listOf("-Xjsr305"), listOf("-Xjsr305=under-migration:strict"), listOf("-Xjsr305=@private.Annotation:warn"), listOf("-Xjvm-default=enable"), listOf("-Xjsr305=strict", "-Xjsr305=ignore"))) {
+                assertEquals("REJECTED", kotlinEngineCompatibilityDecision(project.copy(unstableCompilerOptions = options)).status)
+            }
+            val configured = project.copy(unstableCompilerOptions = listOf("-Xjsr305=strict"))
+            for (outside in listOf(configured.copy(projectCompilerVersion = "1.9.23"), configured.copy(jvmTarget = "21"), configured.copy(languageVersion = "2.0"), configured.copy(apiVersion = "1.8"))) {
+                assertEquals("REJECTED", kotlinEngineCompatibilityDecision(outside).status)
+            }
+        }
+    }
+
+    @Test
     fun kotlin19AnnotationTargetNormalizationPreservesNativeAndUnknownArguments() {
         val original = listOf("-Xannotation-default-target=param-property", "-Xunknown=keep", "-java-parameters")
         assertEquals(listOf("-Xunknown=keep", "-java-parameters"), kotlinAnalysisCompilerArguments("1.9.25", original))
