@@ -9,6 +9,7 @@ pub mod contracts;
 pub mod dataflow;
 pub mod entities;
 pub mod evidence_package;
+pub mod history;
 mod kotlin;
 pub mod model;
 pub mod notes;
@@ -20,6 +21,7 @@ pub mod sections;
 pub mod status;
 pub mod store;
 mod syntax;
+pub mod updates;
 pub mod work;
 
 use crate::error::{ClewError, ErrorCode};

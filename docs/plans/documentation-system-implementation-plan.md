@@ -807,7 +807,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T13. Coordinate revision events and immutable history
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** Central updates preserve exact target and per-section revisions across concurrent teams, repeated events and historical inspection.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC16, AC18, AC19; [scenario cards](../product/documentation-system/scenario-cards.md): S04, S05, S06, S12; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T01, T04, T09, T10, T11, T12
@@ -840,6 +840,17 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Out-of-order work cannot regress accepted targets or overwrite newer authored material.
   - History is inspectable without rerunning a model, compiler or vanished source checkout.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+- **Executed evidence:** Four T13 integration cases passed (three cases in
+  72.21 s; concurrent work/budget case in 22.11 s). After fixing observed mobile
+  history overflow, the history/recovery case passed again in 21.20 s. Five T12
+  regressions passed in 80.13 s; two T00 preservation/status cases in 43.07 s;
+  27 documentation unit tests passed with two compiler fixtures intentionally
+  ignored. Browser inspection at 390 × 844 and 1440 × 1000 confirmed wrapped
+  expanded metadata, old retained source, and snapshot-local Overview navigation.
+  Formatting, JSON parsing, English and six skill packaging checks passed.
+  Existing S04/S05/S06/S12 graph transitions are unchanged. No actual GitLab or
+  paid model qualification is claimed.
 
 ## T14. Provide portable CI jobs and a GitLab sandbox recipe
 

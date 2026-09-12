@@ -187,7 +187,11 @@ fn package_path(d: &str) -> Result<String, ClewError> {
     if !hash(d) {
         return Err(invalid("invalid evidence package digest"));
     }
-    Ok(format!(".codeclew/evidence/packages/{}", &d[7..]))
+    Ok(format!("evidence/packages/{}", &d[7..]))
+}
+pub(super) fn retained(repo: &Repository, id: &str) -> Result<bool, ClewError> {
+    let path = repo.path(&package_path(id)?)?;
+    Ok(load(&path).is_ok_and(|p| p.digest == id))
 }
 
 /// Semantic compatibility does not require an installed compiler at the consumer.
@@ -759,6 +763,7 @@ fn import(repo: &Repository, input: &Path) -> Result<Value, ClewError> {
     }
     let _lock = repo.lock()?;
     let policy = check_expected(repo, &package)?;
+    super::updates::admit_package(repo, &policy.service, package.manifest.revision.as_deref())?;
     let root = package_path(&package.digest)?;
     for (path, data) in &package.raw_parts {
         repo.atomic(&format!("{root}/{path}"), data)?;
@@ -786,10 +791,19 @@ pub(super) fn selected(
     let Some(policy) = policies(repo)?.remove(&service.id) else {
         return Ok(None);
     };
-    let pointer: Selection = store::read(
-        &repo.path(&selection_path(&service.id)?)?,
-        store::MAX_RECORD,
-    )?;
+    let pointer_path = repo.path(&selection_path(&service.id)?)?;
+    let pointer: Selection = if pointer_path.exists() {
+        store::read(&pointer_path, store::MAX_RECORD)?
+    } else {
+        // A trusted expectation and a retained immutable artifact are sufficient
+        // to reconstruct disposable coordinator cache after loss.
+        Selection {
+            schema: "codeclew-documentation-evidence-selection/1.0".into(),
+            service: service.id.clone(),
+            manifest_digest: policy.manifest_digest.clone(),
+            expectation_digest: digest(&policy)?,
+        }
+    };
     if pointer.schema != "codeclew-documentation-evidence-selection/1.0"
         || pointer.service != service.id
         || pointer.manifest_digest != policy.manifest_digest

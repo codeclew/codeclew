@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-update-policy/1.0"
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "repositoryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "acceptedRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[^-\\s][^\\s]*$"
+      },
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "service",
+    "repositoryId",
+    "acceptedRefs"
+  ]
+}

@@ -242,6 +242,10 @@ Three targeted CLI regressions pass; final reader and shared-pipeline regression
 results are recorded in the approved implementation plan. Existing graph edges
 are unchanged.
 
+### T13 implementation evidence
+
+Reader navigation now exposes immutable snapshots and keeps each snapshot’s Overview links local. Publication manifests bind targets, section state, canonical explanation digests, input records, files and observed tags. T13 history fixtures preserve old source pages after a tag move and offline cache recovery. Existing S04 graph transitions remain unchanged.
+
 ## S05 — Detect changes and review affected explanations
 
 - **Status:** current
@@ -301,6 +305,10 @@ publication. The existing source/relocation and declared-scenario recovery check
 remain regression inputs; strict refusals use `--require-complete`.
 
 
+### T13 implementation evidence
+
+Coordinator events select exact targets before evidence arrives and republish conservative status. Per-service sequences, immutable event IDs and target-bound package admission reject late results. Bounded configured refresh rechecks target, note and definition versions; T13 fixtures cover two-service reconciliation and conflicting in-flight work. Existing S05 graph transitions remain unchanged.
+
 ## S06 — Preserve manual files and recover a publication
 
 - **Status:** current
@@ -343,6 +351,10 @@ T09 extends `notes.ownership` with byte-preserving imports, explicit association
 separate assessments and captured-input invalidation. Protected-path sandbox
 checks and concurrent-edit/association-removal CLI regressions preserve original
 human files. Existing recovery/publication transitions remain unchanged.
+
+### T13 implementation evidence
+
+Durable admitted packages and trusted expectations reconstruct lost selection caches without a checkout or compiler. Frozen history reports missing files and expired evidence separately. An interrupted status publication retains the accepted target and repairs on retry. T13 fixtures verify old source bytes and protected human-note edits survive these paths. Existing S06 graph transitions remain unchanged.
 
 ## S07 — Generate a structured service and entity catalogue
 
@@ -742,3 +754,7 @@ retain their original stable code and portable report provenance. The five CLI
 cases include separate author/reviewer acceptance and denied writes to trust
 configuration. Event ingestion, retained history and CI recipes remain T13/T14;
 existing S12 transitions are unchanged.
+
+### T13 implementation evidence
+
+Local update configure/enqueue/reconcile/run/status and history list/show/compare commands now implement exact targets, idempotency, out-of-order rejection and immutable history. Four T13 integration cases exercise batches, failed/missing service evidence, tag moves, cache loss, interrupted publication and finite queue work. Actual GitLab execution and model quality remain later qualification tasks. Existing S12 graph transitions remain unchanged.

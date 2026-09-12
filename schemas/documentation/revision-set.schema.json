@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-revision-set/1.0"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "update-event.schema.json"
+      },
+      "minItems": 1,
+      "maxItems": 64
+    }
+  },
+  "required": [
+    "schema",
+    "events"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-update-event/1.0"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "repositoryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "sourceRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^-\\s][^\\s]*$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tag": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^-\\s][^\\s]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "service",
+    "repositoryId",
+    "sourceRef",
+    "revision",
+    "sequence"
+  ]
+}

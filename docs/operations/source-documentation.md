@@ -465,3 +465,21 @@ for commands, expectation shape, retention, privacy boundaries and format limits
 The default report distinguishes declared Java/Kotlin versions from producer
 admission and the Kotlin worker's Java 21 requirement. Exact application and
 compiler inputs absent from the optional index remain an explicit diagnostic limit.
+
+## Coordinated updates and history
+
+Configure accepted refs, then submit exact revision events through `docs update
+enqueue` or a revision set through `docs update reconcile`. The coordinator records
+targets independently of evidence arrival and immediately republishes conservative
+status. Import trusted packages for those targets and use `docs update run` with
+an external execution configuration and finite `--max-work` budget. A missing
+configuration leaves visible work pending. Retrying status publication cannot
+roll back an accepted target or overwrite concurrent human edits.
+
+`docs history list/show/compare` inspect immutable publication manifests offline.
+The reader provides snapshot and previous-snapshot navigation. Retain the public
+catalogue, authored material, event audit, `evidence/packages` and generated bundles
+as one authorized documentation artifact. `.codeclew` selection cache can be
+reconstructed from retained trusted evidence. History records observed tag commits
+and reports missing files/packages explicitly; moving a tag cannot rewrite an old
+snapshot. See the [revision event and history examples](../../skills/codeclew/references/documentation-evidence.md#revision-events-and-retained-history).

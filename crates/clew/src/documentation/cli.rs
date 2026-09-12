@@ -14,6 +14,16 @@ use std::{
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect immutable documentation snapshots without rerunning producers or agents.
+    History {
+        #[command(subcommand)]
+        command: super::history::Command,
+    },
+    /// Reconcile exact target revisions and process bounded documentation updates.
+    Update {
+        #[command(subcommand)]
+        command: super::updates::Command,
+    },
     /// Capture, inspect and admit portable per-service evidence.
     Evidence {
         #[command(subcommand)]
@@ -245,6 +255,8 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::View { command } => super::dataflow::run(command),
         Command::Evidence { command } => super::evidence_package::run(command),
+        Command::Update { command } => super::updates::run(command),
+        Command::History { command } => super::history::run(command),
         Command::Process { command } => super::processes::run(command),
         Command::Note { command } => super::notes::run(command),
         Command::Section { command } => super::sections::run(command),

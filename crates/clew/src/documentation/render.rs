@@ -2039,11 +2039,23 @@ pub(super) fn commit_bundle(
     let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
     files.insert("overview.html".into(), bundle_overview.into_bytes());
+    let live_overview=overview.replacen("<body>","<body><nav aria-label=\"Snapshot history\" style=\"padding:12px 20px\"><a href=\"history.html\">Snapshot history</a></nav>",1);
+    files.insert(
+        "root-overview.html".into(),
+        live_overview.as_bytes().to_vec(),
+    );
+    let mut publication =
+        super::history::prepare(repo, bundle, &binding, &mut files, input_digest, previous)?;
     binding.output_hashes = files
         .iter()
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
         .collect();
     files.insert("bindings.json".into(), bytes(&binding)?);
+    publication.files = files
+        .iter()
+        .map(|(name, data)| (name.clone(), canonical::hash_bytes(data)))
+        .collect();
+    files.insert("publication.json".into(), bytes(&publication)?);
     if files.values().any(|data| data.len() > 64 * 1024 * 1024) {
         return Err(ClewError::new(
             ErrorCode::SliceBudgetExceeded,
@@ -2107,10 +2119,11 @@ pub(super) fn commit_bundle(
         }
     }
     // One pointer changes only after all matching documents and bindings exist.
-    repo.atomic("docs/index.html", overview.as_bytes())?;
+    super::history::index(repo, bundle)?;
+    repo.atomic("docs/index.html", live_overview.as_bytes())?;
     Ok(())
 }
 
 pub(super) fn renderer_digest() -> Result<String, ClewError> {
-    digest(&[TEMPLATE, STYLE, SCRIPT])
+    digest(&[TEMPLATE, STYLE, SCRIPT, include_str!("history.rs")])
 }

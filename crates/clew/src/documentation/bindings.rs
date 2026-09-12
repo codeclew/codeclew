@@ -317,6 +317,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.8"
             | "codeclew-documentation-html/1.9"
             | "codeclew-documentation-html/1.10"
+            | "codeclew-documentation-html/1.11"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(
@@ -329,7 +330,12 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
         index_text.clone()
     };
     let root_hash = canonical::hash_bytes(comparison_text.as_bytes());
-    if binding.output_hashes.get("overview.html") != Some(&root_hash) {
+    let root_matches = if let Some(expected) = binding.output_hashes.get("root-overview.html") {
+        expected == &canonical::hash_bytes(index_text.as_bytes())
+    } else {
+        binding.output_hashes.get("overview.html") == Some(&root_hash)
+    };
+    if !root_matches {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
             "generated overview was edited; preserve the edit as manual prose before regeneration",

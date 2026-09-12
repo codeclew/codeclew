@@ -165,3 +165,5 @@ not claimed by this planning package's structural or independent review.
   rejection. Source-free reports expose capabilities and safe diagnostics; source
   inclusion is explicit. Existing scenario graph edges remain unchanged. These
   results do not qualify live CI delivery or every Kotlin compiler environment.
+
+- T13 → S04/S05/S06/S12, AC16/AC18/AC19: coordinator-selected revision vectors and immutable history are implemented. Delayed results cannot regress targets; conflicting authored work is rejected. Source-bearing packages are durable artifacts and disposable selection caches reconstruct from trust policy. History records observed tags, input and explanation versions, section states and file hashes, with explicit missing-artifact outcomes. Four focused integration cases passed; portable-evidence regressions also passed. Existing scenario edges are unchanged; this establishes local coordination, not GitLab qualification.

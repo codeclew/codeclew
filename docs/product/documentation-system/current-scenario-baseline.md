@@ -171,3 +171,5 @@ snapshot as if growth behavior existed at the base revision.
   envelope exclusion. Index/source inclusion is explicit; offline evidence is
   current only for the configured revision. S01/S11/S12 edges are unchanged.
   Event coordination and durable snapshot history remain T13.
+
+- T13: exact revision events, accepted-ref policies and durable coordinator targets now publish conservative status before evidence arrival. Four integration cases passed for ordering, reconciliation, moved tags, vanished producers/private cache, retained evidence expiry, publication recovery, concurrent note/definition changes and bounded refresh. Publication history retains source and canonical explanation versions offline. S04/S05/S06/S12 graph edges are unchanged; live CI and model qualification remain pending.

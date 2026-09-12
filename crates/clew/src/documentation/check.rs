@@ -83,18 +83,26 @@ pub fn run_selected(
     let scenarios = repository.scenarios()?;
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
+    let targets = super::updates::state(repository)?;
     for (id, service) in &services {
         if !selected.is_empty() && !selected.contains(id) {
             unresolved.insert(id.clone(), json!({"status":"NOT_CHECKED","reason":"SERVICE_NOT_SELECTED","nextAction":"Select this service explicitly to check its current source."}));
             continue;
         }
-        match analysis::capture(repository, service) {
+        match if targets.targets.is_empty() {
+            analysis::capture(repository, service)
+        } else {
+            super::updates::capture(repository, service, &targets)
+        } {
             Ok(value) => {
                 evidence.insert(id.clone(), value);
             }
             Err(error) => {
                 let mut failure =
                     json!({"status":"UNRESOLVED","reason":error.code,"nextAction":error.message});
+                if let Some(target) = targets.targets.get(id) {
+                    failure["targetRevision"] = json!(target.revision);
+                }
                 if let Some(diagnostic) = crate::worker_diagnostics::from_evidence(&error.evidence)
                 {
                     failure["workerFailure"] = diagnostic;

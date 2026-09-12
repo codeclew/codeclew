@@ -32,7 +32,403 @@ fn package_service(to: &Fixture, from: &Fixture) {
     ]);
 }
 fn package_expect(_f: &Fixture, capture: &serde_json::Value, sequence: u64) -> serde_json::Value {
-    serde_json::json!({"schema":"codeclew-documentation-evidence-expectation/1.0","service":"orders","repositoryId":"orders","serviceDigest":capture["serviceDigest"],"revision":capture["revision"],"manifestDigest":capture["manifestDigest"],"sequence":sequence})
+    serde_json::json!({"schema":"codeclew-documentation-evidence-expectation/1.0","service":capture["service"],"repositoryId":capture["service"],"serviceDigest":capture["serviceDigest"],"revision":capture["revision"],"manifestDigest":capture["manifestDigest"],"sequence":sequence})
+}
+
+fn update_configure(f: &Fixture, id: &str) {
+    let input=f.input("update-policy.json",&serde_json::json!({"schema":"codeclew-documentation-update-policy/1.0","service":id,"repositoryId":id,"acceptedRefs":["refs/heads/main","refs/tags/release"]}));
+    let current = f.ok(&["docs", "service", "list"]);
+    f.ok(&[
+        "docs",
+        "update",
+        "configure",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        current["inputDigest"].as_str().unwrap(),
+    ]);
+}
+fn update_event(
+    capture: &serde_json::Value,
+    id: &str,
+    sequence: u64,
+    tag: bool,
+) -> serde_json::Value {
+    serde_json::json!({"schema":"codeclew-documentation-update-event/1.0","id":id,"service":capture["service"],"repositoryId":capture["service"],"sourceRef":if tag{"refs/tags/release"}else{"refs/heads/main"},"revision":capture["revision"],"sequence":sequence,"tag":if tag{Some("refs/tags/release")}else{None}})
+}
+fn update_enqueue(f: &Fixture, event: &serde_json::Value) -> (i32, serde_json::Value) {
+    let input = f.input("event.json", event);
+    f.run(&[
+        "docs",
+        "update",
+        "enqueue",
+        "--input",
+        input.to_str().unwrap(),
+    ])
+}
+fn update_central(
+    producer: &Fixture,
+    ids: &[&str],
+) -> (Fixture, Vec<(std::path::PathBuf, serde_json::Value)>) {
+    let f = Fixture::new();
+    let mut captures = Vec::new();
+    for id in ids {
+        let record = read(producer.docs.join(format!("catalog/services/{id}.json")));
+        let input = f.input("central-service.json", &record);
+        let current = f.ok(&["docs", "service", "list"]);
+        f.ok(&[
+            "docs",
+            "service",
+            "add",
+            "--input",
+            input.to_str().unwrap(),
+            "--expected-input-digest",
+            current["inputDigest"].as_str().unwrap(),
+        ]);
+        let path = producer.temp.path().join(format!("initial-{id}"));
+        let captured = producer.ok(&[
+            "docs",
+            "evidence",
+            "capture",
+            "--service",
+            id,
+            "--output",
+            path.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            package_set_expected(&f, &package_expect(&f, &captured, 1)).0,
+            0
+        );
+        assert_eq!(package_import(&f, &path).0, 0);
+        update_configure(&f, id);
+        captures.push((path, captured));
+    }
+    fs::remove_file(f.temp.path().join("tools/git")).unwrap();
+    (f, captures)
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t13_inflight_work_rechecks_notes_definitions_targets_and_job_budget() {
+    use serde_json::json;
+    let producer = Fixture::new();
+    let source = producer.service("orders");
+    let (f, initial) = update_central(&producer, &["orders"]);
+    assert_eq!(
+        update_enqueue(&f, &update_event(&initial[0].1, "first", 1, false)).0,
+        0
+    );
+    let (_, original) = note_fixture(&f);
+    let mut definition = process_definition("reserve", &[]);
+    save_process(&f, &definition);
+    let reject = |work: &str, proposal: &serde_json::Value| {
+        let input = f.input("stale-update-proposal.json", proposal);
+        let result = f.run(&[
+            "docs",
+            "proposal",
+            "submit",
+            "--work",
+            work,
+            "--input",
+            input.to_str().unwrap(),
+        ]);
+        assert_ne!(result.0, 0);
+        assert!(
+            result.1.to_string().contains("STALE_REQUIRES_RESLICE"),
+            "{result:?}"
+        );
+    };
+    let (work, proposal, _) = proposal_fixture(&f);
+    assert!(
+        proposal_submit(&f, &work, &proposal)["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    let mut modified = original.clone();
+    modified.extend_from_slice(b"\nA maintainer added context.\n");
+    fs::write(f.docs.join("notes/history.md"), &modified).unwrap();
+    reject(&work, &proposal);
+    let (work, proposal, _) = proposal_fixture(&f);
+    definition["title"] = json!("Updated maintained definition");
+    save_process(&f, &definition);
+    reject(&work, &proposal);
+    let config = execution_config(&f, json!({"mode":"malformed"}), json!({}), None);
+    let input = f.input("queue-config.json", &config);
+    let run = f.ok(&[
+        "docs",
+        "update",
+        "run",
+        "--config",
+        input.to_str().unwrap(),
+        "--max-work",
+        "1",
+    ]);
+    assert_eq!(run["attempted"], 1);
+    assert!(run["remainingAtStart"].as_u64().unwrap() > 0);
+    assert!(!run["results"].to_string().contains("ACCEPTED"));
+    let (work, proposal, _) = proposal_fixture(&f);
+    fs::write(
+        source.join("Orders.java"),
+        "public class Orders { public int reserve(int quantity) { return quantity + 7; } }\n",
+    )
+    .unwrap();
+    commit(&source);
+    let (_, next) = package_capture(&producer, "next-target");
+    assert_eq!(
+        update_enqueue(&f, &update_event(&next, "next", 2, false)).0,
+        0
+    );
+    reject(&work, &proposal);
+    assert_eq!(fs::read(f.docs.join("notes/history.md")).unwrap(), modified);
+}
+
+#[test]
+fn docsys_t13_batch_targets_late_results_and_reconciliation_are_ordered() {
+    use serde_json::json;
+    let producer = Fixture::new();
+    let orders = producer.service("orders");
+    let other = producer.service("other");
+    let (f, initial) = update_central(&producer, &["orders", "other"]);
+    let checked = f.checked();
+    let a = f.author("orders", &checked);
+    let b = f.author("other", &checked);
+    let published = f.ok(&[
+        "docs",
+        "render",
+        "--input",
+        a.to_str().unwrap(),
+        "--input",
+        b.to_str().unwrap(),
+    ]);
+    let old_id = published["bundle"].as_str().unwrap();
+    let old_page = fs::read(f.bundle(old_id, "services/orders.html")).unwrap();
+    let first = json!({"schema":"codeclew-documentation-revision-set/1.0","events":[update_event(&initial[0].1,"orders-one",1,false),update_event(&initial[1].1,"other-one",1,false)]});
+    assert_eq!(update_enqueue(&f, &first).0, 0);
+    fs::write(
+        orders.join("Orders.java"),
+        "public class Orders { public int reserve(int quantity) { return quantity + 1; } }\n",
+    )
+    .unwrap();
+    commit(&orders);
+    fs::write(
+        other.join("Orders.java"),
+        "public class Orders { public int reserve(int quantity) { return quantity + 2; } }\n",
+    )
+    .unwrap();
+    commit(&other);
+    let (new_orders, capture) = package_capture(&producer, "orders-new");
+    let other_revision = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&other)
+        .output()
+        .unwrap();
+    let mut other_capture = initial[1].1.clone();
+    other_capture["revision"] = json!(String::from_utf8(other_revision.stdout).unwrap().trim());
+    let second = json!({"schema":"codeclew-documentation-revision-set/1.0","events":[update_event(&capture,"orders-two",2,false),update_event(&other_capture,"other-two",2,false)]});
+    let queued = update_enqueue(&f, &second);
+    assert_eq!(queued.0, 0, "{queued:?}");
+    let status = f.ok(&["docs", "update", "status"]);
+    assert_eq!(status["targets"]["orders"]["revision"], capture["revision"]);
+    assert_eq!(
+        status["targets"]["other"]["revision"],
+        other_capture["revision"]
+    );
+    let latest = clew::documentation::bindings::baseline(
+        &clew::documentation::store::Repository::open(&f.docs).unwrap(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        latest.1.target_revisions["orders"].as_deref(),
+        capture["revision"].as_str()
+    );
+    assert_ne!(
+        latest.1.section_states["service:orders"].freshness,
+        clew::documentation::model::Freshness::Current
+    );
+    assert_eq!(
+        fs::read(f.bundle(old_id, "services/orders.html")).unwrap(),
+        old_page
+    );
+    assert_ne!(package_import(&f, &initial[0].0).0, 0);
+    assert_eq!(
+        package_set_expected(&f, &package_expect(&f, &capture, 2)).0,
+        0
+    );
+    assert_eq!(package_import(&f, &new_orders).0, 0);
+    let check = f.checked();
+    assert!(check.services.contains_key("orders"));
+    assert!(check.unresolved.contains_key("other"));
+    let delayed = update_enqueue(&f, &first);
+    assert_eq!(delayed.0, 0);
+    assert!(
+        delayed.1["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["status"] == "SUPERSEDED")
+    );
+    let duplicate = update_enqueue(&f, &second);
+    assert_eq!(duplicate.0, 0);
+    assert!(
+        duplicate.1["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["status"] == "DUPLICATE")
+    );
+    let mut collision = update_event(&capture, "orders-two", 3, false);
+    collision["revision"] = initial[0].1["revision"].clone();
+    assert_ne!(update_enqueue(&f, &collision).0, 0);
+    let mut disallowed = update_event(&capture, "disallowed", 3, false);
+    disallowed["sourceRef"] = json!("refs/heads/unapproved");
+    assert_ne!(update_enqueue(&f, &disallowed).0, 0);
+    let input = f.input("reconciliation.json", &second);
+    let repaired = f.ok(&[
+        "docs",
+        "update",
+        "reconcile",
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        repaired["targets"]["orders"]["revision"],
+        capture["revision"]
+    );
+    let run = f.ok(&["docs", "update", "run", "--max-work", "1"]);
+    assert_eq!(run["status"], "AGENT_CONFIGURATION_REQUIRED");
+    assert_eq!(run["attempted"], 0);
+}
+
+#[test]
+fn docsys_t13_history_preserves_moved_tags_and_recovers_without_private_cache() {
+    let producer = Fixture::new();
+    let source = producer.service("orders");
+    let (f, initial) = update_central(&producer, &["orders"]);
+    assert_eq!(
+        update_enqueue(&f, &update_event(&initial[0].1, "release-one", 1, true)).0,
+        0
+    );
+    let checked = f.checked();
+    let narrative = f.author("orders", &checked);
+    let result = f.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
+    let old = result["bundle"].as_str().unwrap().to_owned();
+    let original = fs::read(f.bundle(&old, "services/orders.html")).unwrap();
+    fs::write(
+        source.join("Orders.java"),
+        "public class Orders { public int reserve(int quantity) { return quantity + 1; } }\n",
+    )
+    .unwrap();
+    commit(&source);
+    let (path, new) = package_capture(&producer, "release-next");
+    assert_eq!(
+        update_enqueue(&f, &update_event(&new, "release-two", 2, true)).0,
+        0
+    );
+    assert_eq!(package_set_expected(&f, &package_expect(&f, &new, 2)).0, 0);
+    assert_eq!(package_import(&f, &path).0, 0);
+    let result = f.ok(&["docs", "refresh", "--status-only"]);
+    let latest = result["bundle"].as_str().unwrap();
+    let shown = f.ok(&["docs", "history", "show", "--id", &old]);
+    assert_eq!(shown["status"], "FROZEN_SNAPSHOT");
+    assert_eq!(
+        shown["items"][0]["observedTags"]["orders"]["refs/tags/release"],
+        initial[0].1["revision"]
+    );
+    let diff = f.ok(&[
+        "docs", "history", "compare", "--before", &old, "--after", latest,
+    ]);
+    assert!(
+        diff["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "observed-tags")
+    );
+    assert_eq!(
+        fs::read(f.bundle(&old, "services/orders.html")).unwrap(),
+        original
+    );
+    drop(producer);
+    fs::remove_dir_all(f.docs.join(".codeclew")).unwrap();
+    assert_eq!(
+        f.checked().services["orders"].revision,
+        new["revision"].as_str().unwrap()
+    );
+    let history = f.ok(&["docs", "history", "list"]);
+    assert!(
+        history["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == old)
+    );
+    let files = f.ok(&["docs", "history", "show", "--id", &old, "--kind", "files"]);
+    assert_eq!(files["status"], "FROZEN_SNAPSHOT");
+    assert_eq!(files["evidenceRetention"], "COMPLETE");
+    let digest = initial[0].1["manifestDigest"].as_str().unwrap();
+    fs::remove_dir_all(f.docs.join(format!("evidence/packages/{}", &digest[7..]))).unwrap();
+    let expired = f.ok(&["docs", "history", "show", "--id", &old]);
+    assert_eq!(expired["status"], "FROZEN_SNAPSHOT");
+    assert_eq!(expired["evidenceRetention"], "MISSING_PACKAGES");
+    if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T13_REVIEW") {
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            fs::create_dir_all(to).unwrap();
+            for item in fs::read_dir(from).unwrap() {
+                let item = item.unwrap();
+                if item.file_type().unwrap().is_dir() {
+                    copy(&item.path(), &to.join(item.file_name()));
+                } else {
+                    fs::copy(item.path(), to.join(item.file_name())).unwrap();
+                }
+            }
+        }
+        copy(&f.docs.join("docs"), std::path::Path::new(&directory));
+    }
+}
+
+#[test]
+fn docsys_t13_interrupted_publication_is_repaired_without_target_rollback() {
+    let producer = Fixture::new();
+    let source = producer.service("orders");
+    let (f, initial) = update_central(&producer, &["orders"]);
+    assert_eq!(
+        update_enqueue(&f, &update_event(&initial[0].1, "initial", 1, false)).0,
+        0
+    );
+    let before = fs::read(f.docs.join("docs/index.html")).unwrap();
+    fs::write(
+        source.join("Orders.java"),
+        "public class Orders { public int reserve(int quantity) { return quantity + 3; } }\n",
+    )
+    .unwrap();
+    commit(&source);
+    let (_, next) = package_capture(&producer, "later");
+    let history = f.docs.join("docs/history.html");
+    fs::rename(&history, history.with_extension("saved")).unwrap();
+    fs::create_dir(&history).unwrap();
+    let result = update_enqueue(&f, &update_event(&next, "later", 2, false));
+    assert_eq!(result.0, 0);
+    assert_eq!(
+        result.1["publication"]["status"],
+        "STATUS_PUBLICATION_PENDING"
+    );
+    assert_eq!(fs::read(f.docs.join("docs/index.html")).unwrap(), before);
+    assert_eq!(
+        f.ok(&["docs", "update", "status"])["targets"]["orders"]["revision"],
+        next["revision"]
+    );
+    fs::remove_dir(&history).unwrap();
+    fs::rename(history.with_extension("saved"), &history).unwrap();
+    let repaired = f.ok(&["docs", "update", "run"]);
+    assert_ne!(
+        repaired["publication"]["status"],
+        "STATUS_PUBLICATION_PENDING"
+    );
+    assert_ne!(fs::read(f.docs.join("docs/index.html")).unwrap(), before);
+    let state = f.ok(&["docs", "update", "status"]);
+    assert_eq!(state["targets"]["orders"]["sequence"], 2);
 }
 fn package_set_expected(f: &Fixture, expectation: &serde_json::Value) -> (i32, serde_json::Value) {
     let input = f.input("expectation.json", expectation);

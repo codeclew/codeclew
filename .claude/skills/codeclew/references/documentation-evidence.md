@@ -65,9 +65,12 @@ sequence. Exact replay is idempotent; an older expectation or mismatched package
 cannot replace the selected result. Updating an expectation makes a missing new
 result a local gap while preserving previously retained artifacts.
 
-Expectations live in `catalog/evidence-trust`; admitted immutable parts and selected
-pointers are local `.codeclew/evidence` state, reconstructed by importing retained
-packages in a fresh job. An expectation selects portable evidence even if a local
+Expectations live in `catalog/evidence-trust`; admitted packages live durably in
+`evidence/packages/<digest>`. Retain these authorized source-bearing artifacts
+with the documentation repository. Only selected pointers are disposable
+`.codeclew/evidence` state. A missing pointer is reconstructed from the trusted
+expectation and retained package without a checkout or compiler. An expectation
+selects portable evidence even if a local
 binding exists. Capture always uses the local supported producer and cannot
 relabel an import as a new producer result. A failed capture at a known revision
 can be imported as an explicit failure. A failure without a known revision is
@@ -82,3 +85,69 @@ selected indexed facts, not every raw compiler artifact. Missing source, private
 stderr or unrepresented compiler inputs cannot be reconstructed from a report.
 Offline freshness is relative to the configured revision; it cannot discover a
 new remote HEAD. Imported evidence still requires normal separate meaning review.
+
+## Revision events and retained history
+
+Configure each service's exact accepted refs with `docs update configure --input
+<policy.json> --expected-input-digest <inputDigest> --root <docs>`:
+
+```json
+{
+  "schema": "codeclew-documentation-update-policy/1.0",
+  "service": "orders",
+  "repositoryId": "orders",
+  "acceptedRefs": ["refs/heads/main", "refs/tags/release"]
+}
+```
+
+An operator-controlled event selects a target before its evidence arrives:
+
+```json
+{
+  "schema": "codeclew-documentation-update-event/1.0",
+  "id": "orders-42",
+  "service": "orders",
+  "repositoryId": "orders",
+  "sourceRef": "refs/heads/main",
+  "revision": "0123456789abcdef0123456789abcdef01234567",
+  "sequence": 42
+}
+```
+
+Use increasing sequences per service, immutable event IDs, and full lower-case
+commit IDs. Optional `tag` must equal `sourceRef`; the snapshot retains its
+observed commit even if that tag later moves. A batch uses schema
+`codeclew-documentation-revision-set/1.0` and an `events` array of 1 to 64 events.
+Policies and events are coordinator inputs, never instructions taken from source.
+
+```sh
+clew docs update enqueue --root <docs> --input <event.json>
+clew docs update reconcile --root <docs> --input <revision-set.json>
+clew docs update status --root <docs>
+clew docs update run --root <docs> --config <execution.json> --max-work 8
+clew docs history list --root <docs>
+clew docs history show --root <docs> --id <publication-id> --kind sections
+clew docs history compare --root <docs> --before <old-id> --after <new-id>
+```
+
+Acceptance first republishes conservative section status. Exact duplicates are
+idempotent, delayed events are superseded, and reused IDs or conflicting equal
+sequences fail. New package admission must match the selected target. Central
+checks reuse admitted evidence; an unavailable package leaves a service gap.
+`run` refreshes status and processes at most `max-work` roots through the existing
+configured author/reviewer budget. Without configuration it returns
+`AGENT_CONFIGURATION_REQUIRED` when work remains. Human-note, definition and target
+changes reject old work. If status publication fails, the accepted target remains
+durable and `STATUS_PUBLICATION_PENDING` directs a retry with `update run`.
+
+Retain `catalog`, `updates/events`, authored records, `evidence/packages`, and
+`docs/generated` together. Generated publication manifests freeze targets,
+per-section content and verification, explanation digests, observed tags, input
+records and file hashes. The reader's Snapshot history link opens retained
+snapshots; navigation within a snapshot stays in that snapshot. History inspection
+does not run a compiler or model. `show` also supports `summary`, `explanations`,
+`files`, `inputs` and `evidence`; paged commands support `--cursor` and `--limit`.
+Missing or damaged files produce `DAMAGED_OR_EXPIRED`; missing packages produce
+`evidenceRetention: MISSING_PACKAGES`. Legacy snapshots lacking a publication
+manifest report `EXPIRED_OR_LEGACY_MANIFEST_MISSING`. Retention remains an external
+operator policy; a snapshot link alone is not evidence of complete retention.

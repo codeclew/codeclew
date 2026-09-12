@@ -34,7 +34,17 @@ pub fn update_states(binding: &mut Bindings, checked: &Check) {
         .map(|id| {
             (
                 id.clone(),
-                checked.services.get(id).map(|e| e.revision.clone()),
+                checked
+                    .services
+                    .get(id)
+                    .map(|e| e.revision.clone())
+                    .or_else(|| {
+                        checked
+                            .unresolved
+                            .get(id)
+                            .and_then(|v| v["targetRevision"].as_str())
+                            .map(str::to_owned)
+                    }),
             )
         })
         .collect();

@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-publication/1.0"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "parent": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ordinal": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "inputDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "targetRevisions": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "freshness": {
+            "enum": [
+              "CURRENT",
+              "STALE",
+              "UNVERIFIED"
+            ]
+          },
+          "verification": {
+            "type": "string"
+          },
+          "contentRevisions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            }
+          },
+          "mixedRevisions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              }
+            }
+          },
+          "targetRevisions": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "coverage": {
+            "type": "object"
+          },
+          "reasons": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "freshness",
+          "verification",
+          "contentRevisions",
+          "targetRevisions",
+          "coverage",
+          "reasons"
+        ]
+      },
+      "maxProperties": 32768
+    },
+    "explanationVersions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
+    },
+    "observedTags": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "evidencePackages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "uniqueItems": true
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "maxProperties": 8192
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "parent",
+    "ordinal",
+    "inputDigest",
+    "targetRevisions",
+    "sections",
+    "explanationVersions",
+    "observedTags",
+    "evidencePackages",
+    "files"
+  ]
+}
