@@ -14,3 +14,5 @@
 .scenario-link>span:nth-child(2){min-width:0;overflow:hidden;text-overflow:ellipsis}.nav-icon{flex-shrink:0}
 
 .process-view{overflow-wrap:anywhere}
+
+.dataflow-scroll{max-height:680px;padding:8px;background:#fcfdfb;border:1px solid var(--line);border-radius:8px}.dataflow-scroll svg{display:block;max-width:100%}

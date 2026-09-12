@@ -230,7 +230,9 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
             if repo.scenarios()?.contains_key(id)
                 && (request.entrypoint.is_none()
                     || (request.entrypoint.as_deref() == Some(super::processes::OVERVIEW)
-                        && repo.scenarios()?[id].process.is_some())) =>
+                        && repo.scenarios()?[id].process.is_some())
+                    || (request.entrypoint.as_deref() == Some(super::dataflow::ROOT)
+                        && repo.scenarios()?[id].view.is_some())) =>
         {
             BTreeSet::new()
         }
@@ -266,6 +268,16 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
         review_reasons.push(json!({"reason":"MISSING_BASELINE"}));
     }
 
+    let component_scope = if kind == "scenario" {
+        checked
+            .scenarios
+            .get(id)
+            .map(|s| bindings::expand_dependencies(&s.dependency_ids, &checked))
+            .transpose()?
+            .unwrap_or_default()
+    } else {
+        BTreeSet::new()
+    };
     let mut handles = BTreeMap::new();
     for (prefix, kind, ids) in [
         (
@@ -280,7 +292,15 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
         (
             "d",
             "DEPENDENCY",
-            checked.dependencies.keys().cloned().collect(),
+            checked
+                .dependencies
+                .iter()
+                .filter(|(key, d)| {
+                    !(d.kind.starts_with("PROCESS_") || d.kind.starts_with("VIEW_"))
+                        || (kind == "scenario" && component_scope.contains(*key))
+                })
+                .map(|(id, _)| id.clone())
+                .collect(),
         ),
         ("s", "SOURCE", checked.sources().keys().cloned().collect()),
     ] {
@@ -316,17 +336,12 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
             );
         }
     }
-    let component_scope = checked
-        .scenarios
-        .get(id)
-        .map(|s| bindings::expand_dependencies(&s.dependency_ids, &checked))
-        .transpose()?
-        .unwrap_or_default();
     let mut influence: BTreeMap<String, String> = checked
         .dependencies
         .iter()
         .filter(|(id, o)| {
-            o.kind != "PROCESS_COMPONENT" || (kind == "scenario" && component_scope.contains(*id))
+            !(o.kind.starts_with("PROCESS_") || o.kind.starts_with("VIEW_"))
+                || (kind == "scenario" && component_scope.contains(*id))
         })
         .map(|(id, o)| (id.clone(), o.digest.clone()))
         .collect();
@@ -644,6 +659,14 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
             items.push(json!({"kind":"OBLIGATION","id":format!("obligation-{}",index+1),"record":obligation}));
         }
     }
+    // Dynamic view/process facts outside this work subject are not supplied
+    // or admitted as implicit influence of a service-only explanation.
+    items.retain(|item| {
+        item["kind"] != "DEPENDENCY"
+            || item["id"]
+                .as_str()
+                .is_some_and(|id| work.influence.contains_key(id))
+    });
     let reverse: BTreeMap<_, _> = work
         .handles
         .iter()

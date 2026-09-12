@@ -1,0 +1,41 @@
+{
+  "schema": "codeclew-documentation-view/1.0",
+  "id": "quantity-flow",
+  "title": "Quantity data flow",
+  "summary": "An explicitly requested quantity process.",
+  "root": {
+    "service": "orders",
+    "selector": {
+      "language": "java",
+      "owner": "Orders",
+      "name": "reserve",
+      "parameterTypes": [
+        "int"
+      ]
+    }
+  },
+  "interactions": [],
+  "maxDepth": 4,
+  "maxNodes": 64,
+  "view": {
+    "module": "entity-dataflow/1.0",
+    "inputObjects": [
+      "entity:quantity"
+    ],
+    "services": [
+      "orders"
+    ],
+    "contracts": [],
+    "relatedProcesses": [],
+    "scope": "Read, normalize and return a quantity with explicit domain correspondence.",
+    "human": {
+      "annotations": {},
+      "tags": [],
+      "metadata": {},
+      "layout": {}
+    },
+    "limitations": [
+      "Static evidence does not establish runtime lineage."
+    ]
+  }
+}

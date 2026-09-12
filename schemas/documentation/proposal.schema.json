@@ -217,7 +217,7 @@
         },
         "steps": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 256,
           "items": {
             "$ref": "#/$defs/step"
@@ -270,6 +270,39 @@
             }
           ],
           "description": "Only for a NOTE work reference. Cite the note in the summary. Without source evidence use UNKNOWN, a limitation, and no correction. Periods and historical claims require separate evidence. Never rewrite the original."
+        },
+        "dataflow": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "nodes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "items": {
+                    "$ref": "#/$defs/dataflowNode"
+                  }
+                },
+                "edges": {
+                  "type": "array",
+                  "maxItems": 128,
+                  "items": {
+                    "$ref": "#/$defs/dataflowEdge"
+                  }
+                }
+              },
+              "required": [
+                "nodes",
+                "edges"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only for docs view prepare: use scenario:<view-id> as entrypoint and empty steps. Summary cites its VIEW_DEFINITION plus code. Domain nodes use exact entity ID/title and cite DOMAIN_ENTITY; other nodes cite source. Name-only edges require candidate/UNKNOWN with meaning.uncertainty. Local read/transform/write edges require source-dataflow and SOURCE_INTERPRETATION; transfer requires declared-contract, DECLARED_TRANSFER, an explicit interaction, source and uncertainty. These classifications do not set review or runtime authority."
         }
       },
       "required": [
@@ -277,6 +310,104 @@
         "title",
         "summary",
         "steps"
+      ]
+    },
+    "dataflowNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "entity": {
+          "type": "string",
+          "pattern": "^entity:[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "kind": {
+          "enum": [
+            "domain",
+            "dto",
+            "message",
+            "table",
+            "field",
+            "function"
+          ]
+        },
+        "service": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "representation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "meaning": {
+          "$ref": "#/$defs/claim"
+        }
+      },
+      "required": [
+        "id",
+        "entity",
+        "kind",
+        "service",
+        "representation",
+        "meaning"
+      ]
+    },
+    "dataflowEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+        },
+        "kind": {
+          "enum": [
+            "read",
+            "transform",
+            "write",
+            "transfer",
+            "candidate"
+          ]
+        },
+        "authority": {
+          "enum": [
+            "SOURCE_INTERPRETATION",
+            "DECLARED_TRANSFER",
+            "UNKNOWN"
+          ]
+        },
+        "matchBasis": {
+          "enum": [
+            "source-dataflow",
+            "declared-contract",
+            "name-only",
+            "unknown"
+          ]
+        },
+        "meaning": {
+          "$ref": "#/$defs/claim"
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "to",
+        "kind",
+        "authority",
+        "matchBasis",
+        "meaning"
       ]
     }
   }

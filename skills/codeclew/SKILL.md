@@ -496,6 +496,13 @@ eight-service limit of one detailed scenario. Saved definitions enter the normal
 reader and status/refresh paths. Original notes remain separate.
 
 
+For an explicitly requested maintained entity flow, use `docs view modules`,
+`list`, `put`, `show` and `prepare` with the
+[saved-view reference](references/documentation-views.md). Preserve distinct domain
+and DTO/message/table identities, evidence classifications, unknown name-only
+edges, protected human metadata and the normal independent meaning review.
+
+
 ## Explain current saved edits
 
 For a single Kotlin/Gradle or Rust repository, use `change inspect --repo

@@ -6,6 +6,7 @@ pub mod bindings;
 pub mod check;
 pub mod cli;
 pub mod contracts;
+pub mod dataflow;
 pub mod entities;
 mod kotlin;
 pub mod model;

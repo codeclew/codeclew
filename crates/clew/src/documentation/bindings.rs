@@ -105,6 +105,8 @@ pub fn expand_dependencies(
                     | "PROCESS_DEFINITION"
                     | "PROCESS_COMPONENT"
                     | "PROCESS_SCOPE"
+                    | "VIEW_DEFINITION"
+                    | "VIEW_SCOPE"
             ) {
                 for linked in dependency.normalized["dependencyIds"]
                     .as_array()
@@ -309,6 +311,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.7"
             | "codeclew-documentation-html/1.8"
             | "codeclew-documentation-html/1.9"
+            | "codeclew-documentation-html/1.10"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(

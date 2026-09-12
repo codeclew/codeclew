@@ -127,6 +127,26 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 "summary must be brief plain prose without implementation code",
             ));
         }
+        if super::dataflow::is_root(checked, &n.subject, &o.id) {
+            if !o.events.is_empty()
+                || !o.explanation.is_empty()
+                || !o.interface_contracts.is_empty()
+                || !o.findings.is_empty()
+                || !o.participants.is_empty()
+                || o.overview_diagram.is_some()
+                || o.assessment.is_some()
+            {
+                return Err(invalid(
+                    "a typed data-flow view cannot also contain a sequence or assessment",
+                ));
+            }
+            super::dataflow::validate_graph(o, checked, &n.subject)?;
+            continue;
+        } else if o.dataflow.is_some() {
+            return Err(invalid(
+                "data-flow graph belongs to an explicit saved view root",
+            ));
+        }
         if super::notes::is_root(&o.id) {
             validate_assessment(o, checked, id, &allowed)?;
         } else {
@@ -522,6 +542,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
         !super::sections::contains(id)
             && !super::notes::is_root(id)
             && id != super::processes::OVERVIEW
+            && id != super::dataflow::ROOT
     }) {
         return Err(invalid(
             "full scope requires every discovered entrypoint to have an operation or an explicit gap",
@@ -753,6 +774,47 @@ pub fn make_bindings(
                 &o.summary.source_ids,
                 checked,
             )?;
+            if let Some(g) = &o.dataflow {
+                add_binding(
+                    &mut fragments,
+                    format!("{prefix}/graph"),
+                    subject,
+                    g,
+                    &o.summary.dependency_ids,
+                    &o.summary.source_ids,
+                    checked,
+                )?;
+                for (kind, id, value, claim) in g
+                    .nodes
+                    .iter()
+                    .map(|n| {
+                        (
+                            "node",
+                            &n.id,
+                            serde_json::to_value(n).map_err(io_error),
+                            &n.meaning,
+                        )
+                    })
+                    .chain(g.edges.iter().map(|e| {
+                        (
+                            "edge",
+                            &e.id,
+                            serde_json::to_value(e).map_err(io_error),
+                            &e.meaning,
+                        )
+                    }))
+                {
+                    add_binding(
+                        &mut fragments,
+                        format!("{prefix}/{kind}-{id}"),
+                        subject,
+                        &value?,
+                        &claim.dependency_ids,
+                        &claim.source_ids,
+                        checked,
+                    )?;
+                }
+            }
             if let Some(a) = &o.assessment {
                 let mut deps = o.summary.dependency_ids.clone();
                 let mut sources = o.summary.source_ids.clone();
@@ -866,6 +928,18 @@ pub fn make_bindings(
         }
     }
     for (id, context) in &checked.scenarios {
+        if checked.dependencies.contains_key(&format!("view:{id}")) {
+            let subject = format!("scenario:{id}");
+            add_binding(
+                &mut fragments,
+                format!("{subject}/view-definition"),
+                &subject,
+                &super::dataflow::page(checked, &subject),
+                &context.dependency_ids,
+                &[],
+                checked,
+            )?;
+        }
         if checked.dependencies.contains_key(&format!("process:{id}")) {
             let subject = format!("scenario:{id}");
             add_binding(
@@ -1129,6 +1203,18 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     let mut sources = BTreeSet::new();
     for o in &n.operations {
         sources.extend(o.summary.source_ids.clone());
+        if let Some(g) = &o.dataflow {
+            sources.extend(
+                g.nodes
+                    .iter()
+                    .flat_map(|n| n.meaning.source_ids.iter().cloned()),
+            );
+            sources.extend(
+                g.edges
+                    .iter()
+                    .flat_map(|e| e.meaning.source_ids.iter().cloned()),
+            );
+        }
         if let Some(c) = o
             .assessment
             .as_ref()
@@ -1194,10 +1280,13 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     );
     boundaries.sort();
     boundaries.dedup();
-    json!({"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 pub fn mermaid(o: &Operation) -> String {
+    if let Some(g) = &o.dataflow {
+        return super::dataflow::mermaid(g);
+    }
     fn label(s: &str) -> String {
         s.replace('&', "&amp;")
             .replace(';', "&#59;")
@@ -1694,6 +1783,19 @@ fn publish_internal(
     // A new accepted child changes its parents in this same atomic publication.
     super::processes::attach_versions(repo, &mut checked, Some(&binding))?;
     for (id, context) in &checked.scenarios {
+        if checked.dependencies.contains_key(&format!("view:{id}")) {
+            let subject = format!("scenario:{id}");
+            binding.fragments.insert(
+                format!("{subject}/view-definition"),
+                bindings::fragment(
+                    &subject,
+                    &super::dataflow::page(&checked, &subject),
+                    &context.dependency_ids,
+                    &[],
+                    &checked,
+                )?,
+            );
+        }
         if checked.dependencies.contains_key(&format!("process:{id}")) {
             let subject = format!("scenario:{id}");
             binding.fragments.insert(
@@ -1868,6 +1970,7 @@ fn publish_internal(
                 markdown(title, n, &binding.section_states)
                     + &super::notes::markdown(&data["notes"])
                     + &super::processes::markdown(&data["process"])
+                    + &super::dataflow::markdown(&data["view"], n)
             )
             .into_bytes(),
         );
@@ -1888,7 +1991,7 @@ fn publish_internal(
                 .into_bytes(),
             );
         }
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.iter().filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)).count(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.iter().filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
     let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><p>{}</p><details><summary>Declaration and source checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
@@ -1917,7 +2020,7 @@ fn publish_internal(
         previous_bytes.as_deref(),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
+        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)&&o.id!=super::processes::OVERVIEW&&o.dataflow.is_none()).count(),"documentedViews":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|o.dataflow.is_some()).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
     )
 }
 

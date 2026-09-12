@@ -38,6 +38,11 @@ pub fn validate(s: &Scenario, services: &BTreeMap<String, Service>) -> Result<()
             Ok(())
         };
     };
+    if s.view.is_some() {
+        return Err(invalid(
+            "a saved definition cannot be both a process and an entity view",
+        ));
+    }
     let bounded = |v: &str| !v.trim().is_empty() && v.len() <= 2048;
     if s.schema != "codeclew-documentation-process/1.0"
         || !bounded(&s.title)
@@ -71,6 +76,9 @@ pub fn expected(checked: &Check, id: &str) -> BTreeSet<String> {
     let mut ids = BTreeSet::from([id.into()]);
     if checked.dependencies.contains_key(&format!("process:{id}")) {
         ids.insert(OVERVIEW.into());
+    }
+    if checked.dependencies.contains_key(&format!("view:{id}")) {
+        ids.insert(super::dataflow::ROOT.into());
     }
     ids
 }
@@ -127,7 +135,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
     let repo = Repository::open(root)?;
     match command {
         Command::List { page } => {
-            let records=repo.scenarios()?.into_values().map(|s|json!({"id":s.id,"title":s.title,"kind":if s.process.is_some(){"SAVED_PROCESS"}else{"LEGACY_SCENARIO"},"subject":format!("scenario:{}",s.id)})).collect::<Vec<_>>();
+            let records=repo.scenarios()?.into_values().map(|s|json!({"id":s.id,"title":s.title,"kind":if s.process.is_some(){"SAVED_PROCESS"}else if s.view.is_some(){"SAVED_VIEW"}else{"LEGACY_SCENARIO"},"subject":format!("scenario:{}",s.id)})).collect::<Vec<_>>();
             super::cli::page(
                 &digest(&records)?,
                 records,
@@ -145,6 +153,13 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             ..
         } => {
             let definition = load_definition(&repo, &input)?;
+            if repo
+                .scenarios()?
+                .get(&definition.id)
+                .is_some_and(|s| s.view.is_some())
+            {
+                return Err(invalid("process ID belongs to a protected saved view"));
+            }
             repo.put(
                 &format!("scenarios/{}.yaml", definition.id),
                 &definition,
@@ -340,9 +355,9 @@ pub(super) fn attach_versions(
         let child = d.normalized["child"].as_str().unwrap();
         let mut deps: BTreeSet<String> =
             serde_json::from_value(d.normalized["dependencyIds"].clone()).map_err(io_error)?;
-        if let Some(p) = definitions.get(child).and_then(|s| s.process.as_ref()) {
+        if let Some(s) = definitions.get(child) {
             deps.extend(
-                p.linked_subviews
+                children(s)
                     .iter()
                     .map(|id| format!("process-component:{child}:{id}")),
             );
@@ -361,14 +376,15 @@ fn components(
     visited: &mut BTreeSet<String>,
     depth: usize,
 ) -> Result<(), ClewError> {
-    let Some(p) = defs.get(id).and_then(|s| s.process.as_ref()) else {
+    let Some(definition) = defs.get(id) else {
         return Ok(());
     };
+    let linked = children(definition);
     if !active.insert(id.into()) {
         return Ok(());
     }
     visited.insert(id.into());
-    for child in &p.linked_subviews {
+    for child in linked {
         let key = format!("process-component:{id}:{child}");
         if checked.dependencies.contains_key(&key) {
             continue;
@@ -388,6 +404,8 @@ fn components(
         let child_subject = format!("scenario:{child}");
         let root = if defs.get(child).is_some_and(|s| s.process.is_some()) {
             OVERVIEW
+        } else if defs.get(child).is_some_and(|s| s.view.is_some()) {
+            super::dataflow::ROOT
         } else {
             child.as_str()
         };
@@ -514,4 +532,12 @@ pub fn markdown(process: &Value) -> String {
         }
     }
     out
+}
+
+fn children(s: &Scenario) -> &[String] {
+    s.process
+        .as_ref()
+        .map(|p| p.linked_subviews.as_slice())
+        .or_else(|| s.view.as_ref().map(|v| v.related_processes.as_slice()))
+        .unwrap_or(&[])
 }

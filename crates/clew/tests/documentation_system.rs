@@ -2468,6 +2468,27 @@ fn docsys_t10_saved_identity_transient_inspection_and_unavailable_participant() 
     let other = f.service("other");
     let mut definition = process_definition("reserve", &[]);
     definition["process"]["participants"] = json!(["orders", "other"]);
+    let mut mixed = definition.clone();
+    mixed["view"] = view_definition("mixed", "orders", "quantity")["view"].clone();
+    let mixed_path = f.input("mixed-process.json", &mixed);
+    let input_digest = f.ok(&["docs", "process", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "process",
+            "put",
+            "--input",
+            mixed_path.to_str().unwrap(),
+            "--expected-input-digest",
+            &input_digest
+        ])
+        .0,
+        0
+    );
+    assert!(!f.docs.join("scenarios/reserve.yaml").exists());
     for (field, value) in [("maxNodes", json!(513)), ("maxDepth", json!(17))] {
         let mut invalid = definition.clone();
         invalid[field] = value;
@@ -2825,5 +2846,725 @@ fn docsys_t10_two_service_conditional_definition_preserves_unresolved_transport(
         context
             .dependency_ids
             .contains(&"interaction:reserve-link".into())
+    );
+}
+
+fn view_definition(id: &str, service: &str, entity: &str) -> serde_json::Value {
+    use serde_json::json;
+    let mut definition = process_definition(id, &[]);
+    definition.as_object_mut().unwrap().remove("process");
+    definition["schema"] = json!("codeclew-documentation-view/1.0");
+    definition["root"]["service"] = json!(service);
+    definition["view"] = json!({"module":"entity-dataflow/1.0","inputObjects":[format!("entity:{entity}")],"services":[service],"contracts":[],"relatedProcesses":[],"scope":"Read and normalize the requested quantity; preserve unknown domain correspondence.","human":{"annotations":{},"tags":[],"metadata":{},"layout":{}},"limitations":[]});
+    definition
+}
+fn view_entity(f: &Fixture, id: &str) {
+    let value = serde_json::json!({"schema":"codeclew-documentation-entity/1.0","id":id,"title":"Quantity","description":"An explicit domain identity, separate from code representation.","relations":[],"limitations":[]});
+    let input = f.input("view-entity.json", &value);
+    let digest = f.ok(&["docs", "entity", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "entity",
+        "put",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ]);
+}
+fn put_view(f: &Fixture, definition: &serde_json::Value, human: bool) -> (i32, serde_json::Value) {
+    let input = f.input("view.json", definition);
+    let digest = f.ok(&["docs", "view", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut args = vec![
+        "docs",
+        "view",
+        "put",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ];
+    if human {
+        args.push("--human");
+    }
+    f.run(&args)
+}
+fn view_work(f: &Fixture, id: &str) -> (String, serde_json::Value) {
+    let mut page = f.ok(&["docs", "view", "prepare", "--id", id]);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(f, &work, serde_json::json!({"cursor":cursor}));
+    }
+    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    (work, frozen)
+}
+fn view_proposal(
+    frozen: &serde_json::Value,
+    id: &str,
+    service: &str,
+    entity: &str,
+) -> serde_json::Value {
+    use serde_json::json;
+    let dep_ref = |id: &str| {
+        frozen["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, h)| h["kind"] == "DEPENDENCY" && h["id"] == id)
+            .unwrap()
+            .0
+            .clone()
+    };
+    let view = dep_ref(&format!("view:{id}"));
+    let entity_ref = dep_ref(&format!("entity:{entity}"));
+    let find = |kind: &str, name: &str| {
+        frozen["checked"]["dependencies"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, d)| {
+                d["kind"] == kind
+                    && d["service"] == service
+                    && d["symbol"].as_str().is_some_and(|s| s.contains(name))
+            })
+            .map(|(id, _)| dep_ref(id))
+            .unwrap()
+    };
+    let entry = find("SYMBOL", "reserve");
+    let mapper = find("FLOW", "normalize");
+    let claim = |text: &str, refs: Vec<&str>| json!({"text":text,"evidence":refs});
+    json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":format!("scenario:{id}"),"title":"Quantity data flow","summary":claim("The selected code normalizes a requested quantity; its domain correspondence remains explicit and uncertain.",vec![&view,&mapper]),"steps":[],"dataflow":{"nodes":[{"id":"domain","entity":format!("entity:{entity}"),"kind":"domain","service":service,"representation":format!("entity:{entity}"),"meaning":claim("Quantity",vec![&entity_ref])},{"id":"input","entity":format!("entity:{entity}"),"kind":"field","service":service,"representation":"quantity parameter","meaning":claim("Requested quantity",vec![&entry])},{"id":"mapper","entity":format!("entity:{entity}"),"kind":"function","service":service,"representation":"Orders.normalize(int)","meaning":claim("Normalize quantity",vec![&mapper])}],"edges":[{"id":"candidate","from":"domain","to":"input","kind":"candidate","authority":"UNKNOWN","matchBasis":"name-only","meaning":{"text":"The matching quantity name is a candidate domain association.","evidence":[&entity_ref,&entry],"uncertainty":"Matching names do not establish domain lineage."}},{"id":"read","from":"input","to":"mapper","kind":"read","authority":"SOURCE_INTERPRETATION","matchBasis":"source-dataflow","meaning":claim("Read the requested quantity for normalization.",vec![&entry,&mapper])}]}}]})
+}
+#[test]
+fn docsys_t11_view_module_and_protected_definition_contract() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    view_entity(&f, "quantity");
+    let modules = f.ok(&["docs", "view", "modules"]);
+    let module = &modules["items"][0];
+    assert_eq!(module["executable"], false);
+    assert!(
+        module["dependencyDerivation"].is_string()
+            && module["validation"].is_string()
+            && module["renderer"].is_string()
+    );
+    for kind in ["domain", "dto", "message", "table"] {
+        assert!(
+            module["representationKinds"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(kind))
+        );
+    }
+    let mut definition = view_definition("quantity-view", "orders", "quantity");
+    definition["view"]["human"] = json!({"annotations":{"scope":"Preserve this team note: Café quantity\nNo runtime lineage promise."},"tags":["domain","team"],"metadata":{"owner":"Maintainers","custom":{"keep":true}},"layout":{"domain":{"column":0,"row":0},"input":{"column":1,"row":0},"mapper":{"column":2,"row":0}}});
+    assert_ne!(put_view(&f, &definition, false).0, 0);
+    assert_eq!(put_view(&f, &definition, true).0, 0);
+    let before = f.ok(&["docs", "view", "show", "--id", "quantity-view"]);
+    assert_eq!(before["definition"], definition);
+    let mut bad = definition.clone();
+    bad["view"]["human"] = json!({});
+    assert_ne!(put_view(&f, &bad, false).0, 0);
+    bad = definition.clone();
+    bad["view"]["module"] = json!("arbitrary-script/1.0");
+    assert_ne!(put_view(&f, &bad, true).0, 0);
+    bad = definition.clone();
+    bad["view"]["inputObjects"] = json!(["entity:guessed-equivalent-name"]);
+    assert_ne!(put_view(&f, &bad, true).0, 0);
+    definition["title"] = json!("Renamed entity view");
+    assert_eq!(put_view(&f, &definition, false).0, 0);
+    assert_eq!(
+        f.ok(&["docs", "view", "show", "--id", "quantity-view"])["definition"]["view"]["human"],
+        before["definition"]["view"]["human"]
+    );
+    let (work, frozen) = view_work(&f, "quantity-view");
+    let proposal = view_proposal(&frozen, "quantity-view", "orders", "quantity");
+    read_view_evidence(&f, &work, &frozen, &proposal);
+    let ready = proposal_submit(&f, &work, &proposal);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let mut bad = proposal.clone();
+    bad["operations"][0]["dataflow"]["edges"][0]["authority"] = json!("SOURCE_INTERPRETATION");
+    bad["operations"][0]["dataflow"]["edges"][0]["kind"] = json!("transform");
+    assert_eq!(proposal_submit(&f, &work, &bad)["status"], "NEEDS_REPAIR");
+    assert!(!f.docs.join("docs/index.html").exists());
+}
+fn read_view_evidence(
+    f: &Fixture,
+    work: &str,
+    frozen: &serde_json::Value,
+    proposal: &serde_json::Value,
+) {
+    use std::collections::BTreeSet;
+    fn visit(v: &serde_json::Value, refs: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(o) => {
+                if let Some(es) = o.get("evidence").and_then(serde_json::Value::as_array) {
+                    refs.extend(es.iter().filter_map(|s| s.as_str().map(str::to_owned)));
+                }
+                for x in o.values() {
+                    visit(x, refs);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for x in a {
+                    visit(x, refs)
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut refs = BTreeSet::new();
+    visit(proposal, &mut refs);
+    let sources: BTreeSet<String> = refs
+        .iter()
+        .filter_map(|r| frozen["handles"][r]["id"].as_str())
+        .flat_map(|id| {
+            frozen["checked"]["dependencies"][id]["sourceIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s.as_str().map(str::to_owned))
+        })
+        .collect();
+    refs.extend(
+        frozen["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, h)| {
+                h["kind"] == "SOURCE" && h["id"].as_str().is_some_and(|id| sources.contains(id))
+            })
+            .map(|(r, _)| r.clone()),
+    );
+    for chunk in refs.into_iter().collect::<Vec<_>>().chunks(8) {
+        let mut page = work_read(f, work, serde_json::json!({"references":chunk}));
+        while let Some(cursor) = page["nextCursor"].as_str() {
+            page = work_read(
+                f,
+                work,
+                serde_json::json!({"references":chunk,"cursor":cursor}),
+            );
+        }
+    }
+}
+#[test]
+fn docsys_t11_mapper_change_invalidates_views_process_and_contract_with_independent_reuse() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    f.service("other");
+    view_entity(&f, "quantity");
+    view_entity(&f, "independent");
+    for (id, service, entity) in [
+        ("quantity-view", "orders", "quantity"),
+        ("quantity-output", "orders", "quantity"),
+        ("independent-view", "other", "independent"),
+    ] {
+        assert_eq!(
+            put_view(&f, &view_definition(id, service, entity), false).0,
+            0
+        );
+    }
+    save_process(
+        &f,
+        &process_definition("quantity-process", &["quantity-view", "quantity-output"]),
+    );
+    let mut inputs = Vec::new();
+    for (id, service, entity) in [
+        ("quantity-view", "orders", "quantity"),
+        ("quantity-output", "orders", "quantity"),
+        ("independent-view", "other", "independent"),
+    ] {
+        let (work, frozen) = view_work(&f, id);
+        let proposal = view_proposal(&frozen, id, service, entity);
+        read_view_evidence(&f, &work, &frozen, &proposal);
+        let ready = proposal_submit(&f, &work, &proposal);
+        assert!(
+            ready["status"].as_str().unwrap().starts_with("READY_"),
+            "{ready}"
+        );
+        inputs.push(f.input(
+            &format!("{id}-narrative.json"),
+            &proposal_artifact(&f, &ready)["narrative"],
+        ));
+    }
+    let checked = f.checked();
+    let input = f.author("orders", &checked);
+    let mut contract = read(input);
+    let mapper = checked.services["orders"]
+        .observations
+        .values()
+        .find(|o| o.kind == "FLOW" && o.symbol.contains("normalize"))
+        .unwrap();
+    contract["operations"][0]["interfaceContracts"] = json!([{"id":"quantity-contract","title":"Returned quantity","kind":"payload","rows":[{"id":"mapped-output","label":"quantity","value":"Returns the normalized quantity.","dependencyIds":[mapper.id],"sourceIds":mapper.source_ids}],"boundaries":["Source-derived output; no wire compatibility claim."]}]);
+    inputs.push(f.input("contract-narrative.json", &contract));
+    let mut args = vec!["docs", "render"];
+    for input in &inputs {
+        args.extend(["--input", input.to_str().unwrap()]);
+    }
+    let result = f.ok(&args);
+    let bundle = result["bundle"].as_str().unwrap();
+    assert_eq!(result["documentedViews"], 3, "{result}");
+    let data = read(f.bundle(bundle, "scenarios/quantity-view.json"));
+    let graph = data["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|o| o.get("dataflow"))
+        .unwrap();
+    assert_eq!(graph["edges"][0]["authority"], "UNKNOWN");
+    let md = fs::read_to_string(f.bundle(bundle, "scenarios/quantity-view.md")).unwrap();
+    assert!(md.contains("UNKNOWN") && md.contains("not a runtime trace"));
+    let mmd = fs::read_to_string(f.bundle(
+        bundle,
+        "diagrams/scenario-quantity-view-entity-dataflow.mmd",
+    ))
+    .unwrap();
+    assert!(mmd.contains("flowchart LR") && mmd.contains("-.->") && mmd.contains("UNKNOWN"));
+    let baseline: clew::documentation::bindings::Bindings =
+        serde_json::from_value(read(f.bundle(bundle, "bindings.json"))).unwrap();
+    assert!(
+        baseline.fragments["scenario:quantity-view/entity-dataflow/edge-read"]
+            .dependencies
+            .contains_key(&mapper.id)
+    );
+    let original = f.bundle(bundle, "scenarios/quantity-view.json");
+    let old = fs::read(&original).unwrap();
+    let file = source.join("Orders.java");
+    fs::write(
+        &file,
+        fs::read_to_string(&file)
+            .unwrap()
+            .replace("return quantity;", "return quantity + 1;"),
+    )
+    .unwrap();
+    commit(&source);
+    let changed = f.checked();
+    let changes = clew::documentation::bindings::freshness(Some(&baseline), &changed);
+    for subject in [
+        "scenario:quantity-view",
+        "scenario:quantity-output",
+        "scenario:quantity-process",
+        "service:orders",
+    ] {
+        assert!(
+            changes["affected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["subject"] == subject),
+            "{subject}: {changes}"
+        );
+    }
+    assert!(
+        !changes["affected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["subject"] == "scenario:independent-view"),
+        "{changes}"
+    );
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    let after = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "scenarios/quantity-view.json",
+    ));
+    assert_eq!(after["operations"], data["operations"]);
+    assert_eq!(
+        after["operationStates"]["entity-dataflow"]["freshness"],
+        "STALE"
+    );
+    assert_eq!(fs::read(original).unwrap(), old);
+    let independent = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "scenarios/independent-view.json",
+    ));
+    assert_eq!(
+        independent["operationStates"]["entity-dataflow"]["freshness"],
+        "CURRENT"
+    );
+}
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t11_reviewed_graph_reuses_process_and_preserves_human_material() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    f.service("other");
+    view_entity(&f, "quantity");
+    let mut definition = view_definition("quantity-view", "orders", "quantity");
+    definition["view"]["relatedProcesses"] = json!(["child"]);
+    definition["view"]["human"]["annotations"] = json!({"scope":"Team note: preserve original wording. <script>window.viewNoteExecuted=true</script>"});
+    definition["view"]["human"]["tags"] = json!(["domain"]);
+    assert_eq!(put_view(&f, &definition, true).0, 0);
+    save_process(&f, &process_definition("child", &[]));
+    let (mut note, original_note) = note_fixture(&f);
+    note["targets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("view:quantity-view"));
+    let input = f.input("view-note.json", &note);
+    let rows = f.ok(&["docs", "note", "list"]);
+    f.ok(&[
+        "docs",
+        "note",
+        "associate",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        rows["inputDigest"].as_str().unwrap(),
+        "--expected-note-digest",
+        rows["items"][0]["original"]["digest"].as_str().unwrap(),
+    ]);
+    let (child_work, child_frozen) = process_work(&f, "child");
+    let handle = child_frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && child_frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"]
+                    == "FLOW"
+                && child_frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["service"]
+                    == "orders"
+        })
+        .unwrap()
+        .0;
+    let child_proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:child","title":"Child overview","summary":{"text":"The child explains normalized quantity handling.","evidence":[handle]},"steps":[]}]});
+    read_view_evidence(&f, &child_work, &child_frozen, &child_proposal);
+    let child = work_run(
+        &f,
+        &child_work,
+        &execution_config(&f, json!({"proposal":child_proposal}), json!({}), None),
+    );
+    assert_eq!(child["status"], "ACCEPTED", "{child}");
+    let original = fs::read(f.docs.join("scenarios/quantity-view.yaml")).unwrap();
+    let (work, frozen) = view_work(&f, "quantity-view");
+    assert_eq!(
+        frozen["checked"]["dependencies"]["process-component:quantity-view:child"]["normalized"]["status"],
+        "ACCEPTED_CHILD"
+    );
+    let mut proposal = view_proposal(&frozen, "quantity-view", "orders", "quantity");
+    let component = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| h["id"] == "process-component:quantity-view:child")
+        .unwrap()
+        .0;
+    proposal["operations"][0]["summary"]["evidence"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(component));
+    read_view_evidence(&f, &work, &frozen, &proposal);
+    let result = work_run(
+        &f,
+        &work,
+        &execution_config(
+            &f,
+            json!({"proposal":proposal,"mode":"denials","readPaths":[],"writePaths":[f.docs.join("scenarios/quantity-view.yaml"),f.docs.join("notes/history.md"),f.docs.join("catalog/notes/policy.json")]}),
+            json!({}),
+            None,
+        ),
+    );
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    assert_eq!(
+        fs::read(f.docs.join("scenarios/quantity-view.yaml")).unwrap(),
+        original
+    );
+    let bundle = result["publication"]["bundle"].as_str().unwrap();
+    let data = read(f.bundle(bundle, "scenarios/quantity-view.json"));
+    assert_eq!(
+        data["view"]["definition"]["view"]["human"],
+        definition["view"]["human"]
+    );
+    assert_eq!(
+        data["operationStates"]["entity-dataflow"]["verification"],
+        "VERIFIED_WITH_LIMITATIONS"
+    );
+    assert_eq!(
+        fs::read(f.docs.join("notes/history.md")).unwrap(),
+        original_note
+    );
+    assert_eq!(data["notes"][0]["association"]["id"], "policy");
+    assert!(
+        data["notes"][0]["missingTargets"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let graph = data["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|o| o.get("dataflow"))
+        .unwrap();
+    assert_eq!(graph["edges"][0]["authority"], "UNKNOWN");
+    let html = fs::read_to_string(f.bundle(bundle, "scenarios/quantity-view.html")).unwrap();
+    assert!(!html.contains("<script>window.viewNoteExecuted"));
+    if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T11_REVIEW") {
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            f.bundle(bundle, "scenarios/quantity-view.html"),
+            std::path::Path::new(&directory).join("view.html"),
+        )
+        .unwrap();
+        fs::copy(
+            f.bundle(bundle, "scenarios/child.html"),
+            std::path::Path::new(&directory).join("child.html"),
+        )
+        .unwrap();
+    }
+    // A service-only author/reviewer job must not acquire unrelated dynamic
+    // process/view scopes captured as NOT_CHECKED in its source selection.
+    let mut page = f.ok(&[
+        "docs",
+        "section",
+        "prepare",
+        "--service",
+        "other",
+        "--id",
+        "section-overview",
+    ]);
+    let service_work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(&f, &service_work, json!({"cursor":cursor}));
+    }
+    let sw = read(
+        f.docs
+            .join(format!(".codeclew/work/{service_work}/work.json")),
+    );
+    assert!(
+        sw["handles"]
+            .as_object()
+            .unwrap()
+            .values()
+            .filter(|h| h["kind"] == "DEPENDENCY")
+            .all(
+                |h| !sw["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("PROCESS_")
+                    && !sw["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("VIEW_")
+            )
+    );
+    let flow = sw["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && sw["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
+        })
+        .unwrap()
+        .0;
+    let section = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Other service overview","summary":{"text":"The other service processes its requested quantity.","evidence":[flow]},"steps":[]}]});
+    let accepted = work_run(
+        &f,
+        &service_work,
+        &execution_config(&f, json!({"proposal":section}), json!({}), None),
+    );
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    definition["view"]["human"]["annotations"]["scope"] =
+        json!("A concurrent human clarification.");
+    assert_eq!(put_view(&f, &definition, true).0, 0);
+    let path = f.input("old-view-proposal.json", &proposal);
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "proposal",
+            "submit",
+            "--work",
+            &work,
+            "--input",
+            path.to_str().unwrap()
+        ])
+        .0,
+        0
+    );
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    let retained = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "scenarios/quantity-view.json",
+    ));
+    assert_eq!(retained["view"]["targetChanged"], true);
+    assert_eq!(retained["operations"], data["operations"]);
+    assert_eq!(
+        retained["operationStates"]["entity-dataflow"]["freshness"],
+        "STALE"
+    );
+}
+#[test]
+fn docsys_t11_declared_transfer_and_distinct_dto_message_table_representations() {
+    use serde_json::json;
+    let f = Fixture::new();
+    for service in ["orders", "other"] {
+        let source = f.service(service);
+        fs::write(
+            source.join("Orders.java"),
+            include_str!("../../../fixtures/documentation-system/dataflow/Orders.java"),
+        )
+        .unwrap();
+        commit(&source);
+    }
+    view_entity(&f, "quantity");
+    fs::write(f.docs.join("catalog/interactions/quantity-link.json"),serde_json::to_vec(&json!({"schema":"codeclew-documentation-interaction/1.0","id":"quantity-link","title":"Team-declared quantity handoff","from":{"service":"orders"},"to":{"service":"other"},"transport":{"kind":"http","method":"POST","path":"/quantity"},"declaration":{"origin":"human","rationale":"Team declaration; field mapping and wire compatibility are not established."}})).unwrap()).unwrap();
+    let mut definition = view_definition("quantity-transfer", "orders", "quantity");
+    definition["view"]["services"] = json!(["orders", "other"]);
+    definition["interactions"] = json!(["quantity-link"]);
+    assert_eq!(put_view(&f, &definition, false).0, 0);
+    let (work, frozen) = view_work(&f, "quantity-transfer");
+    let mut proposal = view_proposal(&frozen, "quantity-transfer", "orders", "quantity");
+    let reference = |service: &str, kind: &str, name: &str| {
+        frozen["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, h)| {
+                h["kind"] == "DEPENDENCY" && {
+                    let d = &frozen["checked"]["dependencies"][h["id"].as_str().unwrap()];
+                    d["service"] == service
+                        && d["kind"] == kind
+                        && d["symbol"].as_str().is_some_and(|s| s.contains(name))
+                }
+            })
+            .unwrap()
+            .0
+            .clone()
+    };
+    let dto = reference("orders", "SYMBOL", "dto");
+    let write = reference("orders", "SYMBOL", "write");
+    let message = reference("other", "SYMBOL", "message");
+    let interaction = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| h["id"] == "interaction:quantity-link")
+        .unwrap()
+        .0
+        .clone();
+    let nodes = proposal["operations"][0]["dataflow"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    for (id, kind, service, representation, text, evidence) in [
+        (
+            "dto",
+            "dto",
+            "orders",
+            "QuantityDto",
+            "QuantityDto representation",
+            dto.as_str(),
+        ),
+        (
+            "table",
+            "table",
+            "orders",
+            "quantity_records",
+            "SQL quantity_records table representation",
+            write.as_str(),
+        ),
+        (
+            "message",
+            "message",
+            "other",
+            "QuantityMessage",
+            "QuantityMessage representation",
+            message.as_str(),
+        ),
+    ] {
+        nodes.push(json!({"id":id,"entity":"entity:quantity","kind":kind,"service":service,"representation":representation,"meaning":{"text":text,"evidence":[evidence]}}));
+    }
+    proposal["operations"][0]["dataflow"]["edges"].as_array_mut().unwrap().extend([
+        json!({"id":"transform","from":"mapper","to":"dto","kind":"transform","authority":"SOURCE_INTERPRETATION","matchBasis":"source-dataflow","meaning":{"text":"Construct the DTO from the normalization result.","evidence":[dto]}}),
+        json!({"id":"write","from":"dto","to":"table","kind":"write","authority":"SOURCE_INTERPRETATION","matchBasis":"source-dataflow","meaning":{"text":"Pass the DTO quantity to the SQL insert statement.","evidence":[write],"uncertainty":"Static code does not establish database execution or persistence."}}),
+        json!({"id":"transfer","from":"dto","to":"message","kind":"transfer","authority":"DECLARED_TRANSFER","matchBasis":"declared-contract","meaning":{"text":"A team declaration links the two service representations.","evidence":[interaction,dto,message],"uncertainty":"The declaration does not prove field mapping, routing, delivery or wire compatibility."}})
+    ]);
+    read_view_evidence(&f, &work, &frozen, &proposal);
+    let ready = proposal_submit(&f, &work, &proposal);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let mut bad = proposal.clone();
+    bad["operations"][0]["dataflow"]["edges"][4]["meaning"]["evidence"] = json!([dto, message]);
+    assert_eq!(proposal_submit(&f, &work, &bad)["status"], "NEEDS_REPAIR");
+    bad = proposal.clone();
+    bad["operations"][0]["dataflow"]["edges"][4]["authority"] = json!("RUNTIME_VERIFIED");
+    assert_eq!(proposal_submit(&f, &work, &bad)["status"], "NEEDS_REPAIR");
+    bad = proposal.clone();
+    bad["operations"][0]["dataflow"]["nodes"][3]["service"] = json!("other");
+    assert_eq!(proposal_submit(&f, &work, &bad)["status"], "NEEDS_REPAIR");
+    let narrative = f.input(
+        "transfer-narrative.json",
+        &proposal_artifact(&f, &ready)["narrative"],
+    );
+    let result = f.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
+    let bundle = result["bundle"].as_str().unwrap();
+    let data = read(f.bundle(bundle, "scenarios/quantity-transfer.json"));
+    let graph = data["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|o| o.get("dataflow"))
+        .unwrap();
+    for kind in ["domain", "dto", "message", "table"] {
+        assert!(
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["kind"] == kind)
+        );
+    }
+    assert_eq!(graph["edges"][4]["authority"], "DECLARED_TRANSFER");
+    assert_eq!(graph["edges"][0]["authority"], "UNKNOWN");
+    assert_eq!(
+        data["operationStates"]["entity-dataflow"]["verification"],
+        "UNASSESSED"
+    );
+    if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T11_REVIEW") {
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            f.bundle(bundle, "scenarios/quantity-transfer.html"),
+            std::path::Path::new(&directory).join("transfer.html"),
+        )
+        .unwrap();
+    }
+    let old_scope =
+        frozen["checked"]["dependencies"]["view-scope:quantity-transfer"]["digest"].clone();
+    let mut added = read(f.docs.join("catalog/interactions/quantity-link.json"));
+    added["id"] = json!("additional-link");
+    fs::write(
+        f.docs.join("catalog/interactions/additional-link.json"),
+        serde_json::to_vec(&added).unwrap(),
+    )
+    .unwrap();
+    let changed = f.checked();
+    assert_ne!(
+        changed.dependencies["view-scope:quantity-transfer"].digest,
+        old_scope.as_str().unwrap()
+    );
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    let retained = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "scenarios/quantity-transfer.json",
+    ));
+    assert_eq!(retained["operations"], data["operations"]);
+    assert_eq!(
+        retained["operationStates"]["entity-dataflow"]["freshness"],
+        "STALE"
     );
 }

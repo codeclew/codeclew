@@ -697,7 +697,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T11. Add entity data-flow views through the shared view contract
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** A saved entity view explains evidence-backed reads, transformations, writes and transfers and stays consistent with related processes and contracts.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC14, AC18; [scenario cards](../product/documentation-system/scenario-cards.md): S09; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T09, T10
@@ -728,6 +728,27 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Adding a view type requires explicit dependency and verification behavior.
   - Data-flow diagrams do not masquerade as runtime traces or universal taint analysis.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+- **Observed evidence (2026-09-12):** All four `docsys_t11_*` CLI cases passed
+  (188.99 s), including distinct DTO/message/table nodes, declared transfer,
+  name-only UNKNOWN edges, source-service mismatch rejection, separately reviewed
+  composition, sandbox protection for definitions and original notes, concurrent
+  human edits, mapper invalidation and independent entity reuse. Adding a relevant
+  interaction invalidates the retained graph. The 25 documentation unit tests
+  passed (two compiler-launching fixtures excluded). The four T10 process cases
+  pass, including a new mixed process/view definition rejection; its test command
+  initially omitted the required CAS digest and passed after correction (19.63 s
+  for that case). T08 section review and T09 isolated note review regressions
+  passed. Browser QA at 1440×1000 and 390×844 confirmed exact retained mapper/SQL
+  source, distinct UNKNOWN/DECLARED_TRANSFER descriptions, escaped human markup
+  and contained diagram scrolling (390 px page width). A long transfer arrow
+  initially crossed a table node; routing it below the row preserved its visible
+  label. The affected transfer CLI case passed again (41.35 s), and a new browser
+  check confirmed the corrected path. JavaScript syntax, documentation schema
+  parsing, skill packaging (six tests), formatting and English checks passed.
+  Existing S09 graph edges
+  are unchanged. The graph is bounded to 64 nodes/128 edges; source interpretation
+  and declared transfers establish neither runtime lineage nor wire compatibility.
 
 ## T12. Export and import portable per-service evidence
 

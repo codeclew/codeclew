@@ -291,7 +291,9 @@ impl Repository {
         for (id, value) in &rows {
             if !matches!(
                 value.schema.as_str(),
-                "codeclew-documentation-scenario/1.0" | "codeclew-documentation-process/1.0"
+                "codeclew-documentation-scenario/1.0"
+                    | "codeclew-documentation-process/1.0"
+                    | "codeclew-documentation-view/1.0"
             ) || id != &value.id
                 || !valid_id(id)
                 || value.max_depth > 16
@@ -301,6 +303,7 @@ impl Repository {
                 return Err(invalid("invalid scenario identity or traversal bounds"));
             }
             super::processes::validate(value, &services)?;
+            super::dataflow::validate_definition(value, &services)?;
             endpoint(&value.root, &services)?;
             let mut seen = std::collections::BTreeSet::new();
             for interaction in &value.interactions {

@@ -54,6 +54,8 @@ pub struct ProposedOperation {
     pub summary: Claim,
     #[serde(default)]
     pub assessment: Option<ProposedAssessment>,
+    #[serde(default)]
+    pub dataflow: Option<super::dataflow::ProposedGraph>,
     pub steps: Vec<Step>,
     #[serde(default)]
     pub contracts: Vec<Contract>,
@@ -267,7 +269,10 @@ impl Builder<'_> {
                             .checked
                             .dependencies
                             .values()
-                            .filter(|d| d.source_ids.contains(&handle.id))
+                            .filter(|d| {
+                                d.source_ids.contains(&handle.id)
+                                    && self.work.influence.contains_key(&d.id)
+                            })
                             .map(|d| d.id.clone()),
                     );
                 }
@@ -276,9 +281,12 @@ impl Builder<'_> {
         }
         if deps.len() > 128
             || (sources.is_empty()
-                && !deps
-                    .iter()
-                    .all(|id| self.work.checked.dependencies[id].kind == "NOTE_ASSOCIATION"))
+                && !deps.iter().all(|id| {
+                    matches!(
+                        self.work.checked.dependencies[id].kind.as_str(),
+                        "NOTE_ASSOCIATION" | "DOMAIN_ENTITY" | "VIEW_DEFINITION"
+                    )
+                }))
             || sources.len() > 32
         {
             return Err(invalid(
@@ -581,6 +589,7 @@ fn materialize(
             title: proposed.title.clone(),
             summary,
             assessment: None,
+            dataflow: None,
             explanation: Vec::new(),
             interface_contracts: Vec::new(),
             overview_diagram: None,
@@ -591,6 +600,38 @@ fn materialize(
         };
         if let Some(gap) = &proposed.summary.uncertainty {
             op.boundaries.push(gap.clone());
+        }
+        if super::dataflow::is_root(&work.checked, &work.subject, &op.id) {
+            let graph = proposed
+                .dataflow
+                .as_ref()
+                .ok_or_else(|| invalid("data-flow view requires typed nodes and edges"))?;
+            if !proposed.steps.is_empty()
+                || !proposed.contracts.is_empty()
+                || proposed.assessment.is_some()
+            {
+                return Err(invalid(
+                    "data-flow graphs are separate from sequence steps, contracts and note assessments",
+                ));
+            }
+            op.dataflow = Some(super::dataflow::materialize(
+                &work.checked,
+                &work.subject[9..],
+                graph,
+                |slot, claim| builder.claim(&scope, slot, claim),
+            )?);
+            op.boundaries.extend(
+                work.checked.scenarios[&work.subject[9..]]
+                    .boundaries
+                    .clone(),
+            );
+            op.participants.clear();
+            n.operations.push(op);
+            continue;
+        } else if proposed.dataflow.is_some() {
+            return Err(invalid(
+                "typed data-flow content requires a saved view root",
+            ));
         }
         if super::notes::is_root(&op.id) {
             let a = proposed
@@ -870,6 +911,15 @@ pub fn show(
     if let Some(n) = &a.narrative {
         for operation in &n.operations {
             rows.push(json!({"kind":"OPERATION","id":operation.id,"record":{"title":operation.title,"summary":operation.summary,"participants":operation.participants,"boundaries":operation.boundaries,"overviewDiagram":operation.overview_diagram}}));
+            if let Some(g) = &operation.dataflow {
+                rows.push(json!({"kind":"DATAFLOW_BINDING","id":operation.id,"record":{"schema":g.schema,"view":g.view,"definitionDigest":g.definition_digest,"moduleDigest":g.module_digest}}));
+                for node in &g.nodes {
+                    rows.push(json!({"kind":"DATAFLOW_NODE","id":node.id,"record":node}));
+                }
+                for edge in &g.edges {
+                    rows.push(json!({"kind":"DATAFLOW_EDGE","id":edge.id,"record":edge}));
+                }
+            }
             for event in &operation.events {
                 rows.push(json!({"kind":"DIAGRAM_STEP","id":event.id,"record":event}));
             }

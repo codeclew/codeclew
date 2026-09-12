@@ -153,4 +153,13 @@ snapshot as if growth behavior existed at the base revision.
   parent case. Desktop/mobile navigation and exact source inspection pass, including
   390-pixel layout without horizontal overflow. Conditional syntax observations
   do not establish a resolved cross-service HTTP call. S03/S09 edges are unchanged;
-  entity data-flow remains T11.
+  entity data-flow was subsequently delivered in T11 below.
+- T11: the versioned built-in entity view contract now exposes domain and
+  field/function/DTO/message/table nodes with typed read/transform/write/transfer
+  edges. Four CLI cases passed for protected human material, bounded independent
+  review, source attribution, declared/unknown authority and transitive mapper
+  invalidation with independent entity reuse. Adding a relevant interaction and
+  editing a human annotation invalidate retained views. Shared process, note and
+  section regressions pass. Desktop/mobile source inspection preserves exact
+  retained code and contains diagram overflow at 390 px. S09 transitions remain
+  unchanged; portable evidence is still T12.

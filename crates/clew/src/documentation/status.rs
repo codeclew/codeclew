@@ -222,6 +222,7 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
         attach(&mut data, subject, &binding);
         super::notes::mark_targets(&mut data, &checked);
         super::processes::mark_targets(&mut data, &checked, subject);
+        super::dataflow::mark_targets(&mut data, &checked, subject);
         files.insert(path, bytes(&data)?);
         files.insert(
             format!("{folder}/{id}.html"),
@@ -236,7 +237,8 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
         let title = data["title"].as_str().unwrap_or(id);
         let body = render::markdown(title, &binding.narratives[subject], &binding.section_states)
             + &super::notes::markdown(&data["notes"])
-            + &super::processes::markdown(&data["process"]);
+            + &super::processes::markdown(&data["process"])
+            + &super::dataflow::markdown(&data["view"], &binding.narratives[subject]);
         let status_text = format!(
             "Source freshness: {state_label}. Meaning review: {}.\n\nContent revisions: {}\n\nTarget revisions: {}\n\n",
             state.verification,

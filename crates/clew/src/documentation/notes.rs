@@ -117,6 +117,9 @@ fn target_exists(repo: &Repository, target: &str) -> Result<bool, ClewError> {
     if let Some(id) = target.strip_prefix("entity:") {
         return Ok(super::entities::records(repo)?.contains_key(id));
     }
+    if let Some(id) = target.strip_prefix("view:") {
+        return Ok(repo.scenarios()?.get(id).is_some_and(|s| s.view.is_some()));
+    }
     if let Some(id) = target.strip_prefix("scenario:") {
         return Ok(repo.scenarios()?.contains_key(id));
     }
@@ -139,7 +142,9 @@ pub fn attach(repo: &Repository, checked: &mut Check) -> Result<(), ClewError> {
         value["dependencyIds"] = json!(
             a.targets
                 .iter()
-                .filter(|t| t.starts_with("entity:") || t.starts_with("scenario:"))
+                .filter(|t| t.starts_with("entity:")
+                    || t.starts_with("scenario:")
+                    || t.starts_with("view:"))
                 .collect::<Vec<_>>()
         );
         let key = format!("note:{id}");
@@ -212,6 +217,9 @@ fn visible(checked: &Check, note: &Observation, subject: &str) -> bool {
         .is_some_and(|targets| {
             targets.iter().filter_map(Value::as_str).any(|target| {
                 target == subject
+                    || (target
+                        .strip_prefix("view:")
+                        .is_some_and(|id| subject == format!("scenario:{id}")))
                     || target.starts_with(&format!("{subject}/"))
                     || (target.starts_with("entity:")
                         && subject.strip_prefix("service:").is_some_and(|service| {

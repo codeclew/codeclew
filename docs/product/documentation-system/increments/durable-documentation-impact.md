@@ -148,4 +148,12 @@ not claimed by this planning package's structural or independent review.
   Four focused CLI cases, seven shared regressions and 25 documentation unit
   cases pass; a final focused admission check and reader QA also pass. Original
   notes and definitions are protected from isolated agent execution. Existing
-  graph edges remain unchanged. Typed entity flow is still scheduled for T11.
+  graph edges remain unchanged. Typed entity flow was subsequently delivered in T11.
+- T11 → S09, AC14/AC18: saved entity views use an explicit non-executable module
+  contract and share work, separate review, fragment bindings and accepted process
+  dependencies. Human annotations/layout and linked notes remain protected.
+  Four CLI cases establish typed representations, conservative authority,
+  source attribution, shared mapper invalidation and independent entity reuse.
+  Desktop/mobile reader checks cover exact source navigation and contained
+  diagram scrolling. Shared process, note and section regressions pass; existing
+  scenario graph edges are unchanged. Portable evidence remains T12.

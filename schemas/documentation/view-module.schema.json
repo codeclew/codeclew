@@ -1,0 +1,99 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-view-module/1.0"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "inputObjects": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "representationKinds": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "edgeKinds": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "authority": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "dependencyDerivation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "validation": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "renderer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "executable": {
+      "const": false
+    },
+    "implementationDigest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "inputObjects",
+    "representationKinds",
+    "edgeKinds",
+    "authority",
+    "dependencyDerivation",
+    "validation",
+    "renderer",
+    "executable",
+    "implementationDigest",
+    "limitations"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/view-module.schema.json",
+  "title": "Built-in view contract: explicit validation, influence and rendering"
+}

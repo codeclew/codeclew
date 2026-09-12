@@ -516,7 +516,23 @@ reviews and same-publication parent invalidation after a child version changes.
 Final shared regression and desktop/mobile source-inspection evidence is in T10
 of the implementation plan. Existing graph edges are unchanged.
 
-Entity data-flow and the shared typed view contract remain T11.
+### T11 implementation evidence
+
+`view.module`, `view.definition`, `view.dataflow` and `view.dependencies` now use
+the built-in versioned `entity-dataflow/1.0` contract. `docs view` exposes its
+input, representation, edge, authority, dependency, validator and renderer
+contracts and maintains explicit saved definitions. Domain identities stay
+distinct from field/function/DTO/message/table representations. Name-only edges
+remain UNKNOWN; cross-service edges require a declaration and retain
+DECLARED_TRANSFER authority. These are static interpretations, not runtime traces.
+
+Four CLI cases cover protected human annotations/layout and linked original notes,
+separate author/reviewer acceptance, reuse of accepted process components, source
+service attribution, mapper mutation across dependent views/processes/contracts,
+independent entity reuse, interaction membership changes and concurrent edits.
+The reader renders the same bound graph with source inspection and accessible
+edge descriptions. Desktop/mobile checks and shared regressions are recorded in
+T11 of the implementation plan. Existing S09 graph edges are unchanged.
 
 ## S10 — Attach and reassess protected human notes
 

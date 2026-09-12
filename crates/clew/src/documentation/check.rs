@@ -115,6 +115,7 @@ pub fn run_selected(
     )?;
     super::entities::attach(repository, &mut checked)?;
     super::notes::attach(repository, &mut checked)?;
+    super::dataflow::attach(repository, &mut checked)?;
     if checked.input_digest != repository.input_digest()? {
         return Err(invalid("note inputs changed during checking"));
     }
@@ -799,6 +800,7 @@ mod tests {
         };
         let scenario = Scenario {
             process: None,
+            view: None,
             schema: "codeclew-documentation-scenario/1.0".into(),
             id: "checkout".into(),
             title: "Checkout".into(),

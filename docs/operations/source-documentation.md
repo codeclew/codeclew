@@ -387,3 +387,58 @@ link becomes a
 compiler-resolved or observed runtime transfer. Unavailable participants and
 unaccepted child prose remain visible gaps. The reader and Markdown export
 separate requested metadata, reviewed overview, detailed flow and linked views.
+
+## Saved entity data-flow views
+
+`docs view modules --root <docs>` exposes the built-in versioned view contract:
+input objects, representation/edge kinds, authority, dependency derivation,
+validation, renderer identity and limitations. The first implementation is
+`entity-dataflow/1.0`; arbitrary scripts or executable plugin definitions are
+not accepted. A new view implementation must provide these contracts explicitly.
+
+Use [the saved-view schema](../../schemas/documentation/view.schema.json) and
+[the quantity-flow definition](../../fixtures/documentation-system/dataflow/quantity-flow.json).
+Saved views reuse the bounded scenario selection and stable document identity.
+Their `view.inputObjects` are existing `entity:<id>` domain IDs, distinct from
+DTO, message, table, field and function representations. `view.services` explicitly
+selects at most eight services for graph claims; source capture retains the existing
+conservative scenario work boundary. Optional `contracts` reference exact observed
+contract IDs, and `relatedProcesses` reuse current accepted component explanations.
+
+```sh
+./clew docs view modules --root <docs>
+./clew docs view list --root <docs>
+./clew docs view put --root <docs> --input <view.json> --expected-input-digest <digest>
+./clew docs view show --root <docs> --id <view-id>
+./clew docs view prepare --root <docs> --id <view-id>
+```
+
+The proposal uses `scenario:<view-id>` as its entrypoint, an empty `steps` array
+and a typed `dataflow` graph. Its summary cites the returned `VIEW_DEFINITION`
+reference plus source evidence. Read the supplied domain inputs and explicitly
+expand mapper/body references and exact sources before citing them. Domain nodes
+use the exact declared entity ID/title; other representations cite source from
+their named service. Read/transform/write claims need local source evidence.
+A transfer requires an explicit human/imported interaction with matching service
+endpoints, exact source and stated uncertainty. Name-only correspondence remains
+`candidate` / `UNKNOWN`; it cannot be relabeled as an established transformation.
+
+The graph, node and edge claims are bound to the saved definition, view module,
+source/contract scopes and accepted related component versions, and receive the
+existing separate meaning review. A view is static interpretation, not a runtime
+trace, universal taint analysis, or a proof of field/wire compatibility. Declared
+transfers retain that limitation. Failed updates preserve prior graph content with
+non-current status. Mapper changes propagate to dependent graphs, processes and
+contract rows; independent scopes remain reusable where their recorded evidence
+permits. New relevant declared interactions also invalidate a previously captured
+view scope, including negative/candidate conclusions.
+
+`view.human` owns annotations, tags, metadata and optional node layout positions.
+Generated graphs are separate accepted content and do not rewrite this material.
+`view put` preserves existing human fields by default; explicit maintainer edits
+use `--human` and the current catalogue digest. Concurrent human edits invalidate
+older work. Protected notes may associate with `view:<id>` and remain separate
+from generated graph claims. The reader provides a source-linked SVG, accessible
+node/edge text, Markdown and Mermaid exports using the same accepted graph and
+per-operation freshness state. Human layout is optional; unmatched layout IDs
+are retained in metadata rather than silently deleted.
