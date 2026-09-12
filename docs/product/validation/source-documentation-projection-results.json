@@ -1,0 +1,726 @@
+{
+  "schema": "codeclew-documentation-projection-results/1.0",
+  "date": "2026-09-12",
+  "implementationRevision": "a74ba0d880a03a4ef6aae7904421d3b16244e26a",
+  "protocolDigest": "445da8f154dd676567f4f4f26b622a9c2d4a41425734d583697378f440e6b31b",
+  "originalProtocolDigest": "d9251ef1399e50d621bb9c8b30d5bb0b6379f840e3770de0d5568d35725fee3b",
+  "model": "gpt-6-astra",
+  "reasoningEffort": "high",
+  "clientVersion": "0.153.4",
+  "repetitions": 1,
+  "factor": "Only docs context format changes between arms; same concise retrieval guide, source-built implementation, selected compiler profiles, frozen tasks, model, and warm check. Direct named-declaration selection is available in both arms.",
+  "corpusRevisions": {
+    "imports": "cf46f6196933bdf359dd80a879c4bb758a931025",
+    "orders": "a4873448e0351fcff558f1c829c09b713c9a7a30",
+    "inventory": "b35afe2c74811e6bc0d073082479e2ff5480d0e1"
+  },
+  "preparation": {
+    "sourceLauncherSeconds": 54.57,
+    "warmCompilerCaptureSeconds": 17.752,
+    "scriptModelCalls": 0,
+    "parentDesignAndReviewMetered": false
+  },
+  "aggregates": {
+    "raw": {
+      "totalLogicalTokens": 490717,
+      "elapsedSeconds": 293.003,
+      "commands": 20,
+      "failedCommands": 1,
+      "toolOutputBytes": 272326,
+      "modelRounds": 20,
+      "usage": {
+        "input_tokens": 483394,
+        "cached_input_tokens": 349952,
+        "output_tokens": 7323
+      },
+      "acceptedAnswers": 5,
+      "acceptedObligations": 19
+    },
+    "compact": {
+      "totalLogicalTokens": 468532,
+      "elapsedSeconds": 273.66,
+      "commands": 17,
+      "failedCommands": 0,
+      "toolOutputBytes": 254031,
+      "modelRounds": 19,
+      "usage": {
+        "input_tokens": 461773,
+        "cached_input_tokens": 320768,
+        "output_tokens": 6759
+      },
+      "acceptedAnswers": 5,
+      "acceptedObligations": 19
+    }
+  },
+  "compactTokenReductionPercent": 4.520935692058763,
+  "runs": [
+    {
+      "task": "E1",
+      "arm": "raw",
+      "promptDigest": "2870220df9974f25bcc76f11e51e7d069004c93586e211bd01938137c087a50a",
+      "promptBytes": 3729,
+      "elapsedSeconds": 41.033,
+      "usage": {
+        "input_tokens": 59607,
+        "cached_input_tokens": 45696,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 893,
+        "reasoning_output_tokens": 0
+      },
+      "totalLogicalTokens": 60500,
+      "commands": 3,
+      "failedCommands": 0,
+      "toolOutputBytes": 30733,
+      "modelRounds": 3,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16458,
+          "cached_input_tokens": 12160,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 122,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16580
+        },
+        {
+          "input_tokens": 17439,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 199,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 17638
+        },
+        {
+          "input_tokens": 25710,
+          "cached_input_tokens": 17280,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 572,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 26282
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "publisher-topic-and-key",
+          "listener-topic-and-group",
+          "runtime-delivery-boundary"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "500517079f321783b60eed5f8f713e6c013f20c565ab73456a23ebcffd5aad2d"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E1",
+      "arm": "compact",
+      "promptDigest": "3d2be7ccda8f2c1bf37b4b0a4818256f590d3dec14a42ab30747034731dc8c68",
+      "promptBytes": 3737,
+      "elapsedSeconds": 38.056,
+      "usage": {
+        "input_tokens": 59665,
+        "cached_input_tokens": 45696,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 773,
+        "reasoning_output_tokens": 0
+      },
+      "totalLogicalTokens": 60438,
+      "commands": 2,
+      "failedCommands": 0,
+      "toolOutputBytes": 31888,
+      "modelRounds": 3,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16458,
+          "cached_input_tokens": 12160,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 118,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16576
+        },
+        {
+          "input_tokens": 17433,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 99,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 17532
+        },
+        {
+          "input_tokens": 25774,
+          "cached_input_tokens": 17280,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 556,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 26330
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "publisher-topic-and-key",
+          "listener-topic-and-group",
+          "runtime-delivery-boundary"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "695d90df47f507e85b1a4f44d4e1495de3bad121e05fae71b0b7095f82a44c72"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E2",
+      "arm": "raw",
+      "promptDigest": "54157dce649aec79653a6aae4ba6a999de10cb793120afc4ed1ca82470e60c5d",
+      "promptBytes": 3735,
+      "elapsedSeconds": 54.991,
+      "usage": {
+        "input_tokens": 107284,
+        "cached_input_tokens": 78208,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1266,
+        "reasoning_output_tokens": 51
+      },
+      "totalLogicalTokens": 108550,
+      "commands": 4,
+      "failedCommands": 1,
+      "toolOutputBytes": 42428,
+      "modelRounds": 5,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16456,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 127,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16583
+        },
+        {
+          "input_tokens": 16695,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 101,
+          "reasoning_output_tokens": 11,
+          "total_tokens": 16796
+        },
+        {
+          "input_tokens": 17653,
+          "cached_input_tokens": 16512,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 105,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 17758
+        },
+        {
+          "input_tokens": 28026,
+          "cached_input_tokens": 17536,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 133,
+          "reasoning_output_tokens": 40,
+          "total_tokens": 28159
+        },
+        {
+          "input_tokens": 28454,
+          "cached_input_tokens": 27904,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 800,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 29254
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "route",
+          "negative-path",
+          "zero-and-positive-path",
+          "completion-boundary"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "828177747fe1486008e93c2e1099c9b22f0566ca4b4b774b11d277ff65eb1ed4"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E2",
+      "arm": "compact",
+      "promptDigest": "1dc2518d88dc9ac01d2052a11d82c5dff4fe63cbcaa286384098808be49e23c3",
+      "promptBytes": 3743,
+      "elapsedSeconds": 45.842,
+      "usage": {
+        "input_tokens": 89444,
+        "cached_input_tokens": 60928,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1129,
+        "reasoning_output_tokens": 44
+      },
+      "totalLogicalTokens": 90573,
+      "commands": 3,
+      "failedCommands": 0,
+      "toolOutputBytes": 40951,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16456,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 117,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16573
+        },
+        {
+          "input_tokens": 17430,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 105,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 17535
+        },
+        {
+          "input_tokens": 27562,
+          "cached_input_tokens": 17280,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 137,
+          "reasoning_output_tokens": 44,
+          "total_tokens": 27699
+        },
+        {
+          "input_tokens": 27996,
+          "cached_input_tokens": 27392,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 770,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 28766
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "route",
+          "negative-path",
+          "zero-and-positive-path",
+          "completion-boundary"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "b1ce546529092d6d3a28f5b5180f35bd65f7562644c6475ab406d09d59e790ce"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E3",
+      "arm": "raw",
+      "promptDigest": "3b1606060d8839a1508e875811b7622a8a1b657b012bbe08366b27c9a9853171",
+      "promptBytes": 3723,
+      "elapsedSeconds": 48.087,
+      "usage": {
+        "input_tokens": 84905,
+        "cached_input_tokens": 56576,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1177,
+        "reasoning_output_tokens": 16
+      },
+      "totalLogicalTokens": 86082,
+      "commands": 5,
+      "failedCommands": 0,
+      "toolOutputBytes": 36895,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16458,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 115,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16573
+        },
+        {
+          "input_tokens": 17431,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 170,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 17601
+        },
+        {
+          "input_tokens": 23178,
+          "cached_input_tokens": 17280,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 203,
+          "reasoning_output_tokens": 16,
+          "total_tokens": 23381
+        },
+        {
+          "input_tokens": 27838,
+          "cached_input_tokens": 23040,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 689,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 28527
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "stock-consumer",
+          "audit-consumer",
+          "ambiguity-and-runtime-boundary"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "d97a4126db31a43c832131154080de7da28db931d1a6dff5760727469369486b"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E3",
+      "arm": "compact",
+      "promptDigest": "064ae170f7d587d156124fb041fd8b23fd360f6b520872aa478e970f369e1ad9",
+      "promptBytes": 3731,
+      "elapsedSeconds": 47.742,
+      "usage": {
+        "input_tokens": 81682,
+        "cached_input_tokens": 57088,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1116,
+        "reasoning_output_tokens": 88
+      },
+      "totalLogicalTokens": 82798,
+      "commands": 4,
+      "failedCommands": 0,
+      "toolOutputBytes": 25144,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16458,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 123,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16581
+        },
+        {
+          "input_tokens": 17438,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 188,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 17626
+        },
+        {
+          "input_tokens": 23754,
+          "cached_input_tokens": 17280,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 180,
+          "reasoning_output_tokens": 88,
+          "total_tokens": 23934
+        },
+        {
+          "input_tokens": 24032,
+          "cached_input_tokens": 23552,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 625,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 24657
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "stock-consumer",
+          "audit-consumer",
+          "ambiguity-and-runtime-boundary"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "c50ec976586d301d96bfba25db7226a88fd96d1db0c306479cfdf3f2938b1198"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E4",
+      "arm": "raw",
+      "promptDigest": "3de4f11d3e300c0993436ef70f345a8e35e44899ff4b5ffae052064a687d313a",
+      "promptBytes": 3842,
+      "elapsedSeconds": 66.918,
+      "usage": {
+        "input_tokens": 110925,
+        "cached_input_tokens": 88448,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1646,
+        "reasoning_output_tokens": 76
+      },
+      "totalLogicalTokens": 112571,
+      "commands": 4,
+      "failedCommands": 0,
+      "toolOutputBytes": 79390,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16474,
+          "cached_input_tokens": 12160,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 118,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16592
+        },
+        {
+          "input_tokens": 27191,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 255,
+          "reasoning_output_tokens": 34,
+          "total_tokens": 27446
+        },
+        {
+          "input_tokens": 33198,
+          "cached_input_tokens": 27008,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 335,
+          "reasoning_output_tokens": 42,
+          "total_tokens": 33533
+        },
+        {
+          "input_tokens": 34062,
+          "cached_input_tokens": 33024,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 938,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 35000
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "entry-route-and-guard",
+          "request-construction",
+          "response-propagation",
+          "network-boundaries"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "b42c57016b2ba55c81f4a5607851b25e5c3505532a326507bc3f82551af136fb"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E4",
+      "arm": "compact",
+      "promptDigest": "771902ee963bc782c3beb3c80d40c4b7c50682069e5fc43df8a95b0a8dae7fba",
+      "promptBytes": 3850,
+      "elapsedSeconds": 60.753,
+      "usage": {
+        "input_tokens": 114562,
+        "cached_input_tokens": 78080,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1518,
+        "reasoning_output_tokens": 61
+      },
+      "totalLogicalTokens": 116080,
+      "commands": 4,
+      "failedCommands": 0,
+      "toolOutputBytes": 77237,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16474,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 120,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16594
+        },
+        {
+          "input_tokens": 27254,
+          "cached_input_tokens": 16256,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 160,
+          "reasoning_output_tokens": 25,
+          "total_tokens": 27414
+        },
+        {
+          "input_tokens": 34919,
+          "cached_input_tokens": 27136,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 310,
+          "reasoning_output_tokens": 36,
+          "total_tokens": 35229
+        },
+        {
+          "input_tokens": 35915,
+          "cached_input_tokens": 34688,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 928,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 36843
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "entry-route-and-guard",
+          "request-construction",
+          "response-propagation",
+          "network-boundaries"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "24faad3158966d513743eb6e94a9d59579a22415ea1a6148580e816beaef3d22"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E5",
+      "arm": "raw",
+      "promptDigest": "dbebde2f37491ffc871817108aff681e1b8243b01ed21c2506c6a89c4520f29d",
+      "promptBytes": 3928,
+      "elapsedSeconds": 81.974,
+      "usage": {
+        "input_tokens": 120673,
+        "cached_input_tokens": 81024,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2341,
+        "reasoning_output_tokens": 71
+      },
+      "totalLogicalTokens": 123014,
+      "commands": 4,
+      "failedCommands": 0,
+      "toolOutputBytes": 82880,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16503,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 127,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16630
+        },
+        {
+          "input_tokens": 27229,
+          "cached_input_tokens": 16384,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 318,
+          "reasoning_output_tokens": 31,
+          "total_tokens": 27547
+        },
+        {
+          "input_tokens": 37844,
+          "cached_input_tokens": 27008,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 307,
+          "reasoning_output_tokens": 40,
+          "total_tokens": 38151
+        },
+        {
+          "input_tokens": 39097,
+          "cached_input_tokens": 37632,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1589,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 40686
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "zero-path",
+          "hundred-path",
+          "hundred-one-path",
+          "declared-handoff",
+          "state-and-runtime-boundaries"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "f783dd46a91787e67a42b01a98daa77fce854522c6dcba2e184f4d6ebb93e2ad"
+      },
+      "sourceRevisionsUnchanged": true
+    },
+    {
+      "task": "E5",
+      "arm": "compact",
+      "promptDigest": "ac78772ed0cfc5aae86374292a937d8d0a20da7e1830e3434e18e605bcd49a40",
+      "promptBytes": 3936,
+      "elapsedSeconds": 81.267,
+      "usage": {
+        "input_tokens": 116420,
+        "cached_input_tokens": 78976,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 2223,
+        "reasoning_output_tokens": 48
+      },
+      "totalLogicalTokens": 118643,
+      "commands": 4,
+      "failedCommands": 0,
+      "toolOutputBytes": 78811,
+      "modelRounds": 4,
+      "perRoundUsage": [
+        {
+          "input_tokens": 16503,
+          "cached_input_tokens": 0,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 124,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 16627
+        },
+        {
+          "input_tokens": 27287,
+          "cached_input_tokens": 16384,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 249,
+          "reasoning_output_tokens": 27,
+          "total_tokens": 27536
+        },
+        {
+          "input_tokens": 35697,
+          "cached_input_tokens": 27136,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 289,
+          "reasoning_output_tokens": 21,
+          "total_tokens": 35986
+        },
+        {
+          "input_tokens": 36933,
+          "cached_input_tokens": 35456,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 1561,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 38494
+        }
+      ],
+      "quality": {
+        "status": "PASS",
+        "acceptedObligations": [
+          "zero-path",
+          "hundred-path",
+          "hundred-one-path",
+          "declared-handoff",
+          "state-and-runtime-boundaries"
+        ],
+        "criticalMisses": 0,
+        "falseExactClaims": 0,
+        "reviewer": "Parent source review; not independent or blinded",
+        "answerSha256": "ae6aa504955c3f5dc614bf0df5321919f2866fe8f3f1e7d7c92106294868d017"
+      },
+      "sourceRevisionsUnchanged": true
+    }
+  ],
+  "limitations": [
+    "Five correlated synthetic questions, one repetition; no population confidence or independent quality non-inferiority.",
+    "Native continuation allowed; failed calls charged. E2 raw tried a bare class name and received INVALID_INPUT.",
+    "Historical native and oracle arms were not rerun; they do not isolate this projection factor.",
+    "Logical tokens include cached input; monetary billing unavailable.",
+    "This experiment uses retained compiler profiles, not a four-arm syntax/enriched/hybrid maintenance evaluation.",
+    "M4-M6 planning remains deferred; compact remains opt-in."
+  ]
+}

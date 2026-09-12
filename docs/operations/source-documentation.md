@@ -151,3 +151,6 @@ The initial [token-economics measurement](../product/validation/source-documenta
 compares released Codeclew, native tools, and manually prepared oracle context.
 It does not measure this implementation's model-token savings. Byte reductions
 from compact output must not be reported as measured model-token or cost savings.
+
+The subsequent [implementation qualification and paired projection study](../product/validation/source-documentation-qualification.md)
+records executed availability checks and the limited observed compact-token effect.
