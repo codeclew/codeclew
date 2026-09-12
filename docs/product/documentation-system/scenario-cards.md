@@ -487,6 +487,10 @@ Missing configuration/platform support stays explicit; real model results and
 CI event/history behavior are not established by fake adapters. Existing graph
 edges and extension-point regression obligations remain unchanged.
 
+### T14 implementation evidence
+
+T14 adds a configured stdio-to-HTTPS role gateway with exact role/model/invocation binding, bounded process execution, explicit credentials and unknown usage preservation. Durable execution/accounts ledgers prevent cache loss from resetting recorded spending; legacy ledgers migrate before dispatch or denial. The admitted core adapter still requires macOS Seatbelt. Existing S08 graph transitions are unchanged.
+
 ## S09 — Save a process or entity data-flow view
 
 - **Status:** growth
@@ -691,6 +695,10 @@ versions, stable reason codes and safe worker metadata; T12 unit tests establish
 private-envelope exclusion and bounded multipart encoding. Successful Kotlin 1.9
 compiler qualification remains a separate runtime check. Existing S11 edges remain.
 
+### T14 implementation evidence
+
+T14 portable capture jobs verify the observed exact revision and transfer the complete authorized package. Configuration selects commands, roots and audience; source/package text cannot select executables. Source-launcher execution exposed and fixed a missing embedded proposal-schema input in the runtime registry, now covered by an embedding-closure regression. Existing S11 graph transitions are unchanged.
+
 ## S12 — Update central documentation through CI and inspect history
 
 - **Status:** growth
@@ -758,3 +766,7 @@ existing S12 transitions are unchanged.
 ### T13 implementation evidence
 
 Local update configure/enqueue/reconcile/run/status and history list/show/compare commands now implement exact targets, idempotency, out-of-order rejection and immutable history. Four T13 integration cases exercise batches, failed/missing service evidence, tag moves, cache loss, interrupted publication and finite queue work. Actual GitLab execution and model quality remain later qualification tasks. Existing S12 graph transitions remain unchanged.
+
+### T14 implementation evidence
+
+T14 implements versioned local/CI jobs, exact event forwarding, retained idempotency results, conservative acceptance before evidence transfer, coordinator locks, configured publication and a GitLab resource-group recipe. The configured qualification entry point triggers pipelines and compares returned artifacts with local outcomes. Thirteen fake contract tests and an actual local source-launcher capture/import/status flow passed; this is not actual GitLab qualification. Existing S12 graph transitions are unchanged.

@@ -214,10 +214,10 @@ pub(super) fn prepare(
             .filter_map(|f| f.evidence.as_ref())
             .flat_map(|e| e.observations.values()),
     ) {
-        if o.kind == "EVIDENCE_PACKAGE" {
-            if let Some(id) = o.normalized["expectation"]["manifestDigest"].as_str() {
-                packages.insert(id.to_owned());
-            }
+        if o.kind == "EVIDENCE_PACKAGE"
+            && let Some(id) = o.normalized["expectation"]["manifestDigest"].as_str()
+        {
+            packages.insert(id.to_owned());
         }
     }
     let mut tags: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();

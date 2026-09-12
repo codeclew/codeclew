@@ -1490,6 +1490,19 @@ fn publish_internal(
     versions: BTreeMap<String, super::review::AcceptedVersion>,
 ) -> Result<Value, ClewError> {
     let previous = bindings::baseline(repo)?;
+    for (key, version) in &versions {
+        if let Some(expected) = &version.previous_narrative_digest {
+            let (subject, _) = key
+                .split_once('/')
+                .ok_or_else(|| invalid("invalid prepared section key"))?;
+            let retained = previous
+                .as_ref()
+                .and_then(|(_, b)| b.narratives.get(subject));
+            if &digest(&retained)? != expected {
+                return Err(invalid("published content changed after work preparation"));
+            }
+        }
+    }
     if let Some((id, binding)) = &previous {
         bindings::verify_outputs(repo, id, binding)?;
     }
@@ -1712,6 +1725,8 @@ fn publish_internal(
                 let mut retained = fragment.clone();
                 if retained.evidence.is_none() {
                     retained.evidence = Some(bindings::FragmentEvidence {
+                        shared_observations: vec![],
+                        shared_sources: vec![],
                         revisions: old.revisions.clone(),
                         observations: retained
                             .dependencies
@@ -2050,6 +2065,7 @@ pub(super) fn commit_bundle(
         .iter()
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
         .collect();
+    bindings::compact(&mut binding);
     files.insert("bindings.json".into(), bytes(&binding)?);
     publication.files = files
         .iter()

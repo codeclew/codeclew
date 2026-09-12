@@ -72,10 +72,10 @@ impl<'a> Context<'a> {
             if visited > 200000 {
                 return Err(invalid("source annotation syntax budget exceeded"));
             }
-            if is_type(node.kind()) {
-                if let Some(name) = node.child_by_field_name("name") {
-                    local_types.insert(spelling(name, text).into());
-                }
+            if is_type(node.kind())
+                && let Some(name) = node.child_by_field_name("name")
+            {
+                local_types.insert(spelling(name, text).into());
             }
             stack.extend(children(node));
         }
@@ -108,18 +108,16 @@ impl<'a> Context<'a> {
         if tokens.is_empty() || depth > 16 {
             return unresolved();
         }
-        if tokens.len() == 1 {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&tokens[0]) {
-                if !value.is_object()
-                    && !value.is_array()
-                    && !value.is_null()
-                    && !value.as_str().is_some_and(|s| {
-                        self.language == "kotlin" && s.contains('$') && !s.contains("${")
-                    })
-                {
-                    return AnnotationValue::Constant { value };
-                }
-            }
+        if tokens.len() == 1
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&tokens[0])
+            && !value.is_object()
+            && !value.is_array()
+            && !value.is_null()
+            && !value
+                .as_str()
+                .is_some_and(|s| self.language == "kotlin" && s.contains('$') && !s.contains("${"))
+        {
+            return AnnotationValue::Constant { value };
         }
         let (start, end) = if matches!(
             (

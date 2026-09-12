@@ -149,15 +149,17 @@ HTTP/Kafka extraction from a Kotlin 1.9 Maven project.
 Short business overviews appear first; detailed source flow opens on demand.
 Source-bound HTTP/Kafka contract cards and payload tables support projects without
 OpenAPI. They retain explicit interpretation and serialization boundaries.
-The development source adds the `source-syntax` documentation profile for Python,
+Codeclew 0.8.0 adds the `source-syntax` documentation profile for Python,
 Java, and Kotlin 1.9 without a project build or K2. It reads an explicit committed
 source scope, records lexical declarations and control structure, and preserves
 unresolved call targets. Optional compiler enrichment attaches to the same source
 objects. `docs context --format compact` reduces duplicate evidence, and
 `docs changes` provides affected claims with before/after sources.
 See [build-independent documentation](docs/operations/source-documentation.md)
-for setup, freshness rules, and current limitations. These additions are not a
-claim that the installed 0.7.1 release already provides them.
+for setup, freshness rules, and current limitations. Local authors can prepare
+recorded work, submit a proposal, and publish it with `docs proposal publish
+--unassessed` without an external model runner. Meaning review remains separate
+from source freshness. Update from 0.7.1 to use this workflow.
 
 No model API or online renderer is required. Project build dependencies remain
 subject to the target environment's configured caches and mirrors.

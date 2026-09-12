@@ -33,6 +33,66 @@ pub struct FragmentEvidence {
     pub revisions: BTreeMap<String, String>,
     pub observations: BTreeMap<String, Observation>,
     pub sources: BTreeMap<String, Source>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_observations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_sources: Vec<String>,
+}
+
+/// Share identical evidence within one portable snapshot. Older versions of an
+/// observation or source remain attached to their original fragment.
+pub(super) fn compact(binding: &mut Bindings) {
+    binding.schema = "codeclew-documentation-bindings/1.2".into();
+    for evidence in binding
+        .fragments
+        .values_mut()
+        .filter_map(|f| f.evidence.as_mut())
+    {
+        evidence.observations.retain(|id, value| {
+            if binding.observations.get(id) == Some(value) {
+                evidence.shared_observations.push(id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        evidence.sources.retain(|id, value| {
+            if binding.retained_sources.get(id) == Some(value) {
+                evidence.shared_sources.push(id.clone());
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
+    for evidence in binding
+        .fragments
+        .values_mut()
+        .filter_map(|f| f.evidence.as_mut())
+    {
+        for id in std::mem::take(&mut evidence.shared_observations) {
+            let value = binding
+                .observations
+                .get(&id)
+                .ok_or_else(|| invalid("shared fragment observation is missing"))?;
+            if evidence.observations.insert(id, value.clone()).is_some() {
+                return Err(invalid("duplicate shared fragment observation"));
+            }
+        }
+        for id in std::mem::take(&mut evidence.shared_sources) {
+            let value = binding
+                .retained_sources
+                .get(&id)
+                .ok_or_else(|| invalid("shared fragment source is missing"))?;
+            if evidence.sources.insert(id, value.clone()).is_some() {
+                return Err(invalid("duplicate shared fragment source"));
+            }
+        }
+    }
+    Ok(())
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -191,10 +251,10 @@ pub fn fragment(
                 .map(|d| d.id.clone()),
         );
     }
-    if let Some(id) = subject.strip_prefix("scenario:") {
-        if let Some(context) = checked.scenarios.get(id) {
-            initial.extend(context.dependency_ids.iter().cloned());
-        }
+    if let Some(id) = subject.strip_prefix("scenario:")
+        && let Some(context) = checked.scenarios.get(id)
+    {
+        initial.extend(context.dependency_ids.iter().cloned());
     }
     let ids = expand_dependencies(&initial, checked)?;
     let sources = checked.sources();
@@ -223,6 +283,7 @@ pub fn fragment(
         dependencies: observations.iter().map(|(id, o)| (id.clone(), o.digest.clone())).collect(),
         sources: retained.iter().map(|(id, source)| (id.clone(), json!({"revision":source.revision,"file":source.file,"startLine":source.start_line,"endLine":source.end_line,"textDigest":source.text_digest,"url":source.url}))).collect(),
         evidence: Some(FragmentEvidence {
+            shared_observations: vec![], shared_sources: vec![],
             revisions: services.iter().filter_map(|id| checked.services.get(*id).map(|e| ((*id).to_owned(),e.revision.clone()))).collect(),
             observations, sources: retained,
         }),
@@ -253,16 +314,19 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
     if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid("invalid documentation bundle pointer"));
     }
-    let binding: Bindings = store::read(
+    let mut binding: Bindings = store::read(
         &repo.path(&format!("docs/generated/{id}/bindings.json"))?,
         64 * 1024 * 1024,
     )?;
     if !matches!(
         binding.schema.as_str(),
-        "codeclew-documentation-bindings/1.0" | "codeclew-documentation-bindings/1.1"
+        "codeclew-documentation-bindings/1.0"
+            | "codeclew-documentation-bindings/1.1"
+            | "codeclew-documentation-bindings/1.2"
     ) {
         return Err(invalid("unsupported documentation bindings schema"));
     }
+    expand_shared(&mut binding)?;
     for (id, observation) in &binding.observations {
         if id != &observation.id || digest(&observation.normalized)? != observation.digest {
             return Err(invalid("portable baseline observation digest is invalid"));
@@ -318,6 +382,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.9"
             | "codeclew-documentation-html/1.10"
             | "codeclew-documentation-html/1.11"
+            | "codeclew-documentation-html/1.12"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(
@@ -442,6 +507,54 @@ pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
 mod tests {
     use super::*;
     use crate::documentation::check;
+
+    #[test]
+    fn portable_evidence_sharing_preserves_mixed_revisions_and_rejects_missing_records() {
+        let mut binding = old(&current());
+        let original = serde_json::to_value(&binding.fragments).unwrap();
+        // The same logical source can have a newer occurrence in the global
+        // table while an old fragment still retains its exact prior text.
+        binding
+            .retained_sources
+            .get_mut("inventory-source")
+            .unwrap()
+            .revision = "2".repeat(40);
+        compact(&mut binding);
+        assert!(
+            binding.fragments.values().any(|f| !f
+                .evidence
+                .as_ref()
+                .unwrap()
+                .shared_observations
+                .is_empty())
+        );
+        assert!(binding.fragments.values().all(|f| {
+            f.evidence
+                .as_ref()
+                .unwrap()
+                .sources
+                .contains_key("inventory-source")
+        }));
+        let mut damaged = binding.clone();
+        damaged.observations.clear();
+        assert!(expand_shared(&mut damaged).is_err());
+        let encoded = serde_json::to_vec(&binding).unwrap();
+        let mut decoded: Bindings = serde_json::from_slice(&encoded).unwrap();
+        expand_shared(&mut decoded).unwrap();
+        assert_eq!(serde_json::to_value(decoded.fragments).unwrap(), original);
+
+        let mut matching = old(&current());
+        let original = serde_json::to_value(&matching.fragments).unwrap();
+        compact(&mut matching);
+        assert!(
+            matching
+                .fragments
+                .values()
+                .all(|f| f.evidence.as_ref().unwrap().sources.is_empty())
+        );
+        expand_shared(&mut matching).unwrap();
+        assert_eq!(serde_json::to_value(matching.fragments).unwrap(), original);
+    }
 
     fn current() -> Check {
         let source = Source {

@@ -173,3 +173,9 @@ snapshot as if growth behavior existed at the base revision.
   Event coordination and durable snapshot history remain T13.
 
 - T13: exact revision events, accepted-ref policies and durable coordinator targets now publish conservative status before evidence arrival. Four integration cases passed for ordering, reconciliation, moved tags, vanished producers/private cache, retained evidence expiry, publication recovery, concurrent note/definition changes and bounded refresh. Publication history retains source and canonical explanation versions offline. S04/S05/S06/S12 graph edges are unchanged; live CI and model qualification remain pending.
+
+- T14: portable local/GitLab-shaped jobs now share an executable exact-event contract, with bounded configured commands, artifact validation, role gateway dispatch, audience/credential-bound publication and a configured actual GitLab comparison entry point. Thirteen deterministic tooling tests and a local supported-source-launcher capture/import/status flow passed. Runtime staging now includes the embedded proposal schema. Budget ledgers are durable across work-cache loss; current agent isolation still requires a macOS runner. Actual GitLab and model qualification remain pending; S08/S11/S12 edges are unchanged.
+
+- User prioritization, 2026-09-12: T14 and actual GitLab qualification are deferred.
+  Existing CI tooling is a draft for later; local launcher, durable accounting,
+  authoring, publication, recovery and qualification work continue independently.

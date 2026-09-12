@@ -15,7 +15,7 @@ ID; a scenario operation ID is its registered scenario ID.
 
 ```json
 {
-  "schema": "codeclew-documentation-narrative/1.2",
+  "schema": "codeclew-documentation-narrative/1.3",
   "subject": "service:orders",
   "contextDigest": "CURRENT_CONTEXT_DIGEST",
   "operations": [{
@@ -80,7 +80,7 @@ The overview should describe business decisions, not repeat every source step.
 For a longer operation, mark implementation-only explanation paragraphs with
 `detail: true`. Their step coverage and evidence remain validated, but the UI
 keeps them inside the detailed view. Keep important failures and asynchronous
-boundaries in the short default overview. The renderer folds reference lists and source commentary. For schema 1.3, add
+boundaries in the short default overview. The renderer folds reference lists and source commentary. In schema 1.3, add
 a source-bound `overviewDiagram` with at most 12 nodes; its grid, node and edge
 fields are defined in the service-documentation reference. A large retained
 event list must never become the reader-facing diagram.

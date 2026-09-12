@@ -167,3 +167,9 @@ not claimed by this planning package's structural or independent review.
   results do not qualify live CI delivery or every Kotlin compiler environment.
 
 - T13 → S04/S05/S06/S12, AC16/AC18/AC19: coordinator-selected revision vectors and immutable history are implemented. Delayed results cannot regress targets; conflicting authored work is rejected. Source-bearing packages are durable artifacts and disposable selection caches reconstruct from trust policy. History records observed tags, input and explanation versions, section states and file hashes, with explicit missing-artifact outcomes. Four focused integration cases passed; portable-evidence regressions also passed. Existing scenario edges are unchanged; this establishes local coordination, not GitLab qualification.
+
+- T14 → S08/S11/S12, AC17/AC19: executable portable job and role-gateway tooling, GitLab recipe and explicit operational retention/permission guidance are implemented. The actual local source-launcher flow passed after fixing its missing embedded-schema staging input. Thirteen tooling fixtures validate failures, replay, paths, role identity and configured platform API shapes without external communication. Durable ledgers preserve budget authority across cache reconstruction. Actual platform qualification remains T16; existing scenario edges are unchanged.
+
+- User prioritization, 2026-09-12: T14 and actual GitLab qualification are deferred.
+  Existing CI tooling is a draft for later; local launcher, durable accounting,
+  authoring, publication, recovery and qualification work continue independently.

@@ -1,8 +1,218 @@
 #![cfg(unix)]
+#[path = "support/documentation_qualification.rs"]
+mod qualification;
 #[path = "support/documentation.rs"]
 mod support;
 use std::fs;
 use support::{Fixture, commit, read};
+
+#[test]
+fn docsys_t17_local_proposal_publication_retains_influence_without_inventing_review() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    fs::create_dir_all(f.docs.join("notes")).unwrap();
+    fs::write(
+        f.docs.join("notes/context.md"),
+        "Local maintainer context.\n",
+    )
+    .unwrap();
+    let (work, proposal, _) = proposal_fixture(&f);
+    work_read(
+        &f,
+        &work,
+        json!({"query":{"kind":"SYMBOL","symbolContains":"futureCallback"}}),
+    );
+    let ready = proposal_submit(&f, &work, &proposal);
+    assert!(ready["status"].as_str().unwrap().starts_with("READY_"));
+    let id = ready["proposal"].as_str().unwrap();
+    let published = f.ok(&[
+        "docs",
+        "proposal",
+        "publish",
+        "--proposal",
+        id,
+        "--unassessed",
+    ]);
+    assert_eq!(published["meaningReview"], "UNASSESSED");
+    let bundle = published["bundle"].as_str().unwrap();
+    let data = read(f.bundle(bundle, "services/orders.json"));
+    let root = data["operations"][0]["id"].as_str().unwrap();
+    assert_eq!(data["operationStates"][root]["freshness"], "CURRENT");
+    assert_eq!(data["operationStates"][root]["verification"], "UNASSESSED");
+    let binding = read(f.bundle(bundle, "bindings.json"));
+    let version = &binding["acceptedVersions"][format!("service:orders/{root}")];
+    assert!(version["invocation"].is_null());
+    assert!(version["reviewDigest"].is_null());
+    assert!(version["reviewerDriverDigest"].is_null());
+    assert!(
+        version["influence"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|id| id.starts_with("documentation-input-scope:"))
+    );
+    let original = fs::read(f.bundle(bundle, "services/orders.html")).unwrap();
+    fs::write(
+        f.docs.join("notes/context.md"),
+        "Changed maintainer context.\n",
+    )
+    .unwrap();
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    let changed = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    assert_eq!(changed["operationStates"][root]["freshness"], "STALE");
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "proposal",
+            "publish",
+            "--proposal",
+            id,
+            "--unassessed"
+        ])
+        .0,
+        0
+    );
+    assert_eq!(
+        fs::read(f.bundle(bundle, "services/orders.html")).unwrap(),
+        original
+    );
+    let (work, mut wrong, _) = proposal_fixture(&f);
+    wrong["operations"][0]["steps"][0]["meaning"]["checks"][0]["expected"] = json!("THROW");
+    let rejected = proposal_submit(&f, &work, &wrong);
+    assert_eq!(rejected["status"], "NEEDS_REPAIR");
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "proposal",
+            "publish",
+            "--proposal",
+            rejected["proposal"].as_str().unwrap(),
+            "--unassessed"
+        ])
+        .0,
+        0
+    );
+}
+
+#[test]
+fn docsys_t17_fresh_init_and_legacy_narratives_preserve_protected_material() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    fs::create_dir_all(f.docs.join("notes")).unwrap();
+    let instructions = fs::read_to_string(f.docs.join("AGENTS.md")).unwrap();
+    assert!(instructions.contains("narrative 1.3") && instructions.contains("--unassessed"));
+    fs::write(
+        f.docs.join("AGENTS.md"),
+        "# Maintainer instructions\nKeep exact text.\n",
+    )
+    .unwrap();
+    fs::write(
+        f.docs.join("notes/manual.md"),
+        "Protected local knowledge.\n",
+    )
+    .unwrap();
+    for version in ["1.0", "1.1", "1.2", "1.3"] {
+        let checked = f.checked();
+        let mut n = read(f.author("orders", &checked));
+        n["schema"] = json!(format!("codeclew-documentation-narrative/{version}"));
+        let operation = &n["operations"][0];
+        let paragraphs:Vec<_> = operation["events"].as_array().unwrap().iter().enumerate().map(|(i,e)| json!({"id":format!("paragraph-{i}"),"text":"The retained source describes quantity processing.","eventIds":[e["id"]],"dependencyIds":e["dependencyIds"],"sourceIds":e["sourceIds"]})).collect();
+        n["operations"][0]["explanation"] = json!(paragraphs);
+        let path = f.input("legacy.json", &n);
+        let published = f.ok(&["docs", "render", "--input", path.to_str().unwrap()]);
+        assert_eq!(
+            published["documentedOperations"], 1,
+            "{version}: {published}"
+        );
+        f.ok(&["docs", "init"]);
+        assert_eq!(
+            fs::read_to_string(f.docs.join("AGENTS.md")).unwrap(),
+            "# Maintainer instructions\nKeep exact text.\n"
+        );
+        assert_eq!(
+            fs::read_to_string(f.docs.join("notes/manual.md")).unwrap(),
+            "Protected local knowledge.\n"
+        );
+        assert_eq!(
+            f.ok(&[
+                "docs",
+                "history",
+                "show",
+                "--id",
+                published["bundle"].as_str().unwrap()
+            ])["status"],
+            "FROZEN_SNAPSHOT"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit 40-service runtime qualification; run the qualification script"]
+fn docsys_t15_forty_service_qualification() {
+    qualification::forty_services();
+}
+
+#[test]
+fn docsys_t15_mutation_boundaries_have_no_known_false_current() {
+    qualification::mutations();
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t14_budget_survives_work_cache_loss_and_migrates_legacy_ledger() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let (work, _, _) = proposal_fixture(&f);
+    let config = execution_config(&f, json!({"usage":"excessive"}), json!({}), None);
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "GENERATION_GAP");
+    let ledger = f.docs.join("execution/accounts/fixture.json");
+    let before = fs::read(&ledger).unwrap();
+    // Exercise migration from the original private ledger location first.
+    fs::create_dir_all(f.docs.join(".codeclew/accounts")).unwrap();
+    fs::rename(&ledger, f.docs.join(".codeclew/accounts/fixture.json")).unwrap();
+    let legacy: clew::documentation::agent_jobs::Config =
+        serde_json::from_value(config.clone()).unwrap();
+    let repo = clew::documentation::store::Repository::open(&f.docs).unwrap();
+    assert!(clew::documentation::agent_jobs::reserve(&repo, &legacy, "migration").is_err());
+    // Even an exhausted legacy ledger migrates before denying a new dispatch.
+    assert_eq!(
+        fs::read(f.docs.join(".codeclew/accounts/fixture.json")).unwrap(),
+        before
+    );
+    assert_eq!(fs::read(&ledger).unwrap(), before);
+    fs::remove_dir_all(f.docs.join(".codeclew")).unwrap();
+    f.ok(&[
+        "docs",
+        "bind",
+        "--service",
+        "orders",
+        "--repo",
+        source.to_str().unwrap(),
+    ]);
+    let (next, _, _) = proposal_fixture(&f);
+    let rejected = work_run(&f, &next, &config);
+    assert_eq!(rejected["status"], "GENERATION_GAP", "{rejected}");
+    assert!(
+        rejected["gap"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("ACCOUNTING_BOUND_VIOLATED")
+    );
+    assert!(
+        run_report(&f, &rejected)["attempts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read(&ledger).unwrap(), before);
+}
 
 fn package_capture(f: &Fixture, name: &str) -> (std::path::PathBuf, serde_json::Value) {
     let path = f.temp.path().join(name);
@@ -1274,10 +1484,7 @@ fn docsys_t02_oversized_records_are_explicit_and_pages_stay_bounded() {
     let id = page["work"].as_str().unwrap().to_owned();
     let mut omitted = Vec::new();
     for _ in 0..100 {
-        assert!(
-            serde_json::to_vec(&page).unwrap().len() + 1 <= 2048,
-            "{page}"
-        );
+        assert!(serde_json::to_vec(&page).unwrap().len() < 2048, "{page}");
         omitted.extend(page["omitted"].as_array().unwrap().iter().cloned());
         let Some(cursor) = page["nextCursor"].as_str() else {
             break;
@@ -1979,7 +2186,7 @@ fn docsys_t04_cancellation_keeps_dispatched_maximum_and_stops_driver() {
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let account = f.docs.join(".codeclew/accounts/fixture.json");
+            let account = f.docs.join("execution/accounts/fixture.json");
             if account.exists()
                 && read(&account)["reservations"]
                     .as_object()

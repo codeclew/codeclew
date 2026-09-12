@@ -3913,7 +3913,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             ),
             local_event("end", "end", "", None, None, guard),
         ];
-        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{overview_diagram:None,interface_contracts:vec![],id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:vec![],participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
+        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{assessment:None,dataflow:None,overview_diagram:None,interface_contracts:vec![],id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:vec![],participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
     }
     let scenario = &checked.scenarios["checkout"];
     let first = scenario
@@ -4122,6 +4122,27 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             .message
             .contains("omits a source-backed condition")
     );
+    // A complete service publication includes the standard architecture sections.
+    for narrative in narratives
+        .iter_mut()
+        .filter(|n| n.subject.starts_with("service:"))
+    {
+        let operation = narrative.operations[0].clone();
+        for id in [
+            "section-overview",
+            "section-responsibilities",
+            "section-entities",
+            "section-ingress",
+            "section-egress",
+        ] {
+            let mut section = operation.clone();
+            section.id = id.into();
+            section.title = id.into();
+            section.participants.clear();
+            section.events.clear();
+            narrative.operations.push(section);
+        }
+    }
     let mut inputs = Vec::new();
     for (index, n) in narratives.iter().enumerate() {
         let path = temporary.path().join(format!("narrative-{index}.json"));

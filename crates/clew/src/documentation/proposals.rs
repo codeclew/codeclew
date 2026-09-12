@@ -35,6 +35,15 @@ pub enum Command {
         #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
+    /// Publish checked local authoring while retaining UNASSESSED meaning review.
+    Publish {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        proposal: String,
+        #[arg(long, required = true)]
+        unassessed: bool,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -155,6 +164,30 @@ pub fn load(repo: &Repository, id: &str) -> Result<Artifact, ClewError> {
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Publish {
+            root,
+            proposal,
+            unassessed: _,
+        } => {
+            let repo = Repository::open(&root)?;
+            let artifact = load(&repo, &proposal)?;
+            let work = work::load(&repo, &artifact.work)?;
+            current(&repo, &work)?;
+            let reads = digest(&work::read_state(&repo, &work.id)?)?;
+            if reads != artifact.read_digest {
+                return Err(invalid(
+                    "work reads changed; submit the proposal again before publication",
+                ));
+            }
+            let versions = super::review::unassessed_versions(&work, &artifact, &reads)?;
+            let narrative = artifact
+                .narrative
+                .ok_or_else(|| invalid("proposal has no canonical content"))?;
+            let mut result = render::publish_reviewed(&repo, narrative, versions)?;
+            result["meaningReview"] = json!("UNASSESSED");
+            result["proposal"] = json!(proposal);
+            Ok(result)
+        }
         Command::Submit { root, work, input } => submit(
             &Repository::open(&root)?,
             &work,
@@ -488,11 +521,13 @@ impl Builder<'_> {
     }
 }
 
+type MaterializedProposal = (Narrative, BTreeMap<String, Value>, Vec<Value>);
+
 fn materialize(
     work: &Work,
     input: &Proposal,
     state: &work::ReadState,
-) -> Result<(Narrative, BTreeMap<String, Value>, Vec<Value>), ClewError> {
+) -> Result<MaterializedProposal, ClewError> {
     if input.schema != "codeclew-documentation-proposal/1.0"
         || input.operations.len() > 100
         || input.gaps.len() > 1024

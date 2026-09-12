@@ -36,6 +36,20 @@ fn agent_skill_digest() -> String {
             include_bytes!("../../../skills/codeclew/references/authoring-example.md").as_slice(),
         ),
         (
+            "references/documentation-evidence.md",
+            include_bytes!("../../../skills/codeclew/references/documentation-evidence.md")
+                .as_slice(),
+        ),
+        (
+            "references/documentation-processes.md",
+            include_bytes!("../../../skills/codeclew/references/documentation-processes.md")
+                .as_slice(),
+        ),
+        (
+            "references/documentation-views.md",
+            include_bytes!("../../../skills/codeclew/references/documentation-views.md").as_slice(),
+        ),
+        (
             "references/service-documentation.md",
             include_bytes!("../../../skills/codeclew/references/service-documentation.md")
                 .as_slice(),
@@ -1002,10 +1016,20 @@ mod tests {
 
     #[test]
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
-        assert_eq!(
-            agent_skill_digest(),
-            "sha256:2360141f7ea064c15a86bc0b11785e634a6076e709a87203fb4da06bd3b95bbd"
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let destination = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new(root.join("clew"))
+            .args(["skill", "install", "--destination"])
+            .arg(destination.path())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
         );
+        let installed: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(agent_skill_digest(), installed["digest"].as_str().unwrap());
     }
 
     #[test]

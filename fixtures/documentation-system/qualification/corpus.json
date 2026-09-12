@@ -1,0 +1,10 @@
+{
+  "schema": "codeclew-documentation-qualification-corpus/1.0",
+  "services": 40,
+  "largeServiceEndpoints": 40,
+  "otherEndpointCounts": [1, 2, 4, 8],
+  "scopePaddingBytes": [0, 1024, 8192, 32768],
+  "maximumServiceBytes": 262144,
+  "maximumCorpusBytes": 4194304,
+  "maximumChangedRepositories": 4
+}

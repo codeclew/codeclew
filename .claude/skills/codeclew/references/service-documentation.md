@@ -10,10 +10,10 @@ analyzed with language/API 2.0 by the current engine; this is conditional analys
 not execution by the project's original compiler. Older installed releases need
 the corresponding product update before using these extensions.
 
-## Build-independent source profile (development source)
+## Build-independent source profile (0.8.0)
 
-The development source supports an explicit `source-syntax` profile for Python,
-Java, and Kotlin 1.9. Inspect the selected launcher's help/version before using
+Codeclew 0.8.0 supports an explicit `source-syntax` profile for Python,
+Java, and Kotlin with a declared dialect. Inspect the selected launcher's help/version before using
 new flags on an installed release. This profile selects syntax authority
 explicitly; it does not substitute syntax evidence after compiler admission fails.
 Set `source.roots` and `source.dialect`; `compilation` is unnecessary. Include
@@ -390,8 +390,10 @@ fields, failed calls and cancellation retain the corresponding maximum; unknown
 usage is never zero. Undispatched slots can be released. A reported cap violation
 freezes further calls on that account. Reports distinguish actual usage from
 conservative charges. Status pages use cursors for bounded attempts/accounting.
-A crashed coordinator retains reservations; do not delete private ledgers to
-recover budget. Full crash recovery is a separate qualification task.
+A crashed coordinator retains reservations in durable `execution/accounts`; keep
+these ledgers with coordinator state when discarding private work caches. Legacy
+`.codeclew/accounts` ledgers migrate on the next reservation, including denied
+reservations. Do not discard unmigrated ledgers or recover a budget as empty.
 
 Only the coordinator publishes accepted versions after machine checks, exact
 revision/input checks and separately bound meaning approval. Publications retain
@@ -400,3 +402,27 @@ shows verification separately from freshness. Changing a captured note or source
 scope invalidates dependent content. Public legacy `docs render` input cannot
 inherit review acceptance for replaced operations. Protected notes remain outside
 generated outputs. An accepted review is model assessment, not runtime proof.
+
+## Complete local authoring without an external runner
+
+Prepare and read bounded work with the current assistant, submit a constrained
+proposal, inspect its diagnostics, then publish machine-ready content locally:
+
+```sh
+clew docs proposal publish --root <docs> --proposal <proposal-id> --unassessed
+```
+
+This command needs no API key, CI runner or model gateway. It retains the captured
+source, notes, negative-query scope and external-input membership. It rechecks
+source revisions, reads, definitions, human inputs and prior authored content
+before publication. Source freshness and meaning review remain separate:
+locally published content is `UNASSESSED`, with no invented reviewer or approval
+receipt. The normal configured author/reviewer pipeline can later establish
+`VERIFIED` or `VERIFIED_WITH_LIMITATIONS`. A machine failure or stale work cannot
+be published by this route. Supply `--unassessed` explicitly; it is an output
+classification, not an interactive approval prompt.
+
+Current narrative schema is 1.3; legacy 1.0–1.2 imports remain supported. Prefer
+work/proposals for new authoring so the tool materializes canonical dependency
+IDs and preserves the full captured influence boundary. Direct Narrative imports
+remain useful for migration and retain their existing unassessed meaning status.

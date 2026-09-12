@@ -205,10 +205,10 @@ fn enqueue(repo: &Repository, events: Vec<Event>) -> Result<Value, ClewError> {
                     ));
                 }
             }
-            if let Some(old) = seen.insert(&e.id, e) {
-                if old != e {
-                    return Err(invalid("conflicting event IDs in reconciliation"));
-                }
+            if let Some(old) = seen.insert(&e.id, e)
+                && old != e
+            {
+                return Err(invalid("conflicting event IDs in reconciliation"));
             }
         }
         for e in &events {
@@ -257,12 +257,12 @@ pub(super) fn capture(
 ) -> Result<ServiceEvidence, ClewError> {
     let e = super::evidence_package::selected(repo, service)?
         .ok_or_else(|| invalid("central update requires admitted portable service evidence"))?;
-    if let Some(target) = targets.targets.get(&service.id) {
-        if target.repository_id != service.repository_id || target.revision != e.revision {
-            return Err(invalid(
-                "admitted artifact has not reached the coordinator-selected revision",
-            ));
-        }
+    if let Some(target) = targets.targets.get(&service.id)
+        && (target.repository_id != service.repository_id || target.revision != e.revision)
+    {
+        return Err(invalid(
+            "admitted artifact has not reached the coordinator-selected revision",
+        ));
     }
     Ok(e)
 }
@@ -271,12 +271,12 @@ pub(super) fn admit_package(
     service: &str,
     revision: Option<&str>,
 ) -> Result<(), ClewError> {
-    if let Some(target) = state(repo)?.targets.get(service) {
-        if revision != Some(target.revision.as_str()) {
-            return Err(invalid(
-                "late artifact cannot regress the coordinator-selected target",
-            ));
-        }
+    if let Some(target) = state(repo)?.targets.get(service)
+        && revision != Some(target.revision.as_str())
+    {
+        return Err(invalid(
+            "late artifact cannot regress the coordinator-selected target",
+        ));
     }
     Ok(())
 }

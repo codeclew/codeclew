@@ -42,9 +42,9 @@ pub struct AcceptedVersion {
     pub schema: String,
     pub work: String,
     pub proposal: String,
-    pub invocation: String,
-    pub review_digest: String,
-    pub reviewer_driver_digest: String,
+    pub invocation: Option<String>,
+    pub review_digest: Option<String>,
+    pub reviewer_driver_digest: Option<String>,
     pub evidence_digest: String,
     pub read_digest: String,
     pub operation_digest: String,
@@ -54,6 +54,8 @@ pub struct AcceptedVersion {
     pub influence: BTreeMap<String, String>,
     pub external_request: Request,
     pub external_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_narrative_digest: Option<String>,
 }
 
 pub(super) fn validate(
@@ -182,10 +184,6 @@ pub(super) fn versions(
             "only an approved, machine-checked proposal can be accepted",
         ));
     }
-    let scope = input_scope(&work.request, &work.external_inputs)?;
-    let mut influence = work.influence.clone();
-    influence.remove("documentation:external-inputs");
-    influence.insert(scope.id, scope.digest);
     let mut limitations = review.limitations.clone();
     limitations.extend(
         review
@@ -205,6 +203,33 @@ pub(super) fn versions(
     } else {
         "VERIFIED_WITH_LIMITATIONS"
     };
+    let mut versions = unassessed_versions(work, proposal, read_digest)?;
+    for version in versions.values_mut() {
+        version.invocation = Some(invocation.into());
+        version.review_digest = Some(digest(review)?);
+        version.reviewer_driver_digest = Some(driver_digest.into());
+        version.evidence_digest = evidence_digest.into();
+        version.verification = verification.into();
+        version.limitations = limitations.clone();
+    }
+    Ok(versions)
+}
+
+/// Preserve the work boundary without inventing a reviewer or approval receipt.
+pub(super) fn unassessed_versions(
+    work: &Work,
+    proposal: &Artifact,
+    read_digest: &str,
+) -> Result<BTreeMap<String, AcceptedVersion>, ClewError> {
+    if !proposal.status.starts_with("READY_") {
+        return Err(invalid(
+            "only a machine-ready proposal can be published locally",
+        ));
+    }
+    let scope = input_scope(&work.request, &work.external_inputs)?;
+    let mut influence = work.influence.clone();
+    influence.remove("documentation:external-inputs");
+    influence.insert(scope.id, scope.digest);
     proposal
         .narrative
         .as_ref()
@@ -215,17 +240,17 @@ pub(super) fn versions(
             Ok((
                 format!("{}/{}", work.subject, operation.id),
                 AcceptedVersion {
-                    schema: "codeclew-documentation-accepted-version/1.0".into(),
+                    schema: "codeclew-documentation-accepted-version/1.1".into(),
                     work: work.id.clone(),
                     proposal: proposal.id.clone(),
-                    invocation: invocation.into(),
-                    review_digest: digest(review)?,
-                    reviewer_driver_digest: driver_digest.into(),
-                    evidence_digest: evidence_digest.into(),
+                    invocation: None,
+                    review_digest: None,
+                    reviewer_driver_digest: None,
+                    evidence_digest: digest(&(&work.id, &proposal.id, read_digest))?,
                     read_digest: read_digest.into(),
                     operation_digest: digest(operation)?,
-                    verification: verification.into(),
-                    limitations: limitations.clone(),
+                    verification: "UNASSESSED".into(),
+                    limitations: vec!["Published locally without separate meaning review.".into()],
                     source_revisions: work
                         .checked
                         .services
@@ -235,6 +260,7 @@ pub(super) fn versions(
                     influence: influence.clone(),
                     external_request: work.request.clone(),
                     external_fingerprint: digest(&work.external_inputs)?,
+                    previous_narrative_digest: Some(digest(&work.retained)?),
                 },
             ))
         })

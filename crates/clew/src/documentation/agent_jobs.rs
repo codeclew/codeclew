@@ -124,10 +124,15 @@ fn account_path(id: &str) -> Result<String, ClewError> {
     if !store::valid_id(id) {
         return Err(invalid("invalid budget account identity"));
     }
-    Ok(format!(".codeclew/accounts/{id}.json"))
+    Ok(format!("execution/accounts/{id}.json"))
 }
 pub fn account(repo: &Repository, budget: &Budget) -> Result<Account, ClewError> {
-    let path = repo.path(&account_path(&budget.account)?)?;
+    let mut path = repo.path(&account_path(&budget.account)?)?;
+    // Preserve pre-portable ledgers on the first subsequent reservation. All new
+    // writes use durable storage so disposable work-cache loss cannot reset spend.
+    if !path.exists() {
+        path = repo.path(&format!(".codeclew/accounts/{}.json", budget.account))?;
+    }
     if path.exists() {
         let a: Account = store::read(&path, 16 * 1024 * 1024)?;
         if a.schema != "codeclew-documentation-budget/1.0"
@@ -173,6 +178,9 @@ pub fn reserve(repo: &Repository, config: &Config, run: &str) -> Result<Vec<Stri
     }
     let _lock = repo.lock()?;
     let mut ledger = account(repo, &config.budget)?;
+    // Migrate even a frozen/exhausted legacy account before denying dispatch.
+    // A later supported work-cache cleanup must not erase its stop condition.
+    save_account(repo, &config.budget, &ledger)?;
     if ledger
         .reservations
         .values()

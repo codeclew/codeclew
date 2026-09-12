@@ -854,7 +854,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T14. Provide portable CI jobs and a GitLab sandbox recipe
 
-- **Status:** - [ ]
+- **Status:** - [ ] Deferred by the user on 2026-09-12; prioritize the complete local workflow.
 - **Goal:** Operators can run the same update contract locally or through GitLab with an externally configured agent sandbox and explicit permissions.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC17, AC19; [scenario cards](../product/documentation-system/scenario-cards.md): S08, S11, S12; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T13
@@ -896,10 +896,10 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T15. Qualify transitive freshness and operational recovery
 
-- **Status:** - [ ]
+- **Status:** - [ ] The 40-service qualification is deferred by the user on 2026-09-13. Deliver the three local service reviews and a release first. Focused local regression checks remain in scope.
 - **Goal:** Demonstrate the conditional freshness guarantee and failure isolation on a representative multi-repository workload before claiming production suitability.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC18, AC19; [scenario cards](../product/documentation-system/scenario-cards.md): S05, S06, S07, S09, S10, S11, S12; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
-- **Depends on:** T14
+- **Depends on:** T13 for the local qualification. T14 CI integration is deferred by the user and does not block this local task.
 - **Read first:**
   - [documentation/bindings.rs](../../crates/clew/src/documentation/bindings.rs), lines 45-141,243-321.
   - [documentation/render.rs](../../crates/clew/src/documentation/render.rs), lines 1125-1340.
@@ -933,6 +933,10 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
 
 ## T16. Qualify the configured agent workflow and GitLab integration
+
+The GitLab portion is deferred with T14 by the user’s 2026-09-12 prioritization.
+Local runtime, authoring, recovery, migration and service-document delivery remain
+in scope independently of external platform configuration.
 
 - **Status:** - [ ]
 - **Goal:** Establish whether the actual routine author/reviewer setup produces acceptable documentation with bounded fallback, and whether actual GitLab-triggered jobs match the local integration contract.
@@ -969,7 +973,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T17. Finish skill, migration and production acceptance documentation
 
-- **Status:** - [ ]
+- **Status:** - [x] Local release guidance, migration and walkthrough complete on 2026-09-13; broader production/model/GitLab qualification remains deferred or unqualified as recorded in the [verdict](../product/validation/documentation-system-implementation-verdict.md).
 - **Goal:** An author and operator can use the implemented system from a fresh checkout with accurate guidance, compatible old documentation, and an honest readiness verdict.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC01-AC20; [scenario cards](../product/documentation-system/scenario-cards.md): S01-S12; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T15

@@ -883,6 +883,19 @@ class BootstrapAuthorityTest(unittest.TestCase):
         }
         self.assertEqual(changed_ids, {"kotlin23"})
 
+    def test_documentation_embedded_resources_are_in_staged_runtime_inputs(self) -> None:
+        import re
+        repository = MODULE_PATH.parent.parent
+        inputs, _development = bootstrap.source_manifest(repository)
+        selected = {row["path"] for row in inputs}
+        for relative in ["crates/clew/src/documentation/agent_jobs.rs", "crates/clew/src/operations.rs"]:
+            source = repository / relative
+            resources = re.findall(r'include_(?:str|bytes)!\("([^\"]+)"\)', source.read_text())
+            self.assertTrue(resources)
+            for resource in resources:
+                target = (source.parent / resource).resolve().relative_to(repository)
+                self.assertIn(str(target), selected, f"embedded resource missing from staged runtime: {target}")
+
     def test_component_registry_accepts_a_new_gradle_language_without_core_changes(self) -> None:
         repository = MODULE_PATH.parent.parent
         registry = bootstrap.load_component_registry(repository)

@@ -1,6 +1,6 @@
 # Documentation from committed source without a build
 
-Status: development source; not an already published 0.7.1 capability.
+Release scope: Codeclew 0.8.0; unavailable in 0.7.1.
 
 The `source-syntax` profile uses the existing documentation catalogue, narrative,
 binding, and renderer models. Python, Java, and Kotlin sources can be documented
@@ -483,3 +483,78 @@ as one authorized documentation artifact. `.codeclew` selection cache can be
 reconstructed from retained trusted evidence. History records observed tag commits
 and reports missing files/packages explicitly; moving a tag cannot rewrite an old
 snapshot. See the [revision event and history examples](../../skills/codeclew/references/documentation-evidence.md#revision-events-and-retained-history).
+
+The [portable CI operations guide](documentation-ci.md) describes executable local
+jobs, the GitLab recipe, sandbox/credential separation, durable budget ledgers and
+configured live qualification. Keep `execution/accounts` with the durable records
+when reconstructing disposable work caches.
+
+## Publish a local proposal
+
+Use `docs work prepare/read` and `docs proposal submit` as described in the
+[local authoring guide](../../skills/codeclew/references/service-documentation.md#complete-local-authoring-without-an-external-runner).
+After the proposal is machine-ready, publish without a hosted model:
+
+```sh
+clew docs proposal publish --root /work/architecture --proposal PROPOSAL_ID --unassessed
+```
+
+The publication retains the captured influence and rechecks source, notes and
+prior authored content. It records UNASSESSED meaning; machine validation does
+not invent a reviewer. Unauthored callables require explicit proposal gaps.
+Standard section summaries are limited to 2,048 bytes; detailed sequences belong
+to operation narratives.
+
+Portable bindings 1.2 share identical evidence within a snapshot. A fragment
+that retains an older observation or source occurrence keeps that exact version;
+sharing never replaces historical evidence with current source. Bindings 1.0
+and 1.1 remain readable. The 64 MiB per-record output limit remains enforced.
+
+Budget ledgers live in `execution/accounts`, outside the disposable work cache.
+Preserve them with documentation history. Legacy `.codeclew/accounts` ledgers
+migrate on the next reservation, including rejected reservations.
+
+## Attach a note or comment to a specific object
+
+Ask the agent to preserve the original text, record its provenance and period,
+and attach it to a stable target. A comment is a protected Markdown note with
+an association; the offline reader has no comment composer or discussion-thread
+lifecycle. Generated assessments and explanations stay separate from the original.
+
+| Scope | Association target |
+| --- | --- |
+| Entire service | `service:orders` |
+| Service ingress section | `service:orders/section-ingress` |
+| Saved scenario/process | `scenario:checkout` |
+| Entity definition | `entity:order` |
+| Data-flow view | `view:order-flow` |
+
+The five supported section IDs are `section-overview`,
+`section-responsibilities`, `section-entities`, `section-ingress`, and
+`section-egress`. Arbitrary methods, paragraphs and line numbers are not note
+targets. For an endpoint-specific question, associate the ingress section and
+record the exact endpoint/symbol as a focus hint in the original note or
+association metadata, or save a focused process. A focus hint is not a validated
+source anchor. Section selection does not guarantee narrow invalidation.
+
+The association requires a host `service`, a `notes/*.md` path, one or more
+existing targets, classification and applicability period. Use `intention` for
+a request or open question; do not turn it into a confirmed policy. Use
+`docs note list` to obtain the current input digest, then `docs note import
+--source ORIGINAL --input ASSOCIATION --expected-input-digest DIGEST`. If the
+original already lives in `notes/`, use `note inspect --path notes/FILE.md`,
+then `note associate --input ASSOCIATION --expected-note-digest ORIGINAL_DIGEST
+--expected-input-digest INPUT_DIGEST`. Every command also takes `--root DOCS`.
+
+`note prepare --id ID` prepares assessment work; it does not generate or publish
+an answer. Ask the agent to read the original and relevant evidence, answer with
+support or uncertainty, and publish the requested documentation update. A new
+comment does not automatically rewrite an entity definition, scenario or source.
+Specify whether to save an open question, answer it, expand an explanation, or
+change an explicit declaration. Original notes remain preserved.
+
+Choose explanation depth in the agent request: audience, selected services or
+process, desired contracts, branches, quantity examples, operational questions
+and acceptable gaps. There is no universal detail-level switch. `maxItems` and
+`maxBytes` bound evidence pages; `maxDepth` and `maxNodes` bound traversal. They
+do not guarantee interpretation quality or exhaustive coverage.
