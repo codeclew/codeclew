@@ -40,6 +40,11 @@ pub struct Bindings {
     pub output_hashes: BTreeMap<String, String>,
     #[serde(default)]
     pub retained_sources: BTreeMap<String, Source>,
+    /// Missing in legacy bundles; it never implies an accepted meaning review.
+    #[serde(default)]
+    pub section_states: BTreeMap<String, SectionState>,
+    #[serde(default)]
+    pub target_revisions: BTreeMap<String, Option<String>>,
 }
 
 pub fn expand_dependencies(
@@ -166,7 +171,10 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
         &repo.path(&format!("docs/generated/{id}/bindings.json"))?,
         64 * 1024 * 1024,
     )?;
-    if binding.schema != "codeclew-documentation-bindings/1.0" {
+    if !matches!(
+        binding.schema.as_str(),
+        "codeclew-documentation-bindings/1.0" | "codeclew-documentation-bindings/1.1"
+    ) {
         return Err(invalid("unsupported documentation bindings schema"));
     }
     for (id, observation) in &binding.observations {
@@ -201,6 +209,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
         "codeclew-documentation-html/1.2"
             | "codeclew-documentation-html/1.3"
             | "codeclew-documentation-html/1.4"
+            | "codeclew-documentation-html/1.5"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(
@@ -429,6 +438,8 @@ mod tests {
             ),
         ]);
         Bindings {
+            section_states: BTreeMap::new(),
+            target_revisions: BTreeMap::new(),
             schema: "codeclew-documentation-bindings/1.0".into(),
             input_digest: "input".into(),
             renderer: RENDERER.into(),

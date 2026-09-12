@@ -1,8 +1,8 @@
 # Documentation system implementation plan
 
-Status: proposed implementation plan, awaiting the user's second approval.
-Product target: approved on 2026-09-12. No T-task has been executed by this planning
-package. The current runtime remains the base revision recorded below.
+Status: approved for implementation by the user on 2026-09-12.
+Product target: approved on 2026-09-12. Execution status is recorded per task; the original planning
+package did not execute implementation tasks. The current runtime remains the base revision recorded below.
 
 ## Sources and scope
 
@@ -11,7 +11,35 @@ package. The current runtime remains the base revision recorded below.
 - **Architecture authority:** [Repository agreements](../../AGENTS.md); existing documentation, adapter, fact and Spring modules. Base revision `a2dcefe2296e65f8f98e1cb205b2bbe3589e7989` includes the development PR #8 work; rebase/migrate deliberately if that base changes.
 - **Review:** [Independent package verdict](../product/documentation-system/validation/verdict.md). A plan review is not runtime or model qualification.
 - **Execution model:** one bounded implementation task at a time, using the user's configured development agent. Production author/reviewer/fallback models are separately configurable; no fixed coding-worker model is required by this plan.
-- **Execution authorization:** target approval authorizes planning. Implementation begins only after this plan is explicitly approved. Credential installation, model budgets and publication destinations remain installation inputs; approval does not invent them.
+- **Execution authorization:** target approval authorizes planning. The user explicitly approved implementation on 2026-09-12. Credential installation, model budgets and publication destinations remain installation inputs; approval does not invent them.
+
+## Approved delivery extension — 2026-09-12
+
+The same approval adds a real three-service documentation repository and remote
+troubleshooting for a work MacBook using Java 17 / Kotlin 1.9 projects. Customer
+repository locations and generated source material remain in the separate private
+delivery repository, not the public Codeclew source tree.
+
+- T12 must expose a supported, versioned diagnostic/index export and offline
+  inspection route. The default report records tool/runtime/project versions,
+  capabilities, failed stage, stable reason codes, sanitized diagnostics, input
+  digests and exact retry instructions without credentials or absolute home paths.
+  Index/evidence content is explicit opt-in and its contents are inspectable before
+  sharing. Imported support material is read-only data and never executes repository
+  commands or agent instructions.
+- T15 must reproduce representative Java 17 / Kotlin 1.9 admission, capture and
+  documentation failures in a separate support environment with source checkouts
+  absent, using only the report and optional exported index. A report must separate
+  a repairable tool defect from missing evidence; universal diagnosis is not promised.
+- T17 includes the documented collect/inspect/share workflow and a MacBook smoke
+  test. Source language/target compatibility is distinct from the JDK required to
+  run Codeclew's compiler workers; missing runtime requirements must be diagnosed
+  before a worker is launched.
+- After the core tasks, deliver standard service/entity/contract documentation and
+  supported cross-service views for the three requested repositories in the new
+  documentation repository. Preserve declared versus inferred relationships, exact
+  source revisions, gaps, and human ownership. Qualify updates and a source-free
+  support round trip on this installation, then record measured results.
 
 ## Task conventions
 
@@ -153,7 +181,7 @@ gap. A passing plan reviewer, mock adapter or schema checker cannot substitute f
 
 ## T00. Publish stale status without generating new prose
 
-- **Status:** - [ ]
+- **Status:** - [x] Implemented 2026-09-12; two public CLI acceptance tests and 24 documentation unit tests pass (two native-worker tests intentionally not run for this Rust-only slice).
 - **Goal:** After a source change, readers immediately see which retained operation and all its views require review, even with no agent configured.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC01, AC02; [scenario cards](../product/documentation-system/scenario-cards.md): S04, S05; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** None

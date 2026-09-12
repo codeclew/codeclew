@@ -7,7 +7,7 @@ knowledge with bounded agent authoring, protected human material and best-effort
 multi-repository updates. Existing source snapshots, annotation interpreters,
 Narrative compatibility and atomic publication are reused rather than replaced by
 a second product. [Target](../target-system.md) and [decisions](../decisions.md) are approved;
-the [implementation plan](../../../plans/documentation-system-implementation-plan.md) is awaiting approval.
+the [implementation plan](../../../plans/documentation-system-implementation-plan.md) was approved on 2026-09-12.
 
 ## Pre-scan
 
@@ -81,3 +81,8 @@ portable evidence validation, event ordering and cache-free recovery. Visual che
 compare heterogeneous service fixtures using the same renderer. Runtime production
 qualification and actual routine/fallback model evaluation are future plan tasks,
 not claimed by this planning package's structural or independent review.
+
+## Implemented task mapping
+
+- T00 → S04/S05, AC01/AC02: independent status publication is implemented and covered
+  by public CLI acceptance. Other listed growth behavior remains pending.

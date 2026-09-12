@@ -52,3 +52,11 @@ The [pre-scan](increments/durable-documentation-pre-scan.md) and
 [impact](increments/durable-documentation-impact.md) identify the changed extension points.
 After implementation, each task records its demonstrated delta; do not rewrite this
 snapshot as if growth behavior existed at the base revision.
+
+## Observed implementation deltas
+
+- T00: status-only publication now retains original explanations and evidence while
+  exposing content/target revisions and current/stale/unverified state. Missing
+  sources are local gaps; old bundles and human files remain unchanged. Public CLI
+  acceptance covers helper changes, unavailable source, repeat publication and
+  output-edit conflicts. Graph transitions remain accurate.

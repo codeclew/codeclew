@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.4";
+pub const RENDERER: &str = "codeclew-documentation-html/1.5";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -358,4 +358,24 @@ pub struct Narrative {
     /// Explicit entrypoint-ID to actionable gap; omitted endpoints are rejected.
     #[serde(default)]
     pub gaps: BTreeMap<String, String>,
+}
+
+/// Source freshness is independent of narrative meaning review and runtime truth.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Freshness {
+    Current,
+    Stale,
+    Unverified,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SectionState {
+    pub freshness: Freshness,
+    pub verification: String,
+    pub content_revisions: BTreeMap<String, String>,
+    pub target_revisions: BTreeMap<String, Option<String>>,
+    pub coverage: BTreeMap<String, serde_json::Value>,
+    pub reasons: Vec<serde_json::Value>,
 }

@@ -42,6 +42,13 @@ pub enum Command {
     },
     /// Rebuild current source evidence and report affected document fragments.
     Check(ListArgs),
+    /// Publish current freshness while retaining previously accepted explanations.
+    Refresh {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, required = true)]
+        status_only: bool,
+    },
     /// Read bounded source-backed authoring input. Use --refresh to rebuild evidence.
     Context(ContextArgs),
     /// Review affected claims with bounded before/after evidence.
@@ -184,6 +191,10 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Refresh {
+            root,
+            status_only: _,
+        } => super::status::refresh(&Repository::open(&root)?),
         Command::Init { root, title } => Repository::init(&root, &title),
         Command::Bind {
             root,

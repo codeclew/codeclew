@@ -160,6 +160,13 @@ As a documentation reader, I navigate readable explanations and inspect their ev
 
 Shared renderer exists; root index is a service/scenario catalogue, not a complete entity knowledge portal. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
 
+### Implementation evidence
+
+T00 adds `docs refresh --status-only`: retained content with independently published
+freshness and revision targets. `docsys_t00_*` verifies helper-change invalidation,
+local unavailable-source gaps, immutable prior outputs and preserved human files.
+
+
 ## S05 — Detect changes and review affected explanations
 
 - **Status:** current
@@ -198,6 +205,13 @@ As a documentation maintainer, I identify affected explanations after source cha
 ### Planning notes
 
 Reports expose staleness; stale HTML is not independently republished and old affected subjects block render. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+
+### Implementation evidence
+
+T00 adds `docs refresh --status-only`: retained content with independently published
+freshness and revision targets. `docsys_t00_*` verifies helper-change invalidation,
+local unavailable-source gaps, immutable prior outputs and preserved human files.
+
 
 ## S06 — Preserve manual files and recover a publication
 

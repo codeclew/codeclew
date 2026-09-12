@@ -7,6 +7,7 @@ pub mod contracts;
 mod kotlin;
 pub mod model;
 pub mod render;
+pub mod status;
 pub mod store;
 mod syntax;
 

@@ -18,10 +18,10 @@ use std::{
 };
 
 const TEMPLATE: &str = include_str!("../../assets/documentation/template.html");
-const STYLE: &str = include_str!("../../assets/documentation/style.css");
+pub(super) const STYLE: &str = include_str!("../../assets/documentation/style.css");
 const SCRIPT: &str = include_str!("../../assets/documentation/app.js");
 
-fn escape(value: &str) -> String {
+pub(super) fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -29,7 +29,7 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
-fn html(data: &Value) -> Result<String, ClewError> {
+pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     let payload = serde_json::to_string(data)
         .map_err(io_error)?
         .replace('<', "\\u003c")
@@ -862,8 +862,8 @@ pub fn make_bindings(
         .into_iter()
         .map(|id| (id.clone(), checked.dependencies[&id].clone()))
         .collect();
-    Ok(Bindings {
-        schema: "codeclew-documentation-bindings/1.0".into(),
+    let mut binding = Bindings {
+        schema: "codeclew-documentation-bindings/1.1".into(),
         input_digest: checked.input_digest.clone(),
         renderer: RENDERER.into(),
         extractor: EXTRACTOR.into(),
@@ -897,7 +897,11 @@ pub fn make_bindings(
         narratives,
         output_hashes: BTreeMap::new(),
         retained_sources: checked.sources(),
-    })
+        section_states: BTreeMap::new(),
+        target_revisions: BTreeMap::new(),
+    };
+    super::status::update_states(&mut binding, checked);
+    Ok(binding)
 }
 
 fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked: &Check) -> Value {
@@ -1062,7 +1066,7 @@ pub fn mermaid(o: &Operation) -> String {
     out
 }
 
-fn markdown(title: &str, n: &Narrative) -> String {
+pub(super) fn markdown(title: &str, n: &Narrative) -> String {
     let mut out = format!(
         "# {}\n\nStatic source interpretation. Declared interactions do not establish runtime routing.\n\n",
         escape(title)
@@ -1221,7 +1225,7 @@ pub fn publish(
         ));
     }
     let bundle=digest(&json!({"context":checked.context_digest,"revisions":checked.services.iter().map(|(id,e)|(id,&e.revision)).collect::<BTreeMap<_,_>>(),"sources":checked.sources(),"narratives":narratives,"renderer":RENDERER,"rendererAssets":digest(&[TEMPLATE, STYLE, SCRIPT])?}))?[7..].to_owned();
-    let mut binding = make_bindings(&checked, narratives.clone())?;
+    let binding = make_bindings(&checked, narratives.clone())?;
     let mut files = BTreeMap::new();
     for (subject, n) in &narratives {
         let (kind, id) = subject
@@ -1242,7 +1246,8 @@ pub fn publish(
         } else {
             "scenarios"
         };
-        let data = page_data(subject, title, subtitle, n, &checked);
+        let mut data = page_data(subject, title, subtitle, n, &checked);
+        super::status::attach(&mut data, subject, &binding);
         files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
         files.insert(format!("{folder}/{id}.json"), bytes(&data)?);
         files.insert(format!("{folder}/{id}.md"), markdown(title, n).into_bytes());
@@ -1267,6 +1272,34 @@ pub fn publish(
         scenarios.len(),
         escape(&repo.manifest.title)
     );
+    commit_bundle(
+        repo,
+        &bundle,
+        binding,
+        files,
+        &overview,
+        &checked.input_digest,
+        previous.as_ref(),
+        previous_bytes.as_deref(),
+    )?;
+    Ok(
+        json!({"schema":"codeclew-docs-render/1.0","status":if gap_count==0 && !partial_source{"RENDERED"}else{"PARTIAL"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"runtime":"UNKNOWN"}),
+    )
+}
+
+/// Commit all immutable files before switching the sole reader pointer.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn commit_bundle(
+    repo: &Repository,
+    bundle: &str,
+    mut binding: Bindings,
+    mut files: BTreeMap<String, Vec<u8>>,
+    overview: &str,
+    input_digest: &str,
+    previous: Option<&(String, Bindings)>,
+    previous_bytes: Option<&[u8]>,
+) -> Result<(), ClewError> {
+    let previous_root = repo.path("docs/index.html")?;
     let bundle_overview = overview.replace(&format!("href=\"generated/{bundle}/"), "href=\"");
     files.insert("overview.html".into(), bundle_overview.into_bytes());
     binding.output_hashes = files
@@ -1281,7 +1314,7 @@ pub fn publish(
         ));
     }
     let _lock = repo.lock()?;
-    if repo.input_digest()? != checked.input_digest {
+    if repo.input_digest()? != input_digest {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
             "documentation input changed before output publication",
@@ -1292,13 +1325,13 @@ pub fn publish(
     } else {
         None
     };
-    if current_bytes != previous_bytes {
+    if current_bytes.as_deref() != previous_bytes {
         return Err(ClewError::new(
             ErrorCode::WwConflict,
             "documentation output changed during rendering",
         ));
     }
-    if let Some((id, binding)) = &previous {
+    if let Some((id, binding)) = previous {
         bindings::verify_outputs(repo, id, binding)?;
     }
     let destination = repo.path(&format!("docs/generated/{bundle}"))?;
@@ -1338,7 +1371,9 @@ pub fn publish(
     }
     // One pointer changes only after all matching documents and bindings exist.
     repo.atomic("docs/index.html", overview.as_bytes())?;
-    Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if gap_count==0 && !partial_source{"RENDERED"}else{"PARTIAL"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"runtime":"UNKNOWN"}),
-    )
+    Ok(())
+}
+
+pub(super) fn renderer_digest() -> Result<String, ClewError> {
+    digest(&[TEMPLATE, STYLE, SCRIPT])
 }

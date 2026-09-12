@@ -92,9 +92,17 @@ rejects missing authored operations and partial source capture.
 
 ```sh
 clew docs check --root /work/architecture
+clew docs refresh --root /work/architecture --status-only
 clew docs changes --root /work/architecture --limit 100
 clew docs changes --root /work/architecture --fragment RETURNED_FRAGMENT_ID --limit 100
 ```
+
+`docs refresh --status-only` publishes a new immutable status snapshot without
+calling an agent. It retains the old explanation and exact source snippets,
+shows content versus target revisions, and marks unavailable inputs locally.
+Meaning review remains unassessed for legacy/direct Narrative content. A status
+refresh cannot remove a prior review obligation or overwrite edited generated
+files. HTML, Markdown and diagram exports carry the same operation status.
 
 A logical source ID is separate from its immutable revision/blob/byte occurrence.
 Whitespace relocation preserves unique callable bindings and updates links.
