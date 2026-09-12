@@ -4078,6 +4078,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         subject: "scenario:checkout".into(),
         context_digest: checked.context_digest.clone(),
         operations: vec![Operation {
+            assessment: None,
             overview_diagram: None,
             interface_contracts: vec![],
             id: "checkout".into(),

@@ -2071,3 +2071,372 @@ fn docsys_t08_section_work_uses_separate_author_and_reviewer() {
         "VERIFIED_WITH_LIMITATIONS"
     );
 }
+
+fn note_fixture(f: &Fixture) -> (serde_json::Value, Vec<u8>) {
+    use serde_json::json;
+    let a = json!({"schema":"codeclew-documentation-note-association/1.0","id":"policy","title":"Quantity policy","service":"orders","path":"notes/history.md","targets":["service:orders","service:orders/section-responsibilities"],"classification":"mixed","period":"Historical and current claims, explicitly distinguished","tags":["history","policy"],"metadata":{"custom":{"retained":true}}});
+    let original = include_str!("../../../fixtures/documentation-system/notes/history.md")
+        .replace('\n', "\r\n")
+        .into_bytes();
+    let source = f.temp.path().join("import.md");
+    fs::write(&source, &original).unwrap();
+    let path = f.input("note.json", &a);
+    let digest = f.ok(&["docs", "note", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result = f.ok(&[
+        "docs",
+        "note",
+        "import",
+        "--source",
+        source.to_str().unwrap(),
+        "--input",
+        path.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ]);
+    assert_eq!(
+        result["original"]["text"].as_str().unwrap().as_bytes(),
+        original
+    );
+    (a, original)
+}
+fn note_work(f: &Fixture) -> (String, serde_json::Value) {
+    use serde_json::json;
+    let mut page = f.ok(&["docs", "note", "prepare", "--id", "policy"]);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(f, &work, json!({"cursor":cursor}));
+    }
+    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    (work, frozen)
+}
+fn note_proposal(frozen: &serde_json::Value, outcome: &str) -> serde_json::Value {
+    use serde_json::json;
+    let flow = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
+        })
+        .unwrap()
+        .0;
+    json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"note1","title":"Assessment of quantity policy","summary":{"text":"The current implementation returns the requested quantity; the doubling claim is not current behavior. The historical assertion needs period evidence.","evidence":["note1",flow],"uncertainty":"Current source does not establish historical behavior or policy intent."},"steps":[],"assessment":{"outcome":outcome,"period":"Current committed source; the historical period remains unverified","proposedCorrection":{"text":"Current implementation returns the requested quantity.","evidence":[flow]}}}]})
+}
+#[test]
+fn docsys_t09_import_association_and_export_preserve_original_bytes() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (mut a, original) = note_fixture(&f);
+    let entity = serde_json::json!({"schema":"codeclew-documentation-entity/1.0","id":"quantity","title":"Quantity","description":"An explicit human domain concept.","relations":[],"limitations":[]});
+    let input = f.input("entity.json", &entity);
+    let rows = f.ok(&["docs", "entity", "list"]);
+    f.ok(&[
+        "docs",
+        "entity",
+        "put",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        rows["inputDigest"].as_str().unwrap(),
+    ]);
+    fs::write(f.docs.join("scenarios/reserve.yaml"),serde_json::to_vec(&serde_json::json!({"schema":"codeclew-documentation-scenario/1.0","id":"reserve","title":"Reserve quantity","summary":"Explicit saved selection","root":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}}})).unwrap()).unwrap();
+    a["targets"].as_array_mut().unwrap().extend([
+        serde_json::json!("entity:quantity"),
+        serde_json::json!("scenario:reserve"),
+    ]);
+    let input = f.input("note-targets.json", &a);
+    let rows = f.ok(&["docs", "note", "list"]);
+    f.ok(&[
+        "docs",
+        "note",
+        "associate",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        rows["inputDigest"].as_str().unwrap(),
+        "--expected-note-digest",
+        rows["items"][0]["original"]["digest"].as_str().unwrap(),
+    ]);
+    let checked = f.checked();
+    let narrative = f.author("orders", &checked);
+    let result = f.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
+    let data = read(f.bundle(result["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(
+        data["notes"][0]["original"]["text"]
+            .as_str()
+            .unwrap()
+            .as_bytes(),
+        original
+    );
+    assert_eq!(data["notes"][0]["association"]["metadata"], a["metadata"]);
+    assert!(data["notes"][0]["assessment"].is_null());
+    let process = read(f.bundle(result["bundle"].as_str().unwrap(), "scenarios/reserve.json"));
+    assert_eq!(process["notes"][0]["association"]["id"], "policy");
+    let html =
+        fs::read_to_string(f.bundle(result["bundle"].as_str().unwrap(), "services/orders.html"))
+            .unwrap();
+    assert!(!html.contains("<script>window.noteInstructionExecuted"));
+    assert!(html.contains("Separate agent assessment") && html.contains("Related human notes"));
+    let md = fs::read_to_string(f.bundle(result["bundle"].as_str().unwrap(), "services/orders.md"))
+        .unwrap();
+    assert!(
+        md.contains("Human note: Quantity policy")
+            && md.contains("Separate agent assessment: UNASSESSED")
+    );
+    let rows = f.ok(&["docs", "note", "list"]);
+    let digest = rows["inputDigest"].as_str().unwrap();
+    let source = f.temp.path().join("import.md");
+    let input = f.input("note.json", &a);
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "note",
+            "import",
+            "--source",
+            source.to_str().unwrap(),
+            "--input",
+            input.to_str().unwrap(),
+            "--expected-input-digest",
+            digest
+        ])
+        .0,
+        0
+    );
+    fs::rename(
+        f.docs.join("notes/history.md"),
+        f.docs.join("notes/renamed.md"),
+    )
+    .unwrap();
+    assert_eq!(
+        f.ok(&["docs", "note", "list"])["items"][0]["original"]["status"],
+        "ABSENT"
+    );
+    a["path"] = json!("notes/renamed.md");
+    a["title"] = json!("Renamed title, same identity");
+    let input = f.input("note.json", &a);
+    let rows = f.ok(&["docs", "note", "list"]);
+    let note_digest = f.ok(&["docs", "note", "inspect", "--path", "notes/renamed.md"])["original"]
+        ["digest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result = f.ok(&[
+        "docs",
+        "note",
+        "associate",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        rows["inputDigest"].as_str().unwrap(),
+        "--expected-note-digest",
+        &note_digest,
+    ]);
+    assert_eq!(
+        f.ok(&["docs", "note", "list"])["items"][0]["association"]["id"],
+        "policy"
+    );
+    let mut bad = a.clone();
+    bad["targets"] = json!(["service:guessed-renamed-service"]);
+    let input = f.input("note.json", &bad);
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "note",
+            "associate",
+            "--input",
+            input.to_str().unwrap(),
+            "--expected-input-digest",
+            result["inputDigest"].as_str().unwrap(),
+            "--expected-note-digest",
+            &note_digest
+        ])
+        .0,
+        0
+    );
+    f.ok(&[
+        "docs",
+        "note",
+        "remove",
+        "--id",
+        "policy",
+        "--expected-input-digest",
+        result["inputDigest"].as_str().unwrap(),
+    ]);
+    assert_eq!(fs::read(f.docs.join("notes/renamed.md")).unwrap(), original);
+    let refresh = f.ok(&["docs", "refresh", "--status-only"]);
+    let retained = read(f.bundle(refresh["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(retained["notes"][0]["targetChanged"], true);
+}
+#[test]
+fn docsys_t09_assessments_require_evidence_and_reject_concurrent_note_edits() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (_, original) = note_fixture(&f);
+    let (work, frozen) = note_work(&f);
+    let proposal = note_proposal(&frozen, "CONTRADICTED");
+    let result = proposal_submit(&f, &work, &proposal);
+    assert!(
+        result["status"].as_str().unwrap().starts_with("READY_"),
+        "{result}"
+    );
+    let mut unsupported = proposal.clone();
+    unsupported["operations"][0]["summary"]["evidence"] = json!(["note1"]);
+    unsupported["operations"][0]["assessment"]["proposedCorrection"] = json!(null);
+    assert_eq!(
+        proposal_submit(&f, &work, &unsupported)["status"],
+        "NEEDS_REPAIR"
+    );
+    unsupported["operations"][0]["assessment"]["outcome"] = json!("UNKNOWN");
+    assert!(
+        proposal_submit(&f, &work, &unsupported)["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    let mut history = proposal.clone();
+    history["operations"][0]["assessment"]["outcome"] = json!("HISTORICAL");
+    history["operations"][0]["assessment"]["period"] = json!("");
+    assert_eq!(
+        proposal_submit(&f, &work, &history)["status"],
+        "NEEDS_REPAIR"
+    );
+    history["operations"][0]["assessment"]["period"] = json!(format!(
+        "revision:{}",
+        frozen["checked"]["services"]["orders"]["revision"]
+            .as_str()
+            .unwrap()
+    ));
+    assert!(
+        proposal_submit(&f, &work, &history)["status"]
+            .as_str()
+            .unwrap()
+            .starts_with("READY_")
+    );
+    let before = f.ok(&["docs", "note", "list"]);
+    fs::write(
+        f.docs.join("notes/history.md"),
+        [original.clone(), b"Human concurrent edit\n".to_vec()].concat(),
+    )
+    .unwrap();
+    let input = f.input("concurrent-proposal.json", &proposal);
+    let result = f.run(&[
+        "docs",
+        "proposal",
+        "submit",
+        "--work",
+        &work,
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert_ne!(result.0, 0);
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "note",
+            "remove",
+            "--id",
+            "policy",
+            "--expected-input-digest",
+            before["inputDigest"].as_str().unwrap()
+        ])
+        .0,
+        0
+    );
+    assert!(
+        fs::read_to_string(f.docs.join("notes/history.md"))
+            .unwrap()
+            .ends_with("Human concurrent edit\n")
+    );
+}
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t09_isolated_review_preserves_notes_and_marks_assessment_stale() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (_, original) = note_fixture(&f);
+    let (work, frozen) = note_work(&f);
+    let proposal = note_proposal(&frozen, "CONTRADICTED");
+    let human = f.docs.join("notes/history.md");
+    let association = f.docs.join("catalog/notes/policy.json");
+    let options = json!({"mode":"denials","readPaths":[human,association],"writePaths":[human,association],"proposal":proposal});
+    let config = execution_config(&f, options.clone(), options, None);
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    assert_eq!(fs::read(&human).unwrap(), original);
+    let data = read(f.bundle(
+        result["publication"]["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    assert_eq!(
+        data["notes"][0]["assessment"]["assessment"]["outcome"],
+        "CONTRADICTED"
+    );
+    assert_eq!(
+        data["operationStates"]["assessment-policy"]["verification"],
+        "VERIFIED_WITH_LIMITATIONS"
+    );
+    let report = run_report(&f, &result);
+    assert_eq!(report["attempts"][0]["role"], "author");
+    assert_eq!(report["attempts"][1]["role"], "reviewer");
+    if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T09_REVIEW") {
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            f.bundle(
+                result["publication"]["bundle"].as_str().unwrap(),
+                "services/orders.html",
+            ),
+            std::path::Path::new(&directory).join("notes.html"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        &human,
+        [original.clone(), b"\nNew human policy\n".to_vec()].concat(),
+    )
+    .unwrap();
+    let result = f.ok(&["docs", "refresh", "--status-only"]);
+    let after = read(f.bundle(result["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(
+        after["operationStates"]["assessment-policy"]["freshness"],
+        "STALE"
+    );
+    assert_eq!(after["notes"][0]["targetChanged"], true);
+    assert_eq!(
+        after["notes"][0]["assessment"],
+        data["notes"][0]["assessment"]
+    );
+    assert_eq!(after["notes"][0]["original"], data["notes"][0]["original"]);
+    assert!(
+        fs::read_to_string(&human)
+            .unwrap()
+            .ends_with("New human policy\n")
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t09_embedded_note_instructions_cannot_bypass_review() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (_, original) = note_fixture(&f);
+    let (work, _) = note_work(&f);
+    let config = execution_config(&f, json!({"mode":"injection"}), json!({}), None);
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "GENERATION_GAP", "{result}");
+    assert_eq!(fs::read(f.docs.join("notes/history.md")).unwrap(), original);
+    assert!(
+        run_report(&f, &result)["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["role"] != "reviewer")
+    );
+}

@@ -93,12 +93,12 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
     }
     let (expected, allowed): (BTreeSet<String>, BTreeSet<String>) = match kind {
         "service" => {
-            let service = checked
+            let _service = checked
                 .services
                 .get(id)
                 .ok_or_else(|| invalid("service evidence is unresolved"))?;
             (
-                super::sections::expected(service),
+                super::notes::expected(checked, id),
                 BTreeSet::from([id.into()]),
             )
         }
@@ -127,13 +127,20 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 "summary must be brief plain prose without implementation code",
             ));
         }
-        supported_refs(
-            &o.summary.dependency_ids,
-            &o.summary.source_ids,
-            checked,
-            &allowed,
-        )?;
-        if kind == "service" && super::sections::contains(&o.id) {
+        if super::notes::is_root(&o.id) {
+            validate_assessment(o, checked, id, &allowed)?;
+        } else {
+            if o.assessment.is_some() {
+                return Err(invalid("assessment metadata requires a note root"));
+            }
+            supported_refs(
+                &o.summary.dependency_ids,
+                &o.summary.source_ids,
+                checked,
+                &allowed,
+            )?;
+        }
+        if kind == "service" && (super::sections::contains(&o.id) || super::notes::is_root(&o.id)) {
             if !o.events.is_empty()
                 || !o.explanation.is_empty()
                 || !o.interface_contracts.is_empty()
@@ -501,11 +508,83 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
     }
     if expected
         .difference(&covered)
-        .any(|id| !super::sections::contains(id))
+        .any(|id| !super::sections::contains(id) && !super::notes::is_root(id))
     {
         return Err(invalid(
             "full scope requires every discovered entrypoint to have an operation or an explicit gap",
         ));
+    }
+    Ok(())
+}
+fn validate_assessment(
+    o: &Operation,
+    checked: &Check,
+    service: &str,
+    allowed: &BTreeSet<String>,
+) -> Result<(), ClewError> {
+    let a = o
+        .assessment
+        .as_ref()
+        .ok_or_else(|| invalid("note root requires assessment metadata"))?;
+    let note = checked
+        .dependencies
+        .get(&format!("note:{}", a.note))
+        .ok_or_else(|| invalid("assessment note is unavailable"))?;
+    if a.schema != "codeclew-documentation-note-assessment/1.0"
+        || o.id != super::notes::root(&a.note)
+        || note.service != service
+        || note.normalized["original"]["status"] != "CAPTURED"
+        || note.normalized["original"]["digest"] != a.note_digest
+        || note.normalized["associationDigest"] != a.association_digest
+        || !matches!(
+            a.outcome.as_str(),
+            "CONSISTENT" | "CONTRADICTED" | "HISTORICAL" | "UNKNOWN"
+        )
+        || a.period.trim().is_empty()
+        || a.period.len() > 512
+        || !o.summary.dependency_ids.contains(&note.id)
+    {
+        return Err(invalid(
+            "assessment must bind the exact note, association, period and declared outcome",
+        ));
+    }
+    if a.outcome == "HISTORICAL" {
+        let sources = checked.sources();
+        let revision=a.period.strip_prefix("revision:").ok_or_else(||invalid("historical assessment period must name revision:FULL_SHA captured in its supporting source"))?;
+        if o.summary.source_ids.is_empty()
+            || o.summary
+                .source_ids
+                .iter()
+                .any(|id| sources.get(id).is_none_or(|s| s.revision != revision))
+        {
+            return Err(invalid(
+                "historical assessment period does not match retained source revisions",
+            ));
+        }
+    }
+    if o.summary.source_ids.is_empty() {
+        if a.outcome != "UNKNOWN"
+            || o.boundaries.is_empty()
+            || o.summary.dependency_ids != vec![note.id.clone()]
+            || a.proposed_correction.is_some()
+        {
+            return Err(invalid(
+                "an assessment without code evidence must remain UNKNOWN with a limitation and no correction",
+            ));
+        }
+    } else {
+        supported_refs(
+            &o.summary.dependency_ids,
+            &o.summary.source_ids,
+            checked,
+            allowed,
+        )?;
+    }
+    if let Some(c) = &a.proposed_correction {
+        if c.text.trim().is_empty() || c.text.len() > 8192 {
+            return Err(invalid("invalid proposed note correction"));
+        }
+        supported_refs(&c.dependency_ids, &c.source_ids, checked, allowed)?;
     }
     Ok(())
 }
@@ -661,6 +740,27 @@ pub fn make_bindings(
                 &o.summary.source_ids,
                 checked,
             )?;
+            if let Some(a) = &o.assessment {
+                let mut deps = o.summary.dependency_ids.clone();
+                let mut sources = o.summary.source_ids.clone();
+                if let Some(c) = &a.proposed_correction {
+                    deps.extend(c.dependency_ids.clone());
+                    sources.extend(c.source_ids.clone());
+                }
+                deps.sort();
+                deps.dedup();
+                sources.sort();
+                sources.dedup();
+                add_binding(
+                    &mut fragments,
+                    format!("{prefix}/assessment"),
+                    subject,
+                    a,
+                    &deps,
+                    &sources,
+                    checked,
+                )?;
+            }
             for p in &o.participants {
                 add_binding(
                     &mut fragments,
@@ -754,6 +854,17 @@ pub fn make_bindings(
     }
     for (id, evidence) in &checked.services {
         let subject = format!("service:{id}");
+        if let Some(scope) = checked.dependencies.get(&format!("note-scope:{id}")) {
+            add_binding(
+                &mut fragments,
+                format!("{subject}/note-catalogue"),
+                &subject,
+                &scope.normalized,
+                std::slice::from_ref(&scope.id),
+                &[],
+                checked,
+            )?;
+        }
         if let Some(scope) = checked.dependencies.get(&format!("entity-scope:{id}")) {
             add_binding(
                 &mut fragments,
@@ -991,6 +1102,13 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     let mut sources = BTreeSet::new();
     for o in &n.operations {
         sources.extend(o.summary.source_ids.clone());
+        if let Some(c) = o
+            .assessment
+            .as_ref()
+            .and_then(|a| a.proposed_correction.as_ref())
+        {
+            sources.extend(c.source_ids.clone());
+        }
         for paragraph in &o.explanation {
             sources.extend(paragraph.source_ids.clone());
         }
@@ -1049,7 +1167,7 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     );
     boundaries.sort();
     boundaries.dedup();
-    json!({"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -1161,7 +1279,7 @@ pub(super) fn markdown(
         }
     }
     for o in &n.operations {
-        if super::sections::contains(&o.id) {
+        if super::sections::contains(&o.id) || super::notes::is_root(&o.id) {
             continue;
         }
         if let Some(state) = states.get(&format!("{}/{}", n.subject, o.id)) {
@@ -1295,13 +1413,13 @@ fn publish_internal(
     let services = repo.services()?;
     let scenarios = repo.scenarios()?;
     let mut fresh = BTreeMap::new();
-    for (id, evidence) in &checked.services {
+    for id in checked.services.keys() {
         let subject = format!("service:{id}");
         fresh.insert(
             subject.clone(),
             default_narrative(
                 subject,
-                super::sections::expected(evidence).into_iter(),
+                super::notes::expected(&checked, id).into_iter(),
                 &checked,
             ),
         );
@@ -1328,11 +1446,7 @@ fn publish_internal(
             continue;
         };
         let expected: BTreeSet<String> = if let Some(id) = n.subject.strip_prefix("service:") {
-            checked
-                .services
-                .get(id)
-                .map(super::sections::expected)
-                .unwrap_or_else(|| super::sections::ids().collect())
+            super::notes::expected(&checked, id)
         } else {
             BTreeSet::from([id_from_subject(&n.subject).to_owned()])
         };
@@ -1696,6 +1810,7 @@ fn publish_internal(
                 "Source freshness: {}. See operation states in the accompanying JSON.\n\n{}",
                 state.freshness.as_str(),
                 markdown(title, n, &binding.section_states)
+                    + &super::notes::markdown(&data["notes"])
             )
             .into_bytes(),
         );
@@ -1716,7 +1831,7 @@ fn publish_internal(
                 .into_bytes(),
             );
         }
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.iter().filter(|o|!super::sections::contains(&o.id)).count(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.iter().filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)).count(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
     let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><p>{}</p><details><summary>Declaration and source checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
@@ -1745,7 +1860,7 @@ fn publish_internal(
         previous_bytes.as_deref(),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
+        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)&&!super::notes::is_root(&o.id)).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
     )
 }
 

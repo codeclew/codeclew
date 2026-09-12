@@ -286,3 +286,59 @@ ID. Links require explicit existing entity IDs and are never rebound by name.
 Entity and contract dependencies propagate through document bindings. Missing
 declared evidence remains an explicit gap. These records express declared or
 proposed domain interpretation, not runtime ownership proof.
+
+## Protected notes and separate assessments
+
+Human notes are bounded UTF-8 Markdown under `notes/`, outside generated files.
+Imports preserve all original bytes, including frontmatter, line endings, tags,
+formatting and embedded text. The reader shows escaped original text, so embedded
+HTML and instructions cannot become executable page content. Associations live
+in `catalog/notes`; they never rewrite the original. See the
+[note association schema](../../schemas/documentation/note-association.schema.json).
+
+```sh
+./clew docs note list --root /path/to/docs
+./clew docs note inspect --root /path/to/docs --path notes/existing.md
+./clew docs note import --root /path/to/docs --input association.json \
+  --source /path/to/original.md --expected-input-digest DIGEST
+./clew docs note associate --root /path/to/docs --input association.json \
+  --expected-input-digest DIGEST --expected-note-digest NOTE_DIGEST
+./clew docs note prepare --root /path/to/docs --id policy
+./clew docs work run --root /path/to/docs --work WORK_ID --config execution.json
+./clew docs note remove --root /path/to/docs --id policy --expected-input-digest DIGEST
+```
+
+Import requires a new destination and note ID. To associate an existing file,
+use the original digest returned by `note inspect`; after association `note list`
+returns that digest too. A rename
+requires an explicit association update using the same ID. A missing old path
+stays absent until that update; matching titles never cause a rebind. Removal
+deletes only the association. Local import source paths are not persisted.
+
+Targets explicitly name `service:ID`, `service:ID/section-overview` (or another
+standard section), `entity:ID`, or `scenario:ID`. They must exist when associated.
+The assessment service is explicit and may differ from a related object's
+service. Classification (`fact`, `historical-context`, `policy`, `intention`,
+`opinion`, `mixed`), declared period, tags and arbitrary bounded metadata retain
+human/imported authority. A fact classification is not automatic verification.
+
+Optional assessments use a supplied `NOTE` work reference as the proposal root,
+an evidence-bound summary and separate assessment metadata. Outcomes are
+`CONSISTENT`, `CONTRADICTED`, `HISTORICAL` or `UNKNOWN`; proposed corrections are
+separate claims with their own evidence. Without source evidence, the assessment
+must remain `UNKNOWN` with a limitation and no correction. Historical conclusions
+must name `revision:FULL_SHA` matching their captured source. Calendar periods,
+intentions and undocumented history need additional evidence or an explicit
+unknown; current code cannot establish them. Deterministic checks bind inputs and
+structure; the isolated reviewer assesses meaning and cannot grant human authority.
+
+Author/reviewer jobs cannot write original notes or association records. Concurrent
+text or association edits invalidate prepared work; later changes mark accepted
+assessments stale. Status-only refresh keeps the original publication snapshot
+and flags changed note inputs. New generation can display the new original beside
+a stale retained assessment; their digests and provenance remain separate.
+HTML navigation/search and Markdown/JSON exports include related notes. Evidence
+tracking covers captured text, associations and recorded inputs, not every implicit
+claim in arbitrary prose. Limits are 128 associations, 256 KiB per note and the
+existing bounded work-read budget; an oversized required read remains a named gap
+and cannot be silently accepted. This is not a general Markdown execution engine.

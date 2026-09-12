@@ -131,3 +131,11 @@ not claimed by this planning package's structural or independent review.
   section gaps remain navigable, agent proposals cannot alter human relationships,
   and explicit linked entity facts participate in transitive bindings. Targeted
   CLI tests passed; final shared-pipeline and layout evidence is recorded in T08.
+
+- T09 → S06/S10, AC12/AC18: exact human/imported text, association metadata and
+  generated assessments have separate ownership. Stable explicit service/section/
+  entity/process targets require no name inference. Note and association changes
+  invalidate work/accepted assessments, while status-only refresh preserves the
+  prior snapshot. Four focused CLI cases, nine shared publication/section/note
+  regressions and 25 documentation unit cases pass; layout and source inspection
+  checks are recorded in T09. No strict completeness claim for arbitrary prose.

@@ -1,0 +1,78 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-note-assessment/1.0"
+    },
+    "note": {
+      "type": "string"
+    },
+    "noteDigest": {
+      "type": "string"
+    },
+    "associationDigest": {
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "CONSISTENT",
+        "CONTRADICTED",
+        "HISTORICAL",
+        "UNKNOWN"
+      ]
+    },
+    "period": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "proposedCorrection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "dependencyIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "sourceIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "text",
+            "dependencyIds",
+            "sourceIds"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "note",
+    "noteDigest",
+    "associationDigest",
+    "outcome",
+    "period"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Metadata attached to a separate summary-only assessment root; summary evidence and accepted review version remain canonical. Outcome never changes the original note classification."
+}

@@ -229,6 +229,47 @@
           "items": {
             "$ref": "#/$defs/contract"
           }
+        },
+        "assessment": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "outcome": {
+                  "enum": [
+                    "CONSISTENT",
+                    "CONTRADICTED",
+                    "HISTORICAL",
+                    "UNKNOWN"
+                  ]
+                },
+                "period": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "proposedCorrection": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/claim"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "outcome",
+                "period"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only for a NOTE work reference. Cite the note in the summary. Without source evidence use UNKNOWN, a limitation, and no correction. Periods and historical claims require separate evidence. Never rewrite the original."
         }
       },
       "required": [

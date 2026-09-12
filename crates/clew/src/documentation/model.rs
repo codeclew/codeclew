@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.7";
+pub const RENDERER: &str = "codeclew-documentation-html/1.8";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -332,6 +332,8 @@ pub struct Operation {
     pub id: String,
     pub title: String,
     pub summary: Fragment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<super::notes::Assessment>,
     /// Domain explanation tied to diagram steps and their evidence.
     #[serde(default)]
     pub explanation: Vec<Explanation>,

@@ -133,3 +133,12 @@ snapshot as if growth behavior existed at the base revision.
   services, partial failure, identity/ownership and isolated section author/reviewer
   work. Shared regression and reader QA results are in the implementation plan.
   Existing S01/S04/S07 graph edges are unchanged.
+
+- T09: protected note import/inspection/association and separate assessment roots
+  are implemented. Original Markdown bytes and metadata remain distinct from
+  generated conclusions and corrections. Four CLI cases pass, including concurrent
+  edits, rejected embedded instructions, real sandbox write denials and stale
+  assessment retention. The shared T00/T08/T09 run passes nine cases and 25
+  documentation unit cases pass. Reader QA confirms escaped original text and
+  mobile source inspection. Historical outcomes bind an explicit captured revision;
+  arbitrary prose/calendar claims remain bounded. S06/S10 edges are unchanged.

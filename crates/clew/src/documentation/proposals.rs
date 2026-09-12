@@ -52,9 +52,19 @@ pub struct ProposedOperation {
     pub entrypoint: String,
     pub title: String,
     pub summary: Claim,
+    #[serde(default)]
+    pub assessment: Option<ProposedAssessment>,
     pub steps: Vec<Step>,
     #[serde(default)]
     pub contracts: Vec<Contract>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposedAssessment {
+    pub outcome: String,
+    pub period: String,
+    #[serde(default)]
+    pub proposed_correction: Option<Claim>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -233,7 +243,7 @@ impl Builder<'_> {
         for reference in references {
             let handle = self.handle(reference)?;
             match handle.kind.as_str() {
-                "DEPENDENCY" => {
+                "DEPENDENCY" | "NOTE" => {
                     let observation = &self.work.checked.dependencies[&handle.id];
                     deps.insert(handle.id.clone());
                     sources.extend(observation.source_ids.iter().cloned());
@@ -264,7 +274,13 @@ impl Builder<'_> {
                 _ => return Err(invalid("unsupported evidence reference")),
             }
         }
-        if deps.len() > 128 || sources.is_empty() || sources.len() > 32 {
+        if deps.len() > 128
+            || (sources.is_empty()
+                && !deps
+                    .iter()
+                    .all(|id| self.work.checked.dependencies[id].kind == "NOTE_ASSOCIATION"))
+            || sources.len() > 32
+        {
             return Err(invalid(
                 "claim evidence exceeds canonical bounds or has no source",
             ));
@@ -533,18 +549,21 @@ fn materialize(
             return Ok(work.subject[9..].into());
         }
         let handle = builder.handle(reference)?;
-        if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION") {
+        if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
             return Err(invalid("operation requires an entrypoint work reference"));
         }
-        if work
-            .request
-            .entrypoint
-            .as_ref()
-            .is_some_and(|id| id != &handle.id)
-        {
+        if work.request.entrypoint.as_ref().is_some_and(|id| {
+            id != &handle.id
+                && !(handle.kind == "NOTE"
+                    && id == &super::notes::root(handle.id.strip_prefix("note:").unwrap()))
+        }) {
             return Err(invalid("operation is outside the requested entrypoint"));
         }
-        Ok(handle.id.clone())
+        Ok(if handle.kind == "NOTE" {
+            super::notes::root(handle.id.strip_prefix("note:").unwrap())
+        } else {
+            handle.id.clone()
+        })
     };
     for (index, proposed) in input.operations.iter().enumerate() {
         if proposed.title.len() > 512 {
@@ -557,6 +576,7 @@ fn materialize(
             id,
             title: proposed.title.clone(),
             summary,
+            assessment: None,
             explanation: Vec::new(),
             interface_contracts: Vec::new(),
             overview_diagram: None,
@@ -568,7 +588,46 @@ fn materialize(
         if let Some(gap) = &proposed.summary.uncertainty {
             op.boundaries.push(gap.clone());
         }
-        if super::sections::contains(&op.id) {
+        if super::notes::is_root(&op.id) {
+            let a = proposed
+                .assessment
+                .as_ref()
+                .ok_or_else(|| invalid("note assessment requires an outcome and period"))?;
+            let note_id = op.id.strip_prefix("assessment-").unwrap();
+            let note = work
+                .checked
+                .dependencies
+                .get(&format!("note:{note_id}"))
+                .ok_or_else(|| invalid("unknown note"))?;
+            builder.handle(&proposed.entrypoint)?;
+            if !op.summary.dependency_ids.contains(&note.id) {
+                return Err(invalid(
+                    "assessment must cite its captured note as well as supporting code",
+                ));
+            }
+            op.assessment = Some(super::notes::Assessment {
+                schema: "codeclew-documentation-note-assessment/1.0".into(),
+                note: note_id.into(),
+                note_digest: note.normalized["original"]["digest"]
+                    .as_str()
+                    .unwrap_or("")
+                    .into(),
+                association_digest: note.normalized["associationDigest"]
+                    .as_str()
+                    .unwrap_or("")
+                    .into(),
+                outcome: a.outcome.clone(),
+                period: a.period.clone(),
+                proposed_correction: a
+                    .proposed_correction
+                    .as_ref()
+                    .map(|c| builder.claim(&scope, "correction", c))
+                    .transpose()?,
+            });
+        } else if proposed.assessment.is_some() {
+            return Err(invalid("assessments require an explicit note root"));
+        }
+        if super::sections::contains(&op.id) || super::notes::is_root(&op.id) {
             if !proposed.steps.is_empty() || !proposed.contracts.is_empty() {
                 return Err(invalid(
                     "section proposals use a supported summary; operation sequences are separate",
@@ -660,9 +719,13 @@ fn materialize(
         let id = if let Some(h) = work
             .handles
             .get(reference)
-            .filter(|h| matches!(h.kind.as_str(), "ENTRYPOINT" | "SECTION"))
+            .filter(|h| matches!(h.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE"))
         {
-            h.id.clone()
+            if h.kind == "NOTE" {
+                super::notes::root(h.id.strip_prefix("note:").unwrap())
+            } else {
+                h.id.clone()
+            }
         } else if work.subject.starts_with("scenario:") && reference == &work.subject {
             work.subject[9..].into()
         } else {
@@ -695,11 +758,7 @@ fn materialize(
 }
 fn expected(work: &Work) -> BTreeSet<String> {
     if let Some(service) = work.subject.strip_prefix("service:") {
-        work.checked
-            .services
-            .get(service)
-            .map(super::sections::expected)
-            .unwrap_or_default()
+        super::notes::expected(&work.checked, service)
     } else {
         BTreeSet::from([work.subject[9..].into()])
     }

@@ -312,7 +312,7 @@ impl Repository {
     pub fn input_digest(&self) -> Result<String, ClewError> {
         // Parse independently authored files without rewriting their bytes/comments.
         digest(
-            &json!({"manifest":self.manifest,"services":self.services()?,"interactions":self.interactions()?,"scenarios":self.scenarios()?,"entities":super::entities::records(self)?}),
+            &json!({"manifest":self.manifest,"services":self.services()?,"interactions":self.interactions()?,"scenarios":self.scenarios()?,"entities":super::entities::records(self)?,"notes":super::notes::snapshot(self)?}),
         )
     }
 

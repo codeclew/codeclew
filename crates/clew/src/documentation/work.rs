@@ -300,6 +300,17 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
             );
         }
     }
+    if kind == "service" {
+        for (i, note) in super::notes::for_service(&checked, id).enumerate() {
+            handles.insert(
+                format!("note{}", i + 1),
+                Handle {
+                    kind: "NOTE".into(),
+                    id: note.id.clone(),
+                },
+            );
+        }
+    }
     let mut influence: BTreeMap<String, String> = checked
         .dependencies
         .iter()
@@ -468,7 +479,38 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
                 .references
                 .iter()
                 .any(|r| work.handles.get(r).is_some_and(|h| h.kind == "SECTION")));
-    let mut items = if section_selection {
+    let note_selection = kind == "service"
+        && ((selection.references.is_empty()
+            && selection.symbols.is_empty()
+            && selection.query.is_none()
+            && work
+                .request
+                .entrypoint
+                .as_deref()
+                .is_some_and(super::notes::is_root))
+            || selection
+                .references
+                .iter()
+                .any(|r| work.handles.get(r).is_some_and(|h| h.kind == "NOTE")));
+    let mut items = if note_selection {
+        if !selection.symbols.is_empty()
+            || selection.query.is_some()
+            || selection.references.len() > 1
+        {
+            return Err(invalid("select a note separately from source expansions"));
+        }
+        let mut rows: Vec<_> = super::notes::for_service(&work.checked, id)
+            .map(|d| json!({"kind":"NOTE","id":d.id,"record":d}))
+            .collect();
+        rows.extend(
+            work.checked
+                .dependencies
+                .values()
+                .filter(|d| d.service == id && d.kind != "NOTE_ASSOCIATION")
+                .map(|d| json!({"kind":"DEPENDENCY","id":d.id,"record":d})),
+        );
+        rows
+    } else if section_selection {
         if !selection.symbols.is_empty()
             || selection.query.is_some()
             || selection.references.len() > 1

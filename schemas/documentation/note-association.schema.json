@@ -1,0 +1,70 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-note-association/1.0"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,79}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "service": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^notes/.+\\.md$"
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string"
+      }
+    },
+    "classification": {
+      "enum": [
+        "fact",
+        "historical-context",
+        "policy",
+        "intention",
+        "opinion",
+        "mixed"
+      ]
+    },
+    "period": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "tags": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string"
+      }
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "title",
+    "service",
+    "path",
+    "targets",
+    "classification",
+    "period"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Human-controlled association stored separately from exact UTF-8 Markdown. Explicit stable targets; import never overwrites an existing file."
+}

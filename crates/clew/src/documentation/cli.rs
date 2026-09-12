@@ -15,6 +15,10 @@ use std::{
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Inspect and author required service sections.
+    Note {
+        #[command(subcommand)]
+        command: super::notes::Command,
+    },
     Section {
         #[command(subcommand)]
         command: super::sections::Command,
@@ -224,6 +228,7 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Note { command } => super::notes::run(command),
         Command::Section { command } => super::sections::run(command),
         Command::Entity { command } => super::entities::run(command),
         Command::Modules { command } => super::modules::run(command),

@@ -114,6 +114,10 @@ pub fn run_selected(
         &scenarios,
     )?;
     super::entities::attach(repository, &mut checked)?;
+    super::notes::attach(repository, &mut checked)?;
+    if checked.input_digest != repository.input_digest()? {
+        return Err(invalid("note inputs changed during checking"));
+    }
     if let Some((_, baseline)) = super::bindings::baseline(repository)? {
         super::review::scopes(
             repository,

@@ -79,7 +79,11 @@ pub fn expand_dependencies(
             .filter(|d| {
                 matches!(
                     d.kind.as_str(),
-                    "SOURCE_SCOPE" | "MODULE_SCOPE" | "CONTRACT_SCOPE" | "ENTITY_SCOPE"
+                    "SOURCE_SCOPE"
+                        | "MODULE_SCOPE"
+                        | "CONTRACT_SCOPE"
+                        | "ENTITY_SCOPE"
+                        | "NOTE_SCOPE"
                 ) && services.contains(d.service.as_str())
             })
             .map(|d| d.id.clone()),
@@ -92,7 +96,10 @@ pub fn expand_dependencies(
                 .dependencies
                 .get(id)
                 .ok_or_else(|| invalid("fragment has a missing dependency"))?;
-            if matches!(dependency.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE") {
+            if matches!(
+                dependency.kind.as_str(),
+                "DOMAIN_ENTITY" | "ENTITY_SCOPE" | "NOTE_SCOPE" | "NOTE_ASSOCIATION"
+            ) {
                 for linked in dependency.normalized["dependencyIds"]
                     .as_array()
                     .into_iter()
@@ -165,7 +172,7 @@ pub fn fragment(
                 .filter(|d| {
                     matches!(
                         d.kind.as_str(),
-                        "SOURCE_SCOPE" | "CONTRACT_SCOPE" | "ENTITY_SCOPE"
+                        "SOURCE_SCOPE" | "CONTRACT_SCOPE" | "ENTITY_SCOPE" | "NOTE_SCOPE"
                     ) && d.service == service
                 })
                 .map(|d| d.id.clone()),
@@ -289,6 +296,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.5"
             | "codeclew-documentation-html/1.6"
             | "codeclew-documentation-html/1.7"
+            | "codeclew-documentation-html/1.8"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(

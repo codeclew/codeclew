@@ -296,7 +296,7 @@ As a service team member, I retain manual context and recover generated document
 ### Alternative / error paths
 
 - Preserve explicit uncertainty and the last valid publication when the relevant step cannot complete.
-- Manual files survive but have no automatic related-section view or assessment model; caches are local.
+- Unassociated manual files survive; explicit note associations enable related-section views and assessments. Caches remain local.
 
 ### Extension points
 
@@ -311,7 +311,12 @@ As a service team member, I retain manual context and recover generated document
 
 ### Planning notes
 
-Manual files survive but have no automatic related-section view or assessment model; caches are local. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+Unassociated manual files survive; explicit note associations enable related-section views and assessments. Caches remain local. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+
+T09 extends `notes.ownership` with byte-preserving imports, explicit associations,
+separate assessments and captured-input invalidation. Protected-path sandbox
+checks and concurrent-edit/association-removal CLI regressions preserve original
+human files. Existing recovery/publication transitions remain unchanged.
 
 ## S07 — Generate a structured service and entity catalogue
 
@@ -520,6 +525,20 @@ As a service team member, I attach free-form context to a documented object so t
 ### Planning notes
 
 Requires import, stable associations and independent assessment ownership. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+
+### T09 implementation
+
+`notes.import` and `notes.assessment` now have public CLI paths and separate
+human/canonical ownership. Four CLI cases cover frontmatter/tags/CRLF/Unicode,
+explicit service/section/entity/process associations, rename and removal, current
+contradictions versus unknown history, concurrent edits, rejected embedded
+instructions, blocked original/catalogue writes and stale retained assessments.
+Historical conclusions require the exact captured revision as their period;
+calendar claims without such evidence remain unknown. Navigation/search and
+Markdown/JSON preserve original snapshots and distinguish assessment meaning
+review from the note's declared classification. Deterministic fixture review
+establishes the pipeline contract, not real model assessment quality. S06/S10
+edges are unchanged.
 
 ## S11 — Configure optional evidence modules
 

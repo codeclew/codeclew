@@ -593,7 +593,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T09. Preserve and display imported human notes with separate assessments
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** A team can add arbitrary notes related to documented objects and receive agent assessments without losing original text, tags or metadata.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC12, AC18; [scenario cards](../product/documentation-system/scenario-cards.md): S06, S10; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T08
@@ -625,6 +625,22 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Original human text and metadata are byte-preserved through generation and concurrency.
   - A stale assessment never silently changes the meaning or provenance of the original note.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+- **Observed evidence:** Four `docsys_t09_*` CLI cases passed. The final shared
+  T00/T08/T09 run passed all nine cases in 166.07 seconds; documentation unit
+  regressions passed 25 cases (two native JVM cases intentionally ignored for
+  this Rust/reader slice). Note imports preserve exact CRLF/Unicode/frontmatter
+  bytes; explicit service/section/entity/process targets, rename/removal, protected
+  sandbox writes, rejected embedded instructions, source/period requirements and
+  concurrent edits are exercised. Isolated deterministic author/reviewer approval
+  is pipeline/security evidence, not a real model quality qualification.
+  Desktop/mobile reader checks use the captured publication with final reader
+  assets; original text is escaped, mobile width remains 390/390 with no page
+  overflow, and an assessment source button opens retained code. Final formatting,
+  JavaScript/schema syntax, English-content and staged privacy checks pass.
+  Existing S06/S10 graph edges remain unchanged. Optional assessments track
+  captured inputs conservatively; arbitrary prose and undocumented historical
+  calendar claims do not gain strict completeness or source authority.
 
 ## T10. Persist requested processes as maintained sections
 
