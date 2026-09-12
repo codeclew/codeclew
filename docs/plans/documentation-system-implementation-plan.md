@@ -252,7 +252,9 @@ gap. A passing plan reviewer, mock adapter or schema checker cannot substitute f
 
 ## T02. Prepare bounded evidence work and capture its influence
 
-- **Status:** - [ ]
+- **Status:** - [x] Implemented; three CLI regression cases, 24 documentation unit
+  tests, six skill-package tests and embedded package-digest validation pass.
+  Two native JVM tests remain outside this Rust-only task.
 - **Goal:** A routine agent receives one complete-enough work unit and can request focused expansion without manually managing evidence identity or hiding reads.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC03, AC18; [scenario cards](../product/documentation-system/scenario-cards.md): S02, S05, S08; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T01

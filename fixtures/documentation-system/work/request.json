@@ -1,0 +1,6 @@
+{
+  "schema": "codeclew-documentation-work-request/1.0",
+  "audience": "Service maintainers",
+  "maxItems": 20,
+  "maxBytes": 40960
+}

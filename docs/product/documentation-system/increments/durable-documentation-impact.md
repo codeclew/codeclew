@@ -88,3 +88,9 @@ not claimed by this planning package's structural or independent review.
   by public CLI acceptance. Other listed growth behavior remains pending.
 - T01 → S01/S04/S05, AC02/AC18: local outcomes and immutable operation evidence
   versions are implemented. Five T00/T01 CLI cases cover current regression behavior.
+
+- T02 → S02/S05/S08, AC03/AC18: bounded immutable evidence work, explicit external
+  input admission and recorded query/read influence are implemented. Regression
+  evidence covers retained content, negative queries gaining members, changed
+  source and notes, cursor misuse, forged handles and over-budget records. The
+  remaining isolation and proposal obligations belong to T03/T04.

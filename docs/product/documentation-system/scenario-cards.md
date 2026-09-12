@@ -81,6 +81,13 @@ As a documentation author, I explain an operation using exact source evidence so
 
 ### Regression checks
 
+T02 adds immutable `docs work prepare/read/expand` with work-local references,
+recorded pagination, negative query membership and conservative scopes. Three
+`docsys_t02_*` CLI tests cover source/note mutation, retained content, forged
+references, cursor selection mismatch, explicit oversized records and sticky
+untracked-read limitations. This implements the bounded-package extension;
+proposal acceptance and isolated reviewer authority remain separate tasks.
+
 - Omitted context items remain explicit and recoverable.
 - Unbound events or missing mandatory branch coverage are rejected.
 - Existing Narrative versions stay readable.
@@ -210,6 +217,13 @@ As a documentation maintainer, I identify affected explanations after source cha
 
 ### Regression checks
 
+T02 adds immutable `docs work prepare/read/expand` with work-local references,
+recorded pagination, negative query membership and conservative scopes. Three
+`docsys_t02_*` CLI tests cover source/note mutation, retained content, forged
+references, cursor selection mismatch, explicit oversized records and sticky
+untracked-read limitations. This implements the bounded-package extension;
+proposal acceptance and isolated reviewer authority remain separate tasks.
+
 - Meaningful helper/configuration changes invalidate involved source scopes.
 - Relocation changes links without rewriting unchanged prose.
 - Missing history and unsupported evidence versions are unresolved.
@@ -338,6 +352,13 @@ As a documentation maintainer, I let a routine agent perform bounded authoring w
 - `agent.escalation` — bounded extension within this journey; preserve its regression checks.
 
 ### Regression checks
+
+T02 adds immutable `docs work prepare/read/expand` with work-local references,
+recorded pagination, negative query membership and conservative scopes. Three
+`docsys_t02_*` CLI tests cover source/note mutation, retained content, forged
+references, cursor selection mismatch, explicit oversized records and sticky
+untracked-read limitations. This implements the bounded-package extension;
+proposal acceptance and isolated reviewer authority remain separate tasks.
 
 - An author cannot self-approve or reuse a review for changed evidence.
 - Missing inputs remain gaps rather than prompting invented answers.

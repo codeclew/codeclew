@@ -42,6 +42,11 @@ pub enum Command {
     },
     /// Rebuild current source evidence and report affected document fragments.
     Check(CheckArgs),
+    /// Prepare and read bounded immutable authoring work.
+    Work {
+        #[command(subcommand)]
+        command: super::work::Command,
+    },
     /// Publish current freshness while retaining previously accepted explanations.
     Refresh {
         #[arg(long)]
@@ -199,6 +204,7 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Work { command } => super::work::run(command),
         Command::Refresh {
             root,
             status_only: _,
@@ -412,6 +418,53 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
     } else {
         format!("scenario:{}", args.scenario.as_deref().unwrap_or(""))
     };
+    let baseline = super::bindings::baseline(&repo)?;
+    let retained = baseline
+        .as_ref()
+        .and_then(|(_, b)| b.narratives.get(&subject));
+    context_from(&checked, &args, retained, authority)
+}
+
+pub(super) fn context_from(
+    checked: &check::Check,
+    args: &ContextArgs,
+    retained: Option<&Narrative>,
+    authority: &str,
+) -> Result<Value, ClewError> {
+    let subject = args
+        .service
+        .as_ref()
+        .map(|id| format!("service:{id}"))
+        .unwrap_or_else(|| format!("scenario:{}", args.scenario.as_deref().unwrap_or("")));
+    let items = context_items(checked, args, retained)?;
+
+    page(
+        &super::digest(&(
+            checked.context_digest.clone(),
+            subject.clone(),
+            args.entrypoint.clone(),
+            args.symbols.clone(),
+            args.source_ids.clone(),
+            args.dependency_ids.clone(),
+            args.format,
+        ))?,
+        items,
+        args.cursor.as_deref(),
+        args.limit as usize,
+        json!({"subject":subject,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","unresolved":checked.unresolved}),
+    )
+}
+
+pub(super) fn context_items(
+    checked: &check::Check,
+    args: &ContextArgs,
+    retained: Option<&Narrative>,
+) -> Result<Vec<Value>, ClewError> {
+    let subject = if let Some(id) = &args.service {
+        format!("service:{id}")
+    } else {
+        format!("scenario:{}", args.scenario.as_deref().unwrap_or(""))
+    };
     let mut selected = BTreeSet::new();
     let mut items = Vec::new();
     if let Some(id) = &args.service {
@@ -536,9 +589,7 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
             json!({"kind":"COVERAGE","id":id,"boundaries":s.boundaries,"truncated":s.truncated}),
         );
     }
-    if let Some((_, baseline)) = super::bindings::baseline(&repo)?
-        && let Some(narrative) = baseline.narratives.get(&subject)
-    {
+    if let Some(narrative) = retained {
         for operation in &narrative.operations {
             if !args.symbols.is_empty() {
                 continue;
@@ -599,21 +650,7 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
     if args.format == ContextFormat::Compact {
         items = compact(items);
     }
-    page(
-        &super::digest(&(
-            checked.context_digest.clone(),
-            subject.clone(),
-            args.entrypoint.clone(),
-            args.symbols.clone(),
-            args.source_ids.clone(),
-            args.dependency_ids.clone(),
-            args.format,
-        ))?,
-        items,
-        args.cursor.as_deref(),
-        args.limit as usize,
-        json!({"subject":subject,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","unresolved":checked.unresolved}),
-    )
+    Ok(items)
 }
 
 /// A deterministic projection of already selected evidence, never a new resolver.

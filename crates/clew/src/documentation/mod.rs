@@ -10,6 +10,7 @@ pub mod render;
 pub mod status;
 pub mod store;
 mod syntax;
+pub mod work;
 
 use crate::error::{ClewError, ErrorCode};
 use serde::Serialize;

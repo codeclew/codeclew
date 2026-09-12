@@ -312,3 +312,196 @@ fn docsys_t01_concurrent_refreshes_leave_one_complete_snapshot() {
             .all(|(_, result)| result["bundle"] == id)
     );
 }
+
+fn work_request(f: &Fixture, bytes: usize, items: u32) -> std::path::PathBuf {
+    f.input("work-request.json",&serde_json::json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","maxBytes":bytes,"maxItems":items}))
+}
+fn work_prepare(f: &Fixture, request: &std::path::Path) -> serde_json::Value {
+    f.ok(&[
+        "docs",
+        "work",
+        "prepare",
+        "--subject",
+        "service:orders",
+        "--input",
+        request.to_str().unwrap(),
+    ])
+}
+fn work_read(f: &Fixture, id: &str, selection: serde_json::Value) -> serde_json::Value {
+    let path = f.input("selection.json", &selection);
+    f.ok(&[
+        "docs",
+        "work",
+        "expand",
+        "--work",
+        id,
+        "--input",
+        path.to_str().unwrap(),
+    ])
+}
+
+#[test]
+fn docsys_t02_freezes_evidence_and_tracks_negative_queries_and_notes() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let baseline = f.author("orders", &f.checked());
+    f.ok(&["docs", "render", "--input", baseline.to_str().unwrap()]);
+    fs::create_dir(f.docs.join("notes")).unwrap();
+    fs::write(
+        f.docs.join("notes/context.md"),
+        "Human decision, retained exactly.\n",
+    )
+    .unwrap();
+    let request = work_request(&f, 40 * 1024, 20);
+    let page = work_prepare(&f, &request);
+    let id = page["work"].as_str().unwrap();
+    let frozen = read(f.docs.join(format!(".codeclew/work/{id}/work.json")));
+    assert!(
+        frozen["retained"]["operations"]
+            .as_array()
+            .is_some_and(|ops| !ops.is_empty())
+    );
+    assert_eq!(
+        frozen["externalInputs"]["notes/context.md"]["text"],
+        "Human decision, retained exactly.\n"
+    );
+    assert!(
+        frozen["influence"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|k| frozen["checked"]["dependencies"][k]["kind"] == "SOURCE_SCOPE")
+    );
+    let query = json!({"query":{"kind":"SYMBOL","symbolContains":"newlyAdded"}});
+    let negative = work_read(&f, id, query.clone());
+    assert_eq!(negative["total"], 0);
+    fs::write(
+        source.join("Added.java"),
+        "public class Added { public int newlyAdded() { return 2; } }\n",
+    )
+    .unwrap();
+    commit(&source);
+    fs::write(f.docs.join("notes/context.md"), "Updated human decision.\n").unwrap();
+    let still_negative = work_read(&f, id, query.clone());
+    assert_eq!(negative, still_negative);
+    let new = work_prepare(&f, &request);
+    let new_id = new["work"].as_str().unwrap();
+    assert_ne!(new_id, id);
+    let positive = work_read(&f, new_id, query);
+    assert!(positive["total"].as_u64().unwrap() > 0);
+    assert_ne!(positive["membershipDigest"], negative["membershipDigest"]);
+    assert_eq!(
+        read(f.docs.join(format!(".codeclew/work/{id}/work.json"))),
+        frozen
+    );
+    let ledger = read(f.docs.join(format!(".codeclew/work/{id}/reads.json")));
+    assert!(ledger["receipts"].as_object().unwrap().values().any(
+        |r| r["selection"]["query"]["symbolContains"] == "newlyAdded"
+            && r["supplied"].as_array().unwrap().is_empty()
+    ));
+}
+
+#[test]
+fn docsys_t02_enforces_selection_cursors_and_untracked_read_limitations() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let request = work_request(&f, 40 * 1024, 1);
+    let page = work_prepare(&f, &request);
+    let id = page["work"].as_str().unwrap();
+    assert!(page["nextCursor"].is_string());
+    let path = f.input("forged.json", &json!({"references":["s999999"]}));
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            id,
+            "--input",
+            path.to_str().unwrap()
+        ])
+        .0,
+        0
+    );
+    let path = f.input(
+        "cursor.json",
+        &json!({"query":{"kind":"SYMBOL"},"cursor":page["nextCursor"]}),
+    );
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "work",
+            "read",
+            "--work",
+            id,
+            "--input",
+            path.to_str().unwrap()
+        ])
+        .0,
+        0
+    );
+    let next = work_read(&f, id, json!({"cursor":page["nextCursor"]}));
+    assert_ne!(next["items"], page["items"]);
+    assert_eq!(
+        work_read(&f, id, json!({"untrackedReads":true}))["influenceCoverage"],
+        "INCOMPLETE_UNTRACKED_READS"
+    );
+    assert_eq!(
+        work_read(&f, id, json!({}))["influenceCoverage"],
+        "INCOMPLETE_UNTRACKED_READS"
+    );
+    let frozen = read(f.docs.join(format!(".codeclew/work/{id}/work.json")));
+    let dependency = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| h["kind"] == "DEPENDENCY")
+        .unwrap()
+        .0;
+    let expanded = work_read(&f, id, json!({"references":[dependency]}));
+    assert!(expanded["total"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn docsys_t02_oversized_records_are_explicit_and_pages_stay_bounded() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    fs::create_dir(f.docs.join("notes")).unwrap();
+    fs::write(
+        f.docs.join("notes/long.md"),
+        "long human input ".repeat(700),
+    )
+    .unwrap();
+    let request = work_request(&f, 2048, 100);
+    let mut page = work_prepare(&f, &request);
+    let id = page["work"].as_str().unwrap().to_owned();
+    let mut omitted = Vec::new();
+    for _ in 0..100 {
+        assert!(
+            serde_json::to_vec(&page).unwrap().len() + 1 <= 2048,
+            "{page}"
+        );
+        omitted.extend(page["omitted"].as_array().unwrap().iter().cloned());
+        let Some(cursor) = page["nextCursor"].as_str() else {
+            break;
+        };
+        page = work_read(&f, &id, json!({"cursor":cursor}));
+    }
+    assert!(page["nextCursor"].is_null());
+    assert!(
+        omitted
+            .iter()
+            .any(|o| o["id"] == "notes/long.md" && o["reason"] == "ITEM_EXCEEDS_WORK_BYTE_BUDGET")
+    );
+    let ledger = read(f.docs.join(format!(".codeclew/work/{id}/reads.json")));
+    assert!(
+        ledger["receipts"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|r| !r["omitted"].as_array().unwrap().is_empty())
+    );
+}

@@ -65,3 +65,11 @@ snapshot as if growth behavior existed at the base revision.
   siblings with their own evidence versions, and records local update gaps.
   Selective service checks mark unselected inputs explicitly. Existing strict
   refusal semantics remain available through `--require-complete`.
+
+- T02: immutable work packages preserve source authority, revisions, conservative
+  influence scopes, prior explanations and admitted human/imported text. Every
+  supplied page and expansion is recorded, including empty query membership and
+  oversized omissions. Work reads survive source changes; a new preparation sees
+  the new facts. Three CLI regression cases pass. Read recording does not claim
+  external-process isolation or semantic approval. Existing graph edges remain
+  accurate; S08 still requires the later proposal/review tasks.

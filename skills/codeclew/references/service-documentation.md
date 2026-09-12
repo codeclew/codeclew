@@ -285,3 +285,38 @@ unaffected text and engineer declarations. Rendering refuses stale retained
 narratives until reviewed replacements are supplied. A digest detects changes;
 it does not prove an agent's explanation. Missing history/source stays
 UNRESOLVED. No hosted LLM or embedded API key is part of this workflow.
+
+## Prepare immutable author work
+
+For recorded authoring, prepare one service or saved scenario with a closed
+`codeclew-documentation-work-request/1.0` JSON object containing `audience`,
+optional `entrypoint`, `maxItems` (1–100) and `maxBytes` (2048–49152):
+
+```sh
+clew docs work prepare --root /work/architecture --subject service:orders --input /work/request.json
+clew docs work read --root /work/architecture --work WORK_ID --input /work/selection.json
+clew docs work expand --root /work/architecture --work WORK_ID --input /work/selection.json
+```
+
+Use returned work-local references such as `e1`, `d3`, and `s2` in selection
+`references`. Select one entrypoint or up to eight evidence references. Exact
+`symbols` or a `query` with `kind` and optional `symbolContains` are alternative
+selectors. `kind: "*"` queries all captured dependency kinds. Carry `nextCursor`
+into the same selection to read further pages. Unknown references and cursors
+from another work or selection are rejected. Read and expand have identical
+recording semantics. Explicit `omitted` records identify evidence that cannot fit;
+prepare work with a larger allowed byte budget or retain a missing-evidence gap.
+Do not silently shorten a fact to make it fit.
+
+The work preserves revisions, provider authority, conservative dependency scopes,
+retained explanations and protected `notes/` inputs. Optional `externalInputs`
+registers bounded UTF-8 files relative to the documentation root. Read these from
+the captured package; citations to outside files do not register prompt reads.
+Declare any other reads with `untrackedReads: true`; this is sticky for the work
+and makes influence coverage incomplete. Recorded reads alone do not attest that
+an external author was isolated. Empty query results and their enclosing source
+scopes are recorded so later matching files can invalidate acceptance. A work
+read never replaces its source evidence with a newer check. Follow owner/helper,
+flow, type and configuration references where required; preserve unresolved
+boundary obligations. No agent may promote syntax or imported claims to runtime
+proof. Human input is retained verbatim with its separate authority.
