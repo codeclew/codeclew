@@ -52,7 +52,8 @@ do not merge an entire superseded snapshot over current code.
 Local ignored build products and private diagnostics are preserved outside the
 active checkout before retiring redundant worktrees. They are not public source
 artifacts and are not uploaded. The local preservation manifest records their
-original locations and the retired worktree revisions.
+original locations and the eight retired worktree revisions. Only the main
+checkout remains registered.
 
 ## Site and verification
 
@@ -64,7 +65,12 @@ revision/version labels. Search is regenerated from the updated sections.
 Consolidation verification covers site navigation, links, generated documentation,
 English content and repository privacy. No runtime rebuild is needed for these
 site and research-document changes; the release's completed runtime checks remain
-applicable. GitHub's normal main-branch CI and Pages workflow run after publication.
+applicable. The main-branch Linux gate also exposed an unused test helper whose
+callers are macOS-only. Its compilation now uses the same platform condition;
+runtime source is unchanged. GitHub's full CI verifies that test-only correction.
+Pages deployment and live HTTP checks confirmed the homepage, documentation,
+evidence page, search index and installer match the committed files. The live
+notes table was also visually inspected.
 
 ## Next practical work
 

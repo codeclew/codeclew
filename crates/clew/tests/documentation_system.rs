@@ -3623,6 +3623,7 @@ fn docsys_t10_linked_cycles_missing_children_and_negative_interaction_scope() {
     );
 }
 
+#[cfg(target_os = "macos")]
 fn process_work(f: &Fixture, id: &str) -> (String, serde_json::Value) {
     use serde_json::json;
     let mut page = f.ok(&["docs", "process", "prepare", "--id", id, "--overview"]);
