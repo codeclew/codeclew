@@ -113,6 +113,7 @@ pub fn run_selected(
         &interactions,
         &scenarios,
     )?;
+    super::entities::attach(repository, &mut checked)?;
     if let Some((_, baseline)) = super::bindings::baseline(repository)? {
         super::review::scopes(
             repository,

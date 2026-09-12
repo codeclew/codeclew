@@ -125,3 +125,9 @@ not claimed by this planning package's structural or independent review.
   external references and unsupported versions remain gaps. Three CLI cases,
   documentation regressions and the shared expansion-budget test pass. Contract
   changes invalidate bound service/process claims outside language source roots.
+
+- T08 → S01/S04/S07, AC10/AC11: predefined sections and declared domain entity
+  relationships are implemented. Existing operations retain their IDs, required
+  section gaps remain navigable, agent proposals cannot alter human relationships,
+  and explicit linked entity facts participate in transitive bindings. Targeted
+  CLI tests passed; final shared-pipeline and layout evidence is recorded in T08.

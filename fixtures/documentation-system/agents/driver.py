@@ -84,6 +84,8 @@ else:
         result = {"action": "review", "review": {"verdict": "APPROVE"}}
     elif mode == "expand" and not any(page.get("total") == 0 for page in payload["evidence"]["pages"]):
         result = {"action": "expand", "selection": {"query": {"kind": "SYMBOL", "symbolContains": "nonexistent"}}}
+    elif "proposal" in options:
+        result = {"action": "proposal", "proposal": options["proposal"]}
     else:
         rows = [item for page in payload["evidence"]["pages"] for item in page["items"]]
         entry = next(item for item in rows if item["kind"] == "ENTRYPOINT")

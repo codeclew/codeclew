@@ -243,3 +243,46 @@ source commit. A module name never promotes syntax or declared facts to runtime
 proof. The shared Spring module consumes compiler facts and separately qualified source
 annotation facts. Its authority follows the input; source spelling never becomes
 compiler resolution. See the [tested compatibility matrix](../../fixtures/documentation-system/spring/README.md).
+
+## Standard service sections and domain identities
+
+Registration exposes five stable section roots: overview, responsibilities,
+domain entities, ingress contracts and egress contracts. They are immediately
+inspectable, even before source binding. `docs render` publishes the common page
+structure with explicit gaps, including registered services whose source capture
+is unavailable. Author one section through the same bounded author/reviewer path:
+
+```sh
+./clew docs section list --root /path/to/docs --service orders
+./clew docs section show --root /path/to/docs --service orders --id section-overview
+./clew docs section prepare --root /path/to/docs --service orders --id section-overview
+./clew docs work run --root /path/to/docs --work WORK_ID --config /path/to/execution.json
+```
+
+Section preparation does not invoke a model. A section proposal uses its supplied
+`SECTION` reference in the existing `operations[].entrypoint` field, an
+exact-source-supported `summary`, empty `steps` and no sequence contracts. This
+compatibility mapping preserves old operation IDs; sections are never inserted
+into source entrypoint inventory. Older narratives may omit section gaps, which
+the publisher supplies. Partial section failure retains accepted siblings.
+Internal source callable records are distinct from discovered public boundaries;
+selected modules, dynamic registration and runtime activation limits remain
+visible. Forty-endpoint services use the same navigation as small services.
+
+Domain entities live in `catalog/entities` with explicit stable IDs. Inspect the
+[entity schema](../../schemas/documentation/entity.schema.json), then register a
+record with `docs entity put --root /path/to/docs --input entity.json
+--expected-input-digest DIGEST`. `docs entity list` returns the current digest.
+Use `--human` for an explicit maintainer declaration. Without that flag, writes
+cannot add, replace or remove human relationship records. Sandboxed author and
+reviewer jobs have no catalogue write capability. Agent-proposed ownership is
+labelled separately and does not become a human ownership declaration.
+
+Relations name `created`, `changed`, `read`, `stored-copy` or `owned`, with origin,
+confidence, rationale and optional source dependencies and implementation
+representations. Classes, DTOs and table names are representations, not domain
+IDs. Duplicate titles remain separate candidates; renaming a title preserves the
+ID. Links require explicit existing entity IDs and are never rebound by name.
+Entity and contract dependencies propagate through document bindings. Missing
+declared evidence remains an explicit gap. These records express declared or
+proposed domain interpretation, not runtime ownership proof.

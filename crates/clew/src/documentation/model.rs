@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.6";
+pub const RENDERER: &str = "codeclew-documentation-html/1.7";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

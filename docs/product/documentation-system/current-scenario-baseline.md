@@ -124,3 +124,12 @@ snapshot as if growth behavior existed at the base revision.
   differences and contract-only service/process dependency invalidation. Existing
   documentation unit regressions and an expansion-budget test pass. Graph S07/S11
   transitions remain unchanged; no runtime contract enforcement is claimed.
+
+- T08: required sections are inspectable immediately after registration and rendered
+  with source-bound content or visible gaps. Domain IDs and their explicit
+  relationships remain distinct from classes and DTOs. Human ownership is
+  protected from proposal writes; related entity facts invalidate transitive
+  document bindings. Three focused CLI regressions passed for small/forty-boundary
+  services, partial failure, identity/ownership and isolated section author/reviewer
+  work. Shared regression and reader QA results are in the implementation plan.
+  Existing S01/S04/S07 graph edges are unchanged.

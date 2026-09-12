@@ -234,7 +234,7 @@ impl Repository {
             .map_err(io_error)
     }
 
-    fn records<T: DeserializeOwned>(
+    pub(super) fn records<T: DeserializeOwned>(
         &self,
         directory: &str,
         extension: &str,
@@ -312,7 +312,7 @@ impl Repository {
     pub fn input_digest(&self) -> Result<String, ClewError> {
         // Parse independently authored files without rewriting their bytes/comments.
         digest(
-            &json!({"manifest":self.manifest,"services":self.services()?,"interactions":self.interactions()?,"scenarios":self.scenarios()?}),
+            &json!({"manifest":self.manifest,"services":self.services()?,"interactions":self.interactions()?,"scenarios":self.scenarios()?,"entities":super::entities::records(self)?}),
         )
     }
 
@@ -354,11 +354,13 @@ impl Repository {
                 "repository identity migration requires an explicit new service record",
             ));
         }
-        self.put(
+        let mut result = self.put(
             &format!("catalog/services/{}.json", value.id),
             &value,
             expected,
-        )
+        )?;
+        result["sections"] = json!(super::sections::records(&value.id, None));
+        Ok(result)
     }
     pub fn interaction_put(
         &self,

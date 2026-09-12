@@ -60,6 +60,13 @@ Maven/javac recovery checks pass. Module/rule changes affect freshness without
 source-byte changes. Python syntax and Kafka checks remain regression evidence.
 Source annotation interpretation and further framework compatibility are T06.
 
+### T08 implementation evidence
+
+Registration now exposes five stable required section records and bounded work requests through `docs section list/show/prepare`, including before source capture. Section roots remain separate from source callable IDs.
+Three targeted CLI regressions pass; final reader and shared-pipeline regression
+results are recorded in the approved implementation plan. Existing graph edges
+are unchanged.
+
 ## S02 — Author a source-bound operation
 
 - **Status:** current
@@ -201,6 +208,13 @@ operation evidence versions on one page, selective checking and concurrent statu
 publication. The existing source/relocation and declared-scenario recovery checks
 remain regression inputs; strict refusals use `--require-complete`.
 
+
+### T08 implementation evidence
+
+Standard overview, responsibility, entity and ingress/egress navigation is shared by small and forty-boundary services. Public boundary gaps stay visible alongside accepted sibling sections. Existing source inspection and per-section freshness use the retained evidence path.
+Three targeted CLI regressions pass; final reader and shared-pipeline regression
+results are recorded in the approved implementation plan. Existing graph edges
+are unchanged.
 
 ## S05 — Detect changes and review affected explanations
 
@@ -358,6 +372,13 @@ source route match remains separate from contract authority and runtime behavior
 Contract-only mutations invalidate service and process fragment dependencies;
 a shared expansion budget bounds repeated references. Existing documentation
 unit regressions pass. See the [fixture scope](../../../fixtures/documentation-system/openapi/README.md).
+
+### T08 implementation evidence
+
+The new section and entity records distinguish domain IDs from implementation representations. Human relationships cannot be changed by agent-proposal writes; duplicate titles and explicit related-entity links do not cause identity rebinding. Section authoring reuses the isolated author/reviewer pipeline and transitive entity dependencies invalidate affected documentation.
+Three targeted CLI regressions pass; final reader and shared-pipeline regression
+results are recorded in the approved implementation plan. Existing graph edges
+are unchanged.
 
 ## S08 — Author, review and escalate bounded agent work
 

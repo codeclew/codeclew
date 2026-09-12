@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Declared domain entity",
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-entity/1.0"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 8192
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "service": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+          },
+          "kind": {
+            "enum": [
+              "created",
+              "changed",
+              "read",
+              "stored-copy",
+              "owned"
+            ]
+          },
+          "origin": {
+            "enum": [
+              "human",
+              "agent-proposal"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "confidence": {
+            "enum": [
+              "declared",
+              "supported",
+              "uncertain"
+            ]
+          },
+          "representations": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string"
+            }
+          },
+          "dependencyIds": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "service",
+          "kind",
+          "origin",
+          "rationale",
+          "confidence"
+        ]
+      }
+    },
+    "relatedEntities": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "title",
+    "description",
+    "relations",
+    "limitations"
+  ]
+}

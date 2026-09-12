@@ -289,6 +289,17 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
             );
         }
     }
+    if kind == "service" {
+        for (index, id) in super::sections::ids().enumerate() {
+            handles.insert(
+                format!("section{}", index + 1),
+                Handle {
+                    kind: "SECTION".into(),
+                    id,
+                },
+            );
+        }
+    }
     let mut influence: BTreeMap<String, String> = checked
         .dependencies
         .iter()
@@ -444,7 +455,42 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
         .subject
         .split_once(':')
         .ok_or_else(|| invalid("invalid stored work subject"))?;
-    let mut items = if let Some(query) = &selection.query {
+    let section_selection = kind == "service"
+        && ((selection.references.is_empty()
+            && selection.symbols.is_empty()
+            && selection.query.is_none()
+            && work
+                .request
+                .entrypoint
+                .as_deref()
+                .is_some_and(super::sections::contains))
+            || selection
+                .references
+                .iter()
+                .any(|r| work.handles.get(r).is_some_and(|h| h.kind == "SECTION")));
+    let mut items = if section_selection {
+        if !selection.symbols.is_empty()
+            || selection.query.is_some()
+            || selection.references.len() > 1
+        {
+            return Err(invalid(
+                "select a section separately from source expansions",
+            ));
+        }
+        let mut rows: Vec<Value> = super::sections::records(id, work.retained.as_ref())
+            .into_iter()
+            .map(|r| json!({"kind":"SECTION","id":r["id"],"record":r}))
+            .collect();
+        rows.push(json!({"kind":"BOUNDARY_INVENTORY","id":format!("inventory:{id}"),"record":super::sections::inventory(id,&work.checked)}));
+        rows.extend(
+            work.checked
+                .dependencies
+                .values()
+                .filter(|d| d.service == id || d.kind == "DOMAIN_ENTITY")
+                .map(|d| json!({"kind":"DEPENDENCY","id":d.id,"record":d})),
+        );
+        rows
+    } else if let Some(query) = &selection.query {
         if query.kind.trim().is_empty() {
             return Err(invalid(
                 "query kind is required; use * for every dependency kind",
@@ -525,6 +571,11 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     };
     if selection.query.is_none() && selection.references.is_empty() && selection.symbols.is_empty()
     {
+        if kind == "service" && !section_selection {
+            for row in super::sections::records(id, work.retained.as_ref()) {
+                items.push(json!({"kind":"SECTION","id":row["id"],"record":row}));
+            }
+        }
         for (index, record) in work.review_reasons.iter().enumerate() {
             items.push(
                 json!({"kind":"REVIEW_REASON","id":format!("review-{index}"),"record":record}),

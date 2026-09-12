@@ -14,6 +14,16 @@ use std::{
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect and author required service sections.
+    Section {
+        #[command(subcommand)]
+        command: super::sections::Command,
+    },
+    /// Manage declared domain identities and proposed relationships.
+    Entity {
+        #[command(subcommand)]
+        command: super::entities::Command,
+    },
     /// Inspect built-in evidence capabilities and explicit service selection.
     Modules {
         #[command(subcommand)]
@@ -214,6 +224,8 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Section { command } => super::sections::run(command),
+        Command::Entity { command } => super::entities::run(command),
         Command::Modules { command } => super::modules::run(command),
         Command::Work { command } => super::work::run(command),
         Command::Proposal { command } => super::proposals::run(command),
@@ -501,7 +513,9 @@ pub(super) fn context_items(
             return Err(invalid("select at most eight dependencies"));
         }
         for dependency in &args.dependency_ids {
-            if !e.observations.contains_key(dependency) {
+            if checked.dependencies.get(dependency).is_none_or(|d| {
+                d.service != *id && !matches!(d.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE")
+            }) {
                 return Err(invalid("unknown service dependency"));
             }
             selected.insert(dependency.clone());

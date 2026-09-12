@@ -533,7 +533,7 @@ fn materialize(
             return Ok(work.subject[9..].into());
         }
         let handle = builder.handle(reference)?;
-        if handle.kind != "ENTRYPOINT" {
+        if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION") {
             return Err(invalid("operation requires an entrypoint work reference"));
         }
         if work
@@ -567,6 +567,16 @@ fn materialize(
         };
         if let Some(gap) = &proposed.summary.uncertainty {
             op.boundaries.push(gap.clone());
+        }
+        if super::sections::contains(&op.id) {
+            if !proposed.steps.is_empty() || !proposed.contracts.is_empty() {
+                return Err(invalid(
+                    "section proposals use a supported summary; operation sequences are separate",
+                ));
+            }
+            op.participants.clear();
+            n.operations.push(op);
+            continue;
         }
         builder.steps(&scope, &proposed.steps, "step", 0, &mut op, &actors)?;
         if proposed.contracts.len() > 64 {
@@ -650,7 +660,7 @@ fn materialize(
         let id = if let Some(h) = work
             .handles
             .get(reference)
-            .filter(|h| h.kind == "ENTRYPOINT")
+            .filter(|h| matches!(h.kind.as_str(), "ENTRYPOINT" | "SECTION"))
         {
             h.id.clone()
         } else if work.subject.starts_with("scenario:") && reference == &work.subject {
@@ -661,6 +671,13 @@ fn materialize(
             ));
         };
         n.gaps.insert(id, reason.clone());
+    }
+    if work.subject.starts_with("service:") {
+        for id in super::sections::ids().filter(|id| !n.operations.iter().any(|o| &o.id == id)) {
+            n.gaps.entry(id).or_insert_with(|| {
+                "Required service section has not been authored in this proposal.".into()
+            });
+        }
     }
     if let Some(entrypoint) = &work.request.entrypoint {
         for id in expected(work).into_iter().filter(|id| id != entrypoint) {
@@ -681,7 +698,7 @@ fn expected(work: &Work) -> BTreeSet<String> {
         work.checked
             .services
             .get(service)
-            .map(|s| s.entrypoints.iter().map(|e| e.id.clone()).collect())
+            .map(super::sections::expected)
             .unwrap_or_default()
     } else {
         BTreeSet::from([work.subject[9..].into()])

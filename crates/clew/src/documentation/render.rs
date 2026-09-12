@@ -98,7 +98,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 .get(id)
                 .ok_or_else(|| invalid("service evidence is unresolved"))?;
             (
-                service.entrypoints.iter().map(|e| e.id.clone()).collect(),
+                super::sections::expected(service),
                 BTreeSet::from([id.into()]),
             )
         }
@@ -133,6 +133,20 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             checked,
             &allowed,
         )?;
+        if kind == "service" && super::sections::contains(&o.id) {
+            if !o.events.is_empty()
+                || !o.explanation.is_empty()
+                || !o.interface_contracts.is_empty()
+                || !o.findings.is_empty()
+                || !o.participants.is_empty()
+                || o.overview_diagram.is_some()
+            {
+                return Err(invalid(
+                    "standard sections contain an evidence-bound summary and limitations; sequence content belongs to operations",
+                ));
+            }
+            continue;
+        }
         if o.participants.len() < 2
             || o.participants.len() > 24
             || o.events.is_empty()
@@ -485,7 +499,10 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             ));
         }
     }
-    if expected != covered {
+    if expected
+        .difference(&covered)
+        .any(|id| !super::sections::contains(id))
+    {
         return Err(invalid(
             "full scope requires every discovered entrypoint to have an operation or an explicit gap",
         ));
@@ -594,7 +611,7 @@ fn default_narrative(
     ids: impl Iterator<Item = String>,
     checked: &Check,
 ) -> Narrative {
-    Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject,context_digest:checked.context_digest.clone(),operations:vec![],gaps:ids.map(|id|(id,"Behavior is not yet authored. Load this entrypoint with clew docs context and supply a source-bound sequence.".into())).collect()}
+    Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject,context_digest:checked.context_digest.clone(),operations:vec![],gaps:ids.map(|id|{let gap=super::sections::REQUIRED.iter().find(|(key,_,_)|*key==id).map(|(_,_,purpose)|format!("{purpose} Source-bound section content has not been accepted yet.")).unwrap_or_else(||"Behavior is not yet authored. Load this entrypoint with clew docs context and supply a source-bound sequence.".into());(id,gap)}).collect()}
 }
 
 fn add_binding(
@@ -737,6 +754,17 @@ pub fn make_bindings(
     }
     for (id, evidence) in &checked.services {
         let subject = format!("service:{id}");
+        if let Some(scope) = checked.dependencies.get(&format!("entity-scope:{id}")) {
+            add_binding(
+                &mut fragments,
+                format!("{subject}/entity-catalogue"),
+                &subject,
+                &scope.normalized,
+                std::slice::from_ref(&scope.id),
+                &scope.source_ids,
+                checked,
+            )?;
+        }
         if let Some(scope) = evidence
             .observations
             .values()
@@ -984,6 +1012,24 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     for c in &contract_rows {
         sources.extend(c.source_ids.clone());
     }
+    sources.extend(
+        checked
+            .dependencies
+            .values()
+            .filter(|d| d.kind == "DOMAIN_ENTITY")
+            .filter(|d| {
+                d.normalized["entity"]["relations"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|r| {
+                        r["service"]
+                            .as_str()
+                            .is_some_and(|id| selected_services.contains(id))
+                    })
+            })
+            .flat_map(|d| d.source_ids.iter().cloned()),
+    );
     let all_sources = checked.sources();
     let chosen_sources: BTreeMap<_, _> = sources
         .iter()
@@ -1003,7 +1049,7 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     );
     boundaries.sort();
     boundaries.dedup();
-    json!({"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -1092,7 +1138,32 @@ pub(super) fn markdown(
         "# {}\n\nStatic source interpretation. Declared interactions do not establish runtime routing.\n\n",
         escape(title)
     );
+    if n.subject.starts_with("service:") {
+        for (id, title, purpose) in super::sections::REQUIRED {
+            let content = n.operations.iter().find(|o| o.id == id);
+            out.push_str(&format!(
+                "## {}\n\n{}\n\n",
+                escape(title),
+                escape(content.map(|o| o.summary.text.as_str()).unwrap_or(purpose))
+            ));
+            if let Some(state) = states.get(&format!("{}/{id}", n.subject)) {
+                out.push_str(&format!(
+                    "Source freshness: {}. Meaning review: {}.\n\n",
+                    state.freshness.as_str(),
+                    escape(&state.verification)
+                ));
+            }
+            if content.is_none() {
+                out.push_str(
+                    "Documentation gap: source-bound section content has not been accepted.\n\n",
+                );
+            }
+        }
+    }
     for o in &n.operations {
+        if super::sections::contains(&o.id) {
+            continue;
+        }
         if let Some(state) = states.get(&format!("{}/{}", n.subject, o.id)) {
             out.push_str(&format!("Source freshness: {}. Meaning review: {}.\n\nContent revisions: {}\n\nTarget revisions: {}\n\n",state.freshness.as_str(),escape(&state.verification),json!(state.content_revisions),json!(state.target_revisions)));
         }
@@ -1141,6 +1212,9 @@ pub(super) fn markdown(
         }
     }
     for (id, gap) in &n.gaps {
+        if super::sections::contains(id) {
+            continue;
+        }
         out.push_str(&format!(
             "## {}\n\nDocumentation gap: {}\n\n",
             escape(id),
@@ -1227,10 +1301,16 @@ fn publish_internal(
             subject.clone(),
             default_narrative(
                 subject,
-                evidence.entrypoints.iter().map(|e| e.id.clone()),
+                super::sections::expected(evidence).into_iter(),
                 &checked,
             ),
         );
+    }
+    for id in services.keys() {
+        let subject = format!("service:{id}");
+        fresh
+            .entry(subject.clone())
+            .or_insert_with(|| default_narrative(subject, super::sections::ids(), &checked));
     }
     for id in scenarios.keys() {
         let subject = format!("scenario:{id}");
@@ -1248,11 +1328,11 @@ fn publish_internal(
             continue;
         };
         let expected: BTreeSet<String> = if let Some(id) = n.subject.strip_prefix("service:") {
-            checked.services[id]
-                .entrypoints
-                .iter()
-                .map(|e| e.id.clone())
-                .collect()
+            checked
+                .services
+                .get(id)
+                .map(super::sections::expected)
+                .unwrap_or_else(|| super::sections::ids().collect())
         } else {
             BTreeSet::from([id_from_subject(&n.subject).to_owned()])
         };
@@ -1636,7 +1716,7 @@ fn publish_internal(
                 .into_bytes(),
             );
         }
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.len(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.iter().filter(|o|!super::sections::contains(&o.id)).count(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
     files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
     let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><p>{}</p><details><summary>Declaration and source checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
@@ -1665,7 +1745,7 @@ fn publish_internal(
         previous_bytes.as_deref(),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
+        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|!super::sections::contains(&o.id)).count(),"documentedSections":narratives.values().flat_map(|n|n.operations.iter()).filter(|o|super::sections::contains(&o.id)).count(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
     )
 }
 

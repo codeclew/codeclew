@@ -528,7 +528,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T08. Generate standard service, responsibility and entity sections
 
-- **Status:** - [ ]
+- **Status:** - [x] Implemented; targeted CLI and shared regressions qualified.
 - **Goal:** Registering two different services produces the same useful standard section structure, with stable domain objects and explicit discovery gaps.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC10, AC11; [scenario cards](../product/documentation-system/scenario-cards.md): S01, S04, S07; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T04, T06, T07
@@ -561,6 +561,35 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Required service sections exist and are navigable after registration, even when incomplete.
   - Every in-scope public boundary is represented or its discovery/authoring gap is visible; entity ownership is not fabricated.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+- **Observed evidence (2026-09-12):**
+  - Three final `docsys_t08_*` CLI tests passed (57.27 s): small/forty-boundary
+    services, unavailable source, sibling section failure, exact source references,
+    all relationship kinds, protected human ownership, duplicate/title-renamed
+    candidates, rejected dangling links and transitive entity dependencies. The
+    isolated deterministic author/reviewer accepted a standard section; this is
+    pipeline qualification, not a real-model writing-quality measurement.
+  - Shared documentation units: 25 passed, two existing JVM launchers ignored for
+    this Rust-only slice. The 36-test documentation-system run passed 35 and found
+    one obsolete four-module assertion after T07 added OpenAPI. The corrected
+    listing/configuration test passed separately (13.85 s). No other shared
+    regression failed. Later section display/source-scope changes were covered by
+    the final T08 rerun; successful unrelated checks were not repeated.
+  - Headless Chromium inspection covered desktop 1440x1000 and mobile 390x844,
+    long route navigation, common sections and an ingress-to-exact-source click.
+    The initial reader check caught section roots being counted as entrypoints;
+    the final reader separates those counts. A local favicon 404 was the only
+    browser console error. Native desktop inspection was unavailable while the
+    host was locked.
+  - Registration exposes required records and work requests immediately; explicit
+    section preparation captures evidence before configured author/reviewer work.
+    Rendering publishes standard gaps without invoking a model. Existing source
+    entrypoint IDs and legacy narrative inputs remain compatible.
+  - Entity records carry declarations/proposals with provenance and limits. They
+    do not establish runtime ownership. Model jobs cannot write the human
+    catalogue; explicit maintainer edits use `docs entity put --human`.
+  - Formatting, JavaScript/Python fixture syntax, JSON schemas, English-content
+    and staged privacy/diff checks passed. S01/S04/S07 graph edges are unchanged.
 
 ## T09. Preserve and display imported human notes with separate assessments
 

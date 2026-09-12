@@ -79,7 +79,7 @@ pub fn expand_dependencies(
             .filter(|d| {
                 matches!(
                     d.kind.as_str(),
-                    "SOURCE_SCOPE" | "MODULE_SCOPE" | "CONTRACT_SCOPE"
+                    "SOURCE_SCOPE" | "MODULE_SCOPE" | "CONTRACT_SCOPE" | "ENTITY_SCOPE"
                 ) && services.contains(d.service.as_str())
             })
             .map(|d| d.id.clone()),
@@ -92,6 +92,18 @@ pub fn expand_dependencies(
                 .dependencies
                 .get(id)
                 .ok_or_else(|| invalid("fragment has a missing dependency"))?;
+            if matches!(dependency.kind.as_str(), "DOMAIN_ENTITY" | "ENTITY_SCOPE") {
+                for linked in dependency.normalized["dependencyIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    if checked.dependencies.contains_key(linked) {
+                        next.insert(linked.to_owned());
+                    }
+                }
+            }
             if !matches!(dependency.kind.as_str(), "SYMBOL" | "FLOW") {
                 continue;
             }
@@ -151,8 +163,10 @@ pub fn fragment(
                 .dependencies
                 .values()
                 .filter(|d| {
-                    matches!(d.kind.as_str(), "SOURCE_SCOPE" | "CONTRACT_SCOPE")
-                        && d.service == service
+                    matches!(
+                        d.kind.as_str(),
+                        "SOURCE_SCOPE" | "CONTRACT_SCOPE" | "ENTITY_SCOPE"
+                    ) && d.service == service
                 })
                 .map(|d| d.id.clone()),
         );
@@ -274,6 +288,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.4"
             | "codeclew-documentation-html/1.5"
             | "codeclew-documentation-html/1.6"
+            | "codeclew-documentation-html/1.7"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(

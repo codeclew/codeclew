@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Required service documentation section",
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-section/1.0"
+    },
+    "id": {
+      "enum": [
+        "section-overview",
+        "section-responsibilities",
+        "section-entities",
+        "section-ingress",
+        "section-egress"
+      ]
+    },
+    "objectId": {
+      "type": "string"
+    },
+    "service": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "purpose": {
+      "type": "string"
+    },
+    "required": {
+      "const": true
+    },
+    "status": {
+      "enum": [
+        "AUTHORED",
+        "GAP"
+      ]
+    },
+    "content": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Accepted summary-only Operation; its stable ID is a document root, not a discovered callable."
+    },
+    "gap": {
+      "type": "string"
+    },
+    "workRequest": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "objectId",
+    "service",
+    "title",
+    "purpose",
+    "required",
+    "status",
+    "content",
+    "gap",
+    "workRequest"
+  ]
+}

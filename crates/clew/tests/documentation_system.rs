@@ -1264,7 +1264,10 @@ fn docsys_t05_lists_real_producer_capabilities_without_build_tools() {
     f.service("orders");
     let listed = f.ok(&["docs", "modules", "list", "--service", "orders"]);
     let rows = listed["records"].as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 5);
+    let openapi = rows.iter().find(|r| r["id"] == "openapi").unwrap();
+    assert_eq!(openapi["configured"], false);
+    assert_eq!(openapi["authority"], "DECLARED_OPENAPI");
     let source = rows.iter().find(|r| r["id"] == "source-syntax").unwrap();
     assert_eq!(source["configured"], true);
     assert_eq!(source["authority"], "SYNTAX_ONLY");
@@ -1808,5 +1811,263 @@ fn docsys_t07_route_comparison_and_contract_only_change_invalidate_service_and_p
             .values()
             .filter(|o| o.kind == "CONTRACT_OPERATION")
             .all(|o| o.normalized["sourceMapping"] == "NO_SOURCE_ROUTE_MATCH")
+    );
+}
+
+#[test]
+fn docsys_t08_required_sections_small_and_forty_boundary_services_with_local_failure() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("small");
+    let unavailable = f.service("unavailable");
+    fs::rename(&unavailable, unavailable.with_extension("offline")).unwrap();
+    let large = f.service("large");
+    let methods = (0..40).map(|i|format!("@GetMapping(\"/operations/a-long-route-name-{i}\") public int operation{i}() {{ return {i}; }}")).collect::<Vec<_>>().join("\n");
+    fs::write(large.join("Orders.java"),format!("import org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.bind.annotation.GetMapping;\n@RestController public class Orders {{ {methods} }}")).unwrap();
+    commit(&large);
+    let sections = f.ok(&["docs", "section", "list", "--service", "small"]);
+    assert_eq!(sections["items"].as_array().unwrap().len(), 5);
+    assert!(
+        sections["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["status"] == "GAP" && s["workRequest"].is_object())
+    );
+    let checked = f.checked();
+    let input = f.author("small", &checked);
+    let mut narrative = read(&input);
+    let mut overview = narrative["operations"][0].clone();
+    overview["id"] = json!("section-overview");
+    overview["title"] = json!("Overview");
+    overview["participants"] = json!([]);
+    overview["events"] = json!([]);
+    let mut broken = overview.clone();
+    broken["id"] = json!("section-responsibilities");
+    broken["summary"]["sourceIds"] = json!(["missing-source"]);
+    narrative["operations"]
+        .as_array_mut()
+        .unwrap()
+        .extend([overview, broken]);
+    let input = f.input("section-narrative.json", &narrative);
+    let published = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+    assert_eq!(published["status"], "PARTIAL");
+    assert!(published["updateFailures"]["service:small/section-responsibilities"].is_object());
+    let bundle = published["bundle"].as_str().unwrap();
+    let unavailable = read(f.bundle(bundle, "services/unavailable.json"));
+    assert_eq!(unavailable["sections"].as_array().unwrap().len(), 5);
+    assert_eq!(unavailable["sectionState"]["freshness"], "UNVERIFIED");
+    assert_eq!(
+        unavailable["boundaryInventory"]["gaps"][0],
+        "SOURCE_EVIDENCE_UNAVAILABLE"
+    );
+    let small = read(f.bundle(bundle, "services/small.json"));
+    let big = read(f.bundle(bundle, "services/large.json"));
+    for data in [&small, &big] {
+        assert_eq!(data["sections"].as_array().unwrap().len(), 5);
+        assert!(
+            !data["catalogue"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["id"].as_str().unwrap().starts_with("section-"))
+        );
+        assert!(
+            !data["boundaryInventory"]["gaps"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(small["sections"][0]["status"], "AUTHORED");
+    assert_eq!(small["sections"][1]["status"], "GAP");
+    assert_eq!(
+        big["boundaryInventory"]["publicBoundaries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        40
+    );
+    assert_eq!(
+        small["boundaryInventory"]["publicBoundaries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert!(
+        !small["boundaryInventory"]["internalCallables"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let md = fs::read_to_string(f.bundle(bundle, "services/small.md")).unwrap();
+    assert!(md.contains("## Overview") && md.contains("## Egress contracts"));
+    let shown = f.ok(&[
+        "docs",
+        "section",
+        "show",
+        "--service",
+        "small",
+        "--id",
+        "section-overview",
+    ]);
+    assert_eq!(shown["status"], "AUTHORED");
+    if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T08_REVIEW") {
+        fs::create_dir_all(&directory).unwrap();
+        for service in ["small", "large"] {
+            fs::copy(
+                f.bundle(bundle, &format!("services/{service}.html")),
+                std::path::Path::new(&directory).join(format!("{service}.html")),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn docsys_t08_entities_keep_human_ownership_and_transitive_identity_dependencies() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    f.service("other");
+    let checked = f.checked();
+    let dep = checked.services["orders"]
+        .observations
+        .values()
+        .find(|d| d.kind == "SYMBOL" && !d.source_ids.is_empty())
+        .unwrap()
+        .id
+        .clone();
+    let entity = json!({"schema":"codeclew-documentation-entity/1.0","id":"quantity","title":"Requested quantity","description":"A declared domain concept.","relations":[{"service":"orders","kind":"owned","origin":"human","rationale":"Maintainer declaration.","confidence":"declared","representations":["Orders"],"dependencyIds":[dep]}],"relatedEntities":[],"limitations":["Ownership is a declaration, not inferred from a DTO."]});
+    let put = |value: &serde_json::Value, human: bool| {
+        let path = f.input("entity.json", value);
+        let digest = f.ok(&["docs", "entity", "list"])["inputDigest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut args = vec![
+            "docs",
+            "entity",
+            "put",
+            "--input",
+            path.to_str().unwrap(),
+            "--expected-input-digest",
+            &digest,
+        ];
+        if human {
+            args.push("--human");
+        }
+        f.run(&args)
+    };
+    assert_eq!(put(&entity, true).0, 0);
+    let mut changed = entity.clone();
+    changed["relations"][0]["service"] = json!("other");
+    assert_ne!(put(&changed, false).0, 0);
+    changed["relations"] = json!([]);
+    assert_ne!(put(&changed, false).0, 0);
+    let mut candidate = entity.clone();
+    candidate["id"] = json!("quantity-candidate");
+    candidate["relations"][0]["origin"] = json!("agent-proposal");
+    candidate["relations"][0]["service"] = json!("other");
+    candidate["relations"][0]["dependencyIds"] = json!([]);
+    candidate["relatedEntities"] = json!(["quantity"]);
+    for kind in ["created", "changed", "read", "stored-copy"] {
+        let mut relation = candidate["relations"][0].clone();
+        relation["kind"] = json!(kind);
+        candidate["relations"]
+            .as_array_mut()
+            .unwrap()
+            .push(relation);
+    }
+    assert_eq!(put(&candidate, false).0, 0);
+    let mut dangling = candidate.clone();
+    dangling["relatedEntities"] = json!(["guessed-renamed-entity"]);
+    assert_ne!(put(&dangling, false).0, 0);
+    let checked = f.checked();
+    let input = f.author("other", &checked);
+    let result = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+    let baseline: clew::documentation::bindings::Bindings = serde_json::from_value(read(
+        f.bundle(result["bundle"].as_str().unwrap(), "bindings.json"),
+    ))
+    .unwrap();
+    assert!(
+        baseline
+            .fragments
+            .values()
+            .filter(|b| b.subject == "service:other")
+            .any(|b| b.dependencies.contains_key("entity:quantity")
+                && b.dependencies.contains_key(&dep))
+    );
+    let mut renamed = entity.clone();
+    renamed["title"] = json!("A renamed human concept");
+    assert_eq!(put(&renamed, true).0, 0);
+    let now = f.checked();
+    let changes = clew::documentation::bindings::freshness(Some(&baseline), &now);
+    assert!(
+        changes["affected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["subject"] == "service:other")
+    );
+    let records = f.ok(&["docs", "entity", "list"]);
+    assert_eq!(records["items"].as_array().unwrap().len(), 2);
+    let original = records["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "quantity")
+        .unwrap();
+    assert_eq!(original["relations"][0]["service"], "orders");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t08_section_work_uses_separate_author_and_reviewer() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let mut page = f.ok(&[
+        "docs",
+        "section",
+        "prepare",
+        "--service",
+        "orders",
+        "--id",
+        "section-overview",
+    ]);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(&f, &work, json!({"cursor":cursor}));
+    }
+    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let handle = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
+        })
+        .unwrap()
+        .0;
+    let proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Overview","summary":{"text":"The service processes requested quantities.","evidence":[handle]},"steps":[]}]});
+    let result = proposal_submit(&f, &work, &proposal);
+    assert_eq!(result["status"], "READY_WITH_LIMITATIONS", "{result}");
+    let config = execution_config(&f, json!({"proposal":proposal}), json!({}), None);
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let report = run_report(&f, &result);
+    assert_eq!(report["attempts"][0]["role"], "author");
+    assert_eq!(report["attempts"][1]["role"], "reviewer");
+    let data = read(f.bundle(
+        result["publication"]["bundle"].as_str().unwrap(),
+        "services/orders.json",
+    ));
+    assert_eq!(data["sections"][0]["status"], "AUTHORED");
+    assert_eq!(
+        data["operationStates"]["section-overview"]["verification"],
+        "VERIFIED_WITH_LIMITATIONS"
     );
 }
