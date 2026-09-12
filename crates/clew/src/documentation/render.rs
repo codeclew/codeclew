@@ -752,6 +752,21 @@ pub fn make_bindings(
                 checked,
             )?;
         }
+        for contract in evidence
+            .observations
+            .values()
+            .filter(|o| matches!(o.kind.as_str(), "CONTRACT_OPERATION" | "CONTRACT_SCOPE"))
+        {
+            add_binding(
+                &mut fragments,
+                format!("{subject}/declared-{}", contract.id),
+                &subject,
+                &contract.normalized,
+                std::slice::from_ref(&contract.id),
+                &contract.source_ids,
+                checked,
+            )?;
+        }
         for entry in &evidence.entrypoints {
             add_binding(
                 &mut fragments,

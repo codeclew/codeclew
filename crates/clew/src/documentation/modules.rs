@@ -191,7 +191,24 @@ fn catalog() -> Result<Vec<Value>, ClewError> {
     );
     spring["availability"] = json!("BUILT_IN_SOURCE_OR_SEALED_FACTS");
     spring["projectCompatibility"] = json!("QUALIFIED_FRAMEWORK_RULES_ONLY");
-    Ok(vec![source, java, kotlin, spring])
+    let mut openapi = common(
+        "openapi",
+        json!(["java", "kotlin", "python"]),
+        "DECLARED_OPENAPI",
+        json!(["openapi/3.0.0", "openapi/3.0.3"]),
+        json!([super::contracts::SCHEMA]),
+        crate::canonical::hash_bytes(include_bytes!("contracts.rs")),
+    );
+    openapi["availability"] = json!("BUILT_IN_NO_BUILD_TOOLS");
+    openapi["testedVersions"] = json!(super::contracts::TESTED_VERSIONS);
+    openapi["limitations"] = json!([
+        "EXPLICIT_COMMITTED_FILES_ONLY",
+        "NO_IMPLICIT_NETWORK",
+        "DECLARATIONS_NOT_RUNTIME_ENFORCEMENT",
+        "CALLBACKS_RETAINED_NOT_SOURCE_MAPPED",
+        "NO_SCHEMA_INSTANCE_VALIDATION"
+    ]);
+    Ok(vec![source, java, kotlin, spring, openapi])
 }
 fn applicable(value: &Value, service: &Service) -> bool {
     value["languages"]
@@ -221,6 +238,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 Some("kotlin-k2") =>
                     service.language == "kotlin"
                         && (semantic(service).is_some() || service.profile != "source-syntax"),
+                Some("openapi") => !service.contract_files.is_empty(),
                 Some("spring") => matches!(service.language.as_str(), "java" | "kotlin"),
                 _ => false,
             });
@@ -251,6 +269,7 @@ pub(super) fn attach(service: &Service, evidence: &mut ServiceEvidence) -> Resul
                 service.language == "kotlin"
                     && (selected.is_some() || service.profile != "source-syntax")
             }
+            Some("openapi") => !service.contract_files.is_empty(),
             _ => matches!(service.language.as_str(), "java" | "kotlin"),
         })
         .collect();

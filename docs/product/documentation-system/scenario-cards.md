@@ -348,6 +348,17 @@ existing Spring compiler-metadata and documentation regressions. The Boot 3.3.0
 fixture verifies a bounded MockMvc route; see its exact [compatibility matrix](../../../fixtures/documentation-system/spring/README.md).
 The existing compiler schema and worker bridges are unchanged.
 
+### T07 implementation evidence
+
+The independent declared OpenAPI module captures explicitly registered committed
+files outside language roots. Three no-tool CLI cases preserve nested contracts,
+local/cross-file references and unmatched operations; reference failures and
+unsupported versions remain visible. Tested dialects are 3.0.0 and 3.0.3. A unique
+source route match remains separate from contract authority and runtime behavior.
+Contract-only mutations invalidate service and process fragment dependencies;
+a shared expansion budget bounds repeated references. Existing documentation
+unit regressions pass. See the [fixture scope](../../../fixtures/documentation-system/openapi/README.md).
+
 ## S08 — Author, review and escalate bounded agent work
 
 - **Status:** growth
@@ -547,6 +558,17 @@ explicit gaps. Three CLI tests and typed-contract/shared-rule tests pass alongsi
 existing Spring compiler-metadata and documentation regressions. The Boot 3.3.0
 fixture verifies a bounded MockMvc route; see its exact [compatibility matrix](../../../fixtures/documentation-system/spring/README.md).
 The existing compiler schema and worker bridges are unchanged.
+
+### T07 implementation evidence
+
+The independent declared OpenAPI module captures explicitly registered committed
+files outside language roots. Three no-tool CLI cases preserve nested contracts,
+local/cross-file references and unmatched operations; reference failures and
+unsupported versions remain visible. Tested dialects are 3.0.0 and 3.0.3. A unique
+source route match remains separate from contract authority and runtime behavior.
+Contract-only mutations invalidate service and process fragment dependencies;
+a shared expansion budget bounds repeated references. Existing documentation
+unit regressions pass. See the [fixture scope](../../../fixtures/documentation-system/openapi/README.md).
 
 ## S12 — Update central documentation through CI and inspect history
 

@@ -115,3 +115,12 @@ snapshot as if growth behavior existed at the base revision.
   Java bytecode targets 17 while the test JVM is 21. This is bounded controller
   registration evidence, not universal Boot or production qualification. The
   fixture README records exact tested configurations. S07/S11 edges are unchanged.
+
+- T07: declared OpenAPI operations are now independent of source endpoint
+  discovery and language roots. Exact registered committed input digests and
+  source occurrences bind 3.0.0/3.0.3 contracts; nested references/constraints,
+  parameters, responses, security and servers remain available. Three CLI tests
+  pass, including unmapped declarations, input/reference gaps, source-route
+  differences and contract-only service/process dependency invalidation. Existing
+  documentation unit regressions and an expansion-budget test pass. Graph S07/S11
+  transitions remain unchanged; no runtime contract enforcement is claimed.

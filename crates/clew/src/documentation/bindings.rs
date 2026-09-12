@@ -77,8 +77,10 @@ pub fn expand_dependencies(
             .dependencies
             .values()
             .filter(|d| {
-                matches!(d.kind.as_str(), "SOURCE_SCOPE" | "MODULE_SCOPE")
-                    && services.contains(d.service.as_str())
+                matches!(
+                    d.kind.as_str(),
+                    "SOURCE_SCOPE" | "MODULE_SCOPE" | "CONTRACT_SCOPE"
+                ) && services.contains(d.service.as_str())
             })
             .map(|d| d.id.clone()),
     );
@@ -148,7 +150,10 @@ pub fn fragment(
             checked
                 .dependencies
                 .values()
-                .filter(|d| d.kind == "SOURCE_SCOPE" && d.service == service)
+                .filter(|d| {
+                    matches!(d.kind.as_str(), "SOURCE_SCOPE" | "CONTRACT_SCOPE")
+                        && d.service == service
+                })
                 .map(|d| d.id.clone()),
         );
     }

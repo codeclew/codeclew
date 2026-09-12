@@ -1,0 +1,32 @@
+openapi: 3.0.3
+info: {title: Orders, version: '1'}
+servers: [{url: 'https://example.invalid'}]
+security: [{token: []}]
+paths:
+  /orders/reserve:
+    parameters:
+      - {name: trace, in: header, required: true, schema: {type: string}}
+    post:
+      operationId: reserve
+      parameters:
+        - {name: trace, in: header, required: false, schema: {type: string, maxLength: 30}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: 'types.yaml#/Order'}
+      responses:
+        '200':
+          description: Reserved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Result'}
+  /declared-only:
+    get:
+      security: []
+      responses: {'204': {description: Done}}
+components:
+  securitySchemes:
+    token: {type: http, scheme: bearer}
+  schemas:
+    Result: {type: object, properties: {id: {type: integer, minimum: 1}}}

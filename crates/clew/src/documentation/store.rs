@@ -466,6 +466,9 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
             "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
         ));
     }
+    if s.contract_files.len() > 128 {
+        return Err(invalid("at most 128 contract files may be selected"));
+    }
     for file in &s.contract_files {
         relative(file)?;
     }

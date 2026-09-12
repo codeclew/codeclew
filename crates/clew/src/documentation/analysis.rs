@@ -136,6 +136,7 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
             provider.compilation = semantic.compilation.clone();
             super::syntax::enrich(&mut source, capture(repository, &provider))?;
         }
+        super::contracts::capture(service, &repo, &mut source)?;
         super::modules::attach(service, &mut source)?;
         return Ok(source);
     }
@@ -199,6 +200,7 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
     // Only use supported lifecycle operations; documentation records have no session dependency.
     let cleanup = session.abort().and_then(|_| session.gc(false)).map(|_| ());
     let mut evidence = result?;
+    super::contracts::capture(service, &repo, &mut evidence)?;
     super::modules::attach(service, &mut evidence)?;
     cleanup?;
     if git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])? != revision {
@@ -595,51 +597,7 @@ pub fn project(
             }
         }
     }
-    for path in &service.contract_files {
-        let Some(text) = files.get(path) else {
-            evidence
-                .boundaries
-                .push(format!("CONTRACT_SOURCE_UNAVAILABLE:{path}"));
-            continue;
-        };
-        let value: Value = serde_yaml_ng::from_str(text)
-            .map_err(|_| invalid("declared contract is not JSON/YAML"))?;
-        if !value["openapi"]
-            .as_str()
-            .is_some_and(|v| v.starts_with("3.0."))
-        {
-            evidence
-                .boundaries
-                .push(format!("UNSUPPORTED_CONTRACT_VERSION:{path}"));
-            continue;
-        }
-        let id = dependency_id(&service.id, "contract", path)?;
-        let fact = json!({"file":path,"startLine":1,"endLine":text.lines().count()});
-        let source = add_source(
-            &mut evidence,
-            service,
-            files,
-            &fact,
-            &canonical::hash_bytes(text.as_bytes()),
-            &format!("contract/{path}"),
-        )?;
-        if let Some(s) = source.as_ref().and_then(|s| evidence.sources.get_mut(s)) {
-            s.authority = "DECLARED_OPENAPI".into();
-        }
-        evidence.observations.insert(
-            id.clone(),
-            Observation {
-                id,
-                kind: "CONTRACT".into(),
-                service: service.id.clone(),
-                symbol: path.clone(),
-                digest: digest(&value)?,
-                normalized: value.clone(),
-                source_ids: source.into_iter().collect(),
-            },
-        );
-        evidence.contracts.insert(path.clone(), value);
-    }
+    super::contracts::import(service, &mut evidence, files)?;
     for entry in &mut evidence.entrypoints {
         if !evidence.observations.values().any(|o| {
             o.kind == "SYMBOL"

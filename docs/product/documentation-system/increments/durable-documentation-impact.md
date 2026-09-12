@@ -118,3 +118,10 @@ not claimed by this planning package's structural or independent review.
   share rules; unresolved names, values, composition and inheritance stay gaps.
   Source/public CLI, compiler-metadata regressions and a Boot 3.3.0 managed MVC
   fixture pass. No worker protocol change or new runtime-registration claim.
+
+- T07 → S07/S11, AC09: an independent declared OpenAPI module captures explicit
+  committed selections and registered references without compiler endpoint
+  discovery. Unmapped operations render as declarations; unsafe/missing/cyclic/
+  external references and unsupported versions remain gaps. Three CLI cases,
+  documentation regressions and the shared expansion-budget test pass. Contract
+  changes invalidate bound service/process claims outside language source roots.

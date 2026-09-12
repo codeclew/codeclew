@@ -54,6 +54,32 @@ authority boundaries; binary inputs retain inventory digests. Symlinks, missing
 roots, empty scopes, and recovered parse errors remain explicit gaps. Exceeding
 a budget fails the capture rather than silently dropping the remaining files.
 
+## Declare OpenAPI contracts independently
+
+Set `contractFiles` on the service record to an explicit list such as
+`["api/openapi.yaml", "api/types.yaml"]`. These committed files are captured
+independently of language roots and compiler availability. The `openapi` module
+exposes its tested versions through `docs modules show --id openapi`: 3.0.0 and
+3.0.3. Other versions remain unsupported with a named gap and retained input.
+Reference-only registered files do not need an `openapi` header.
+
+The reader preserves nested schemas and constraints, inherited/overridden
+parameters, responses, security schemes, and server declarations. Relative file
+references resolve only within the explicit registration; network references,
+missing files, cycles and unresolved pointers remain visible gaps. No network
+fetch, schema instance validation or runtime enforcement is performed. Callbacks
+are retained inside their declaring operation but are not mapped to source routes.
+Reference siblings are flagged rather than silently treated as merged schemas.
+Capture is bounded to 128 files, 2 MiB each, 16 MiB total, 100,000 expanded values
+and 32 levels. Excessive expansion fails with an explicit diagnostic.
+
+Every declared operation appears in the service contract data, even without a
+matching source endpoint. The HTML navigation also shows unmatched declarations.
+A unique method/path match is only a source-route comparison; it does not prove
+payload compatibility or deployed behavior. Changing a registered contract or
+reference input invalidates dependent service/process claims, including when
+language source roots are unchanged.
+
 ## Author one explanation, render several views
 
 ```sh

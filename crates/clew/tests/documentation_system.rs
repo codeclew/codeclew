@@ -1517,3 +1517,296 @@ fn docsys_t06_dynamic_values_alias_conflicts_and_inheritance_keep_named_gaps() {
         );
     }
 }
+
+fn openapi_fixture() -> (Fixture, std::path::PathBuf) {
+    use serde_json::json;
+    let f = Fixture::new();
+    let repo = f.service("orders");
+    fs::create_dir(repo.join("api")).unwrap();
+    fs::write(
+        repo.join("api/api.yaml"),
+        include_str!("../../../fixtures/documentation-system/openapi/api.yaml"),
+    )
+    .unwrap();
+    fs::write(
+        repo.join("api/types.yaml"),
+        include_str!("../../../fixtures/documentation-system/openapi/types.yaml"),
+    )
+    .unwrap();
+    commit(&repo);
+    let mut record = read(f.docs.join("catalog/services/orders.json"));
+    record["source"]["roots"] = json!(["Orders.java"]);
+    record["contractFiles"] = json!(["api/api.yaml", "api/types.yaml"]);
+    let input = f.input("contract-service.json", &record);
+    let current = f.ok(&["docs", "service", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        &current,
+    ]);
+    (f, repo)
+}
+
+#[test]
+fn docsys_t07_declared_operations_without_source_routes_preserve_full_contracts() {
+    let (f, repo) = openapi_fixture();
+    // Dirty contract changes cannot become committed evidence.
+    fs::write(repo.join("api/api.yaml"), "uncommitted: true\n").unwrap();
+    let checked = f.checked();
+    let e = checked
+        .services
+        .get("orders")
+        .unwrap_or_else(|| panic!("{checked:?}"));
+    assert!(e.entrypoints.iter().all(|e| e.kind != "HTTP_ENDPOINT"));
+    let operations: Vec<_> = e
+        .observations
+        .values()
+        .filter(|o| o.kind == "CONTRACT_OPERATION")
+        .collect();
+    assert_eq!(operations.len(), 2);
+    let post = operations
+        .iter()
+        .find(|o| o.normalized["method"] == "POST")
+        .unwrap();
+    let n = &post.normalized;
+    assert_eq!(n["sourceMapping"], "NO_SOURCE_ROUTE_MATCH");
+    assert!(n["entrypoint"].is_null());
+    assert_eq!(n["authority"], "DECLARED_OPENAPI");
+    assert_eq!(n["runtimeEnforcement"], "UNVERIFIED");
+    assert_eq!(
+        n["operation"]["requestBody"]["content"]["application/json"]["schema"]["properties"]["lines"]
+            ["items"]["properties"]["quantity"]["maximum"],
+        100
+    );
+    assert_eq!(
+        n["operation"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]["id"]
+            ["minimum"],
+        1
+    );
+    assert_eq!(n["parameters"][0]["required"], false);
+    assert_eq!(n["securitySchemes"]["token"]["scheme"], "bearer");
+    assert_eq!(n["servers"][0]["url"], "https://example.invalid");
+    assert_eq!(
+        operations
+            .iter()
+            .find(|o| o.normalized["method"] == "GET")
+            .unwrap()
+            .normalized["security"],
+        serde_json::json!([])
+    );
+    assert_eq!(post.source_ids.len(), 2);
+    for id in &post.source_ids {
+        let s = &e.sources[id];
+        assert!(s.occurrence.is_some());
+        assert_eq!(s.authority, "DECLARED_OPENAPI");
+        assert_eq!(
+            s.text_digest,
+            clew::canonical::hash_bytes(s.text.as_bytes())
+        );
+    }
+    let capability = f.ok(&[
+        "docs",
+        "modules",
+        "show",
+        "--id",
+        "openapi",
+        "--service",
+        "orders",
+    ]);
+    assert_eq!(capability["record"]["configured"], true);
+    assert_eq!(
+        capability["record"]["testedVersions"],
+        serde_json::json!(["3.0.0", "3.0.3"])
+    );
+    let input = f.author("orders", &checked);
+    let rendered = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+    let bundle = rendered["bundle"].as_str().unwrap();
+    let data = read(f.bundle(bundle, "services/orders.json"));
+    assert_eq!(data["contracts"].as_array().unwrap().len(), 2);
+    assert!(
+        fs::read_to_string(f.bundle(bundle, "services/orders.html"))
+            .unwrap()
+            .contains("DECLARED_OPENAPI")
+    );
+}
+
+#[test]
+fn docsys_t07_reference_cycles_missing_files_external_urls_and_versions_are_gaps() {
+    let (f, repo) = openapi_fixture();
+    let doc = serde_json::json!({"openapi":"3.0.0","paths":{"/unknown":{"get":{"responses":{"200":{"description":"OK","content":{"application/json":{"schema":{"type":"object","properties":{"cycle":{"$ref":"#/components/schemas/Loop"},"missing":{"$ref":"#/components/schemas/Absent"},"external":{"$ref":"http://127.0.0.1:1/private"},"file":{"$ref":"unregistered.yaml#/Secret"},"escape":{"$ref":"../../outside.yaml"}}}}}}}}}},"components":{"schemas":{"Loop":{"$ref":"#/components/schemas/Loop"}}}});
+    fs::write(repo.join("api/api.yaml"), serde_json::to_vec(&doc).unwrap()).unwrap();
+    fs::write(
+        repo.join("api/unregistered.yaml"),
+        "Secret: {private: do-not-import}\n",
+    )
+    .unwrap();
+    commit(&repo);
+    let checked = f.checked();
+    let e = checked
+        .services
+        .get("orders")
+        .unwrap_or_else(|| panic!("{checked:?}"));
+    let n = &e
+        .observations
+        .values()
+        .find(|o| o.kind == "CONTRACT_OPERATION")
+        .unwrap()
+        .normalized;
+    let gaps = n["boundaries"].to_string();
+    for gap in [
+        "CYCLIC_CONTRACT_REFERENCE",
+        "MISSING_CONTRACT_REFERENCE",
+        "EXTERNAL_CONTRACT_REFERENCE",
+        "UNREGISTERED_OR_UNAVAILABLE_CONTRACT_REFERENCE",
+        "UNSAFE_CONTRACT_REFERENCE",
+    ] {
+        assert!(gaps.contains(gap), "{gaps}");
+    }
+    assert!(!serde_json::to_string(e).unwrap().contains("do-not-import"));
+    for content in ["openapi: 3.1.0\npaths: {}\n", "openapi: [broken\n"] {
+        fs::write(repo.join("api/api.yaml"), content).unwrap();
+        commit(&repo);
+        let checked = f.checked();
+        let e = checked
+            .services
+            .get("orders")
+            .unwrap_or_else(|| panic!("{checked:?}"));
+        assert!(
+            e.observations
+                .values()
+                .all(|o| o.kind != "CONTRACT_OPERATION")
+        );
+        assert!(
+            e.boundaries
+                .iter()
+                .any(|g| g.starts_with(if content.contains("3.1.0") {
+                    "UNSUPPORTED_CONTRACT_VERSION"
+                } else {
+                    "INVALID_CONTRACT_JSON_YAML"
+                })),
+            "{:?}",
+            e.boundaries
+        );
+    }
+    fs::remove_file(repo.join("api/types.yaml")).unwrap();
+    commit(&repo);
+    assert!(
+        f.checked().services["orders"]
+            .boundaries
+            .iter()
+            .any(|g| g == "CONTRACT_SOURCE_UNAVAILABLE:api/types.yaml")
+    );
+}
+
+#[test]
+fn docsys_t07_route_comparison_and_contract_only_change_invalidate_service_and_process() {
+    use clew::documentation::{bindings, render};
+    use serde_json::json;
+    let (f, repo) = openapi_fixture();
+    fs::write(
+        repo.join("Orders.java"),
+        include_str!("../../../fixtures/documentation-system/spring/Orders.java"),
+    )
+    .unwrap();
+    commit(&repo);
+    let checked = f.checked();
+    let e = checked
+        .services
+        .get("orders")
+        .unwrap_or_else(|| panic!("{checked:?}"));
+    let post = e
+        .observations
+        .values()
+        .find(|o| o.kind == "CONTRACT_OPERATION" && o.normalized["method"] == "POST")
+        .unwrap();
+    assert_eq!(post.normalized["sourceMapping"], "SOURCE_ROUTE_MATCH_ONLY");
+    assert!(post.normalized["entrypoint"].is_string());
+    let input = f.author("orders", &checked);
+    f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+    let dependencies = e
+        .entrypoints
+        .iter()
+        .find(|e| e.kind == "HTTP_ENDPOINT")
+        .unwrap()
+        .dependency_ids
+        .clone();
+    // Process claims use the same dependency closure as published scenario fragments.
+    let process = bindings::fragment(
+        "scenario:reserve",
+        &json!({"claim":"Reserve order"}),
+        &dependencies,
+        &[],
+        &checked,
+    )
+    .unwrap();
+    assert!(
+        process
+            .dependencies
+            .keys()
+            .any(|id| checked.dependencies[id].kind == "CONTRACT_SCOPE")
+    );
+    let mut baseline = render::make_bindings(&checked, Default::default()).unwrap();
+    baseline
+        .fragments
+        .insert("scenario:reserve/summary".into(), process);
+    let file = repo.join("api/types.yaml");
+    fs::write(
+        &file,
+        fs::read_to_string(&file)
+            .unwrap()
+            .replace("maximum: 100", "maximum: 50"),
+    )
+    .unwrap();
+    commit(&repo);
+    let changed = f.checked();
+    let before = e
+        .observations
+        .values()
+        .find(|o| o.kind == "SOURCE_SCOPE")
+        .unwrap();
+    let after = changed.services["orders"]
+        .observations
+        .values()
+        .find(|o| o.kind == "SOURCE_SCOPE")
+        .unwrap();
+    assert_eq!(
+        before.digest, after.digest,
+        "contract is outside language roots"
+    );
+    let report = bindings::freshness(Some(&baseline), &changed);
+    assert!(
+        report["affected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["fragment"] == "scenario:reserve/summary"),
+        "{report}"
+    );
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    assert_eq!(
+        refreshed["sections"]["service:orders"]["freshness"],
+        "STALE"
+    );
+    fs::write(
+        repo.join("Orders.java"),
+        include_str!("../../../fixtures/documentation-system/spring/Orders.java")
+            .replace("/reserve", "/different"),
+    )
+    .unwrap();
+    commit(&repo);
+    let changed = f.checked();
+    assert!(
+        changed.services["orders"]
+            .observations
+            .values()
+            .filter(|o| o.kind == "CONTRACT_OPERATION")
+            .all(|o| o.normalized["sourceMapping"] == "NO_SOURCE_ROUTE_MATCH")
+    );
+}

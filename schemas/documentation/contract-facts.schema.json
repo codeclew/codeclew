@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/contract-facts.schema.json",
+  "title": "Declared OpenAPI operation and scope facts",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-contract-facts/1.0"
+        },
+        "authority": {
+          "const": "DECLARED_OPENAPI"
+        },
+        "runtimeEnforcement": {
+          "const": "UNVERIFIED"
+        },
+        "entrypoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceMapping": {
+          "enum": [
+            "NO_SOURCE_ROUTE_MATCH",
+            "SOURCE_ROUTE_MATCH_ONLY",
+            "AMBIGUOUS_SOURCE_ROUTE_MATCH"
+          ]
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "PUT",
+            "POST",
+            "DELETE",
+            "OPTIONS",
+            "HEAD",
+            "PATCH",
+            "TRACE"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "object"
+        },
+        "parameters": {
+          "type": "array"
+        },
+        "security": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "securitySchemes": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "servers": {
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "declaredSource": {
+          "type": "string"
+        },
+        "openapi": {
+          "enum": [
+            "3.0.0",
+            "3.0.3"
+          ]
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "authority",
+        "runtimeEnforcement",
+        "entrypoint",
+        "sourceMapping",
+        "method",
+        "path",
+        "operation",
+        "parameters",
+        "security",
+        "securitySchemes",
+        "servers",
+        "declaredSource",
+        "openapi",
+        "boundaries"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-contract-facts/1.0"
+        },
+        "authority": {
+          "const": "DECLARED_OPENAPI"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object"
+          }
+        },
+        "implementationDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "authority",
+        "inputs",
+        "implementationDigest",
+        "limitations"
+      ]
+    }
+  ]
+}

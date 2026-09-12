@@ -482,7 +482,7 @@ versions and limits are recorded in the Spring fixture README.
 
 ## T07. Make declared OpenAPI usable as an independent contract module
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** Declared API contracts remain documentable and staleable without compiler endpoint resolution, while source-derived comparisons stay separate.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC09; [scenario cards](../product/documentation-system/scenario-cards.md): S07, S11; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T05
@@ -513,6 +513,18 @@ versions and limits are recorded in the Spring fixture README.
   - A declared contract is not silently promoted to source behavior or runtime enforcement.
   - No-K2 documentation can display a complete supported declared contract or exact missing facts.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+Implementation evidence: three `docsys_t07_*` CLI cases passed (40.07 s) without
+compiler/model tools. They exercise registered cross-file and local references,
+nested contracts, independent declaration rendering, exact committed occurrences,
+cycles/missing/external/unsafe inputs, supported 3.0.0/3.0.3 and unsupported 3.1.0,
+source-route differences and contract-only service/process dependency invalidation.
+The process check uses the same fragment dependency closure as scenario publishing;
+it does not qualify a running distributed service. Existing documentation unit
+regressions passed (24, two JVM tests intentionally not selected for this Rust-only
+change), and a focused expansion-budget regression passes. Formatting, JavaScript
+syntax, schema JSON, English and staged privacy checks pass. S07/S11 edges remain
+unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T08. Generate standard service, responsibility and entity sections
 
