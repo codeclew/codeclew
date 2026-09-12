@@ -10,6 +10,7 @@ pub mod entities;
 mod kotlin;
 pub mod model;
 pub mod notes;
+pub mod processes;
 pub mod proposals;
 pub mod render;
 pub mod review;

@@ -546,7 +546,11 @@ fn materialize(
     }
     let operation_id = |builder: &Builder, reference: &str| -> Result<String, ClewError> {
         if work.subject.starts_with("scenario:") && reference == work.subject {
-            return Ok(work.subject[9..].into());
+            return Ok(work
+                .request
+                .entrypoint
+                .clone()
+                .unwrap_or_else(|| work.subject[9..].into()));
         }
         let handle = builder.handle(reference)?;
         if !matches!(handle.kind.as_str(), "ENTRYPOINT" | "SECTION" | "NOTE") {
@@ -627,11 +631,21 @@ fn materialize(
         } else if proposed.assessment.is_some() {
             return Err(invalid("assessments require an explicit note root"));
         }
-        if super::sections::contains(&op.id) || super::notes::is_root(&op.id) {
+        if super::sections::contains(&op.id)
+            || super::notes::is_root(&op.id)
+            || super::processes::overview(&work.checked, &work.subject, &op.id)
+        {
             if !proposed.steps.is_empty() || !proposed.contracts.is_empty() {
                 return Err(invalid(
                     "section proposals use a supported summary; operation sequences are separate",
                 ));
+            }
+            if super::processes::overview(&work.checked, &work.subject, &op.id) {
+                op.boundaries.extend(
+                    work.checked.scenarios[&work.subject[9..]]
+                        .boundaries
+                        .clone(),
+                );
             }
             op.participants.clear();
             n.operations.push(op);
@@ -727,7 +741,10 @@ fn materialize(
                 h.id.clone()
             }
         } else if work.subject.starts_with("scenario:") && reference == &work.subject {
-            work.subject[9..].into()
+            work.request
+                .entrypoint
+                .clone()
+                .unwrap_or_else(|| work.subject[9..].into())
         } else {
             return Err(invalid(
                 "gap requires an entrypoint reference or its scenario subject",
@@ -760,7 +777,7 @@ fn expected(work: &Work) -> BTreeSet<String> {
     if let Some(service) = work.subject.strip_prefix("service:") {
         super::notes::expected(&work.checked, service)
     } else {
-        BTreeSet::from([work.subject[9..].into()])
+        super::processes::expected(&work.checked, &work.subject[9..])
     }
 }
 

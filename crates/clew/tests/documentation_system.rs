@@ -2440,3 +2440,390 @@ fn docsys_t09_embedded_note_instructions_cannot_bypass_review() {
             .all(|a| a["role"] != "reviewer")
     );
 }
+
+fn process_definition(id: &str, children: &[&str]) -> serde_json::Value {
+    serde_json::json!({"schema":"codeclew-documentation-process/1.0","id":id,"title":format!("Maintained {id}"),"summary":"An explicitly saved quantity process.","root":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}},"interactions":[],"maxDepth":4,"maxNodes":64,"process":{"scope":"Quantity handling across explicitly declared participants.","participants":["orders"],"objects":[],"trigger":"A caller requests a quantity.","outcomes":["Return a normalized quantity; failure paths remain evidence-bounded."],"linkedSubviews":children}})
+}
+fn save_process(f: &Fixture, definition: &serde_json::Value) -> serde_json::Value {
+    let path = f.input("process.json", definition);
+    let digest = f.ok(&["docs", "process", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "process",
+        "put",
+        "--input",
+        path.to_str().unwrap(),
+        "--expected-input-digest",
+        &digest,
+    ])
+}
+#[test]
+fn docsys_t10_saved_identity_transient_inspection_and_unavailable_participant() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let other = f.service("other");
+    let mut definition = process_definition("reserve", &[]);
+    definition["process"]["participants"] = json!(["orders", "other"]);
+    for (field, value) in [("maxNodes", json!(513)), ("maxDepth", json!(17))] {
+        let mut invalid = definition.clone();
+        invalid[field] = value;
+        let path = f.input("invalid-process.json", &invalid);
+        assert_ne!(
+            f.run(&[
+                "docs",
+                "process",
+                "inspect",
+                "--input",
+                path.to_str().unwrap()
+            ])
+            .0,
+            0
+        );
+    }
+    let path = f.input("process.json", &definition);
+    let before = fs::read_dir(f.docs.join("scenarios")).unwrap().count();
+    let transient = f.ok(&[
+        "docs",
+        "process",
+        "inspect",
+        "--input",
+        path.to_str().unwrap(),
+    ]);
+    assert_eq!(transient["saved"], false);
+    assert_eq!(
+        before,
+        fs::read_dir(f.docs.join("scenarios")).unwrap().count()
+    );
+    assert!(!f.docs.join("docs/index.html").exists());
+    let saved = save_process(&f, &definition);
+    let reopened = f.ok(&["docs", "process", "show", "--id", "reserve"]);
+    assert_eq!(reopened["definition"], definition);
+    assert_eq!(save_process(&f, &definition)["status"], "CURRENT");
+    let checked = f.checked();
+    let input = f.author("orders", &checked);
+    let published = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+    let data = read(f.bundle(
+        published["bundle"].as_str().unwrap(),
+        "scenarios/reserve.json",
+    ));
+    assert_eq!(data["process"]["definition"], definition);
+    assert!(data["gaps"]["process-overview"].is_string());
+    definition["title"] = json!("A renamed maintained process");
+    save_process(&f, &definition);
+    let old = f.input("old-process.json", &reopened["definition"]);
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "process",
+            "put",
+            "--input",
+            old.to_str().unwrap(),
+            "--expected-input-digest",
+            saved["inputDigest"].as_str().unwrap()
+        ])
+        .0,
+        0
+    );
+    assert_eq!(
+        f.ok(&["docs", "process", "list"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    fs::rename(&other, other.with_extension("unavailable")).unwrap();
+    let checked = f.checked();
+    assert!(
+        checked.scenarios["reserve"]
+            .boundaries
+            .iter()
+            .any(|s| s == "PROCESS_PARTICIPANT_UNAVAILABLE:other")
+    );
+    assert_eq!(
+        checked.dependencies["process-scope:reserve"].normalized["unavailableParticipants"],
+        json!(["other"])
+    );
+}
+#[test]
+fn docsys_t10_linked_cycles_missing_children_and_negative_interaction_scope() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    f.service("other");
+    save_process(&f, &process_definition("parent", &["child", "missing"]));
+    save_process(&f, &process_definition("child", &["parent"]));
+    let checked = f.checked();
+    assert!(checked.dependencies.values().any(|d|d.kind=="PROCESS_COMPONENT"&&d.normalized["gap"]=="LINKED_PROCESS_CYCLE"));
+    assert_eq!(
+        checked.dependencies["process-component:parent:missing"].normalized["gap"],
+        "LINKED_PROCESS_MISSING"
+    );
+    assert!(
+        checked
+            .dependencies
+            .values()
+            .filter(|d| d.kind == "PROCESS_COMPONENT")
+            .all(|d| d.source_ids.is_empty() && d.normalized["accepted"].is_null())
+    );
+    let old = clew::documentation::bindings::fragment(
+        "scenario:parent",
+        &json!({"negative":"No interaction was declared."}),
+        &["process-scope:parent".into()],
+        &[],
+        &checked,
+    )
+    .unwrap();
+    fs::write(f.docs.join("catalog/interactions/new-link.json"),serde_json::to_vec(&json!({"schema":"codeclew-documentation-interaction/1.0","id":"new-link","title":"Declared quantity forwarding","from":{"service":"orders"},"to":{"service":"other"},"transport":{"kind":"http","method":"POST","path":"/quantity"},"declaration":{"origin":"human","rationale":"An explicitly declared relationship."}})).unwrap()).unwrap();
+    let changed = f.checked();
+    assert_ne!(
+        old.dependencies["process-scope:parent"],
+        changed.dependencies["process-scope:parent"].digest
+    );
+    assert_eq!(
+        changed.dependencies["process-scope:parent"].normalized["interactionMembership"],
+        json!(["new-link"])
+    );
+    assert!(
+        old.dependencies.contains_key("scenario:child")
+            && old
+                .dependencies
+                .contains_key("process-component:child:parent")
+    );
+}
+
+fn process_work(f: &Fixture, id: &str) -> (String, serde_json::Value) {
+    use serde_json::json;
+    let mut page = f.ok(&["docs", "process", "prepare", "--id", id, "--overview"]);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(f, &work, json!({"cursor":cursor}));
+    }
+    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    (work, frozen)
+}
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t10_reviewed_child_composition_versions_and_stale_source_influence() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    save_process(&f, &process_definition("child", &[]));
+    save_process(&f, &process_definition("parent", &["child"]));
+    let (work, frozen) = process_work(&f, "child");
+    let handle = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
+        })
+        .unwrap()
+        .0;
+    // A child definition remains protected from an author/reviewer execution.
+    let proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:child","title":"Child overview","summary":{"text":"The child returns a normalized requested quantity.","evidence":[handle]},"steps":[]}]});
+    let config = execution_config(
+        &f,
+        json!({"proposal":proposal,"mode":"denials","readPaths":[],"writePaths":[f.docs.join("scenarios/child.yaml")]}),
+        json!({}),
+        None,
+    );
+    let accepted = work_run(&f, &work, &config);
+    assert_eq!(accepted["status"], "ACCEPTED", "{accepted}");
+    let checked = f.checked();
+    let component = &checked.dependencies["process-component:parent:child"];
+    assert_eq!(
+        component.normalized["status"], "ACCEPTED_CHILD",
+        "{}",
+        component.normalized
+    );
+    assert!(
+        component.normalized["accepted"]["acceptedVersion"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(!component.source_ids.is_empty());
+    let stable = f.checked();
+    assert_eq!(
+        component.digest, stable.dependencies[&component.id].digest,
+        "checking alone must not create accepted-version churn"
+    );
+    let (parent_work, parent_frozen) = process_work(&f, "parent");
+    let reference = parent_frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| h["id"] == component.id)
+        .unwrap()
+        .0;
+    work_read(&f, &parent_work, json!({"references":[reference]}));
+    let parent_proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:parent","title":"Composed process overview","summary":{"text":"The linked child explains normalization of the requested quantity; routing remains unverified.","evidence":[reference],"uncertainty":"A reviewed child explanation does not establish runtime routing."},"steps":[]}]});
+    let ready = proposal_submit(&f, &parent_work, &parent_proposal);
+    assert!(
+        ready["status"].as_str().unwrap().starts_with("READY_"),
+        "{ready}"
+    );
+    let result = work_run(
+        &f,
+        &parent_work,
+        &execution_config(&f, json!({"proposal":parent_proposal}), json!({}), None),
+    );
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    let bundle = result["publication"]["bundle"].as_str().unwrap();
+    let data = read(f.bundle(bundle, "scenarios/parent.json"));
+    assert_eq!(
+        data["operationStates"]["process-overview"]["verification"],
+        "VERIFIED_WITH_LIMITATIONS"
+    );
+    let baseline: clew::documentation::bindings::Bindings =
+        serde_json::from_value(read(f.bundle(bundle, "bindings.json"))).unwrap();
+    let summary_id = data["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "process-overview")
+        .unwrap()["summary"]["id"]
+        .as_str()
+        .unwrap();
+    let fragment = &baseline.fragments[&format!("scenario:parent/process-overview/{summary_id}")];
+    assert!(
+        fragment
+            .dependencies
+            .contains_key("process-component:parent:child")
+            && fragment.dependencies.contains_key("scenario:child")
+    );
+    assert!(
+        component.normalized["accepted"]["sourceInfluence"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|k| fragment.dependencies.contains_key(k))
+    );
+    if let Ok(directory) = std::env::var("CODECLEW_DOCSYS_T10_REVIEW") {
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(
+            f.bundle(bundle, "scenarios/parent.html"),
+            std::path::Path::new(&directory).join("parent.html"),
+        )
+        .unwrap();
+        fs::copy(
+            f.bundle(bundle, "scenarios/child.html"),
+            std::path::Path::new(&directory).join("child.html"),
+        )
+        .unwrap();
+    }
+    // Publishing the overview does not invalidate its own child input.
+    let stable = f.checked();
+    assert_eq!(component.digest, stable.dependencies[&component.id].digest);
+    let (updated_work, updated_frozen) = process_work(&f, "child");
+    let updated_handle = updated_frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && updated_frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"]
+                    == "FLOW"
+        })
+        .unwrap()
+        .0;
+    let updated_proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"scenario:child","title":"Child overview","summary":{"text":"Normalization returns the requested quantity in the child view.","evidence":[updated_handle]},"steps":[]}]});
+    let new_child = work_run(
+        &f,
+        &updated_work,
+        &execution_config(&f, json!({"proposal":updated_proposal}), json!({}), None),
+    );
+    assert_eq!(new_child["status"], "ACCEPTED", "{new_child}");
+    let parent_after_child = read(f.bundle(
+        new_child["publication"]["bundle"].as_str().unwrap(),
+        "scenarios/parent.json",
+    ));
+    assert_eq!(
+        parent_after_child["operationStates"]["process-overview"]["freshness"], "STALE",
+        "a changed child version must stale its parent in the same publication"
+    );
+    assert_ne!(
+        parent_after_child["process"]["linkedSubviews"][0]["accepted"]["acceptedVersion"],
+        data["process"]["linkedSubviews"][0]["accepted"]["acceptedVersion"]
+    );
+    let code = source.join("Orders.java");
+    fs::write(
+        &code,
+        fs::read_to_string(&code)
+            .unwrap()
+            .replace("return quantity;", "return quantity + 1;"),
+    )
+    .unwrap();
+    commit(&source);
+    let changed = f.checked();
+    assert_eq!(
+        changed.dependencies[&component.id].normalized["gap"],
+        "LINKED_PROCESS_STALE"
+    );
+    assert!(changed.dependencies[&component.id].source_ids.is_empty());
+    let changes = clew::documentation::bindings::freshness(Some(&baseline), &changed);
+    assert!(
+        changes["affected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["subject"] == "scenario:parent")
+    );
+    let refreshed = f.ok(&["docs", "refresh", "--status-only"]);
+    let retained = read(f.bundle(
+        refreshed["bundle"].as_str().unwrap(),
+        "scenarios/parent.json",
+    ));
+    assert_eq!(retained["process"]["targetChanged"], true);
+    assert_eq!(retained["operations"], data["operations"]);
+    assert_eq!(
+        retained["operationStates"]["process-overview"]["freshness"],
+        "STALE"
+    );
+}
+#[test]
+fn docsys_t10_two_service_conditional_definition_preserves_unresolved_transport() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let orders = f.service("orders");
+    f.service("other");
+    fs::write(orders.join("Orders.java"),"public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return normalize(quantity); } private int normalize(int quantity) { return quantity; } }\n").unwrap();
+    commit(&orders);
+    fs::write(f.docs.join("catalog/interactions/reserve-link.json"),serde_json::to_vec(&json!({"schema":"codeclew-documentation-interaction/1.0","id":"reserve-link","title":"Declared transfer","from":{"service":"orders","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}},"to":{"service":"other","selector":{"language":"java","owner":"Orders","name":"reserve","parameterTypes":["int"]}},"transport":{"kind":"http","method":"POST","path":"/reserve"},"declaration":{"origin":"human","rationale":"Declared link; static call-site authority remains required."}})).unwrap()).unwrap();
+    let mut definition = process_definition("conditional", &[]);
+    definition["process"]["participants"] = json!(["orders", "other"]);
+    definition["process"]["outcomes"] = json!([
+        "Reject a negative quantity.",
+        "Return a normalized quantity."
+    ]);
+    definition["interactions"] = json!(["reserve-link"]);
+    save_process(&f, &definition);
+    let checked = f.checked();
+    let context = &checked.scenarios["conditional"];
+    assert!(context.steps.iter().any(|s| s.kind == "IF"));
+    assert!(context.steps.iter().any(|s| s.kind == "THROW"));
+    assert!(context.steps.iter().any(|s| s.kind == "RETURN"));
+    assert!(
+        context
+            .boundaries
+            .iter()
+            .any(|b| b == "DECLARED_TRANSITION_NOT_REACHED:reserve-link")
+    );
+    assert!(
+        !context
+            .steps
+            .iter()
+            .any(|s| s.kind == "DECLARED_HTTP_TRANSITION")
+    );
+    assert_eq!(checked.interactions["reserve-link"].runtime, "UNKNOWN");
+    assert!(
+        context
+            .dependency_ids
+            .contains(&"interaction:reserve-link".into())
+    );
+}

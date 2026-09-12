@@ -14,6 +14,11 @@ use std::{
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Save explicit process definitions and prepare maintained views.
+    Process {
+        #[command(subcommand)]
+        command: super::processes::Command,
+    },
     /// Inspect and author required service sections.
     Note {
         #[command(subcommand)]
@@ -228,6 +233,7 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Process { command } => super::processes::run(command),
         Command::Note { command } => super::notes::run(command),
         Command::Section { command } => super::sections::run(command),
         Command::Entity { command } => super::entities::run(command),

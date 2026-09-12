@@ -12,3 +12,5 @@
 .note-original{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;padding:18px;background:#f6f5ee;border:1px solid #deddd2;border-radius:8px;font-size:13px;line-height:1.7}
 
 .scenario-link>span:nth-child(2){min-width:0;overflow:hidden;text-overflow:ellipsis}.nav-icon{flex-shrink:0}
+
+.process-view{overflow-wrap:anywhere}

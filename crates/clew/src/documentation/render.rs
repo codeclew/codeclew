@@ -108,7 +108,7 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 .get(id)
                 .ok_or_else(|| invalid("unknown scenario"))?;
             (
-                BTreeSet::from([id.into()]),
+                super::processes::expected(checked, id),
                 scenario.steps.iter().map(|s| s.service.clone()).collect(),
             )
         }
@@ -140,7 +140,19 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
                 &allowed,
             )?;
         }
-        if kind == "service" && (super::sections::contains(&o.id) || super::notes::is_root(&o.id)) {
+        if (kind == "service" && (super::sections::contains(&o.id) || super::notes::is_root(&o.id)))
+            || super::processes::overview(checked, &n.subject, &o.id)
+        {
+            if super::processes::overview(checked, &n.subject, &o.id)
+                && checked.scenarios[id]
+                    .boundaries
+                    .iter()
+                    .any(|b| !o.boundaries.contains(b))
+            {
+                return Err(invalid(
+                    "process overview must retain every current composition boundary",
+                ));
+            }
             if !o.events.is_empty()
                 || !o.explanation.is_empty()
                 || !o.interface_contracts.is_empty()
@@ -506,10 +518,11 @@ pub fn validate(n: &Narrative, checked: &Check) -> Result<(), ClewError> {
             ));
         }
     }
-    if expected
-        .difference(&covered)
-        .any(|id| !super::sections::contains(id) && !super::notes::is_root(id))
-    {
+    if expected.difference(&covered).any(|id| {
+        !super::sections::contains(id)
+            && !super::notes::is_root(id)
+            && id != super::processes::OVERVIEW
+    }) {
         return Err(invalid(
             "full scope requires every discovered entrypoint to have an operation or an explicit gap",
         ));
@@ -852,6 +865,20 @@ pub fn make_bindings(
             }
         }
     }
+    for (id, context) in &checked.scenarios {
+        if checked.dependencies.contains_key(&format!("process:{id}")) {
+            let subject = format!("scenario:{id}");
+            add_binding(
+                &mut fragments,
+                format!("{subject}/process-definition"),
+                &subject,
+                &super::processes::page(checked, &subject),
+                &context.dependency_ids,
+                &[],
+                checked,
+            )?;
+        }
+    }
     for (id, evidence) in &checked.services {
         let subject = format!("service:{id}");
         if let Some(scope) = checked.dependencies.get(&format!("note-scope:{id}")) {
@@ -1167,7 +1194,7 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     );
     boundaries.sort();
     boundaries.dedup();
-    json!({"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    json!({"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -1434,7 +1461,11 @@ fn publish_internal(
         let subject = format!("scenario:{id}");
         fresh.insert(
             subject.clone(),
-            default_narrative(subject, std::iter::once(id.clone()), &checked),
+            default_narrative(
+                subject,
+                super::processes::expected(&checked, id).into_iter(),
+                &checked,
+            ),
         );
     }
     let mut accepted = BTreeSet::new();
@@ -1448,7 +1479,7 @@ fn publish_internal(
         let expected: BTreeSet<String> = if let Some(id) = n.subject.strip_prefix("service:") {
             super::notes::expected(&checked, id)
         } else {
-            BTreeSet::from([id_from_subject(&n.subject).to_owned()])
+            super::processes::expected(&checked, id_from_subject(&n.subject))
         };
         if !seen.insert(n.subject.clone()) {
             // Duplicate subjects are not merged in input order; retain all original content.
@@ -1660,6 +1691,31 @@ fn publish_internal(
         }
     }
     super::review::attach(&mut binding, &checked, versions)?;
+    // A new accepted child changes its parents in this same atomic publication.
+    super::processes::attach_versions(repo, &mut checked, Some(&binding))?;
+    for (id, context) in &checked.scenarios {
+        if checked.dependencies.contains_key(&format!("process:{id}")) {
+            let subject = format!("scenario:{id}");
+            binding.fragments.insert(
+                format!("{subject}/process-definition"),
+                bindings::fragment(
+                    &subject,
+                    &super::processes::page(&checked, &subject),
+                    &context.dependency_ids,
+                    &[],
+                    &checked,
+                )?,
+            );
+        }
+    }
+    binding.observations.extend(
+        checked
+            .dependencies
+            .iter()
+            .filter(|(_, d)| d.kind.starts_with("PROCESS_"))
+            .map(|(id, d)| (id.clone(), d.clone())),
+    );
+    checked.save(repo)?;
     super::status::update_states(&mut binding, &checked);
     super::review::verification(&mut binding);
     // Whole-page freshness is an aggregate; each operation keeps its exact content vector.
@@ -1811,6 +1867,7 @@ fn publish_internal(
                 state.freshness.as_str(),
                 markdown(title, n, &binding.section_states)
                     + &super::notes::markdown(&data["notes"])
+                    + &super::processes::markdown(&data["process"])
             )
             .into_bytes(),
         );

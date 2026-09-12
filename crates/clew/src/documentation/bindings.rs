@@ -98,7 +98,13 @@ pub fn expand_dependencies(
                 .ok_or_else(|| invalid("fragment has a missing dependency"))?;
             if matches!(
                 dependency.kind.as_str(),
-                "DOMAIN_ENTITY" | "ENTITY_SCOPE" | "NOTE_SCOPE" | "NOTE_ASSOCIATION"
+                "DOMAIN_ENTITY"
+                    | "ENTITY_SCOPE"
+                    | "NOTE_SCOPE"
+                    | "NOTE_ASSOCIATION"
+                    | "PROCESS_DEFINITION"
+                    | "PROCESS_COMPONENT"
+                    | "PROCESS_SCOPE"
             ) {
                 for linked in dependency.normalized["dependencyIds"]
                     .as_array()
@@ -177,6 +183,11 @@ pub fn fragment(
                 })
                 .map(|d| d.id.clone()),
         );
+    }
+    if let Some(id) = subject.strip_prefix("scenario:") {
+        if let Some(context) = checked.scenarios.get(id) {
+            initial.extend(context.dependency_ids.iter().cloned());
+        }
     }
     let ids = expand_dependencies(&initial, checked)?;
     let sources = checked.sources();
@@ -297,6 +308,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.6"
             | "codeclew-documentation-html/1.7"
             | "codeclew-documentation-html/1.8"
+            | "codeclew-documentation-html/1.9"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(

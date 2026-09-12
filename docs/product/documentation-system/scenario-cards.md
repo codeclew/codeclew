@@ -157,6 +157,20 @@ As a documentation author, I connect declared service interactions into a named 
 
 Bounded scenarios require explicit roots/links; syntax-only unresolved handoffs do not become resolved calls. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
 
+### T10 implementation evidence
+
+`process.definition`, `process.composition` and `process.saved-section` now use
+explicit versioned definitions through `docs process list/show/put/inspect/prepare`.
+Transient inspection saves no definition or publication. Existing scenario IDs
+and HTTP/Kafka authority remain compatible. Linked current accepted child summaries
+feed a separately reviewed overview; missing, cyclic, stale and unavailable scopes
+remain gaps. Cyclic edges retain their transitive dependencies. Four CLI cases
+cover identity/CAS, conditional source outcomes and unresolved HTTP transport,
+negative interaction membership, sandboxed definition protection, child/parent
+reviews and same-publication parent invalidation after a child version changes.
+Final shared regression and desktop/mobile source-inspection evidence is in T10
+of the implementation plan. Existing graph edges are unchanged.
+
 ## S04 — Read a consistent generated publication
 
 - **Status:** current
@@ -487,6 +501,22 @@ As a documentation author, I request a process or entity data-flow section once 
 ### Planning notes
 
 Requires persistent semantic section definitions and typed evidence-backed entity flow edges. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+
+### T10 implementation evidence
+
+`process.definition`, `process.composition` and `process.saved-section` now use
+explicit versioned definitions through `docs process list/show/put/inspect/prepare`.
+Transient inspection saves no definition or publication. Existing scenario IDs
+and HTTP/Kafka authority remain compatible. Linked current accepted child summaries
+feed a separately reviewed overview; missing, cyclic, stale and unavailable scopes
+remain gaps. Cyclic edges retain their transitive dependencies. Four CLI cases
+cover identity/CAS, conditional source outcomes and unresolved HTTP transport,
+negative interaction membership, sandboxed definition protection, child/parent
+reviews and same-publication parent invalidation after a child version changes.
+Final shared regression and desktop/mobile source-inspection evidence is in T10
+of the implementation plan. Existing graph edges are unchanged.
+
+Entity data-flow and the shared typed view contract remain T11.
 
 ## S10 — Attach and reassess protected human notes
 

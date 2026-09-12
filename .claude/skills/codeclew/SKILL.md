@@ -465,6 +465,37 @@ the cited source bindings and report the limitation. Do not advertise automatic
 freshness or universal language support merely because the diagram renders.
 
 
+### Maintain an explicitly requested process
+
+When the user asks to save or maintain a process in a documentation repository,
+use `docs process list --root <docs>` to obtain `inputDigest`, then
+`docs process put --root <docs> --input <definition.json>
+--expected-input-digest <digest>`. Existing authorization to save the process
+is sufficient. Give it a stable explicit ID and the process shape in
+[the saved-process reference](references/documentation-processes.md): title, summary, root selector,
+declared interaction IDs, bounded traversal, and `process` metadata containing
+scope, registered participants, explicit domain object IDs, trigger, outcomes,
+and optional `linkedSubviews`. Do not save a conversation transcript or infer
+new domain identities from class names. Renaming the title preserves the ID.
+
+For a transient question, use `docs process inspect --root <docs>
+--input <definition.json>`; it does not save the definition, a work request,
+or a publication. `show --id <id>` reopens a saved definition. Prepare the
+existing source-bound flow with `docs process prepare --root <docs> --id <id>`;
+add `--overview` for a separate bounded summary and linked-child composition.
+Use the normal recorded-read, proposal, author/reviewer and publication path.
+The proposal's entrypoint reference is its returned `scenario:<id>` subject;
+the overview request maps it to the stable `process-overview` section.
+
+A linked child supplies prose only from its current accepted explanation,
+with exact claim/definition versions and source influence. Missing, stale,
+unreviewed, cyclic and over-budget child scopes remain named gaps. Preserve
+these gaps in the parent overview; a child interpretation never proves runtime
+routing. Wide processes use bounded linked child views without increasing the
+eight-service limit of one detailed scenario. Saved definitions enter the normal
+reader and status/refresh paths. Original notes remain separate.
+
+
 ## Explain current saved edits
 
 For a single Kotlin/Gradle or Rust repository, use `change inspect --repo

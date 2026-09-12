@@ -1,0 +1,32 @@
+{
+  "schema": "codeclew-documentation-process/1.0",
+  "id": "quantity",
+  "title": "Quantity handling",
+  "summary": "An explicitly requested quantity process.",
+  "root": {
+    "service": "orders",
+    "selector": {
+      "language": "java",
+      "owner": "Orders",
+      "name": "reserve",
+      "parameterTypes": [
+        "int"
+      ]
+    }
+  },
+  "interactions": [],
+  "maxDepth": 4,
+  "maxNodes": 64,
+  "process": {
+    "scope": "Quantity handling within the declared services.",
+    "participants": [
+      "orders"
+    ],
+    "objects": [],
+    "trigger": "A caller requests a quantity.",
+    "outcomes": [
+      "Return the normalized quantity or preserve an evidenced failure."
+    ],
+    "linkedSubviews": []
+  }
+}

@@ -289,8 +289,10 @@ impl Repository {
         let services = self.services()?;
         let interactions = self.interactions()?;
         for (id, value) in &rows {
-            if value.schema != "codeclew-documentation-scenario/1.0"
-                || id != &value.id
+            if !matches!(
+                value.schema.as_str(),
+                "codeclew-documentation-scenario/1.0" | "codeclew-documentation-process/1.0"
+            ) || id != &value.id
                 || !valid_id(id)
                 || value.max_depth > 16
                 || value.max_nodes == 0
@@ -298,6 +300,7 @@ impl Repository {
             {
                 return Err(invalid("invalid scenario identity or traversal bounds"));
             }
+            super::processes::validate(value, &services)?;
             endpoint(&value.root, &services)?;
             let mut seen = std::collections::BTreeSet::new();
             for interaction in &value.interactions {

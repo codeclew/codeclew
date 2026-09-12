@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.8";
+pub const RENDERER: &str = "codeclew-documentation-html/1.9";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -138,6 +138,8 @@ fn nodes() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Scenario {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<super::processes::Details>,
     pub schema: String,
     pub id: String,
     pub title: String,

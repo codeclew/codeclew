@@ -226,7 +226,12 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
         .ok_or_else(|| invalid("work subject must be service:ID or scenario:ID"))?;
     let selected = match kind {
         "service" if repo.services()?.contains_key(id) => BTreeSet::from([id.to_owned()]),
-        "scenario" if repo.scenarios()?.contains_key(id) && request.entrypoint.is_none() => {
+        "scenario"
+            if repo.scenarios()?.contains_key(id)
+                && (request.entrypoint.is_none()
+                    || (request.entrypoint.as_deref() == Some(super::processes::OVERVIEW)
+                        && repo.scenarios()?[id].process.is_some())) =>
+        {
             BTreeSet::new()
         }
         _ => {
@@ -311,9 +316,18 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
             );
         }
     }
+    let component_scope = checked
+        .scenarios
+        .get(id)
+        .map(|s| bindings::expand_dependencies(&s.dependency_ids, &checked))
+        .transpose()?
+        .unwrap_or_default();
     let mut influence: BTreeMap<String, String> = checked
         .dependencies
         .iter()
+        .filter(|(id, o)| {
+            o.kind != "PROCESS_COMPONENT" || (kind == "scenario" && component_scope.contains(*id))
+        })
         .map(|(id, o)| (id.clone(), o.digest.clone()))
         .collect();
     let mut obligations = Vec::new();

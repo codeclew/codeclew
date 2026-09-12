@@ -342,3 +342,48 @@ tracking covers captured text, associations and recorded inputs, not every impli
 claim in arbitrary prose. Limits are 128 associations, 256 KiB per note and the
 existing bounded work-read budget; an oversized required read remains a named gap
 and cannot be silently accepted. This is not a general Markdown execution engine.
+
+
+## Saved process definitions
+
+Use `docs process inspect --root <docs> --input <process.json>` for a transient
+source interpretation: it saves no process, work request or publication.
+Explicitly requested maintained processes use
+[the process schema](../../schemas/documentation/process.schema.json) and
+[the quantity fixture](../../fixtures/documentation-system/processes/quantity.json).
+The definition records requested scope and outcomes, not an assertion that they
+are implemented. Its `process` metadata names registered participants, optional
+`entity:<id>` objects, a trigger, outcomes and optional `linkedSubviews` IDs.
+
+```sh
+./clew docs process list --root <docs>
+./clew docs process put --root <docs> --input <process.json> --expected-input-digest <digest>
+./clew docs process show --root <docs> --id <process-id>
+./clew docs process prepare --root <docs> --id <process-id>
+./clew docs process prepare --root <docs> --id <process-id> --overview
+```
+
+Keep an existing ID when changing a title or definition. `put` uses the current
+catalogue input digest and saves only the explicit definition in `scenarios/`.
+Legacy scenario files remain supported. These commands never save chat history.
+Agent execution cannot rewrite the saved definition. A maintainer may explicitly
+update it with `put`; the existing authorization to maintain it is sufficient.
+
+The overview is separately reviewed through the existing work/proposal pipeline.
+A proposal uses `scenario:<process-id>` as its entrypoint reference; an overview
+request maps that to `process-overview`. Source flow and the overview keep
+independent accepted versions. Linked child explanations are admitted only when
+their accepted claim, definition and source influence are current. Every parent
+fragment tracks the child version and transitive dependencies. Changing a child
+accepted explanation marks retained parents stale in the same publication.
+Status-only refresh retains old prose and clearly marks changed child captures.
+
+Each detailed scenario retains its eight-service composition limit, depth at most
+16 and node count at most 512. A definition has at most 32 direct child links;
+composition traverses at most 64 linked definitions and 16 levels, with named
+cycle, missing-child and budget gaps. The existing scenario work capture retains
+its conservative registered-service influence boundary. No source-only declared
+link becomes a
+compiler-resolved or observed runtime transfer. Unavailable participants and
+unaccepted child prose remain visible gaps. The reader and Markdown export
+separate requested metadata, reviewed overview, detailed flow and linked views.

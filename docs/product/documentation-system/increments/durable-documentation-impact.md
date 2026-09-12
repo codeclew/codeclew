@@ -139,3 +139,13 @@ not claimed by this planning package's structural or independent review.
   prior snapshot. Four focused CLI cases, nine shared publication/section/note
   regressions and 25 documentation unit cases pass; layout and source inspection
   checks are recorded in T09. No strict completeness claim for arbitrary prose.
+
+
+- T10 → S03/S09, AC13/AC18: explicit `process put` creates a stable maintained
+  definition; transient `inspect` saves no section. Bounded linked child views,
+  separately reviewed overviews, cycle dependencies and same-publication parent
+  staleness use existing scenario/transport and partial-publication contracts.
+  Four focused CLI cases, seven shared regressions and 25 documentation unit
+  cases pass; a final focused admission check and reader QA also pass. Original
+  notes and definitions are protected from isolated agent execution. Existing
+  graph edges remain unchanged. Typed entity flow is still scheduled for T11.

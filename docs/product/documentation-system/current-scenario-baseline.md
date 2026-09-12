@@ -142,3 +142,15 @@ snapshot as if growth behavior existed at the base revision.
   documentation unit cases pass. Reader QA confirms escaped original text and
   mobile source inspection. Historical outcomes bind an explicit captured revision;
   arbitrary prose/calendar claims remain bounded. S06/S10 edges are unchanged.
+
+
+- T10: explicit maintained process definitions and separate reviewed overviews
+  are implemented through the existing scenario pipeline. Linked children retain
+  accepted claim/definition versions and exact source influence; changed accepted
+  child prose invalidates its parent in the same publication. Four focused CLI
+  cases pass, as do seven shared publication/note/process cases and 25 documentation
+  unit cases. Final exact-revision admission refinement passes the focused child/
+  parent case. Desktop/mobile navigation and exact source inspection pass, including
+  390-pixel layout without horizontal overflow. Conditional syntax observations
+  do not establish a resolved cross-service HTTP call. S03/S09 edges are unchanged;
+  entity data-flow remains T11.

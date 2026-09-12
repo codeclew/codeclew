@@ -644,7 +644,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T10. Persist requested processes as maintained sections
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** A process requested once becomes a stable navigable definition and updates with its dependencies, while transient questions remain transient.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC13, AC18; [scenario cards](../product/documentation-system/scenario-cards.md): S03, S09; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T08
@@ -676,6 +676,24 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Saved processes enter navigation and maintenance through existing reader/refresh paths.
   - Unknown edges or failed children cannot become a verified synchronous happy path.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+- **Observed evidence (2026-09-12):** Four `docsys_t10_*` cases passed
+  (95.40 s), including explicit save/reopen/update/CAS and transient inspection,
+  cycles/missing children, negative interaction membership, conditional failure
+  paths with unresolved transport, definition write denial, accepted child/parent
+  review and same-publication parent staleness after a child explanation changes.
+  Seven shared T00/T09/T10 regressions passed (146.24 s). All 25 documentation
+  unit cases passed; two native JVM acceptance fixtures remain explicitly ignored
+  in that Rust-only run. The final exact-source-revision/verification admission
+  refinement passed its focused child/parent regression (55.11 s). Desktop
+  1440×1000 and mobile 390×844 reader inspection passed; a long evidence label
+  overflow was corrected and measured page width is 390 pixels. Overview evidence
+  opens the exact retained child call; the saved child link opens its overview.
+  Skill packaging (six tests), formatting, JavaScript/schema syntax, English
+  content and staged privacy checks pass. No real model-quality or runtime-routing
+  claim is made by the deterministic source-syntax fixtures. Existing S03/S09
+  graph transitions remain unchanged; arbitrary-wide context beyond the documented
+  traversal and work budgets is not claimed.
 
 ## T11. Add entity data-flow views through the shared view contract
 

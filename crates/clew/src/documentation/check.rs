@@ -125,6 +125,7 @@ pub fn run_selected(
             baseline.accepted_versions.into_values(),
         )?;
     }
+    super::processes::attach(repository, &mut checked)?;
     Ok(checked)
 }
 
@@ -797,6 +798,7 @@ mod tests {
             contract_reference: None,
         };
         let scenario = Scenario {
+            process: None,
             schema: "codeclew-documentation-scenario/1.0".into(),
             id: "checkout".into(),
             title: "Checkout".into(),
