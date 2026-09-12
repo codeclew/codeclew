@@ -505,7 +505,8 @@ not invent a reviewer. Unauthored callables require explicit proposal gaps.
 Standard section summaries are limited to 2,048 bytes; detailed sequences belong
 to operation narratives.
 
-Portable bindings 1.2 share identical evidence within a snapshot. A fragment
+Portable bindings 1.3 share identical evidence within a snapshot and derive
+duplicate dependency digest maps from the same retained observations. A fragment
 that retains an older observation or source occurrence keeps that exact version;
 sharing never replaces historical evidence with current source. Bindings 1.0
 and 1.1 remain readable. The 64 MiB per-record output limit remains enforced.

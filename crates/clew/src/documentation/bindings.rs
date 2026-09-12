@@ -22,6 +22,8 @@ pub struct FragmentBinding {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub content: Value,
     pub dependencies: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dependencies_from_evidence: bool,
     pub sources: BTreeMap<String, Value>,
     /// Each retained claim owns its evidence version, even when a sibling is updated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,15 +41,27 @@ pub struct FragmentEvidence {
     pub shared_sources: Vec<String>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 /// Share identical evidence within one portable snapshot. Older versions of an
 /// observation or source remain attached to their original fragment.
 pub(super) fn compact(binding: &mut Bindings) {
-    binding.schema = "codeclew-documentation-bindings/1.2".into();
-    for evidence in binding
-        .fragments
-        .values_mut()
-        .filter_map(|f| f.evidence.as_mut())
-    {
+    binding.schema = "codeclew-documentation-bindings/1.3".into();
+    for fragment in binding.fragments.values_mut() {
+        let Some(evidence) = fragment.evidence.as_mut() else {
+            continue;
+        };
+        let derived = evidence
+            .observations
+            .iter()
+            .map(|(id, o)| (id.clone(), o.digest.clone()))
+            .collect();
+        if fragment.dependencies == derived {
+            fragment.dependencies.clear();
+            fragment.dependencies_from_evidence = true;
+        }
         evidence.observations.retain(|id, value| {
             if binding.observations.get(id) == Some(value) {
                 evidence.shared_observations.push(id.clone());
@@ -68,11 +82,15 @@ pub(super) fn compact(binding: &mut Bindings) {
 }
 
 fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
-    for evidence in binding
-        .fragments
-        .values_mut()
-        .filter_map(|f| f.evidence.as_mut())
-    {
+    for fragment in binding.fragments.values_mut() {
+        if fragment.dependencies_from_evidence && fragment.evidence.is_none() {
+            return Err(invalid(
+                "derived fragment dependencies require retained evidence",
+            ));
+        }
+        let Some(evidence) = fragment.evidence.as_mut() else {
+            continue;
+        };
         for id in std::mem::take(&mut evidence.shared_observations) {
             let value = binding
                 .observations
@@ -90,6 +108,18 @@ fn expand_shared(binding: &mut Bindings) -> Result<(), ClewError> {
             if evidence.sources.insert(id, value.clone()).is_some() {
                 return Err(invalid("duplicate shared fragment source"));
             }
+        }
+        if std::mem::take(&mut fragment.dependencies_from_evidence) {
+            if !fragment.dependencies.is_empty() {
+                return Err(invalid(
+                    "derived fragment dependencies cannot also be inline",
+                ));
+            }
+            fragment.dependencies = evidence
+                .observations
+                .iter()
+                .map(|(id, o)| (id.clone(), o.digest.clone()))
+                .collect();
         }
     }
     Ok(())
@@ -278,6 +308,7 @@ pub fn fragment(
         .filter(|s| !s.is_empty())
         .collect();
     Ok(FragmentBinding {
+        dependencies_from_evidence: false,
         subject: subject.into(), content_digest: digest(value)?,
         content: serde_json::to_value(value).map_err(io_error)?,
         dependencies: observations.iter().map(|(id, o)| (id.clone(), o.digest.clone())).collect(),
@@ -323,6 +354,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
         "codeclew-documentation-bindings/1.0"
             | "codeclew-documentation-bindings/1.1"
             | "codeclew-documentation-bindings/1.2"
+            | "codeclew-documentation-bindings/1.3"
     ) {
         return Err(invalid("unsupported documentation bindings schema"));
     }
@@ -383,6 +415,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.10"
             | "codeclew-documentation-html/1.11"
             | "codeclew-documentation-html/1.12"
+            | "codeclew-documentation-html/1.13"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(
@@ -535,6 +568,24 @@ mod tests {
                 .sources
                 .contains_key("inventory-source")
         }));
+        assert!(
+            binding
+                .fragments
+                .values()
+                .all(|f| f.dependencies_from_evidence && f.dependencies.is_empty())
+        );
+        let mut ambiguous = binding.clone();
+        ambiguous
+            .fragments
+            .values_mut()
+            .next()
+            .unwrap()
+            .dependencies
+            .insert("unexpected".into(), "digest".into());
+        assert!(expand_shared(&mut ambiguous).is_err());
+        let mut absent = binding.clone();
+        absent.fragments.values_mut().next().unwrap().evidence = None;
+        assert!(expand_shared(&mut absent).is_err());
         let mut damaged = binding.clone();
         damaged.observations.clear();
         assert!(expand_shared(&mut damaged).is_err());

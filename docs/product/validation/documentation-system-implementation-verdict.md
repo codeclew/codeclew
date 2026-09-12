@@ -38,3 +38,11 @@ worker/toolchain regressions, bootstrap (44), skill packaging and usability smok
 The scoped T15 mutation regression previously passed its 15 cases. No 40-service
 qualification was run for this release decision. Release asset builds and
 platform packaging remain separate release-workflow results.
+
+The expanded practical walkthrough also registered four domain entities, three
+named processes, two proposed Kafka interactions, protected intention notes and
+a quantity data-flow view. The view exposed further repeated dependency maps
+inside fragment bindings. Bindings 1.3 reconstruct those maps from the exact
+retained observations, rejecting missing evidence or simultaneous inline maps.
+Round-trip and malformed-input checks passed. The reader now calls an
+unassessed saved-process summary a process overview, without implying review.
