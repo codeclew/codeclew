@@ -4,30 +4,89 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Follow nav query from CLI input to SUPPORTED or ABSTAIN, with a visual flow and exact Rust source retrieved by Codeclew itself.">
-  <meta name="theme-color" content="#0b0d0c">
+  <meta name="theme-color" content="#fdfaf2">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./nav-query.css">
   <title>How nav query works — Codeclew</title>
+<link rel="stylesheet" href="./theme.css">
 </head>
 <body>
-  <header class="nav shell">
-    <a class="brand" href="./index.html"><span>Codeclew</span></a>
-    <nav aria-label="Primary navigation"><a href="./documentation.html">Documentation</a><a href="./evidence.html">Evidence</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
-  </header>
-  <main class="shell navdoc">
-    <section class="navdoc-hero">
+  <!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html" aria-current="page">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></div></details>
+    <a href="./documentation.html">Documentation</a>
+    <a href="./evidence.html">Evidence</a>
+    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER -->
+  <main class="shell navdoc" id="main-content">
+    <section class="navdoc-hero"><div class="hero-copy">
       <div class="kicker">Codeclew, explained with Codeclew · CLI walkthrough 01</div>
       <h1>Find the code.<br><em>Know why it was selected.</em></h1>
       <p class="lede"><code>nav query</code> turns a scoped question into a small set of code candidates. Follow the graph to see when it selects one declaration — and when it keeps the decision open.</p>
-      <div class="snapshot-line"><span class="status-dot"></span> Real extraction · Codeclew 0.3.1 <span>Rust syntax evidence</span><a href="https://github.com/codeclew/codeclew/tree/64819fdb1b64a66b98cbbafcd0a68322ef818006">Snapshot 64819fd ↗</a></div>
-    </section>
+      <div class="snapshot-line"><span class="status-dot"></span> Historical extraction · Codeclew 0.3.1 <span>Rust syntax evidence</span><a href="https://github.com/codeclew/codeclew/tree/64819fdb1b64a66b98cbbafcd0a68322ef818006">Snapshot 64819fd ↗</a></div>
+    </div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
+<!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Documentation</span><span aria-hidden="true">/</span><span aria-current="page">Navigation walkthrough</span></nav>
+<!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
+<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html" aria-current="page">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></nav></details>
+<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
+<!-- /SITE_SIDEBAR --><div class="page-content">
     <div class="navdoc-toolbar">
       <div><span class="control-label">Read the flow, then inspect a step</span><div class="segmented" role="group" aria-label="Detail level"><button type="button" data-level="overview" aria-pressed="true">Overview</button><button type="button" data-level="evidence" aria-pressed="false">Code evidence</button></div></div>
       <a href="./evidence/nav-query.json">Claims + source bindings ↗</a>
     </div>
     <section class="navdoc-workbench" aria-label="Interactive static flow and evidence inspector">
-      <div class="flow-panel">
+      <div class="flow-panel"><nav class="pipeline-steps" aria-label="Navigation query steps">
+<a href="#claim-entry" data-claim="entry"><small>01</small><strong>Your question</strong><span>Start with a precise scope</span></a>
+<a href="#claim-admit" data-claim="admit"><small>02</small><strong>Task readiness</strong><span>Check that this task can run</span></a>
+<a href="#claim-context" data-claim="context"><small>03</small><strong>Open context</strong><span>Retain a bounded source set</span></a>
+<a href="#claim-decision" data-claim="decision"><small>04</small><strong>Rank & decide</strong><span>Check identifier coverage</span></a>
+<a href="#claim-result" data-claim="result"><small>05</small><strong>Read the result</strong><span>Keep the decision and limits</span></a>
+</nav><details class="pipeline-detail"><summary class="pipeline-summary">View the full pipeline, branches & boundaries</summary>
         <div class="panel-heading"><span>Entry point</span><b>clew nav query</b></div>
         <div class="flow-graph">
 <!-- NAV_QUERY_GRAPH -->
@@ -231,8 +290,8 @@
         </div>
         <p class="flow-legend"><span aria-hidden="true">┄→</span> Agent-interpreted static flow. Each arrow links to its supporting source. Execution was not traced; Rust call targets remain unresolved.</p>
         <div class="diagram-links"><a href="./diagrams/nav-query.svg">Open SVG ↗</a><a href="./diagrams/nav-query.mmd" download>Mermaid source ↓</a><a href="#reproduce">Reproduce this example ↓</a></div>
-      </div>
-      <aside class="claim-reader" aria-label="Step explanation and supporting source">
+      </details></div>
+<aside class="claim-reader" aria-label="Step explanation and supporting source">
         <label for="claim-select">Selected step</label>
         <select id="claim-select" aria-controls="claim-panels">
           <option value="entry">01 · Input and CLI dispatch</option><option value="admit">02 · Task readiness</option><option value="context">03 · Session and context</option><option value="decision">04 · Ranking and decision</option><option value="supported">SUPPORTED</option><option value="abstain">ABSTAIN</option><option value="result">05 · Returned result</option><option value="failure">Errors and cleanup</option><option value="references">Optional reference follow</option>
@@ -671,8 +730,27 @@ clew nav query --repo "$PWD" \
       <div><div class="kicker">How this page was made</div><h2>From retained code to a readable explanation.</h2><p>An agent used installed Codeclew to open the Rust CLI and library targets, select <code>nav_query</code>, follow retained references, and retrieve exact source for the dispatcher and decision logic. The agent wrote the narrative and static flow from those fragments.</p><p>Every step has a claim ID, pinned source lines, a full-file digest, a fragment digest and an evidence binding. The public JSON contains the selected material; private runtime state is not published.</p></div>
       <div><h3>What this example does not establish</h3><ul><li>A compiler-resolved Rust call graph or observed runtime sequence.</li><li>The internals of every language adapter, cache, readiness check or recovery path.</li><li>Automatic documentation updates: this page describes one immutable snapshot.</li></ul><p>The repository validator checks the cited bytes and graph bindings. Changes to behavior still require fresh extraction and claim review.</p><a href="https://github.com/codeclew/codeclew/blob/main/docs/flows/nav-query.md">Read the extraction recipe ↗</a></div>
     </section>
-  </main>
-  <footer class="shell"><span>Codeclew · Apache-2.0</span><div><a href="./documentation.html">Documentation</a><a href="./index.html">Home</a></div></footer>
+  </div></div></main>
+  <!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html" aria-current="page">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER -->
   <script src="./nav-query.js" defer></script>
-</body>
+<script src="./app.js" defer></script></body>
 </html>

@@ -130,7 +130,7 @@ impl Repository {
                 .as_bytes(),
             )?;
         }
-        let instructions = "# Documentation ownership\n\nRead codeclew-docs.yaml and catalog records first. Use clew docs commands for\nvalidated operations. Bind relocated checkouts with clew docs bind.\nManual notes belong outside docs/generated and narratives; never overwrite them.\nDefault service scope covers every discovered entrypoint, including explicit gaps.\nDeclared interactions are not compiler or runtime proof. Run clew docs check\nbefore refreshing; preserve stable declaration and scenario IDs.\n";
+        let instructions = "# Documentation ownership\n\nRead codeclew-docs.yaml and catalog records first. Use clew docs commands for\nvalidated operations. Bind relocated checkouts with clew docs bind.\nManual notes belong outside docs/generated and narratives; never overwrite them.\nDefault service scope covers every discovered entrypoint, including explicit gaps.\nUse narrative 1.1 with domain explanation paragraphs linked to every diagram step.\nExplain business inputs, checks, state changes, failures and outcomes from source.\nPreserve callback scheduling and asynchronous message boundaries.\nDeclared interactions are not compiler or runtime proof. Run clew docs check\nbefore refreshing; preserve stable declaration and scenario IDs.\n";
         let instructions_path = if repo.path("AGENTS.md")?.exists() {
             "AGENTS.codeclew-docs.md"
         } else {
@@ -410,16 +410,25 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
             "invalid service identity, credential-free repository URL, or revision selector",
         ));
     }
-    if s.language != "java"
-        || !matches!(
+    let supported = match s.language.as_str() {
+        "java" => matches!(
             s.profile.as_str(),
             "java-17plus-maven-read-only" | "java-17plus-gradle-read-only"
-        )
-        || s.compilation.is_empty()
-    {
+        ),
+        "kotlin" => matches!(
+            s.profile.as_str(),
+            "kotlin-jvm-maven-analysis"
+                | "kotlin-jvm-gradle-analysis"
+                | "kotlin-2.3.0-maven-single"
+                | "kotlin-2.4.0-gradle-single"
+                | "kotlin-2.4.10-gradle-single"
+        ),
+        _ => false,
+    };
+    if !supported || s.compilation.is_empty() {
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
-            "durable documentation currently supports Java 17+ Maven/Gradle read-only profiles",
+            "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
         ));
     }
     for file in &s.contract_files {
@@ -443,7 +452,7 @@ pub fn endpoint(e: &Endpoint, services: &BTreeMap<String, Service>) -> Result<()
         return Err(invalid("endpoint refers to an unregistered service"));
     }
     if let Some(s) = &e.selector
-        && (s.language != "java"
+        && (s.language != services[&e.service].language
             || s.owner.is_empty()
             || s.name.is_empty()
             || s.parameter_types.as_ref().is_some_and(|p| p.len() > 64))
@@ -471,7 +480,7 @@ fn validate_interaction(
             "human" | "agent-proposal" | "imported"
         )
         || i.declaration.rationale.trim().is_empty()
-        || i.transport.kind != "http"
+        || !matches!(i.transport.kind.as_str(), "http" | "kafka")
     {
         return Err(invalid(
             "invalid interaction identity, declaration origin, or unsupported transport",
@@ -481,6 +490,18 @@ fn validate_interaction(
     endpoint(&i.to, services)?;
     if i.from.service == i.to.service {
         return Err(invalid("an interaction must connect two distinct services"));
+    }
+    if (i.transport.kind == "kafka"
+        && (i.transport.method.is_some()
+            || i.transport.path.is_some()
+            || i.transport.topic.as_ref().is_none_or(|topic| {
+                topic.is_empty() || topic.len() > 249 || topic.contains(['\n', '\r'])
+            })))
+        || (i.transport.kind == "http" && i.transport.topic.is_some())
+    {
+        return Err(invalid(
+            "Kafka interactions require a bounded topic and no HTTP fields; HTTP interactions have no topic",
+        ));
     }
     if i.transport.method.as_ref().is_some_and(|m| {
         !matches!(

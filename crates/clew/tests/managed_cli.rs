@@ -3820,7 +3820,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
             ),
             local_event("end", "end", "", None, None, guard),
         ];
-        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
+        narratives.push(Narrative{schema:"codeclew-documentation-narrative/1.0".into(),subject:format!("service:{id}"),context_digest:checked.context_digest.clone(),operations:vec![Operation{id:entry.id.clone(),title:if id=="orders"{"Check out an order"}else{"Reserve inventory"}.into(),summary,explanation:vec![],participants:vec![participant("client","Client",None),participant("handler","Request handler",Some(id))],events,findings:vec![],boundaries:vec!["The diagram stops at calls made by this controller; the separate checkout scenario connects both services.".into()]}],gaps:BTreeMap::new()});
     }
     let scenario = &checked.scenarios["checkout"];
     let first = scenario
@@ -4006,6 +4006,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                 },
             ],
             events: scenario_events,
+            explanation: vec![],
             findings: vec![],
             boundaries: scenario.boundaries.clone(),
         }],
@@ -4037,6 +4038,39 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     let (code, rendered) = run(&args);
     assert_eq!(code, 0, "{rendered}");
     assert_eq!(rendered["explicitGaps"], 0);
+    let bundle_root = docs
+        .join("docs/generated")
+        .join(rendered["bundle"].as_str().unwrap());
+    for page in [
+        docs.join("docs/index.html"),
+        bundle_root.join("overview.html"),
+    ] {
+        let html = fs::read_to_string(&page).unwrap();
+        let links: Vec<_> = html
+            .split("href=\"")
+            .skip(1)
+            .map(|part| part.split('"').next().unwrap())
+            .collect();
+        assert!(
+            links
+                .iter()
+                .any(|link| link.ends_with("services/orders.html"))
+        );
+        assert!(
+            links
+                .iter()
+                .any(|link| link.ends_with("scenarios/checkout.html"))
+        );
+        for link in links {
+            if !link.contains("://") && !link.starts_with('#') {
+                assert!(
+                    page.parent().unwrap().join(link).is_file(),
+                    "broken link in {}: {link}",
+                    page.display()
+                );
+            }
+        }
+    }
     let before = fs::read(docs.join("docs/index.html")).unwrap();
     let (code, current) = run(&["docs", "check", "--root", root]);
     assert_eq!(code, 0, "{current}");

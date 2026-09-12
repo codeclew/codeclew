@@ -3,43 +3,93 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="An interactive, evidence-bound documentation example for Codeclew itself.">
-    <meta name="theme-color" content="#0b0d0c">
+    <meta name="description" content="Maintain service explanations and source-linked diagrams, check freshness and render an offline site with Codeclew.">
+    <meta name="theme-color" content="#fdfaf2">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <title>Codeclew — documentation example</title>
-  </head>
+    <title>Service documentation — Codeclew</title>
+  <link rel="stylesheet" href="./theme.css">
+</head>
   <body>
-    <header class="nav shell">
-      <a class="brand" href="./index.html" aria-label="Codeclew home">
-        <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg>
-        <span>Codeclew</span>
-      </a>
-      <nav aria-label="Primary navigation"><a href="./architecture.html">Architecture</a><a href="./index.html">Overview</a><a href="./evidence.html">Evidence</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav>
-    </header>
+    <!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html" aria-current="page">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></div></details>
+    <a href="./documentation.html" aria-current="page">Documentation</a>
+    <a href="./evidence.html">Evidence</a>
+    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER -->
 
-    <main class="docs-page shell">
-      <section class="docs-hero">
-        <div class="docs-note"><b>CLI walkthrough.</b> Follow <a href="./nav-query.html"><u>nav query from input to exact source →</u></a> in a new visual guide generated from Codeclew's own Rust implementation.</div>
-        <div class="kicker">Evidence-bound documentation example</div>
-        <h1>Follow one<br><em>computational thread.</em></h1>
-        <p class="lede">This page documents Codeclew with evidence from its released contract and Kotlin implementation. Select a node, then choose Evidence to inspect the exact supporting code, its authority, digest and local boundary.</p>
-        <div class="docs-note"><b>Kotlin evidence study.</b> Five representative engineering concerns are bound to exact source fragments and 16/16 focused checks at repository revision <code>6281138</code>. The full method and limitations are recorded in the PDF paper.</div>
-      </section>
+    <main class="docs-page shell" id="main-content">
+      <section class="docs-hero"><div class="hero-copy">
+<div class="kicker">Service documentation · v0.5.0</div><h1>Keep the explanation.<br><em>Keep the source close.</em></h1><p class="lede">Give your team an overview of its services, readable interaction diagrams and explanations linked to source. When the code changes, see which parts need another look.</p><div class="hero-links"><a class="primary" href="https://github.com/codeclew/codeclew/blob/v0.5.0/skills/codeclew/references/service-documentation.md">Start the documentation walkthrough ↗</a><a class="secondary" href="#source-example">Inspect a source-linked example ↓</a></div>
+</div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
+<!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Documentation</span><span aria-hidden="true">/</span><span aria-current="page">Service documentation</span></nav>
+<!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
+<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html" aria-current="page">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></nav></details>
+<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
+<!-- /SITE_SIDEBAR --><div class="page-content">
 
+
+<section class="architecture-section" id="service-docs"><div class="kicker">An explanation you can come back to</div><h2>From service map to source code.</h2><p><code>clew docs</code> maintains a separate documentation repository: a service overview, a page per service and named interaction scenarios. Your agent authors the narrative; Codeclew keeps it connected to the selected source.</p><div class="architecture-cards"><article><h3>Read the story</h3><p>Follow an operation through a plain-language explanation, a sequence diagram and its contract details.</p></article><article><h3>Open the evidence</h3><p>Select a diagram step to inspect retained source. Declared service connections stay distinguishable from compiler facts.</p></article><article><h3>Check what changed</h3><p>Freshness checks flag changed methods, routes and contracts. Line movement alone does not make an explanation stale.</p></article></div><p>Render an offline HTML site or use the JSON, Markdown and Mermaid output. Keep manual notes outside generated output; refresh affected explanations after review.</p></section>
+<section class="architecture-section" id="documentation-scope"><div class="kicker">Released scope</div><h2>Start with a Java service.</h2><p>v0.5.0 supports Java 17+ on Maven or Gradle, one compilation per service and up to two services in a scenario. Source analysis is read-only. Declared HTTP relationships help describe a system, but do not establish deployed routing or runtime behavior.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.5.0/docs/releases/v0.5.0.md">Release details and boundaries ↗</a> · <a href="https://github.com/codeclew/codeclew/tree/v0.5.0/fixtures/durable-docs">Two-service executable fixture ↗</a></p></section>
+<section class="architecture-section" id="source-example"><div class="kicker">Historical interactive example</div><h2>Try following a claim to its source.</h2><p>The example below documents Codeclew's own change workflow at revision <code>6281138</code>. Select a step, then switch to Evidence for the supporting fragment. It illustrates source-linked reading; it is an earlier hand-built example, not output from the v0.5.0 service-documentation renderer.</p></section>
       <section class="docs-controls" aria-label="Documentation detail level">
         <div>
           <span class="control-label">Detail level</span>
           <div class="segmented" role="group" aria-label="Choose documentation detail">
-            <button type="button" data-doc-level="overview" aria-pressed="false">Overview</button>
+            <button type="button" data-doc-level="overview" aria-pressed="true">Overview</button>
             <button type="button" data-doc-level="engineering" aria-pressed="false">Engineering</button>
-            <button type="button" data-doc-level="evidence" aria-pressed="true">Evidence</button>
+            <button type="button" data-doc-level="evidence" aria-pressed="false">Evidence</button>
           </div>
         </div>
         <a class="machine-link" href="./evidence/codeclew-self-documentation.json">Machine-readable claims <span>→</span></a>
       </section>
 
-      <section class="docs-workbench" data-doc-detail="evidence">
+      <section class="docs-workbench" data-doc-detail="overview">
         <div class="thread-panel">
           <div class="panel-heading"><span>Scenario</span><b>From intent to a safely published change</b></div>
           <div class="thread-graph" aria-label="Codeclew change lifecycle graph">
@@ -94,11 +144,30 @@
 
       <section class="docs-takeaway">
         <div><div class="kicker">Why this format matters</div><h2>Documentation remains useful when confidence is local.</h2></div>
-        <div><p>A reader can inspect each statement independently. A released contract, a syntax observation, a compiler fact and an unresolved obligation do not inherit one another's confidence merely because they appear in the same graph.</p><a href="./evidence.html">See measured product evidence <span>→</span></a><br><a href="https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf">Read the PDF study <span>→</span></a></div>
+        <div><p>A reader can inspect each statement independently. A released contract, a syntax observation, a compiler fact and an unresolved obligation do not inherit one another's confidence merely because they appear in the same graph.</p><a href="./evidence.html">Explore the historical studies <span>→</span></a><br><a href="https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf">Read the PDF study <span>→</span></a></div>
       </section>
-    </main>
+    </div></div></main>
 
-    <footer class="shell"><span>Codeclew · Apache-2.0</span><div><a href="./architecture.html">Architecture</a><a href="./index.html">Home</a><a href="./evidence.html">Evidence</a><a href="https://github.com/codeclew/codeclew">Source</a></div></footer>
+    <!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html" aria-current="page">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER -->
     <script src="./app.js" defer></script>
     <script src="./documentation.js" defer></script>
   </body>

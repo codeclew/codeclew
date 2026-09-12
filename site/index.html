@@ -3,173 +3,115 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Discover Kotlin and Java repositories, catalogue Spring computation roots, inspect exact source and document the results with traceable evidence.">
-    <meta name="theme-color" content="#0b0d0c">
+    <meta name="description" content="Understand code with your agent: find source, review saved edits and maintain service documentation. Kotlin, Java, Rust, Python and more.">
+    <meta name="theme-color" content="#fdfaf2">
     <link rel="icon" href="./favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="./styles.css">
-    <title>Codeclew — Kotlin and Java repository analysis</title>
-  </head>
+    <title>Codeclew — find code, follow the thread</title>
+  <link rel="stylesheet" href="./theme.css">
+</head>
   <body>
-    <header class="nav shell">
-      <a class="brand" href="#top" aria-label="Codeclew home">
-        <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M16 2 29 9.5v13L16 30 3 22.5v-13L16 2Zm0 5.2L7.5 12v8L16 24.8l8.5-4.8v-8L16 7.2Zm-4.7 5.1 4.7 2.6 4.7-2.6 2.7 1.5-7.4 4.1-7.4-4.1 2.7-1.5Z"/></svg>
-        <span>Codeclew</span>
-      </a>
-      <nav aria-label="Primary navigation"><a href="./architecture.html">Architecture</a>
-        <a href="#how">How it works</a>
-        <a href="./nav-query.html">Documentation</a>
-        <a href="./working-tree.html">Saved edits preview</a>
-        <a href="./pilot.html">Real service pilot</a>
-        <a href="#support">Support</a>
-        <a href="https://github.com/codeclew/codeclew">GitHub</a>
-      </nav>
-    </header>
+    <!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
+<a href="./index.html" aria-current="page">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></div></details>
+    <a href="./documentation.html">Documentation</a>
+    <a href="./evidence.html">Evidence</a>
+    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER -->
 
-    <main id="top">
-      <section class="hero shell">
-        <div class="eyebrow"><span></span> Kotlin + Java · Spring repository analysis</div>
-        <h1>Find where your<br><em>application starts.</em></h1>
-        <p class="lede">Codeclew helps agents discover a repository, catalogue its Spring HTTP handlers, Kafka listeners and scheduled jobs, then inspect exact source and document the work behind each trigger. Compiler identities and explicit coverage limits stay attached to the evidence.</p>
-
-        <div class="install" aria-label="Install Codeclew">
-          <div class="install-label"><span>macOS · Linux · WSL2</span><span>Mac arm64 / x64 · Linux x64</span></div>
-          <div class="command-row">
-            <code id="install-command">curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh</code>
-            <button id="copy-command" type="button" aria-label="Copy installation command"><span>Copy</span></button>
-          </div>
-          <p>Then run <code>clew skill install</code> for your agent. Update later with <code>clew upgrade</code>.</p>
+    <main id="main-content">
+      <section class="hero shell" id="top"><div class="hero-copy">
+        <div class="eyebrow"><span></span> Code understanding for you and your agent</div>
+        <h1>Find the code.<br><em>Follow the thread.</em></h1>
+        <p class="lede">Untangle an unfamiliar codebase. Find relevant code, explain how it fits together, and follow each answer back to its source.</p>
+        <p class="language-line">Kotlin · Java · Rust · Python <a href="#support">All language support →</a></p>
+        <div class="install" id="install" aria-label="Install Codeclew">
+          <div class="install-label"><span>macOS · Linux · WSL2</span><span>Public pilot</span></div>
+          <div class="command-row"><code id="install-command">curl -fsSL https://codeclew.github.io/codeclew/install.sh | sh</code><button id="copy-command" type="button" aria-label="Copy installation command"><span>Copy</span></button></div>
+          <p>Then run <code>clew skill install</code> to connect your agent.</p>
         </div>
-
-        <div class="hero-links">
-          <a class="primary" href="https://github.com/codeclew/codeclew/releases/latest">Download release <span>↗</span></a>
-          <a class="secondary" href="./pilot.html">See the real service pilot</a>
-        </div>
-        <p class="requirements">Requires Git, Python 3.11+, and JDK 21 for Kotlin project analysis. Linux x64 requires glibc 2.35+. On Windows, run inside WSL2 and keep your installation and projects in the Linux filesystem. Codeclew itself is prebuilt.</p>
-      </section>
-
-      <section class="proof-strip" aria-label="Codeclew guarantees">
-        <div class="shell proof-grid">
-          <div><strong>31/31 roots</strong><span>Two private services, checked against independent committed-source inventories</span></div>
-          <div><strong>Kotlin + Java</strong><span>K2 and JDK analysis with source and compiler authority</span></div>
-          <div><strong>Committed analysis</strong><span>Explicit snapshot mode preserves local checkout edits</span></div>
-          <div><strong>Private by default</strong><span>No automatic code upload</span></div>
-        </div>
-      </section>
-
-      <section class="section shell" id="how">
-        <div class="section-heading">
-          <div class="kicker">The everyday analysis flow</div>
-          <h2>Discover. Catalogue.<br>Inspect. Document.</h2>
-          <p>Install Codeclew and its skill, then ask your agent to explain a service. It carries the returned scope and evidence through each step.</p>
-        </div>
+        <div class="hero-links"><a class="primary" href="./documentation.html">Explore service documentation <span>→</span></a><a class="secondary" href="https://github.com/codeclew/codeclew/releases/latest">Download release ↗</a></div>
+        <details class="install-details"><summary>Requirements &amp; updates</summary><p>Git and Python 3.11+. Kotlin analysis requires JDK 21; other profiles use their project toolchains. Prebuilt for macOS arm64/x64 and Linux x64 (glibc 2.35+). On Windows, use WSL2 and keep projects in its Linux filesystem.</p><p>Update with <code>clew upgrade</code>. <a href="https://github.com/codeclew/codeclew/blob/v0.5.0/docs/releases/v0.5.0.md">Offline installation instructions ↗</a></p></details>
+      </div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
+      <section class="explore-section shell" aria-labelledby="explore-title"><div class="section-heading"><div class="kicker">Pick a loose end</div><h2 id="explore-title">A clearer path through your code.</h2></div><div class="explore-grid">
+        <a class="explore-card" href="./nav-query.html"><span class="card-label">01 / Find</span><h3>Get to the relevant code</h3><p>Start with a question. Inspect a focused set of declarations and the source behind them.</p><span class="card-link">Follow the walkthrough →</span></a>
+        <a class="explore-card" href="./documentation.html"><span class="card-label">02 / Explain</span><h3>Keep service knowledge useful</h3><p>Connect explanations and diagrams to source. Check what needs attention when the code changes.</p><span class="card-link">Explore service documentation →</span></a>
+        <a class="explore-card" href="./working-tree-example.html"><span class="card-label">03 / Review</span><h3>Make sense of saved edits</h3><p>Compare saved Kotlin or Rust changes with HEAD. Inspect changed code and supported direct connections.</p><span class="card-link">Open an example report →</span></a>
+      </div></section>
+      <section class="proof-strip" aria-label="How Codeclew helps"><div class="shell proof-grid">
+        <div><strong>Source you can open</strong><span>Inspect the code behind a finding.</span></div><div><strong>Focused context</strong><span>Retrieve relevant pieces in bounded steps.</span></div><div><strong>Visible limits</strong><span>See what is known and what still needs checking.</span></div><div><strong>Local analysis</strong><span>Codeclew makes no automatic code upload.</span></div>
+      </div></section>
+      <section class="section shell" id="how"><div class="section-heading"><div class="kicker">Start with one useful question</div><h2>Small question.<br>Followable answer.</h2><p>Install Codeclew and its skill, then ask your agent: “Find where this behavior starts and explain it with source references.”</p></div>
         <div class="steps">
-          <article><span class="number">01</span><h3>Discover the build</h3><p>Identify the project, supported profile and exact compilation. Choose committed analysis when local edits should stay outside the snapshot.</p><code>clew doctor repository …</code></article>
-          <article><span class="number">02</span><h3>Catalogue the roots</h3><p>Open analysis context, then enumerate Spring triggers across the selected sessions. Follow every page and retain coverage boundaries.</p><code>clew entrypoints …</code></article>
-          <article><span class="number">03</span><h3>Inspect exact source</h3><p>Use each returned callable identity to inspect its declaration and supported relations. Overloads keep distinct identities.</p><code>clew nav expand … --file … --source</code></article>
-          <article><span class="number">04</span><h3>Write the explanation</h3><p>The agent describes each thread, cites the retained source and names unresolved configuration or integration steps.</p><code>Evidence → engineering document</code></article>
-        </div>
-        <p class="requirements">A private service pilot recovered one scheduled job missing from its existing documentation. <a href="./pilot.html">Read the method, result and limits →</a></p>
-      </section>
-
-      <section class="section shell evidence-preview" id="evidence">
-        <div class="section-heading">
-          <div class="kicker">Separate historical engineering study</div>
-          <h2>Kotlin evidence an agent<br>can actually act on.</h2>
-          <p>These earlier public checks cover compatibility policy, Unicode coordinates, Maven topology, bounded control-flow graphs and semantic-input authority. Their 16/16 result and paired-task measurements are separate from the Spring service pilot; they are not current-release performance guarantees.</p>
-        </div>
-
-        <div class="evidence-grid">
-          <article class="metric-card">
-            <small>Five distinct Kotlin concerns</small>
-            <strong>16/16</strong>
-            <h3>focused checks passed</h3>
-            <p>Exact source evidence is backed by executable checks for compatibility, coordinate safety, build topology, graph bounds and manifest hashing.</p>
-            <div class="claim-links"><a href="./evidence.html#kotlin-checks">Evidence</a><a href="./evidence/kotlin-engineering-sample.json">JSON</a></div>
-          </article>
-          <article class="metric-card">
-            <small>Representative Kotlin slice</small>
-            <strong>5/5</strong>
-            <h3>engineering concerns bound to source</h3>
-            <p>Every selected concern has a revision, file, line range, SHA-256 digest, code fragment and focused test result.</p>
-            <div class="claim-links"><a href="./documentation.html">Explore fragments</a><a href="./evidence/kotlin-engineering-sample.json">Evidence</a></div>
-          </article>
-          <article class="metric-card">
-            <small>One prepared warm paired task</small>
-            <strong>3.795×</strong>
-            <h3>fewer effective tokens</h3>
-            <p>Both Codeclew and Default produced source-correct answers. Codeclew used 10,560 effective tokens versus 40,075.</p>
-            <div class="claim-links"><a href="./evidence.html#q1-effective-tokens">Evidence</a><a href="./evidence/q1-prepared-warm.json">JSON</a></div>
-          </article>
-          <article class="metric-card">
-            <small>The same paired task</small>
-            <strong>40.28×</strong>
-            <h3>less tool output to inspect</h3>
-            <p>The bounded evidence envelope was 15,307 bytes versus 616,573 bytes from the Default arm.</p>
-            <div class="claim-links"><a href="./evidence.html#q1-tool-output">Evidence</a><a href="./evidence/q1-prepared-warm.json">JSON</a></div>
-          </article>
-        </div>
-
-        <div class="unproven">
-          <div>
-            <div class="kicker">Read the study</div>
-            <h3>Results here. Methodology in the paper.</h3>
-          </div>
-          <ul>
-            <li>five concern definitions;</li>
-            <li>exact source fragments and digests;</li>
-            <li>focused test ledger;</li>
-            <li>deterministic <code>rg</code> baseline;</li>
-            <li>claim boundary and next six-task gate.</li>
-          </ul>
-          <a href="https://github.com/codeclew/codeclew/raw/main/output/pdf/codeclew-kotlin-evidence-study.pdf">Download the PDF study <span>→</span></a>
+          <article><span class="number">01</span><h3>Choose the scope</h3><p>Discover the repository and its supported targets. Decide which source snapshot answers your question.</p></article>
+          <article><span class="number">02</span><h3>Find the code</h3><p>Retrieve declarations, source and the relationships supported by that language.</p></article>
+          <article><span class="number">03</span><h3>Follow the evidence</h3><p>Open the exact source. Keep observed facts, interpretations and unanswered questions visible.</p></article>
+          <article><span class="number">04</span><h3>Use what you learned</h3><p>Review a change, explain a behavior or maintain service documentation your team can inspect.</p></article>
         </div>
       </section>
-
-      <section class="section contrast" id="support">
-        <div class="shell support-layout">
-          <div class="section-heading">
-            <div class="kicker">Pilot support matrix</div>
-            <h2>Start where the evidence is strongest.</h2>
-            <p>The executable support contract is available at any time through <code>clew capabilities --human</code>.</p>
-          </div>
-          <div class="matrix" role="table" aria-label="Codeclew support matrix">
-            <div class="matrix-row matrix-head" role="row"><span>Profile</span><span>Context</span><span>Change</span></div>
-            <div class="matrix-row" role="row"><span><b>Kotlin 2.4.10</b><small>Gradle · one compilation</small></span><span class="yes">K2</span><span class="pilot">Pilot</span></div>
-            <div class="matrix-row" role="row"><span><b>Kotlin 1.9–2.4</b><small>Gradle / Maven · conditional analysis</small></span><span class="yes">K2</span><span>Read only</span></div>
-            <div class="matrix-row" role="row"><span><b>Java 17+</b><small>Project JDK · tested 17 / 21</small></span><span class="yes">Compiler</span><span>Read only</span></div>
-            <div class="matrix-row" role="row"><span><b>Kotlin 2.3.0</b><small>Maven · optional pack</small></span><span class="yes">K2</span><span>Read only</span></div>
-            <div class="matrix-row" role="row"><span><b>Python</b><small>Tree-sitter syntax</small></span><span>Preview</span><span>Read only</span></div>
-            <div class="matrix-row" role="row"><span><b>Rust</b><small>Bounded syntax</small></span><span>Preview</span><span>Read only</span></div>
-            <div class="matrix-row" role="row"><span><b>2–8 repositories</b><small>Immutable analysis thread</small></span><span>Combined</span><span>Read only</span></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="section shell privacy">
-        <div>
-          <div class="kicker">Incident privacy</div>
-          <h2>Keep the evidence.<br>Leave the code at home.</h2>
-        </div>
-        <div class="privacy-copy">
-          <p>Raw diagnostics remain in a caller-owned private file. The support exporter uses an allowlist and removes source, paths, symbols, diffs, arguments, repository identity, and credentials.</p>
-          <code>clew support summarize --input private-result.json</code>
-          <a href="https://github.com/codeclew/codeclew/blob/main/docs/operations/p0-runbook.md#8-errors-and-investigation-material">Incident runbook <span>→</span></a>
-        </div>
-      </section>
-
-      <section class="cta shell">
-        <div>
-          <div class="kicker">Start with an explicit source scope</div>
-          <h2>Install once. Let agents ask better questions.</h2>
-        </div>
-        <a href="#top">Install Codeclew <span>↑</span></a>
-      </section>
+      <section class="section contrast" id="support"><div class="shell">
+        <div class="section-heading"><div class="kicker">Language support · v0.5.0</div><h2>Different languages.<br>Honest levels of detail.</h2><p>All of these profiles can help you inspect code. Compiler analysis resolves supported identities and relations; syntax analysis records what is written in the selected source.</p></div>
+        <div class="architecture-table-wrap"><table class="architecture-table language-table" role="table"><caption>Analysis and managed changes in the public pilot</caption><thead><tr role="row"><th scope="col" role="columnheader">Language</th><th scope="col" role="columnheader">What you can inspect</th><th scope="col" role="columnheader">Managed changes</th></tr></thead><tbody>
+          <tr role="row"><th scope="row" role="rowheader">Kotlin<small>JVM 1.9–2.4 · Gradle / Maven</small></th><td role="cell" data-label="What you can inspect">Compiler-backed declarations, source and supported relations. Compatibility differences remain explicit.</td><td role="cell" data-label="Managed changes">Pilot for exact 2.4.10 + Gradle, one compilation. Other profiles are read-only.</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Java<small>JDK 17+ · Gradle / Maven</small></th><td role="cell" data-label="What you can inspect">Compiler-backed declarations, calls, types and Spring entry points.</td><td role="cell" data-label="Managed changes">Read-only preview.</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Rust<small>One Cargo target</small></th><td role="cell" data-label="What you can inspect">Bounded syntax and declaration ranges. No resolved call graph; cfg and macros remain explicit limits.</td><td role="cell" data-label="Managed changes">Conditional pilot with Cargo validation.</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">Python<small>Explicit import and source roots</small></th><td role="cell" data-label="What you can inspect">Bounded syntax, declarations, imports and call names. No runtime import or type resolution.</td><td role="cell" data-label="Managed changes">Conditional pilot with native Python validation.</td></tr>
+          <tr role="row"><th scope="row" role="rowheader">TypeScript / JavaScript<small>Project-local TypeScript 5 · tsconfig</small></th><td role="cell" data-label="What you can inspect">Compiler facts for TypeScript and checked JavaScript. Unchecked JavaScript has weaker, explicit evidence.</td><td role="cell" data-label="Managed changes">Read-only preview.</td></tr>
+        </tbody></table></div>
+        <div class="support-notes"><p><b>Conditional changes:</b> Rust and Python require a reviewed diff, successful native validation and acknowledgement of unresolved obligations. Passing tests does not turn syntax facts into compiler proof.</p><p><b>Feature scope:</b> saved-edit reports cover Kotlin and Rust. Service documentation in v0.5.0 covers Java 17+, one compilation per service and up to two services per scenario. Multi-repository analysis supports 2–8 repositories and is read-only.</p><p>Check your installed version with <code>clew capabilities --human</code>. <a href="https://github.com/codeclew/codeclew/blob/v0.5.0/README.md#practical-code-navigation">Exact profiles and setup ↗</a></p></div>
+      </div></section>
+      <section class="section shell privacy" id="privacy"><div><div class="kicker">Your code. Your environment.</div><h2>Curiosity can<br>stay local.</h2></div><div class="privacy-copy"><p>Codeclew analyzes code locally and needs no hosted model or API key. Your chosen agent writes the explanations; its own data and model settings still apply.</p><p>Support summaries omit source and other sensitive fields by design. You decide what to share.</p><a href="https://github.com/codeclew/codeclew/blob/v0.5.0/docs/operations/p0-runbook.md#8-errors-and-investigation-material">How diagnostics are handled →</a></div></section>
+      <section class="section shell" id="evidence"><div class="section-heading"><div class="kicker">Look under the hood</div><h2>Every claim needs a place to stand.</h2><p>Read the implementation, inspect release fixtures, or explore earlier case studies with their methods and limits.</p></div><div class="hero-links"><a class="secondary" href="./architecture.html">How Codeclew works →</a><a class="secondary" href="./evidence.html">Evidence &amp; studies →</a></div></section>
+      <section class="cta shell"><div><div class="kicker">Follow your first thread</div><h2>One repository. One useful question.</h2></div><a href="#install">Install Codeclew <span>↑</span></a></section>
     </main>
 
-    <footer class="shell">
-      <span>Codeclew · Apache-2.0</span>
-      <div><a href="./architecture.html">Architecture</a><a href="./pilot.html">Real service pilot</a><a href="https://github.com/codeclew/codeclew">Source</a><a href="https://github.com/codeclew/codeclew/security">Security</a><a href="https://github.com/codeclew/codeclew/releases">Releases</a></div>
-    </footer>
+    <!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html" aria-current="page">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER -->
     <script src="./app.js" defer></script>
   </body>
 </html>

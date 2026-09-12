@@ -2229,12 +2229,17 @@ internal class Worker(
                 val semanticAvailable = analysis.valid
                 val declarationRelations = if (semanticAvailable) declarationRelationGraph(repo, selected, false, analysis, project!!) else JsonArray(emptyList())
                 val declarationDescriptors = if (semanticAvailable) declarationDescriptorGraph(repo, selected, false, analysis, project!!, module, sourceSet) else JsonArray(emptyList())
+        val documentationDescriptors = (declarationDescriptors as? JsonObject)?.get("descriptors")?.jsonArray.orEmpty()
+            .map { it.jsonObject }.groupBy { it["file"]?.jsonPrimitive?.content }
+        val documentationCalls = analysis.facts.filter { it["recordType"].safeString() == "DOCUMENTATION_CALL" }
+            .groupBy { it["file"].safeString()?.let { file -> repositoryRelativeCompilerPath(repo, file) } }
         val files = selectedFiles.map { path ->
             val bytes = path.readBytes(); val kt = parse(path, bytes); val pkg = kt.packageFqName.asString()
+            val relative = repo.relativize(path).invariantSeparatorsPathString
+            val documentation = KotlinDocumentationSource(relative, kt, documentationDescriptors[relative].orEmpty(), documentationCalls[relative].orEmpty())
             val declarations = PsiTreeUtil.collectElementsOfType(kt, KtNamedDeclaration::class.java)
                 .filter { it is KtNamedFunction || it is KtClassOrObject || it is KtProperty }
-                .sortedBy { it.textOffset }.map { declarationJson(repo, path, pkg, it, analysis, module, sourceSet) }
-            val relative = repo.relativize(path).invariantSeparatorsPathString
+                .sortedBy { it.textOffset }.map { documentation.enrich(it, declarationJson(repo, path, pkg, it, analysis, module, sourceSet)) }
             val inheritance = PsiTreeUtil.collectElementsOfType(kt, KtClassOrObject::class.java).map { declaration ->
                 buildJsonObject { put("symbol", symbolId(pkg, declaration, module, sourceSet)); putJsonArray("supertypes") { declaration.superTypeListEntries.map { it.typeReference?.text.orEmpty() }.sorted().forEach(::add) } }
             }.sortedBy { it.toString() }
@@ -2280,6 +2285,9 @@ internal class Worker(
                             put("semanticInputManifestHash", project["semanticInputManifestHash"]!!)
                             put("buildModelBoundaries", project["buildModelBoundaries"]!!)
                             put("compilerVersion", project["compilerVersion"]!!)
+                            listOf("projectCompilerVersion", "analyzerCompilerVersion", "kotlinProjectSemantics", "kotlinSemanticEngine").forEach { field ->
+                                project[field]?.let { put(field, it) }
+                            }
                             put("compilerOptionsHash", sha(buildJsonObject { put("languageVersion", project["languageVersion"]!!); put("apiVersion", project["apiVersion"]!!); put("jvmTarget", project["jvmTarget"]!!); put("freeCompilerArguments", project["freeCompilerArguments"]!!); put("compilerPlugins", project["compilerPlugins"]!!); put("compilerPluginOptions", project["compilerPluginOptions"]!!) }.toString().toByteArray()))
                         }
             put("k2Validated", analysis.valid); putJsonArray("diagnostics") { analysis.diagnostics.forEach(::add) }

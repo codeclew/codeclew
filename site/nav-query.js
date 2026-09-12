@@ -18,6 +18,10 @@ function selectClaim(id, updateLocation = false) {
     if (link.dataset.claim === id) link.setAttribute("aria-current", "true");
     else link.removeAttribute("aria-current");
   });
+  document.querySelectorAll(".pipeline-steps [data-claim]").forEach(link => {
+    if (link.dataset.claim === id) link.setAttribute("aria-current", "step");
+    else link.removeAttribute("aria-current");
+  });
   chosen.querySelector(".claim-evidence").open = level === "evidence";
   if (updateLocation) history.replaceState(null, "", `#claim-${id}`);
 }
@@ -40,6 +44,15 @@ graph.addEventListener("keydown", event => {
   if (event.key !== " ") return;
   const link = event.target.closest("[data-claim]");
   if (link) { event.preventDefault(); link.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
+});
+document.querySelector(".pipeline-steps")?.addEventListener("click", event => {
+  const link = event.target.closest("[data-claim]");
+  if (!link) return;
+  event.preventDefault();
+  selectClaim(link.dataset.claim, true);
+  if (matchMedia("(max-width: 850px)").matches) {
+    document.querySelector(".claim-reader").scrollIntoView({ block: "start" });
+  }
 });
 selector.addEventListener("change", () => selectClaim(selector.value, true));
 levelButtons.forEach(button => button.addEventListener("click", () => {

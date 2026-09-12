@@ -1,8 +1,64 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Compare saved Kotlin and Rust edits against HEAD, inspect retained source and direct consequences, and keep coverage separate from freshness."><link rel="icon" href="./favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./nav-query.css"><title>Explain saved edits — Codeclew</title></head>
-<body><header class="nav shell"><a class="brand" href="./index.html"><span>Codeclew</span></a><nav aria-label="Primary navigation"><a href="./documentation.html">Documentation</a><a href="./nav-query.html">Navigation walkthrough</a><a href="https://github.com/codeclew/codeclew">GitHub</a></nav></header>
-<main class="shell navdoc"><section class="navdoc-hero"><div class="kicker">Working-tree analysis · development preview</div><h1>Review edits.<br><em>Inspect their consequences.</em></h1><p class="lede">Compare the files you have saved against pinned HEAD. Open changed declarations, direct consumers and the exact code supporting each finding.</p><p>This feature is qualified from the source branch <code>feature/working-tree-impact</code>. It is not an announcement of a new packaged release.</p><p><a class="button primary" href="./working-tree-example.html">Explore the retained example ↗</a></p></section>
-<section><h2>A body change, a signature change and a removed call</h2><p>The fixture changes <code>Pricing.price()</code> from <code>1</code> to <code>3</code>, changes <code>Pricing.label(Int)</code> to <code>Pricing.label(Long)</code>, and removes a call from <code>stopCalling()</code>. The index contains an intermediate price of <code>2</code>; analysis uses the saved price of <code>3</code>.</p><p>Select <code>consumer</code> to see an unchanged caller with before/after evidence. Select the <code>stopCalling → Pricing.price</code> relation to inspect the removed call. Its after claim stays unresolved under partial coverage. Four direct consumer candidates are retained; they are verification suggestions, not observed runtime failures.</p><p>The example selects main only. A separate qualification selects the test compilation and finds a relationship from <code>PriceTest.kt</code>. Neither inspection executes tests. The temporary fixture and its CAS retention root have been collected; the example's embedded evidence remains readable offline, while its old CLI comparison ID is no longer live.</p></section>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Compare saved Kotlin and Rust edits against HEAD, inspect retained source and direct consequences, and keep coverage separate from freshness."><link rel="icon" href="./favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./styles.css"><link rel="stylesheet" href="./nav-query.css"><title>Explain saved edits — Codeclew</title><link rel="stylesheet" href="./theme.css">
+</head>
+<body><!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html" aria-current="page">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></div></details>
+    <a href="./documentation.html">Documentation</a>
+    <a href="./evidence.html">Evidence</a>
+    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER -->
+<main class="shell navdoc" id="main-content"><section class="navdoc-hero"><div class="hero-copy"><div class="kicker">Saved-edit analysis · available since v0.4.0</div><h1>Review edits.<br><em>Inspect their consequences.</em></h1><p class="lede">Compare the files you have saved against pinned HEAD. Open changed declarations, direct consumers and the exact code supporting each finding.</p><p>Available for Kotlin and Rust. Kotlin can include supported direct consumers; Rust retains syntax-level evidence. <a href="./index.html#support">See language boundaries →</a></p><p><a class="button primary" href="./working-tree-example.html">Explore the retained example ↗</a></p></div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
+<!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Documentation</span><span aria-hidden="true">/</span><span aria-current="page">Saved edits guide</span></nav>
+<!-- /SITE_BREADCRUMB --><div class="page-layout"><!-- SITE_SIDEBAR -->
+<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html" aria-current="page">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></nav></details>
+<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
+<!-- /SITE_SIDEBAR --><div class="page-content">
+<section><h2>A body change, a signature change and a removed call</h2><p>The fixture changes <code>Pricing.price()</code> from <code>1</code> to <code>3</code>, changes <code>Pricing.label(Int)</code> to <code>Pricing.label(Long)</code>, and removes a call from <code>stopCalling()</code>. The index contains an intermediate price of <code>2</code>; analysis uses the saved price of <code>3</code>.</p><p>Select <code>consumer</code> to see an unchanged caller with before/after evidence. Select the <code>stopCalling → Pricing.price</code> relation to inspect the removed call. Its after claim stays unresolved under partial coverage. Four direct consumer candidates are retained; they are verification suggestions, not observed runtime failures.</p><p>The example selects main only. A separate qualification selects the test compilation and finds a relationship from <code>PriceTest.kt</code>. Neither inspection executes tests.</p></section>
 <section><h2>Use the same workflow on saved Kotlin edits</h2><pre><code>clew change inspect --repo &lt;repo&gt; --target-ref &lt;branch&gt; \
   --language kotlin --profile kotlin-jvm-gradle-analysis \
   --compilation :/main --working-tree --base HEAD
@@ -13,6 +69,24 @@ clew change source --comparison &lt;returned-id&gt; \
   --node &lt;returned-node-id&gt; --side after
 clew change forget --comparison &lt;returned-id&gt;</code></pre><p>Use repository discovery for the exact profile and compilation of your project. Add test compilations explicitly. For Rust, use the discovered syntax profile and Cargo compilation; the report does not invent compiler-resolved callers.</p></section>
 <section><h2>Three separate questions</h2><ul><li><strong>Are the retained claims readable and valid?</strong> Source, fact and comparison digests bind the evidence.</li><li><strong>Does the snapshot still match this checkout?</strong> Further saved edits produce <code>LIVE_CHANGED</code>. Create a new comparison when current edits are needed.</li><li><strong>Is the selected scope complete?</strong> Compiler failures, unresolved targets, test scope and truncation remain explicit. Valid evidence and a fresh checkout do not remove those limitations.</li></ul><p>The local report has no background watcher, network dependencies or implicit publication. Repeated rendering reads retained evidence without compiling the project. Exact source windows are bounded; follow <code>nextOffset</code> when needed.</p></section>
-<section><h2>Measured fixture behavior</h2><p>The macOS source-launcher qualification took 22.078 seconds to compare main plus tests. Retained graph reads took about 5 seconds, and HTML rendering took 9.728 seconds; a repeat after editing took 9.682 seconds and produced identical bytes. The first main inspection took 69.732 seconds including a development runtime build. These small-fixture observations are not release latency guarantees.</p><p><a href="./evidence/working-tree-qualification.json">Qualification measurements and checks ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/feature/working-tree-impact/docs/plans/codeclew-working-tree-impact-plan.md">Scope, acceptance cases and implementation evidence ↗</a></p></section>
-<section><h2>Real repository qualification</h2><p>The full Kotlin worker comparison took 425.986 seconds and found two direct consumers from <code>Main.kt</code>, with partial coverage retained. The Rust CLI comparison took 74.904 seconds including a development runtime build and retained syntax authority. <a href="./evidence/working-tree-dogfood.json">Read the measurements, coverage and qualification budgets ↗</a>.</p></section>
-</main></body></html>
+<section id="report-evidence"><h2>Inspect the method behind the example</h2><p>The retained report comes from an earlier qualification fixture. Its embedded source remains readable offline; its comparison ID is no longer live. Historical fixture and repository measurements are available in the <a href="./evidence.html#saved-edits">evidence archive</a>.</p><p><a href="https://github.com/codeclew/codeclew/blob/v0.4.0/docs/releases/v0.4.0.md">Saved-edit analysis release notes ↗</a></p></section>
+</div></div></main><!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html" aria-current="page">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER --><script src="./app.js" defer></script></body></html>

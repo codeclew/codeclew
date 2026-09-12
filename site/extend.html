@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Add a Codeclew capability: choose the extension point, define its evidence, wire the CLI and verify a small end-to-end example.">
+    <meta name="theme-color" content="#fdfaf2">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+    <title>Extend Codeclew — contributor guide</title>
+  <link rel="stylesheet" href="./theme.css">
+</head>
+  <body>
+    <!-- SITE_HEADER -->
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-header"><div class="site-header-inner shell">
+  <a class="brand" href="./index.html" aria-label="Codeclew home"><img src="./assets/cat-face.svg" width="48" height="48" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a>
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <details class="site-menu"><summary>Explore <span aria-hidden="true">⌄</span></summary><div class="menu-panel"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html" aria-current="page">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></div></details>
+    <a href="./documentation.html">Documentation</a>
+    <a href="./evidence.html">Evidence</a>
+    <a href="https://github.com/codeclew/codeclew">GitHub <span aria-hidden="true">↗</span></a>
+  </nav>
+  <button class="search-trigger" type="button" aria-haspopup="dialog" aria-controls="site-search" hidden><span>Search docs…</span><kbd>⌘ K</kbd></button>
+</div></header>
+<dialog id="site-search" class="search-dialog" aria-labelledby="search-title">
+  <div class="search-heading"><h2 id="search-title">Find your next thread</h2><button type="button" data-close-search aria-label="Close search">Close <kbd>Esc</kbd></button></div>
+  <label for="site-search-input">Search pages and sections</label><input id="site-search-input" type="search" placeholder="Try “Python” or “service documentation”" autocomplete="off">
+  <p id="search-status" role="status"></p><div id="search-results"></div>
+</dialog>
+<!-- /SITE_HEADER -->
+
+    <main class="architecture-page shell" id="main-content">
+      <section class="docs-hero"><div class="hero-copy"><div class="kicker">Contributor guide</div><h1>Add a capability.<br><em>Leave a useful thread.</em></h1><p class="lede">A new language, a framework rule, a better way to inspect code. Start with one useful result, connect it to the right layer, and show exactly what it can establish.</p><nav class="architecture-jump" aria-label="On this page"><a href="#start">Start small</a><a href="#extension-points">Choose a layer</a><a href="#contract">Define the contract</a><a href="#example">Worked example</a><a href="#verify">Verify</a><a href="#contribute">Contribute</a></nav></div><img class="hero-cat" src="./assets/cat.svg" width="480" height="340" alt="A curious cat following a bright blue thread of yarn"></section>
+<!-- SITE_BREADCRUMB -->
+<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="./index.html">Home</a><span aria-hidden="true">/</span><span>Documentation</span><span aria-hidden="true">/</span><span aria-current="page">Extend Codeclew</span></nav>
+<!-- /SITE_BREADCRUMB -->
+<div class="page-layout"><!-- SITE_SIDEBAR -->
+<aside class="site-sidebar"><details class="sidebar-disclosure" open><summary>On this site</summary><nav aria-label="Site navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html" aria-current="page">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div></nav></details>
+<a class="sidebar-note" href="./documentation.html"><img src="./assets/cat-standing.svg" alt="" width="90" height="90" loading="lazy"><strong>Curious how it works?</strong><span>Follow the clues.<br>Inspect the evidence.</span></a></aside>
+<!-- /SITE_SIDEBAR --><div class="page-content">
+<section class="architecture-section" id="start"><div class="kicker">One useful result first</div><h2>Pick a small knot to untangle.</h2><p>Describe the question someone should be able to answer after your change. Choose one supported project shape and build a tiny fixture that demonstrates it. Include a case where Codeclew should return a limit or no match.</p><div class="architecture-cards architecture-pair"><article><h3>A good first slice</h3><p>“Find methods carrying this scheduling annotation and show their exact source.” One annotation, one language, one project fixture.</p></article><article><h3>A clear boundary</h3><p>“The annotation declares a schedule. We have not established that it is active in a running deployment.” Keep that distinction in the output.</p></article></div><p>This guide describes contributions to Codeclew's source. Build providers and language adapters are internal interfaces; there is currently no public drop-in plugin loader. Use <code>./clew</code> from your checkout for source development and the installed <code>clew</code> for a packaged release.</p></section>
+<section class="architecture-section" id="extension-points"><div class="kicker">Choose the layer that owns the behavior</div><h2>Where does your capability fit?</h2>
+<div class="architecture-cards architecture-pair">
+<article><h3>A build system</h3><p>Implement <code>BuildModelProvider</code>: report a handshake, probe a project, extract its compilation model and support shutdown. Describe source roots, dependencies, toolchain and options with explicit completeness.</p><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/adapter_v2.rs">Provider interface and registry tests ↗</a></p></article>
+<article><h3>A language or analyzer</h3><p>Implement <code>LanguageAdapter</code>: handshake, analyze a generation, cancel and shut down. Emit <code>FactShard</code> events and an <code>AttemptComplete</code> event carrying the completeness receipt.</p><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/python_adapter_v2.rs">Python syntax example ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/java_adapter_v2.rs">Java compiler example ↗</a></p></article>
+<article><h3>A framework rule</h3><p>Extract language facts first, then interpret framework meaning in a separate layer. Preserve annotation identity, attributes and source. Unresolved configuration stays visible.</p><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/spring_entrypoints.rs">Spring catalogue and validation ↗</a></p></article>
+<article><h3>A CLI or agent workflow</h3><p>Add the command and route it to the owning service. Return a bounded response with stable fields and useful next actions. Teach the bundled skill how to use it.</p><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/main.rs">CLI commands ↗</a> · <a href="https://github.com/codeclew/codeclew/tree/main/skills/codeclew">Canonical skill ↗</a></p></article>
+<article><h3>A report or documentation view</h3><p>Build on retained facts, source references and freshness results. Keep the view readable offline where the existing output contract requires it, and preserve the meaning of evidence labels.</p><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/documentation/render.rs">Documentation renderer ↗</a> · <a href="https://github.com/codeclew/codeclew/tree/main/crates/clew/assets/documentation">UI assets ↗</a></p></article>
+<article><h3>A compiler version</h3><p>Follow the existing worker and engine structure. Keep project and analyzer versions distinct; add compatibility fixtures for the supported combination. Update runtime manifests when worker artifacts change.</p><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/kotlin_engine.rs">Engine selection ↗</a> · <a href="https://github.com/codeclew/codeclew/tree/main/workers/manifests">Worker manifests ↗</a></p></article>
+</div><p>Adding an adapter to <code>AdapterRegistry</code> is one integration step. A new language also needs project discovery, session selection and generation dispatch. Follow the nearest existing language through <a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/session.rs">session.rs</a> and <a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/generation_service.rs">generation_service.rs</a> so the public command can actually reach it.</p></section>
+<section class="architecture-section" id="contract"><div class="kicker">Make the evidence inspectable</div><h2>Define what the result means.</h2><ol class="architecture-extension"><li><b>Inputs:</b> choose the language, target, toolchain and source snapshot. State what is excluded, including generated code or additional compilations when relevant.</li><li><b>Facts:</b> define the returned identity, payload and source range. Use the existing snapshot and content-addressed storage APIs to bind facts to the source that produced them.</li><li><b>Strength:</b> state whether a result is compiler-resolved, observed syntax or a derived interpretation. A syntactic call name is not a resolved call edge.</li><li><b>Limits:</b> report unsupported constructs, ambiguity, missing inputs, truncation and cancellation. A partial result must not appear complete.</li><li><b>Compatibility:</b> version affected schemas and translation identities when their meaning changes. Update validators, producers and consumers together so old facts cannot be reused under new assumptions.</li></ol><div class="docs-note"><b>Analysis and changes are separate capabilities.</b> A new read path does not enable managed writes. Changes also need isolated preparation, native validation, freshness checks and the applicable publication checks. Expose mutation support only after its own acceptance cases pass.</div><p><a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/adapter_v2.rs">Protocol types ↗</a> · <a href="https://github.com/codeclew/codeclew/tree/main/schemas">Schemas ↗</a> · <a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/support-matrix.json">Executable support matrix ↗</a></p></section>
+<section class="architecture-section" id="example"><div class="kicker">Worked design example</div><h2>Add support for a scheduling annotation.</h2><p>Suppose a framework has an annotation that Codeclew does not yet recognize. The intended result is a catalogue entry with a method identity, schedule attributes and source location. This is a proposed implementation path, not an existing capability.</p><ol class="architecture-extension"><li><b>Capture the cases.</b> Create a tiny project with one annotated method, an unrelated annotation with the same short name, and a schedule value that depends on configuration.</li><li><b>Extract the identity.</b> Extend the relevant compiler adapter or worker to retain the resolved annotation and its attributes. If resolution is unavailable, preserve that boundary instead of matching by short name.</li><li><b>Interpret the declaration.</b> Add the framework rule and its payload validation. Retain the method's source anchor and the unresolved schedule expression. Do not label it as an observed running job.</li><li><b>Carry it to the reader.</b> Update the catalogue consumer and any affected CLI or report schema. Make sure a reader can open the exact declaration and see the configuration limit.</li><li><b>Prove the result.</b> Assert that the supported method appears, the namesake does not, and the dynamic value remains conditional. Exercise the public CLI on the fixture and inspect the rendered source link.</li></ol><p>The existing Spring path is a useful reference: <a href="https://github.com/codeclew/codeclew/blob/main/workers/kotlin/src/test/kotlin/dev/semanticthread/worker/SpringAnnotationFactsTest.kt">compiler extraction tests</a> → <a href="https://github.com/codeclew/codeclew/blob/main/crates/clew/src/spring_entrypoints.rs">metadata validation and catalogue</a> → <a href="https://github.com/codeclew/codeclew/blob/main/scripts/spring-entrypoints-smoke.py">CLI smoke example</a>.</p></section>
+<section class="architecture-section" id="verify"><div class="kicker">Check the behavior you changed</div><h2>Follow the new path all the way through.</h2><p>Use the pinned Rust toolchain, Python 3.11+, JDK 21 and the repository Gradle wrapper as needed. The <a href="https://github.com/codeclew/codeclew/blob/main/README.md">README</a> and <a href="https://github.com/codeclew/codeclew/blob/main/AGENTS.md">contributor instructions</a> describe the checkout's current requirements.</p><pre class="architecture-command"><code># Inspect capabilities through the source launcher
+./clew capabilities --human
+
+# Example: focused checks for an adapter change
+cargo fmt --all --check
+cargo test --locked -p clew --lib 'adapter_v2::tests::' -- --test-threads=1
+
+# Full development gate when the code change is ready
+./scripts/ci-verify.sh</code></pre><p>Choose additional checks for your implementation. Compiler-worker changes require the affected Gradle worker tests; Rust tests alone do not verify compiler extraction. Add a focused <code>managed_cli</code> test for a new public command. Run the corresponding <code>scripts/test_*.py</code> suite for Python tooling.</p><p>Test useful output, unsupported input and the failure paths you changed. For retained evidence, check source ranges, bounded output and behavior after source changes. If you change the bundled skill, run <code>python3 -I -S scripts/test_agent_skill.py</code>. Documentation-only contributions need syntax/link checks and <code>python3 -I -S scripts/check_english_content.py</code>, without rebuilding the runtime.</p></section>
+<section class="architecture-section" id="contribute"><div class="kicker">Make it easy to review</div><h2>Bring the capability and its proof.</h2><p>Include a before/after example, the fixture, relevant test results and the supported scope in your contribution. Update capability reporting and the support matrix when behavior changes. Keep the README and user-facing guide consistent with what is actually available.</p><p>When changing the skill, edit <code>skills/codeclew</code> and keep its <code>.agents/skills/codeclew</code> and <code>.claude/skills/codeclew</code> copies identical. Run <code>python3 -I -S scripts/check_repository_privacy.py --pre-commit</code> before publication. Add packaging or release checks when your change affects the installed runtime.</p><div class="hero-links"><a class="primary" href="https://github.com/codeclew/codeclew">Open the repository ↗</a><a class="secondary" href="./architecture.html">Explore the architecture →</a></div></section>
+</div></div></main>
+<!-- SITE_FOOTER -->
+<footer class="site-footer shell"><div class="footer-brand"><a class="brand" href="./index.html"><img src="./assets/cat-face.svg" width="38" height="38" alt=""><span>Codeclew<small>Find code. Follow the thread.</small></span></a><p>Better developers.<br>A more understandable world.</p><small>Apache-2.0 · Built with curiosity.</small></div>
+<nav class="footer-nav" aria-label="Footer navigation"><div class="nav-group"><p>Start here</p>
+<a href="./index.html">Home</a>
+<a href="./index.html#install">Installation</a>
+<a href="./index.html#support">Language support</a>
+</div>
+<div class="nav-group"><p>Documentation</p>
+<a href="./architecture.html">Architecture</a>
+<a href="./nav-query.html">Navigation walkthrough</a>
+<a href="./documentation.html">Service documentation</a>
+<a href="./working-tree.html">Saved edits guide</a>
+<a href="./working-tree-example.html">Saved edits example</a>
+<a href="./extend.html" aria-current="page">Extend Codeclew</a>
+</div>
+<div class="nav-group"><p>Research</p>
+<a href="./evidence.html">Evidence &amp; studies</a>
+<a href="./pilot.html">Spring case study</a>
+</div><div class="nav-group"><p>Community</p><a href="https://github.com/codeclew/codeclew">GitHub</a><a href="https://github.com/codeclew/codeclew/releases">Changelog & releases</a><a href="https://github.com/codeclew/codeclew/security">Security</a></div></nav></footer>
+<!-- /SITE_FOOTER -->
+<script src="./app.js" defer></script></body></html>

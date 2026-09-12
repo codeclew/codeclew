@@ -1,9 +1,15 @@
 # Durable service documentation
 
 Use this workflow for a separate documentation repository with per-service pages,
-a root overview and named interaction slices. It is available in Codeclew 0.5.0
-for Java 17+ Maven/Gradle read-only profiles, one compilation per service. Each
-scenario connects at most two services. The overview can list more services.
+a root overview and named interaction slices. The source implementation extends
+Codeclew 0.5.0 with Kotlin/JVM 1.9+, up to eight services per scenario, Kafka
+interactions and step-linked domain explanations. Java 17+ remains supported.
+Use one Maven/Gradle compilation per service. The overview can list more services.
+For Kotlin choose `kotlin-jvm-maven-analysis` or `kotlin-jvm-gradle-analysis`.
+Project/compiler differences remain explicit: Kotlin 1.9 language/API inputs are
+analyzed with language/API 2.0 by the current engine; this is conditional analysis,
+not execution by the project's original compiler. Older installed releases need
+the corresponding product update before using these extensions.
 
 ## Start or recover
 
@@ -68,6 +74,16 @@ HTTP adapter recognizes resolved Spring RestTemplate literal method/path calls
 and `@Value` destination keys. Unknown clients, dynamic routes, external calls,
 unsupported control flow and runtime configuration remain explicit boundaries.
 
+For a Kafka link use `transport: {"kind":"kafka","topic":"stock-import"}` and
+an explicit compiler-returned publisher `callSite.target` when the topic is
+indirect. Caller/receiver topic checks stay separate from the declaration. Literal
+Spring Kafka topics can be checked; properties and custom publishers can remain
+unresolved. A Kafka reply is a separate event interaction, never an HTTP-style
+return. Outbox enqueue and a later scheduled publisher are separate entrypoints:
+do not invent a call between them. The eight-service limit counts distinct
+services, not individual clients or database actors; a diagram allows up to 24
+participants so eight services can still show external actors.
+
 Write the explanation from returned source, then submit a closed JSON Narrative
 using [the authoring example](authoring-example.md). Every discovered entrypoint
 needs a detailed operation or an explicit actionable gap. For full-service
@@ -77,6 +93,29 @@ markers must balance; every selected source condition and return needs a bound
 corresponding event. A count check cannot establish semantic fidelity: read the
 predicate and outcome, and keep their actual nesting/order in the narrative.
 Do not convert unsupported branches into a linear happy path.
+
+Use narrative schema `codeclew-documentation-narrative/1.1`. Keep `summary` short,
+then write `explanation` as ordered domain paragraphs: the business trigger and
+inputs; validation and eligibility; changes to business state; transfers between
+services; failure/alternate outcomes; the final result. Explain why a step occurs
+and what its outcome means to the operator. Do not merely expand method names
+or repeat arrow labels. Name stock, warehouses, reservations or other actual
+domain concepts instead of implementation classes. Include implementation
+mechanisms only when they change the business outcome, such as publication after
+commit or retry/idempotency behavior supported by the source.
+
+Each paragraph has `id`, `text`, `eventIds`, `dependencyIds` and `sourceIds`.
+Every non-`end` diagram event must be covered, and paragraphs retain the evidence
+of every referenced event. Aim for a few cohesive paragraphs, grouping related
+steps; a longer scenario can need more. The validator checks references and
+coverage, not the truth of the prose. Review the actual predicates and effects.
+Narrative 1.0 remains readable for existing bundles; new authoring uses 1.1.
+
+Kotlin `DEFERRED` callback blocks must stay inside an `opt` group. Their source
+can be explained, but invocation, count and scheduling are not established by
+merely passing a lambda. `TRY` becomes `alt`; catches become `else`; preserve
+`FINALLY`, `BREAK` and `CONTINUE` as explicit notes. Keep callbacks and outbox
+boundaries visible instead of presenting a synchronous happy path.
 
 Source/dependency IDs must come from the current context. Every arrow/node keeps
 its own source binding; cross-service arrows also name the declared interaction.

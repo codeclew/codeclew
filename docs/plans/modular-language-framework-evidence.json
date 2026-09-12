@@ -1,0 +1,811 @@
+{
+  "schema": "modular-architecture-analysis-evidence/1.0",
+  "date": "2026-09-08",
+  "baseRevision": "a15a104268f4155c10165bd4cc758a9322ecf325",
+  "sourceSelection": "WORKING_TREE",
+  "snapshotDigest": "sha256:63473ad9fff11d4fb8dad37ec0ead86a4a013b98a66a20477d79da5bbf3268ca",
+  "runtimeKey": "sha256:d922fbf00d7610e5f33c3677066d543ed11800e8373bb2d858b3a0e647cf63a1",
+  "rawArtifactDirectoryId": "modular-20260908",
+  "claims": {
+    "E1": [
+      "03-kotlin-open.json",
+      "05-kotlin-reader.json"
+    ],
+    "E2": [
+      "02-rust-open.json"
+    ],
+    "E3": [
+      "06-java-contract.json"
+    ],
+    "E4": [
+      "08-adapter-contract.json"
+    ],
+    "E5": [
+      "12-kotlin-adapter.json"
+    ],
+    "E6": [
+      "11-docs-project.json"
+    ],
+    "E7": [
+      "10-derived.json"
+    ],
+    "E8": [
+      "15-config-observations.json"
+    ]
+  },
+  "contexts": [
+    {
+      "artifact": "02-rust-open.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:a5dbee5792be72deac1e82a0c389bc42ce8b7f810bdaf4422df881ce25a4b6bf",
+      "evidenceDigest": "sha256:e8d2a3d28f1f6019053268e06ace14aec694eebebdf9be057fef968a91b5ac9d",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/spring_entrypoints.rs",
+          "contentDigest": "sha256:3f2b8b8634d421402af3443d30c4fd35624f6fd6c54c576003d14de76b42b864",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 27,
+              "endLine": 45
+            },
+            {
+              "startLine": 51,
+              "endLine": 90
+            },
+            {
+              "startLine": 160,
+              "endLine": 238
+            },
+            {
+              "startLine": 434,
+              "endLine": 474
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "03-kotlin-open.json",
+      "sessionId": "session:48792fd0-cbd5-45a7-8df6-60a14efeecce",
+      "contextId": "context:sha256:dc79e9578e5b11bcbb1ea23ab91a65f337d48def6332df21b1a279e956dd18c8",
+      "evidenceDigest": "sha256:c9997e0f75138964016aa20728dc76279d4e29838f48399cf6699f3838614cda",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts24.kt",
+          "contentDigest": "sha256:9fca960173c6de648bfd9c3b11153219ca259c00201641580eab60c1d6fe0d56",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 16,
+              "endLine": 72
+            },
+            {
+              "startLine": 200,
+              "endLine": 200
+            },
+            {
+              "startLine": 276,
+              "endLine": 276
+            }
+          ]
+        },
+        {
+          "file": "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts21.kt",
+          "contentDigest": "sha256:ade930cbf33bad62414318e726e9fc74f7192735ac77a94924e904161098d7f4",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 42,
+              "endLine": 74
+            },
+            {
+              "startLine": 191,
+              "endLine": 224
+            },
+            {
+              "startLine": 275,
+              "endLine": 275
+            }
+          ]
+        },
+        {
+          "file": "workers/kotlin23/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts23.kt",
+          "contentDigest": "sha256:db0ba0f36b2f4ab8351cee5029df471800b0c1ee09e9655d0351027b0f482297",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 37,
+              "endLine": 73
+            },
+            {
+              "startLine": 200,
+              "endLine": 200
+            },
+            {
+              "startLine": 276,
+              "endLine": 276
+            }
+          ]
+        },
+        {
+          "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt",
+          "contentDigest": "sha256:957c9a7aed21216b3aa2966b00d43d6eb710bc26ead3a0c2116ed28bd570dde1",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 131,
+              "endLine": 190
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "04-contracts.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:93ca4beefcb41a9b54eb2b223def904b013ee89a2472ba170b33b4a3e8a6e4e1",
+      "evidenceDigest": "sha256:e6ec860773363698ab5238d7e21e9ae995822b10ab4b4102e1bed251294d583e",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "QUERY_COMPLETE",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": [
+          "kotlincompilerfact"
+        ]
+      },
+      "windows": []
+    },
+    {
+      "artifact": "05-kotlin-reader.json",
+      "sessionId": "session:48792fd0-cbd5-45a7-8df6-60a14efeecce",
+      "contextId": "context:sha256:442b3122cc6e596c5df54dfdbafdeee54361b3d8ba78cd9fe509b85e847bcad3",
+      "evidenceDigest": "sha256:28fc1c186eae66117a49d2f14d5483b176e7acf347614aa967047df4d7ece430",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts24.kt",
+          "contentDigest": "sha256:9fca960173c6de648bfd9c3b11153219ca259c00201641580eab60c1d6fe0d56",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 51,
+              "endLine": 349
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "06-java-contract.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:995b5a96c4ee8ef8cf88cbba61254d383e074b9f3c354134f3f1ebc1689a147c",
+      "evidenceDigest": "sha256:62030323ded3704dec2a81ec693bb25d138e02e0d4a8c02b5adf41c9ee2124cd",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "QUERY_COMPLETE",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": [
+          "kotlincompilerfact"
+        ]
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/java_adapter_v2.rs",
+          "contentDigest": "sha256:afda0b681731fb38557024dd7c75596502803841403ea3ebebf931988dbff453",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "ranges": [
+            {
+              "startLine": 34,
+              "endLine": 128
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "07-adapter.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:c02c4f66faa4e38570d68ff28023f7618a13aafc7d90bc2043feffa57106a56a",
+      "evidenceDigest": "sha256:a8d68e23eab894e1cf5a34101e57d845c78c4ba23401a4841d6bb06f6b1312bc",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/lib.rs",
+          "contentDigest": "sha256:fa94fc008372e9c8a0930554b599a7591cb69848fb5df13903c5700238fcc35f",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 1,
+              "endLine": 25
+            },
+            {
+              "startLine": 64,
+              "endLine": 64
+            }
+          ]
+        },
+        {
+          "file": "crates/clew/src/adapter_v2.rs",
+          "contentDigest": "sha256:eb5258f9219dd1db21c9544bf7b06bafce90dfc129ba069d7b4f5c239ebcf6e9",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 294,
+              "endLine": 326
+            },
+            {
+              "startLine": 515,
+              "endLine": 549
+            },
+            {
+              "startLine": 763,
+              "endLine": 801
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "08-adapter-contract.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:dcbae4373fbeaca1c37d30a835479265171c83f9d0bc430a61c6fe20c93abedb",
+      "evidenceDigest": "sha256:908b86a41647ce1f24446dbfeff2f39ffa3a2dcf0b60d20106dcd0ab3ef21cef",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/adapter_v2.rs",
+          "contentDigest": "sha256:eb5258f9219dd1db21c9544bf7b06bafce90dfc129ba069d7b4f5c239ebcf6e9",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "ranges": [
+            {
+              "startLine": 285,
+              "endLine": 327
+            }
+          ]
+        },
+        {
+          "file": "crates/clew/src/adapter_v2.rs",
+          "contentDigest": "sha256:eb5258f9219dd1db21c9544bf7b06bafce90dfc129ba069d7b4f5c239ebcf6e9",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "ranges": [
+            {
+              "startLine": 162,
+              "endLine": 203
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "09-docs.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:fe0a8665e23f01caf48ab98a4577dcd08f7ad2234878fcf5cd1ddcc2cdce960b",
+      "evidenceDigest": "sha256:309d37417a0ba908e805a729ea612729bcf6f569639d3f3bcc72e0dddbe16c99",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/lib.rs",
+          "contentDigest": "sha256:fa94fc008372e9c8a0930554b599a7591cb69848fb5df13903c5700238fcc35f",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 1,
+              "endLine": 31
+            },
+            {
+              "startLine": 41,
+              "endLine": 41
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "10-derived.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:a4bd1e2e8e8c2209b6fdf6c204d6117c9e368678dab122baa852d135cdea4741",
+      "evidenceDigest": "sha256:0acb4883c535d2c71545aacfc431bec2b4051c584ea5f68f0407f9aa64a53ae5",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/lib.rs",
+          "contentDigest": "sha256:fa94fc008372e9c8a0930554b599a7591cb69848fb5df13903c5700238fcc35f",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 1,
+              "endLine": 30
+            }
+          ]
+        },
+        {
+          "file": "crates/clew/src/derived_manifest.rs",
+          "contentDigest": "sha256:cd04c684005e42111add971976a2911c93ddb4e97493920b6b39244684e8d98d",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 1,
+              "endLine": 33
+            },
+            {
+              "startLine": 262,
+              "endLine": 296
+            },
+            {
+              "startLine": 335,
+              "endLine": 356
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "11-docs-project.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:a3d51831453cdad76cc688f11dbccfebe92eb60bb2052d44d466567fde6229f4",
+      "evidenceDigest": "sha256:cb70410ad3c4ab142b6c68a36088d14423c0bee863d783226f34f124c20c5ec8",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/documentation/analysis.rs",
+          "contentDigest": "sha256:cc829af59288917e0b34c9df4aabd4da14ae690d58dbab94b65ac0027e65f517",
+          "authority": "EXACT_SNAPSHOT_TEXT",
+          "ranges": [
+            {
+              "startLine": 447,
+              "endLine": 641
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "12-kotlin-adapter.json",
+      "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+      "contextId": "context:sha256:c0c5385808b4fb76f1a10c606acefe1b48d3ece9743aa0025f5d26e0a096cad3",
+      "evidenceDigest": "sha256:e8e74acb626569365e7df74279bec1bab73d1c031f6c472ba86c9161297944a3",
+      "completeness": {
+        "certainty": "UNSURE",
+        "coverage": "PARTIAL",
+        "status": "CONDITIONAL_TASK",
+        "support": "SUPPORTED",
+        "unmatchedTerms": []
+      },
+      "windows": [
+        {
+          "file": "crates/clew/src/kotlin_adapter_v2.rs",
+          "contentDigest": "sha256:a1bb5ac047cb66af8d5599f96fd96f7639fa0b2f8c383ae7f31dcef58c675dfc",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 42,
+              "endLine": 82
+            },
+            {
+              "startLine": 735,
+              "endLine": 735
+            },
+            {
+              "startLine": 1375,
+              "endLine": 1406
+            },
+            {
+              "startLine": 1408,
+              "endLine": 1454
+            }
+          ]
+        },
+        {
+          "file": "crates/clew/src/lib.rs",
+          "contentDigest": "sha256:fa94fc008372e9c8a0930554b599a7591cb69848fb5df13903c5700238fcc35f",
+          "authority": "EXACT_RETAINED_SOURCE_WINDOW",
+          "ranges": [
+            {
+              "startLine": 13,
+              "endLine": 45
+            },
+            {
+              "startLine": 64,
+              "endLine": 64
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "nativeConfigurationObservations": [
+    {
+      "file": "settings.gradle.kts",
+      "sha256": "18902537a4e6f633918ced56eacefaf0d24db5a1640d3fc19cc5753b7e4b6f7d",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "Cargo.toml",
+      "sha256": "efcc1f93b9bbeffcdaf8d6f3f1a82a6a1e7888b325471bac2dfcd239231c225d",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "schemas/worker.proto",
+      "sha256": "db0c50d328fb82883f594738dedd5246b42db6d1e3d178f291391319b4b227ed",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "workers/kotlin/build.gradle.kts",
+      "sha256": "53591992fcd080c968a383d649b00b3b65c9ef87d4931efeb623d5c835731a43",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "workers/kotlin21/build.gradle.kts",
+      "sha256": "cb473dd6b2fa5633d3f31c4f23340d9a9648296986b2e97f7c698dbed9772b31",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "workers/kotlin23/build.gradle.kts",
+      "sha256": "cbb0e4235ce9cfd3922649add0890eb1e1cb6d1e51afe8b004b820c7a80693ff",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "workers/manifests/kotlin21.json",
+      "sha256": "263f5b803bd4f09e25282f28148ad07f5ac047c2f96da4f7cfa2d11aab8d3652",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "workers/manifests/kotlin23.json",
+      "sha256": "2f287eaa22561ad59cb4b4185edb8b0d21faf8325148af31353052b3333578e3",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    },
+    {
+      "file": "workers/manifests/kotlin24.json",
+      "sha256": "f8cf111da4f116cacfe1bca33e35224cc19afa2ff42611961e2ac09da96c9fc8",
+      "authority": "NATIVE_CONFIGURATION_READ"
+    }
+  ],
+  "freshness": [
+    {
+      "artifact": "13-rust-freshness.json",
+      "result": {
+        "headMatchesExpected": true,
+        "lifecycleStatus": "OPEN",
+        "liveSnapshotMatches": false,
+        "remediationId": "CAPTURE_NEW_SNAPSHOT_IF_CURRENT_EDITS_ARE_NEEDED",
+        "retainedEvidenceValid": true,
+        "schema": "codeclew-session-freshness/2.0",
+        "sessionId": "session:0f09f5a6-0dcc-4436-902c-fb4b4b15a475",
+        "status": "LIVE_CHANGED",
+        "targetRefMatchesExpected": null,
+        "targetWorktreeClean": null
+      }
+    },
+    {
+      "artifact": "14-kotlin-freshness.json",
+      "result": {
+        "headMatchesExpected": true,
+        "lifecycleStatus": "OPEN",
+        "liveSnapshotMatches": false,
+        "remediationId": "CAPTURE_NEW_SNAPSHOT_IF_CURRENT_EDITS_ARE_NEEDED",
+        "retainedEvidenceValid": true,
+        "schema": "codeclew-session-freshness/2.0",
+        "sessionId": "session:48792fd0-cbd5-45a7-8df6-60a14efeecce",
+        "status": "LIVE_CHANGED",
+        "targetRefMatchesExpected": null,
+        "targetWorktreeClean": null
+      }
+    }
+  ],
+  "discardedDigestComparison": {
+    "artifact": "16-cited-source-digests.json",
+    "status": "INVALID_COMPARISON",
+    "reason": "CAS object digests were compared to raw-file SHA256 without establishing identical digest domains; mismatch does not prove source changes"
+  },
+  "citedWindowFreshness": {
+    "authority": "NATIVE_EXACT_WINDOW_COMPARISON_AFTER_LIVE_CHANGED",
+    "limitation": "Checks cited line windows only, not whole snapshot or semantic freshness",
+    "windows": [
+      {
+        "artifact": "02-rust-open.json",
+        "file": "crates/clew/src/spring_entrypoints.rs",
+        "startLine": 27,
+        "endLine": 45,
+        "matches": true
+      },
+      {
+        "artifact": "02-rust-open.json",
+        "file": "crates/clew/src/spring_entrypoints.rs",
+        "startLine": 51,
+        "endLine": 90,
+        "matches": true
+      },
+      {
+        "artifact": "02-rust-open.json",
+        "file": "crates/clew/src/spring_entrypoints.rs",
+        "startLine": 160,
+        "endLine": 238,
+        "matches": true
+      },
+      {
+        "artifact": "02-rust-open.json",
+        "file": "crates/clew/src/spring_entrypoints.rs",
+        "startLine": 434,
+        "endLine": 474,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts24.kt",
+        "startLine": 16,
+        "endLine": 72,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts24.kt",
+        "startLine": 200,
+        "endLine": 200,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts24.kt",
+        "startLine": 276,
+        "endLine": 276,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts21.kt",
+        "startLine": 42,
+        "endLine": 74,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts21.kt",
+        "startLine": 191,
+        "endLine": 224,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin21/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts21.kt",
+        "startLine": 275,
+        "endLine": 275,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin23/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts23.kt",
+        "startLine": 37,
+        "endLine": 73,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin23/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts23.kt",
+        "startLine": 200,
+        "endLine": 200,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin23/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts23.kt",
+        "startLine": 276,
+        "endLine": 276,
+        "matches": true
+      },
+      {
+        "artifact": "03-kotlin-open.json",
+        "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/Worker.kt",
+        "startLine": 131,
+        "endLine": 190,
+        "matches": true
+      },
+      {
+        "artifact": "05-kotlin-reader.json",
+        "file": "workers/kotlin/src/main/kotlin/dev/semanticthread/worker/SpringAnnotationFacts24.kt",
+        "startLine": 51,
+        "endLine": 349,
+        "matches": true
+      },
+      {
+        "artifact": "06-java-contract.json",
+        "file": "crates/clew/src/java_adapter_v2.rs",
+        "startLine": 34,
+        "endLine": 128,
+        "matches": true
+      },
+      {
+        "artifact": "07-adapter.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 1,
+        "endLine": 25,
+        "matches": true
+      },
+      {
+        "artifact": "07-adapter.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 64,
+        "endLine": 64,
+        "matches": true
+      },
+      {
+        "artifact": "07-adapter.json",
+        "file": "crates/clew/src/adapter_v2.rs",
+        "startLine": 294,
+        "endLine": 326,
+        "matches": true
+      },
+      {
+        "artifact": "07-adapter.json",
+        "file": "crates/clew/src/adapter_v2.rs",
+        "startLine": 515,
+        "endLine": 549,
+        "matches": true
+      },
+      {
+        "artifact": "07-adapter.json",
+        "file": "crates/clew/src/adapter_v2.rs",
+        "startLine": 763,
+        "endLine": 801,
+        "matches": true
+      },
+      {
+        "artifact": "08-adapter-contract.json",
+        "file": "crates/clew/src/adapter_v2.rs",
+        "startLine": 285,
+        "endLine": 327,
+        "matches": true
+      },
+      {
+        "artifact": "08-adapter-contract.json",
+        "file": "crates/clew/src/adapter_v2.rs",
+        "startLine": 162,
+        "endLine": 203,
+        "matches": true
+      },
+      {
+        "artifact": "09-docs.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 1,
+        "endLine": 31,
+        "matches": true
+      },
+      {
+        "artifact": "09-docs.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 41,
+        "endLine": 41,
+        "matches": true
+      },
+      {
+        "artifact": "10-derived.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 1,
+        "endLine": 30,
+        "matches": true
+      },
+      {
+        "artifact": "10-derived.json",
+        "file": "crates/clew/src/derived_manifest.rs",
+        "startLine": 1,
+        "endLine": 33,
+        "matches": true
+      },
+      {
+        "artifact": "10-derived.json",
+        "file": "crates/clew/src/derived_manifest.rs",
+        "startLine": 262,
+        "endLine": 296,
+        "matches": true
+      },
+      {
+        "artifact": "10-derived.json",
+        "file": "crates/clew/src/derived_manifest.rs",
+        "startLine": 335,
+        "endLine": 356,
+        "matches": true
+      },
+      {
+        "artifact": "11-docs-project.json",
+        "file": "crates/clew/src/documentation/analysis.rs",
+        "startLine": 447,
+        "endLine": 641,
+        "matches": true
+      },
+      {
+        "artifact": "12-kotlin-adapter.json",
+        "file": "crates/clew/src/kotlin_adapter_v2.rs",
+        "startLine": 42,
+        "endLine": 82,
+        "matches": true
+      },
+      {
+        "artifact": "12-kotlin-adapter.json",
+        "file": "crates/clew/src/kotlin_adapter_v2.rs",
+        "startLine": 735,
+        "endLine": 735,
+        "matches": true
+      },
+      {
+        "artifact": "12-kotlin-adapter.json",
+        "file": "crates/clew/src/kotlin_adapter_v2.rs",
+        "startLine": 1375,
+        "endLine": 1406,
+        "matches": true
+      },
+      {
+        "artifact": "12-kotlin-adapter.json",
+        "file": "crates/clew/src/kotlin_adapter_v2.rs",
+        "startLine": 1408,
+        "endLine": 1454,
+        "matches": true
+      },
+      {
+        "artifact": "12-kotlin-adapter.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 13,
+        "endLine": 45,
+        "matches": true
+      },
+      {
+        "artifact": "12-kotlin-adapter.json",
+        "file": "crates/clew/src/lib.rs",
+        "startLine": 64,
+        "endLine": 64,
+        "matches": true
+      }
+    ]
+  }
+}

@@ -905,7 +905,7 @@ mod tests {
     fn embedded_agent_skill_digest_matches_portable_installer_contract() {
         assert_eq!(
             agent_skill_digest(),
-            "sha256:6aa2918e7c087aeb83ccb675e9d187a1412ede36028153d5d2102b7c4a94779d"
+            "sha256:dbaaf3d675e111eeda20563cfb5e0581c5a20c6496e4f2998df65690ff819715"
         );
     }
 

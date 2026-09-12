@@ -1,4 +1,4 @@
-//! Current Java evidence uses the normal admitted session and immutable generation.
+//! Current JVM evidence uses the normal admitted session and immutable generation.
 use super::{
     bytes, digest, invalid, io_error,
     model::*,
@@ -46,6 +46,21 @@ pub fn git(repo: &Path, args: &[&str]) -> Result<String, ClewError> {
 fn locator(value: &str) -> Option<String> {
     if store::safe_url(value) {
         return Some(value.trim_end_matches('/').trim_end_matches(".git").into());
+    }
+    if let Some(rest) = value.strip_prefix("ssh://git@") {
+        let (authority, path) = rest.split_once('/')?;
+        let host = if let Some((host, port)) = authority.split_once(':') {
+            let _ = port.parse::<u16>().ok().filter(|port| *port > 0)?;
+            host
+        } else {
+            authority
+        };
+        // The registered identity is a web locator; an SSH transport port is not a web port.
+        let candidate = format!("https://{host}/{path}");
+        if store::safe_url(&candidate) {
+            return Some(candidate.trim_end_matches(".git").into());
+        }
+        return None;
     }
     if let Some(rest) = value.strip_prefix("git@") {
         let (host, path) = rest.split_once(':')?;
@@ -114,13 +129,18 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
     let runtime = RuntimeAuthority::from_environment()?
         .ok_or_else(|| invalid("documentation analysis requires the supported clew launcher"))?;
     let compilations = vec![service.compilation.clone()];
+    let language = if service.language == "kotlin" {
+        SessionLanguage::Kotlin
+    } else {
+        SessionLanguage::Java
+    };
     let readiness = operations::doctor(
         &runtime,
         DoctorScope::Task,
         Some(&repo),
         Some(&service.target_ref),
         Some(DoctorTask {
-            language: SessionLanguage::Java,
+            language,
             profile_id: &service.profile,
             operation: DoctorOperation::Analysis,
             compilations: &compilations,
@@ -145,7 +165,7 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
         &revision,
         &service_digest,
         EXTRACTOR,
-        crate::java_adapter_v2::java_adapter_digest()?,
+        service.language,
         runtime.runtime_key
     ]))?;
     let cache_path = format!(
@@ -156,7 +176,7 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
     let session = SessionAuthority::open(
         &repo,
         &service.target_ref,
-        SessionLanguage::Java,
+        language,
         &compilations,
         None,
         ModelCachePolicy::NonCacheable,
@@ -200,7 +220,12 @@ fn capture_session(
         let generation: GenerationManifest =
             serde_json::from_slice(lease.bytes()).map_err(io_error)?;
         generation.visit_facts(&store, |fact| {
-            if fact.domain_uri.as_str() != "analysis:java-compiler-facts" {
+            let domain = if service.language == "kotlin" {
+                "analysis:kotlin-semantic-facts"
+            } else {
+                "analysis:java-compiler-facts"
+            };
+            if fact.domain_uri.as_str() != domain {
                 return Ok(());
             }
             count += 1;
@@ -216,6 +241,9 @@ fn capture_session(
             facts.push((value, fact.payload.digest.clone()));
             Ok(())
         })?;
+    }
+    if service.language == "kotlin" {
+        facts = super::kotlin::project_facts(facts)?;
     }
     let mut files = BTreeMap::new();
     let wanted: BTreeSet<_> = facts
@@ -444,7 +472,7 @@ pub fn project(
             evidence.boundaries.push(
                 fact["code"]
                     .as_str()
-                    .unwrap_or("JAVA_ANALYSIS_BOUNDARY")
+                    .unwrap_or("JVM_ANALYSIS_BOUNDARY")
                     .into(),
             );
             continue;
@@ -475,7 +503,7 @@ pub fn project(
         if let Some(flow) = fact.get("documentation") {
             let events = flow["events"]
                 .as_array()
-                .ok_or_else(|| invalid("Java flow has no events"))?;
+                .ok_or_else(|| invalid("compiler flow has no events"))?;
             if let Some(boundaries) = flow["boundaries"].as_array() {
                 evidence.boundaries.extend(
                     boundaries
@@ -506,8 +534,14 @@ pub fn project(
             }
         }
         if let Some(spring) = fact.get("spring") {
-            let metadata =
-                spring_entrypoints::validate_metadata(spring, "JAVAC_RESOLVED_ANNOTATIONS")?;
+            let metadata = spring_entrypoints::validate_metadata(
+                spring,
+                if service.language == "kotlin" {
+                    "K2_RESOLVED_ANNOTATIONS"
+                } else {
+                    "JAVAC_RESOLVED_ANNOTATIONS"
+                },
+            )?;
             for (ordinal, entry) in metadata.entries.iter().enumerate() {
                 let target = entry.target_symbol.as_deref().unwrap_or(symbol);
                 let eid = source_id(&service.id, &format!("entrypoint/{target}/{ordinal}"))?;
@@ -681,7 +715,7 @@ pub fn resolve<'a>(
     let Some(selector) = selector else {
         return vec![];
     };
-    let owner = if selector.owner.starts_with("class:") {
+    let owner = if selector.owner.starts_with("class:") || selector.owner.starts_with("package:") {
         selector.owner.clone()
     } else {
         format!("class:{}", selector.owner)
@@ -691,7 +725,9 @@ pub fn resolve<'a>(
         .values()
         .filter(|o| {
             o.kind == "SYMBOL"
-                && o.normalized["ownerIdentity"] == owner
+                && o.normalized["ownerIdentity"]
+                    .as_str()
+                    .is_some_and(|observed| observed.replace('/', ".") == owner)
                 && o.normalized["name"] == selector.name
                 && selector.parameter_types.as_ref().is_none_or(|parameters| {
                     o.normalized
@@ -723,6 +759,12 @@ mod tests {
     }
     #[test]
     fn locators_do_not_export_credentials() {
+        assert_eq!(
+            locator("ssh://git@example.invalid:2222/team/service.git"),
+            locator("https://example.invalid/team/service")
+        );
+        assert!(locator("ssh://git@example.invalid:invalid/team/service.git").is_none());
+
         assert_eq!(
             locator("git@example.invalid:team/service.git"),
             locator("https://example.invalid/team/service")

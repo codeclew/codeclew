@@ -1,0 +1,10 @@
+flowchart LR
+    K["P1 Kotlin compiler packs: 2.1 / 2.3 / 2.4"] --> F["P2 Sealed JVM facts: values, definitions, relationships"]
+    J["P1 Java compiler pack"] --> F
+    F --> S["P3 One Spring package: versioned framework rules"]
+    F --> C["P4 Existing code analysis: calls, bodies, flow"]
+    S --> O["P5 Derived framework facts: origins and coverage"]
+    O --> D["P6 Entry points and documentation: join exact identities"]
+    C --> D
+%% All nodes and edges describe the proposed architecture, not observed execution.
+%% Claim-to-evidence mapping: see modular-language-framework-analysis.md, E1-E8.

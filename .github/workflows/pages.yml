@@ -6,6 +6,8 @@ on:
     paths:
       - site/**
       - scripts/build_cli_documentation.py
+      - scripts/build_site_navigation.py
+      - scripts/test_site.py
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -30,6 +32,10 @@ jobs:
           fetch-depth: 0
       - name: Verify documentation source and diagram bindings
         run: python3 -I -S scripts/build_cli_documentation.py --check
+      - name: Verify shared site navigation and local links
+        run: |
+          python3 -I -S scripts/build_site_navigation.py --check
+          python3 -I -S scripts/test_site.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
