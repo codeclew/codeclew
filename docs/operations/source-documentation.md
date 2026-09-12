@@ -92,10 +92,19 @@ rejects missing authored operations and partial source capture.
 
 ```sh
 clew docs check --root /work/architecture
+clew docs check --root /work/architecture --service orders
 clew docs refresh --root /work/architecture --status-only
 clew docs changes --root /work/architecture --limit 100
 clew docs changes --root /work/architecture --fragment RETURNED_FRAGMENT_ID --limit 100
 ```
+
+Default `docs render` publishes valid operations despite unrelated unavailable
+repositories or rejected inputs. A failed operation update retains its previous
+text, exact snippets and source revision; another operation on the same page may
+use newer evidence. Inspect `updateFailures` and operation states. Selective
+`docs check --service` explicitly marks unselected services as not checked.
+`--require-complete` retains the strict, non-publishing diagnostic behavior when
+any section is stale, unavailable, rejected or explicitly incomplete.
 
 `docs refresh --status-only` publishes a new immutable status snapshot without
 calling an agent. It retains the old explanation and exact source snippets,

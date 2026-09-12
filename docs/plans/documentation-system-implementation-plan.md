@@ -217,7 +217,7 @@ gap. A passing plan reviewer, mock adapter or schema checker cannot substitute f
 
 ## T01. Publish valid section updates despite unrelated capture failures
 
-- **Status:** - [ ]
+- **Status:** - [x] Implemented 2026-09-12; five T00/T01 public CLI tests, the existing multi-language source and declared-scenario recovery checks, and 24 documentation unit tests pass. Native worker qualification remains in T05/T06.
 - **Goal:** Allow one service or operation to update while another is unavailable, preserving coherent explanation versions and explicit failure states.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC02, AC18; [scenario cards](../product/documentation-system/scenario-cards.md): S01, S04, S05; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T00

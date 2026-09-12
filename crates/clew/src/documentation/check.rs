@@ -67,13 +67,27 @@ pub struct Check {
 }
 
 pub fn run(repository: &Repository) -> Result<Check, ClewError> {
+    run_selected(repository, &BTreeSet::new())
+}
+
+pub fn run_selected(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+) -> Result<Check, ClewError> {
     let input_digest = repository.input_digest()?;
     let services = repository.services()?;
+    if selected.iter().any(|id| !services.contains_key(id)) {
+        return Err(invalid("selected documentation service does not exist"));
+    }
     let interactions = repository.interactions()?;
     let scenarios = repository.scenarios()?;
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
     for (id, service) in &services {
+        if !selected.is_empty() && !selected.contains(id) {
+            unresolved.insert(id.clone(), json!({"status":"NOT_CHECKED","reason":"SERVICE_NOT_SELECTED","nextAction":"Select this service explicitly to check its current source."}));
+            continue;
+        }
         match analysis::capture(repository, service) {
             Ok(value) => {
                 evidence.insert(id.clone(), value);

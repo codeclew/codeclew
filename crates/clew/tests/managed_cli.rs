@@ -4248,7 +4248,7 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
         stale["interactions"]["reserve-inventory"]["path"]["receiver"]["status"],
         "MISMATCH"
     );
-    let (code, refused) = run(&["docs", "render", "--root", root]);
+    let (code, refused) = run(&["docs", "render", "--root", root, "--require-complete"]);
     assert_eq!(code, 4, "{refused}");
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), before);
     // Restore the old available revision without rewriting the first source checkout.
@@ -4642,7 +4642,10 @@ fn durable_source_documentation_without_build_tools_rebinds_and_preserves_public
             .any(|i| i["kind"] == "SOURCE_CHANGE" && i["beforeAvailable"] == true),
         "{dossier}"
     );
-    assert_ne!(run(&["docs", "render", "--root", root]).0, 0);
+    assert_ne!(
+        run(&["docs", "render", "--root", root, "--require-complete"]).0,
+        0
+    );
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), relocated);
     assert_eq!(
         fs::read_to_string(docs.join("docs/manual.md")).unwrap(),
@@ -4792,6 +4795,9 @@ fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_root
             .iter()
             .any(|b| b == "SEMANTIC_PROVIDER_UNAVAILABLE_SOURCE_REMAINS_READABLE")
     );
-    assert_ne!(run(&["docs", "render", "--root", root]).0, 0);
+    assert_ne!(
+        run(&["docs", "render", "--root", root, "--require-complete"]).0,
+        0
+    );
     assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), published);
 }

@@ -60,3 +60,8 @@ snapshot as if growth behavior existed at the base revision.
   sources are local gaps; old bundles and human files remain unchanged. Public CLI
   acceptance covers helper changes, unavailable source, repeat publication and
   output-edit conflicts. Graph transitions remain accurate.
+
+- T01: publication now accepts valid operations independently, preserves rejected
+  siblings with their own evidence versions, and records local update gaps.
+  Selective service checks mark unselected inputs explicitly. Existing strict
+  refusal semantics remain available through `--require-complete`.

@@ -899,6 +899,7 @@ pub fn make_bindings(
         retained_sources: checked.sources(),
         section_states: BTreeMap::new(),
         target_revisions: BTreeMap::new(),
+        update_failures: BTreeMap::new(),
     };
     super::status::update_states(&mut binding, checked);
     Ok(binding)
@@ -1066,12 +1067,19 @@ pub fn mermaid(o: &Operation) -> String {
     out
 }
 
-pub(super) fn markdown(title: &str, n: &Narrative) -> String {
+pub(super) fn markdown(
+    title: &str,
+    n: &Narrative,
+    states: &BTreeMap<String, SectionState>,
+) -> String {
     let mut out = format!(
         "# {}\n\nStatic source interpretation. Declared interactions do not establish runtime routing.\n\n",
         escape(title)
     );
     for o in &n.operations {
+        if let Some(state) = states.get(&format!("{}/{}", n.subject, o.id)) {
+            out.push_str(&format!("Source freshness: {}. Meaning review: {}.\n\nContent revisions: {}\n\nTarget revisions: {}\n\n",state.freshness.as_str(),escape(&state.verification),json!(state.content_revisions),json!(state.target_revisions)));
+        }
         out.push_str(&format!(
             "## {}\n\n{}\n\n",
             escape(&o.title),
@@ -1131,147 +1139,452 @@ pub fn publish(
     incoming: Vec<Narrative>,
     require_complete: bool,
 ) -> Result<Value, ClewError> {
+    publish_with_failures(repo, incoming, require_complete, BTreeMap::new())
+}
+
+pub fn publish_with_failures(
+    repo: &Repository,
+    incoming: Vec<Narrative>,
+    require_complete: bool,
+    mut failures: BTreeMap<String, Value>,
+) -> Result<Value, ClewError> {
     let previous = bindings::baseline(repo)?;
     if let Some((id, binding)) = &previous {
         bindings::verify_outputs(repo, id, binding)?;
     }
-    let previous_root = repo.path("docs/index.html")?;
-    let previous_bytes = if previous_root.exists() {
-        Some(fs::read(&previous_root).map_err(io_error)?)
+    let root = repo.path("docs/index.html")?;
+    let previous_bytes = if root.exists() {
+        Some(fs::read(&root).map_err(io_error)?)
     } else {
         None
     };
     let checked = check::run(repo)?;
     checked.save(repo)?;
-    if !checked.unresolved.is_empty() {
-        return Err(ClewError::new(
-            ErrorCode::IncompleteSemanticAnalysis,
-            "documentation source check is unresolved; inspect clew docs check before publication",
-        ));
+    let services = repo.services()?;
+    let scenarios = repo.scenarios()?;
+    let mut fresh = BTreeMap::new();
+    for (id, evidence) in &checked.services {
+        let subject = format!("service:{id}");
+        fresh.insert(
+            subject.clone(),
+            default_narrative(
+                subject,
+                evidence.entrypoints.iter().map(|e| e.id.clone()),
+                &checked,
+            ),
+        );
     }
-    let freshness = bindings::freshness(previous.as_ref().map(|(_, b)| b), &checked);
+    for id in scenarios.keys() {
+        let subject = format!("scenario:{id}");
+        fresh.insert(
+            subject.clone(),
+            default_narrative(subject, std::iter::once(id.clone()), &checked),
+        );
+    }
+    let mut accepted = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut updated_gaps = BTreeMap::new();
+    for n in incoming {
+        let Some(target) = fresh.get_mut(&n.subject) else {
+            failures.insert(n.subject.clone(), json!({"reason":"SUBJECT_UNAVAILABLE","nextAction":"Register and capture this subject before authoring."}));
+            continue;
+        };
+        let expected: BTreeSet<String> = if let Some(id) = n.subject.strip_prefix("service:") {
+            checked.services[id]
+                .entrypoints
+                .iter()
+                .map(|e| e.id.clone())
+                .collect()
+        } else {
+            BTreeSet::from([id_from_subject(&n.subject).to_owned()])
+        };
+        if !seen.insert(n.subject.clone()) {
+            // Duplicate subjects are not merged in input order; retain all original content.
+            accepted.retain(|key: &String| !key.starts_with(&format!("{}/", n.subject)));
+            target.operations.clear();
+            target.gaps = expected
+                .iter()
+                .map(|id| {
+                    (
+                        id.clone(),
+                        "Duplicate subject proposals; resubmit one coherent input.".into(),
+                    )
+                })
+                .collect();
+            failures.insert(n.subject.clone(), json!({"reason":"DUPLICATE_SUBJECT","nextAction":"Supply one proposal per subject."}));
+            continue;
+        }
+        let mut envelope = n.clone();
+        envelope.operations.clear();
+        envelope.gaps = expected
+            .iter()
+            .map(|id| (id.clone(), "Operation validation follows.".into()))
+            .collect();
+        if let Err(error) = validate(&envelope, &checked) {
+            failures.insert(
+                n.subject.clone(),
+                json!({"reason":error.code,"nextAction":error.message}),
+            );
+            continue;
+        }
+        let mut operation_ids = BTreeSet::new();
+        let duplicate_ids: BTreeSet<_> = n
+            .operations
+            .iter()
+            .filter(|o| !operation_ids.insert(o.id.clone()))
+            .map(|o| o.id.clone())
+            .collect();
+        for operation in &n.operations {
+            let key = format!("{}/{}", n.subject, operation.id);
+            let mut candidate = n.clone();
+            candidate.operations = vec![operation.clone()];
+            candidate.gaps = expected
+                .iter()
+                .filter(|id| **id != operation.id)
+                .map(|id| {
+                    (
+                        id.clone(),
+                        "Outside this operation proposal; retained or explicitly incomplete."
+                            .into(),
+                    )
+                })
+                .collect();
+            let validation = if duplicate_ids.contains(&operation.id) {
+                Err(invalid("duplicate operation proposal"))
+            } else {
+                validate(&candidate, &checked)
+            };
+            match validation {
+                Ok(()) => {
+                    accepted.insert(key);
+                    target.operations.push(operation.clone());
+                }
+                Err(error) => {
+                    failures.insert(key, json!({"reason":error.code,"nextAction":error.message}));
+                }
+            }
+        }
+        for (id, reason) in n.gaps {
+            if expected.contains(&id) && !reason.trim().is_empty() && reason.len() <= 8192 {
+                updated_gaps.insert((n.subject.clone(), id.clone()), reason.clone());
+                target.gaps.insert(id, reason);
+            } else {
+                failures.insert(format!("{}/gap-{id}",n.subject),json!({"reason":"INVALID_GAP","nextAction":"Name an in-scope operation and an actionable missing-information reason."}));
+            }
+        }
+        target
+            .gaps
+            .retain(|id, _| !target.operations.iter().any(|o| &o.id == id));
+    }
+    let mut binding = make_bindings(&checked, fresh.clone())?;
     let mut narratives = previous
         .as_ref()
         .map(|(_, b)| b.narratives.clone())
         .unwrap_or_default();
-    narratives.retain(|subject, _| {
-        subject
-            .strip_prefix("service:")
-            .is_some_and(|id| checked.services.contains_key(id))
-            || subject
-                .strip_prefix("scenario:")
-                .is_some_and(|id| checked.scenarios.contains_key(id))
-    });
-    let mut replaced = BTreeSet::new();
-    for n in incoming {
-        validate(&n, &checked)?;
-        if !replaced.insert(n.subject.clone()) {
-            return Err(invalid("duplicate incoming narrative subject"));
+    for (subject, n) in &fresh {
+        let combined = narratives
+            .entry(subject.clone())
+            .or_insert_with(|| n.clone());
+        for operation in &n.operations {
+            combined.operations.retain(|old| old.id != operation.id);
+            combined.operations.push(operation.clone());
         }
-        narratives.insert(n.subject.clone(), n);
+        combined.operations.sort_by(|a, b| a.id.cmp(&b.id));
+        combined.gaps = n
+            .gaps
+            .iter()
+            .filter(|(id, _)| !combined.operations.iter().any(|o| &o.id == *id))
+            .map(|(id, v)| {
+                (
+                    id.clone(),
+                    updated_gaps
+                        .get(&(subject.clone(), id.clone()))
+                        .or_else(|| combined.gaps.get(id))
+                        .unwrap_or(v)
+                        .clone(),
+                )
+            })
+            .collect();
     }
-    let affected_subjects: BTreeSet<_> = freshness["affected"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|f| f["subject"].as_str())
-        .collect();
-    for (subject, n) in &mut narratives {
-        if !replaced.contains(subject) && affected_subjects.contains(subject.as_str()) {
-            return Err(ClewError::new(
-                ErrorCode::StaleRequiresReslice,
-                format!(
-                    "review affected fragments for {subject} and provide its updated narrative"
-                ),
-            ));
+    // A service whose first capture failed still has a reader-visible actionable gap.
+    for id in services.keys() {
+        let subject = format!("service:{id}");
+        narratives.entry(subject.clone()).or_insert_with(|| {
+            default_narrative(
+                subject,
+                std::iter::once("source-unavailable".into()),
+                &checked,
+            )
+        });
+    }
+    if let Some((_, old)) = &previous {
+        for (key, failure) in &old.update_failures {
+            if key.contains('/') && !accepted.contains(key) {
+                failures
+                    .entry(key.clone())
+                    .or_insert_with(|| failure.clone());
+            }
         }
-        n.context_digest = checked.context_digest.clone();
-        validate(n, &checked)?;
-    }
-    let services = repo.services()?;
-    let scenarios = repo.scenarios()?;
-    let interactions = repo.interactions()?;
-    for (id, e) in &checked.services {
-        narratives
-            .entry(format!("service:{id}"))
-            .or_insert_with(|| {
-                default_narrative(
-                    format!("service:{id}"),
-                    e.entrypoints.iter().map(|e| e.id.clone()),
-                    &checked,
-                )
+        for (id, fragment) in &old.fragments {
+            let retained_operation = old.narratives.get(&fragment.subject).is_some_and(|n| {
+                n.operations.iter().any(|o| {
+                    let key = format!("{}/{}", fragment.subject, o.id);
+                    id.starts_with(&format!("{key}/")) && !accepted.contains(&key)
+                })
             });
+            let unavailable_subject = fragment
+                .subject
+                .strip_prefix("service:")
+                .is_some_and(|id| !checked.services.contains_key(id));
+            if retained_operation || unavailable_subject {
+                let mut retained = fragment.clone();
+                if retained.evidence.is_none() {
+                    retained.evidence = Some(bindings::FragmentEvidence {
+                        revisions: old.revisions.clone(),
+                        observations: retained
+                            .dependencies
+                            .keys()
+                            .filter_map(|id| {
+                                old.observations.get(id).map(|o| (id.clone(), o.clone()))
+                            })
+                            .collect(),
+                        sources: retained
+                            .sources
+                            .keys()
+                            .filter_map(|id| {
+                                old.retained_sources
+                                    .get(id)
+                                    .map(|s| (id.clone(), s.clone()))
+                            })
+                            .collect(),
+                    });
+                }
+                binding.fragments.insert(id.clone(), retained);
+            }
+        }
+        for (id, state) in &old.section_states {
+            if !accepted.contains(id)
+                && (id.contains('/')
+                    || id
+                        .strip_prefix("service:")
+                        .is_some_and(|service| !checked.services.contains_key(service)))
+            {
+                binding.section_states.insert(id.clone(), state.clone());
+            }
+        }
+        for (id, revision) in &old.revisions {
+            binding
+                .revisions
+                .entry(id.clone())
+                .or_insert_with(|| revision.clone());
+        }
+        for (id, coverage) in &old.coverage {
+            binding
+                .coverage
+                .entry(id.clone())
+                .or_insert_with(|| coverage.clone());
+        }
+        for (id, source) in &old.retained_sources {
+            binding
+                .retained_sources
+                .entry(id.clone())
+                .or_insert_with(|| source.clone());
+        }
+        for (id, observation) in &old.observations {
+            binding
+                .observations
+                .entry(id.clone())
+                .or_insert_with(|| observation.clone());
+        }
     }
-    for id in scenarios.keys() {
-        narratives
-            .entry(format!("scenario:{id}"))
-            .or_insert_with(|| {
-                default_narrative(
-                    format!("scenario:{id}"),
-                    std::iter::once(id.clone()),
-                    &checked,
-                )
-            });
+    binding.narratives = narratives.clone();
+    super::status::update_states(&mut binding, &checked);
+    // Whole-page freshness is an aggregate; each operation keeps its exact content vector.
+    for subject in narratives.keys() {
+        let children: Vec<_> = binding
+            .section_states
+            .iter()
+            .filter(|(key, _)| key.starts_with(&format!("{subject}/")))
+            .map(|(_, s)| s.clone())
+            .collect();
+        if let Some(state) = binding.section_states.get_mut(subject) {
+            if children
+                .iter()
+                .any(|s| s.freshness == Freshness::Unverified)
+            {
+                state.freshness = Freshness::Unverified;
+            } else if children.iter().any(|s| s.freshness == Freshness::Stale) {
+                state.freshness = Freshness::Stale;
+            }
+        }
     }
-    let gap_count: usize = narratives.values().map(|n| n.gaps.len()).sum();
-    let partial_source = checked
-        .services
-        .values()
-        .any(|e| e.extractor == SOURCE_EXTRACTOR && e.coverage != "SYNTAX");
-    if require_complete && (gap_count > 0 || partial_source) {
+    let incomplete = !checked.unresolved.is_empty()
+        || !failures.is_empty()
+        || narratives.values().any(|n| !n.gaps.is_empty())
+        || binding
+            .section_states
+            .values()
+            .any(|s| s.freshness != Freshness::Current);
+    if require_complete && incomplete {
+        let code = if binding
+            .section_states
+            .values()
+            .any(|s| s.freshness == Freshness::Stale)
+        {
+            ErrorCode::StaleRequiresReslice
+        } else {
+            ErrorCode::IncompleteSemanticAnalysis
+        };
         return Err(ClewError::new(
-            ErrorCode::IncompleteSemanticAnalysis,
-            "documentation contains explicit gaps; author every in-scope operation before --require-complete",
+            code,
+            "documentation has retained stale content or explicit gaps; inspect the local outcomes before --require-complete",
         ));
     }
-    let bundle=digest(&json!({"context":checked.context_digest,"revisions":checked.services.iter().map(|(id,e)|(id,&e.revision)).collect::<BTreeMap<_,_>>(),"sources":checked.sources(),"narratives":narratives,"renderer":RENDERER,"rendererAssets":digest(&[TEMPLATE, STYLE, SCRIPT])?}))?[7..].to_owned();
-    let binding = make_bindings(&checked, narratives.clone())?;
+    binding.update_failures = failures.clone();
+    binding.output_hashes.clear();
+    let bundle =
+        digest(&json!({"binding":binding,"rendererAssets":renderer_digest()?}))?[7..].to_owned();
     let mut files = BTreeMap::new();
+    let mut cards = String::new();
     for (subject, n) in &narratives {
         let (kind, id) = subject
             .split_once(':')
-            .ok_or_else(|| invalid("invalid subject"))?;
-        let (title, subtitle) = if kind == "service" {
-            let s = &services[id];
-            (
-                s.title.as_str(),
-                "All discovered entrypoints, contracts and behavior",
-            )
-        } else {
-            let s = &scenarios[id];
-            (s.title.as_str(), s.summary.as_str())
-        };
+            .ok_or_else(|| invalid("invalid retained subject"))?;
         let folder = if kind == "service" {
             "services"
         } else {
             "scenarios"
         };
-        let mut data = page_data(subject, title, subtitle, n, &checked);
+        let old_data: Option<Value> = if let Some((bundle, b)) = &previous {
+            if b.narratives.contains_key(subject) {
+                Some(store::read(
+                    &repo.path(&format!("docs/generated/{bundle}/{folder}/{id}.json"))?,
+                    64 * 1024 * 1024,
+                )?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let title = services
+            .get(id)
+            .filter(|_| kind == "service")
+            .map(|s| s.title.as_str())
+            .or_else(|| {
+                scenarios
+                    .get(id)
+                    .filter(|_| kind == "scenario")
+                    .map(|s| s.title.as_str())
+            })
+            .or_else(|| old_data.as_ref().and_then(|d| d["title"].as_str()))
+            .unwrap_or(id);
+        let mut data = page_data(
+            subject,
+            title,
+            "Service behavior and explicit evidence boundaries",
+            n,
+            &checked,
+        );
+        let mut operation_sources = BTreeMap::new();
+        let mut operation_contracts = BTreeMap::new();
+        for operation in &n.operations {
+            let key = format!("{subject}/{}", operation.id);
+            let from = if !accepted.contains(&key) {
+                old_data.as_ref().unwrap_or(&data)
+            } else {
+                &data
+            };
+            operation_sources.insert(
+                operation.id.clone(),
+                from["operationSources"]
+                    .get(&operation.id)
+                    .unwrap_or(&from["sources"])
+                    .clone(),
+            );
+            operation_contracts.insert(
+                operation.id.clone(),
+                from["operationContracts"]
+                    .get(&operation.id)
+                    .unwrap_or(&from["contracts"])
+                    .clone(),
+            );
+            if let Some(old) = &old_data {
+                for entry in old["catalogue"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|e| e["id"] == operation.id)
+                {
+                    if !data["catalogue"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|e| e["id"] == operation.id)
+                    {
+                        let mut retained = entry.clone();
+                        retained["retainedOnly"] = json!(true);
+                        data["catalogue"].as_array_mut().unwrap().push(retained);
+                    }
+                }
+            }
+        }
+        data["operationSources"] = json!(operation_sources);
+        data["operationContracts"] = json!(operation_contracts);
+        data["updateFailures"] = json!(
+            failures
+                .iter()
+                .filter(|(key, _)| *key == subject || key.starts_with(&format!("{subject}/")))
+                .collect::<BTreeMap<_, _>>()
+        );
         super::status::attach(&mut data, subject, &binding);
-        files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
         files.insert(format!("{folder}/{id}.json"), bytes(&data)?);
-        files.insert(format!("{folder}/{id}.md"), markdown(title, n).into_bytes());
-        for o in &n.operations {
+        files.insert(format!("{folder}/{id}.html"), html(&data)?.into_bytes());
+        let state = &binding.section_states[subject];
+        files.insert(
+            format!("{folder}/{id}.md"),
+            format!(
+                "Source freshness: {}. See operation states in the accompanying JSON.\n\n{}",
+                state.freshness.as_str(),
+                markdown(title, n, &binding.section_states)
+            )
+            .into_bytes(),
+        );
+        for operation in &n.operations {
+            let state = &binding.section_states[&format!("{subject}/{}", operation.id)];
             files.insert(
-                format!("diagrams/{}-{}.mmd", subject.replace(':', "-"), o.id),
-                mermaid(o).into_bytes(),
+                format!(
+                    "diagrams/{}-{}.mmd",
+                    subject.replace(':', "-"),
+                    operation.id
+                ),
+                format!(
+                    "%% Source freshness: {}; meaning review: {}\n{}",
+                    state.freshness.as_str(),
+                    state.verification,
+                    mermaid(operation)
+                )
+                .into_bytes(),
             );
         }
+        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">{}</div><h2><a href=\"generated/{bundle}/{folder}/{}.html\">{}</a></h2><p>{} documented operations · {} gaps</p><p>Source freshness: {}</p><details><summary>Revisions, status and update gaps</summary><pre>{}</pre></details></article>",escape(kind),escape(id),escape(title),n.operations.len(),n.gaps.len(),state.freshness.as_str(),escape(&serde_json::to_string_pretty(&json!({"state":state,"failures":data["updateFailures"]})).map_err(io_error)?)));
     }
-    let mut cards = String::new();
-    for (id, s) in &services {
-        let n = &narratives[&format!("service:{id}")];
-        cards.push_str(&format!("<article class=\"gap-card\"><div class=\"eyebrow\">MICROSERVICE</div><h3><a href=\"generated/{bundle}/services/{}.html\">{}</a></h3><p>{} documented / {} entrypoints · {} gaps</p><p><code>{}</code> · {}</p></article>",escape(id),escape(&s.title),n.operations.len(),checked.services[id].entrypoints.len(),n.gaps.len(),&checked.services[id].revision[..12],escape(&checked.services[id].coverage)));
-    }
-    let scenario_cards=scenarios.iter().map(|(id,s)|format!("<article class=\"gap-card\"><div class=\"eyebrow\">INTERACTION SCENARIO</div><h3><a href=\"generated/{bundle}/scenarios/{}.html\">{}</a></h3><p>{}</p><p>{} declared interactions · {} documented operations</p></article>",escape(id),escape(&s.title),escape(&s.summary),s.interactions.len(),narratives[&format!("scenario:{id}")].operations.len())).collect::<String>();
-    let interaction_cards=interactions.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {} {} · {}</p><p>{}</p><details class=\"technical-evidence\"><summary>Declaration and supported checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(i.transport.method.as_deref().unwrap_or(&i.transport.kind)),escape(i.transport.topic.as_deref().or(i.transport.path.as_deref()).unwrap_or("unresolved route")),escape(&i.declaration.origin),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions[&i.id]).unwrap_or_default()))).collect::<String>();
+    files.insert("status.json".into(),bytes(&json!({"schema":"codeclew-documentation-status/1.0","sections":binding.section_states,"targetRevisions":binding.target_revisions,"updateFailures":failures,"unresolved":checked.unresolved}))?);
+    let relationships=repo.interactions()?.values().map(|i|format!("<article class=\"gap-card\"><h3>{}</h3><p>{} → {} · {}</p><p>{}</p><details><summary>Declaration and source checks</summary><pre>{}</pre></details></article>",escape(&i.title),escape(&i.from.service),escape(&i.to.service),escape(&i.transport.kind),escape(&i.declaration.rationale),escape(&serde_json::to_string_pretty(&checked.interactions.get(&i.id)).unwrap_or_default()))).collect::<String>();
+    let update_gaps = if failures.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<section><h2>Update gaps</h2><p>Valid sections were published; these inputs need attention.</p><pre>{}</pre></section>",
+            escape(&serde_json::to_string_pretty(&failures).map_err(io_error)?)
+        )
+    };
     let overview = format!(
-        "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><header class=\"topbar\"><span class=\"brand\"><span class=\"logo\">c</span><b>Codeclew</b><span>Service docs</span></span><span class=\"experiment\">{} services · {} scenarios</span></header><main style=\"margin:auto;max-width:1180px\"><div class=\"coverage-heading\"><div class=\"eyebrow\">ARCHITECTURE DOCUMENTATION</div><h2>{}</h2><p>Each microservice has its own documentation. Named scenarios connect bounded local flows through explicitly declared interactions.</p></div><h2>Microservices</h2><div class=\"coverage-grid\">{cards}</div><h2>Interaction scenarios</h2>{scenario_cards}<h2>Declared service relationships</h2>{interaction_cards}<p class=\"flow-note\">{gap_count} explicit documentation gaps. Source interpretation does not establish runtime activation or wire compatibility.</p></main></body></html>\n",
+        "<!-- codeclew-bundle {bundle} -->\n<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title><style>{STYLE}</style></head><body><main style=\"margin:auto;max-width:1180px;padding:32px\"><div class=\"eyebrow\">ARCHITECTURE DOCUMENTATION</div><h1>{}</h1><p>Each explanation retains its source revisions. Failed updates remain explicit local gaps.</p><div class=\"coverage-grid\">{cards}</div><h2>Declared service relationships</h2>{relationships}{update_gaps}</main></body></html>\n",
         escape(&repo.manifest.title),
-        services.len(),
-        scenarios.len(),
         escape(&repo.manifest.title)
     );
+    let gap_count: usize = narratives.values().map(|n| n.gaps.len()).sum();
     commit_bundle(
         repo,
         &bundle,
@@ -1283,7 +1596,7 @@ pub fn publish(
         previous_bytes.as_deref(),
     )?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if gap_count==0 && !partial_source{"RENDERED"}else{"PARTIAL"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"runtime":"UNKNOWN"}),
+        json!({"schema":"codeclew-docs-render/1.0","status":if incomplete{"PARTIAL"}else{"RENDERED"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"updateFailures":failures,"unresolved":checked.unresolved,"runtime":"UNKNOWN"}),
     )
 }
 

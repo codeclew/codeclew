@@ -44,6 +44,12 @@ As a documentation author, I register a repository and capture source-bound evid
 
 Source profile is explicit; catalogue capture is sequential; provider selection is restricted. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
 
+T01 acceptance adds malformed-input and unavailable-service isolation, different
+operation evidence versions on one page, selective checking and concurrent status
+publication. The existing source/relocation and declared-scenario recovery checks
+remain regression inputs; strict refusals use `--require-complete`.
+
+
 ## S02 — Author a source-bound operation
 
 - **Status:** current
@@ -167,6 +173,12 @@ freshness and revision targets. `docsys_t00_*` verifies helper-change invalidati
 local unavailable-source gaps, immutable prior outputs and preserved human files.
 
 
+T01 acceptance adds malformed-input and unavailable-service isolation, different
+operation evidence versions on one page, selective checking and concurrent status
+publication. The existing source/relocation and declared-scenario recovery checks
+remain regression inputs; strict refusals use `--require-complete`.
+
+
 ## S05 — Detect changes and review affected explanations
 
 - **Status:** current
@@ -211,6 +223,12 @@ Reports expose staleness; stale HTML is not independently republished and old af
 T00 adds `docs refresh --status-only`: retained content with independently published
 freshness and revision targets. `docsys_t00_*` verifies helper-change invalidation,
 local unavailable-source gaps, immutable prior outputs and preserved human files.
+
+
+T01 acceptance adds malformed-input and unavailable-service isolation, different
+operation evidence versions on one page, selective checking and concurrent status
+publication. The existing source/relocation and declared-scenario recovery checks
+remain regression inputs; strict refusals use `--require-complete`.
 
 
 ## S06 — Preserve manual files and recover a publication

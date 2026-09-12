@@ -86,3 +86,5 @@ not claimed by this planning package's structural or independent review.
 
 - T00 → S04/S05, AC01/AC02: independent status publication is implemented and covered
   by public CLI acceptance. Other listed growth behavior remains pending.
+- T01 → S01/S04/S05, AC02/AC18: local outcomes and immutable operation evidence
+  versions are implemented. Five T00/T01 CLI cases cover current regression behavior.

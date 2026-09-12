@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
 pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
-pub const RENDERER: &str = "codeclew-documentation-html/1.5";
+pub const RENDERER: &str = "codeclew-documentation-html/1.6";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -369,12 +369,24 @@ pub enum Freshness {
     Unverified,
 }
 
+impl Freshness {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Current => "CURRENT",
+            Self::Stale => "STALE",
+            Self::Unverified => "UNVERIFIED",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SectionState {
     pub freshness: Freshness,
     pub verification: String,
     pub content_revisions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mixed_revisions: BTreeMap<String, Vec<String>>,
     pub target_revisions: BTreeMap<String, Option<String>>,
     pub coverage: BTreeMap<String, serde_json::Value>,
     pub reasons: Vec<serde_json::Value>,

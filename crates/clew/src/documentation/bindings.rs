@@ -23,6 +23,16 @@ pub struct FragmentBinding {
     pub content: Value,
     pub dependencies: BTreeMap<String, String>,
     pub sources: BTreeMap<String, Value>,
+    /// Each retained claim owns its evidence version, even when a sibling is updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<FragmentEvidence>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FragmentEvidence {
+    pub revisions: BTreeMap<String, String>,
+    pub observations: BTreeMap<String, Observation>,
+    pub sources: BTreeMap<String, Source>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,6 +55,8 @@ pub struct Bindings {
     pub section_states: BTreeMap<String, SectionState>,
     #[serde(default)]
     pub target_revisions: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub update_failures: BTreeMap<String, Value>,
 }
 
 pub fn expand_dependencies(
@@ -137,10 +149,35 @@ pub fn fragment(
     }
     let ids = expand_dependencies(&initial, checked)?;
     let sources = checked.sources();
-    Ok(FragmentBinding{subject:subject.into(),content_digest:digest(value)?,content:serde_json::to_value(value).map_err(io_error)?,dependencies:ids.into_iter().map(|id|{let d=checked.dependencies[&id].digest.clone();(id,d)}).collect(),sources:source_ids.iter().map(|id|{
-        let source=sources.get(id).ok_or_else(||invalid("fragment source is unavailable"))?;
-        Ok((id.clone(),json!({"revision":source.revision,"file":source.file,"startLine":source.start_line,"endLine":source.end_line,"textDigest":source.text_digest,"url":source.url})))
-    }).collect::<Result<_,ClewError>>()?})
+    let observations: BTreeMap<_, _> = ids
+        .iter()
+        .map(|id| (id.clone(), checked.dependencies[id].clone()))
+        .collect();
+    let retained: BTreeMap<_, _> = source_ids
+        .iter()
+        .map(|id| {
+            let source = sources
+                .get(id)
+                .ok_or_else(|| invalid("fragment source is unavailable"))?;
+            Ok((id.clone(), source.clone()))
+        })
+        .collect::<Result<_, ClewError>>()?;
+    let services: BTreeSet<_> = observations
+        .values()
+        .map(|o| o.service.as_str())
+        .chain(retained.values().map(|s| s.service.as_str()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok(FragmentBinding {
+        subject: subject.into(), content_digest: digest(value)?,
+        content: serde_json::to_value(value).map_err(io_error)?,
+        dependencies: observations.iter().map(|(id, o)| (id.clone(), o.digest.clone())).collect(),
+        sources: retained.iter().map(|(id, source)| (id.clone(), json!({"revision":source.revision,"file":source.file,"startLine":source.start_line,"endLine":source.end_line,"textDigest":source.text_digest,"url":source.url}))).collect(),
+        evidence: Some(FragmentEvidence {
+            revisions: services.iter().filter_map(|id| checked.services.get(*id).map(|e| ((*id).to_owned(),e.revision.clone()))).collect(),
+            observations, sources: retained,
+        }),
+    })
 }
 
 pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewError> {
@@ -191,12 +228,28 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
         if !fragment.content.is_null() && digest(&fragment.content)? != fragment.content_digest {
             return Err(invalid("retained fragment content digest is invalid"));
         }
-        if fragment.dependencies.iter().any(|(id, value)| {
-            binding
-                .observations
-                .get(id)
-                .is_none_or(|o| &o.digest != value)
-        }) {
+        if let Some(evidence) = &fragment.evidence {
+            for (id, observation) in &evidence.observations {
+                if id != &observation.id || digest(&observation.normalized)? != observation.digest {
+                    return Err(invalid("retained section observation digest is invalid"));
+                }
+            }
+            for source in evidence.sources.values() {
+                if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
+                    return Err(invalid("retained section source digest is invalid"));
+                }
+            }
+        }
+        let observations = fragment
+            .evidence
+            .as_ref()
+            .map(|e| &e.observations)
+            .unwrap_or(&binding.observations);
+        if fragment
+            .dependencies
+            .iter()
+            .any(|(id, value)| observations.get(id).is_none_or(|o| &o.digest != value))
+        {
             return Err(invalid(
                 "portable baseline is missing a normalized dependency observation",
             ));
@@ -210,6 +263,7 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             | "codeclew-documentation-html/1.3"
             | "codeclew-documentation-html/1.4"
             | "codeclew-documentation-html/1.5"
+            | "codeclew-documentation-html/1.6"
     ) {
         if index_text.contains("href=\"services/") || index_text.contains("href=\"scenarios/") {
             return Err(ClewError::new(
@@ -440,6 +494,7 @@ mod tests {
         Bindings {
             section_states: BTreeMap::new(),
             target_revisions: BTreeMap::new(),
+            update_failures: BTreeMap::new(),
             schema: "codeclew-documentation-bindings/1.0".into(),
             input_digest: "input".into(),
             renderer: RENDERER.into(),

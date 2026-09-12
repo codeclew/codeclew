@@ -43,13 +43,27 @@ pub fn update_states(binding: &mut Bindings, checked: &Check) {
         let subject = key.split('/').next().unwrap_or(&key);
         let prefix = format!("{key}/");
         let mut services = BTreeSet::new();
+        let mut content_versions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         if let Some(id) = subject.strip_prefix("service:") {
             services.insert(id.to_owned());
         }
         for (id, fragment) in &binding.fragments {
             if id.starts_with(&prefix) {
+                if let Some(evidence) = &fragment.evidence {
+                    for (id, revision) in &evidence.revisions {
+                        content_versions
+                            .entry(id.clone())
+                            .or_default()
+                            .insert(revision.clone());
+                    }
+                }
+                let observations = fragment
+                    .evidence
+                    .as_ref()
+                    .map(|e| &e.observations)
+                    .unwrap_or(&binding.observations);
                 for dep in fragment.dependencies.keys() {
-                    if let Some(observation) = binding.observations.get(dep) {
+                    if let Some(observation) = observations.get(dep) {
                         if !observation.service.is_empty() {
                             services.insert(observation.service.clone());
                         }
@@ -133,7 +147,21 @@ pub fn update_states(binding: &mut Bindings, checked: &Check) {
                     .unwrap_or_else(|| "UNASSESSED".into()),
                 content_revisions: services
                     .iter()
-                    .filter_map(|id| binding.revisions.get(id).map(|r| (id.clone(), r.clone())))
+                    .filter_map(|id| match content_versions.get(id) {
+                        Some(values) if values.len() == 1 => {
+                            Some((id.clone(), values.first().unwrap().clone()))
+                        }
+                        Some(_) => None,
+                        None => previous
+                            .and_then(|s| s.content_revisions.get(id))
+                            .or_else(|| binding.revisions.get(id))
+                            .map(|r| (id.clone(), r.clone())),
+                    })
+                    .collect(),
+                mixed_revisions: content_versions
+                    .iter()
+                    .filter(|(_, values)| values.len() > 1)
+                    .map(|(id, values)| (id.clone(), values.iter().cloned().collect()))
                     .collect(),
                 target_revisions: services
                     .iter()
@@ -204,7 +232,7 @@ pub fn refresh(repo: &Repository) -> Result<Value, ClewError> {
             Freshness::Unverified => "UNVERIFIED",
         };
         let title = data["title"].as_str().unwrap_or(id);
-        let body = render::markdown(title, &binding.narratives[subject]);
+        let body = render::markdown(title, &binding.narratives[subject], &binding.section_states);
         let status_text = format!(
             "Source freshness: {state_label}. Meaning review: {}.\n\nContent revisions: {}\n\nTarget revisions: {}\n\n",
             state.verification,

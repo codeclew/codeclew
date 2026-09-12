@@ -41,7 +41,7 @@ pub enum Command {
         command: InteractionCommand,
     },
     /// Rebuild current source evidence and report affected document fragments.
-    Check(ListArgs),
+    Check(CheckArgs),
     /// Publish current freshness while retaining previously accepted explanations.
     Refresh {
         #[arg(long)]
@@ -62,6 +62,14 @@ pub enum Command {
         #[arg(long)]
         require_complete: bool,
     },
+}
+#[derive(Debug, Args)]
+pub struct CheckArgs {
+    #[command(flatten)]
+    pub page: ListArgs,
+    /// Check selected services only; all others remain explicitly unverified.
+    #[arg(long = "service")]
+    pub services: Vec<String>,
 }
 #[derive(Debug, Args)]
 pub struct RootArgs {
@@ -251,9 +259,10 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 )
             }
         },
-        Command::Check(args) => {
+        Command::Check(request) => {
+            let args = request.page;
             let repo = Repository::open(&args.root)?;
-            let checked = check::run(&repo)?;
+            let checked = check::run_selected(&repo, &request.services.into_iter().collect())?;
             checked.save(&repo)?;
             let mut value = checked.summary();
             value["freshness"] = super::bindings::freshness(
@@ -296,11 +305,25 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             input,
             require_complete,
         } => {
-            let narratives = input
-                .iter()
-                .map(|p| store::read(p, store::MAX_RECORD))
-                .collect::<Result<Vec<Narrative>, _>>()?;
-            super::render::publish(&Repository::open(&root)?, narratives, require_complete)
+            let mut narratives = Vec::new();
+            let mut failures = BTreeMap::new();
+            for (index, path) in input.iter().enumerate() {
+                match store::read::<Narrative>(path, store::MAX_RECORD) {
+                    Ok(narrative) => narratives.push(narrative),
+                    Err(error) => {
+                        failures.insert(
+                            format!("input-{index}"),
+                            json!({"reason":error.code,"nextAction":error.message}),
+                        );
+                    }
+                }
+            }
+            super::render::publish_with_failures(
+                &Repository::open(&root)?,
+                narratives,
+                require_complete,
+                failures,
+            )
         }
     }
 }
@@ -659,6 +682,15 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
     let mut dependencies = BTreeSet::new();
     let mut source_ids = BTreeSet::new();
     let mut changed_files = BTreeSet::new();
+    let selected_fragment = args.fragment.as_ref().and_then(|id| old.fragments.get(id));
+    let before_observations = selected_fragment
+        .and_then(|f| f.evidence.as_ref())
+        .map(|e| &e.observations)
+        .unwrap_or(&old.observations);
+    let before_sources = selected_fragment
+        .and_then(|f| f.evidence.as_ref())
+        .map(|e| &e.sources)
+        .unwrap_or(&old.retained_sources);
     let affected = report["affected"].as_array().cloned().unwrap_or_default();
     if args
         .fragment
@@ -678,7 +710,7 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
         items.push(json!({"kind":"AFFECTED_CLAIM","id":id,"subject":fragment.subject,"oldClaim":fragment.content,"oldClaimDigest":fragment.content_digest,"reasons":change["reasons"],"affectedViewId":id,"authority":"RETAINED_CLAIM_REQUIRES_REVIEW","oldClaimAvailable":!fragment.content.is_null()}));
     }
     for id in dependencies {
-        let before = old.observations.get(&id);
+        let before = before_observations.get(&id);
         let after = checked.dependencies.get(&id);
         if before.map(|o| &o.digest) == after.map(|o| &o.digest) {
             continue;
@@ -705,13 +737,13 @@ fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
         items.push(json!({"kind":"CHANGED_FACT","id":id,"before":before,"after":after,"beforeAuthority":"RETAINED_BASELINE","afterAuthority":"CURRENT_SOURCE_CHECK"}));
     }
     let current = checked.sources();
-    for source in old.retained_sources.values().chain(current.values()) {
+    for source in before_sources.values().chain(current.values()) {
         if changed_files.contains(&(source.service.clone(), source.file.clone())) {
             source_ids.insert(source.id.clone());
         }
     }
     for id in source_ids {
-        let before = old.retained_sources.get(&id);
+        let before = before_sources.get(&id);
         let after = current.get(&id);
         items.push(json!({"kind":"SOURCE_CHANGE","id":id,"before":before,"after":after,"beforeAvailable":before.is_some(),"afterAvailable":after.is_some(),"drill":after.map(|s|json!({"command":"docs context","service":s.service,"source":s.id}))}));
     }
