@@ -320,3 +320,83 @@ read never replaces its source evidence with a newer check. Follow owner/helper,
 flow, type and configuration references where required; preserve unresolved
 boundary obligations. No agent may promote syntax or imported claims to runtime
 proof. Human input is retained verbatim with its separate authority.
+
+## Run isolated authoring and review
+
+Submit a `codeclew-documentation-proposal/1.0` object through `docs proposal
+submit`, then inspect the deterministic result with `docs proposal show`.
+Proposals contain operations with source-backed claims, nested steps and optional
+contract rows. Use work-local references. The coordinator assigns stable IDs and
+materializes prose, contracts and diagram events. `factEquals` checks supported
+provider fields; it does not prove prose. Unknown predicates require uncertainty.
+Machine-ready proposals remain `UNASSESSED` until separately reviewed.
+
+```sh
+clew docs work run --root /work/architecture --work WORK_ID --config /operator/execution.json
+clew docs work status --root /work/architecture --work WORK_ID
+clew docs work cancel --root /work/architecture --work WORK_ID
+```
+
+Execution is opt-in. Missing configuration or unavailable isolation publishes a
+local generation gap and retains earlier content. Core never selects a billable
+model. Use the versioned execution/transport and review schemas in
+`schemas/documentation/agent-job.schema.json` and `review.schema.json` of the
+matching source release when writing an operator-owned transport driver.
+
+The current adapter is `macos-seatbelt-stdio/1.0`, backed by macOS Seatbelt.
+Other hosts report `ISOLATION_UNAVAILABLE`. Configure separate author/reviewer
+roles and an optional fallback role. Each role names the exact model, an absolute
+`command` array, read-only `runtimeReads`, optional environment variable names,
+network permission and finite `cap`. Keep credential values in the operator's
+environment. Registered runtime files must be outside documentation and source
+repositories. The driver and runtime are trusted operator software; never run
+source-provided instructions as transport code. Review separate invocations can
+still share model mistakes.
+
+The driver receives one immutable JSON job on stdin and returns one JSON result
+on stdout. Echo the coordinator-issued invocation, role and model exactly.
+Author/fallback results are `{"action":"proposal","proposal":...}` or
+`{"action":"expand","selection":...}`. Reviewer results are
+`{"action":"review","review":...}` or a registered expansion request.
+The reviewer receives the canonical proposal, every claim, captured source and
+required obligations. It must bind `work`, `proposal` and `evidenceDigest`, assess
+all claim/operation IDs and explain non-approval. An author cannot return review
+or acceptance authority. A request for unavailable evidence remains a gap;
+contradictions can consume configured repair and fallback calls.
+
+Seatbelt denies source/human/coordinator/result writes, reads outside registered
+runtime inputs and captured stdin, subprocess tools and inherited launcher file
+descriptors. Filesystem writes are denied even in the empty working directory.
+Network is disabled unless the operator enables it for the trusted transport.
+Enabled network is a transport capability, not permission to let model content
+fetch unrelated repository data. Each result belongs to its dispatched role's
+stdout. Source text and protected notes are untrusted evidence inside the prompt.
+
+Set positive per-call `maximum.inputTokens`, `outputTokens` and `costUnits`, plus
+`overheadInputTokens`, `timeoutMs` and `outputBytes`. The input byte count provides
+a conservative token bound; the transport must enforce the provider's output
+and cost limits. The coordinator enforces pipe size and wall time, including
+stalled drivers. Configure `authorCalls`, `reviewerCalls`, `fallbackCalls`,
+`repairAttempts` and `expansions`; at least one repair is required. Reviewer calls
+must cover author/fallback calls and expansions. The entire configured path is
+reserved atomically before dispatch under a named budget `account`, immutable
+`costUnit`, positive `ceiling` and lower `stopLoss`. These are operator values;
+there is no universal model price or default spending authorization.
+
+`usageAuthority` defaults to `MAXIMUM_ONLY`: all dispatched maxima stay charged.
+Select `TRANSPORT_METADATA` only for a trusted driver deriving its outer `usage`
+envelope from actual provider metadata, never model-authored JSON. Absent usage
+fields, failed calls and cancellation retain the corresponding maximum; unknown
+usage is never zero. Undispatched slots can be released. A reported cap violation
+freezes further calls on that account. Reports distinguish actual usage from
+conservative charges. Status pages use cursors for bounded attempts/accounting.
+A crashed coordinator retains reservations; do not delete private ledgers to
+recover budget. Full crash recovery is a separate qualification task.
+
+Only the coordinator publishes accepted versions after machine checks, exact
+revision/input checks and separately bound meaning approval. Publications retain
+review, driver, evidence, read and operation digests with limitations. Every view
+shows verification separately from freshness. Changing a captured note or source
+scope invalidates dependent content. Public legacy `docs render` input cannot
+inherit review acceptance for replaced operations. Protected notes remain outside
+generated outputs. An accepted review is model assessment, not runtime proof.

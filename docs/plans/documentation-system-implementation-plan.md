@@ -328,7 +328,7 @@ gap. A passing plan reviewer, mock adapter or schema checker cannot substitute f
 
 ## T04. Run separate review, bounded repair and configurable fallback
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** A routine agent and separate reviewer can complete or fail a work item automatically, with bounded repair/fallback and section-local publication behavior.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC05, AC06; [scenario cards](../product/documentation-system/scenario-cards.md): S08, S12; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T03
@@ -363,6 +363,13 @@ gap. A passing plan reviewer, mock adapter or schema checker cannot substitute f
   - Only the coordinator assigns acceptance; separate role execution is not advertised as uncorrelated model errors.
   - Every attempt, limitation and result is traceable; human notes and application source remain outside agent write permissions.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+**Observed verification (2026-09-12):** All twelve T04 CLI cases passed on macOS
+with the real Seatbelt adapter and deterministic fixture drivers. A combined
+T00-T04 run passed 23/24 cases and exposed a cancellation/write-lock race; after
+the isolated cancellation-signal fix, the failed case passed. The twelve T00-T03
+cases remain passing in that combined run. No paid model or real CI qualification
+is claimed. Unsupported hosts produce an explicit isolation gap.
 
 ## T05. Expose explicit documentation modules using existing producers
 

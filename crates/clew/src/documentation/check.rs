@@ -106,13 +106,21 @@ pub fn run_selected(
     if input_digest != repository.input_digest()? {
         return Err(invalid("documentation input changed during checking"));
     }
-    assemble(
+    let mut checked = assemble(
         input_digest,
         evidence,
         unresolved,
         &interactions,
         &scenarios,
-    )
+    )?;
+    if let Some((_, baseline)) = super::bindings::baseline(repository)? {
+        super::review::scopes(
+            repository,
+            &mut checked,
+            baseline.accepted_versions.into_values(),
+        )?;
+    }
+    Ok(checked)
 }
 
 pub fn assemble(
@@ -607,6 +615,13 @@ pub fn compose(
 }
 
 impl Check {
+    pub(super) fn refresh_digest(&mut self) -> Result<(), ClewError> {
+        self.context_digest = digest(
+            &json!({"inputDigest":self.input_digest,"extractor":EXTRACTOR,"dependencies":self.dependencies.iter().map(|(id,d)|(id,&d.digest)).collect::<BTreeMap<_,_>>(),"coverage":self.services.iter().map(|(id,e)|(id,json!([e.coverage,e.boundaries]))).collect::<BTreeMap<_,_>>(),"unresolved":self.unresolved}),
+        )?;
+        Ok(())
+    }
+
     pub fn sources(&self) -> BTreeMap<String, Source> {
         self.services
             .values()

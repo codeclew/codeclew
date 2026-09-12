@@ -174,7 +174,18 @@ pub fn current(repo: &Repository, work: &Work) -> Result<(), ClewError> {
         BTreeSet::new()
     };
     let now = check::run_selected(repo, &selected)?;
-    if now.context_digest != work.checked.context_digest
+    if now
+        .services
+        .iter()
+        .map(|(id, e)| (id, &e.revision))
+        .collect::<BTreeMap<_, _>>()
+        != work
+            .checked
+            .services
+            .iter()
+            .map(|(id, e)| (id, &e.revision))
+            .collect::<BTreeMap<_, _>>()
+        || now.context_digest != work.checked.context_digest
         || now.input_digest != work.checked.input_digest
         || work::capture_inputs(repo, &work.request)? != work.external_inputs
     {

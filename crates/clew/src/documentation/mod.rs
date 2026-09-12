@@ -1,4 +1,6 @@
 //! Durable service documentation, independent from mutation missions and sessions.
+mod agent_adapter;
+pub mod agent_jobs;
 pub mod analysis;
 pub mod bindings;
 pub mod check;
@@ -8,6 +10,7 @@ mod kotlin;
 pub mod model;
 pub mod proposals;
 pub mod render;
+pub mod review;
 pub mod status;
 pub mod store;
 mod syntax;

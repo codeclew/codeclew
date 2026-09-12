@@ -57,6 +57,8 @@ pub struct Bindings {
     pub target_revisions: BTreeMap<String, Option<String>>,
     #[serde(default)]
     pub update_failures: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub accepted_versions: BTreeMap<String, super::review::AcceptedVersion>,
 }
 
 pub fn expand_dependencies(
@@ -495,6 +497,7 @@ mod tests {
             section_states: BTreeMap::new(),
             target_revisions: BTreeMap::new(),
             update_failures: BTreeMap::new(),
+            accepted_versions: BTreeMap::new(),
             schema: "codeclew-documentation-bindings/1.0".into(),
             input_digest: "input".into(),
             renderer: RENDERER.into(),

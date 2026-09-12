@@ -213,7 +213,8 @@ impl Repository {
         Ok(WriteLock(path))
     }
 
-    /// Caller holds the repository lock. Tempfile is always on the same filesystem.
+    /// Serialize dependent read-modify-write operations with the repository lock.
+    /// Independent idempotent signals need no global lock. Tempfiles stay on the same filesystem.
     pub fn atomic(&self, relative_path: &str, data: &[u8]) -> Result<(), ClewError> {
         let path = self.path(relative_path)?;
         let parent = path

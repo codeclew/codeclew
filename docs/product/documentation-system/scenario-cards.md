@@ -380,6 +380,18 @@ proposal acceptance and isolated reviewer authority remain separate tasks.
 
 Requires a constrained proposal API, captured reads, review-bound acceptance and portable agent roles. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
 
+### T04 implementation evidence
+
+Isolated author/reviewer runs now publish coordinator-accepted content or a local
+generation gap. The twelve `docsys_t04_*` CLI tests exercise separate review,
+recorded expansion, bounded repair/fallback, exact review binding, local failure,
+actual OS access denials, cancellation and conservative accounting. Accepted
+content retains revision/read/review digests; protected note changes invalidate
+it. The current adapter is macOS Seatbelt with trusted operator transport code.
+Missing configuration/platform support stays explicit; real model results and
+CI event/history behavior are not established by fake adapters. Existing graph
+edges and extension-point regression obligations remain unchanged.
+
 ## S09 — Save a process or entity data-flow view
 
 - **Status:** growth
@@ -535,3 +547,15 @@ As a CI operator, I process accepted changes from multiple teams so that the cen
 ### Planning notes
 
 Requires selective evidence interchange, event ordering, status-only publication, history manifests and integration recipes. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+
+### T04 implementation evidence
+
+Isolated author/reviewer runs now publish coordinator-accepted content or a local
+generation gap. The twelve `docsys_t04_*` CLI tests exercise separate review,
+recorded expansion, bounded repair/fallback, exact review binding, local failure,
+actual OS access denials, cancellation and conservative accounting. Accepted
+content retains revision/read/review digests; protected note changes invalidate
+it. The current adapter is macOS Seatbelt with trusted operator transport code.
+Missing configuration/platform support stays explicit; real model results and
+CI event/history behavior are not established by fake adapters. Existing graph
+edges and extension-point regression obligations remain unchanged.

@@ -900,6 +900,7 @@ pub fn make_bindings(
         section_states: BTreeMap::new(),
         target_revisions: BTreeMap::new(),
         update_failures: BTreeMap::new(),
+        accepted_versions: BTreeMap::new(),
     };
     super::status::update_states(&mut binding, checked);
     Ok(binding)
@@ -1146,7 +1147,24 @@ pub fn publish_with_failures(
     repo: &Repository,
     incoming: Vec<Narrative>,
     require_complete: bool,
+    failures: BTreeMap<String, Value>,
+) -> Result<Value, ClewError> {
+    publish_internal(repo, incoming, require_complete, failures, BTreeMap::new())
+}
+
+pub(super) fn publish_reviewed(
+    repo: &Repository,
+    narrative: Narrative,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
+) -> Result<Value, ClewError> {
+    publish_internal(repo, vec![narrative], false, BTreeMap::new(), versions)
+}
+fn publish_internal(
+    repo: &Repository,
+    mut incoming: Vec<Narrative>,
+    require_complete: bool,
     mut failures: BTreeMap<String, Value>,
+    versions: BTreeMap<String, super::review::AcceptedVersion>,
 ) -> Result<Value, ClewError> {
     let previous = bindings::baseline(repo)?;
     if let Some((id, binding)) = &previous {
@@ -1158,7 +1176,32 @@ pub fn publish_with_failures(
     } else {
         None
     };
-    let checked = check::run(repo)?;
+    let mut checked = check::run(repo)?;
+    super::review::scopes(repo, &mut checked, versions.values().cloned())?;
+    for version in versions.values() {
+        if version.source_revisions.iter().any(|(id, revision)| {
+            checked
+                .services
+                .get(id)
+                .is_none_or(|e| &e.revision != revision)
+        }) || digest(&super::work::capture_inputs(
+            repo,
+            &version.external_request,
+        )?)? != version.external_fingerprint
+        {
+            return Err(invalid("reviewed work inputs changed before publication"));
+        }
+    }
+    for narrative in &mut incoming {
+        if narrative
+            .operations
+            .iter()
+            .all(|o| versions.contains_key(&format!("{}/{}", narrative.subject, o.id)))
+            && !versions.is_empty()
+        {
+            narrative.context_digest = checked.context_digest.clone();
+        }
+    }
     checked.save(repo)?;
     let services = repo.services()?;
     let scenarios = repo.scenarios()?;
@@ -1398,7 +1441,18 @@ pub fn publish_with_failures(
         }
     }
     binding.narratives = narratives.clone();
+    if let Some((_, old)) = &previous {
+        for (key, version) in &old.accepted_versions {
+            if !accepted.contains(key) {
+                binding
+                    .accepted_versions
+                    .insert(key.clone(), version.clone());
+            }
+        }
+    }
+    super::review::attach(&mut binding, &checked, versions)?;
     super::status::update_states(&mut binding, &checked);
+    super::review::verification(&mut binding);
     // Whole-page freshness is an aggregate; each operation keeps its exact content vector.
     for subject in narratives.keys() {
         let children: Vec<_> = binding

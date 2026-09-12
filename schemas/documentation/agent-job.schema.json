@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/agent-job.schema.json",
+  "title": "Isolated documentation execution and transport",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/execution"
+    },
+    {
+      "$ref": "#/$defs/job"
+    },
+    {
+      "$ref": "#/$defs/reply"
+    }
+  ],
+  "$defs": {
+    "amount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "outputTokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "costUnits": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "costUnits"
+      ]
+    },
+    "cap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maximum": {
+          "$ref": "#/$defs/amount"
+        },
+        "overheadInputTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        },
+        "outputBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        }
+      },
+      "required": [
+        "maximum",
+        "overheadInputTokens",
+        "timeoutMs",
+        "outputBytes"
+      ]
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "const": "macos-seatbelt-stdio/1.0"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "usageAuthority": {
+          "enum": [
+            "MAXIMUM_ONLY",
+            "TRANSPORT_METADATA"
+          ],
+          "default": "MAXIMUM_ONLY"
+        },
+        "command": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "runtimeReads": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "environment": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "network": {
+          "type": "boolean"
+        },
+        "cap": {
+          "$ref": "#/$defs/cap"
+        }
+      },
+      "required": [
+        "adapter",
+        "model",
+        "command",
+        "runtimeReads",
+        "cap"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-execution/1.0"
+        },
+        "author": {
+          "$ref": "#/$defs/role"
+        },
+        "reviewer": {
+          "$ref": "#/$defs/role"
+        },
+        "fallback": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/role"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "authorCalls": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 32
+        },
+        "reviewerCalls": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 64
+        },
+        "fallbackCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "repairAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "expansions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "budget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "type": "string",
+              "minLength": 1
+            },
+            "costUnit": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "ceiling": {
+              "$ref": "#/$defs/amount"
+            },
+            "stopLoss": {
+              "$ref": "#/$defs/amount"
+            }
+          },
+          "required": [
+            "account",
+            "costUnit",
+            "ceiling",
+            "stopLoss"
+          ]
+        }
+      },
+      "required": [
+        "schema",
+        "author",
+        "reviewer",
+        "authorCalls",
+        "reviewerCalls",
+        "fallbackCalls",
+        "repairAttempts",
+        "expansions",
+        "budget"
+      ]
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-agent-job/1.0"
+        },
+        "invocation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "author",
+            "reviewer",
+            "fallback"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "work": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cap": {
+          "$ref": "#/$defs/cap"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema",
+        "invocation",
+        "role",
+        "model",
+        "work",
+        "cap",
+        "payload"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "costUnits": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": []
+    },
+    "reply": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "codeclew-documentation-agent-result/1.0"
+        },
+        "invocation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "enum": [
+            "author",
+            "reviewer",
+            "fallback"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "usage": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema",
+        "invocation",
+        "role",
+        "model",
+        "result"
+      ]
+    }
+  }
+}

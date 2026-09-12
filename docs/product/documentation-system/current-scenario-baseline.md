@@ -82,3 +82,15 @@ snapshot as if growth behavior existed at the base revision.
   CLI cases demonstrate these boundaries; prose meaning remains UNASSESSED.
   Work preparation also supplies retained-fragment change reasons. Existing
   graph transitions remain accurate pending the T04 reviewer/acceptance path.
+
+- T04: isolated author/reviewer execution, constrained repair/fallback and atomic
+  whole-path budget reservation now publish reviewed content or a local gap.
+  The macOS Seatbelt adapter denies unregistered reads, writes, subprocesses and
+  inherited launcher descriptors. Twelve CLI cases cover acceptance, expansion,
+  replay/self-approval, injection, access denial, cancellation, malformed/time-
+  limited output, accounting contention, missing usage and exhaustion. The
+  cancellation regression exposed a shared-lock race; cancellation now uses an
+  independent atomic signal. T00-T03 cases remain regression evidence. Separate
+  reviewer calls do not imply independent model error distributions. No real
+  paid model or GitLab automation qualification is claimed. Existing S08/S12
+  graph transitions remain accurate; event ordering/history awaits later tasks.

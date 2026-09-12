@@ -27,6 +27,30 @@ pub enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    Run {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    Status {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
+    Cancel {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        work: String,
+    },
     Read(ReadArgs),
     Expand(ReadArgs),
 }
@@ -161,6 +185,23 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             subject,
             store::read(&input, store::MAX_RECORD)?,
         ),
+        Command::Run { root, work, config } => {
+            super::agent_jobs::run(&Repository::open(&root)?, &work, config.as_deref())
+        }
+        Command::Status {
+            root,
+            work,
+            cursor,
+            limit,
+        } => super::agent_jobs::status(
+            &Repository::open(&root)?,
+            &work,
+            cursor.as_deref(),
+            limit as usize,
+        ),
+        Command::Cancel { root, work } => {
+            super::agent_jobs::cancel(&Repository::open(&root)?, &work)
+        }
         Command::Read(args) | Command::Expand(args) => read(
             &Repository::open(&args.root)?,
             &args.work,

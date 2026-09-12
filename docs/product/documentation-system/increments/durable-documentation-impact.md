@@ -99,3 +99,10 @@ not claimed by this planning package's structural or independent review.
   field checks and deterministic repair diagnostics are implemented. Four CLI
   cases cover unsupported/contradicted claims, required branches, forged fields,
   stale/untracked/incomplete work and legacy rendering without meaning approval.
+
+- T04 → S08/S12, AC05/AC06/AC20: isolated stdio roles, coordinator acceptance,
+  immutable review bindings, explicit limitations and conservative finite
+  accounting are implemented. Twelve public CLI cases exercise real Seatbelt
+  access denials and deterministic fake models. Captured note changes invalidate
+  retained accepted content; legacy replacements lose review acceptance. The
+  adapter is currently macOS-only; actual model/CI qualification remains T16.
