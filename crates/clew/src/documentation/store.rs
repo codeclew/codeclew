@@ -403,6 +403,7 @@ impl Repository {
 }
 
 pub fn validate_service(s: &Service) -> Result<(), ClewError> {
+    super::modules::validate(s)?;
     if s.schema != "codeclew-documentation-service/1.0"
         || !valid_id(&s.id)
         || !valid_id(&s.repository_id)
@@ -566,6 +567,7 @@ mod tests {
             language: "java".into(),
             profile: "java-17plus-maven-read-only".into(),
             source: None,
+            modules: None,
             compilation: ":/main".into(),
             target_ref: "main".into(),
             source_link_template: None,

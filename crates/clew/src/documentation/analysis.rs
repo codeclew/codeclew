@@ -128,13 +128,15 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
     let repo = bound_repository(repository, service)?;
     if service.profile == "source-syntax" {
         let mut source = super::syntax::capture(service, &repo)?;
-        if let Some(semantic) = service.source.as_ref().and_then(|s| s.semantic.as_ref()) {
+        if let Some(semantic) = super::modules::semantic(service) {
             let mut provider = service.clone();
             provider.source = None;
+            provider.modules = None;
             provider.profile = semantic.profile.clone();
             provider.compilation = semantic.compilation.clone();
             super::syntax::enrich(&mut source, capture(repository, &provider))?;
         }
+        super::modules::attach(service, &mut source)?;
         return Ok(source);
     }
     let runtime = RuntimeAuthority::from_environment()?
@@ -196,7 +198,8 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
     let result = capture_session(&session, service, &service_digest);
     // Only use supported lifecycle operations; documentation records have no session dependency.
     let cleanup = session.abort().and_then(|_| session.gc(false)).map(|_| ());
-    let evidence = result?;
+    let mut evidence = result?;
+    super::modules::attach(service, &mut evidence)?;
     cleanup?;
     if git(&repo, &["rev-parse", "--verify", "HEAD^{commit}"])? != revision {
         return Err(ClewError::new(

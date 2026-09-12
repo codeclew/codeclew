@@ -76,7 +76,10 @@ pub fn expand_dependencies(
         checked
             .dependencies
             .values()
-            .filter(|d| d.kind == "SOURCE_SCOPE" && services.contains(d.service.as_str()))
+            .filter(|d| {
+                matches!(d.kind.as_str(), "SOURCE_SCOPE" | "MODULE_SCOPE")
+                    && services.contains(d.service.as_str())
+            })
             .map(|d| d.id.clone()),
     );
     let mut frontier = output.clone();
@@ -569,6 +572,56 @@ mod tests {
         assert_eq!(freshness(Some(&old), &checked)["status"], "UNRESOLVED");
         assert_eq!(freshness(None, &checked)["status"], "UNRESOLVED");
     }
+    #[test]
+    fn module_rule_change_invalidates_bound_content_without_source_changes() {
+        let mut checked = current();
+        let normalized = json!({"implementationDigest":"old-rules","availability":"AVAILABLE"});
+        checked.dependencies.insert(
+            "module-scope".into(),
+            Observation {
+                id: "module-scope".into(),
+                kind: "MODULE_SCOPE".into(),
+                service: "inventory".into(),
+                symbol: "module-scope".into(),
+                digest: digest(&normalized).unwrap(),
+                normalized,
+                source_ids: vec![],
+            },
+        );
+        let baseline = old(&checked);
+        assert!(
+            baseline.fragments["contract-row"]
+                .dependencies
+                .contains_key("module-scope")
+        );
+        let sources = checked.sources();
+        let revisions = checked
+            .services
+            .iter()
+            .map(|(s, e)| (s.clone(), e.revision.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let scope = checked.dependencies.get_mut("module-scope").unwrap();
+        scope.normalized["implementationDigest"] = json!("new-rules");
+        scope.digest = digest(&scope.normalized).unwrap();
+        let report = freshness(Some(&baseline), &checked);
+        assert!(
+            report["affected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["fragment"] == "contract-row")
+        );
+        assert_eq!(sources, checked.sources());
+        assert_eq!(
+            revisions,
+            checked
+                .services
+                .iter()
+                .map(|(s, e)| (s.clone(), e.revision.clone()))
+                .collect()
+        );
+    }
+
     #[test]
     fn unsupported_evidence_version_requires_review() {
         let checked = current();

@@ -136,7 +136,43 @@ render leaves the prior pointer and manual content intact.
 
 ## Optional compiler enrichment
 
-Add this field inside `source` when semantic evidence is wanted:
+Inspect producer capabilities without running a build:
+
+```sh
+clew docs modules list --root /work/architecture --service orders
+clew docs modules show --root /work/architecture --id kotlin-k2
+```
+
+Results distinguish registered producers from project admission, expose input/
+output schemas and implementation digests, and report project/analyzer versions.
+Kotlin workers require JDK 21 independently of the project's JVM target; configure
+`CODECLEW_WORKER_JAVA_HOME` separately from the project's `JAVA_HOME`. A Java 17
+project target does not require the analyzer to run on Java 17. Project plugins,
+options and compiler compatibility still pass the existing admission checks.
+
+The versioned `modules` field belongs at the service record's top level:
+
+```json
+{
+  "modules": {
+    "schema": "codeclew-documentation-modules/1.0",
+    "semantic": {
+      "module": "javac",
+      "enabled": true,
+      "profile": "java-17plus-maven-read-only",
+      "compilation": ":/main"
+    }
+  }
+}
+```
+
+Use `kotlin-k2` with an existing Kotlin analysis profile for Kotlin. Omit `semantic`
+or set `{"module":"javac","enabled":false}` to keep only source evidence.
+The source profile remains enabled. Module configuration cannot contain commands
+or select arbitrary adapters from repository files. Wrong-language selections,
+unknown fields and simultaneous explicit/legacy settings are rejected.
+
+Legacy `source.semantic` remains supported when `modules` is absent:
 
 ```json
 {"semantic":{"profile":"java-17plus-maven-read-only","compilation":":/main"}}
@@ -171,3 +207,10 @@ from compact output must not be reported as measured model-token or cost savings
 
 The subsequent [implementation qualification and paired projection study](../product/validation/source-documentation-qualification.md)
 records executed availability checks and the limited observed compact-token effect.
+
+Module implementation/rule digests, selection and availability participate in the
+conservative service scope. Provider loss preserves source readability and marks
+relevant dependent evidence changed; rule changes can require review without a
+source commit. A module name never promotes syntax or declared facts to runtime
+proof. The shared Spring module currently consumes validated JVM annotation facts;
+source annotation derivation is introduced separately.

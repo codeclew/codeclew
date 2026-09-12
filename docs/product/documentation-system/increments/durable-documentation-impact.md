@@ -106,3 +106,9 @@ not claimed by this planning package's structural or independent review.
   access denials and deterministic fake models. Captured note changes invalidate
   retained accepted content; legacy replacements lose review acceptance. The
   adapter is currently macOS-only; actual model/CI qualification remains T16.
+
+- T05 → S01/S11, AC07/AC15: module discovery and explicit optional producer
+  selection reuse the existing registry and compiler lifecycle. New settings
+  preserve source-first readability and conservative module influence. Three
+  new CLI tests and actual Kotlin 1.9/javac recovery checks pass; adapter registry,
+  Python syntax, Kafka and accepted-review paths remain regression evidence.

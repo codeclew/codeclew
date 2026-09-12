@@ -14,6 +14,11 @@ use std::{
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect built-in evidence capabilities and explicit service selection.
+    Modules {
+        #[command(subcommand)]
+        command: super::modules::Command,
+    },
     /// Initialize a separate, user-owned documentation repository.
     Init {
         #[arg(long)]
@@ -209,6 +214,7 @@ fn inspect<T: serde::Serialize>(
 
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
+        Command::Modules { command } => super::modules::run(command),
         Command::Work { command } => super::work::run(command),
         Command::Proposal { command } => super::proposals::run(command),
         Command::Refresh {

@@ -34,3 +34,5 @@ pub(crate) fn digest(value: &impl Serialize) -> Result<String, ClewError> {
 pub(crate) fn bytes(value: &impl Serialize) -> Result<Vec<u8>, ClewError> {
     crate::canonical::bytes(value).map_err(io_error)
 }
+
+pub mod modules;

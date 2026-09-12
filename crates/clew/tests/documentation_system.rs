@@ -1257,3 +1257,142 @@ fn docsys_t04_competing_reservations_cannot_overdraw_one_account() {
         40
     );
 }
+
+#[test]
+fn docsys_t05_lists_real_producer_capabilities_without_build_tools() {
+    let f = Fixture::new();
+    f.service("orders");
+    let listed = f.ok(&["docs", "modules", "list", "--service", "orders"]);
+    let rows = listed["records"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    let source = rows.iter().find(|r| r["id"] == "source-syntax").unwrap();
+    assert_eq!(source["configured"], true);
+    assert_eq!(source["authority"], "SYNTAX_ONLY");
+    let javac = f.ok(&[
+        "docs",
+        "modules",
+        "show",
+        "--id",
+        "javac",
+        "--service",
+        "orders",
+    ]);
+    assert_eq!(javac["record"]["configured"], false);
+    assert_eq!(javac["record"]["producer"]["id"], "java17");
+    assert_eq!(javac["record"]["projectJavaMinimum"], 17);
+    let kotlin = f.ok(&[
+        "docs",
+        "modules",
+        "show",
+        "--id",
+        "kotlin-k2",
+        "--service",
+        "orders",
+    ]);
+    assert_eq!(kotlin["record"]["applicable"], false);
+    assert_eq!(kotlin["record"]["availability"], "WORKER_NOT_INSTALLED");
+    assert_eq!(kotlin["record"]["workerJavaMajor"], 21);
+    assert!(!f.checked().services["orders"].entrypoints.is_empty());
+}
+
+#[test]
+fn docsys_t05_optional_provider_loss_and_disable_keep_source_roots_readable() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let first = f.checked();
+    let old_scope = first.services["orders"]
+        .observations
+        .values()
+        .find(|o| o.kind == "SOURCE_SCOPE")
+        .unwrap();
+    let mut record = read(f.docs.join("catalog/services/orders.json"));
+    record["modules"] = json!({"schema":"codeclew-documentation-modules/1.0","semantic":{"module":"javac","enabled":true,"profile":"java-17plus-maven-read-only","compilation":":/main"}});
+    let input = f.input("module-service.json", &record);
+    let update = |input: &std::path::Path| {
+        let current = f.ok(&["docs", "service", "list"])["inputDigest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        f.ok(&[
+            "docs",
+            "service",
+            "add",
+            "--input",
+            input.to_str().unwrap(),
+            "--expected-input-digest",
+            &current,
+        ]);
+    };
+    update(&input);
+    let missing = f.checked();
+    let missing = &missing.services["orders"];
+    assert_eq!(first.services["orders"].revision, missing.revision);
+    assert_eq!(first.services["orders"].entrypoints, missing.entrypoints);
+    let scope = missing
+        .observations
+        .values()
+        .find(|o| o.kind == "SOURCE_SCOPE")
+        .unwrap();
+    assert_ne!(old_scope.digest, scope.digest);
+    assert_eq!(
+        scope.normalized["semantic"]["provider"]["status"],
+        "UNAVAILABLE"
+    );
+    assert!(
+        scope.normalized["modules"]["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "javac")
+    );
+    record["modules"]["semantic"] = json!({"module":"javac","enabled":false});
+    let input = f.input("module-service.json", &record);
+    update(&input);
+    let disabled = f.checked();
+    let disabled = &disabled.services["orders"];
+    assert_eq!(first.services["orders"].entrypoints, disabled.entrypoints);
+    let scope = disabled
+        .observations
+        .values()
+        .find(|o| o.kind == "SOURCE_SCOPE")
+        .unwrap();
+    assert!(scope.normalized["semantic"].is_null());
+    assert!(
+        !disabled
+            .boundaries
+            .iter()
+            .any(|b| b == "SEMANTIC_PROVIDER_UNAVAILABLE_SOURCE_REMAINS_READABLE")
+    );
+}
+
+#[test]
+fn docsys_t05_rejects_wrong_language_ambiguous_and_executable_module_configuration() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let original = read(f.docs.join("catalog/services/orders.json"));
+    for module in [
+        json!({"module":"kotlin-k2","enabled":true,"profile":"kotlin-jvm-maven-analysis","compilation":":/main"}),
+        json!({"module":"javac","enabled":false,"profile":"java-17plus-maven-read-only"}),
+        json!({"module":"javac","enabled":true,"command":["/bin/sh"]}),
+    ] {
+        let mut record = original.clone();
+        record["modules"] =
+            json!({"schema":"codeclew-documentation-modules/1.0","semantic":module});
+        let input = f.input("invalid-module.json", &record);
+        assert_ne!(
+            f.run(&["docs", "service", "add", "--input", input.to_str().unwrap()])
+                .0,
+            0
+        );
+    }
+    let mut ambiguous = original;
+    ambiguous["source"]["semantic"] =
+        json!({"profile":"java-17plus-maven-read-only","compilation":":/main"});
+    ambiguous["modules"] = json!({"schema":"codeclew-documentation-modules/1.0"});
+    let input = f.input("ambiguous-module.json", &ambiguous);
+    let (code, error) = f.run(&["docs", "service", "add", "--input", input.to_str().unwrap()]);
+    assert_ne!(code, 0);
+    assert!(error.to_string().contains("legacy source.semantic"));
+}

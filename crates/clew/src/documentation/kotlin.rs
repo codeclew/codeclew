@@ -221,6 +221,7 @@ mod tests {
                 language: "kotlin".into(),
                 profile: "kotlin-jvm-maven-analysis".into(),
                 source: None,
+                modules: None,
                 compilation: ":/main".into(),
                 target_ref: "main".into(),
                 source_link_template: None,

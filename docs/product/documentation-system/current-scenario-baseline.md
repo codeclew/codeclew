@@ -94,3 +94,13 @@ snapshot as if growth behavior existed at the base revision.
   reviewer calls do not imply independent model error distributions. No real
   paid model or GitLab automation qualification is claimed. Existing S08/S12
   graph transitions remain accurate; event ordering/history awaits later tasks.
+
+- T05: `docs modules list/show` exposes existing source/javac/K2/Spring producer
+  contracts and applicability without executing a project. Versioned per-service
+  module settings enable optional enrichment; legacy settings retain behavior.
+  Three CLI cases cover no-tool capability discovery, missing/disabled compiler
+  readability, wrong-language and conflicting/executable settings. Actual
+  Kotlin 1.9.25 and Maven/javac enrichment/recovery tests pass; the former retains
+  its explicit language-upgrade boundary and Kafka observations. Module rule
+  changes invalidate bindings without requiring source changes. S01/S11 graph
+  transitions remain unchanged; normalized source Spring rules are still T06.

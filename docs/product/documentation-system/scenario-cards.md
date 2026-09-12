@@ -50,6 +50,16 @@ publication. The existing source/relocation and declared-scenario recovery check
 remain regression inputs; strict refusals use `--require-complete`.
 
 
+### T05 implementation evidence
+
+`docs modules list/show` reports built-in producer contracts, implementation
+identity, availability and project applicability. Versioned per-service settings
+select javac or K2 through existing admission and cleanup. Three public CLI tests
+cover missing tools and invalid/ambiguous selection; actual Kotlin 1.9.25 and
+Maven/javac recovery checks pass. Module/rule changes affect freshness without
+source-byte changes. Python syntax and Kafka checks remain regression evidence.
+Source annotation interpretation and further framework compatibility are T06.
+
 ## S02 — Author a source-bound operation
 
 - **Status:** current
@@ -507,6 +517,16 @@ As a CI operator, I enable compatible evidence modules per repository so that av
 ### Planning notes
 
 Built-in metadata and adapter registry exist; documentation does not expose a generic module contract. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
+
+### T05 implementation evidence
+
+`docs modules list/show` reports built-in producer contracts, implementation
+identity, availability and project applicability. Versioned per-service settings
+select javac or K2 through existing admission and cleanup. Three public CLI tests
+cover missing tools and invalid/ambiguous selection; actual Kotlin 1.9.25 and
+Maven/javac recovery checks pass. Module/rule changes affect freshness without
+source-byte changes. Python syntax and Kafka checks remain regression evidence.
+Source annotation interpretation and further framework compatibility are T06.
 
 ## S12 — Update central documentation through CI and inspect history
 

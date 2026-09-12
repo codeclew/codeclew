@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeclew.dev/schemas/documentation/module-capability.schema.json",
+  "title": "Documentation evidence module capability",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-module-capability/1.0"
+    },
+    "id": {
+      "type": "string"
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "authority": {
+      "type": "string"
+    },
+    "inputSchemas": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "outputSchemas": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "implementationDigest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "selection": {
+      "const": "OPERATOR_DOCUMENTATION_CATALOG_ONLY"
+    },
+    "execution": {
+      "const": "EXISTING_PRODUCER_ADMISSION_AND_CLEANUP"
+    },
+    "availability": {
+      "type": "string"
+    },
+    "projectCompatibility": {
+      "type": [
+        "string",
+        "object"
+      ]
+    },
+    "producer": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "producers": {
+      "type": "array"
+    },
+    "knownAnalyzers": {
+      "type": "array"
+    },
+    "projectJavaMinimum": {
+      "type": "integer"
+    },
+    "workerJavaMajor": {
+      "type": "integer"
+    },
+    "analyzer": {
+      "type": "string"
+    },
+    "applicable": {
+      "type": "boolean"
+    },
+    "configured": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "languages",
+    "authority",
+    "inputSchemas",
+    "outputSchemas",
+    "implementationDigest",
+    "selection",
+    "execution",
+    "availability"
+  ]
+}

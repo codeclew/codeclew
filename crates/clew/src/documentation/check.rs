@@ -739,6 +739,7 @@ mod tests {
                 language: "java".into(),
                 profile: "java-17plus-maven-read-only".into(),
                 source: None,
+                modules: None,
                 compilation: ":/main".into(),
                 target_ref: "main".into(),
                 source_link_template: None,

@@ -373,7 +373,7 @@ is claimed. Unsupported hosts produce an explicit isolation gap.
 
 ## T05. Expose explicit documentation modules using existing producers
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** A service can select available syntax, K2 and javac evidence modules while preserving baseline availability and producer provenance.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC07; [scenario cards](../product/documentation-system/scenario-cards.md): S01, S11; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T02
@@ -408,6 +408,15 @@ is claimed. Unsupported hosts produce an explicit isolation gap.
   - No module name confers stronger authority than its supplied validated evidence.
   - First-party producer reuse and extension interfaces are available without implementing deferred protocols.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+**Observed verification (2026-09-12):** Three T05 CLI tests pass without build
+tools. The actual Kotlin 1.9.25 compiler fixture (27.77 seconds) and admitted
+Maven/javac source-enrichment recovery (58.87 seconds) pass with JDK 21 configured
+for the worker. Adapter tests pass 37 cases with five separate qualification
+cases ignored; the two selected JVM qualification cases above were executed
+explicitly. Documentation unit regressions pass, including a new module-rule
+invalidation case, and accepted isolated publication/note invalidation still
+passes. Kotlin 1.9 analysis retains its explicit language-upgrade limitation.
 
 ## T06. Feed shared Spring rules from normalized source annotations
 

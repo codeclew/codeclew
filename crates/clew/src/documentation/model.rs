@@ -29,6 +29,8 @@ pub struct Service {
     pub compilation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<super::modules::Configuration>,
     pub target_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_link_template: Option<String>,
