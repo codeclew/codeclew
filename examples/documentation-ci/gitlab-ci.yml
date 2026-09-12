@@ -1,0 +1,45 @@
+# Install the matching Codeclew release and this trusted script outside source
+# repositories. Protected file variables point to operator-owned configuration.
+# Use a macOS runner for the currently admitted Seatbelt agent adapter.
+stages: [capture, update, publish]
+
+default:
+  tags: [documentation-macos]
+  interruptible: true
+
+capture-evidence:
+  stage: capture
+  script:
+    - 'python3 -I -S -c ''import os,pathlib; pathlib.Path("event.json").write_text(os.environ["DOCUMENTATION_EVENT_JSON"])'''
+    - 'python3 -I -S "$DOCS_CI_SCRIPT" build-job --event event.json --id "capture-${CI_PIPELINE_ID}" --kind capture --output capture-job.json'
+    - 'python3 -I -S "$DOCS_CI_SCRIPT" run-job --config "$DOCS_PRODUCER_CONFIG" --input capture-job.json --output artifacts/capture-result.json'
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths: [artifacts/, event.json]
+
+update-documentation:
+  stage: update
+  needs: [capture-evidence]
+  resource_group: documentation-coordinator
+  script:
+    - 'python3 -I -S "$DOCS_CI_SCRIPT" build-job --event event.json --id "update-${CI_PIPELINE_ID}" --kind update --capture-result artifacts/capture-result.json --output update-job.json'
+    - 'python3 -I -S "$DOCS_CI_SCRIPT" run-job --config "$DOCS_COORDINATOR_CONFIG" --input update-job.json --output artifacts/update-result.json'
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths: [artifacts/]
+
+publish-documentation:
+  stage: publish
+  needs: [update-documentation]
+  resource_group: documentation-coordinator
+  interruptible: false
+  # Protected environment owns publication credentials and its audience policy.
+  environment: documentation
+  script:
+    - 'python3 -I -S "$DOCS_CI_SCRIPT" publish --config "$DOCS_PUBLICATION_CONFIG" --input artifacts/update-result.json --output artifacts/publication-result.json'
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths: [artifacts/publication-result.json]

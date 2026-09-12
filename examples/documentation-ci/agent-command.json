@@ -1,0 +1,20 @@
+{
+  "schema": "codeclew-documentation-agent-command/1.0",
+  "roles": {
+    "author": {
+      "model": "operator-selected-routine-model",
+      "endpoint": "https://gateway.example.invalid/documentation/author",
+      "credentialEnvironment": "DOCUMENTATION_AUTHOR_CREDENTIAL"
+    },
+    "reviewer": {
+      "model": "operator-selected-reviewer-model",
+      "endpoint": "https://gateway.example.invalid/documentation/reviewer",
+      "credentialEnvironment": "DOCUMENTATION_REVIEWER_CREDENTIAL"
+    },
+    "fallback": {
+      "model": "operator-selected-fallback-model",
+      "endpoint": "https://gateway.example.invalid/documentation/fallback",
+      "credentialEnvironment": "DOCUMENTATION_FALLBACK_CREDENTIAL"
+    }
+  }
+}
