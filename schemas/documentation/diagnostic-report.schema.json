@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "producerVersion": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "architecture": {
+      "type": "string"
+    },
+    "language": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "stage": {
+      "type": "string"
+    },
+    "runtimeMode": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "codeclew-documentation-diagnostic-report/1.0"
+    },
+    "declaredDialect": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "projectJavaMinimum": {
+      "type": "integer"
+    },
+    "kotlinWorkerJava": {
+      "type": "integer"
+    },
+    "outcome": {
+      "enum": [
+        "CAPTURED",
+        "PRODUCER_FAILURE",
+        "DIAGNOSTICS_ONLY"
+      ]
+    },
+    "errorCode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "workerFailure": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceIncluded": {
+      "type": "boolean"
+    },
+    "sourceCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "observationCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "entrypointCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "retry": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "semanticOutcomes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "producerVersion",
+    "platform",
+    "architecture",
+    "language",
+    "profile",
+    "stage",
+    "runtimeMode",
+    "schema",
+    "declaredDialect",
+    "projectJavaMinimum",
+    "kotlinWorkerJava",
+    "outcome",
+    "errorCode",
+    "workerFailure",
+    "sourceIncluded",
+    "sourceCount",
+    "observationCount",
+    "entrypointCount",
+    "retry",
+    "limitations",
+    "capabilities",
+    "semanticOutcomes"
+  ]
+}

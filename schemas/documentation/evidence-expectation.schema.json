@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "codeclew-documentation-evidence-expectation/1.0"
+    },
+    "service": {
+      "type": "string"
+    },
+    "repositoryId": {
+      "type": "string"
+    },
+    "serviceDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "manifestDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "schema",
+    "service",
+    "repositoryId",
+    "serviceDigest",
+    "revision",
+    "manifestDigest",
+    "sequence"
+  ]
+}

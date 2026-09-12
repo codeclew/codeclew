@@ -14,6 +14,11 @@ use std::{
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Capture, inspect and admit portable per-service evidence.
+    Evidence {
+        #[command(subcommand)]
+        command: super::evidence_package::Command,
+    },
     /// Manage explicitly saved evidence-bound entity views.
     View {
         #[command(subcommand)]
@@ -239,6 +244,7 @@ fn inspect<T: serde::Serialize>(
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::View { command } => super::dataflow::run(command),
+        Command::Evidence { command } => super::evidence_package::run(command),
         Command::Process { command } => super::processes::run(command),
         Command::Note { command } => super::notes::run(command),
         Command::Section { command } => super::sections::run(command),

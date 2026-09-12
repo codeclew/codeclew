@@ -752,7 +752,7 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
 
 ## T12. Export and import portable per-service evidence
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** A CI worker can hand off one repository result to a central documentation job without copying private Codeclew sessions or requiring every checkout centrally.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC15; [scenario cards](../product/documentation-system/scenario-cards.md): S01, S11, S12; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T05, T07
@@ -784,6 +784,26 @@ unchanged. No compiler bridge or runtime enforcement claim was added.
   - Artifact interchange is sufficient for central work without a shared mutable index.
   - Missing or rejected service artifacts become local gaps and cannot replace a newer valid result.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+- **Observed evidence:** Five `docsys_t12_*` CLI cases passed (86.60 s) with
+  no application checkout, Git command or compiler in the receiving fixture.
+  They cover bounded inspection, import/check/render, separately reviewed authoring,
+  protected coordinator trust, missing/corrupt parts, traversal/symlinks,
+  unsupported compression/schema, incorrect identity/revision, forged stronger
+  authority, rehashed untrusted input and replay. Failed import preserves selected
+  bytes; advancing a trusted expectation exposes a missing new result as a gap.
+  Source-free support reports omit index parts; a failed Kotlin producer at a
+  known revision imports as a gap with the original reason/report provenance.
+  The 27 documentation unit tests passed (two compiler-launching fixtures excluded),
+  including split encoding of 1,500 records, oversized-record rejection and private
+  diagnostic-envelope exclusion. Optional-provider loss/disable and contract-only
+  service/process invalidation regressions passed (13.76 s and 17.82 s). Formatting,
+  schema parsing, English checks and six skill packaging checks passed. Existing
+  S01/S11/S12 graph transitions remain unchanged. Envelopes are uncompressed JSON,
+  bounded to 2 MiB/part, 4,096 parts, 131,072 records and 128 MiB/service; existing
+  work capture limits still apply. Report-only failures without a known revision
+  cannot satisfy a coordinator revision expectation. These fixtures establish
+  artifact interchange, not universal offline compiler reproduction or live CI.
 
 ## T13. Coordinate revision events and immutable history
 

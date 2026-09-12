@@ -163,3 +163,11 @@ snapshot as if growth behavior existed at the base revision.
   section regressions pass. Desktop/mobile source inspection preserves exact
   retained code and contains diagram overflow at 390 px. S09 transitions remain
   unchanged; portable evidence is still T12.
+
+- T12: portable service evidence and source-free support reports are implemented.
+  Five CLI cases pass for offline use, separate review, trusted selection,
+  corruption/authority rejection, replay and failed captures (86.60 s). The 27
+  documentation unit tests pass, including multipart bounds and private worker
+  envelope exclusion. Index/source inclusion is explicit; offline evidence is
+  current only for the configured revision. S01/S11/S12 edges are unchanged.
+  Event coordination and durable snapshot history remain T13.

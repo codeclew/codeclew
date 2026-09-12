@@ -97,7 +97,7 @@ pub(super) fn validate(service: &Service) -> Result<(), ClewError> {
     }
     Ok(())
 }
-fn catalog() -> Result<Vec<Value>, ClewError> {
+pub(super) fn catalog() -> Result<Vec<Value>, ClewError> {
     let runtime = RuntimeAuthority::from_environment()?;
     let registered = runtime
         .as_ref()

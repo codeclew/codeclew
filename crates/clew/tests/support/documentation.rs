@@ -203,12 +203,15 @@ impl Fixture {
     pub fn run(&self, args: &[&str]) -> (i32, Value) {
         let mut args = args.to_vec();
         args.extend(["--root", self.docs.to_str().unwrap()]);
+        self.run_unrooted(&args)
+    }
+    pub fn run_unrooted(&self, args: &[&str]) -> (i32, Value) {
         let out = run_managed_exact_path(
             &self.binary,
             &self.state,
             &self.runtime,
             &self.lease,
-            &args,
+            args,
             &self.tools,
         );
         let value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {

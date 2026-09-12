@@ -99,6 +99,12 @@ pub fn run_selected(
                 {
                     failure["workerFailure"] = diagnostic;
                 }
+                if let Some(report) = error.evidence.iter().find_map(|s| {
+                    s.strip_prefix("documentation-evidence-report:")
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                }) {
+                    failure["evidencePackage"] = report;
+                }
                 unresolved.insert(id.clone(), failure);
             }
         }

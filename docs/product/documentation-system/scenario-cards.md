@@ -67,6 +67,18 @@ Three targeted CLI regressions pass; final reader and shared-pipeline regression
 results are recorded in the approved implementation plan. Existing graph edges
 are unchanged.
 
+### T12 implementation evidence
+
+Per-service capture now produces a closed versioned manifest and bounded
+content-addressed parts through supported local producers. A source-free report
+is the default support artifact; application index/source inclusion is explicit.
+Five CLI cases cover offline inspection/import/rendering without a checkout or
+compiler, separate meaning review, corruption/path/authority rejection, increasing
+coordinator expectations and preserved producer failures. A trusted digest is
+configured separately from package integrity. See T12 in the implementation plan
+and the [portable workflow](../../../skills/codeclew/references/documentation-evidence.md).
+Existing S01 transitions are unchanged.
+
 ## S02 — Author a source-bound operation
 
 - **Status:** current
@@ -656,6 +668,17 @@ Contract-only mutations invalidate service and process fragment dependencies;
 a shared expansion budget bounds repeated references. Existing documentation
 unit regressions pass. See the [fixture scope](../../../fixtures/documentation-system/openapi/README.md).
 
+### T12 implementation evidence
+
+Portable packages retain producer/rule schemas and digests, source bindings,
+coverage and semantic-provider outcomes. The consumer checks rule compatibility
+without requiring its own compiler installation. A missing worker or failed
+producer remains an explicit captured outcome; importing it grants no stronger
+source/runtime authority. Source-free support reports include available module
+versions, stable reason codes and safe worker metadata; T12 unit tests establish
+private-envelope exclusion and bounded multipart encoding. Successful Kotlin 1.9
+compiler qualification remains a separate runtime check. Existing S11 edges remain.
+
 ## S12 — Update central documentation through CI and inspect history
 
 - **Status:** growth
@@ -707,3 +730,15 @@ it. The current adapter is macOS Seatbelt with trusted operator transport code.
 Missing configuration/platform support stays explicit; real model results and
 CI event/history behavior are not established by fake adapters. Existing graph
 edges and extension-point regression obligations remain unchanged.
+
+### T12 implementation evidence
+
+Central jobs can import a captured service at an exact coordinator-selected
+revision with no application checkout, Git command or compiler. Expectations bind
+origin/project, configuration, trusted manifest digest and increasing sequence;
+idempotent repeats are accepted and older/mismatched results leave retained
+selection untouched. A missing new result becomes a local gap. Captured failures
+retain their original stable code and portable report provenance. The five CLI
+cases include separate author/reviewer acceptance and denied writes to trust
+configuration. Event ingestion, retained history and CI recipes remain T13/T14;
+existing S12 transitions are unchanged.

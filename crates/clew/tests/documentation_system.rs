@@ -4,6 +4,404 @@ mod support;
 use std::fs;
 use support::{Fixture, commit, read};
 
+fn package_capture(f: &Fixture, name: &str) -> (std::path::PathBuf, serde_json::Value) {
+    let path = f.temp.path().join(name);
+    let result = f.ok(&[
+        "docs",
+        "evidence",
+        "capture",
+        "--service",
+        "orders",
+        "--output",
+        path.to_str().unwrap(),
+    ]);
+    (path, result)
+}
+fn package_service(to: &Fixture, from: &Fixture) {
+    let record = read(from.docs.join("catalog/services/orders.json"));
+    let input = to.input("service-import.json", &record);
+    let before = to.ok(&["docs", "service", "list"]);
+    to.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        before["inputDigest"].as_str().unwrap(),
+    ]);
+}
+fn package_expect(_f: &Fixture, capture: &serde_json::Value, sequence: u64) -> serde_json::Value {
+    serde_json::json!({"schema":"codeclew-documentation-evidence-expectation/1.0","service":"orders","repositoryId":"orders","serviceDigest":capture["serviceDigest"],"revision":capture["revision"],"manifestDigest":capture["manifestDigest"],"sequence":sequence})
+}
+fn package_set_expected(f: &Fixture, expectation: &serde_json::Value) -> (i32, serde_json::Value) {
+    let input = f.input("expectation.json", expectation);
+    let current = f.ok(&["docs", "service", "list"]);
+    f.run(&[
+        "docs",
+        "evidence",
+        "expect",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        current["inputDigest"].as_str().unwrap(),
+    ])
+}
+fn package_import(f: &Fixture, path: &std::path::Path) -> (i32, serde_json::Value) {
+    f.run(&[
+        "docs",
+        "evidence",
+        "import",
+        "--input",
+        path.to_str().unwrap(),
+    ])
+}
+fn package_copy(from: &std::path::Path, to: &std::path::Path) {
+    fs::create_dir(to).unwrap();
+    fs::create_dir(to.join("parts")).unwrap();
+    fs::copy(from.join("manifest.json"), to.join("manifest.json")).unwrap();
+    for part in fs::read_dir(from.join("parts")).unwrap() {
+        let part = part.unwrap();
+        fs::copy(part.path(), to.join("parts").join(part.file_name())).unwrap();
+    }
+}
+
+#[test]
+fn docsys_t12_offline_index_without_checkout_or_compiler() {
+    let producer = Fixture::new();
+    producer.service("orders");
+    let (package, capture) = package_capture(&producer, "portable");
+    assert_eq!(capture["status"], "CAPTURED");
+    let consumer = Fixture::new();
+    package_service(&consumer, &producer);
+    fs::remove_file(consumer.temp.path().join("tools/git")).unwrap();
+    assert_ne!(package_import(&consumer, &package).0, 0);
+    assert_eq!(
+        package_set_expected(&consumer, &package_expect(&consumer, &capture, 1)).0,
+        0
+    );
+    assert_eq!(package_import(&consumer, &package).1["status"], "IMPORTED");
+    assert_eq!(package_import(&consumer, &package).1["status"], "CURRENT");
+    let inspect = consumer.run_unrooted(&[
+        "docs",
+        "evidence",
+        "inspect",
+        "--input",
+        package.to_str().unwrap(),
+    ]);
+    assert_eq!(inspect.0, 0, "{inspect:?}");
+    assert_eq!(inspect.1["status"], "INTEGRITY_CHECKED_NOT_ADMITTED");
+    assert_eq!(inspect.1["report"]["projectJavaMinimum"], 17);
+    assert_eq!(inspect.1["report"]["kotlinWorkerJava"], 21);
+    let page = consumer.run_unrooted(&[
+        "docs",
+        "evidence",
+        "read",
+        "--input",
+        package.to_str().unwrap(),
+        "--kind",
+        "sources",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(page.0, 0, "{page:?}");
+    assert_eq!(page.1["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page.1["items"][0]["authority"], "EXACT_SNAPSHOT_TEXT");
+    let checked = consumer.checked();
+    assert!(checked.unresolved.is_empty(), "{:?}", checked.unresolved);
+    assert_eq!(
+        checked.services["orders"].revision,
+        capture["revision"].as_str().unwrap()
+    );
+    assert!(
+        checked.services["orders"]
+            .boundaries
+            .contains(&"PORTABLE_EVIDENCE_AT_SELECTED_REVISION".into())
+    );
+    assert!(
+        !consumer
+            .docs
+            .join(".codeclew/bindings/orders.json")
+            .exists()
+    );
+    let narrative = consumer.author("orders", &checked);
+    let rendered = consumer.ok(&["docs", "render", "--input", narrative.to_str().unwrap()]);
+    assert!(
+        consumer
+            .bundle(rendered["bundle"].as_str().unwrap(), "services/orders.html")
+            .exists()
+    );
+    // No dependency on either the application checkout or the original package directory.
+    drop(producer);
+    assert_eq!(
+        consumer.checked().services["orders"].revision,
+        checked.services["orders"].revision
+    );
+}
+
+#[test]
+fn docsys_t12_rejects_corruption_forged_authority_paths_and_wrong_identity() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (package, capture) = package_capture(&f, "original");
+    assert_eq!(
+        package_set_expected(&f, &package_expect(&f, &capture, 1)).0,
+        0
+    );
+    assert_eq!(package_import(&f, &package).0, 0);
+    let selected = f.docs.join(".codeclew/evidence/selected/orders.json");
+    let before = fs::read(&selected).unwrap();
+    for case in [
+        "missing",
+        "corrupt",
+        "path",
+        "compressed",
+        "schema",
+        "service",
+        "revision",
+        "authority",
+        "limit",
+        "symlink",
+    ] {
+        let bad = f.temp.path().join(case);
+        package_copy(&package, &bad);
+        let mut m = read(bad.join("manifest.json"));
+        let first = m["parts"][0]["path"].as_str().unwrap().to_owned();
+        match case {
+            "missing" => {
+                fs::remove_file(bad.join(&first)).unwrap();
+            }
+            "corrupt" => {
+                fs::write(bad.join(&first), b"{}").unwrap();
+            }
+            "path" => m["parts"][0]["path"] = json!("../manifest.json"),
+            "compressed" => m["parts"][0]["encoding"] = json!("gzip"),
+            "schema" => m["schema"] = json!("codeclew-documentation-evidence-package/999.0"),
+            "service" => {
+                m["service"]["id"] = json!("other");
+                m["serviceDigest"] = json!(clew::canonical::hash(&m["service"]).unwrap());
+            }
+            "revision" => m["revision"] = json!("0".repeat(40)),
+            "limit" => m["parts"][0]["bytes"] = json!(129 * 1024 * 1024),
+            "symlink" => {
+                fs::remove_file(bad.join(&first)).unwrap();
+                std::os::unix::fs::symlink(package.join(&first), bad.join(&first)).unwrap();
+            }
+            "authority" => {
+                let reference = m["parts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|p| p["kind"] == "sources")
+                    .unwrap();
+                let old = reference["path"].as_str().unwrap().to_owned();
+                let mut part = read(bad.join(&old));
+                part["records"][0]["authority"] = json!("RUNTIME_VERIFIED");
+                let data = serde_json::to_vec(&part).unwrap();
+                let digest = clew::canonical::hash_bytes(&data);
+                let path = format!("parts/{}.json", &digest[7..]);
+                fs::write(bad.join(&path), &data).unwrap();
+                reference["path"] = json!(path);
+                reference["digest"] = json!(digest);
+                reference["bytes"] = json!(data.len());
+            }
+            _ => unreachable!(),
+        }
+        fs::write(bad.join("manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        assert_ne!(package_import(&f, &bad).0, 0, "accepted {case}");
+        assert_eq!(
+            fs::read(&selected).unwrap(),
+            before,
+            "{case} replaced valid selection"
+        );
+    }
+    // A forger who changes an interpretation and rehashes every part still lacks coordinator trust.
+    let bad = f.temp.path().join("self-rehashed");
+    package_copy(&package, &bad);
+    let mut m = read(bad.join("manifest.json"));
+    m["producerVersion"] = json!("untrusted-producer");
+    fs::write(bad.join("manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+    assert_ne!(package_import(&f, &bad).0, 0);
+    assert_eq!(fs::read(selected).unwrap(), before);
+}
+
+#[test]
+fn docsys_t12_new_expectation_failure_and_replay_preserve_previous_result() {
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let (old, old_capture) = package_capture(&f, "old");
+    let first = package_expect(&f, &old_capture, 1);
+    assert_eq!(package_set_expected(&f, &first).0, 0);
+    assert_eq!(package_import(&f, &old).0, 0);
+    let pointer = f.docs.join(".codeclew/evidence/selected/orders.json");
+    let previous = fs::read(&pointer).unwrap();
+    fs::write(
+        source.join("Orders.java"),
+        "public class Orders { public int reserve(int quantity) { return quantity + 1; } }\n",
+    )
+    .unwrap();
+    commit(&source);
+    let (new, new_capture) = package_capture(&f, "new");
+    let second = package_expect(&f, &new_capture, 2);
+    assert_eq!(package_set_expected(&f, &second).0, 0);
+    assert_ne!(package_import(&f, &old).0, 0);
+    assert_eq!(fs::read(&pointer).unwrap(), previous);
+    assert!(f.checked().unresolved.contains_key("orders"));
+    assert_eq!(package_import(&f, &new).0, 0);
+    assert_ne!(package_set_expected(&f, &first).0, 0);
+    assert_eq!(
+        f.checked().services["orders"].revision,
+        new_capture["revision"].as_str().unwrap()
+    );
+    let newest = fs::read(&pointer).unwrap();
+    // A producer failure is a result, not guessed successful facts.
+    fs::remove_file(f.temp.path().join("tools/git")).unwrap();
+    let (_, missing) = package_capture(&f, "failure-no-git");
+    assert_eq!(missing["status"], "PRODUCER_FAILURE");
+    assert!(
+        !missing
+            .to_string()
+            .contains(f.temp.path().to_str().unwrap())
+    );
+    assert_eq!(fs::read(&pointer).unwrap(), newest);
+}
+
+#[test]
+fn docsys_t12_support_report_is_source_free_and_failed_capture_is_an_offline_gap() {
+    use serde_json::json;
+    let producer = Fixture::new();
+    producer.service("orders");
+    let output = producer.temp.path().join("support-report");
+    let report = producer.ok(&[
+        "docs",
+        "evidence",
+        "report",
+        "--service",
+        "orders",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(report["status"], "DIAGNOSTICS_ONLY");
+    assert_eq!(report["report"]["sourceIncluded"], false);
+    let manifest = read(output.join("manifest.json"));
+    assert!(
+        manifest["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["kind"] == "report")
+    );
+    assert_ne!(package_import(&producer, &output).0, 0);
+    for part in fs::read_dir(output.join("parts")).unwrap() {
+        let text = fs::read_to_string(part.unwrap().path()).unwrap();
+        assert!(!text.contains("return quantity"));
+        assert!(!text.contains(producer.temp.path().to_str().unwrap()));
+    }
+    let mut service = read(producer.docs.join("catalog/services/orders.json"));
+    service["language"] = json!("kotlin");
+    service["profile"] = json!("kotlin-jvm-maven-analysis");
+    service["compilation"] = json!("main");
+    service.as_object_mut().unwrap().remove("source");
+    let input = producer.input("compiler-service.json", &service);
+    let current = producer.ok(&["docs", "service", "list"]);
+    producer.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        current["inputDigest"].as_str().unwrap(),
+    ]);
+    let (failed, capture) = package_capture(&producer, "failed-compiler");
+    assert_eq!(capture["status"], "PRODUCER_FAILURE");
+    assert!(capture["revision"].is_string());
+    let consumer = Fixture::new();
+    package_service(&consumer, &producer);
+    fs::remove_file(consumer.temp.path().join("tools/git")).unwrap();
+    assert_eq!(
+        package_set_expected(&consumer, &package_expect(&consumer, &capture, 1)).0,
+        0
+    );
+    assert_eq!(
+        package_import(&consumer, &failed).1["status"],
+        "PRODUCER_FAILURE_RECORDED"
+    );
+    drop(producer);
+    let checked = consumer.checked();
+    assert!(!checked.services.contains_key("orders"));
+    assert_eq!(
+        checked.unresolved["orders"]["reason"],
+        capture["report"]["errorCode"]
+    );
+    assert_eq!(
+        checked.unresolved["orders"]["evidencePackage"]["manifestDigest"],
+        capture["manifestDigest"]
+    );
+    assert_eq!(
+        checked.unresolved["orders"]["evidencePackage"]["report"]["kotlinWorkerJava"],
+        21
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn docsys_t12_imported_evidence_receives_separate_review_and_protects_trust() {
+    use serde_json::json;
+    let producer = Fixture::new();
+    producer.service("orders");
+    let (package, capture) = package_capture(&producer, "review-package");
+    let f = Fixture::new();
+    package_service(&f, &producer);
+    assert_eq!(
+        package_set_expected(&f, &package_expect(&f, &capture, 1)).0,
+        0
+    );
+    assert_eq!(package_import(&f, &package).0, 0);
+    fs::remove_file(f.temp.path().join("tools/git")).unwrap();
+    drop(producer);
+    let mut page = f.ok(&[
+        "docs",
+        "section",
+        "prepare",
+        "--service",
+        "orders",
+        "--id",
+        "section-overview",
+    ]);
+    let work = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(&f, &work, json!({"cursor":cursor}));
+    }
+    let frozen = read(f.docs.join(format!(".codeclew/work/{work}/work.json")));
+    let handle = frozen["handles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, h)| {
+            h["kind"] == "DEPENDENCY"
+                && frozen["checked"]["dependencies"][h["id"].as_str().unwrap()]["kind"] == "FLOW"
+        })
+        .unwrap()
+        .0;
+    let proposal = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":"section1","title":"Overview","summary":{"text":"The service normalizes requested quantities.","evidence":[handle]},"steps":[]}]});
+    let policy = f.docs.join("catalog/evidence-trust/orders.json");
+    let before = fs::read(&policy).unwrap();
+    let config = execution_config(
+        &f,
+        json!({"mode":"denials","proposal":proposal,"readPaths":[],"writePaths":[policy]}),
+        json!({}),
+        None,
+    );
+    let result = work_run(&f, &work, &config);
+    assert_eq!(result["status"], "ACCEPTED", "{result}");
+    assert_eq!(fs::read(policy).unwrap(), before);
+    let report = run_report(&f, &result);
+    assert_eq!(report["attempts"][0]["role"], "author");
+    assert_eq!(report["attempts"][1]["role"], "reviewer");
+}
+
 #[test]
 fn docsys_t00_stale_status_retains_content_without_agents() {
     let f = Fixture::new();

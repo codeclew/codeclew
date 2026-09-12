@@ -80,6 +80,7 @@ pub fn expand_dependencies(
                 matches!(
                     d.kind.as_str(),
                     "SOURCE_SCOPE"
+                        | "EVIDENCE_PACKAGE"
                         | "MODULE_SCOPE"
                         | "CONTRACT_SCOPE"
                         | "ENTITY_SCOPE"
@@ -180,7 +181,11 @@ pub fn fragment(
                 .filter(|d| {
                     matches!(
                         d.kind.as_str(),
-                        "SOURCE_SCOPE" | "CONTRACT_SCOPE" | "ENTITY_SCOPE" | "NOTE_SCOPE"
+                        "SOURCE_SCOPE"
+                            | "EVIDENCE_PACKAGE"
+                            | "CONTRACT_SCOPE"
+                            | "ENTITY_SCOPE"
+                            | "NOTE_SCOPE"
                     ) && d.service == service
                 })
                 .map(|d| d.id.clone()),

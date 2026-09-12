@@ -157,3 +157,11 @@ not claimed by this planning package's structural or independent review.
   Desktop/mobile reader checks cover exact source navigation and contained
   diagram scrolling. Shared process, note and section regressions pass; existing
   scenario graph edges are unchanged. Portable evidence remains T12.
+
+- T12 → S01/S11/S12, AC15: supported capture exports per-service manifests and
+  bounded content-addressed parts. Trusted expectations bind service/configuration,
+  source revision, package digest and sequence before import. Five CLI cases pass
+  for offline inspection/rendering/review, failed producers and adversarial package
+  rejection. Source-free reports expose capabilities and safe diagnostics; source
+  inclusion is explicit. Existing scenario graph edges remain unchanged. These
+  results do not qualify live CI delivery or every Kotlin compiler environment.

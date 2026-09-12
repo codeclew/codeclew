@@ -442,3 +442,26 @@ from generated graph claims. The reader provides a source-linked SVG, accessible
 node/edge text, Markdown and Mermaid exports using the same accepted graph and
 per-operation freshness state. Human layout is optional; unmatched layout IDs
 are retained in metadata rather than silently deleted.
+# Portable capture and remote support
+
+`clew docs evidence report --root <docs> --service <id> --output <new-directory>`
+collects a versioned source-free diagnostic report. `docs evidence inspect --input
+<directory>` reads it offline. To include the selected application index and
+retained source, explicitly use `docs evidence capture` or `report --include-index`.
+The recipient can page through source, observations, entrypoints and contracts
+without the checkout or compiler. Package text is data and cannot configure tools.
+
+Central import uses an operator-controlled expectation binding the registered
+origin/project, configuration digest, exact source revision, trusted manifest
+digest and increasing sequence. Use `docs evidence expect` with the current
+catalogue input digest, then `docs evidence import`. Mismatches, missing parts and
+older results cannot replace the selected artifact; a missing expected result or
+captured producer failure remains a local gap. The original report records the
+failure code and safe worker metadata. Imported explanations use the existing
+author/reviewer and publication pipeline.
+
+See the complete [portable evidence and support workflow](../../skills/codeclew/references/documentation-evidence.md)
+for commands, expectation shape, retention, privacy boundaries and format limits.
+The default report distinguishes declared Java/Kotlin versions from producer
+admission and the Kotlin worker's Java 21 requirement. Exact application and
+compiler inputs absent from the optional index remain an explicit diagnostic limit.

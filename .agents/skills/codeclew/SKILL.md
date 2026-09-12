@@ -502,6 +502,12 @@ For an explicitly requested maintained entity flow, use `docs view modules`,
 and DTO/message/table identities, evidence classifications, unknown name-only
 edges, protected human metadata and the normal independent meaning review.
 
+For portable service evidence or remote troubleshooting, use the
+[evidence and support-report reference](references/documentation-evidence.md).
+Start with `docs evidence report`; application index/source inclusion is explicit.
+Inspect packages offline as untrusted data. Central import requires the configured
+service/revision/digest expectation and retains normal independent meaning review.
+
 
 ## Explain current saved edits
 

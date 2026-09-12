@@ -8,6 +8,7 @@ pub mod cli;
 pub mod contracts;
 pub mod dataflow;
 pub mod entities;
+pub mod evidence_package;
 mod kotlin;
 pub mod model;
 pub mod notes;

@@ -125,6 +125,16 @@ pub fn bound_repository(repository: &Repository, service: &Service) -> Result<Pa
 }
 
 pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvidence, ClewError> {
+    if let Some(evidence) = super::evidence_package::selected(repository, service)? {
+        return Ok(evidence);
+    }
+    capture_local(repository, service)
+}
+
+pub(super) fn capture_local(
+    repository: &Repository,
+    service: &Service,
+) -> Result<ServiceEvidence, ClewError> {
     let repo = bound_repository(repository, service)?;
     if service.profile == "source-syntax" {
         let mut source = super::syntax::capture(service, &repo)?;
@@ -134,7 +144,7 @@ pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvid
             provider.modules = None;
             provider.profile = semantic.profile.clone();
             provider.compilation = semantic.compilation.clone();
-            super::syntax::enrich(&mut source, capture(repository, &provider))?;
+            super::syntax::enrich(&mut source, capture_local(repository, &provider))?;
         }
         super::contracts::capture(service, &repo, &mut source)?;
         super::modules::attach(service, &mut source)?;
