@@ -156,8 +156,14 @@
     "group": "Documentation"
   },
   {
-    "title": "Start with a Java service.",
+    "title": "Start locally with one service.",
     "url": "./documentation.html#documentation-scope",
+    "description": "Service documentation",
+    "group": "Documentation"
+  },
+  {
+    "title": "Add a note to the thing it explains.",
+    "url": "./documentation.html#notes-and-comments",
     "description": "Service documentation",
     "group": "Documentation"
   },
@@ -246,7 +252,7 @@
     "group": "Research"
   },
   {
-    "title": "Service documentation you can inspect.",
+    "title": "Local documentation you can inspect.",
     "url": "./evidence.html#release-evidence",
     "description": "Evidence & studies",
     "group": "Research"
