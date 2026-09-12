@@ -1,0 +1,13 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId><artifactId>source-documentation-kotlin</artifactId><version>1.0</version>
+  <properties><kotlin.version>1.9.25</kotlin.version><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+  <dependencies><dependency>
+    <groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId><version>${kotlin.version}</version>
+  </dependency></dependencies>
+  <build><sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory><plugins><plugin>
+    <groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>${kotlin.version}</version>
+    <configuration><jvmTarget>17</jvmTarget><languageVersion>1.9</languageVersion><apiVersion>1.9</apiVersion></configuration>
+    <executions><execution><id>compile</id><goals><goal>compile</goal></goals></execution></executions>
+  </plugin></plugins></build>
+</project>
