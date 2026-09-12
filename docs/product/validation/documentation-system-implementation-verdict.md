@@ -46,3 +46,19 @@ inside fragment bindings. Bindings 1.3 reconstruct those maps from the exact
 retained observations, rejecting missing evidence or simultaneous inline maps.
 Round-trip and malformed-input checks passed. The reader now calls an
 unassessed saved-process summary a process overview, without implying review.
+
+Final practical publication succeeded with bindings 1.3 at 45,748,230 bytes.
+It contains 15 service sections, three process overviews and one data-flow view;
+all 19 authored roots are CURRENT with UNASSESSED meaning. The 407 explicit gaps
+include 401 unauthored source callables and remaining detailed/assessment roots.
+Two original intention notes are byte-preserved. The source check completed
+without unresolved services. Desktop and mobile inspection confirmed the
+maintained view and the separate practical guides; wide graphs scroll locally.
+
+The final runtime gate passed across its run and continuation after updating
+regression fixtures to load compact bindings through the validated reader.
+The previously failing child-composition regression passed (58.60 s), as did
+entity identity/freshness (24.82 s), data-flow invalidation/reuse (57.00 s), and
+history/cache-loss recovery (23.03 s). All remaining CI commands completed,
+including the final usability smoke. Format and clippy passed after fixture
+adaptation. Release-platform asset builds remain the release workflow's gate.
