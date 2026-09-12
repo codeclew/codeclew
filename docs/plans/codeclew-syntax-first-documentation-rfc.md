@@ -1,6 +1,7 @@
 # Syntax-first documentation, semantic enrichment, and freshness
 
 Date: 2026-09-10.
+Scope updated: 2026-09-12; Kotlin 1.9 is included in the first acceptance slice.
 Status: research RFC and architecture proposal; not implemented or qualified.
 Inspected revision: `codeclew/codeclew@4430b5af1e82b0bf89b7eca988517c1802108b0c`.
 
@@ -21,7 +22,10 @@ Tree-sitter is suitable for this foundation, but need not be the only parser.
 The common contract should describe observations, not prescribe one universal
 AST. Retain the Rust `syn` adapter where useful. Qualify Kotlin PSI parsing and
 candidate Tree-sitter grammars separately for coverage, resilience, and delivery
-cost before selecting a baseline provider.
+cost before selecting a baseline provider. The first slice must include basic
+Kotlin 1.9 source understanding without K2 or a successful build. Its no-JDK
+baseline requires a parser that does not depend on a JVM; parsing-only PSI can
+be evaluated separately but cannot be its only provider.
 
 The product contract is bounded: for accessible, explicitly selected sources
 within resource limits, return available observations and named gaps. It does
@@ -382,10 +386,23 @@ missing stale claims during subsequent updates.
 
 ## 12. First vertical slice
 
-Use Python through the existing Tree-sitter extractor and a Java fixture with
-intentionally unavailable compilation. Both feed one engine-independent
-documentation contract. Restoring Java compilation adds semantic facts to the
-same source authority and revisits claims depending on that enrichment.
+Use Python through the existing Tree-sitter extractor, a Java fixture with
+intentionally unavailable compilation, and Kotlin 1.9 fixtures with K2 absent or
+failed and with unavailable build dependencies. All three feed one
+engine-independent documentation contract.
+
+The Kotlin baseline must expose source-bound declarations, lexical call
+expressions, and control structure, including safe calls, Elvis expressions,
+lambdas, and `when` branches. Valid supported fixtures must yield structural
+observations rather than only retained file text. Syntax alone does not resolve
+overloads, extension dispatch, inferred types, or coroutine execution. Preserve
+explicit gaps for incomplete or unsupported syntax.
+
+Restoring Java compilation or a qualified K2 provider for Kotlin 1.9 source adds
+semantic facts to the same source authority and documentation object, revisiting
+claims depending on that enrichment. A later provider failure leaves the
+baseline readable and resolution-dependent claims unresolved or review-required.
+Language version and semantic analyzer version remain separate inputs.
 
 Do not begin with a new universal cross-service call graph. First establish a
 useful bundle without a build, exact bindings, no silent false-current results

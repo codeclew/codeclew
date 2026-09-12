@@ -1,6 +1,7 @@
 # Plan: build-independent documentation and semantic enrichment
 
 Date: 2026-09-10.
+Scope updated: 2026-09-12; Kotlin 1.9 is required in the first acceptance slice.
 Status: proposed; implementation and qualification have not been performed.
 Basis: [research RFC](codeclew-syntax-first-documentation-rfc.md), grounded in
 `codeclew/codeclew@4430b5af1e82b0bf89b7eca988517c1802108b0c`.
@@ -23,6 +24,8 @@ inputs instead of creating a parallel documentation subsystem.
 ## Invariants
 
 - Available source/syntax evidence does not depend on semantic-provider success.
+- Kotlin 1.9 source understanding remains available when K2 is absent or fails;
+  the syntax path does not invoke K2 or require a successful project build.
 - A syntax call occurrence does not become a resolved call edge by name matching.
 - A current source binding does not prove arbitrary narrative correctness.
 - Compact views retain material compilation, runtime, and configuration boundaries.
@@ -39,11 +42,21 @@ observation, claim, query dependency, and rendering dependency separately.
 Specify independent binding, freshness, authority, and review states. Keep
 proposed schema names provisional until the vertical slice is qualified.
 
-Prepare small Python and Java service fixtures. Java has buildable and
-intentionally missing-dependency variants. Tasks cover a local operation, a
+Prepare small Python, Java, and Kotlin 1.9 service fixtures. Java and Kotlin have
+buildable and intentionally missing-dependency variants. Kotlin also has an
+explicit K2-unavailable case. Tasks cover a local operation, a
 conditional branch, a helper call, and an engineer-declared service handoff.
 Freeze expected source bindings, admissible claims, and unresolved boundaries
 before implementation. Record source revisions and producer/profile versions.
+
+For Kotlin 1.9, include packages/imports, classes and objects, properties,
+functions (including extension and suspend functions), annotations as written,
+call expressions, lambdas, safe calls, Elvis expressions, and `if`/`when`/loop
+structure. Include UTF-8/range cases, incomplete syntax, and absent dependencies.
+Freeze which observations each fixture must expose; merely returning FILE_ONLY
+for valid supported Kotlin fixtures does not satisfy basic source understanding.
+Inferred types, overload selection, extension dispatch, and coroutine execution
+remain unresolved unless separately supported by semantic evidence.
 
 **Definition of Done:** the generator does not define its own success oracle.
 The fixtures distinguish exact source attachment from behavior interpretation
@@ -62,15 +75,20 @@ Do not automatically download grammars or execute repository code.
 **Definition of Done:** without JDK, Maven, Gradle, Cargo, or a target Python
 environment, the baseline returns a source manifest and available data. Process
 and network audits show no attempts to execute these tools or install project
-dependencies. Missing, unsafe, and oversized inputs produce named boundaries or
+dependencies. Kotlin baseline audits also establish that no K2 worker is started,
+including when the semantic provider is absent or has failed. Missing, unsafe,
+and oversized inputs produce named boundaries or
 failures. Existing mutation admission is unchanged.
 
 ## D2. Common structural observations
 
-Reuse the Python Tree-sitter extractor and add a build-independent Java parser
-adapter for the first slice. Subsequently separate Rust syntax extraction from
-Cargo-target authority, retaining distinct profiles. Qualify Kotlin grammar/PSI
-choices separately rather than mandating a universal parser migration.
+Reuse the Python Tree-sitter extractor and add build-independent Java and Kotlin
+1.9 parser adapters for the first slice. Qualify a pinned Kotlin grammar against
+the D0 fixtures, with no K2/JDK/Gradle dependency in the baseline path. Parsing-only
+PSI may be evaluated separately, but a provider requiring a JVM cannot be the
+only implementation of this no-JDK acceptance path. Do not turn this into a
+universal parser migration. Subsequently separate Rust syntax extraction from
+Cargo-target authority, retaining distinct profiles.
 
 The shared contract covers declarations, containment, call expressions, control
 syntax, annotations as written, source ranges, parse errors, and coverage. It
@@ -94,9 +112,11 @@ and content-addressed outputs. Extend current Event/Explanation/Fragment records
 with engine-independent evidence references. Start with prose and sequence views;
 permit a state view only with an explicit state abstraction and provenance.
 
-**Definition of Done:** Python and Java with an unavailable build produce useful
-bundles and resolvable source links. Text fragments and diagram elements connect
-to parent events/claims. Unresolved service handoffs are declared/candidate, not
+**Definition of Done:** Python, Java with an unavailable build, and Kotlin 1.9
+without K2 or a working build produce useful bundles and resolvable source links.
+Kotlin declarations, lexical calls, and control structure feed the same model
+without being represented as compiler-resolved facts. Text fragments and diagram
+elements connect to parent events/claims. Unresolved service handoffs are declared/candidate, not
 proven runtime calls. All views derive from one accepted explanation version.
 No runtime-order guarantee is inferred merely from source line order.
 
@@ -136,7 +156,9 @@ assemble every intermediate JSON object manually. A resolved result may refute
 a candidate; preserve history and revise the accepted interpretation.
 
 **Definition of Done:** restored compilation enriches the same documentation
-object instead of creating a separate copy. Subsequent compiler failure leaves
+object instead of creating a separate copy. Restoring a qualified K2 provider
+for Kotlin 1.9 source enriches that same object; language version and analyzer
+version remain separate recorded inputs. Subsequent compiler failure leaves
 syntax documentation readable but marks dependent semantic claims for review.
 Synthetic or multi-compilation symbols never receive fabricated source links.
 Parser results do not silently replace failed K2 evidence with stronger claims.
@@ -176,6 +198,8 @@ not an atomic transaction across independently deployed services.
 | Classpath, cfg, or analyzer changed | Recheck dependent semantic projections; unchanged source bytes are insufficient |
 | Parser error or missing grammar | Return partial/FILE_ONLY with available source; do not promote unsupported structure claims |
 | Compiler unavailable, then restored | Preserve baseline availability and report actual semantic freshness/authority |
+| Kotlin 1.9 source with K2 absent or failed | Retain declarations, lexical calls, control structure, and exact links; keep resolution-dependent claims unresolved |
+| Kotlin safe call, Elvis expression, or `when` branch changes | Detect changed syntax and review dependent claims without requiring K2 or claiming runtime order |
 | Asynchronous callback or new retry branch | Do not derive runtime order from source-line order |
 | Only one service advances its revision | Bind the new revision vector and revisit transitively affected scenarios |
 | Previously empty query gains a result | Invalidate its scope/result dependency and any dependent inventory or absence claim |
@@ -194,7 +218,9 @@ quality requirements, and ordinary source-reading tools within each comparison.
 
 **D. Hybrid:** selective enrichment for tasks where it provides measured value.
 
-Buildable and intentionally unbuildable fixtures are separate strata. Do not
+Buildable and intentionally unbuildable fixtures are separate strata. Include
+Kotlin 1.9 with K2 absent, failed, and restored as distinct availability cases;
+compare the same source snapshots and count failed semantic attempts. Do not
 give one arm hidden oracle names or relationships. Runtime truth must not be
 replaced by an expert guess; evaluate unknown scenarios on whether their
 boundaries are represented correctly.
@@ -241,12 +267,22 @@ D0 contracts and fixtures
  -> D6 selective regeneration and qualification
 ```
 
-First acceptance covers D1-D4 on Python and the broken-build Java fixture.
+First acceptance covers D1-D4 on Python, the broken-build Java fixture, and
+Kotlin 1.9 with K2 unavailable and with an unavailable build. Kotlin baseline
+understanding is part of this acceptance boundary, not a later enrichment task.
 Further languages, exact service-dependency analysis, and fine-grained cost-based
 routing follow that correctness result. D2 lists extension points, not a demand
-to implement every language before the first vertical slice.
+to implement languages beyond these three before the first vertical slice.
 
 The implementation plan complements the token-economics research in PR #6.
 It does not depend on that branch: this proposal concerns baseline availability,
 evidence identity, and documentation maintenance; token savings remain a shared
 experimental question rather than an established outcome.
+
+The agreed work sequence is M0-M2 from [PR #6](https://github.com/codeclew/codeclew/pull/6)
+for measurement and the oracle experiment, then this plan's D0-D4 first slice,
+then D5-D6, followed by M3 projection optimization. M4-M6 planner work remains
+conditional on a positive economic gate for the relevant task class, followed
+by M7 qualification. An unsuccessful token experiment does not cancel the
+independent documentation-availability result. These are implementation
+priorities; the two documentation-only PRs have no merge dependency.
