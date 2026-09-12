@@ -19,6 +19,8 @@ use std::fs;
 pub struct FragmentBinding {
     pub subject: String,
     pub content_digest: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub content: Value,
     pub dependencies: BTreeMap<String, String>,
     pub sources: BTreeMap<String, Value>,
 }
@@ -36,6 +38,8 @@ pub struct Bindings {
     pub observations: BTreeMap<String, Observation>,
     pub narratives: BTreeMap<String, Narrative>,
     pub output_hashes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub retained_sources: BTreeMap<String, Source>,
 }
 
 pub fn expand_dependencies(
@@ -43,6 +47,19 @@ pub fn expand_dependencies(
     checked: &Check,
 ) -> Result<BTreeSet<String>, ClewError> {
     let mut output: BTreeSet<_> = initial.iter().cloned().collect();
+    // Claims depend conservatively on each involved service's read/query scope.
+    let services: BTreeSet<_> = initial
+        .iter()
+        .filter_map(|id| checked.dependencies.get(id))
+        .map(|d| d.service.as_str())
+        .collect();
+    output.extend(
+        checked
+            .dependencies
+            .values()
+            .filter(|d| d.kind == "SOURCE_SCOPE" && services.contains(d.service.as_str()))
+            .map(|d| d.id.clone()),
+    );
     let mut frontier = output.clone();
     for depth in 0..=16 {
         let mut next = BTreeSet::new();
@@ -103,9 +120,19 @@ pub fn fragment(
     source_ids: &[String],
     checked: &Check,
 ) -> Result<FragmentBinding, ClewError> {
-    let ids = expand_dependencies(dependency_ids, checked)?;
+    let mut initial = dependency_ids.to_vec();
+    if let Some(service) = subject.strip_prefix("service:") {
+        initial.extend(
+            checked
+                .dependencies
+                .values()
+                .filter(|d| d.kind == "SOURCE_SCOPE" && d.service == service)
+                .map(|d| d.id.clone()),
+        );
+    }
+    let ids = expand_dependencies(&initial, checked)?;
     let sources = checked.sources();
-    Ok(FragmentBinding{subject:subject.into(),content_digest:digest(value)?,dependencies:ids.into_iter().map(|id|{let d=checked.dependencies[&id].digest.clone();(id,d)}).collect(),sources:source_ids.iter().map(|id|{
+    Ok(FragmentBinding{subject:subject.into(),content_digest:digest(value)?,content:serde_json::to_value(value).map_err(io_error)?,dependencies:ids.into_iter().map(|id|{let d=checked.dependencies[&id].digest.clone();(id,d)}).collect(),sources:source_ids.iter().map(|id|{
         let source=sources.get(id).ok_or_else(||invalid("fragment source is unavailable"))?;
         Ok((id.clone(),json!({"revision":source.revision,"file":source.file,"startLine":source.start_line,"endLine":source.end_line,"textDigest":source.text_digest,"url":source.url})))
     }).collect::<Result<_,ClewError>>()?})
@@ -147,7 +174,15 @@ pub fn baseline(repo: &Repository) -> Result<Option<(String, Bindings)>, ClewErr
             return Err(invalid("portable baseline observation digest is invalid"));
         }
     }
+    for source in binding.retained_sources.values() {
+        if canonical::hash_bytes(source.text.as_bytes()) != source.text_digest {
+            return Err(invalid("retained source digest is invalid"));
+        }
+    }
     for fragment in binding.fragments.values() {
+        if !fragment.content.is_null() && digest(&fragment.content)? != fragment.content_digest {
+            return Err(invalid("retained fragment content digest is invalid"));
+        }
         if fragment.dependencies.iter().any(|(id, value)| {
             binding
                 .observations
@@ -265,7 +300,11 @@ pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
             catalogue.push(json!({"service":service,"reason":"ANALYSIS_COVERAGE_CHANGED"}));
         }
     }
-    let status = if !checked.unresolved.is_empty() {
+    let incomplete_source = checked
+        .services
+        .values()
+        .any(|e| e.extractor == SOURCE_EXTRACTOR && e.coverage != "SYNTAX");
+    let status = if !checked.unresolved.is_empty() || incomplete_source {
         "UNRESOLVED"
     } else if affected.is_empty() && catalogue.is_empty() {
         "CURRENT"
@@ -274,7 +313,7 @@ pub fn freshness(old: Option<&Bindings>, checked: &Check) -> Value {
     } else {
         "PARTIALLY_STALE"
     };
-    json!({"status":status,"affected":affected,"unaffected":unaffected,"linkChanges":links,"catalogueChanges":catalogue,"scope":"Recorded dependencies and supported static analysis only","unresolved":checked.unresolved})
+    json!({"status":status,"affected":affected,"unaffected":unaffected,"linkChanges":links,"catalogueChanges":catalogue,"scope":"Recorded dependencies and supported static analysis only","incompleteSource":incomplete_source,"unresolved":checked.unresolved})
 }
 
 #[cfg(test)]
@@ -294,6 +333,7 @@ mod tests {
             text_digest: canonical::hash_bytes(b"return reserve();"),
             evidence_digest: canonical::hash_bytes(b"evidence"),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            occurrence: None,
             url: None,
         };
         let observation = |id: &str, kind: &str, value: Value| Observation {
@@ -403,6 +443,7 @@ mod tests {
             observations: checked.dependencies.clone(),
             narratives: BTreeMap::new(),
             output_hashes: BTreeMap::new(),
+            retained_sources: checked.sources(),
         }
     }
     #[test]

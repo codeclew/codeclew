@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 pub const VERSION: &str = "1.0";
 pub const EXTRACTOR: &str = "codeclew-documentation-jvm/1.2";
+pub const SOURCE_EXTRACTOR: &str = "codeclew-documentation-source/1.0";
 pub const RENDERER: &str = "codeclew-documentation-html/1.4";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -24,12 +25,32 @@ pub struct Service {
     pub repository: String,
     pub language: String,
     pub profile: String,
+    #[serde(default)]
     pub compilation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceConfig>,
     pub target_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_link_template: Option<String>,
     #[serde(default)]
     pub contract_files: Vec<String>,
+}
+
+/// Explicit committed scope; language dialect is declared, not compiler-validated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceConfig {
+    pub roots: Vec<String>,
+    pub dialect: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticConfig {
+    pub profile: String,
+    pub compilation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,7 +170,19 @@ pub struct Source {
     pub text_digest: String,
     pub evidence_digest: String,
     pub authority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<SourceOccurrence>,
     pub url: Option<String>,
+}
+
+/// Immutable byte occurrence; logical Source.id intentionally survives relocation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceOccurrence {
+    pub snapshot: String,
+    pub blob: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

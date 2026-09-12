@@ -8,6 +8,7 @@ mod kotlin;
 pub mod model;
 pub mod render;
 pub mod store;
+mod syntax;
 
 use crate::error::{ClewError, ErrorCode};
 use serde::Serialize;

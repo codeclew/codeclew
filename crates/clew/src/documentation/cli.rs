@@ -44,6 +44,8 @@ pub enum Command {
     Check(ListArgs),
     /// Read bounded source-backed authoring input. Use --refresh to rebuild evidence.
     Context(ContextArgs),
+    /// Review affected claims with bounded before/after evidence.
+    Changes(ChangeArgs),
     /// Render the overview, each service, and named interaction scenarios offline.
     Render {
         #[arg(long)]
@@ -115,6 +117,23 @@ pub enum InteractionCommand {
     },
 }
 #[derive(Debug, Args)]
+pub struct ChangeArgs {
+    #[arg(long)]
+    pub root: PathBuf,
+    #[arg(long)]
+    pub fragment: Option<String>,
+    #[arg(long)]
+    pub cursor: Option<String>,
+    #[arg(long, default_value_t=20, value_parser=clap::value_parser!(u32).range(1..=100))]
+    pub limit: u32,
+}
+#[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq, serde::Serialize)]
+pub enum ContextFormat {
+    Raw,
+    Compact,
+}
+
+#[derive(Debug, Args)]
 pub struct ContextArgs {
     #[arg(long)]
     pub root: PathBuf,
@@ -131,6 +150,13 @@ pub struct ContextArgs {
     /// Exact compiler identity or qualified declaration name for an interface DTO.
     #[arg(long = "symbol", requires = "service", conflicts_with = "entrypoint")]
     pub symbols: Vec<String>,
+    /// Drill into exact source IDs listed by a context or change dossier.
+    #[arg(long = "source", requires = "service", conflicts_with_all = ["entrypoint", "symbols"])]
+    pub source_ids: Vec<String>,
+    #[arg(long = "dependency", requires = "service", conflicts_with_all = ["entrypoint", "symbols", "source_ids"])]
+    pub dependency_ids: Vec<String>,
+    #[arg(long, value_enum, default_value = "raw")]
+    pub format: ContextFormat,
     #[arg(long)]
     pub refresh: bool,
     #[arg(long)]
@@ -253,6 +279,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
             )
         }
         Command::Context(args) => context(args),
+        Command::Changes(args) => changes(args),
         Command::Render {
             root,
             input,
@@ -361,11 +388,24 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
         let entries: Vec<_> = e
             .entrypoints
             .iter()
-            .filter(|_| args.symbols.is_empty())
+            .filter(|_| {
+                args.symbols.is_empty()
+                    && args.source_ids.is_empty()
+                    && args.dependency_ids.is_empty()
+            })
             .filter(|entry| args.entrypoint.as_ref().is_none_or(|id| &entry.id == id))
             .collect();
         if args.entrypoint.is_some() && entries.is_empty() {
             return Err(invalid("unknown entrypoint"));
+        }
+        if args.dependency_ids.len() > 8 {
+            return Err(invalid("select at most eight dependencies"));
+        }
+        for dependency in &args.dependency_ids {
+            if !e.observations.contains_key(dependency) {
+                return Err(invalid("unknown service dependency"));
+            }
+            selected.insert(dependency.clone());
         }
         for symbol in &args.symbols {
             let matches: Vec<_> = e
@@ -374,6 +414,16 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
                 .filter(|o| {
                     o.kind == "SYMBOL"
                         && (o.symbol == *symbol
+                            || o.normalized["ownerIdentity"].as_str().is_some_and(|owner| {
+                                let owner = owner
+                                    .strip_prefix("class:")
+                                    .or_else(|| owner.strip_prefix("package:"))
+                                    .unwrap_or(owner)
+                                    .replace('/', ".");
+                                o.normalized["name"]
+                                    .as_str()
+                                    .is_some_and(|name| format!("{owner}.{name}") == *symbol)
+                            })
                             || o.symbol
                                 .split_once(':')
                                 .map(|(_, name)| {
@@ -402,6 +452,7 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
                 "select at most eight interface declarations per context request",
             ));
         }
+        items.push(json!({"kind":"COVERAGE","id":id,"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"boundaries":e.boundaries,"callAuthority":if e.extractor==SOURCE_EXTRACTOR{"SYNTAX_UNRESOLVED"}else{"PROVIDER_EVIDENCE"}}));
         for entry in &entries {
             items.push(json!({"kind":"ENTRYPOINT","id":entry.id,"record":entry}));
             if args.entrypoint.is_some() {
@@ -468,8 +519,38 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
         }
         items.push(json!({"kind":"RETAINED_GAPS","id":subject,"record":narrative.gaps}));
     }
+    // Compact declarations may omit nested event copies only after the same
+    // selected callable's flow records have been included independently.
+    let selected_symbols: BTreeSet<_> = selected
+        .iter()
+        .filter_map(|id| checked.dependencies.get(id))
+        .filter(|o| o.kind == "SYMBOL")
+        .map(|o| o.symbol.as_str())
+        .collect();
+    let flow_ids: Vec<_> = checked
+        .dependencies
+        .values()
+        .filter(|o| {
+            matches!(o.kind.as_str(), "FLOW" | "SEMANTIC_SYMBOL")
+                && selected_symbols.contains(o.symbol.as_str())
+        })
+        .map(|o| o.id.clone())
+        .collect();
+    selected.extend(flow_ids);
     let sources = checked.sources();
+    if args.source_ids.len() > 8 {
+        return Err(invalid("select at most eight source fragments"));
+    }
     let mut source_ids = BTreeSet::new();
+    for id in &args.source_ids {
+        let source = sources
+            .get(id)
+            .ok_or_else(|| invalid("unknown source ID"))?;
+        if args.service.as_ref() != Some(&source.service) {
+            return Err(invalid("source belongs to a different service"));
+        }
+        source_ids.insert(id.clone());
+    }
     for id in selected {
         if let Some(d) = checked.dependencies.get(&id) {
             source_ids.extend(d.source_ids.iter().cloned());
@@ -481,17 +562,168 @@ fn context(args: ContextArgs) -> Result<Value, ClewError> {
             items.push(json!({"kind":"SOURCE","id":id,"record":source}));
         }
     }
+    if args.format == ContextFormat::Compact {
+        items = compact(items);
+    }
     page(
         &super::digest(&(
             checked.context_digest.clone(),
             subject.clone(),
             args.entrypoint.clone(),
             args.symbols.clone(),
+            args.source_ids.clone(),
+            args.dependency_ids.clone(),
+            args.format,
         ))?,
         items,
         args.cursor.as_deref(),
         args.limit as usize,
         json!({"subject":subject,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"authority":authority,"narrativeAuthority":"AGENT_INFERRED","unresolved":checked.unresolved}),
+    )
+}
+
+/// A deterministic projection of already selected evidence, never a new resolver.
+fn compact(items: Vec<Value>) -> Vec<Value> {
+    let sources: Vec<_> = items
+        .iter()
+        .filter(|i| i["kind"] == "SOURCE")
+        .map(|i| i["record"].clone())
+        .collect();
+    items.into_iter().map(|mut item| {
+        match item["kind"].as_str().unwrap_or("") {
+            "DEPENDENCY" => {
+                let record=&mut item["record"];
+                if let Some(map)=record.as_object_mut() && let Some(digest)=map.remove("digest") { map.insert("fullRecordDigest".into(),digest); }
+                let normalized=&mut record["normalized"];
+                if let Some(map)=normalized.as_object_mut() {
+                    map.remove("sourceTokens");
+                    if let Some(documentation)=map.get_mut("documentation").and_then(Value::as_object_mut)
+                        && let Some(events)=documentation.remove("events") { documentation.insert("eventCount".into(),json!(events.as_array().map_or(0,Vec::len))); }
+                }
+                if record["kind"] == "FLOW" && record["sourceIds"].as_array().is_some_and(|s|!s.is_empty()) {
+                    record["normalized"].as_object_mut().map(|m|m.remove("text"));
+                }
+                item["projection"]=json!("COMPACT_EVIDENCE_1");
+                item["fullRecord"]=json!({"command":"docs context","format":"raw","service":item["record"]["service"],"dependency":item["id"]});
+            },
+            "SOURCE" => {
+                let source=&item["record"];
+                let covering=sources.iter().filter(|other| other["id"]!=source["id"] && other["service"]==source["service"] && other["revision"]==source["revision"] && other["file"]==source["file"]
+                    && other["startLine"].as_u64() <= source["startLine"].as_u64()
+                    && other["endLine"].as_u64() >= source["endLine"].as_u64()
+                    && other["text"].as_str().is_some_and(|t|source["text"].as_str().is_some_and(|s|t.contains(s)))
+                    && (other["text"].as_str().map(str::len)>source["text"].as_str().map(str::len) || other["id"].as_str()<source["id"].as_str()))
+                    .max_by_key(|other|other["text"].as_str().map(str::len));
+                if let Some(covering)=covering {
+                    item=json!({"kind":"SOURCE_ALIAS","id":source["id"],"coveredBy":covering["id"],"file":source["file"],"startLine":source["startLine"],"endLine":source["endLine"],"authority":source["authority"],"textDigest":source["textDigest"],"drill":{"service":source["service"],"source":source["id"],"format":"raw"}});
+                }
+            },
+            _ => {},
+        }
+        item
+    }).collect()
+}
+
+fn changes(args: ChangeArgs) -> Result<Value, ClewError> {
+    let repo = Repository::open(&args.root)?;
+    let (bundle, old) = super::bindings::baseline(&repo)?
+        .ok_or_else(|| invalid("change dossier requires a published documentation baseline"))?;
+    super::bindings::verify_outputs(&repo, &bundle, &old)?;
+    let path = repo.path(".codeclew/cache/latest-check.json")?;
+    let checked: check::Check = if args.cursor.is_some() && path.exists() {
+        let checked: check::Check = store::read(&path, 64 * 1024 * 1024)?;
+        if checked.input_digest != repo.input_digest()? {
+            return Err(invalid(
+                "documentation declarations changed; restart the change dossier",
+            ));
+        }
+        checked
+    } else {
+        let checked = check::run(&repo)?;
+        checked.save(&repo)?;
+        checked
+    };
+    let report = super::bindings::freshness(Some(&old), &checked);
+    let mut items = Vec::new();
+    let mut dependencies = BTreeSet::new();
+    let mut source_ids = BTreeSet::new();
+    let mut changed_files = BTreeSet::new();
+    let affected = report["affected"].as_array().cloned().unwrap_or_default();
+    if args
+        .fragment
+        .as_ref()
+        .is_some_and(|id| !old.fragments.contains_key(id))
+    {
+        return Err(invalid("unknown baseline fragment"));
+    }
+    for change in affected
+        .iter()
+        .filter(|c| args.fragment.as_ref().is_none_or(|id| c["fragment"] == *id))
+    {
+        let id = change["fragment"].as_str().unwrap();
+        let fragment = &old.fragments[id];
+        dependencies.extend(fragment.dependencies.keys().cloned());
+        source_ids.extend(fragment.sources.keys().cloned());
+        items.push(json!({"kind":"AFFECTED_CLAIM","id":id,"subject":fragment.subject,"oldClaim":fragment.content,"oldClaimDigest":fragment.content_digest,"reasons":change["reasons"],"affectedViewId":id,"authority":"RETAINED_CLAIM_REQUIRES_REVIEW","oldClaimAvailable":!fragment.content.is_null()}));
+    }
+    for id in dependencies {
+        let before = old.observations.get(&id);
+        let after = checked.dependencies.get(&id);
+        if before.map(|o| &o.digest) == after.map(|o| &o.digest) {
+            continue;
+        }
+        for fact in [before, after].into_iter().flatten() {
+            source_ids.extend(fact.source_ids.iter().cloned());
+        }
+        if before.is_some_and(|o| o.kind == "SOURCE_SCOPE")
+            || after.is_some_and(|o| o.kind == "SOURCE_SCOPE")
+        {
+            let a = before.and_then(|o| o.normalized["inventory"].as_object());
+            let b = after.and_then(|o| o.normalized["inventory"].as_object());
+            let paths: BTreeSet<_> = a
+                .into_iter()
+                .flat_map(|m| m.keys())
+                .chain(b.into_iter().flat_map(|m| m.keys()))
+                .collect();
+            for path in paths {
+                if a.and_then(|m| m.get(path)) != b.and_then(|m| m.get(path)) {
+                    changed_files.insert((before.or(after).unwrap().service.clone(), path.clone()));
+                }
+            }
+        }
+        items.push(json!({"kind":"CHANGED_FACT","id":id,"before":before,"after":after,"beforeAuthority":"RETAINED_BASELINE","afterAuthority":"CURRENT_SOURCE_CHECK"}));
+    }
+    let current = checked.sources();
+    for source in old.retained_sources.values().chain(current.values()) {
+        if changed_files.contains(&(source.service.clone(), source.file.clone())) {
+            source_ids.insert(source.id.clone());
+        }
+    }
+    for id in source_ids {
+        let before = old.retained_sources.get(&id);
+        let after = current.get(&id);
+        items.push(json!({"kind":"SOURCE_CHANGE","id":id,"before":before,"after":after,"beforeAvailable":before.is_some(),"afterAvailable":after.is_some(),"drill":after.map(|s|json!({"command":"docs context","service":s.service,"source":s.id}))}));
+    }
+    let involved_services: BTreeSet<_> = changed_files
+        .iter()
+        .map(|(service, _)| service.as_str())
+        .collect();
+    for source in current
+        .values()
+        .filter(|s| involved_services.contains(s.service.as_str()))
+    {
+        items.push(json!({"kind":"SUPPORTING_CONTEXT_REFERENCE","id":source.id,"service":source.service,"file":source.file,"startLine":source.start_line,"endLine":source.end_line,"authority":source.authority,"drill":{"command":"docs context","service":source.service,"source":source.id}}));
+    }
+    for (service, file) in changed_files {
+        items.push(json!({"kind":"CHANGED_SCOPE_FILE","id":format!("{service}/{file}"),"service":service,"file":file,"requiredAction":"REVIEW_FILE_AND_ITS_HELPER_IMPORT_CONFIGURATION_CONTEXT"}));
+    }
+    items.push(json!({"kind":"COVERAGE","id":"coverage","unresolved":checked.unresolved,"catalogueChanges":report["catalogueChanges"],"linkChanges":report["linkChanges"],"services":checked.services.iter().map(|(id,e)|(id,json!({"coverage":e.coverage,"boundaries":e.boundaries}))).collect::<BTreeMap<_,_>>(),"scope":"Recorded claims plus conservative selected source scope; external reads require their own registered scope"}));
+    page(
+        &super::digest(&(&bundle, &checked.context_digest, &args.fragment))?,
+        items,
+        args.cursor.as_deref(),
+        args.limit as usize,
+        json!({"reportSchema":"codeclew-docs-changes/1.0","baselineBundle":bundle,"contextDigest":checked.context_digest,"status":report["status"],"requiredAction":"Review affected claims before supplying a new narrative; this command does not publish"}),
     )
 }
 

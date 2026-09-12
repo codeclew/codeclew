@@ -4346,3 +4346,452 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
     let missing: Value = serde_json::from_slice(&missing.stdout).unwrap();
     assert_eq!(missing["freshness"]["status"], "UNRESOLVED");
 }
+
+#[test]
+#[cfg(unix)]
+fn durable_source_documentation_without_build_tools_rebinds_and_preserves_publication() {
+    use clew::documentation::check::Check;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let state = temporary.path().join("state/v2");
+    let runtime = state.join("runtimes").join("1".repeat(64));
+    fs::create_dir_all(state.join("locks")).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = fd_runtime(&runtime);
+    let lease = state
+        .join("locks")
+        .join(format!("runtime-{}.lease", "1".repeat(64)));
+    let tools = temporary.path().join("tools");
+    fs::create_dir(&tools).unwrap();
+    let git = Command::new("/bin/sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    symlink(
+        String::from_utf8(git.stdout).unwrap().trim(),
+        tools.join("git"),
+    )
+    .unwrap();
+    let audit = temporary.path().join("unexpected-tool");
+    for tool in [
+        "java", "javac", "mvn", "gradle", "kotlinc", "python", "python3", "cargo", "curl", "wget",
+        "node",
+    ] {
+        let path = tools.join(tool);
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' '{tool}' >> '{}'\nexit 99\n",
+                audit.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let docs = temporary.path().join("docs");
+    let root = docs.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let out = run_managed_exact_path(&binary, &state, &runtime, &lease, args, &tools);
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        (out.status.code().unwrap(), value)
+    };
+    assert_eq!(run(&["docs", "init", "--root", root]).0, 0);
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/durable-docs-source");
+    let mut repositories = BTreeMap::new();
+    for language in ["python", "java", "kotlin"] {
+        let repo = temporary.path().join(language);
+        copy_tree(&fixtures.join(language), &repo);
+        run_git(&repo, &["init", "-q"]);
+        run_git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("https://example.invalid/{language}"),
+            ],
+        );
+        run_git(&repo, &["add", "."]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fixture",
+            ],
+        );
+        let record = json!({"schema":"codeclew-documentation-service/1.0","id":language,"title":format!("{language} reservations"),"repositoryId":language,"repository":format!("https://example.invalid/{language}"),"language":language,"profile":"source-syntax","targetRef":"HEAD","source":{"roots":["."],"dialect":if language=="kotlin"{"1.9"}else{"fixture"}}});
+        let input = temporary.path().join(format!("{language}.json"));
+        fs::write(&input, serde_json::to_vec(&record).unwrap()).unwrap();
+        let (_, catalogue) = run(&["docs", "service", "list", "--root", root]);
+        let (code, value) = run(&[
+            "docs",
+            "service",
+            "add",
+            "--root",
+            root,
+            "--input",
+            input.to_str().unwrap(),
+            "--expected-input-digest",
+            catalogue["inputDigest"].as_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{value}");
+        let (code, value) = run(&[
+            "docs",
+            "bind",
+            "--root",
+            root,
+            "--service",
+            language,
+            "--repo",
+            repo.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{value}");
+        repositories.insert(language, repo);
+    }
+    let (_, value) = run(&["docs", "check", "--root", root]);
+    assert_eq!(value["status"], "CHECKED", "{value}");
+    for language in ["python", "java", "kotlin"] {
+        assert_eq!(value["services"][language]["coverage"], "SYNTAX", "{value}");
+        assert!(value["services"][language]["entrypoints"].as_u64().unwrap() > 1);
+    }
+    let checked: Check =
+        serde_json::from_slice(&fs::read(docs.join(".codeclew/cache/latest-check.json")).unwrap())
+            .unwrap();
+    let mut inputs = Vec::new();
+    for (language, evidence) in &checked.services {
+        let entry = evidence
+            .entrypoints
+            .iter()
+            .find(|e| e.trigger["name"] == "reserve")
+            .unwrap();
+        let flows: Vec<_> = evidence
+            .observations
+            .values()
+            .filter(|o| o.kind == "FLOW" && o.symbol == entry.symbol)
+            .collect();
+        let mut flows = flows;
+        flows.sort_by_key(|o| o.normalized["ordinal"].as_u64());
+        let mut events = Vec::new();
+        for (index, flow) in flows.iter().enumerate() {
+            let kind = match flow.normalized["kind"].as_str().unwrap() {
+                "IF" | "TRY" => "alt",
+                "LOOP" => "loop",
+                "DEFERRED" => "opt",
+                _ => "note",
+            };
+            events.push(json!({"id":format!("event-{index}"),"kind":kind,"text":format!("Source contains {}. This view records lexical structure.",flow.normalized["syntaxKind"].as_str().unwrap()),"from":null,"to":null,"dependencyIds":[flow.id],"sourceIds":flow.source_ids}));
+            if matches!(kind, "alt" | "loop" | "opt") {
+                events.push(json!({"id":format!("end-{index}"),"kind":"end","text":"","from":null,"to":null,"dependencyIds":[flow.id],"sourceIds":flow.source_ids}));
+            }
+        }
+        let narrative = json!({"schema":"codeclew-documentation-narrative/1.0","subject":format!("service:{language}"),"contextDigest":checked.context_digest,"operations":[{"id":entry.id,"title":"Reserve stock","summary":{"id":"summary","text":"The source checks quantity before recording a reservation in memory. It does not establish durable storage.","dependencyIds":entry.dependency_ids,"sourceIds":entry.source_ids},"participants":[{"id":"caller","label":"Caller","service":null},{"id":"service","label":"Reservations","service":language}],"events":events,"boundaries":["Source syntax only; call targets and runtime ordering remain unresolved."]}],"gaps":evidence.entrypoints.iter().filter(|e|e.id!=entry.id).map(|e|(&e.id,"This callable has source evidence but its behavior has not been authored.")).collect::<BTreeMap<_,_>>()});
+        let input = temporary.path().join(format!("narrative-{language}.json"));
+        fs::write(&input, serde_json::to_vec(&narrative).unwrap()).unwrap();
+        inputs.push(input);
+        let named = if language == "python" {
+            "orders.Reservations.reserve"
+        } else {
+            "example.Reservations.reserve"
+        };
+        let (code, raw) = run(&[
+            "docs",
+            "context",
+            "--root",
+            root,
+            "--service",
+            language,
+            "--symbol",
+            named,
+            "--format",
+            "raw",
+            "--limit",
+            "100",
+        ]);
+        assert_eq!(code, 0, "{raw}");
+        let (code, compact) = run(&[
+            "docs",
+            "context",
+            "--root",
+            root,
+            "--service",
+            language,
+            "--symbol",
+            named,
+            "--format",
+            "compact",
+            "--limit",
+            "100",
+        ]);
+        assert_eq!(code, 0, "{compact}");
+        assert!(
+            compact["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "COVERAGE")
+        );
+        assert_eq!(raw["contextDigest"], compact["contextDigest"]);
+        let flow_ids = |page: &Value| {
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|i| i["kind"] == "DEPENDENCY" && i["record"]["kind"] == "FLOW")
+                .map(|i| i["id"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(!flow_ids(&raw).is_empty());
+        assert_eq!(flow_ids(&raw), flow_ids(&compact));
+        assert!(
+            serde_json::to_vec(&compact).unwrap().len() < serde_json::to_vec(&raw).unwrap().len()
+        );
+    }
+    fs::write(docs.join("docs/manual.md"), "Engineer-owned explanation.\n").unwrap();
+    let mut args = vec!["docs", "render", "--root", root];
+    for path in &inputs {
+        args.extend(["--input", path.to_str().unwrap()]);
+    }
+    let (code, rendered) = run(&args);
+    assert_eq!(code, 0, "{rendered}");
+    assert_eq!(rendered["documentedOperations"], 3);
+    let initial = fs::read(docs.join("docs/index.html")).unwrap();
+    assert_eq!(
+        run(&["docs", "render", "--root", root]).1["bundle"],
+        rendered["bundle"]
+    );
+    let repo = &repositories["python"];
+    let source = repo.join("orders.py");
+    let original = fs::read_to_string(&source).unwrap();
+    fs::write(&source, format!("\n\n{original}")).unwrap();
+    run_git(repo, &["add", "."]);
+    run_git(
+        repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Move lines",
+        ],
+    );
+    let (code, value) = run(&["docs", "check", "--root", root]);
+    assert_eq!(code, 0, "{value}");
+    assert_eq!(value["freshness"]["status"], "CURRENT", "{value}");
+    assert!(
+        !value["freshness"]["linkChanges"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let (code, value) = run(&["docs", "render", "--root", root]);
+    assert_eq!(code, 0, "{value}");
+    assert_ne!(value["bundle"], rendered["bundle"]);
+    let relocated = fs::read(docs.join("docs/index.html")).unwrap();
+    assert_ne!(initial, relocated);
+    fs::write(repo.join("policy.py"), "MAX_QUANTITY = 25\n").unwrap();
+    run_git(repo, &["add", "."]);
+    run_git(
+        repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Change helper",
+        ],
+    );
+    let (_, value) = run(&["docs", "check", "--root", root]);
+    assert_eq!(value["freshness"]["status"], "PARTIALLY_STALE", "{value}");
+    assert!(
+        value["freshness"]["affected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["subject"] == "service:python")
+    );
+    let (_, dossier) = run(&["docs", "changes", "--root", root, "--limit", "100"]);
+    assert!(
+        dossier["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["kind"] == "AFFECTED_CLAIM" && i["oldClaimAvailable"] == true),
+        "{dossier}"
+    );
+    assert!(
+        dossier["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["kind"] == "SOURCE_CHANGE" && i["beforeAvailable"] == true),
+        "{dossier}"
+    );
+    assert_ne!(run(&["docs", "render", "--root", root]).0, 0);
+    assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), relocated);
+    assert_eq!(
+        fs::read_to_string(docs.join("docs/manual.md")).unwrap(),
+        "Engineer-owned explanation.\n"
+    );
+    assert!(
+        !audit.exists(),
+        "build, runtime, or network tool was invoked: {:?}",
+        fs::read_to_string(&audit)
+    );
+}
+
+#[test]
+#[cfg(unix)]
+#[ignore = "runs the admitted Maven/javac provider for source-documentation enrichment"]
+fn durable_source_documentation_java_enrichment_recovers_on_the_same_source_roots() {
+    use clew::documentation::check::Check;
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = tempfile::tempdir().unwrap();
+    let _cleanup = WritableTreeOnDrop(temporary.path().to_path_buf());
+    let state = temporary.path().join("state/v2");
+    let runtime = state.join("runtimes").join("1".repeat(64));
+    fs::create_dir_all(state.join("locks")).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    let binary = fd_runtime(&runtime);
+    let lease = state
+        .join("locks")
+        .join(format!("runtime-{}.lease", "1".repeat(64)));
+    let repo = temporary.path().join("java");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/durable-docs-source/java"),
+        &repo,
+    );
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", "https://example.invalid/java"],
+    );
+    let commit = || {
+        run_git(&repo, &["add", "."]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fixture",
+            ],
+        );
+    };
+    commit();
+    let docs = temporary.path().join("architecture");
+    let root = docs.to_str().unwrap();
+    let run = |args: &[&str]| {
+        let out = run_managed(&binary, &state, &runtime, &lease, args, None);
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        (out.status.code().unwrap(), value)
+    };
+    assert_eq!(run(&["docs", "init", "--root", root]).0, 0);
+    let record_path = docs.join("catalog/services/java.json");
+    let mut record = json!({"schema":"codeclew-documentation-service/1.0","id":"java","title":"Java reservations","repositoryId":"java","repository":"https://example.invalid/java","language":"java","profile":"source-syntax","targetRef":"main","source":{"roots":["."],"dialect":"17"}});
+    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert_eq!(
+        run(&[
+            "docs",
+            "bind",
+            "--root",
+            root,
+            "--service",
+            "java",
+            "--repo",
+            repo.to_str().unwrap()
+        ])
+        .0,
+        0
+    );
+    let (_, report) = run(&["docs", "check", "--root", root]);
+    assert_eq!(report["status"], "CHECKED", "{report}");
+    let read = || {
+        serde_json::from_slice::<Check>(
+            &fs::read(docs.join(".codeclew/cache/latest-check.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    let first = read();
+    let root_id = first.services["java"]
+        .entrypoints
+        .iter()
+        .find(|e| e.trigger["name"] == "reserve")
+        .unwrap()
+        .id
+        .clone();
+    fs::create_dir_all(repo.join("src/main/java/example/missing")).unwrap();
+    fs::write(
+        repo.join("src/main/java/example/missing/ExternalPolicy.java"),
+        "package example.missing; public interface ExternalPolicy {}\n",
+    )
+    .unwrap();
+    commit();
+    record["source"]["semantic"] =
+        json!({"profile":"java-17plus-maven-read-only","compilation":":/main"});
+    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let (_, report) = run(&["docs", "check", "--root", root]);
+    assert_eq!(report["status"], "CHECKED", "{report}");
+    let enriched = read();
+    let e = &enriched.services["java"];
+    assert!(e.entrypoints.iter().any(|entry| entry.id == root_id));
+    assert!(
+        e.observations
+            .values()
+            .any(|o| o.kind == "SEMANTIC_SYMBOL" && o.normalized["fact"]["name"] == "reserve"),
+        "{}",
+        serde_json::to_string(&e.boundaries).unwrap()
+    );
+    assert_eq!(run(&["docs", "render", "--root", root]).0, 0);
+    let published = fs::read(docs.join("docs/index.html")).unwrap();
+    fs::write(repo.join("pom.xml"), "<broken>\n").unwrap();
+    commit();
+    let (_, report) = run(&["docs", "check", "--root", root]);
+    assert_eq!(report["status"], "CHECKED", "{report}");
+    assert_ne!(report["freshness"]["status"], "CURRENT");
+    let lost = read();
+    assert!(
+        lost.services["java"]
+            .entrypoints
+            .iter()
+            .any(|entry| entry.id == root_id)
+    );
+    assert!(
+        !lost.services["java"]
+            .observations
+            .values()
+            .any(|o| o.kind == "SEMANTIC_SYMBOL")
+    );
+    assert!(
+        lost.services["java"]
+            .boundaries
+            .iter()
+            .any(|b| b == "SEMANTIC_PROVIDER_UNAVAILABLE_SOURCE_REMAINS_READABLE")
+    );
+    assert_ne!(run(&["docs", "render", "--root", root]).0, 0);
+    assert_eq!(fs::read(docs.join("docs/index.html")).unwrap(), published);
+}

@@ -162,6 +162,48 @@ mod tests {
             "{:?}",
             evidence.boundaries
         );
+        let files = BTreeMap::from([(
+            source.to_owned(),
+            std::fs::read_to_string(fixture.join(source)).unwrap(),
+        )]);
+        let mut syntax =
+            crate::documentation::syntax::source_for_provider_test(&service, &evidence, &files);
+        let roots = syntax.entrypoints.clone();
+        crate::documentation::syntax::enrich(&mut syntax, Ok(evidence.clone())).unwrap();
+        assert_eq!(syntax.entrypoints, roots);
+        assert!(
+            syntax
+                .observations
+                .values()
+                .any(|o| o.kind == "SEMANTIC_SYMBOL" && o.normalized["fact"]["name"] == "publish"),
+            "{:?}",
+            syntax.boundaries
+        );
+        assert!(
+            syntax
+                .observations
+                .values()
+                .filter(|o| o.kind == "SEMANTIC_SYMBOL")
+                .any(|o| o.normalized["boundaries"].as_array().is_some_and(|b| b
+                    .iter()
+                    .any(|v| v == "KOTLIN_ANALYSIS_LANGUAGE_UPGRADED_FROM_1_9_TO_2_0")))
+        );
+        let mut unavailable =
+            crate::documentation::syntax::source_for_provider_test(&service, &evidence, &files);
+        crate::documentation::syntax::enrich(
+            &mut unavailable,
+            Err(crate::documentation::invalid(
+                "K2 unavailable in this fixture",
+            )),
+        )
+        .unwrap();
+        assert_eq!(unavailable.entrypoints, roots);
+        assert!(
+            !unavailable
+                .observations
+                .values()
+                .any(|o| o.kind == "SEMANTIC_SYMBOL")
+        );
     }
 
     fn chain(count: usize) -> check::Check {
@@ -178,6 +220,7 @@ mod tests {
                 repository: format!("https://example.invalid/{id}"),
                 language: "kotlin".into(),
                 profile: "kotlin-jvm-maven-analysis".into(),
+                source: None,
                 compilation: ":/main".into(),
                 target_ref: "main".into(),
                 source_link_template: None,

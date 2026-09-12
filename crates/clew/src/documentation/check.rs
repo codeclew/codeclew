@@ -187,6 +187,8 @@ fn resolution(endpoint: &Endpoint, services: &BTreeMap<String, ServiceEvidence>)
                 1 => {
                     if matches[0].source_ids.is_empty() {
                         "SOURCE_UNAVAILABLE"
+                    } else if matches[0].normalized["authority"] == "SYNTAX" {
+                        "SOURCE_MATCH"
                     } else {
                         "RESOLVED"
                     }
@@ -559,7 +561,7 @@ pub fn compose(
             .insert("MORE_THAN_EIGHT_SERVICES_NOT_SUPPORTED_IN_ONE_SCENARIO".into());
     } else {
         let root = resolution(&s.root, services);
-        if root.status == "RESOLVED" {
+        if matches!(root.status.as_str(), "RESOLVED" | "SOURCE_MATCH") {
             walker.walk(
                 &s.root.service,
                 &services[&s.root.service].observations[&root.candidates[0]].symbol,
@@ -602,7 +604,14 @@ impl Check {
     }
     pub fn save(&self, repo: &Repository) -> Result<(), ClewError> {
         let _lock = repo.lock()?;
-        repo.atomic(".codeclew/cache/latest-check.json", &bytes(self)?)
+        let encoded = bytes(self)?;
+        if encoded.len() > 64 * 1024 * 1024 {
+            return Err(crate::error::ClewError::new(
+                crate::error::ErrorCode::SliceBudgetExceeded,
+                "documentation check exceeds its portable cache budget; narrow source roots",
+            ));
+        }
+        repo.atomic(".codeclew/cache/latest-check.json", &encoded)
     }
 }
 
@@ -700,6 +709,7 @@ mod tests {
                 repository: format!("https://example.invalid/{id}"),
                 language: "java".into(),
                 profile: "java-17plus-maven-read-only".into(),
+                source: None,
                 compilation: ":/main".into(),
                 target_ref: "main".into(),
                 source_link_template: None,

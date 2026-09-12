@@ -126,6 +126,17 @@ pub fn bound_repository(repository: &Repository, service: &Service) -> Result<Pa
 
 pub fn capture(repository: &Repository, service: &Service) -> Result<ServiceEvidence, ClewError> {
     let repo = bound_repository(repository, service)?;
+    if service.profile == "source-syntax" {
+        let mut source = super::syntax::capture(service, &repo)?;
+        if let Some(semantic) = service.source.as_ref().and_then(|s| s.semantic.as_ref()) {
+            let mut provider = service.clone();
+            provider.source = None;
+            provider.profile = semantic.profile.clone();
+            provider.compilation = semantic.compilation.clone();
+            super::syntax::enrich(&mut source, capture(repository, &provider))?;
+        }
+        return Ok(source);
+    }
     let runtime = RuntimeAuthority::from_environment()?
         .ok_or_else(|| invalid("documentation analysis requires the supported clew launcher"))?;
     let compilations = vec![service.compilation.clone()];
@@ -353,6 +364,7 @@ fn add_source(
             text: exact,
             evidence_digest: binding.into(),
             authority: "EXACT_SNAPSHOT_TEXT".into(),
+            occurrence: None,
             url: source_link(service, &evidence.revision, file, start, end),
         },
     );
@@ -649,7 +661,7 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
     if e.schema != "codeclew-documentation-service-evidence/1.0"
         || e.revision.len() != 40
         || !e.revision.bytes().all(|b| b.is_ascii_hexdigit())
-        || e.extractor != EXTRACTOR
+        || ![EXTRACTOR, SOURCE_EXTRACTOR].contains(&e.extractor.as_str())
     {
         return Err(invalid("portable evidence version or revision is invalid"));
     }
@@ -662,6 +674,19 @@ pub fn verify_evidence(e: &ServiceEvidence) -> Result<(), ClewError> {
             || canonical::hash_bytes(s.text.as_bytes()) != s.text_digest
         {
             return Err(invalid("portable source binding is inconsistent"));
+        }
+        if let Some(occurrence) = &s.occurrence
+            && (occurrence.end_byte.checked_sub(occurrence.start_byte) != Some(s.text.len())
+                || s.evidence_digest
+                    != digest(&(
+                        SOURCE_EXTRACTOR,
+                        &occurrence.snapshot,
+                        &occurrence.blob,
+                        occurrence.start_byte,
+                        occurrence.end_byte,
+                    ))?)
+        {
+            return Err(invalid("portable byte occurrence is inconsistent"));
         }
         store::relative(&s.file)?;
     }

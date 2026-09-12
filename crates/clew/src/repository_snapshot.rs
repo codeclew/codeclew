@@ -349,6 +349,29 @@ pub(crate) fn capture_commit_scope(
     accepts: impl Fn(&str) -> bool,
     limits: TrackedScopeLimits,
 ) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
+    capture_scope(repo, revision, source_roots, store, accepts, limits, true)
+}
+
+/// Language-neutral documentation inventory, including configuration and unsupported files.
+pub(crate) fn capture_documentation_scope(
+    repo: &Path,
+    revision: &str,
+    source_roots: &[String],
+    store: &CasStore,
+    limits: TrackedScopeLimits,
+) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
+    capture_scope(repo, revision, source_roots, store, |_| true, limits, false)
+}
+
+fn capture_scope(
+    repo: &Path,
+    revision: &str,
+    source_roots: &[String],
+    store: &CasStore,
+    accepts: impl Fn(&str) -> bool,
+    limits: TrackedScopeLimits,
+    python_only: bool,
+) -> Result<(RepositoryInputSnapshot, CasObject), ClewError> {
     validate_oid(revision)?;
     if source_roots.is_empty() {
         return Err(invalid("selected source-root set is empty"));
@@ -372,14 +395,15 @@ pub(crate) fn capture_commit_scope(
         .stdout
         .take()
         .ok_or_else(|| internal("Git tree stdout is unavailable"))?;
-    let selected = match parse_tree_stream(BufReader::new(stdout), &accepts, limits) {
-        Ok(selected) => selected,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
+    let selected =
+        match parse_tree_stream_mode(BufReader::new(stdout), &accepts, limits, python_only) {
+            Ok(selected) => selected,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
     if !child.wait().map_err(io_error)?.success() {
         return Err(invalid("selected base-revision tree is unavailable"));
     }
@@ -473,10 +497,20 @@ fn publish_snapshot(
     Ok((snapshot, object))
 }
 
+#[cfg(test)]
 fn parse_tree_stream(
+    reader: impl BufRead,
+    accepts: &impl Fn(&str) -> bool,
+    limits: TrackedScopeLimits,
+) -> Result<Vec<RawIndexEntry>, ClewError> {
+    parse_tree_stream_mode(reader, accepts, limits, true)
+}
+
+fn parse_tree_stream_mode(
     mut reader: impl BufRead,
     accepts: &impl Fn(&str) -> bool,
     limits: TrackedScopeLimits,
+    python_only: bool,
 ) -> Result<Vec<RawIndexEntry>, ClewError> {
     if limits.max_files == 0
         || limits.max_tree_entries == 0
@@ -520,7 +554,7 @@ fn parse_tree_stream(
             .position(|byte| *byte == b'\t')
             .ok_or_else(|| invalid("Git tree row has no path separator"))?;
         let raw_path = &row[tab + 1..];
-        if !raw_python_path(raw_path) {
+        if python_only && !raw_python_path(raw_path) {
             continue;
         }
         if raw_path.len() > limits.max_tree_path_bytes {

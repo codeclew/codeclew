@@ -1,0 +1,14 @@
+{
+  "schema": "codeclew-documentation-service/1.0",
+  "id": "orders",
+  "title": "Order reservations",
+  "repositoryId": "orders",
+  "repository": "https://example.invalid/orders",
+  "language": "kotlin",
+  "profile": "source-syntax",
+  "targetRef": "main",
+  "source": {
+    "roots": ["src", "pom.xml"],
+    "dialect": "1.9"
+  }
+}

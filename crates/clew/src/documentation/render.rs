@@ -737,6 +737,21 @@ pub fn make_bindings(
     }
     for (id, evidence) in &checked.services {
         let subject = format!("service:{id}");
+        if let Some(scope) = evidence
+            .observations
+            .values()
+            .find(|o| o.kind == "SOURCE_SCOPE")
+        {
+            add_binding(
+                &mut fragments,
+                format!("{subject}/source-scope"),
+                &subject,
+                &json!({"coverage":evidence.coverage,"catalogue":evidence.entrypoints.iter().map(|e|&e.id).collect::<Vec<_>>()}),
+                std::slice::from_ref(&scope.id),
+                &[],
+                checked,
+            )?;
+        }
         for entry in &evidence.entrypoints {
             add_binding(
                 &mut fragments,
@@ -881,6 +896,7 @@ pub fn make_bindings(
         observations,
         narratives,
         output_hashes: BTreeMap::new(),
+        retained_sources: checked.sources(),
     })
 }
 
@@ -1194,7 +1210,11 @@ pub fn publish(
             });
     }
     let gap_count: usize = narratives.values().map(|n| n.gaps.len()).sum();
-    if require_complete && gap_count > 0 {
+    let partial_source = checked
+        .services
+        .values()
+        .any(|e| e.extractor == SOURCE_EXTRACTOR && e.coverage != "SYNTAX");
+    if require_complete && (gap_count > 0 || partial_source) {
         return Err(ClewError::new(
             ErrorCode::IncompleteSemanticAnalysis,
             "documentation contains explicit gaps; author every in-scope operation before --require-complete",
@@ -1254,6 +1274,12 @@ pub fn publish(
         .map(|(path, bytes)| (path.clone(), canonical::hash_bytes(bytes)))
         .collect();
     files.insert("bindings.json".into(), bytes(&binding)?);
+    if files.values().any(|data| data.len() > 64 * 1024 * 1024) {
+        return Err(ClewError::new(
+            ErrorCode::SliceBudgetExceeded,
+            "documentation output exceeds its portable record budget; narrow source roots",
+        ));
+    }
     let _lock = repo.lock()?;
     if repo.input_digest()? != checked.input_digest {
         return Err(ClewError::new(
@@ -1313,6 +1339,6 @@ pub fn publish(
     // One pointer changes only after all matching documents and bindings exist.
     repo.atomic("docs/index.html", overview.as_bytes())?;
     Ok(
-        json!({"schema":"codeclew-docs-render/1.0","status":if gap_count==0{"RENDERED"}else{"PARTIAL"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"runtime":"UNKNOWN"}),
+        json!({"schema":"codeclew-docs-render/1.0","status":if gap_count==0 && !partial_source{"RENDERED"}else{"PARTIAL"},"bundle":bundle,"index":"docs/index.html","services":services.len(),"scenarios":scenarios.len(),"documentedOperations":narratives.values().map(|n|n.operations.len()).sum::<usize>(),"explicitGaps":gap_count,"inputDigest":checked.input_digest,"contextDigest":checked.context_digest,"runtime":"UNKNOWN"}),
     )
 }

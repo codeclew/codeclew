@@ -141,6 +141,10 @@ impl Repository {
         }
         for (name, content) in [
             (
+                "examples/service-source.json",
+                include_str!("../../assets/documentation/examples/service-source.json"),
+            ),
+            (
                 "examples/service.json",
                 include_str!("../../assets/documentation/examples/service.json"),
             ),
@@ -425,7 +429,36 @@ pub fn validate_service(s: &Service) -> Result<(), ClewError> {
         ),
         _ => false,
     };
-    if !supported || s.compilation.is_empty() {
+    let source_profile =
+        s.profile == "source-syntax" && matches!(s.language.as_str(), "python" | "java" | "kotlin");
+    if source_profile {
+        let config = s
+            .source
+            .as_ref()
+            .ok_or_else(|| invalid("source-syntax requires source roots and dialect"))?;
+        if config.roots.is_empty() || config.roots.len() > 64 || config.dialect.trim().is_empty() {
+            return Err(invalid(
+                "source roots and dialect must be bounded and nonempty",
+            ));
+        }
+        if let Some(semantic) = &config.semantic {
+            let mut provider = s.clone();
+            provider.source = None;
+            provider.profile = semantic.profile.clone();
+            provider.compilation = semantic.compilation.clone();
+            validate_service(&provider)?;
+        }
+        for root in &config.roots {
+            if root != "." {
+                relative(root)?;
+            }
+        }
+    } else if s.source.is_some() {
+        return Err(invalid(
+            "source configuration requires the source-syntax profile",
+        ));
+    }
+    if !source_profile && (!supported || s.compilation.is_empty()) {
         return Err(ClewError::new(
             ErrorCode::UnsupportedLanguage,
             "durable documentation requires a Java 17+ or Kotlin/JVM 1.9+ Maven/Gradle analysis profile",
@@ -531,6 +564,7 @@ mod tests {
             repository: format!("https://example.invalid/{id}"),
             language: "java".into(),
             profile: "java-17plus-maven-read-only".into(),
+            source: None,
             compilation: ":/main".into(),
             target_ref: "main".into(),
             source_link_template: None,

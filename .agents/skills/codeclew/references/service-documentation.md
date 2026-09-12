@@ -10,6 +10,45 @@ analyzed with language/API 2.0 by the current engine; this is conditional analys
 not execution by the project's original compiler. Older installed releases need
 the corresponding product update before using these extensions.
 
+## Build-independent source profile (development source)
+
+The development source supports an explicit `source-syntax` profile for Python,
+Java, and Kotlin 1.9. Inspect the selected launcher's help/version before using
+new flags on an installed release. This profile selects syntax authority
+explicitly; it does not substitute syntax evidence after compiler admission fails.
+Set `source.roots` and `source.dialect`; `compilation` is unnecessary. Include
+configuration and helper files in the roots, or record those omitted inputs as
+limitations. Only the selected committed revision is read. Dirty files are not
+included. The installed binary and its pinned grammars are prerequisites, but
+project dependencies, imports, build scripts, and K2 are not invoked.
+
+```json
+{"schema":"codeclew-documentation-service/1.0","id":"orders","title":"Orders","repositoryId":"orders","repository":"https://example.invalid/orders","language":"kotlin","profile":"source-syntax","targetRef":"main","source":{"roots":["src","pom.xml"],"dialect":"1.9"}}
+```
+
+`SOURCE_MATCH` means a unique lexical declaration. Preserve `SYNTAX`,
+`ORDER_LEXICAL_ONLY`, unresolved targets, parse errors, and declared dialect
+boundaries in explanations. Every source-based fragment conservatively watches
+its involved service scope, including helpers, configuration, membership changes,
+and empty catalogues. Reads outside registered scopes require an expanded scope
+or an explicit incomplete-read limitation. Citations alone do not track them.
+
+Optional `source.semantic: {"profile":"kotlin-jvm-maven-analysis","compilation":":/main"}`
+requests the existing compiler provider. Provider failure keeps source evidence
+readable and invalidates retained semantic dependencies. Enrichment attaches
+only uniquely mapped equal-revision file/range facts; it does not convert syntax
+calls to resolved edges. Kotlin language/analyzer differences remain visible.
+
+Use `docs context --format compact` to remove duplicate event payloads and
+repeated nested snippets. `SOURCE_ALIAS.coveredBy` points to retained text; follow
+pagination and preserve all authority/coverage records. A known method can be
+selected directly with `--symbol example.Reservations.reserve`; overloads require
+an exact returned identity. `--source ID` and `--dependency ID` provide focused
+raw drill-down within a selected service. `docs changes --root ...` rebuilds the
+check and returns old claims, invalidation reasons, before/after sources, and
+supporting context references. `--fragment ID` narrows this review package.
+It never publishes or silently marks a claim reviewed.
+
 ## Start or recover
 
 Resolve the installed `clew` launcher once. `clew docs` owns source admission,
@@ -19,9 +58,10 @@ substitute raw source analysis for compiler-backed evidence.
 
 ```sh
 clew docs init --root /work/architecture --title 'System architecture'
-clew docs service add --root /work/architecture --input /work/service.json
+clew docs service list --root /work/architecture
+clew docs service add --root /work/architecture --input /work/service.json --expected-input-digest RETURNED_INPUT_DIGEST
 clew docs bind --root /work/architecture --service orders --repo /work/orders
-clew docs interaction put --root /work/architecture --input /work/interaction.json
+clew docs interaction put --root /work/architecture --input /work/interaction.json --expected-input-digest CURRENT_INPUT_DIGEST
 clew docs check --root /work/architecture
 clew docs context --root /work/architecture --service orders --limit 100
 ```
