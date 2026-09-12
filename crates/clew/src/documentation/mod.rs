@@ -6,6 +6,7 @@ pub mod cli;
 pub mod contracts;
 mod kotlin;
 pub mod model;
+pub mod proposals;
 pub mod render;
 pub mod status;
 pub mod store;

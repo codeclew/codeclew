@@ -47,6 +47,11 @@ pub enum Command {
         #[command(subcommand)]
         command: super::work::Command,
     },
+    /// Submit constrained content for deterministic checks and separate review.
+    Proposal {
+        #[command(subcommand)]
+        command: super::proposals::Command,
+    },
     /// Publish current freshness while retaining previously accepted explanations.
     Refresh {
         #[arg(long)]
@@ -205,6 +210,7 @@ fn inspect<T: serde::Serialize>(
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {
         Command::Work { command } => super::work::run(command),
+        Command::Proposal { command } => super::proposals::run(command),
         Command::Refresh {
             root,
             status_only: _,

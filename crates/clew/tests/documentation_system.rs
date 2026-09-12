@@ -505,3 +505,251 @@ fn docsys_t02_oversized_records_are_explicit_and_pages_stay_bounded() {
             .any(|r| !r["omitted"].as_array().unwrap().is_empty())
     );
 }
+
+fn proposal_fixture(f: &Fixture) -> (String, serde_json::Value, serde_json::Value) {
+    use serde_json::json;
+    let checked = f.checked();
+    let entry = checked.services["orders"]
+        .entrypoints
+        .iter()
+        .find(|e| e.symbol.contains("reserve"))
+        .unwrap();
+    let request=f.input("proposal-work.json",&json!({"schema":"codeclew-documentation-work-request/1.0","audience":"Service maintainers","entrypoint":entry.id,"maxItems":100,"maxBytes":49152}));
+    let mut page = work_prepare(f, &request);
+    let id = page["work"].as_str().unwrap().to_owned();
+    while let Some(cursor) = page["nextCursor"].as_str() {
+        page = work_read(f, &id, json!({"cursor":cursor}));
+    }
+    let frozen = read(f.docs.join(format!(".codeclew/work/{id}/work.json")));
+    let reference = |native: &str| {
+        frozen["handles"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, h)| h["id"] == native)
+            .unwrap()
+            .0
+            .clone()
+    };
+    let flow = |kind: &str| {
+        checked.services["orders"]
+            .observations
+            .values()
+            .find(|d| d.kind == "FLOW" && d.symbol == entry.symbol && d.normalized["kind"] == kind)
+    };
+    let claim = |text: &str, d: &clew::documentation::model::Observation| json!({"text":text,"evidence":[reference(&d.id)],"checks":[{"kind":"factEquals","evidence":reference(&d.id),"field":"kind","expected":d.normalized["kind"]}]});
+    let mut steps = Vec::new();
+    if let Some(guard) = flow("IF") {
+        let thrown = flow("THROW").unwrap();
+        steps.push(json!({"kind":"alt","meaning":claim("A negative requested quantity takes the failure branch.",guard),"children":[{"kind":"note","meaning":claim("The operation throws an invalid argument failure.",thrown)}]}));
+    }
+    let returned = flow("RETURN").unwrap();
+    steps.push(json!({"kind":"note","meaning":claim("The operation returns the resulting quantity.",returned)}));
+    let input = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[{"entrypoint":reference(&entry.id),"title":"Reserve quantity","summary":{"text":"Processes the requested quantity.","evidence":[reference(&entry.id)]},"steps":steps}]});
+    (id, input, frozen)
+}
+fn proposal_submit(f: &Fixture, id: &str, input: &serde_json::Value) -> serde_json::Value {
+    let path = f.input("proposal.json", input);
+    f.ok(&[
+        "docs",
+        "proposal",
+        "submit",
+        "--work",
+        id,
+        "--input",
+        path.to_str().unwrap(),
+    ])
+}
+fn proposal_artifact(f: &Fixture, result: &serde_json::Value) -> serde_json::Value {
+    read(f.docs.join(format!(
+        ".codeclew/proposals/{}.json",
+        result["proposal"].as_str().unwrap()
+    )))
+}
+
+#[test]
+fn docsys_t03_materializes_stable_claims_without_meaning_acceptance() {
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, input, _) = proposal_fixture(&f);
+    let result = proposal_submit(&f, &work, &input);
+    assert_eq!(result["status"], "READY_WITH_LIMITATIONS", "{result}");
+    assert_eq!(result["meaningReview"], "UNASSESSED");
+    assert!(!f.docs.join("docs/index.html").exists());
+    let artifact = proposal_artifact(&f, &result);
+    assert!(artifact["claims"].as_object().unwrap().values().any(|c| {
+        c["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["status"] == "SUPPORTED")
+    }));
+    assert!(
+        artifact["narrative"]["operations"][0]["summary"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("claim-")
+    );
+    assert_eq!(
+        proposal_submit(&f, &work, &input)["proposal"],
+        result["proposal"]
+    );
+    let legacy = f.input("legacy-narrative.json", &artifact["narrative"]);
+    let rendered = f.ok(&["docs", "render", "--input", legacy.to_str().unwrap()]);
+    let data = read(f.bundle(rendered["bundle"].as_str().unwrap(), "services/orders.json"));
+    assert_eq!(data["sectionState"]["verification"], "UNASSESSED");
+}
+
+#[test]
+fn docsys_t03_rejects_opposite_outcomes_hidden_branches_and_forged_handles() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    fs::write(source.join("Orders.java"),"public class Orders { public int reserve(int quantity) { if (quantity < 0) { throw new IllegalArgumentException(); } return quantity; } }\n").unwrap();
+    commit(&source);
+    let (work, input, _) = proposal_fixture(&f);
+    assert_eq!(
+        proposal_submit(&f, &work, &input)["status"],
+        "READY_WITH_LIMITATIONS"
+    );
+    let mut opposite = input.clone();
+    opposite["operations"][0]["steps"][0]["children"][0]["meaning"]["checks"][0]["expected"] =
+        json!("RETURN");
+    let result = proposal_submit(&f, &work, &opposite);
+    assert_eq!(result["status"], "NEEDS_REPAIR");
+    let artifact = proposal_artifact(&f, &result);
+    assert!(
+        artifact["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "CLAIM_CONTRADICTED" && d["actual"] == "THROW")
+    );
+    let mut hidden = input.clone();
+    hidden["operations"][0]["steps"][0]["children"] = json!([]);
+    let result = proposal_submit(&f, &work, &hidden);
+    assert_eq!(result["status"], "NEEDS_REPAIR");
+    assert!(
+        proposal_artifact(&f, &result)["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "STRUCTURE_OR_COVERAGE_INVALID")
+    );
+    let mut forged = input.clone();
+    forged["operations"][0]["summary"]["evidence"] = json!(["d999999"]);
+    assert_eq!(
+        proposal_submit(&f, &work, &forged)["status"],
+        "NEEDS_REPAIR"
+    );
+}
+
+#[test]
+fn docsys_t03_unsupported_predicates_need_gaps_and_authority_is_machine_owned() {
+    use serde_json::json;
+    let f = Fixture::new();
+    f.service("orders");
+    let (work, input, _) = proposal_fixture(&f);
+    let mut unknown = input.clone();
+    unknown["operations"][0]["steps"][0]["meaning"]["checks"][0]["kind"] = json!("runtimeActive");
+    assert_eq!(
+        proposal_submit(&f, &work, &unknown)["status"],
+        "NEEDS_REPAIR"
+    );
+    unknown["operations"][0]["steps"][0]["meaning"]["uncertainty"] =
+        json!("Runtime activation is unknown; this package contains committed syntax only.");
+    let result = proposal_submit(&f, &work, &unknown);
+    assert_eq!(result["status"], "READY_WITH_LIMITATIONS");
+    assert!(
+        proposal_artifact(&f, &result)["claims"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|c| c["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["status"] == "UNKNOWN"))
+    );
+    for (field, value) in [
+        ("verification", json!("ACCEPTED")),
+        ("authority", json!("COMPILER_PROVEN")),
+        ("claimReferences", json!(["self"])),
+    ] {
+        let mut forged = input.clone();
+        forged[field] = value;
+        let path = f.input("forged-proposal.json", &forged);
+        assert_ne!(
+            f.run(&[
+                "docs",
+                "proposal",
+                "submit",
+                "--work",
+                &work,
+                "--input",
+                path.to_str().unwrap()
+            ])
+            .0,
+            0
+        );
+    }
+    let mut cycle = input.clone();
+    cycle["operations"][0]["steps"][0]["children"] = json!([{"reference":"self"}]);
+    let path = f.input("cycle.json", &cycle);
+    assert_ne!(
+        f.run(&[
+            "docs",
+            "proposal",
+            "submit",
+            "--work",
+            &work,
+            "--input",
+            path.to_str().unwrap()
+        ])
+        .0,
+        0
+    );
+}
+
+#[test]
+fn docsys_t03_rejects_stale_and_incompletely_read_work() {
+    use serde_json::json;
+    let f = Fixture::new();
+    let source = f.service("orders");
+    let (work, input, _) = proposal_fixture(&f);
+    work_read(&f, &work, json!({"untrackedReads":true}));
+    assert_eq!(proposal_submit(&f, &work, &input)["status"], "NEEDS_REPAIR");
+    fs::write(
+        source.join("NewHelper.java"),
+        "class NewHelper { int value() { return 3; } }\n",
+    )
+    .unwrap();
+    commit(&source);
+    let path = f.input("stale-proposal.json", &input);
+    let (code, error) = f.run(&[
+        "docs",
+        "proposal",
+        "submit",
+        "--work",
+        &work,
+        "--input",
+        path.to_str().unwrap(),
+    ]);
+    assert_ne!(code, 0);
+    assert!(
+        error.to_string().contains("STALE_REQUIRES_RESLICE"),
+        "{error}"
+    );
+    let request = work_request(&f, 49152, 1);
+    let page = work_prepare(&f, &request);
+    let incomplete_id = page["work"].as_str().unwrap();
+    let empty = json!({"schema":"codeclew-documentation-proposal/1.0","operations":[]});
+    let result = proposal_submit(&f, incomplete_id, &empty);
+    assert!(
+        proposal_artifact(&f, &result)["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "REQUIRED_CONTEXT_NOT_READ")
+    );
+}

@@ -99,6 +99,8 @@ pub struct Work {
     pub handles: BTreeMap<String, Handle>,
     pub influence: BTreeMap<String, String>,
     pub obligations: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_reasons: Vec<Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -194,7 +196,30 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
     };
     let checked = check::run_selected(repo, &selected)?;
     checked.save(repo)?;
-    let retained = bindings::baseline(repo)?.and_then(|(_, b)| b.narratives.get(&subject).cloned());
+    let baseline = bindings::baseline(repo)?;
+    let retained = baseline
+        .as_ref()
+        .and_then(|(_, b)| b.narratives.get(&subject).cloned());
+    let changes = bindings::freshness(baseline.as_ref().map(|(_, b)| b), &checked);
+    let mut review_reasons: Vec<Value> = changes["affected"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| v["subject"] == subject)
+        .cloned()
+        .collect();
+    review_reasons.extend(
+        changes["catalogueChanges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|v| kind == "scenario" || v["service"] == id)
+            .cloned(),
+    );
+    if baseline.is_none() {
+        review_reasons.push(json!({"reason":"MISSING_BASELINE"}));
+    }
+
     let mut handles = BTreeMap::new();
     for (prefix, kind, ids) in [
         (
@@ -264,6 +289,7 @@ pub fn prepare(repo: &Repository, subject: String, request: Request) -> Result<V
         handles,
         influence,
         obligations,
+        review_reasons,
     };
     work.id = digest(&work)?[7..].into();
     // Validate selection before committing an unusable work object.
@@ -458,6 +484,11 @@ fn rows(work: &Work, selection: &Selection) -> Result<Vec<Value>, ClewError> {
     };
     if selection.query.is_none() && selection.references.is_empty() && selection.symbols.is_empty()
     {
+        for (index, record) in work.review_reasons.iter().enumerate() {
+            items.push(
+                json!({"kind":"REVIEW_REASON","id":format!("review-{index}"),"record":record}),
+            );
+        }
         for (path, record) in &work.external_inputs {
             items.push(json!({"kind":"EXTERNAL_INPUT","id":path,"record":record}));
         }
@@ -600,4 +631,26 @@ pub fn read(repo: &Repository, id: &str, selection: Selection) -> Result<Value, 
     }
     repo.atomic(&format!("{}/reads.json", directory(id)?), &encoded)?;
     Ok(output)
+}
+
+/// All initially required facts, old content and human inputs must be supplied.
+/// Omitted records are an evidence-budget problem, never a model-reasoning problem.
+pub fn initial_context_complete(state: &ReadState) -> bool {
+    let mut cursor: Option<String> = None;
+    for _ in 0..=state.receipts.len() {
+        let Some(receipt) = state.receipts.values().find(|r| {
+            r.selection.references.is_empty()
+                && r.selection.symbols.is_empty()
+                && r.selection.query.is_none()
+                && r.selection.cursor == cursor
+                && r.omitted.is_empty()
+        }) else {
+            return false;
+        };
+        if receipt.next_cursor.is_none() {
+            return true;
+        }
+        cursor = receipt.next_cursor.clone();
+    }
+    false
 }

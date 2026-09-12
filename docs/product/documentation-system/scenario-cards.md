@@ -81,6 +81,12 @@ As a documentation author, I explain an operation using exact source evidence so
 
 ### Regression checks
 
+T03 adds constrained proposal submission and bounded inspection. Four public CLI
+cases demonstrate stable canonical claims, legacy unassessed rendering, rejected
+opposite structured outcomes and missing branches, forged authority/handles/cycles,
+unknown predicates requiring gaps, stale work and unread required input. Separate
+meaning acceptance is intentionally still pending T04.
+
 T02 adds immutable `docs work prepare/read/expand` with work-local references,
 recorded pagination, negative query membership and conservative scopes. Three
 `docsys_t02_*` CLI tests cover source/note mutation, retained content, forged
@@ -352,6 +358,12 @@ As a documentation maintainer, I let a routine agent perform bounded authoring w
 - `agent.escalation` — bounded extension within this journey; preserve its regression checks.
 
 ### Regression checks
+
+T03 adds constrained proposal submission and bounded inspection. Four public CLI
+cases demonstrate stable canonical claims, legacy unassessed rendering, rejected
+opposite structured outcomes and missing branches, forged authority/handles/cycles,
+unknown predicates requiring gaps, stale work and unread required input. Separate
+meaning acceptance is intentionally still pending T04.
 
 T02 adds immutable `docs work prepare/read/expand` with work-local references,
 recorded pagination, negative query membership and conservative scopes. Three

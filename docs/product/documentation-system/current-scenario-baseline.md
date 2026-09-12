@@ -73,3 +73,12 @@ snapshot as if growth behavior existed at the base revision.
   the new facts. Three CLI regression cases pass. Read recording does not claim
   external-process isolation or semantic approval. Existing graph edges remain
   accurate; S08 still requires the later proposal/review tasks.
+
+- T03: constrained proposals now materialize stable claims, explanations and
+  bounded diagrams without author-created canonical IDs or approval fields.
+  Supported structured equality checks can contradict a proposed outcome;
+  unsupported predicates require a visible uncertainty. Required flow coverage,
+  recorded reads and exact current work inputs are checked before review. Four
+  CLI cases demonstrate these boundaries; prose meaning remains UNASSESSED.
+  Work preparation also supplies retained-fragment change reasons. Existing
+  graph transitions remain accurate pending the T04 reviewer/acceptance path.

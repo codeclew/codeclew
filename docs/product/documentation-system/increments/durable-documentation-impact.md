@@ -94,3 +94,8 @@ not claimed by this planning package's structural or independent review.
   evidence covers retained content, negative queries gaining members, changed
   source and notes, cursor misuse, forged handles and over-budget records. The
   remaining isolation and proposal obligations belong to T03/T04.
+
+- T03 → S02/S08, AC04/AC18: closed proposals, canonical materialization, provider
+  field checks and deterministic repair diagnostics are implemented. Four CLI
+  cases cover unsupported/contradicted claims, required branches, forged fields,
+  stale/untracked/incomplete work and legacy rendering without meaning approval.

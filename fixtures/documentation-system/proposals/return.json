@@ -1,0 +1,34 @@
+{
+  "schema": "codeclew-documentation-proposal/1.0",
+  "operations": [
+    {
+      "entrypoint": "e1",
+      "title": "Return quantity",
+      "summary": {
+        "text": "Returns the requested quantity.",
+        "evidence": [
+          "e1"
+        ]
+      },
+      "steps": [
+        {
+          "kind": "note",
+          "meaning": {
+            "text": "Returns the requested quantity.",
+            "evidence": [
+              "d1"
+            ],
+            "checks": [
+              {
+                "kind": "factEquals",
+                "evidence": "d1",
+                "field": "kind",
+                "expected": "RETURN"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

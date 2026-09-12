@@ -292,7 +292,8 @@ gap. A passing plan reviewer, mock adapter or schema checker cannot substitute f
 
 ## T03. Accept constrained content proposals with deterministic checks
 
-- **Status:** - [ ]
+- **Status:** - [x] Implemented; four T03 CLI cases and all twelve T00–T03
+  regression cases pass. Meaning acceptance remains a separate T04 obligation.
 - **Goal:** The author submits readable bounded content; Codeclew resolves its allowed evidence handles, builds canonical records and validates what can be checked deterministically.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC04, AC18; [scenario cards](../product/documentation-system/scenario-cards.md): S02, S08; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T02
