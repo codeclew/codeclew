@@ -6,6 +6,15 @@ mod support;
 use std::fs;
 use support::{Fixture, commit, read};
 
+fn portable_baseline(f: &Fixture) -> clew::documentation::bindings::Bindings {
+    clew::documentation::bindings::baseline(
+        &clew::documentation::store::Repository::open(&f.docs).unwrap(),
+    )
+    .unwrap()
+    .unwrap()
+    .1
+}
+
 #[test]
 fn docsys_t17_local_proposal_publication_retains_influence_without_inventing_review() {
     use serde_json::json;
@@ -2987,11 +2996,8 @@ fn docsys_t08_entities_keep_human_ownership_and_transitive_identity_dependencies
     assert_ne!(put(&dangling, false).0, 0);
     let checked = f.checked();
     let input = f.author("other", &checked);
-    let result = f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
-    let baseline: clew::documentation::bindings::Bindings = serde_json::from_value(read(
-        f.bundle(result["bundle"].as_str().unwrap(), "bindings.json"),
-    ))
-    .unwrap();
+    f.ok(&["docs", "render", "--input", input.to_str().unwrap()]);
+    let baseline = portable_baseline(&f);
     assert!(
         baseline
             .fragments
@@ -3702,8 +3708,7 @@ fn docsys_t10_reviewed_child_composition_versions_and_stale_source_influence() {
         data["operationStates"]["process-overview"]["verification"],
         "VERIFIED_WITH_LIMITATIONS"
     );
-    let baseline: clew::documentation::bindings::Bindings =
-        serde_json::from_value(read(f.bundle(bundle, "bindings.json"))).unwrap();
+    let baseline = portable_baseline(&f);
     let summary_id = data["operations"]
         .as_array()
         .unwrap()
@@ -4132,8 +4137,7 @@ fn docsys_t11_mapper_change_invalidates_views_process_and_contract_with_independ
     ))
     .unwrap();
     assert!(mmd.contains("flowchart LR") && mmd.contains("-.->") && mmd.contains("UNKNOWN"));
-    let baseline: clew::documentation::bindings::Bindings =
-        serde_json::from_value(read(f.bundle(bundle, "bindings.json"))).unwrap();
+    let baseline = portable_baseline(&f);
     assert!(
         baseline.fragments["scenario:quantity-view/entity-dataflow/edge-read"]
             .dependencies
