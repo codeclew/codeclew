@@ -36,3 +36,5 @@ pub(crate) fn bytes(value: &impl Serialize) -> Result<Vec<u8>, ClewError> {
 }
 
 pub mod modules;
+
+mod source_annotations;

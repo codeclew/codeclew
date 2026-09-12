@@ -1396,3 +1396,124 @@ fn docsys_t05_rejects_wrong_language_ambiguous_and_executable_module_configurati
     assert_ne!(code, 0);
     assert!(error.to_string().contains("legacy source.semantic"));
 }
+
+fn spring_source_fixture(
+    language: &str,
+    text: &str,
+) -> (Fixture, clew::documentation::check::Check) {
+    use serde_json::json;
+    let f = Fixture::new();
+    let repo = f.service("orders");
+    fs::remove_file(repo.join("Orders.java")).unwrap();
+    fs::write(
+        repo.join(if language == "java" {
+            "Orders.java"
+        } else {
+            "Orders.kt"
+        }),
+        text,
+    )
+    .unwrap();
+    commit(&repo);
+    let mut record = read(f.docs.join("catalog/services/orders.json"));
+    record["language"] = json!(language);
+    record["source"]["dialect"] = json!(if language == "java" { "17" } else { "1.9" });
+    let input = f.input("spring-service.json", &record);
+    let current = f.ok(&["docs", "service", "list"])["inputDigest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.ok(&[
+        "docs",
+        "service",
+        "add",
+        "--input",
+        input.to_str().unwrap(),
+        "--expected-input-digest",
+        &current,
+    ]);
+    let checked = f.checked();
+    (f, checked)
+}
+#[test]
+fn docsys_t06_shared_rules_derive_equivalent_java_and_kotlin_source_endpoints() {
+    for (language, text) in [
+        (
+            "java",
+            include_str!("../../../fixtures/documentation-system/spring/Orders.java"),
+        ),
+        (
+            "kotlin",
+            include_str!("../../../fixtures/documentation-system/spring/Orders.kt"),
+        ),
+    ] {
+        let (_f, checked) = spring_source_fixture(language, text);
+        let service = &checked.services["orders"];
+        let endpoint = service
+            .entrypoints
+            .iter()
+            .find(|e| e.kind == "HTTP_ENDPOINT")
+            .unwrap_or_else(|| panic!("{language}: {service:?}"));
+        assert_eq!(endpoint.trigger["methods"], serde_json::json!(["POST"]));
+        assert_eq!(
+            endpoint.trigger["paths"],
+            serde_json::json!(["/orders/reserve"])
+        );
+        assert_eq!(endpoint.trigger["authority"], "FRAMEWORK_DERIVED_SOURCE");
+        assert_eq!(
+            endpoint.trigger["frameworkDerivation"]["inputSchema"],
+            "source-annotation-facts/1.0"
+        );
+        assert!(
+            endpoint
+                .boundaries
+                .iter()
+                .any(|b| b == "SOURCE_NAMES_NOT_COMPILER_RESOLVED")
+        );
+        assert_eq!(service.runtime_mode, "COMMITTED_SOURCE_NO_BUILD");
+    }
+}
+#[test]
+fn docsys_t06_unrelated_or_ambiguous_annotations_never_become_spring_routes() {
+    let java = include_str!("../../../fixtures/documentation-system/spring/Orders.java");
+    for text in [java.replace("import org.springframework.web.bind.annotation.PostMapping;","import other.PostMapping;"),java.replace("import org.springframework.web.bind.annotation.PostMapping;","import org.springframework.web.bind.annotation.*;"),java.replace("import org.springframework.web.bind.annotation.PostMapping;","@interface PostMapping { String path(); }"),java.replace("import org.springframework.web.bind.annotation.PostMapping;","import org.springframework.web.bind.annotation.PostMapping;\nimport other.PostMapping;")] {
+        let (_,checked)=spring_source_fixture("java",&text);assert!(!checked.services["orders"].entrypoints.iter().any(|e|e.kind=="HTTP_ENDPOINT"),"{checked:?}");
+    }
+}
+#[test]
+fn docsys_t06_dynamic_values_alias_conflicts_and_inheritance_keep_named_gaps() {
+    let java = include_str!("../../../fixtures/documentation-system/spring/Orders.java");
+    for (text, gap) in [
+        (
+            java.replace("path = \"/reserve\"", "path = ROUTE"),
+            "UNRESOLVED_ANNOTATION_VALUE",
+        ),
+        (
+            java.replace(
+                "path = \"/reserve\"",
+                "value = \"/other\", path = \"/reserve\"",
+            ),
+            "CONFLICTING_PATH_ALIASES",
+        ),
+        (
+            java.replace(
+                "public class Orders {",
+                "public class Orders extends BaseOrders {",
+            ),
+            "SOURCE_INHERITANCE_UNRESOLVED",
+        ),
+        (
+            java.replace("path = \"/reserve\"", "path = \"${route}\""),
+            "RUNTIME_EXPRESSION",
+        ),
+    ] {
+        let (_, checked) = spring_source_fixture("java", &text);
+        assert!(
+            checked.services["orders"]
+                .boundaries
+                .iter()
+                .any(|b| b == gap),
+            "{gap}: {checked:?}"
+        );
+    }
+}

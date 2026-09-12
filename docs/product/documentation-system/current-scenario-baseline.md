@@ -104,3 +104,14 @@ snapshot as if growth behavior existed at the base revision.
   its explicit language-upgrade boundary and Kafka observations. Module rule
   changes invalidate bindings without requiring source changes. S01/S11 graph
   transitions remain unchanged; normalized source Spring rules are still T06.
+
+- T06: Java/Kotlin source adapters now normalize annotations and explicit import
+  qualification into a separate source contract. The shared Rust Spring rule
+  engine derives literal declarations with source authority and named gaps;
+  existing compiler facts/worker contracts remain unchanged. Three CLI cases,
+  two source-fact tests, two shared-source rule tests and five existing Spring
+  regressions pass. Documentation unit regressions pass 25 cases. Boot 3.3.0 /
+  Spring MVC 6.1.8 MockMvc verifies the Java fixture's POST and rejected GET;
+  Java bytecode targets 17 while the test JVM is 21. This is bounded controller
+  registration evidence, not universal Boot or production qualification. The
+  fixture README records exact tested configurations. S07/S11 edges are unchanged.

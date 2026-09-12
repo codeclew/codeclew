@@ -338,6 +338,16 @@ As a documentation author, I enroll a service and receive a standard responsibil
 
 Requires standard section kinds, domain identities, complete boundary inventory and shared framework/contract interpretation. The acceptance mapping is in the [target](target-system.md#acceptance-contract-and-traceability).
 
+### T06 implementation evidence
+
+Java/Kotlin source annotation facts feed the shared Rust Spring interpreter.
+Qualified imports, Kotlin aliases and literal mappings derive source declarations;
+unrelated/ambiguous annotations and unresolved aliases/values/hierarchy remain
+explicit gaps. Three CLI tests and typed-contract/shared-rule tests pass alongside
+existing Spring compiler-metadata and documentation regressions. The Boot 3.3.0
+fixture verifies a bounded MockMvc route; see its exact [compatibility matrix](../../../fixtures/documentation-system/spring/README.md).
+The existing compiler schema and worker bridges are unchanged.
+
 ## S08 — Author, review and escalate bounded agent work
 
 - **Status:** growth
@@ -527,6 +537,16 @@ cover missing tools and invalid/ambiguous selection; actual Kotlin 1.9.25 and
 Maven/javac recovery checks pass. Module/rule changes affect freshness without
 source-byte changes. Python syntax and Kafka checks remain regression evidence.
 Source annotation interpretation and further framework compatibility are T06.
+
+### T06 implementation evidence
+
+Java/Kotlin source annotation facts feed the shared Rust Spring interpreter.
+Qualified imports, Kotlin aliases and literal mappings derive source declarations;
+unrelated/ambiguous annotations and unresolved aliases/values/hierarchy remain
+explicit gaps. Three CLI tests and typed-contract/shared-rule tests pass alongside
+existing Spring compiler-metadata and documentation regressions. The Boot 3.3.0
+fixture verifies a bounded MockMvc route; see its exact [compatibility matrix](../../../fixtures/documentation-system/spring/README.md).
+The existing compiler schema and worker bridges are unchanged.
 
 ## S12 — Update central documentation through CI and inspect history
 

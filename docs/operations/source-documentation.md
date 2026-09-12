@@ -64,9 +64,11 @@ clew docs render --root /work/architecture --input /work/orders-narrative.json
 ```
 
 A qualified name must select exactly one declaration; overloads need an exact
-returned identity. Source entrypoints are callable declarations, including
-unannotated helpers, rather than confirmed framework endpoints. Compiler
-profiles retain their existing endpoint discovery. Use explicit gaps for
+returned identity. Source entrypoints retain callable identities, including unannotated helpers.
+Java/Kotlin annotations with fully qualified names or explicit imports also
+supply Spring declaration triggers through shared Rust rules. These are source
+declarations with runtime-registration gaps. Compiler profiles retain their
+existing endpoint discovery. Use explicit gaps for
 callables whose behavior is not yet authored. Follow `nextCursor` and inspect
 `omitted`; compact output is a projection of the same selected evidence, not a
 new context planner. `SOURCE_ALIAS` names a covering source fragment and provides
@@ -212,5 +214,6 @@ Module implementation/rule digests, selection and availability participate in th
 conservative service scope. Provider loss preserves source readability and marks
 relevant dependent evidence changed; rule changes can require review without a
 source commit. A module name never promotes syntax or declared facts to runtime
-proof. The shared Spring module currently consumes validated JVM annotation facts;
-source annotation derivation is introduced separately.
+proof. The shared Spring module consumes compiler facts and separately qualified source
+annotation facts. Its authority follows the input; source spelling never becomes
+compiler resolution. See the [tested compatibility matrix](../../fixtures/documentation-system/spring/README.md).

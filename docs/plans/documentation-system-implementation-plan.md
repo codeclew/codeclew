@@ -420,7 +420,7 @@ passes. Kotlin 1.9 analysis retains its explicit language-upgrade limitation.
 
 ## T06. Feed shared Spring rules from normalized source annotations
 
-- **Status:** - [ ]
+- **Status:** - [x]
 - **Goal:** Kotlin and Java service boundaries can use the same Rust Spring interpretation even when only source evidence is available.
 - **Sources:** [Target acceptance](../product/documentation-system/target-system.md#acceptance-contract-and-traceability): AC08; [scenario cards](../product/documentation-system/scenario-cards.md): S07, S11; [impact](../product/documentation-system/increments/durable-documentation-impact.md).
 - **Depends on:** T05
@@ -467,6 +467,18 @@ passes. Kotlin 1.9 analysis retains its explicit language-upgrade limitation.
   - Common Spring rules retain existing semantic evidence quality and source-only limitations.
   - Existing semantic/Kafka rule behavior is covered by regression tests.
   - Relevant checks pass with the required test cases actually executed; record evidence before changing Status.
+
+**Observed verification (2026-09-12):** Three public CLI cases pass (58.69 seconds),
+two additive source-fact contract tests and two shared-source Spring rule tests
+pass, five existing Spring entrypoint regressions pass, and 25 documentation unit
+regressions pass (two separate JVM qualification cases ignored in this unit run).
+The Boot 3.3.0 managed Spring MVC 6.1.8 fixture passes one actual MockMvc test with
+POST and GET assertions; its class major version is 61 (Java 17), test JVM 21.
+The initial Kotlin import discovery failure was corrected to use the pinned
+Kotlin grammar's `import` node, then the relevant and final CLI cases passed.
+The conditional producer branch is not applicable: the additive Rust source
+schema does not change `jvm-annotation-facts/1.0` or any worker bridge. Tested
+versions and limits are recorded in the Spring fixture README.
 
 ## T07. Make declared OpenAPI usable as an independent contract module
 

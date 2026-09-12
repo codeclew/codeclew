@@ -48,6 +48,108 @@ struct Binding {
 pub fn analyze(facts: &JvmAnnotationFacts) -> Result<SpringMetadata, String> {
     facts.validate().map_err(str::to_owned)?;
     let input_digest = clew_facts::digest(facts).map_err(|error| error.to_string())?;
+    analyze_validated(facts, input_digest)
+}
+
+/// Interpret qualified source spelling without changing the compiler contract.
+/// The same rule engine handles language-independent annotation declarations.
+pub fn analyze_source(
+    source: &clew_facts::SourceAnnotationFacts,
+) -> Result<SpringMetadata, String> {
+    source.validate().map_err(str::to_owned)?;
+    let mut boundaries: BTreeSet<_> = source.boundaries.iter().cloned().collect();
+    boundaries.insert("SOURCE_NAMES_NOT_COMPILER_RESOLVED".into());
+    boundaries.insert("RUNTIME_REGISTRATION_UNPROVEN".into());
+    let mut convert = |annotations: &[clew_facts::SourceAnnotationUse]| -> Vec<AnnotationUse> {
+        annotations
+            .iter()
+            .filter_map(|a| {
+                let Some(name) = &a.qualified_name else {
+                    boundaries.insert("SOURCE_ANNOTATION_NAME_UNRESOLVED".into());
+                    return None;
+                };
+                let mut arguments = a.arguments.clone();
+                // A compiler would reject a mismatched enum type; syntax has no such proof.
+                if name == REQUEST
+                    && arguments
+                        .get("method")
+                        .is_some_and(|v| !source_request_methods(v))
+                {
+                    arguments.insert(
+                        "method".into(),
+                        AnnotationValue::Unresolved {
+                            reason: "REQUEST_METHOD_TYPE_UNPROVEN".into(),
+                        },
+                    );
+                    boundaries.insert("REQUEST_METHOD_TYPE_UNPROVEN".into());
+                }
+                Some(AnnotationUse {
+                    type_name: name.clone(),
+                    arguments,
+                    origin: a.origin.clone(),
+                    use_site_target: None,
+                })
+            })
+            .collect()
+    };
+    let annotations = convert(&source.declaration.annotations);
+    let classes = source
+        .owners
+        .iter()
+        .map(|owner| clew_facts::AnnotatedType {
+            identity: owner.identity.clone(),
+            annotations: convert(&owner.annotations),
+            direct_supertypes: vec![],
+        })
+        .collect();
+    let facts = JvmAnnotationFacts {
+        schema: source.schema.clone(),
+        authority: source.authority.clone(),
+        declaration: source.declaration.identity.clone(),
+        definitions: BTreeMap::new(),
+        types: vec![],
+        callables: vec![clew_facts::AnnotatedCallable {
+            method: AnnotatedMethod {
+                identity: source.declaration.identity.clone(),
+                annotations,
+                overrides: vec![],
+            },
+            classes,
+            bean_class: None,
+            abstract_method: false,
+            inherited: false,
+            implementation_source: false,
+        }],
+        boundaries: boundaries.into_iter().collect(),
+        coverage: clew_facts::Coverage {
+            status: "PARTIAL".into(),
+            scope: "SOURCE_DECLARED_ANNOTATIONS_ONLY".into(),
+        },
+    };
+    let mut metadata = analyze_validated(
+        &facts,
+        clew_facts::digest(source).map_err(|e| e.to_string())?,
+    )?;
+    metadata.authority = "FRAMEWORK_DERIVED_SOURCE".into();
+    Ok(metadata)
+}
+fn source_request_methods(value: &AnnotationValue) -> bool {
+    match value {
+        AnnotationValue::Enum { r#type, value } => {
+            r#type == "org.springframework.web.bind.annotation.RequestMethod"
+                && [
+                    "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE",
+                ]
+                .contains(&value.as_str())
+        }
+        AnnotationValue::Array { values } => values.iter().all(source_request_methods),
+        _ => false,
+    }
+}
+fn analyze_validated(
+    facts: &JvmAnnotationFacts,
+    input_digest: String,
+) -> Result<SpringMetadata, String> {
     let mut interpreter = Interpreter {
         facts,
         boundaries: facts.boundaries.iter().cloned().collect(),
@@ -296,6 +398,17 @@ impl Interpreter<'_> {
                 } else {
                     attributes
                 },
+            }];
+        }
+        if self.facts.authority == "SOURCE_ANNOTATIONS"
+            && name == "org.springframework.web.bind.annotation.RestController"
+        {
+            // This is a versioned framework declaration rule, not a synthesized
+            // compiler annotation definition or proof of bean registration.
+            return vec![Binding {
+                annotation: CONTROLLER.into(),
+                chain,
+                attributes,
             }];
         }
         let Some(definition) = self.facts.definitions.get(name).cloned() else {
@@ -719,5 +832,85 @@ pub fn describe_trigger(entry: &SpringEntry) -> Value {
             "authority":"SPRING_ANNOTATION_RULES"
         }),
         _ => json!({"configuration":attributes,"authority":"SPRING_ANNOTATION_RULES"}),
+    }
+}
+
+#[cfg(test)]
+mod source_rules_tests {
+    use super::*;
+    use clew_facts::{Origin, SourceAnnotatedElement, SourceAnnotationFacts, SourceAnnotationUse};
+    fn facts(name: &str, arguments: BTreeMap<String, AnnotationValue>) -> SourceAnnotationFacts {
+        SourceAnnotationFacts {
+            schema: clew_facts::SOURCE_ANNOTATION_SCHEMA.into(),
+            authority: "SOURCE_ANNOTATIONS".into(),
+            language: "java".into(),
+            declaration: SourceAnnotatedElement {
+                identity: "source:Orders/reserve".into(),
+                annotations: vec![SourceAnnotationUse {
+                    spelling: name.into(),
+                    qualified_name: Some(name.into()),
+                    qualification: "FULLY_QUALIFIED".into(),
+                    arguments,
+                    origin: Origin {
+                        kind: "SOURCE".into(),
+                        identity: "Orders.java".into(),
+                        start: None,
+                        end: None,
+                    },
+                }],
+            },
+            owners: vec![],
+            imports: vec![],
+            boundaries: vec![],
+        }
+    }
+    #[test]
+    fn source_defaults_and_unavailable_composition_remain_distinct() {
+        let source = facts(
+            "org.springframework.web.bind.annotation.PostMapping",
+            BTreeMap::new(),
+        );
+        let metadata = analyze_source(&source).unwrap();
+        assert_eq!(metadata.entries.len(), 1);
+        assert_eq!(
+            describe_trigger(&metadata.entries[0])["methods"],
+            json!(["POST"])
+        );
+        assert_eq!(describe_trigger(&metadata.entries[0])["paths"], json!([""]));
+        assert_eq!(metadata.authority, "FRAMEWORK_DERIVED_SOURCE");
+        assert_eq!(
+            metadata.derivation.unwrap().input_authority,
+            "SOURCE_ANNOTATIONS"
+        );
+        let custom = analyze_source(&facts("example.FastEndpoint", BTreeMap::new())).unwrap();
+        assert!(custom.entries.is_empty());
+        assert!(
+            custom
+                .boundaries
+                .contains(&"ANNOTATION_DECLARATION_UNAVAILABLE".into())
+        );
+    }
+    #[test]
+    fn source_enum_spelling_is_not_a_resolved_request_method_type() {
+        let source = facts(
+            REQUEST,
+            BTreeMap::from([(
+                "method".into(),
+                AnnotationValue::Enum {
+                    r#type: "example.Other".into(),
+                    value: "GET".into(),
+                },
+            )]),
+        );
+        let metadata = analyze_source(&source).unwrap();
+        assert!(
+            metadata
+                .boundaries
+                .contains(&"REQUEST_METHOD_TYPE_UNPROVEN".into())
+        );
+        assert!(describe_trigger(&metadata.entries[0])["methods"].is_null());
+        let mut forged = source;
+        forged.authority = "JAVAC_RESOLVED_ANNOTATIONS".into();
+        assert!(analyze_source(&forged).is_err());
     }
 }

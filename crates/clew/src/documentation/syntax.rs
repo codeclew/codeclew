@@ -397,6 +397,7 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
             node.kind(),
             "import_declaration"
                 | "import_header"
+                | "import"
                 | "import_statement"
                 | "import_from_statement"
                 | "field_declaration"
@@ -436,6 +437,27 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
             vec![source],
         )?;
     }
+    let annotation_context = if matches!(file.service.language.as_str(), "java" | "kotlin") {
+        Some(super::source_annotations::Context::new(
+            &file.service.language,
+            file.path,
+            file.text,
+            root,
+        )?)
+    } else {
+        None
+    };
+    let annotation_sources: Vec<_> = e
+        .observations
+        .values()
+        .filter(|o| {
+            o.kind == "SYNTAX_DETAIL"
+                && o.source_ids
+                    .iter()
+                    .any(|id| e.sources[id].file == file.path)
+        })
+        .flat_map(|o| o.source_ids.iter().cloned())
+        .collect();
     let mut counts = BTreeMap::new();
     for (_, _, _, id) in &declarations {
         *counts.entry(id.clone()).or_insert(0) += 1;
@@ -494,18 +516,61 @@ fn extract(file: &File<'_>, root: Node<'_>, e: &mut ServiceEvidence) -> Result<(
         let normalized = json!({"kind":"DECLARATION","authority":"SYNTAX","name":name,"ownerIdentity":owner,"symbolIdentity":identity,"syntaxKind":node.kind(),"fingerprint":fingerprint(node,file.text)?,"documentation":{"parameterTypes":parameter_types,"events":events,"boundaries":["CALL_TARGETS_UNRESOLVED","ORDER_LEXICAL_ONLY"]}});
         let dep = observe(e, "SYMBOL", &identity, normalized, vec![source.clone()])?;
         if callable(node.kind()) {
+            let mut spring = None;
+            let mut dependencies = vec![dep];
+            if let Some(context) = &annotation_context {
+                let facts = context.facts(node, &identity)?;
+                if !facts.declaration.annotations.is_empty()
+                    || facts.owners.iter().any(|o| !o.annotations.is_empty())
+                {
+                    let metadata =
+                        clew_framework_spring::analyze_source(&facts).map_err(invalid)?;
+                    let mut sources = annotation_sources.clone();
+                    sources.push(source.clone());
+                    sources.sort();
+                    sources.dedup();
+                    let observation = observe(
+                        e,
+                        "SOURCE_ANNOTATIONS",
+                        &identity,
+                        json!({"authority":"SOURCE_ANNOTATIONS","facts":facts,"framework":metadata}),
+                        sources,
+                    )?;
+                    dependencies.push(observation);
+                    e.boundaries.extend(metadata.boundaries.iter().cloned());
+                    spring = Some(metadata);
+                }
+            }
+            let mut trigger = json!({"authority":"SYNTAX","name":name,"owner":owner});
+            let mut kind = "SOURCE_DECLARATION".to_owned();
+            let mut boundaries = vec![
+                "TRIGGER_NOT_FRAMEWORK_RESOLVED".into(),
+                "CALL_TARGETS_UNRESOLVED".into(),
+            ];
+            if let Some(metadata) = spring {
+                boundaries.extend(metadata.boundaries.clone());
+                trigger["frameworkDeclarations"]=json!(metadata.entries.iter().map(|entry|json!({"kind":entry.kind,"trigger":crate::spring_entrypoints::describe_trigger(entry),"registration":entry.registration})).collect::<Vec<_>>());
+                trigger["frameworkDerivation"] = json!(metadata.derivation);
+                if metadata.entries.len() == 1 {
+                    kind = metadata.entries[0].kind.clone();
+                    let derived = crate::spring_entrypoints::describe_trigger(&metadata.entries[0]);
+                    for (key, value) in derived.as_object().into_iter().flatten() {
+                        trigger[key] = value.clone();
+                    }
+                    trigger["authority"] = json!("FRAMEWORK_DERIVED_SOURCE");
+                }
+            }
+            boundaries.sort();
+            boundaries.dedup();
             e.entrypoints.push(Entrypoint {
                 id: analysis::source_id(&e.service, &format!("entry:{identity}"))?,
                 service: e.service.clone(),
                 symbol: identity,
-                kind: "SOURCE_DECLARATION".into(),
-                trigger: json!({"authority":"SYNTAX","name":name,"owner":owner}),
+                kind,
+                trigger,
                 source_ids: vec![source],
-                dependency_ids: vec![dep],
-                boundaries: vec![
-                    "TRIGGER_NOT_FRAMEWORK_RESOLVED".into(),
-                    "CALL_TARGETS_UNRESOLVED".into(),
-                ],
+                dependency_ids: dependencies,
+                boundaries,
             });
         }
     }

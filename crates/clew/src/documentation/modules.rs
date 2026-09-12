@@ -114,9 +114,14 @@ fn catalog() -> Result<Vec<Value>, ClewError> {
         json!(["java", "kotlin", "python"]),
         "SYNTAX_ONLY",
         json!([crate::repository_snapshot::SNAPSHOT_SCHEMA]),
-        json!(["codeclew-documentation-service-evidence/1.0"]),
+        json!([
+            "codeclew-documentation-service-evidence/1.0",
+            clew_facts::SOURCE_ANNOTATION_SCHEMA
+        ]),
         digest(&(
             crate::canonical::hash_bytes(include_bytes!("syntax.rs")),
+            crate::canonical::hash_bytes(include_bytes!("source_annotations.rs")),
+            crate::canonical::hash_bytes(include_bytes!("../../../clew-facts/src/lib.rs")),
             crate::canonical::hash_bytes(include_bytes!("../../../../Cargo.lock")),
         ))?,
     );
@@ -176,12 +181,15 @@ fn catalog() -> Result<Vec<Value>, ClewError> {
     let mut spring = common(
         clew_framework_spring::MODULE_ID,
         json!(["java", "kotlin"]),
-        "DERIVED_FROM_VALIDATED_ANNOTATION_AUTHORITY",
-        json!([clew_facts::JVM_ANNOTATION_SCHEMA]),
+        "DERIVED_FROM_EXPLICIT_INPUT_AUTHORITY",
+        json!([
+            clew_facts::JVM_ANNOTATION_SCHEMA,
+            clew_facts::SOURCE_ANNOTATION_SCHEMA
+        ]),
         json!(["spring-entrypoints/0.2"]),
         clew_framework_spring::implementation_digest(),
     );
-    spring["availability"] = json!("BUILT_IN_SEALED_FACTS_REQUIRED");
+    spring["availability"] = json!("BUILT_IN_SOURCE_OR_SEALED_FACTS");
     spring["projectCompatibility"] = json!("QUALIFIED_FRAMEWORK_RULES_ONLY");
     Ok(vec![source, java, kotlin, spring])
 }
@@ -213,6 +221,7 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
                 Some("kotlin-k2") =>
                     service.language == "kotlin"
                         && (semantic(service).is_some() || service.profile != "source-syntax"),
+                Some("spring") => matches!(service.language.as_str(), "java" | "kotlin"),
                 _ => false,
             });
         }
@@ -242,7 +251,7 @@ pub(super) fn attach(service: &Service, evidence: &mut ServiceEvidence) -> Resul
                 service.language == "kotlin"
                     && (selected.is_some() || service.profile != "source-syntax")
             }
-            _ => service.profile != "source-syntax" || selected.is_some(),
+            _ => matches!(service.language.as_str(), "java" | "kotlin"),
         })
         .collect();
     let normalized = json!({"schema":"codeclew-documentation-module-influence/1.0","configuration":service.modules,"legacySemantic":service.source.as_ref().and_then(|s|s.semantic.as_ref()),"modules":records,"adapterProtocol":crate::adapter_v2::ADAPTER_PROTOCOL,"derivationDigest":digest(&(crate::canonical::hash_bytes(include_bytes!("analysis.rs")),crate::canonical::hash_bytes(include_bytes!("modules.rs"))))?});

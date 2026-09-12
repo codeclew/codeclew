@@ -112,3 +112,9 @@ not claimed by this planning package's structural or independent review.
   preserve source-first readability and conservative module influence. Three
   new CLI tests and actual Kotlin 1.9/javac recovery checks pass; adapter registry,
   Python syntax, Kafka and accepted-review paths remain regression evidence.
+
+- T06 → S07/S11, AC08: one Rust framework interpreter accepts separately validated
+  source annotations and existing compiler facts. Literal Java/Kotlin declarations
+  share rules; unresolved names, values, composition and inheritance stay gaps.
+  Source/public CLI, compiler-metadata regressions and a Boot 3.3.0 managed MVC
+  fixture pass. No worker protocol change or new runtime-registration claim.

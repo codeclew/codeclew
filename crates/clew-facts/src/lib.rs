@@ -104,6 +104,123 @@ pub struct AnnotatedCallable {
     pub implementation_source: bool,
 }
 
+/// Syntax evidence has its own additive contract. It cannot carry compiler
+/// relationships, binary definitions, or a resolved-annotation authority.
+pub const SOURCE_ANNOTATION_SCHEMA: &str = "source-annotation-facts/1.0";
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceAnnotationFacts {
+    pub schema: String,
+    pub authority: String,
+    pub language: String,
+    pub declaration: SourceAnnotatedElement,
+    pub owners: Vec<SourceAnnotatedElement>,
+    pub imports: Vec<String>,
+    pub boundaries: Vec<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceAnnotatedElement {
+    pub identity: String,
+    pub annotations: Vec<SourceAnnotationUse>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceAnnotationUse {
+    pub spelling: String,
+    pub qualified_name: Option<String>,
+    pub qualification: String,
+    pub arguments: BTreeMap<String, AnnotationValue>,
+    pub origin: Origin,
+}
+impl SourceAnnotationFacts {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema != SOURCE_ANNOTATION_SCHEMA
+            || self.authority != "SOURCE_ANNOTATIONS"
+            || !matches!(self.language.as_str(), "java" | "kotlin")
+            || self.owners.len() > 128
+            || self.imports.len() > 2048
+            || self.boundaries.len() > 256
+            || self
+                .imports
+                .iter()
+                .chain(&self.boundaries)
+                .any(|s| s.is_empty() || s.len() > 2048)
+        {
+            return Err("invalid source annotation identity or bounds");
+        }
+        let mut budget = 32768;
+        for element in std::iter::once(&self.declaration).chain(&self.owners) {
+            if element.identity.is_empty()
+                || element.identity.len() > 8192
+                || element.annotations.len() > 128
+            {
+                return Err("invalid source declaration or annotation bounds");
+            }
+            for annotation in &element.annotations {
+                spend(&mut budget)?;
+                if annotation.spelling.is_empty()
+                    || annotation.spelling.len() > 1024
+                    || annotation.origin.kind != "SOURCE"
+                    || annotation.arguments.len() > 512
+                {
+                    return Err("invalid source annotation origin or size");
+                }
+                origin(&annotation.origin)?;
+                match (
+                    annotation.qualification.as_str(),
+                    &annotation.qualified_name,
+                ) {
+                    ("FULLY_QUALIFIED", Some(name))
+                        if name.len() <= 1024
+                            && name.contains('.')
+                            && name == &annotation.spelling => {}
+                    ("EXPLICIT_IMPORT", Some(name))
+                        if name.len() <= 1024
+                            && self.imports.iter().any(|import| {
+                                source_import_matches(import, &annotation.spelling, name)
+                            }) => {}
+                    ("UNRESOLVED", None) => {}
+                    _ => {
+                        return Err(
+                            "source annotation name qualification does not match its evidence",
+                        );
+                    }
+                }
+                for value in annotation.arguments.values() {
+                    value.validate(0, &mut budget)?;
+                    if !source_value(value) {
+                        return Err(
+                            "source annotations cannot carry compiler-exact class or nested annotation identities",
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+fn source_import_matches(import: &str, spelling: &str, qualified: &str) -> bool {
+    let parts: Vec<_> = import.split_whitespace().collect();
+    if parts.first() != Some(&"import") || parts.iter().any(|s| *s == "static" || *s == "*") {
+        return false;
+    }
+    let alias = parts.iter().position(|p| *p == "as");
+    let end = alias.unwrap_or(parts.len());
+    let name = parts[1..end].join("").trim_end_matches(';').to_owned();
+    let local = alias
+        .and_then(|i| parts.get(i + 1).copied())
+        .unwrap_or_else(|| name.rsplit('.').next().unwrap_or(""));
+    name == qualified && local == spelling
+}
+fn source_value(value: &AnnotationValue) -> bool {
+    match value {
+        AnnotationValue::Class { .. } | AnnotationValue::Annotation { .. } => false,
+        AnnotationValue::Array { values } => values.iter().all(source_value),
+        _ => true,
+    }
+}
+
 pub fn digest<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
     // Struct field order and BTreeMap keys are deterministic. This contract's
     // digest is versioned separately from envelopes owned by other consumers.
@@ -237,5 +354,63 @@ impl AnnotationValue {
             _ => (),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod source_contract_tests {
+    use super::*;
+    use serde_json::json;
+    fn record() -> serde_json::Value {
+        json!({"schema":SOURCE_ANNOTATION_SCHEMA,"authority":"SOURCE_ANNOTATIONS","language":"java","declaration":{"identity":"source:Orders/reserve","annotations":[{"spelling":"PostMapping","qualifiedName":"org.springframework.web.bind.annotation.PostMapping","qualification":"EXPLICIT_IMPORT","arguments":{},"origin":{"kind":"SOURCE","identity":"Orders.java"}}]},"owners":[],"imports":["import org.springframework.web.bind.annotation.PostMapping"],"boundaries":[]})
+    }
+    #[test]
+    fn source_contract_cannot_claim_compiler_authority_or_relationships() {
+        let original = record();
+        let valid: SourceAnnotationFacts = serde_json::from_value(original.clone()).unwrap();
+        valid.validate().unwrap();
+        let mut forged = original.clone();
+        forged["authority"] = json!("JAVAC_RESOLVED_ANNOTATIONS");
+        assert!(
+            serde_json::from_value::<SourceAnnotationFacts>(forged)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let mut forged = original.clone();
+        forged["declaration"]["overrides"] = json!(["compiler:base"]);
+        assert!(serde_json::from_value::<SourceAnnotationFacts>(forged).is_err());
+        let mut forged = original;
+        forged["declaration"]["annotations"][0]["origin"]["kind"] = json!("BINARY");
+        assert!(
+            serde_json::from_value::<SourceAnnotationFacts>(forged)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    #[test]
+    fn source_qualification_cannot_hide_unresolved_names_or_nested_compiler_values() {
+        let mut unresolved = record();
+        unresolved["declaration"]["annotations"][0]["qualification"] = json!("UNRESOLVED");
+        assert!(
+            serde_json::from_value::<SourceAnnotationFacts>(unresolved.clone())
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        unresolved["declaration"]["annotations"][0]["qualifiedName"] = serde_json::Value::Null;
+        serde_json::from_value::<SourceAnnotationFacts>(unresolved.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        unresolved["declaration"]["annotations"][0]["arguments"]["type"] =
+            json!({"kind":"CLASS","value":"compiler:exact"});
+        assert!(
+            serde_json::from_value::<SourceAnnotationFacts>(unresolved)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 }
