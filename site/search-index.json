@@ -162,6 +162,12 @@
     "group": "Documentation"
   },
   {
+    "title": "A fresh repository already has help.",
+    "url": "./documentation.html#offline-help",
+    "description": "Service documentation",
+    "group": "Documentation"
+  },
+  {
     "title": "Add a note to the thing it explains.",
     "url": "./documentation.html#notes-and-comments",
     "description": "Service documentation",
