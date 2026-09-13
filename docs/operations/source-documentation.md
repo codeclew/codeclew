@@ -32,7 +32,7 @@ evidence, refresh, relocation and publication. Both work offline before
 the first publication. Re-running init preserves existing guide files. New
 publications include the guides in their immutable snapshots and navigation.
 
-The source checkout's reader update is pending the next release. It adds a
+Codeclew 0.8.2 adds a
 searchable `catalog.html` with type filters and 20 results per page. Global
 navigation stays bounded as services and processes grow; a document's sections
 and operations remain in its local sidebar. Evidence-limit explanations are
