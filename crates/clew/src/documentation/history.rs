@@ -158,7 +158,7 @@ fn nav(id: &str, parent: Option<&str>, nested: bool) -> String {
         })
         .unwrap_or_default();
     format!(
-        "<nav aria-label=\"Snapshot history\" style=\"display:flex;gap:20px;flex-wrap:wrap;padding:12px 20px;background:#eff4e8;color:#263d2d;font:14px system-ui\"><a href=\"{history}\">Snapshot history</a><span>Frozen snapshot {}</span>{previous}</nav>",
+        "<nav aria-label=\"Snapshot history\" style=\"display:flex;gap:20px;flex-wrap:wrap;padding:12px 20px;background:#e9f5fd;color:#12334e;font:14px system-ui\"><a href=\"{history}\">Snapshot history</a><span>Frozen snapshot {}</span>{previous}</nav>",
         &id[..12]
     )
 }
@@ -252,7 +252,18 @@ pub(super) fn prepare(
 pub(super) fn index(repo: &Repository, current: &str) -> Result<(), ClewError> {
     let rows = records(repo)?;
     let cards=rows.iter().map(|p|format!("<li><a href=\"generated/{}/overview.html\">Snapshot {} · {}</a>{}<details><summary>Observed targets and tags</summary><pre>{}</pre></details></li>",p.id,p.ordinal,&p.id[..12],if p.id==current{" · Current publication"}else{""},render::escape(&json!({"targets":p.target_revisions,"tags":p.observed_tags}).to_string()))).collect::<String>();
-    repo.atomic("docs/history.html",format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Documentation history</title><style>pre{{white-space:pre-wrap;overflow-wrap:anywhere}}li{{margin-block:16px}}a{{overflow-wrap:anywhere}}</style></head><body style=\"font:16px system-ui;max-width:1000px;margin:auto;padding:24px\"><h1>Documentation history</h1><p><a href=\"index.html\">Current publication</a></p><p>Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.</p><ol>{cards}</ol></body></html>").as_bytes())
+    let publication = load(repo, current)?;
+    let pages = publication.files.keys().cloned().collect::<Vec<_>>();
+    let nav =
+        super::reader::navigation(&format!("generated/{current}/"), "index.html", None, &pages);
+    let body = format!(
+        "<h1>Documentation history</h1><p>Snapshots preserve their observed revisions and meaning review. A moved tag does not rewrite a snapshot. Use history inspection to verify retained files and evidence availability.</p><ol>{cards}</ol>"
+    );
+    repo.atomic(
+        "docs/history.html",
+        super::reader::decorate(&super::reader::page("Documentation history", &body), &nav)
+            .as_bytes(),
+    )
 }
 pub fn run(command: Command) -> Result<Value, ClewError> {
     match command {

@@ -16,3 +16,13 @@
 .process-view{overflow-wrap:anywhere}
 
 .dataflow-scroll{max-height:680px;padding:8px;background:#fcfdfb;border:1px solid var(--line);border-radius:8px}.dataflow-scroll svg{display:block;max-width:100%}
+
+/* Shared Codeclew site palette and persistent offline reader navigation. */
+:root{--ink:#12334e;--muted:#526980;--line:#dce8e9}
+body{background:#fdfaf2;color:#12334e;font-family:"Avenir Next","Segoe UI",sans-serif}
+a{color:#087dc1}.logo{background:#087dc1;color:white}.topbar{background:#fffdf8;position:relative;top:auto}.sidebar{background:#fffdf8}.eyebrow,.small-label{color:#526980}.sidebar nav button.active{background:#e9f5fd;color:#12334e}
+.reader-nav{display:flex;align-items:center;gap:10px 18px;flex-wrap:wrap;padding:14px 24px;background:#12334e;color:#fffdf8;border-bottom:3px solid #087dc1;font-size:14px;position:relative;z-index:30}
+.reader-nav a{color:#fffdf8;text-decoration:none;padding:4px 0;overflow-wrap:anywhere}.reader-nav a:hover,.reader-nav a:focus-visible{text-decoration:underline;color:#b9e7ff}.reader-brand{font-weight:800;font-size:18px}.reader-guide{max-width:1050px;margin:auto;padding:36px 24px 80px}.reader-guide h2{margin-top:34px}.reader-guide p,.reader-guide li{line-height:1.7}.reader-guide pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#fffdf8;border:1px solid #dce8e9;border-radius:8px;padding:18px}.reader-guide code{overflow-wrap:anywhere}.gap-card,.metric{border-color:#dce8e9;background:#fffdf8}
+@media(max-width:700px){.reader-nav{gap:7px 14px;padding:12px 16px;font-size:13px}.reader-guide{padding:24px 16px 60px}.reader-guide h1{font-size:30px}}
+
+.topbar,.topbar .brand,.topbar a,.topbar button{color:#12334e}.topbar .brand span{color:#526980}.topbar .brand .logo{color:white}.nav-item.active{background:#e9f5fd;color:#12334e}

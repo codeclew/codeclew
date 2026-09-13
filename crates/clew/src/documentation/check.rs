@@ -74,13 +74,37 @@ pub fn run_selected(
     repository: &Repository,
     selected: &BTreeSet<String>,
 ) -> Result<Check, ClewError> {
+    let mut checked = capture_selected(repository, selected, &repository.scenarios()?)?;
+    super::entities::attach(repository, &mut checked)?;
+    super::notes::attach(repository, &mut checked)?;
+    super::dataflow::attach(repository, &mut checked)?;
+    if checked.input_digest != repository.input_digest()? {
+        return Err(invalid("note inputs changed during checking"));
+    }
+    let baseline = super::bindings::baseline(repository)?;
+    if let Some((_, baseline)) = &baseline {
+        super::review::scopes(
+            repository,
+            &mut checked,
+            baseline.accepted_versions.values().cloned(),
+        )?;
+    }
+    super::processes::attach_versions(repository, &mut checked, baseline.as_ref().map(|(_, b)| b))?;
+    Ok(checked)
+}
+
+/// Capture source for a transient definition without loading authored history.
+pub(super) fn capture_selected(
+    repository: &Repository,
+    selected: &BTreeSet<String>,
+    scenarios: &BTreeMap<String, Scenario>,
+) -> Result<Check, ClewError> {
     let input_digest = repository.input_digest()?;
     let services = repository.services()?;
     if selected.iter().any(|id| !services.contains_key(id)) {
         return Err(invalid("selected documentation service does not exist"));
     }
     let interactions = repository.interactions()?;
-    let scenarios = repository.scenarios()?;
     let mut evidence = BTreeMap::new();
     let mut unresolved = BTreeMap::new();
     let targets = super::updates::state(repository)?;
@@ -120,28 +144,7 @@ pub fn run_selected(
     if input_digest != repository.input_digest()? {
         return Err(invalid("documentation input changed during checking"));
     }
-    let mut checked = assemble(
-        input_digest,
-        evidence,
-        unresolved,
-        &interactions,
-        &scenarios,
-    )?;
-    super::entities::attach(repository, &mut checked)?;
-    super::notes::attach(repository, &mut checked)?;
-    super::dataflow::attach(repository, &mut checked)?;
-    if checked.input_digest != repository.input_digest()? {
-        return Err(invalid("note inputs changed during checking"));
-    }
-    if let Some((_, baseline)) = super::bindings::baseline(repository)? {
-        super::review::scopes(
-            repository,
-            &mut checked,
-            baseline.accepted_versions.into_values(),
-        )?;
-    }
-    super::processes::attach(repository, &mut checked)?;
-    Ok(checked)
+    assemble(input_digest, evidence, unresolved, &interactions, scenarios)
 }
 
 pub fn assemble(

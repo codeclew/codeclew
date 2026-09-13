@@ -168,16 +168,25 @@ pub fn run(command: Command) -> Result<Value, ClewError> {
         }
         Command::Inspect { input, .. } => {
             let definition = load_definition(&repo, &input)?;
-            let mut scenarios = repo.scenarios()?;
-            scenarios.insert(definition.id.clone(), definition.clone());
-            let captured = super::check::run(&repo)?;
-            let checked = super::check::assemble(
-                captured.input_digest,
-                captured.services,
-                captured.unresolved,
-                &repo.interactions()?,
-                &scenarios,
-            )?;
+            let scenarios = BTreeMap::from([(definition.id.clone(), definition.clone())]);
+            let mut selected: BTreeSet<_> = definition
+                .process
+                .as_ref()
+                .unwrap()
+                .participants
+                .iter()
+                .cloned()
+                .collect();
+            selected.insert(definition.root.service.clone());
+            let interactions = repo.interactions()?;
+            for id in &definition.interactions {
+                let interaction = &interactions[id];
+                selected.extend([
+                    interaction.from.service.clone(),
+                    interaction.to.service.clone(),
+                ]);
+            }
+            let checked = super::check::capture_selected(&repo, &selected, &scenarios)?;
             Ok(
                 json!({"status":"TRANSIENT","saved":false,"definition":definition,"context":checked.scenarios[&definition.id],"linkedSubviews":definition.process.as_ref().map(|p|&p.linked_subviews),"limitation":"Linked child explanations are checked only for an explicitly saved definition."}),
             )

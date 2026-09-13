@@ -3527,6 +3527,25 @@ fn docsys_t10_saved_identity_transient_inspection_and_unavailable_participant() 
         fs::read_dir(f.docs.join("scenarios")).unwrap().count()
     );
     assert!(!f.docs.join("docs/index.html").exists());
+    // Transient inspection must not parse or hydrate an unrelated publication.
+    fs::write(
+        f.docs.join("docs/index.html"),
+        "Unrelated manual landing page",
+    )
+    .unwrap();
+    let independent = f.ok(&[
+        "docs",
+        "process",
+        "inspect",
+        "--input",
+        path.to_str().unwrap(),
+    ]);
+    assert_eq!(independent["context"], transient["context"]);
+    assert_eq!(
+        fs::read_to_string(f.docs.join("docs/index.html")).unwrap(),
+        "Unrelated manual landing page"
+    );
+    fs::remove_file(f.docs.join("docs/index.html")).unwrap();
     let saved = save_process(&f, &definition);
     let reopened = f.ok(&["docs", "process", "show", "--id", "reserve"]);
     assert_eq!(reopened["definition"], definition);

@@ -38,6 +38,10 @@ pub(super) fn html(data: &Value) -> Result<String, ClewError> {
     Ok(TEMPLATE
         .replace("/*__STYLE__*/", STYLE)
         .replace("/*__SCRIPT__*/", SCRIPT)
+        .replace(
+            "/*__ANALYSIS_SCRIPT__*/",
+            include_str!("../../assets/documentation/analysis.js"),
+        )
         .replace("__DOCUMENT_DATA__", &payload))
 }
 
@@ -1280,7 +1284,16 @@ fn page_data(subject: &str, title: &str, subtitle: &str, n: &Narrative, checked:
     );
     boundaries.sort();
     boundaries.dedup();
-    json!({"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
+    let analysis_evidence = selected_services.iter().filter_map(|id| {
+        checked.services.get(id).map(|e| {
+            let provider = e.observations.values().find(|o| o.kind == "SOURCE_SCOPE")
+                .map(|o| o.normalized["semantic"]["provider"].clone()).filter(|v| !v.is_null())
+                .unwrap_or_else(|| json!({"status": if e.coverage == "SYNTAX" { "NOT_REQUESTED" } else { "NATIVE_ANALYSIS" }}));
+            let facts = e.observations.values().filter(|o| o.kind == "SEMANTIC_SYMBOL").collect::<Vec<_>>();
+            (id, json!({"revision":e.revision,"extractor":e.extractor,"runtimeMode":e.runtime_mode,"coverage":e.coverage,"provider":provider,"mappedSymbols":facts.len(),"sampleFacts":facts.iter().take(3).map(|o| &o.normalized).collect::<Vec<_>>()}))
+        })
+    }).collect::<BTreeMap<_,_>>();
+    json!({"analysisEvidence":analysis_evidence,"view":super::dataflow::page(checked,subject),"relatedViews":checked.dependencies.values().filter(|d|d.kind=="VIEW_DEFINITION" && service_id.is_some_and(|id|d.normalized["definition"]["view"]["services"].as_array().is_some_and(|ss|ss.iter().any(|s|s==id)))).map(|d|json!({"id":d.normalized["definition"]["id"],"title":d.normalized["definition"]["title"],"inputObjects":d.normalized["definition"]["view"]["inputObjects"]})).collect::<Vec<_>>(),"process":super::processes::page(checked,subject),"notes":super::notes::page(checked,subject,n),"sections":service_id.map(|id|super::sections::records(id,Some(n))).unwrap_or_default(),"boundaryInventory":service_id.map(|id|super::sections::inventory(id,checked)),"entities":checked.dependencies.values().filter(|d|d.kind=="DOMAIN_ENTITY").collect::<Vec<_>>(),"subject":subject,"title":title,"subtitle":subtitle,"operations":n.operations,"gaps":n.gaps,"catalogue":catalogue,"sources":chosen_sources,"contracts":contract_rows,"revisions":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.revision))).collect::<BTreeMap<_,_>>(),"boundaries":boundaries,"coverage":selected_services.iter().filter_map(|id|checked.services.get(id).map(|e|(id,&e.coverage))).collect::<BTreeMap<_,_>>(),"interactions":checked.interactions.values().filter(|i|service_id.is_some_and(|id|checked.dependencies[&format!("interaction:{}",i.id)].normalized["from"]["service"]==id||checked.dependencies[&format!("interaction:{}",i.id)].normalized["to"]["service"]==id)||checked.scenarios.get(id_from_subject(subject)).is_some_and(|s|s.dependency_ids.contains(&format!("interaction:{}",i.id)))).collect::<Vec<_>>(),"extractor":EXTRACTOR,"renderer":RENDERER})
 }
 
 pub fn mermaid(o: &Operation) -> String {
@@ -2059,6 +2072,8 @@ pub(super) fn commit_bundle(
         "root-overview.html".into(),
         live_overview.as_bytes().to_vec(),
     );
+    super::reader::decorate_bundle(&mut files, bundle)?;
+    let live_overview = String::from_utf8(files["root-overview.html"].clone()).map_err(io_error)?;
     let mut publication =
         super::history::prepare(repo, bundle, &binding, &mut files, input_digest, previous)?;
     binding.output_hashes = files
@@ -2137,9 +2152,20 @@ pub(super) fn commit_bundle(
     // One pointer changes only after all matching documents and bindings exist.
     super::history::index(repo, bundle)?;
     repo.atomic("docs/index.html", live_overview.as_bytes())?;
+    super::reader::connect_starters(repo, bundle, &files.keys().cloned().collect::<Vec<_>>())?;
     Ok(())
 }
 
 pub(super) fn renderer_digest() -> Result<String, ClewError> {
-    digest(&[TEMPLATE, STYLE, SCRIPT, include_str!("history.rs")])
+    digest(&[
+        TEMPLATE,
+        STYLE,
+        SCRIPT,
+        include_str!("history.rs"),
+        include_str!("reader.rs"),
+        super::reader::HELP,
+        super::reader::RUNBOOKS,
+        super::reader::ICON,
+        include_str!("../../assets/documentation/analysis.js"),
+    ])
 }

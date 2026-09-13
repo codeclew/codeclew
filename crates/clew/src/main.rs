@@ -55,6 +55,12 @@ enum Command {
     Doctor(DoctorArgs),
     /// Update an installed macOS release. Source checkouts are updated with Git.
     Upgrade,
+    /// Install or inspect the bundled agent skill (handled by the clew launcher).
+    #[command(disable_help_flag = true)]
+    Skill {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     Change {
         #[command(subcommand)]
         command: ChangeCommand,
@@ -1452,6 +1458,10 @@ fn run(cli: Cli) -> Result<Value, ClewError> {
         }
         Command::Capabilities(_) => capabilities(&active_runtime()?),
         Command::Doctor(args) => run_doctor(&args),
+        Command::Skill { .. } => Err(ClewError::new(
+            ErrorCode::InvalidInput,
+            "Use the supported clew launcher for skill commands; run clew skill --help.",
+        )),
         Command::Upgrade => Err(ClewError::new(
             ErrorCode::InvalidInput,
             "this is a source checkout; update it through the approved Git commit or tag",

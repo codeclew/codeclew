@@ -1,6 +1,7 @@
 # Documentation from committed source without a build
 
-Release scope: Codeclew 0.8.0; unavailable in 0.7.1.
+Source-syntax release scope: Codeclew 0.8.0; unavailable in 0.7.1.
+Offline starter help and runbooks: Codeclew 0.8.1.
 
 The `source-syntax` profile uses the existing documentation catalogue, narrative,
 binding, and renderer models. Python, Java, and Kotlin sources can be documented
@@ -22,6 +23,18 @@ clew docs bind --root /work/architecture --service orders --repo /work/orders
 clew docs check --root /work/architecture
 clew docs context --root /work/architecture --service orders --format compact --limit 100
 ```
+
+After initialization, open `docs/help.html` for local onboarding, notes, entity
+comments, scenario/dataflow prompts and detail preferences. `docs/runbooks.html`
+contains Codeclew procedures for relocation, slow inspection, digest conflicts,
+stale explanations and unavailable compiler evidence. Both work offline before
+the first publication. Re-running init preserves existing guide files. New
+publications include the guides in their immutable snapshots and navigation.
+
+`RETURNED_INPUT_DIGEST` is a placeholder for the complete `inputDigest` returned
+by the preceding list/show operation, including `sha256:`. It checks that no one
+changed the catalogue since you read it. On conflict, re-read and reconcile the
+record before retrying. Do not type the placeholder literally.
 
 Example service record:
 

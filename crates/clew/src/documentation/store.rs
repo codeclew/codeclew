@@ -161,6 +161,7 @@ impl Repository {
                 repo.atomic(name, content.as_bytes())?;
             }
         }
+        super::reader::init(&repo)?;
         Ok(
             json!({"schema":"codeclew-docs-init/1.0", "status":"READY", "inputDigest":repo.input_digest()?}),
         )

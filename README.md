@@ -131,6 +131,11 @@ validates source bindings and coverage, renders offline pages and reports which
 fragments are stale after source or declaration changes. Each diagram step opens
 its retained source. Engineer-declared relationships retain their authority.
 
+Codeclew 0.8.1 initializes offline help at `docs/help.html` and Codeclew runbooks
+at `docs/runbooks.html`, before any service is registered. Every new publication
+includes the guides, cross-page navigation and explicit analysis-provider status.
+Service-specific operational procedures still come from your sources and notes.
+
 Start with `clew docs init --root /work/architecture`, adapt the generated examples,
 and follow the [packaged workflow](skills/codeclew/references/service-documentation.md).
 The [two-service fixture](fixtures/durable-docs/README.md) provides a reproducible
