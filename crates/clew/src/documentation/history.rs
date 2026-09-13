@@ -158,7 +158,7 @@ fn nav(id: &str, parent: Option<&str>, nested: bool) -> String {
         })
         .unwrap_or_default();
     format!(
-        "<nav aria-label=\"Snapshot history\" style=\"display:flex;gap:20px;flex-wrap:wrap;padding:12px 20px;background:#e9f5fd;color:#12334e;font:14px system-ui\"><a href=\"{history}\">Snapshot history</a><span>Frozen snapshot {}</span>{previous}</nav>",
+        "<details class=\"snapshot-history\"><summary>Snapshot {} · retained source version</summary><nav class=\"snapshot-links\" aria-label=\"Snapshot history\"><a href=\"{history}\">Snapshot history</a>{previous}</nav></details>",
         &id[..12]
     )
 }
@@ -198,8 +198,8 @@ pub(super) fn prepare(
             html = html.replace("href=\"../../../index.html\"", "href=\"../overview.html\"");
         }
         html = html.replacen(
-            "<body>",
-            &format!("<body>{}", nav(id, parent.as_deref(), nested)),
+            "</nav>",
+            &format!("</nav>{}", nav(id, parent.as_deref(), nested)),
             1,
         );
         *contents = html.into_bytes();

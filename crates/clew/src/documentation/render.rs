@@ -2166,6 +2166,9 @@ pub(super) fn renderer_digest() -> Result<String, ClewError> {
         super::reader::HELP,
         super::reader::RUNBOOKS,
         super::reader::ICON,
+        super::reader::STYLE,
+        super::reader::SCRIPT,
+        super::reader::LIMITS,
         include_str!("../../assets/documentation/analysis.js"),
     ])
 }
