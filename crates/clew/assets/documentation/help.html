@@ -2,12 +2,14 @@
 <p>This guide and the Codeclew runbooks are included when you initialize a documentation repository. Service explanations, business definitions and operational knowledge come from your repositories and notes.</p>
 <h2>Start on another laptop</h2><pre>clew --version
 clew skill install --agent codex
+# For compiler analysis of Kotlin 2.3 projects:
+clew pack install kotlin23
 clew docs init --root ./architecture --title "Service documentation"</pre>
 <p>Open <code>architecture/docs/help.html</code> directly, or serve the architecture directory on localhost. For an existing documentation repository, clone it together with its retained evidence and history, then bind each relocated service checkout:</p><pre>clew docs bind --root ./architecture --service SERVICE_ID --repo /path/to/service
 clew docs check --root ./architecture</pre>
 <h2>Add a service, scenario or dataflow</h2><p>Ask the agent: “Register this local service from its committed source, document its responsibilities, ingress, egress, entities and failure paths. Show gaps and uncertain relationships. Use examples/service-source.json and preserve my original notes.” The examples directory also contains interaction and scenario records.</p>
 <p>Use <code>clew docs service --help</code>, <code>clew docs process --help</code>, <code>clew docs entity --help</code> and <code>clew docs view --help</code> for the installed schemas and commands. Ask: “Trace this reservation lifecycle across these services; explain each input, state change, output and failure, and save the scenario.” For a dataflow: “Trace quantity from the incoming payload through validation and persistence to the response; retain source links and mark declared cross-service edges.”</p>
-<h2>Add a note or comment</h2><p>Keep the original text in a Markdown file. Tell the agent the target, whether this is a fact, intention or question, and its date and environment. Targets can be a whole service, one service section or operation, a scenario, an entity definition, or a dataflow view.</p><pre>For service inventory, section ingress: save this as an open question,
+<h2>Add a note or comment</h2><p>Keep the original text in a Markdown file. Tell the agent the target, whether this is a fact, intention or question, and its date and environment. Targets can be a whole service, one service section, a scenario, an entity definition, or a dataflow view. For a particular operation or paragraph, use a section target and describe the exact focus in the note; that text is not a validated code anchor.</p><pre>For service inventory, section ingress: save this as an open question,
 not a confirmed fact: who supplies the reservation ID?
 Associate it with the reservation scenario and entity definition.
 Then investigate source evidence and update the explanation if supported.</pre>

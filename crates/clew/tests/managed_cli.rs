@@ -4180,6 +4180,25 @@ fn durable_documentation_cli_recovers_and_reports_route_fragments() {
                 .any(|link| link.ends_with("scenarios/checkout.html"))
         );
         for link in links {
+            if let Some(encoded) = link.strip_prefix("data:image/svg+xml,") {
+                // Embedded favicons remain portable offline assets, not file paths.
+                assert!(html.contains(&format!(
+                    "rel=\"icon\" type=\"image/svg+xml\" href=\"{link}\""
+                )));
+                assert_eq!(encoded.len() % 3, 0);
+                let svg = encoded
+                    .as_bytes()
+                    .chunks_exact(3)
+                    .map(|chunk| {
+                        assert_eq!(chunk[0], b'%');
+                        u8::from_str_radix(std::str::from_utf8(&chunk[1..]).unwrap(), 16).unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                let svg = String::from_utf8(svg).unwrap();
+                let document = roxmltree::Document::parse(&svg).unwrap();
+                assert_eq!(document.root_element().tag_name().name(), "svg");
+                continue;
+            }
             if !link.contains("://") && !link.starts_with('#') {
                 assert!(
                     page.parent().unwrap().join(link).is_file(),

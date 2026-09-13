@@ -55,7 +55,7 @@ enum Command {
     Doctor(DoctorArgs),
     /// Update an installed macOS release. Source checkouts are updated with Git.
     Upgrade,
-    /// Install or inspect the bundled agent skill (handled by the clew launcher).
+    /// Install the bundled agent skill (handled by the clew launcher).
     #[command(disable_help_flag = true)]
     Skill {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
