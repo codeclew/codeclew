@@ -63,7 +63,7 @@ pub fn target(work: &Work) -> Result<String, super::ClewError> {
         })
 }
 
-fn output_schema() -> Result<Value, super::ClewError> {
+pub(super) fn output_schema() -> Result<Value, super::ClewError> {
     serde_json::from_str(include_str!(
         "../../../../schemas/documentation/section-author.schema.json"
     ))
@@ -176,7 +176,7 @@ pub fn reviewer_binding(
     }))
 }
 
-fn reviewer_output_schema(
+pub(super) fn reviewer_output_schema(
     work: &Work,
     pages: &[Value],
     proposal: &proposals::Artifact,
@@ -184,7 +184,7 @@ fn reviewer_output_schema(
 ) -> Result<Value, super::ClewError> {
     let mut output_schema = output_schema()?;
     output_schema.as_object_mut().unwrap().remove("$id");
-    output_schema["title"] = json!("Bound section meaning-review result");
+    output_schema["title"] = json!("Bound meaning-review result");
     output_schema["description"] = json!(
         "Return a review of every supplied claim and operation, or request registered evidence expansion. Coverage arrays contain ID strings. Issue evidence contains delivered Work handles. Runtime validation also enforces UTF-8 byte bounds and nonempty text."
     );
