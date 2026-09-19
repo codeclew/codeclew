@@ -940,6 +940,14 @@ fn managed_python_context_rejects_missing_plan_without_project_processes() {
     assert!(!poison_bin.join("python3.executed").exists());
     assert!(!git_poison.with_extension("executed").exists());
     assert!(!checkout_hook.with_extension("executed").exists());
+    // fd_runtime deliberately seals the fixture directory. Restore only this
+    // test-owned root after all lifecycle assertions so TempDir can remove it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    temporary.close().unwrap();
 }
 
 #[test]

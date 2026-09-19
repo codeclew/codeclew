@@ -1338,17 +1338,13 @@ fn validate_session_authority_shape(
                 && authority.model_cache_policy == ModelCachePolicy::NonCacheable
         }
     };
-    // A durable profile is meaningful for committed Java contexts (e.g.
-    // writable-then-seal). It must be non-empty when present and is rejected
-    // for working-tree sessions, which carry their profile in the binding.
+    // Admission persists the selected profile for every committed language.
+    // It must be non-empty when present and is rejected for working-tree
+    // sessions, which carry their profile in the binding instead.
     let profile_valid = match (&authority.profile, &authority.working_tree) {
         (Some(profile), _) if profile.is_empty() => false,
         (Some(_), Some(_)) => false,
-        (Some(_), None) => {
-            matches!(authority.language, SessionLanguage::Java)
-                || authority.language == SessionLanguage::Kotlin
-                || authority.language == SessionLanguage::Rust
-        }
+        (Some(_), None) => true,
         (None, _) => true,
     };
     if !source_valid
@@ -4819,6 +4815,34 @@ mod tests {
         // Empty profile is rejected; a profile on a working-tree session is too.
         let empty = profile_session(SessionLanguage::Java, Some(""));
         assert!(validate_session_authority_shape(&empty, &empty.session_id).is_err());
+    }
+
+    #[test]
+    fn committed_syntax_profiles_survive_authority_round_trip() {
+        for (language, profile, compilation) in [
+            (SessionLanguage::Python, "python-syntax", "python:.#."),
+            (
+                SessionLanguage::JavaScript,
+                "javascript-read-only",
+                "tsconfig:jsconfig.json",
+            ),
+            (
+                SessionLanguage::TypeScript,
+                "typescript-read-only",
+                "tsconfig:tsconfig.json",
+            ),
+        ] {
+            let mut session = profile_session(language, Some(profile));
+            session.compilations = vec![compilation.into()];
+            session.authority_digest = session_authority_digest(&session).unwrap();
+            let saved = canonical::bytes(&session).unwrap();
+            let reopened: SessionAuthority = serde_json::from_slice(&saved).unwrap();
+            validate_session_authority(&reopened, &session.session_id).unwrap();
+
+            let mut tampered = reopened;
+            tampered.profile = Some("changed-profile".into());
+            assert!(validate_session_authority(&tampered, &session.session_id).is_err());
+        }
     }
 
     #[test]
